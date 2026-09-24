@@ -9,6 +9,7 @@ pub mod accounts;
 pub mod outbox;
 pub mod projections;
 pub mod sessions;
+pub mod social;
 pub mod throttle;
 pub mod tokens;
 pub mod work;

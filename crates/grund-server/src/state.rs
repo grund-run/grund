@@ -7,7 +7,10 @@
 use std::{sync::Arc, time::Instant};
 
 use crate::{
-    config::ServeConfig, secrets::SecretKey, services::passwords::Passwords, templates::Templates,
+    config::ServeConfig,
+    secrets::SecretKey,
+    services::{entitlements::Entitlements, passwords::Passwords, social::Provider},
+    templates::Templates,
 };
 
 /// Cheap to clone: every field is an `Arc`, a pool or a handle.
@@ -21,5 +24,11 @@ pub struct State {
     pub health: nostatus::StatusState,
     pub passwords: Passwords,
     pub templates: Templates,
+    pub entitlements: Arc<Entitlements>,
+    /// The social providers configured with GRUND_SOCIAL_LOGIN on. Offered
+    /// only when `entitlements` allows social sign-in.
+    pub social: Arc<Vec<Provider>>,
+    /// For calls to social sign-in providers: 10 s per request.
+    pub http: reqwest::Client,
     pub started: Instant,
 }

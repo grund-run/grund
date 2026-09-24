@@ -3,14 +3,18 @@
 //! `state.sessions()`, `state.limits()`, `state.passwords()`.
 
 pub mod accounts;
+pub mod entitlements;
 pub mod limits;
 pub mod mail;
 pub mod maintenance;
 pub mod outbox;
 pub mod passwords;
 pub mod sessions;
+pub mod social;
 
 pub use accounts::AccountsState;
+pub use entitlements::EntitlementsState;
 pub use limits::LimitsState;
 pub use passwords::PasswordsState;
 pub use sessions::SessionsState;
+pub use social::SocialState;

@@ -1,0 +1,12 @@
+{% extends "layout-auth.html.jinja" %}
+{% block title %}Choose a username · grund{% endblock %}
+{% block card %}
+<h1 class="auth-title">Choose a username</h1>
+<p class="auth-lede">{{ provider }} confirmed {{ email }}. Pick the name your account and organisation go by.</p>
+<form class="form" method="post" action="/auth/complete" novalidate>
+  {{ ui.csrf_field(csrf) }}
+  {{ ui.form_error(error) }}
+  {{ ui.field("username", "Username", value=username, autocomplete="username", hint="3 to 32 letters, digits and single hyphens. It is public.", autofocus=true) }}
+  <button class="btn btn-primary btn-block" type="submit">Create account</button>
+</form>
+{% endblock %}

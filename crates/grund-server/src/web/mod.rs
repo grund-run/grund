@@ -11,6 +11,7 @@
 pub mod assets;
 pub mod browser;
 pub mod pages;
+pub mod social;
 
 use axum::{
     Router,
@@ -66,6 +67,10 @@ pub fn router(state: State) -> Router {
         .route("/settings/sessions", get(pages::sessions_page))
         .route("/settings/sessions/revoke-others", post(pages::revoke_other_sessions))
         .route("/settings/sessions/{id}/revoke", post(pages::revoke_session))
+        .route("/auth/{provider}/start", get(social::start))
+        .route("/auth/{provider}/callback", get(social::callback))
+        .route("/auth/complete", get(social::complete_form).post(social::complete))
+        .route("/auth/link", get(social::link_form).post(social::link))
         .route("/licenses", get(pages::licenses))
         .route("/style-guide", get(pages::style_guide))
         .fallback(pages::not_found)

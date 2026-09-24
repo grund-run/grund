@@ -67,6 +67,7 @@ the look is [docs/design/style-guide.md](docs/design/style-guide.md)):
 | `/reset`, `/reset/sent`, `/reset/confirm?token=` | Mail a reset link; choose a new password, which signs out every device |
 | `/` | The signed-in overview (a placeholder until apps exist) |
 | `/settings/sessions` | Every device signed in, with sign-out for each or all others |
+| `/auth/<provider>/start`, `/callback`, `/auth/complete`, `/auth/link` | Social sign-in (GitHub, Google, any OIDC provider). **Commercial**: offered only when the license key includes it (docs/design/licensing.md); without one these answer 403 |
 | `/style-guide`, `/licenses` | Every component with example data; the fonts' licenses |
 
 ## Layout

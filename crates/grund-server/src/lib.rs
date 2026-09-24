@@ -18,6 +18,7 @@ pub mod config;
 pub mod crypto;
 pub mod db;
 pub mod health;
+pub mod license;
 pub mod projections;
 pub mod secrets;
 pub mod server;
@@ -41,6 +42,13 @@ pub async fn serve(config: ServeConfig) -> anyhow::Result<()> {
     let templates = templates::Templates::new()?;
     let mailer = services::mail::Mailer::new(&config, templates.clone())?;
     let health = health::registry(pool.clone(), nats.clone(), mailer.configured(), &config);
+    let entitlements = entitlements(&config)?;
+    let social = if config.social.social_login {
+        services::social::providers(&config.social)
+    } else {
+        Vec::new()
+    };
+    let http = http_client()?;
     let grace = config.shutdown_grace;
     let state = State {
         config: std::sync::Arc::new(config),
@@ -51,6 +59,9 @@ pub async fn serve(config: ServeConfig) -> anyhow::Result<()> {
         health,
         passwords: services::passwords::Passwords::new()?,
         templates,
+        entitlements: std::sync::Arc::new(entitlements),
+        social: std::sync::Arc::new(social),
+        http,
         started: health::started(),
     };
 
@@ -69,6 +80,40 @@ pub async fn serve(config: ServeConfig) -> anyhow::Result<()> {
         .run()
         .await?;
     Ok(())
+}
+
+/// The HTTP client for calls to sign-in providers: rustls with the ring
+/// provider (installed here, once per process), 10 s per request.
+pub fn http_client() -> anyhow::Result<reqwest::Client> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .user_agent("grund")
+        .build()
+        .context("build the HTTP client for sign-in providers")
+}
+
+fn entitlements(config: &ServeConfig) -> anyhow::Result<services::entitlements::Entitlements> {
+    let key = match (&config.license_key, &config.license_key_file) {
+        (Some(key), _) => Some(key.clone()),
+        (None, Some(path)) => Some(
+            std::fs::read_to_string(path)
+                .with_context(|| format!("read GRUND_LICENSE_KEY_FILE {}", path.display()))?,
+        ),
+        (None, None) => None,
+    };
+    let entitlements = services::entitlements::Entitlements::from_key(
+        key.as_deref(),
+        &license::Verifier::grund(),
+        chrono::Utc::now(),
+    );
+    if config.social.social_login
+        && let Err(refusal) = entitlements.allows(license::Feature::SocialLogin)
+    {
+        tracing::warn!(%refusal, "GRUND_SOCIAL_LOGIN is on, but social sign-in needs a license that includes it; offering password sign-in only");
+    }
+    Ok(entitlements)
 }
 
 /// `grund migrate`: applies every migration and exits. `serve` does the same

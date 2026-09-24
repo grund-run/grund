@@ -30,6 +30,8 @@ pub const TEMPLATES: &[(&str, &str)] = embedded![
     "pages/sessions.html.jinja",
     "pages/licenses.html.jinja",
     "pages/style-guide.html.jinja",
+    "pages/social-username.html.jinja",
+    "pages/social-link.html.jinja",
     "mail/verify_email.txt.jinja",
     "mail/verify_email.html.jinja",
     "mail/password_reset.txt.jinja",

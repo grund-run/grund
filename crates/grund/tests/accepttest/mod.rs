@@ -8,3 +8,4 @@ mod pages;
 mod reset;
 mod sessions;
 mod signup;
+mod social;

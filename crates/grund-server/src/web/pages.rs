@@ -53,7 +53,7 @@ pub struct Failed(pub std::sync::Arc<anyhow::Error>);
 
 type PageResult = Result<Response, PageError>;
 
-fn render(
+pub fn render(
     state: &State,
     browser: &Browser,
     status: StatusCode,
@@ -70,7 +70,7 @@ fn render(
     Ok(response)
 }
 
-fn redirect(to: &str) -> Response {
+pub fn redirect(to: &str) -> Response {
     let mut response = StatusCode::SEE_OTHER.into_response();
     response.headers_mut().insert(
         header::LOCATION,
@@ -90,7 +90,7 @@ fn with_referrer_off(mut response: Response) -> Response {
     response
 }
 
-fn message(
+pub fn message(
     state: &State,
     browser: &Browser,
     status: StatusCode,
@@ -108,7 +108,7 @@ fn message(
     )
 }
 
-fn forged(state: &State, browser: &Browser) -> PageResult {
+pub fn forged(state: &State, browser: &Browser) -> PageResult {
     message(
         state,
         browser,
@@ -117,6 +117,24 @@ fn forged(state: &State, browser: &Browser) -> PageResult {
         "For your safety grund only accepts forms it just showed you. Go back, reload the page and try again.",
         Some(("/", "Go to grund")),
     )
+}
+
+/// A path to return to after sign-in: same-origin paths only.
+/// The social providers the sign-in page offers: none unless the license
+/// includes social sign-in.
+pub fn offered_providers(state: &State) -> Vec<Value> {
+    if state
+        .entitlements
+        .allows(crate::license::Feature::SocialLogin)
+        .is_err()
+    {
+        return Vec::new();
+    }
+    state
+        .social
+        .iter()
+        .map(|p| context! { id => p.id, name => p.name, icon => p.icon })
+        .collect()
 }
 
 /// A path to return to after sign-in: same-origin paths only.
@@ -231,7 +249,7 @@ fn login_page(
             error => error.unwrap_or_default(),
             notice => notice.unwrap_or_default(),
             return_to => return_to.unwrap_or_default(),
-            providers => Vec::<Value>::new(),
+            providers => offered_providers(state),
             signup_enabled => state.config.signup_enabled,
         },
     )

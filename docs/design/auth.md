@@ -1,8 +1,8 @@
 # Authentication
 
-Status: accepted design. Built: §1–§5 (except social sign-in), §8, §9 and
-§12. Social sign-in (§5, §7) and the API tokens (§6) are marked where they
-are not built. Decisions that belong to Kasper are marked *Decision for
+Status: accepted design. Built: §1–§5, §7, §8, §9 and §12, including
+social sign-in behind the license gate. The API tokens (§6) are marked
+where they are not built. Decisions that belong to Kasper are marked *Decision for
 Kasper* and are not settled until he says so. 
 ## What exists today
 
@@ -446,8 +446,22 @@ the real binary, real PostgreSQL, NATS and Mailpit:
   exist.
 - **Sessions**: listing and revoking; **a second account's session is a
   404**.
-- **The gate**: social sign-in configured without a license starts, shows
-  no buttons, and refuses `/auth/<provider>/*`.
+- **The gate**: social sign-in configured without a license, or with a key
+  this build does not trust, starts, shows no buttons, and refuses every
+  `/auth/*` route with 403.
+- **Social sign-in with a license** (`crates/grund-server/tests/social_flow.rs`,
+  in process). It uses a license signed by a key generated inside the test,
+  a mock OIDC provider on localhost, and real PostgreSQL:
+  - the redirect carries `state`, a PKCE S256 challenge and a `nonce`;
+  - a new identity chooses a username and becomes an account, and then
+    signs straight in;
+  - an identity whose address has an account links only with that
+    account's password, and a used flow links nothing again;
+  - an unverified address, or a callback with a `state` from another
+    browser, is refused and creates nothing.
+  No real GitHub, Google or OIDC app exists yet. Those are Kasper's to
+  create, so the provider side is proven against the mock only
+  (*Not established* against the real providers).
 
 Timing equality for sign-in is measured, not assumed: the sign-in test
 compares the median of repeated unknown-account and wrong-password

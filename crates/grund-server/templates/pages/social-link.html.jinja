@@ -1,0 +1,13 @@
+{% extends "layout-auth.html.jinja" %}
+{% block title %}Connect {{ provider }} · grund{% endblock %}
+{% block card %}
+<h1 class="auth-title">Connect {{ provider }}</h1>
+<p class="auth-lede">An account with {{ email }} already exists. Enter its password to connect {{ provider }} to it. After that, either way signs you in.</p>
+<form class="form" method="post" action="/auth/link" novalidate>
+  {{ ui.csrf_field(csrf) }}
+  {{ ui.form_error(error) }}
+  {{ ui.field("password", "Password", type="password", autocomplete="current-password", autofocus=true) }}
+  <button class="btn btn-primary btn-block" type="submit">Connect and sign in</button>
+</form>
+<div class="form-foot"><p>No password on that account? <a href="/reset">Set one first</a>.</p></div>
+{% endblock %}
