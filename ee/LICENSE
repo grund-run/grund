@@ -1,0 +1,45 @@
+The grund Commercial License
+
+Copyright (c) 2026-present Kasper Juul Hermansen. All rights reserved.
+
+1. Scope. This license covers everything in the "ee/" directory of the grund
+   repository, and the parts of any grund binary built from it (together,
+   "the Software"). Everything outside "ee/" is licensed as the top-level
+   LICENSE file says.
+
+2. Production use needs a license key. You may use the Software's features
+   in production only while you hold a valid grund license key that
+   includes those features. The key must be issued by grund for the
+   instance, the plan and the number of machines you run, and you must stay
+   within the terms under which it was issued. Running a grund binary that
+   contains the Software, without such a key, is permitted: the Software's
+   features stay off, and nothing in this license is breached by that.
+
+3. Development and testing. Without a license key, you may copy, build and
+   modify the Software to develop, test and review grund or your changes to
+   it, on systems that serve no production users.
+
+4. Changes. You may publish changes to the Software, under this license. Any
+   change you publish or send to grund may be used, copied, modified and
+   distributed by grund without obligation to you. Your changed version may
+   be used in production only as section 2 allows.
+
+5. Redistribution. You may redistribute the Software, changed or not, only
+   as part of a copy of grund, with this license and the top-level LICENSE
+   included. Every recipient is bound by sections 2 to 4.
+
+6. No other rights. Except as sections 2 to 5 allow, you may not copy,
+   distribute, sublicense or sell the Software, nor remove, disable or work
+   around its license-key check. That the source is available does not
+   give permission to use it.
+
+7. Termination. Your rights under this license end automatically if you
+   break its terms.
+
+8. No warranty. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+   KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+   NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+   DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+   OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+   USE OR OTHER DEALINGS IN THE SOFTWARE.

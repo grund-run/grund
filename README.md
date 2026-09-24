@@ -11,8 +11,28 @@ reset a forgotten password, and see and end your sessions. Each account
 comes with its own organisation, which everything grund manages later will
 belong to. Nothing here deploys an app yet.
 
-License: to be decided. Until a license is chosen, no license is granted;
-see [docs/design/licensing.md](docs/design/licensing.md) for the options.
+## What is open, and what is paid
+
+grund is open source. The self-hosted edition is free, and it is the real
+product: deploying, releases, data, domains, and a whole team signing in
+with passwords, with nothing held back to make the paid plans look better.
+A few features on top are commercial. They are in `ee/`, where the source
+can be read, and they work with a license key.
+
+| | Where | License |
+|---|---|---|
+| Everything grund does, except the features below | everywhere but `ee/` | AGPL-3.0-only |
+| The API contract and clients (`proto/`, `crates/grund-proto`) | | Apache-2.0 |
+| Sign in with GitHub or Google (from the Homelab plan) | `ee/` | grund Commercial License |
+| Single sign-on with your own provider, audit log (Business plan) | `ee/` | grund Commercial License *(not built)* |
+
+Where things stand, plainly: grund is in development and nothing is for
+sale yet. No license key can be bought or issued today, so the commercial
+features cannot be turned on anywhere. The pricing on grund.sh is planned
+pricing. The licensing, and what it means for you, is in
+[LICENSE](LICENSE) and
+[docs/design/licensing.md](docs/design/licensing.md). Contributions are
+welcome under Apache-2.0 with a sign-off ([CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ## Run it
 

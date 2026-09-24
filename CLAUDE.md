@@ -13,8 +13,14 @@ github.com/grund-run/grund. Everything in it is public from the first push:
   run time, never committed;
 - no internal IPs, cluster internals or gateway details. Those live in the
   private repos (`grund/terraform`, `kjuulh/clank-homelab`) or forest config;
-- no license. The choice is Kasper's (docs/design/licensing.md). Do not add a
-  LICENSE file, name a license in docs, or set `license` in Cargo.toml.
+- the licensing is decided (Kasper, 2026-09-24; LICENSE and
+  docs/design/licensing.md): AGPL-3.0-only for the core, Apache-2.0 for
+  `proto/` and `crates/grund-proto`, the grund Commercial License for
+  `ee/`. New code goes on the right side of that line. A commercial feature
+  lives in `ee/` and plugs in through `Extension`. Moving code out of `ee/`
+  publishes it under the AGPL for good, and moving code into `ee/` takes a
+  feature away from the open edition. Ask Kasper before moving code either
+  way.
 
 ## House rules
 

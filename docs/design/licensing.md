@@ -1,25 +1,34 @@
 # Licensing and the commercial boundary
 
-Status: **direction chosen by Kasper (2026-09-24): Metabase's model, priced
-lower.** In his words: "I think metabase is a really interesting model,
-they're just too expensive, so if we balance this then it makes sense."
-Not yet applied. There is no LICENSE file, and no license is named in
-README or Cargo.toml until he gives the go-ahead to publish one (§6, "What
-it would take"). What is built is only the verification seam (§7): grund
-can check a signed license key offline and turn features on from it. No
-key has been issued, and the production key list is empty.
+Status: **decided and applied (Kasper, 2026-09-24).** In his words: "I think
+metabase is a really interesting model, they're just too expensive, so if
+we balance this then it makes sense", and "I'll follow your
+recommendations. I'd rather be honest about where we are, and still
+deliver true value in our open source version with some additional
+features on top locked down to us."
+
+- The repository is licensed as LICENSE says: AGPL-3.0-only for the core,
+  Apache-2.0 for `proto/` and `crates/grund-proto`, and the grund
+  Commercial License (`ee/LICENSE`) for `ee/`.
+- Contributions come in under Apache-2.0 with a DCO sign-off
+  (CONTRIBUTING.md).
+- No license key has been issued, and the production key list is empty
+  (§7), so no commercial feature can be turned on anywhere yet.
+- `ee/LICENSE` was drafted without a lawyer. Have it reviewed before the
+  first key is sold.
 
 ## What exists today
 
 - grund is public from its first commit (git.kjuulh.io/grund/grund, mirrored
-  to github.com/grund-run/grund) with no license file.
+  to github.com/grund-run/grund). It had no license file until 2026-09-24,
+  when the shape below was applied. Earlier commits carry no license grant.
 - The product promise, from the site and `product`: *you can always run all
   of grund yourself, dashboard included; hosted services are a convenience,
   never a requirement.* Pricing is by the machine for hosted plans: Homelab
   (first machine free, then €3), Pro €10, Business €49 + €10.
-- The first commercial feature is **social sign-in** (GitHub, Google, OIDC).
-  It is behind `Entitlements` (docs/design/auth.md §7), and without a valid
-  license it stays off.
+- The first commercial feature is **social sign-in** (GitHub, Google, OIDC),
+  in `ee/grund-ee`. It is behind `Entitlements` (docs/design/auth.md §7), and
+  without a valid license key it stays off.
 
 ## The unifying concept
 
@@ -233,15 +242,11 @@ features." Metabase ships two builds. grund can ship one binary whose
 `ee` features activate only with a key (§6), because the license, not the
 build, is what forbids unlicensed use.
 
-## 6. The shape (direction chosen 2026-09-24)
+## 6. The shape (decided 2026-09-24)
 
-Kasper chose this direction on 2026-09-24 ("metabase is a really
-interesting model, they're just too expensive"). What is still his:
-- the go-ahead to publish the license;
-- the inbound rule (item 4);
-- the plan mapping (§6, "The balance").
-
-The shape is **the AGPL open core, in Metabase's shape:**
+Decided by Kasper on 2026-09-24, including the inbound rule (item 4) and
+the plan mapping (§6, "The balance"). The shape is **the AGPL open core, in
+Metabase's shape:**
 
 1. **AGPL-3.0-only** for the server and the agent (`crates/grund`,
    `grund-server`, `grund-store`, `grund-domain`). "-only", as Zitadel and
@@ -266,16 +271,22 @@ recommendation): the paid features become a license term, not just a
 check that anyone may lawfully delete, and nothing else changes for
 self-hosters.
 
-What it would take, once decided:
-- a LICENSE (AGPL text plus a header like Metabase's saying which
-  directories are licensed how), `ee/LICENSE` and a LICENSING.md;
-- SPDX headers or per-crate `license` fields (`AGPL-3.0-only`,
-  `Apache-2.0`);
-- moving `services/social.rs`, `web/social.rs` and the flow migration into
-  an `ee` crate;
-- a CONTRIBUTING.md that states the Apache-2.0 inbound rule and the DCO;
-- a license FAQ on grund.sh (§4), and the site's "open source" wording
-  kept as it is.
+Applied on 2026-09-24:
+- LICENSE (the map), `LICENSES/AGPL-3.0-only.txt` and
+  `LICENSES/Apache-2.0.txt` (fetched from gnu.org and apache.org),
+  `ee/LICENSE`, and CONTRIBUTING.md (Apache-2.0 inbound, and the DCO text
+  from developercertificate.org);
+- `license` in every crate's Cargo.toml (`ee/grund-ee` points at
+  `ee/LICENSE`), and an SPDX line on the proto;
+- social sign-in in `ee/grund-ee`, behind the core's `Extension` seam, with
+  `--no-default-features` for a core-only binary;
+- README ("What is open, and what is paid") and CLAUDE.md.
+
+Not done yet:
+- the license FAQ on grund.sh (§4). The site's copy can now name the
+  license, and skills `product` still says to name none;
+- a legal review of `ee/LICENSE`;
+- a CI check that every commit in a pull request is signed off.
 
 ### The balance: Metabase's structure, grund's prices
 
@@ -299,11 +310,10 @@ never per seat, never per traffic. A key is minted per paid period
 whichever plan buys it, and it works offline on a self-hosted instance
 exactly as on grund's hosting.
 
-*Proposal, for Kasper to confirm:* which licensed feature lands in which
-plan. The balancing move is to put the cheap conveniences low and keep
+Which licensed feature lands in which plan (decided 2026-09-24). The balancing move is to put the cheap conveniences low and keep
 only the organisational controls for Business:
 
-| grund plan (decided price) | Licensed features (proposed) |
+| grund plan (decided price) | Licensed features |
 |---|---|
 | Self-hosted, free | everything outside `ee/`: deploy, releases, data, domains, a whole team with passwords |
 | Homelab: first machine free, then €3 per machine | GitHub and Google sign-in |
@@ -389,9 +399,9 @@ A subscription is a series of keys:
 
 ## 8. What is deliberately not decided or built
 
-- The LICENSE file, LICENSING.md, `ee/LICENSE` and CONTRIBUTING.md (the
-  list in §6).
 - Pricing enforcement beyond feature flags. `machines` is carried in the
   key but not enforced: there are no machines yet.
 - Online key refresh, revocation lists, and key delivery through the
   hosted dashboard.
+- Issuing keys at all: the signing key, the billing side and the
+  customer-facing terms.
