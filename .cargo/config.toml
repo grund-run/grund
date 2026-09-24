@@ -1,0 +1,4 @@
+# Defaults for local runs against `docker compose -f compose.dev.yaml up -d`.
+# A value already in the environment (CI sets its own) wins.
+[env]
+DATABASE_URL = "postgres://grund:grund@127.0.0.1:55410/grund"

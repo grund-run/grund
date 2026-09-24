@@ -5,6 +5,14 @@
 //! is served, and both are idempotent and serialised by advisory locks, so
 //! replicas starting together are safe.
 
+pub mod accounts;
+pub mod outbox;
+pub mod projections;
+pub mod sessions;
+pub mod throttle;
+pub mod tokens;
+pub mod work;
+
 use anyhow::Context;
 use sqlx::PgPool;
 

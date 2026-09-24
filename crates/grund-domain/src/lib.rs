@@ -5,3 +5,8 @@
 //! (`mire::Aggregate::apply`), commands decide (`mire::Command::handle`), and
 //! timestamps arrive as fields. The orchestrator and the agent will share
 //! these types, which is why they live apart from the server.
+
+pub mod account;
+pub mod names;
+
+pub mod organisation;

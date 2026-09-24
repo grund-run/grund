@@ -32,6 +32,8 @@ steps:
     image: rust:1.98-alpine
     environment:
       CARGO_TERM_COLOR: always
+      # The store's #[sqlx::test]s create a database per test from this one.
+      DATABASE_URL: postgres://grund:grund@postgres:5432/grund
       GRUND_ACCEPT_DATABASE_URL: postgres://grund:grund@postgres:5432/grund
       GRUND_ACCEPT_NATS_URL: nats://nats:4222
       GRUND_ACCEPT_SMTP_URL: smtp://mailpit:1025
