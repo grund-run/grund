@@ -81,6 +81,44 @@ source. Nobody who started on AGPL had to relicense to protect their
 business. Coolify and Cal.com moved away from AGPL toward permissive, and
 neither gave a public reason in the repository.
 
+### The closest competitor: Coolify
+
+Observed on 2026-09-24 unless marked.
+
+- **License.** AGPL at the first release (2021). The LICENSE file was
+  dropped in the v2 rewrite (February 2022), AGPL restored (March 2022),
+  then Apache-2.0 from 2022-08-08, in a commit titled "Changing license".
+  No reason is stated, and a 2024 request to go copyleft (discussion #2847,
+  citing Redis) has no reply. The copyright line names the founder
+  personally, and CONTRIBUTING mentions no CLA.
+- **Business.**
+  - Everything is free, with "no feature behind the paywall" (README).
+  - Coolify Cloud is a hosted control plane only: $5/month for 2
+    servers, +$3 per extra server, and "your apps will be deployed on the
+    server you connect".
+  - There are donations and sponsors. Among the sponsors are hosting
+    companies that sell Coolify VPSes (Contabo, CubePath, PrivateAlps).
+    Apache asks nothing of them, so they sponsor by choice.
+  - Revenue is Reported at about $10k MRR (Hacker News, 2025-04), and
+    Andras wrote "We are profitable and growing" (#5685, 2025-04).
+- **Problems. None of them is a license problem:**
+  - Security: the repository has published 70 advisories, 9 in 2025 and 61
+    in 2026 (16 critical, 25 high).
+  - Code: Andras on v4 (#5685): "few tests, lacks strict rules … updates
+    break existing functionality".
+  - The v5 rewrite was announced 2025-04 and is unreleased. A team member
+    said on 2025-12-22 that "a release in 2025 won't be happening"; the
+    `v5.x` branch was last committed on 2026-03-27. Burnout is Reported,
+    from a user relaying Andras's tweet on 2026-07-06.
+  - Everything rests on one maintainer.
+- **What it shows for grund.** Apache has not visibly hurt Coolify, because
+  it sells nothing a license could protect: no paid features, and a $5
+  control plane whose value is convenience. Its protection is goodwill and
+  brand, and nothing stops a host from offering a closed managed Coolify.
+  grund plans licensed features and hosted plans, which is the case the
+  AGPL and `ee/` are for. Coolify also shows the one direction that is
+  always open later: AGPL → Apache took one commit.
+
 ## 2. The case against Apache-2.0 or MIT for grund
 
 grund's business is the hosted dashboard, rented machines and the licensed
