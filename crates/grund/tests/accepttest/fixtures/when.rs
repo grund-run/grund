@@ -190,39 +190,47 @@ impl When {
         mail::link(&mailpit, to, subject, path, count).await
     }
 
-    pub async fn timing_sign_ins(
+    pub async fn timing_sign_ins_alternately(
         &self,
-        login: &str,
-        password: &str,
-        attempts: usize,
-    ) -> anyhow::Result<Duration> {
-        let mut samples = Vec::with_capacity(attempts);
-        for _ in 0..attempts {
-            let form = self.send("GET", "/login", &[], None).await?;
-            let csrf = csrf_of(&form.text()).context("no csrf")?;
-            let origin = self.testcase.fixture.origin.serialized();
-            let body = form_encode(&[("csrf", &csrf), ("login", login), ("password", password)]);
-            let started = Instant::now();
-            let response = self
-                .send(
-                    "POST",
-                    "/login",
-                    &[
-                        ("Content-Type", "application/x-www-form-urlencoded"),
-                        ("Origin", &origin),
-                    ],
-                    Some(body.as_bytes()),
-                )
-                .await?;
-            samples.push(started.elapsed());
-            anyhow::ensure!(
-                response.status == 200,
-                "a timed sign-in answered {}",
-                response.status
-            );
+        first: (&str, &str),
+        second: (&str, &str),
+        rounds: usize,
+    ) -> anyhow::Result<(Duration, Duration)> {
+        let mut firsts = Vec::with_capacity(rounds);
+        let mut seconds = Vec::with_capacity(rounds);
+        for _ in 0..rounds {
+            firsts.push(self.time_one_sign_in(first.0, first.1).await?);
+            seconds.push(self.time_one_sign_in(second.0, second.1).await?);
         }
-        samples.sort();
-        Ok(samples[samples.len() / 2])
+        firsts.sort();
+        seconds.sort();
+        Ok((firsts[rounds / 2], seconds[rounds / 2]))
+    }
+
+    async fn time_one_sign_in(&self, login: &str, password: &str) -> anyhow::Result<Duration> {
+        let form = self.send("GET", "/login", &[], None).await?;
+        let csrf = csrf_of(&form.text()).context("no csrf")?;
+        let origin = self.testcase.fixture.origin.serialized();
+        let body = form_encode(&[("csrf", &csrf), ("login", login), ("password", password)]);
+        let started = Instant::now();
+        let response = self
+            .send(
+                "POST",
+                "/login",
+                &[
+                    ("Content-Type", "application/x-www-form-urlencoded"),
+                    ("Origin", &origin),
+                ],
+                Some(body.as_bytes()),
+            )
+            .await?;
+        let elapsed = started.elapsed();
+        anyhow::ensure!(
+            response.status == 200,
+            "a timed sign-in answered {}",
+            response.status
+        );
+        Ok(elapsed)
     }
 }
 

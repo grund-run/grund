@@ -51,11 +51,13 @@ async fn an_unknown_account_and_a_wrong_password_get_the_same_answer_in_the_same
     anyhow::ensure!(unknown_page == wrong_page, "the two answers differ");
 
     let (_, timer, _) = given.testcase.another_browser();
-    let unknown_time = timer
-        .timing_sign_ins(&given.a_fresh_name("nobody"), "wrong password one", 5)
-        .await?;
-    let wrong_time = timer
-        .timing_sign_ins(&account.email, "wrong password two", 5)
+    let nobody = given.a_fresh_name("nobody");
+    let (unknown_time, wrong_time) = timer
+        .timing_sign_ins_alternately(
+            (&nobody, "wrong password one"),
+            (&account.email, "wrong password two"),
+            9,
+        )
         .await?;
     let (fast, slow) = if unknown_time < wrong_time {
         (unknown_time, wrong_time)

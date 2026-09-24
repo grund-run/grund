@@ -463,6 +463,14 @@ the real binary, real PostgreSQL, NATS and Mailpit:
   create, so the provider side is proven against the mock only
   (*Not established* against the real providers).
 
-Timing equality for sign-in is measured, not assumed: the sign-in test
-compares the median of repeated unknown-account and wrong-password
-attempts.
+Timing equality for sign-in is measured, not assumed:
+
+- **In the tests.** The sign-in test interleaves unknown-account and
+  wrong-password attempts, nine of each, and requires their medians to be
+  within 1.5x of each other. Interleaving matters: run in two batches on a
+  busy CI runner, the first batch measured 61 ms and the second 27 ms,
+  from load alone (pipeline 3, 2026-09-24).
+- **By hand.** Observed on 2026-09-24 on an idle development machine, with
+  a release build and 20 interleaved attempts of each: median 10.8 ms for
+  an unknown account and 10.5 ms for a wrong password (min 8.4 ms and max
+  14.2 ms for both).
