@@ -14,6 +14,7 @@
 //! PostgreSQL is the truth. NATS, when configured, only wakes background work
 //! sooner; every worker also polls, so losing NATS costs latency, never work.
 
+pub mod api;
 pub mod config;
 pub mod crypto;
 pub mod db;

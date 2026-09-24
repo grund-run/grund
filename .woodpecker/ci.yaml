@@ -51,3 +51,11 @@ steps:
       - for i in $(seq 1 60); do nc -z postgres 5432 && nc -z nats 4222 && nc -z mailpit 1025 && break; sleep 1; done
       - nc -z postgres 5432 || { echo "postgres never accepted connections"; exit 1; }
       - cargo test --workspace --locked
+
+  proto:
+    # The API contract is linted on every change, and a pull request may not
+    # break it against main (skills D-19): generated clients depend on it.
+    image: bufbuild/buf:1.73.0
+    commands:
+      - buf lint proto
+      - if [ "$${CI_PIPELINE_EVENT}" = "pull_request" ]; then buf breaking proto --against "https://git.kjuulh.io/grund/grund.git#branch=main,subdir=proto"; fi

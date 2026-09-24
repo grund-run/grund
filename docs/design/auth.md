@@ -280,8 +280,11 @@ GitHub, then Google, then any OpenID Connect provider:
 
 ### Decision
 
-- The Connect API (`grund.account.v1`) accepts the **dashboard session
-  cookie** today, for same-origin calls from the dashboard. A
+- The Connect API (`grund.account.v1`: GetViewer, ListSessions,
+  RevokeSession) accepts the **dashboard session cookie** today, for
+  same-origin calls from the dashboard. It authenticates in tower middleware
+  before the body is read, and authorizes in an interceptor against a table
+  in which every procedure must appear (unit-tested), denying by default. A
   cookie-authenticated call with a foreign `Origin` is refused. A
   cross-site page cannot send the `application/json` or
   `application/proto` Connect content types without a CORS preflight,

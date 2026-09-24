@@ -22,6 +22,16 @@ impl Then {
         Ok(self)
     }
 
+    pub fn connect_code(&self, code: &str) -> anyhow::Result<&Self> {
+        let json = self.json()?;
+        ensure!(
+            json["code"] == code,
+            "connect error code: got {}, wanted {code:?}",
+            json["code"]
+        );
+        Ok(self)
+    }
+
     pub fn status_in(&self, allowed: &[u16]) -> anyhow::Result<&Self> {
         let status = self.last()?.status;
         ensure!(

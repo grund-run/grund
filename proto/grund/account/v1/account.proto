@@ -1,0 +1,78 @@
+syntax = "proto3";
+
+package grund.account.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// The signed-in person's own account, organisations and sessions. Every
+// method acts on the caller, identified by the dashboard session; there is no
+// way to name another account. A session id that is not one of the caller's
+// is not_found, exactly as if it did not exist.
+service AccountService {
+  // Who the caller is, and the organisations they belong to.
+  rpc GetViewer(GetViewerRequest) returns (GetViewerResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // The caller's live sessions, newest first. At most 100.
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // Ends one of the caller's sessions. Ending one that is already ended is
+  // not_found. Ending the caller's own session signs this client out.
+  rpc RevokeSession(RevokeSessionRequest) returns (RevokeSessionResponse);
+}
+
+message GetViewerRequest {}
+
+message GetViewerResponse {
+  Viewer viewer = 1;
+}
+
+message Viewer {
+  // UUIDv7.
+  string account_id = 1;
+  // Public, 3-32 characters of a-z, 0-9 and single hyphens.
+  string username = 2;
+  string email = 3;
+  google.protobuf.Timestamp registered_at = 4;
+  repeated Membership memberships = 5;
+}
+
+message Membership {
+  string organisation_id = 1;
+  string organisation_slug = 2;
+  Role role = 3;
+}
+
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  ROLE_OWNER = 1;
+  ROLE_ADMIN = 2;
+  ROLE_MEMBER = 3;
+}
+
+message ListSessionsRequest {}
+
+message ListSessionsResponse {
+  repeated Session sessions = 1;
+}
+
+message Session {
+  string session_id = 1;
+  google.protobuf.Timestamp created_at = 2;
+  google.protobuf.Timestamp last_seen_at = 3;
+  // As the browser sent it, at most 256 characters.
+  string user_agent = 4;
+  // Empty when the client address was not known.
+  string client_address = 5;
+  // True for the session this call was made with.
+  bool current = 6;
+}
+
+message RevokeSessionRequest {
+  string session_id = 1;
+}
+
+message RevokeSessionResponse {}

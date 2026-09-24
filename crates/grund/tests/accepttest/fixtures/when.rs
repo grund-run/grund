@@ -57,6 +57,25 @@ impl When {
         Ok(response)
     }
 
+    pub async fn calling(&self, procedure: &str, json: &str) -> anyhow::Result<&Self> {
+        self.calling_with(procedure, json, &[]).await
+    }
+
+    pub async fn calling_with(
+        &self,
+        procedure: &str,
+        json: &str,
+        extra: &[(&str, &str)],
+    ) -> anyhow::Result<&Self> {
+        let mut headers = vec![
+            ("Content-Type", "application/json"),
+            ("Connect-Protocol-Version", "1"),
+        ];
+        headers.extend_from_slice(extra);
+        self.requesting_with("POST", procedure, &headers, Some(json.as_bytes()))
+            .await
+    }
+
     pub async fn visiting(&self, path: &str) -> anyhow::Result<&Self> {
         self.requesting("GET", path).await
     }

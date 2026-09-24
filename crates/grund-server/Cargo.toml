@@ -13,12 +13,16 @@ argon2 = "0.5"
 async-nats.workspace = true
 axum.workspace = true
 base64.workspace = true
+buffa = { version = "=0.9.2", features = ["json"] }
+buffa-types = { version = "=0.9.2", features = ["json"] }
 chrono.workspace = true
 clap.workspace = true
+connectrpc = { version = "=0.9.1", features = ["axum"] }
 ed25519-dalek = "2"
 futures-util.workspace = true
 getrandom.workspace = true
 grund-domain.workspace = true
+grund-proto.workspace = true
 grund-store.workspace = true
 hex.workspace = true
 hmac.workspace = true
@@ -44,4 +48,5 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+grund-proto = { workspace = true, features = ["client"] }
 http-body-util = "0.1"

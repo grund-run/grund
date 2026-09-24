@@ -1,6 +1,7 @@
 #[allow(dead_code)]
 mod fixtures;
 
+mod api;
 mod csrf;
 mod health;
 mod login;
