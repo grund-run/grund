@@ -101,6 +101,8 @@ impl Fixture {
             ("GRUND_SMTP_URL".into(), smtp_url),
             ("GRUND_MAIL_FROM".into(), "grund <grund@accept.test>".into()),
             ("GRUND_HEALTH_INTERVAL".into(), "1".into()),
+            // Many instances run at once against one database.
+            ("GRUND_DATABASE_MAX_CONNECTIONS".into(), "4".into()),
             ("GRUND_WORK_POLL_INTERVAL".into(), "1".into()),
             (
                 "RUST_LOG".into(),

@@ -1,0 +1,48 @@
+# Fast gates for every push and pull request: formatting, lints as errors, the
+# unit tests, and the accepttests against a binary cargo spawns, with real
+# PostgreSQL, NATS and Mailpit as services. images.yaml runs the accepttests
+# again against the release binary it packages, because that is the artifact
+# that ships and Woodpecker workflows share no workspace.
+
+when:
+  - event: push
+    branch: main
+  - event: pull_request
+  - event: manual
+
+labels:
+  platform: linux/amd64
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: grund
+      POSTGRES_USER: grund
+      POSTGRES_PASSWORD: grund
+  nats:
+    image: nats:2.15-alpine
+  mailpit:
+    image: axllent/mailpit:v1.31
+
+steps:
+  check:
+    # The same image images.yaml builds the shipped binary in, so a toolchain
+    # difference cannot pass here and fail there.
+    image: rust:1.98-alpine
+    environment:
+      CARGO_TERM_COLOR: always
+      GRUND_ACCEPT_DATABASE_URL: postgres://grund:grund@postgres:5432/grund
+      GRUND_ACCEPT_NATS_URL: nats://nats:4222
+      GRUND_ACCEPT_SMTP_URL: smtp://mailpit:1025
+      GRUND_ACCEPT_MAILPIT_URL: http://mailpit:8025
+    commands:
+      # protobuf-dev: protoc and the well-known types, for the API codegen.
+      - apk add --no-cache musl-dev protobuf-dev
+      - rustup component add rustfmt clippy
+      - cargo fmt --all --check
+      - cargo clippy --workspace --all-targets --locked -- -D warnings
+      # Fail with the cause, not with thirty accepttests timing out.
+      - for i in $(seq 1 60); do nc -z postgres 5432 && nc -z nats 4222 && nc -z mailpit 1025 && break; sleep 1; done
+      - nc -z postgres 5432 || { echo "postgres never accepted connections"; exit 1; }
+      - cargo test --workspace --locked

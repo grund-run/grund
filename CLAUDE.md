@@ -53,6 +53,26 @@ cargo fmt --all --check && cargo clippy --workspace --all-targets --locked -- -D
 - The revision in `/health/ready` comes from `CI_COMMIT_SHA` (or
   `GRUND_REVISION`) at build time. Local builds say `unknown`.
 
+## Deploy
+
+- Push to main. `ci.yaml` gates, `images.yaml` builds the static binary, runs
+  the accepttests against that exact file and publishes
+  `git.kjuulh.io/grund/grund:main-<sha>`, and `rollout.yaml` stages a forest
+  release (project `kjuulh/grund`). The project's dev trigger rolls it to dev.
+- **Never promote to prod from here** (`forest release release/approve`
+  against prod). That is Kasper's call.
+- `rollout.yaml` is generated. After changing the `woodpecker-forest` block in
+  `forest.cue`, run `forest run install` and commit what it writes.
+- The forest instance is forest.kjuulh.io; the CLI talks to
+  `https://api.forest.kjuulh.io`. Pass `--context kjuulh-prod` on every
+  command: the default context on this machine is another instance.
+- `forest validate` reports "Validated 0 component(s)". To check the config
+  against kubernetes-app's `#Spec`, unify `config` with each env's `config`
+  and `cue vet -c` it against the component's `forest.component.cue`.
+- Prove what is deployed from the live origin:
+  `curl -s https://dev.app.grund.sh/health/ready` must report the commit as
+  `revision`, sampled a few times (replicas can disagree mid-rollout).
+
 ## Gotchas
 
 - `compose.yaml` builds `grund:local` from source unless `GRUND_IMAGE` is set.
