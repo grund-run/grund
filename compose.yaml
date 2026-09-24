@@ -2,7 +2,7 @@
 #
 # This is how a self-hoster runs grund today, not only a development setup.
 # What it gives you, and what it deliberately does not (TLS, backups), is in
-# docs/self-hosting.md. Every setting is in .env.example; copy it to .env to
+# the README, "Self-hosting". Every setting is in .env.example; copy it to .env to
 # change one. Nothing here needs a secret typed in: `init` generates the
 # instance key and the database password on first start, into the grund-data
 # volume, and keeps them afterwards.
@@ -67,7 +67,7 @@ services:
 
   # Catches every mail grund sends, so sign-up works with no mail server.
   # Read them at http://localhost:8025. To deliver real mail instead, set
-  # GRUND_SMTP_URL in .env (see docs/self-hosting.md).
+  # GRUND_SMTP_URL in .env (see .env.example).
   mailpit:
     image: axllent/mailpit:v1.31
     ports:

@@ -1,8 +1,7 @@
 /*
  * grund, the product. The tokens are grund/website's (site/styles.css), taken
  * from the dashboard design, so the site and the product read as one thing.
- * docs/design/style-guide.md explains every component below; /style-guide
- * renders them. Everything is served from this origin: the CSP allows no
+ * /style-guide renders every component below, with example data. Everything is served from this origin: the CSP allows no
  * inline style and no other origin.
  */
 

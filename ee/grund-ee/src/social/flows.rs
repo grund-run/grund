@@ -1,4 +1,4 @@
-//! Social sign-in (docs/design/auth.md §5): GitHub, Google and any OpenID
+//! Social sign-in: GitHub, Google and any OpenID
 //! Connect provider, behind [`grund_server::services::entitlements::Entitlements`].
 //!
 //! Every flow carries `state` (bound to a `__Host-` cookie), a PKCE S256

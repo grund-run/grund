@@ -1,4 +1,4 @@
-//! Fixed-window counters for sign-in and mail limits (docs/design/auth.md §8).
+//! Fixed-window counters for sign-in and mail limits.
 //! One statement per check; keys are HMAC digests made by the caller, never
 //! the counted value itself.
 

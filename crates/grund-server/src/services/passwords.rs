@@ -1,4 +1,4 @@
-//! Password hashing (docs/design/auth.md §2): Argon2id, m = 19 MiB, t = 2,
+//! Password hashing: Argon2id, m = 19 MiB, t = 2,
 //! p = 1, at most four hashes at once per process, and a dummy hash so an
 //! unknown account costs what a wrong password costs.
 

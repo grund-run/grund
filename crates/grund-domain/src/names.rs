@@ -2,7 +2,7 @@
 //! slugs made from them), email addresses and passwords.
 //!
 //! Every constructor normalises and refuses; a value of one of these types is
-//! valid by construction. See docs/design/auth.md §1–§2.
+//! valid by construction.
 
 use serde::{Deserialize, Serialize};
 
@@ -173,7 +173,7 @@ pub enum PasswordError {
     SameAsName,
 }
 
-/// Checks a new password against the policy (docs/design/auth.md §2): length
+/// Checks a new password against the policy: length
 /// only, no composition rules, and not the username or address itself.
 pub fn check_new_password(
     password: &str,

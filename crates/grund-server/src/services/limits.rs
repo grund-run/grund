@@ -1,4 +1,4 @@
-//! Rate limits and lockout (docs/design/auth.md §8), on `grund_throttle`.
+//! Rate limits and lockout, on `grund_throttle`.
 //! Counted values (account names, addresses, client addresses) are keyed by
 //! an HMAC with the instance's throttle subkey, so the table holds none of
 //! them in the clear.

@@ -57,10 +57,8 @@ By making a contribution to this project, I certify that:
 
 ## How we work
 
-- The engineering rules are in [CLAUDE.md](CLAUDE.md) and the design
-  documents in [docs/design/](docs/design/). In Rust, the only comments
-  are doc comments on public items; `cargo run -q -p comment-policy`
-  checks it.
+- In Rust, the only comments are doc comments on public items; `cargo run
+  -q -p comment-policy` checks it, and CI runs it.
 - Before opening a pull request, run the gates in the README ("Verify").
 - For anything larger than a fix, open an issue first, so we agree on the
   shape before you spend the time.

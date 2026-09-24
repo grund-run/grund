@@ -1,6 +1,5 @@
 //! What a page handler knows about the browser asking: its request id, its
-//! address, its cookies, its session and its CSRF token (docs/design/auth.md
-//! §3–§4).
+//! address, its cookies, its session and its CSRF token.
 
 use std::net::SocketAddr;
 

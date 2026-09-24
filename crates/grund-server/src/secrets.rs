@@ -4,7 +4,7 @@
 //! `HMAC-SHA256(key, "grund/<purpose>/v1")`, so a digest made for one purpose
 //! can never be replayed as another. Rotating the key signs everyone out
 //! (CSRF tokens change) and resets rate-limit windows; it does not touch
-//! passwords, which are not peppered (see docs/design/auth.md).
+//! passwords, which are not peppered: losing the key must not lock everyone out.
 
 use std::{
     io::Write,

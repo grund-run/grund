@@ -6,7 +6,7 @@
 //! enclosing modules are all `pub`, on the variants and fields of such an
 //! item, on the items of such a trait, and as the inner documentation of a
 //! `lib.rs`, `main.rs` or `src/bin/*.rs` crate root. Everything else, private
-//! code and tests included, explains itself through names or in `docs/`.
+//! code and tests included, explains itself through names or in commit bodies.
 //!
 //! Visibility is syntactic: `pub(crate)` is not public, and a `pub` item in a
 //! private module is not either. Items in `impl Trait for T` blocks never
@@ -41,7 +41,7 @@ impl std::fmt::Display for Violation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let what = match self.kind {
             ViolationKind::Comment => {
-                "comment: only doc comments on public items are allowed; say it in a name, a public item's docs or docs/"
+                "comment: only doc comments on public items are allowed; say it in a name, a public item's docs or the commit body"
             }
             ViolationKind::PrivateDoc => {
                 "doc comment on an item that is not public: make the item public API or drop the comment"

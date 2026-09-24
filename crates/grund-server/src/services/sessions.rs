@@ -1,4 +1,4 @@
-//! Dashboard sessions (docs/design/auth.md §3): an opaque token in the
+//! Dashboard sessions: an opaque token in the
 //! cookie, only its SHA-256 in PostgreSQL, rotated at every sign-in.
 
 use std::time::Duration;

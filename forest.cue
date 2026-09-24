@@ -89,7 +89,7 @@ kjuulh: "kubernetes-app": {
 			GRUND_LOGIN_ATTEMPTS_PER_ADDRESS: "0"
 			GRUND_MAIL_REQUESTS_PER_ADDRESS:  "0"
 			// No NATS in these clusters for grund yet: background work is
-			// found by polling, which is correct on its own (docs/self-hosting.md).
+			// found by polling, which is correct on its own.
 			GRUND_WORK_POLL_INTERVAL: "2"
 		}
 
@@ -114,7 +114,7 @@ kjuulh: "kubernetes-app": {
 		}
 
 		// Sign-in hashes a password with Argon2id at 19 MiB per hash, at most
-		// four at once (docs/design/auth.md), so memory has room for that
+		// four at once, so memory has room for that
 		// above the baseline.
 		resources: {
 			requests: {

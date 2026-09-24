@@ -1,4 +1,4 @@
-//! The commercial seam (docs/design/auth.md §7): the one place that answers
+//! The commercial seam: the one place that answers
 //! "may this instance use feature X". It is built once at startup from the
 //! license key. Nothing else in grund turns a commercial feature on: no flag,
 //! no config value, no `cfg`.

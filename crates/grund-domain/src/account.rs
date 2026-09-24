@@ -1,7 +1,7 @@
 //! The account aggregate (`grund-account`): a person's security history.
 //!
 //! Events carry no email address, password hash or provider subject; those
-//! live in plain tables that can be erased (docs/design/auth.md §1). The
+//! live in plain tables that can be erased. The
 //! verified address appears only as a SHA-256 digest.
 
 use chrono::{DateTime, Utc};

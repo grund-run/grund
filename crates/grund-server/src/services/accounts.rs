@@ -1,7 +1,6 @@
-//! Accounts: sign-up, email verification, sign-in and password reset
-//! (docs/design/auth.md §5). Every decision that could reveal whether an
-//! account exists costs the same either way, or is made later by the outbox
-//! drain, off the request path.
+//! Accounts: sign-up, email verification, sign-in and password reset. Every
+//! decision that could reveal whether an account exists costs the same
+//! either way, or is made later by the outbox drain, off the request path.
 
 use std::time::Duration;
 

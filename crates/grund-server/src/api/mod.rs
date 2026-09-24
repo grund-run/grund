@@ -13,7 +13,7 @@
 //! site is refused: a cross-site page cannot make a browser send Connect's
 //! content types without a CORS preflight, which grund never grants, and this
 //! check does not rely on that alone. Bearer tokens (personal access tokens
-//! for the CLI) are designed in docs/design/auth.md §6 and not built; a call
+//! for the CLI) are designed and not built; a call
 //! presenting one is refused as unauthenticated.
 
 pub mod account;

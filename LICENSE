@@ -26,6 +26,10 @@ adds it, for development and testing.
 Contributions are accepted under the Apache License, Version 2.0, with a
 Developer Certificate of Origin sign-off (see CONTRIBUTING.md).
 
-What the AGPL means in practice (running unmodified grund, the apps you
-deploy on it, hosting it for others) is explained in
-docs/design/licensing.md, section 4.
+What the AGPL means in practice:
+* Running unmodified grund, for any purpose, business included, asks
+  nothing of you beyond keeping these notices.
+* If you modify grund and others use your modified version over a network,
+  offer them its source.
+* The apps you deploy on grund are separate programs. grund does not link
+  into them, and its license does not reach them.
