@@ -1,5 +1,5 @@
 //! Social sign-in (docs/design/auth.md §5): GitHub, Google and any OpenID
-//! Connect provider, behind [`crate::services::entitlements::Entitlements`].
+//! Connect provider, behind [`grund_server::services::entitlements::Entitlements`].
 //!
 //! Every flow carries `state` (bound to a `__Host-` cookie), a PKCE S256
 //! verifier and, for OIDC, a `nonce`, and is single-use for ten minutes. An
@@ -24,7 +24,9 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::{
+use std::sync::Arc;
+
+use grund_server::{
     config::{PublicOrigin, SocialArgs},
     crypto,
     services::{
@@ -299,16 +301,28 @@ pub struct Social {
     passwords: Passwords,
     limits: Limits,
     http: reqwest::Client,
+    providers: Arc<[Provider]>,
 }
 
 impl Social {
+    /// The flows for `state`, over these providers and this client.
+    pub fn new(state: &State, providers: Arc<[Provider]>, http: reqwest::Client) -> Self {
+        Self {
+            state: state.clone(),
+            passwords: state.passwords(),
+            limits: state.limits(),
+            http,
+            providers,
+        }
+    }
+
     fn origin(&self) -> PublicOrigin {
         self.state.config.public_origin()
     }
 
     /// The configured provider with this id.
     pub fn provider(&self, id: &str) -> Option<Provider> {
-        self.state.social.iter().find(|p| p.id == id).cloned()
+        self.providers.iter().find(|p| p.id == id).cloned()
     }
 
     fn redirect_uri(&self, provider: &Provider) -> String {
@@ -718,22 +732,6 @@ impl Social {
         self.limits.login_succeeded(&name).await?;
         tracing::info!(%account_id, provider = %pending.provider, "identity linked");
         Ok(LinkOutcome::SignIn(account_id))
-    }
-}
-
-/// Access to [`Social`] from [`State`].
-pub trait SocialState {
-    fn social(&self) -> Social;
-}
-
-impl SocialState for State {
-    fn social(&self) -> Social {
-        Social {
-            state: self.clone(),
-            passwords: self.passwords(),
-            limits: self.limits(),
-            http: self.http.clone(),
-        }
     }
 }
 

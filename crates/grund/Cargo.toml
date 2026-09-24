@@ -11,8 +11,13 @@ repository.workspace = true
 name = "grund"
 path = "src/main.rs"
 
+[features]
+default = ["ee"]
+ee = ["dep:grund-ee"]
+
 [dependencies]
 anyhow.workspace = true
+grund-ee = { workspace = true, optional = true }
 clap.workspace = true
 grund-server.workspace = true
 tokio.workspace = true

@@ -452,7 +452,7 @@ the real binary, real PostgreSQL, NATS and Mailpit:
 - **The gate**: social sign-in configured without a license, or with a key
   this build does not trust, starts, shows no buttons, and refuses every
   `/auth/*` route with 403.
-- **Social sign-in with a license** (`crates/grund-server/tests/social_flow.rs`,
+- **Social sign-in with a license** (`ee/grund-ee/tests/social_flow.rs`,
   in process). It uses a license signed by a key generated inside the test,
   a mock OIDC provider on localhost, and real PostgreSQL:
   - the redirect carries `state`, a PKCE S256 challenge and a `nonce`;

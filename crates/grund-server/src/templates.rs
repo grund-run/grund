@@ -30,8 +30,6 @@ pub const TEMPLATES: &[(&str, &str)] = embedded![
     "pages/sessions.html.jinja",
     "pages/licenses.html.jinja",
     "pages/style-guide.html.jinja",
-    "pages/social-username.html.jinja",
-    "pages/social-link.html.jinja",
     "mail/verify_email.txt.jinja",
     "mail/verify_email.html.jinja",
     "mail/password_reset.txt.jinja",
@@ -47,12 +45,12 @@ pub struct Templates {
 }
 
 impl Templates {
-    /// Loads every template. Fails at startup, naming the template, if one
-    /// does not parse.
-    pub fn new() -> anyhow::Result<Self> {
+    /// Loads every template, then `extra` (from extensions). Fails at
+    /// startup, naming the template, if one does not parse.
+    pub fn new(extra: &[(&'static str, &'static str)]) -> anyhow::Result<Self> {
         let mut env = Environment::new();
         env.set_undefined_behavior(UndefinedBehavior::Strict);
-        for (name, source) in TEMPLATES {
+        for (name, source) in TEMPLATES.iter().chain(extra) {
             env.add_template(name, source)
                 .with_context(|| format!("parse template {name}"))?;
         }

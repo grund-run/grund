@@ -1,0 +1,38 @@
+[package]
+name = "grund-ee"
+description = "grund's commercial features (grund Commercial License, not the AGPL)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+base64.workspace = true
+chrono.workspace = true
+grund-domain.workspace = true
+grund-server.workspace = true
+grund-store.workspace = true
+minijinja = { version = "2.24", features = ["json"] }
+reqwest = { version = "0.13", default-features = false, features = ["form", "json", "rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde.workspace = true
+serde_json.workspace = true
+serde_urlencoded = "0.7"
+sha2.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+clap.workspace = true
+ed25519-dalek = "2"
+getrandom.workspace = true
+http-body-util = "0.1"
+mire.workspace = true
+nostatus.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+tower.workspace = true

@@ -39,6 +39,11 @@ comments: the rule is about Rust.
 - `crates/grund-server/src/lib.rs` wires `serve`: config, tracing, pool,
   migrations, NATS, State, then notmad components **in drain order** (HTTP
   first, outbox last). Add a component in the right place, not at the end.
+- `ee/grund-ee` holds the commercial features (social sign-in today). It
+  plugs into the core only through `grund_server::extension::Extension`,
+  and every feature asks `Entitlements` before acting. Core code never
+  imports from `ee/`. `cargo build -p grund --no-default-features` builds
+  the core alone, and CI keeps that building.
 - `crates/grund-domain` has no I/O. If a change needs a clock or a query
   there, it belongs in a service.
 - `crates/grund-store/migrations/` is forward-only. Never edit an applied

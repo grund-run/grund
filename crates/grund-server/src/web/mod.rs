@@ -11,7 +11,6 @@
 pub mod assets;
 pub mod browser;
 pub mod pages;
-pub mod social;
 
 use axum::{
     Router,
@@ -51,6 +50,12 @@ pub const MAX_BODY_BYTES: usize = 16 * 1024;
 /// because query strings carry tokens.
 pub fn router(state: State) -> Router {
     let timeout = state.config.request_timeout;
+    let extensions = state
+        .extensions
+        .iter()
+        .fold(Router::new(), |router, extension| {
+            router.merge(extension.routes())
+        });
     Router::new()
         .route("/health/live", get(health::live))
         .route("/health/ready", get(health::ready))
@@ -67,12 +72,9 @@ pub fn router(state: State) -> Router {
         .route("/settings/sessions", get(pages::sessions_page))
         .route("/settings/sessions/revoke-others", post(pages::revoke_other_sessions))
         .route("/settings/sessions/{id}/revoke", post(pages::revoke_session))
-        .route("/auth/{provider}/start", get(social::start))
-        .route("/auth/{provider}/callback", get(social::callback))
-        .route("/auth/complete", get(social::complete_form).post(social::complete))
-        .route("/auth/link", get(social::link_form).post(social::link))
         .route("/licenses", get(pages::licenses))
         .route("/style-guide", get(pages::style_guide))
+        .merge(extensions)
         .fallback(pages::not_found)
         .layer(middleware::from_fn_with_state(state.clone(), request_context))
         .with_state(state.clone())

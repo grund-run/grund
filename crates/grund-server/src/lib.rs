@@ -18,6 +18,7 @@ pub mod api;
 pub mod config;
 pub mod crypto;
 pub mod db;
+pub mod extension;
 pub mod health;
 pub mod license;
 pub mod projections;
@@ -32,24 +33,26 @@ use anyhow::Context;
 
 use crate::{config::ServeConfig, state::State};
 
-/// `grund serve`.
-pub async fn serve(config: ServeConfig) -> anyhow::Result<()> {
+/// `grund serve`, with the extensions this binary was built with (none for
+/// the open-source-only build).
+pub async fn serve(
+    config: ServeConfig,
+    extensions: Vec<std::sync::Arc<dyn extension::Extension>>,
+) -> anyhow::Result<()> {
     let secret = secrets::SecretKey::load(&config)?;
     let pool = db::connect(&config.database).await?;
     grund_store::migrate(&pool).await?;
     let events = mire::EventStore::new(pool.clone());
     let nats = connect_nats(&config).await?;
 
-    let templates = templates::Templates::new()?;
+    let extra: Vec<(&'static str, &'static str)> = extensions
+        .iter()
+        .flat_map(|e| e.templates().iter().copied())
+        .collect();
+    let templates = templates::Templates::new(&extra)?;
     let mailer = services::mail::Mailer::new(&config, templates.clone())?;
     let health = health::registry(pool.clone(), nats.clone(), mailer.configured(), &config);
     let entitlements = entitlements(&config)?;
-    let social = if config.social.social_login {
-        services::social::providers(&config.social)
-    } else {
-        Vec::new()
-    };
-    let http = http_client()?;
     let grace = config.shutdown_grace;
     let state = State {
         config: std::sync::Arc::new(config),
@@ -61,12 +64,17 @@ pub async fn serve(config: ServeConfig) -> anyhow::Result<()> {
         passwords: services::passwords::Passwords::new()?,
         templates,
         entitlements: std::sync::Arc::new(entitlements),
-        social: std::sync::Arc::new(social),
-        http,
+        extensions: std::sync::Arc::new(extensions),
         started: health::started(),
     };
 
+    if state.config.social.social_login && state.extensions.is_empty() {
+        tracing::warn!(
+            "GRUND_SOCIAL_LOGIN is on, but this build has no commercial features; offering password sign-in only"
+        );
+    }
     tracing::info!(
+        extensions = ?state.extensions.iter().map(|e| e.name()).collect::<Vec<_>>(),
         revision = health::REVISION,
         version = health::VERSION,
         "grund starting"
@@ -81,18 +89,6 @@ pub async fn serve(config: ServeConfig) -> anyhow::Result<()> {
         .run()
         .await?;
     Ok(())
-}
-
-/// The HTTP client for calls to sign-in providers: rustls with the ring
-/// provider (installed here, once per process), 10 s per request.
-pub fn http_client() -> anyhow::Result<reqwest::Client> {
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .connect_timeout(std::time::Duration::from_secs(5))
-        .user_agent("grund")
-        .build()
-        .context("build the HTTP client for sign-in providers")
 }
 
 fn entitlements(config: &ServeConfig) -> anyhow::Result<services::entitlements::Entitlements> {

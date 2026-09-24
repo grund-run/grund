@@ -8,6 +8,10 @@
 //!
 //! The agent that runs on each machine will be another subcommand of this
 //! binary, so there is one artifact to build, sign and ship.
+//!
+//! The `ee` feature (on by default) adds grund's commercial features from
+//! `ee/`, each of which still needs a license key to act. Build with
+//! `--no-default-features` for a binary made only of the AGPL core.
 
 mod probe;
 
@@ -58,7 +62,11 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Serve(mut config) => {
             config.validate()?;
-            grund_server::serve(*config).await
+            #[cfg(feature = "ee")]
+            let extensions = grund_ee::extensions(&config)?;
+            #[cfg(not(feature = "ee"))]
+            let extensions = Vec::new();
+            grund_server::serve(*config, extensions).await
         }
         Command::Migrate(args) => grund_server::migrate(args).await,
         Command::Init(args) => grund_server::secrets::init(&args),

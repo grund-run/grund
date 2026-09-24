@@ -14,6 +14,10 @@ use axum::{
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use clap::Parser;
 use ed25519_dalek::{Signer, SigningKey};
+use grund_ee::social::{
+    Registered, SocialLogin, TEMPLATES,
+    flows::{Protocol, Provider},
+};
 use grund_server::{
     config::ServeConfig,
     license::{PREFIX, Verifier},
@@ -21,7 +25,6 @@ use grund_server::{
         accounts::{AccountsState, RequestMeta, SignupForm, SignupOutcome},
         entitlements::Entitlements,
         passwords::Passwords,
-        social::{Protocol, Provider},
     },
     state::State,
     templates::Templates,
@@ -132,10 +135,12 @@ async fn state(pool: PgPool, issuer: &str) -> State {
         secret: Arc::new(grund_server::secrets::SecretKey::generate()),
         health: nostatus::StatusState::empty(),
         passwords: Passwords::new().unwrap(),
-        templates: Templates::new().unwrap(),
+        templates: Templates::new(TEMPLATES).unwrap(),
         entitlements: Arc::new(entitlements),
-        social: Arc::new(vec![provider]),
-        http: grund_server::http_client().unwrap(),
+        extensions: Arc::new(vec![Arc::new(Registered(Arc::new(SocialLogin::with(
+            vec![provider],
+            grund_ee::social::http_client().unwrap(),
+        ))))]),
         started: Instant::now(),
     }
 }

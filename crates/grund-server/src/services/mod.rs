@@ -10,11 +10,9 @@ pub mod maintenance;
 pub mod outbox;
 pub mod passwords;
 pub mod sessions;
-pub mod social;
 
 pub use accounts::AccountsState;
 pub use entitlements::EntitlementsState;
 pub use limits::LimitsState;
 pub use passwords::PasswordsState;
 pub use sessions::SessionsState;
-pub use social::SocialState;

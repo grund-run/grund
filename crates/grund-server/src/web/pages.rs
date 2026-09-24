@@ -119,20 +119,13 @@ pub fn forged(state: &State, browser: &Browser) -> PageResult {
     )
 }
 
-/// A path to return to after sign-in: same-origin paths only.
-/// The social providers the sign-in page offers: none unless the license
-/// includes social sign-in.
+/// The sign-in providers the page offers: whatever the extensions offer,
+/// each having checked the instance's entitlements.
 pub fn offered_providers(state: &State) -> Vec<Value> {
-    if state
-        .entitlements
-        .allows(crate::license::Feature::SocialLogin)
-        .is_err()
-    {
-        return Vec::new();
-    }
     state
-        .social
+        .extensions
         .iter()
+        .flat_map(|extension| extension.login_providers(state))
         .map(|p| context! { id => p.id, name => p.name, icon => p.icon })
         .collect()
 }

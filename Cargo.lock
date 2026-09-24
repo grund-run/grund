@@ -1050,6 +1050,7 @@ dependencies = [
  "anyhow",
  "clap",
  "getrandom 0.3.4",
+ "grund-ee",
  "grund-server",
  "rustls",
  "serde_json",
@@ -1070,6 +1071,38 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "uuid",
+]
+
+[[package]]
+name = "grund-ee"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "clap",
+ "ed25519-dalek",
+ "getrandom 0.3.4",
+ "grund-domain",
+ "grund-server",
+ "grund-store",
+ "http-body-util",
+ "minijinja",
+ "mire",
+ "nostatus",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "sha2 0.10.9",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tower",
+ "tracing",
  "uuid",
 ]
 
@@ -1113,8 +1146,6 @@ dependencies = [
  "mire",
  "nostatus",
  "notmad",
- "reqwest",
- "rustls",
  "serde",
  "serde_json",
  "serde_urlencoded",

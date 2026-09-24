@@ -396,14 +396,14 @@ pub fn violations_in(source: &str, path: &Path, allowed: &BTreeSet<usize>) -> Ve
         .collect()
 }
 
-/// Checks every Rust file of every package under `crates/` and `tools/`,
+/// Checks every Rust file of every package under `crates/`, `ee/` and `tools/`,
 /// starting from each crate root and following `mod` declarations. A file
 /// no root reaches is checked as private.
 pub fn check_workspace(root: &Path) -> anyhow::Result<Vec<Violation>> {
     let mut violations = Vec::new();
     let mut visited = BTreeSet::new();
     let mut all_files = Vec::new();
-    for group in ["crates", "tools"] {
+    for group in ["crates", "ee", "tools"] {
         let Ok(entries) = std::fs::read_dir(root.join(group)) else {
             continue;
         };

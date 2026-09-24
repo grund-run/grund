@@ -97,6 +97,7 @@ crates/grund-store/    PostgreSQL: migrations, event-sourced write paths, read m
 crates/grund-domain/   aggregates, events and pure decisions; no I/O, no clock
 crates/grund-proto/    the API contract, generated from proto/ at build time (needs protoc)
 proto/                 the protobuf services (buf lint in CI; buf breaking on pull requests)
+ee/grund-ee/           the commercial features (social sign-in), plugged in through one Extension seam
 tools/comment-policy/  the CI check that Rust comments are docs on public items only
 compose.yaml           the self-hosted instance (grund, PostgreSQL, NATS, Mailpit)
 compose.dev.yaml       development and test infrastructure on fixed local ports

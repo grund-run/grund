@@ -8,8 +8,9 @@ use std::{sync::Arc, time::Instant};
 
 use crate::{
     config::ServeConfig,
+    extension::Extensions,
     secrets::SecretKey,
-    services::{entitlements::Entitlements, passwords::Passwords, social::Provider},
+    services::{entitlements::Entitlements, passwords::Passwords},
     templates::Templates,
 };
 
@@ -25,10 +26,8 @@ pub struct State {
     pub passwords: Passwords,
     pub templates: Templates,
     pub entitlements: Arc<Entitlements>,
-    /// The social providers configured with GRUND_SOCIAL_LOGIN on. Offered
-    /// only when `entitlements` allows social sign-in.
-    pub social: Arc<Vec<Provider>>,
-    /// For calls to social sign-in providers: 10 s per request.
-    pub http: reqwest::Client,
+    /// Features built outside the core (the commercial `ee/`), if this
+    /// binary includes them.
+    pub extensions: Extensions,
     pub started: Instant,
 }

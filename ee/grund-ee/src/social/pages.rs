@@ -1,5 +1,5 @@
 //! Social sign-in pages. Every one of them asks
-//! [`crate::services::entitlements::Entitlements`] first, and refuses with a
+//! [`grund_server::services::entitlements::Entitlements`] first, and refuses with a
 //! 403 page when the license does not include social sign-in.
 
 use axum::{
@@ -11,18 +11,22 @@ use axum::{
 use minijinja::context;
 use serde::Deserialize;
 
-use crate::{
+use std::sync::Arc;
+
+use axum::Extension;
+use grund_server::{
     license::Feature,
-    services::{
-        entitlements::EntitlementsState,
-        sessions::SessionsState,
-        social::{CallbackOutcome, CompleteOutcome, LinkOutcome, Provider, SocialState},
-    },
+    services::{entitlements::EntitlementsState, sessions::SessionsState},
     state::State,
     web::{
         browser::{Browser, CookieJar, cookie},
         pages::{PageError, forged, message, redirect, render},
     },
+};
+
+use super::{
+    SocialLogin,
+    flows::{CallbackOutcome, CompleteOutcome, LinkOutcome, Provider},
 };
 
 type PageResult = Result<Response, PageError>;
@@ -36,6 +40,7 @@ fn flow_cookie_name(jar: &CookieJar) -> &'static str {
 }
 
 fn gate(
+    ee: &SocialLogin,
     state: &State,
     browser: &Browser,
     provider: Option<&str>,
@@ -54,7 +59,7 @@ fn gate(
     let Some(id) = provider else {
         return Ok(None);
     };
-    match state.social().provider(id) {
+    match ee.flows(state).provider(id) {
         Some(provider) => Ok(Some(provider)),
         None => Err(Box::new(message(
             state,
@@ -72,16 +77,17 @@ fn flow_cookie(browser: &Browser, parts: &axum::http::HeaderMap) -> Option<Strin
 }
 
 pub async fn start(
+    Extension(ee): Extension<Arc<SocialLogin>>,
     AxumState(state): AxumState<State>,
     browser: Browser,
     Path(provider): Path<String>,
 ) -> PageResult {
-    let provider = match gate(&state, &browser, Some(&provider)) {
+    let provider = match gate(&ee, &state, &browser, Some(&provider)) {
         Ok(Some(provider)) => provider,
         Ok(None) => unreachable!("a provider id was given"),
         Err(page) => return *page,
     };
-    let (token, location) = state.social().start(&provider).await?;
+    let (token, location) = ee.flows(&state).start(&provider).await?;
     let mut response = redirect(&location);
     let jar = browser.jar();
     response.headers_mut().append(
@@ -100,13 +106,14 @@ pub struct CallbackQuery {
 }
 
 pub async fn callback(
+    Extension(ee): Extension<Arc<SocialLogin>>,
     AxumState(state): AxumState<State>,
     browser: Browser,
     headers: axum::http::HeaderMap,
     Path(provider): Path<String>,
     Query(query): Query<CallbackQuery>,
 ) -> PageResult {
-    let provider = match gate(&state, &browser, Some(&provider)) {
+    let provider = match gate(&ee, &state, &browser, Some(&provider)) {
         Ok(Some(provider)) => provider,
         Ok(None) => unreachable!("a provider id was given"),
         Err(page) => return *page,
@@ -121,8 +128,8 @@ pub async fn callback(
             Some(("/login", "Sign in")),
         );
     };
-    match state
-        .social()
+    match ee
+        .flows(&state)
         .callback(&provider, &flow, &query.state, &query.code, &browser.meta())
         .await?
     {
@@ -166,24 +173,24 @@ async fn signed_in(state: &State, browser: &Browser, account_id: uuid::Uuid) -> 
     Ok(response)
 }
 
-fn provider_name(state: &State, id: &str) -> String {
-    state
-        .social()
+fn provider_name(ee: &SocialLogin, state: &State, id: &str) -> String {
+    ee.flows(state)
         .provider(id)
         .map(|p| p.name)
         .unwrap_or_else(|| id.to_string())
 }
 
 pub async fn complete_form(
+    Extension(ee): Extension<Arc<SocialLogin>>,
     AxumState(state): AxumState<State>,
     browser: Browser,
     headers: axum::http::HeaderMap,
 ) -> PageResult {
-    if let Err(page) = gate(&state, &browser, None) {
+    if let Err(page) = gate(&ee, &state, &browser, None) {
         return *page;
     }
     let pending = match flow_cookie(&browser, &headers) {
-        Some(flow) => state.social().pending(&flow, "choose_username").await?,
+        Some(flow) => ee.flows(&state).pending(&flow, "choose_username").await?,
         None => None,
     };
     let Some(pending) = pending else {
@@ -195,7 +202,7 @@ pub async fn complete_form(
         StatusCode::OK,
         "pages/social-username.html.jinja",
         context! {
-            csrf => browser.csrf_token(), provider => provider_name(&state, &pending.provider), email => pending.email,
+            csrf => browser.csrf_token(), provider => provider_name(&ee, &state, &pending.provider), email => pending.email,
             username => pending.suggested_name.unwrap_or_default(), error => "",
         },
     )
@@ -210,12 +217,13 @@ pub struct CompleteFields {
 }
 
 pub async fn complete(
+    Extension(ee): Extension<Arc<SocialLogin>>,
     AxumState(state): AxumState<State>,
     browser: Browser,
     headers: axum::http::HeaderMap,
     Form(form): Form<CompleteFields>,
 ) -> PageResult {
-    if let Err(page) = gate(&state, &browser, None) {
+    if let Err(page) = gate(&ee, &state, &browser, None) {
         return *page;
     }
     if !browser.form_is_genuine(&form.csrf) {
@@ -224,9 +232,9 @@ pub async fn complete(
     let Some(flow) = flow_cookie(&browser, &headers) else {
         return Ok(redirect("/login"));
     };
-    let pending = state.social().pending(&flow, "choose_username").await?;
-    match state
-        .social()
+    let pending = ee.flows(&state).pending(&flow, "choose_username").await?;
+    match ee
+        .flows(&state)
         .complete_signup(&flow, &form.username, &browser.meta())
         .await?
     {
@@ -241,7 +249,7 @@ pub async fn complete(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "pages/social-username.html.jinja",
                 context! {
-                    csrf => browser.csrf_token(), provider => provider_name(&state, &pending.provider), email => pending.email,
+                    csrf => browser.csrf_token(), provider => provider_name(&ee, &state, &pending.provider), email => pending.email,
                     username => form.username, error,
                 },
             )
@@ -258,15 +266,16 @@ pub async fn complete(
 }
 
 pub async fn link_form(
+    Extension(ee): Extension<Arc<SocialLogin>>,
     AxumState(state): AxumState<State>,
     browser: Browser,
     headers: axum::http::HeaderMap,
 ) -> PageResult {
-    if let Err(page) = gate(&state, &browser, None) {
+    if let Err(page) = gate(&ee, &state, &browser, None) {
         return *page;
     }
     let pending = match flow_cookie(&browser, &headers) {
-        Some(flow) => state.social().pending(&flow, "link").await?,
+        Some(flow) => ee.flows(&state).pending(&flow, "link").await?,
         None => None,
     };
     let Some(pending) = pending else {
@@ -278,7 +287,7 @@ pub async fn link_form(
         StatusCode::OK,
         "pages/social-link.html.jinja",
         context! {
-            csrf => browser.csrf_token(), provider => provider_name(&state, &pending.provider), email => pending.email, error => "",
+            csrf => browser.csrf_token(), provider => provider_name(&ee, &state, &pending.provider), email => pending.email, error => "",
         },
     )
 }
@@ -292,12 +301,13 @@ pub struct LinkFields {
 }
 
 pub async fn link(
+    Extension(ee): Extension<Arc<SocialLogin>>,
     AxumState(state): AxumState<State>,
     browser: Browser,
     headers: axum::http::HeaderMap,
     Form(form): Form<LinkFields>,
 ) -> PageResult {
-    if let Err(page) = gate(&state, &browser, None) {
+    if let Err(page) = gate(&ee, &state, &browser, None) {
         return *page;
     }
     if !browser.form_is_genuine(&form.csrf) {
@@ -306,9 +316,9 @@ pub async fn link(
     let Some(flow) = flow_cookie(&browser, &headers) else {
         return Ok(redirect("/login"));
     };
-    let pending = state.social().pending(&flow, "link").await?;
-    let error = match state
-        .social()
+    let pending = ee.flows(&state).pending(&flow, "link").await?;
+    let error = match ee
+        .flows(&state)
         .link(&flow, &form.password, &browser.meta())
         .await?
     {
@@ -335,7 +345,7 @@ pub async fn link(
         StatusCode::OK,
         "pages/social-link.html.jinja",
         context! {
-            csrf => browser.csrf_token(), provider => provider_name(&state, &pending.provider), email => pending.email, error,
+            csrf => browser.csrf_token(), provider => provider_name(&ee, &state, &pending.provider), email => pending.email, error,
         },
     )
 }
