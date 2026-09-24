@@ -1,4 +1,4 @@
-//! License keys (docs/design/licensing.md §4): a signed token verified
+//! License keys (docs/design/licensing.md §7): a signed token verified
 //! offline against keys compiled into this binary. No network call, ever.
 //!
 //! `grund-license-v1.<payload>.<signature>`, where the payload is base64url
@@ -22,7 +22,7 @@ pub struct TrustedKey {
 }
 
 /// The keys this build trusts. Empty until Kasper creates the first
-/// production signing key (docs/design/licensing.md §4): until then no key
+/// production signing key (docs/design/licensing.md §7): until then no key
 /// verifies and every commercial feature stays off. Only the public half is
 /// ever here.
 pub const TRUSTED_KEYS: &[TrustedKey] = &[];
