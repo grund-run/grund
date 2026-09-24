@@ -1,0 +1,79 @@
+{% extends "layout-app.html.jinja" %}
+{% block title %}Style guide · grund{% endblock %}
+{% block crumbs %}<li>Style guide</li>{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1 class="page-title">Style guide</h1>
+    <p class="status-line">{{ ui.icon("ok", "tone-ok") }}Every component, as the product renders it. Names and figures are examples.</p>
+  </div>
+  <span class="btn btn-primary">{{ ui.icon("plus") }}Primary action</span>
+</div>
+
+<section class="section" aria-labelledby="sg-colour">
+  <div class="section-head"><h2 class="section-title" id="sg-colour">Colour</h2></div>
+  <ul class="sg-swatches">
+    {% for swatch in swatches %}
+    <li class="sg-swatch"><div class="sg-chip sg-{{ swatch.0 }}"></div><code>--{{ swatch.0 }}</code><br><span class="hint">{{ swatch.1 }}</span></li>
+    {% endfor %}
+  </ul>
+</section>
+
+<section class="section" aria-labelledby="sg-buttons">
+  <div class="section-head"><h2 class="section-title" id="sg-buttons">Buttons and links</h2></div>
+  <div class="sg-row">
+    <span class="btn btn-primary">{{ ui.icon("plus") }}Deploy application</span>
+    <span class="btn btn-secondary">Secondary</span>
+    <span class="btn btn-danger btn-sm">Sign out</span>
+    <a class="link-more" href="#sg-buttons">View all{{ ui.icon("arrow", "icon-sm") }}</a>
+  </div>
+</section>
+
+<section class="section" aria-labelledby="sg-callout">
+  <div class="section-head"><h2 class="section-title" id="sg-callout">Callout</h2></div>
+  <div class="callout">
+    <span class="spinner" aria-hidden="true"></span>
+    <div class="callout-body">
+      <p class="callout-title">Storefront is updating</p>
+      <p class="callout-text">Checking the new release. Current version is serving traffic.</p>
+    </div>
+    <a class="link-more" href="#sg-callout">View rollout{{ ui.icon("arrow", "icon-sm") }}</a>
+  </div>
+</section>
+
+<section class="section" aria-labelledby="sg-rows">
+  <div class="section-head">
+    <h2 class="section-title" id="sg-rows">Applications<span class="count">3</span></h2>
+    <a class="link-more" href="#sg-rows">View all{{ ui.icon("arrow", "icon-sm") }}</a>
+  </div>
+  <ul class="rows">
+    <li class="row"><span class="row-icon">{{ ui.icon("box", "icon-lg tone-orange") }}</span><div><p class="row-name">Storefront</p><p class="row-sub">shop.nord.example</p></div>{{ ui.status("Serving") }}<span class="row-end">{{ ui.icon("chevron") }}</span></li>
+    <li class="row"><span class="row-icon">{{ ui.icon("bars", "icon-lg tone-blue") }}</span><div><p class="row-name">Plausible</p><p class="row-sub">stats.nord.example</p></div>{{ ui.status("Serving") }}<span class="row-end">{{ ui.icon("chevron") }}</span></li>
+    <li class="row"><span class="row-icon">{{ ui.icon("code", "icon-lg tone-violet") }}</span><div><p class="row-name">Customer API</p><p class="row-sub">api.nord.example</p></div>{{ ui.status("Serving") }}<span class="row-end">{{ ui.icon("chevron") }}</span></li>
+  </ul>
+  <p class="notice">{{ ui.icon("box", "tone-orange") }}An update is available for Plausible.<a class="link-more" href="#sg-rows">Review update{{ ui.icon("arrow", "icon-sm") }}</a></p>
+  <ul class="stats">
+    <li>{{ ui.icon("server", "icon-sm") }}3 servers online</li>
+    <li>{{ ui.icon("globe", "icon-sm") }}4 domains connected</li>
+  </ul>
+</section>
+
+<section class="section" aria-labelledby="sg-forms">
+  <div class="section-head"><h2 class="section-title" id="sg-forms">Forms</h2></div>
+  <div class="auth-card">
+    <div class="form">
+      {{ ui.form_ok("Your email is confirmed. Sign in to continue.") }}
+      {{ ui.form_error("That email, username or password is not right.") }}
+      {{ ui.field("sg-email", "Email", type="email", hint="We send a link to confirm it.", required=false) }}
+      {{ ui.field("sg-password", "Password", type="password", error="Use at least 12 characters.", required=false) }}
+      <span class="btn btn-primary btn-block">Sign in</span>
+    </div>
+  </div>
+  <p class="sg-caption">Tags: <span class="tag">Soon</span> <span class="tag tag-ok">Current</span></p>
+</section>
+
+<section class="section" aria-labelledby="sg-empty">
+  <div class="section-head"><h2 class="section-title" id="sg-empty">Empty state</h2></div>
+  <div class="empty"><strong>No applications yet</strong>Deploy one and it shows up here.</div>
+</section>
+{% endblock %}

@@ -1,0 +1,17 @@
+{% extends "layout-auth.html.jinja" %}
+{% block title %}Confirm your email · grund{% endblock %}
+{% block card %}
+{% if valid %}
+<h1 class="auth-title">Confirm your email</h1>
+<p class="auth-lede">Confirm this address to finish creating your account.</p>
+<form class="form" method="post" action="/verify">
+  {{ ui.csrf_field(csrf) }}
+  <input type="hidden" name="token" value="{{ token }}">
+  <button class="btn btn-primary btn-block" type="submit">Confirm email</button>
+</form>
+{% else %}
+<h1 class="auth-title">This link has expired</h1>
+<p class="auth-lede">Links work once, for 24 hours. Sign in with your password and we send a new one.</p>
+<div class="form-foot"><p><a class="link-more" href="/login">Sign in{{ ui.icon("arrow", "icon-sm") }}</a></p></div>
+{% endif %}
+{% endblock %}

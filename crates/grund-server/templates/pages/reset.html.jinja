@@ -1,0 +1,13 @@
+{% extends "layout-auth.html.jinja" %}
+{% block title %}Reset your password · grund{% endblock %}
+{% block card %}
+<h1 class="auth-title">Reset your password</h1>
+<p class="auth-lede">Enter the email address of your account. We send a link to choose a new password.</p>
+<form class="form" method="post" action="/reset" novalidate>
+  {{ ui.csrf_field(csrf) }}
+  {{ ui.form_error(error) }}
+  {{ ui.field("email", "Email", type="email", value=email, autocomplete="email", autofocus=true) }}
+  <button class="btn btn-primary btn-block" type="submit">Send link</button>
+</form>
+<div class="form-foot"><p><a href="/login">Back to sign in</a></p></div>
+{% endblock %}

@@ -38,6 +38,14 @@ impl Origin {
         })
     }
 
+    pub fn serialized(&self) -> String {
+        format!(
+            "{}://{}",
+            if self.tls { "https" } else { "http" },
+            self.authority()
+        )
+    }
+
     pub fn authority(&self) -> String {
         let default = if self.tls { 443 } else { 80 };
         if self.port == default {

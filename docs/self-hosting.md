@@ -21,7 +21,7 @@ checkout, which takes a few minutes. To run a published build instead, set
 | `init` | Generates the instance secret key and the database password into the `grund-data` volume on first start, then exits. It never overwrites them | nowhere |
 | `postgres` | PostgreSQL 18, where everything grund knows is kept | the compose network only |
 | `nats` | Wakes background work (mail) as soon as it is queued. grund works without it by polling every 5 s | the compose network only |
-| `mailpit` | Catches every mail grund sends, so mail works without a mail server. **It delivers nothing** | http://localhost:8025 |
+| `mailpit` | Catches every mail grund sends, so sign-up works without a mail server. **It delivers nothing** | http://localhost:8025 |
 | `grund` | The dashboard and API. Runs database migrations on every start | http://localhost:8080 (bound to 127.0.0.1) |
 
 - **Health.** Every service has a health check, and grund starts only once

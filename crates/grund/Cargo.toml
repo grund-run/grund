@@ -29,3 +29,4 @@ tokio = { workspace = true, features = ["io-util"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 webpki-roots = "1"
 getrandom.workspace = true
+sqlx.workspace = true

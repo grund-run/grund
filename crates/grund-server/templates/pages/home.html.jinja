@@ -1,0 +1,37 @@
+{% extends "layout-app.html.jinja" %}
+{% block title %}Overview · grund{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1 class="page-title">Overview</h1>
+    <p class="status-line">{{ ui.icon("ok", "tone-ok") }}Signed in as {{ viewer.username }}.</p>
+  </div>
+  <span class="btn btn-primary" aria-disabled="true">{{ ui.icon("plus") }}Deploy application</span>
+</div>
+<div class="callout">
+  {{ ui.icon("box", "icon-lg tone-orange") }}
+  <div class="callout-body">
+    <p class="callout-title">Deploying applications is in development</p>
+    <p class="callout-text">Your account and your organisation, {{ viewer.organisation }}, are ready. Applications, machines and domains arrive here next.</p>
+  </div>
+</div>
+<section class="section" aria-labelledby="orgs">
+  <div class="section-head">
+    <h2 class="section-title" id="orgs">Organisations<span class="count">{{ viewer.memberships | length }}</span></h2>
+  </div>
+  <ul class="rows">
+    {% for membership in viewer.memberships %}
+    <li class="row">
+      <span class="row-icon">{{ ui.icon("grid", "icon-lg tone-blue") }}</span>
+      <div><p class="row-name">{{ membership.slug }}</p><p class="row-sub">{{ membership.slug }}</p></div>
+      {{ ui.status(membership.role | capitalize) }}
+      <span></span>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+<ul class="stats">
+  <li>{{ ui.icon("mail", "icon-sm") }}{{ viewer.email }}</li>
+  <li>{{ ui.icon("clock", "icon-sm") }}Member since {{ viewer.registered_on }}</li>
+</ul>
+{% endblock %}

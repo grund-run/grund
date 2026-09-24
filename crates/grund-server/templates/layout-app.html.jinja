@@ -1,0 +1,38 @@
+{% extends "base.html.jinja" %}
+{% import "components/ui.html.jinja" as ui %}
+{% block body %}
+<div class="shell">
+  <nav class="sidebar" aria-label="Main">
+    {{ ui.brand() }}
+    <ul class="nav">
+      <li><a class="nav-item{% if section == 'overview' %} is-active{% endif %}" href="/"{% if section == 'overview' %} aria-current="page"{% endif %}>{{ ui.icon("home") }}Overview</a></li>
+      <li><span class="nav-item" aria-disabled="true">{{ ui.icon("grid") }}Applications <span class="tag">Soon</span></span></li>
+      <li><span class="nav-item" aria-disabled="true">{{ ui.icon("server") }}Fleet <span class="tag">Soon</span></span></li>
+      <li><span class="nav-item" aria-disabled="true">{{ ui.icon("globe") }}Domains <span class="tag">Soon</span></span></li>
+      <li><span class="nav-item" aria-disabled="true">{{ ui.icon("clock") }}Activity <span class="tag">Soon</span></span></li>
+    </ul>
+    <ul class="nav nav-foot">
+      <li><a class="nav-item" href="https://git.kjuulh.io/grund/grund">{{ ui.icon("book") }}Docs &amp; community</a></li>
+      <li><a class="nav-item{% if section == 'settings' %} is-active{% endif %}" href="/settings/sessions"{% if section == 'settings' %} aria-current="page"{% endif %}>{{ ui.icon("gear") }}Settings</a></li>
+    </ul>
+    <span class="avatar" title="{{ viewer.username }}">{{ viewer.initials }}</span>
+  </nav>
+  <div class="main">
+    <header class="topbar">
+      <ol class="crumbs">
+        <li>{{ viewer.organisation }}</li>
+        {% block crumbs %}{% endblock %}
+      </ol>
+      <div class="topbar-end">
+        <form class="inline-form" method="post" action="/logout">
+          {{ ui.csrf_field(csrf) }}
+          <button class="btn btn-ghost" type="submit">{{ ui.icon("logout", "icon-sm") }}Sign out</button>
+        </form>
+      </div>
+    </header>
+    <main class="content" id="main">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+</div>
+{% endblock %}

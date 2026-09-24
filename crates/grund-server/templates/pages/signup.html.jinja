@@ -1,0 +1,15 @@
+{% extends "layout-auth.html.jinja" %}
+{% block title %}Create an account · grund{% endblock %}
+{% block card %}
+<h1 class="auth-title">Create an account</h1>
+<p class="auth-lede">Your account comes with its own organisation. Everything you deploy will belong to it.</p>
+<form class="form" method="post" action="/signup" novalidate>
+  {{ ui.csrf_field(csrf) }}
+  {{ ui.form_error(error) }}
+  {{ ui.field("username", "Username", value=username, autocomplete="username", error=errors.username, hint="3 to 32 letters, digits and single hyphens. It is public.", autofocus=true) }}
+  {{ ui.field("email", "Email", type="email", value=email, autocomplete="email", error=errors.email, hint="We send a link to confirm it.") }}
+  {{ ui.field("password", "Password", type="password", autocomplete="new-password", error=errors.password, hint="At least 12 characters.") }}
+  <button class="btn btn-primary btn-block" type="submit">Create account</button>
+</form>
+<div class="form-foot"><p>Already have an account? <a href="/login">Sign in</a></p></div>
+{% endblock %}

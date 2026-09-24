@@ -58,7 +58,11 @@ steps:
         GRUND_SECRET_KEY=$$(openssl rand -hex 32)
         GRUND_NATS_URL=nats://nats:4222 GRUND_SMTP_URL=smtp://mailpit:1025
         GRUND_WORK_POLL_INTERVAL=1 GRUND_HEALTH_INTERVAL=1
+        GRUND_LOGIN_ATTEMPTS_PER_ADDRESS=0 GRUND_MAIL_REQUESTS_PER_ADDRESS=0
         ./.image/grund serve > server.log 2>&1 &
+      # Every test reaches this one server from one address, so the
+      # per-address limits are off here; the spawned-binary run in ci.yaml
+      # covers them.
       # Assert against the real binary, not a mock of it: the same accepttests
       # that `cargo test` runs against a spawned binary, pointed at this one.
       - GRUND_ACCEPT_URL=http://127.0.0.1:8080 cargo test --locked --release -p grund --test tests || { echo "--- server log"; cat server.log; exit 1; }

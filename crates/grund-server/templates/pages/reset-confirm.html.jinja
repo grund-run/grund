@@ -1,0 +1,19 @@
+{% extends "layout-auth.html.jinja" %}
+{% block title %}Choose a new password · grund{% endblock %}
+{% block card %}
+{% if valid %}
+<h1 class="auth-title">Choose a new password</h1>
+<p class="auth-lede">Every device signed in to your account is signed out.</p>
+<form class="form" method="post" action="/reset/confirm" novalidate>
+  {{ ui.csrf_field(csrf) }}
+  <input type="hidden" name="token" value="{{ token }}">
+  {{ ui.form_error(error) }}
+  {{ ui.field("password", "New password", type="password", autocomplete="new-password", error=password_error, hint="At least 12 characters.", autofocus=true) }}
+  <button class="btn btn-primary btn-block" type="submit">Set password</button>
+</form>
+{% else %}
+<h1 class="auth-title">This link has expired</h1>
+<p class="auth-lede">Reset links work once, for 30 minutes.</p>
+<div class="form-foot"><p><a class="link-more" href="/reset">Send a new link{{ ui.icon("arrow", "icon-sm") }}</a></p></div>
+{% endif %}
+{% endblock %}

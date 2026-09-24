@@ -17,6 +17,7 @@ pub struct Fixture {
     pub origin: Origin,
     pub mailpit: Option<Origin>,
     child: Option<Child>,
+    database: Option<(String, String)>,
 }
 
 impl Drop for Fixture {
@@ -25,7 +26,43 @@ impl Drop for Fixture {
             let _ = child.kill();
             let _ = child.wait();
         }
+        if let Some((admin, name)) = self.database.take() {
+            let _ = std::thread::spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()?;
+                runtime.block_on(async {
+                    let mut connection =
+                        <sqlx::PgConnection as sqlx::Connection>::connect(&admin).await?;
+                    sqlx::Executor::execute(
+                        &mut connection,
+                        sqlx::AssertSqlSafe(format!(
+                            "DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)"
+                        )),
+                    )
+                    .await?;
+                    Ok::<_, anyhow::Error>(())
+                })
+            })
+            .join();
+        }
     }
+}
+
+async fn fresh_database(admin: &str) -> anyhow::Result<(String, String)> {
+    let name = format!("grund_accept_{}", random_hex(8));
+    let mut connection = <sqlx::PgConnection as sqlx::Connection>::connect(admin)
+        .await
+        .with_context(|| format!("connect to GRUND_ACCEPT_DATABASE_URL ({admin})"))?;
+    sqlx::Executor::execute(
+        &mut connection,
+        sqlx::AssertSqlSafe(format!("CREATE DATABASE \"{name}\"")),
+    )
+    .await?;
+    let (base, _) = admin
+        .rsplit_once('/')
+        .context("GRUND_ACCEPT_DATABASE_URL has no database name")?;
+    Ok((format!("{base}/{name}"), name))
 }
 
 fn env(name: &str) -> Option<String> {
@@ -51,6 +88,7 @@ impl Fixture {
                 .map(|url| Origin::parse(&url))
                 .transpose()?,
             child: None,
+            database: None,
         };
         fixture.wait_until_live(None).await?;
         Ok(fixture)
@@ -65,7 +103,8 @@ impl Fixture {
         let log = File::create(&log_path)?;
 
         let public_url = format!("http://127.0.0.1:{port}");
-        let database_url = env("GRUND_ACCEPT_DATABASE_URL").unwrap_or(DEFAULT_DATABASE_URL.into());
+        let admin_url = env("GRUND_ACCEPT_DATABASE_URL").unwrap_or(DEFAULT_DATABASE_URL.into());
+        let (database_url, database_name) = fresh_database(&admin_url).await?;
         let smtp_url = env("GRUND_ACCEPT_SMTP_URL").unwrap_or(DEFAULT_SMTP_URL.into());
         let mailpit_url = env("GRUND_ACCEPT_MAILPIT_URL").unwrap_or(DEFAULT_MAILPIT_URL.into());
         let secret_key = random_hex(32);
@@ -108,6 +147,7 @@ impl Fixture {
             origin: Origin::parse(&public_url)?,
             mailpit: Some(Origin::parse(&mailpit_url)?),
             child: Some(command.spawn().context("spawn grund")?),
+            database: Some((admin_url, database_name)),
         };
         fixture.wait_until_live(Some(&log_path)).await?;
         Ok(fixture)

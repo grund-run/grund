@@ -6,8 +6,11 @@
 
 use std::{sync::Arc, time::Instant};
 
-use crate::{config::ServeConfig, secrets::SecretKey};
+use crate::{
+    config::ServeConfig, secrets::SecretKey, services::passwords::Passwords, templates::Templates,
+};
 
+/// Cheap to clone: every field is an `Arc`, a pool or a handle.
 #[derive(Clone)]
 pub struct State {
     pub config: Arc<ServeConfig>,
@@ -16,5 +19,7 @@ pub struct State {
     pub nats: Option<async_nats::Client>,
     pub secret: Arc<SecretKey>,
     pub health: nostatus::StatusState,
+    pub passwords: Passwords,
+    pub templates: Templates,
     pub started: Instant,
 }

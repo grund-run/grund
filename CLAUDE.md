@@ -60,8 +60,16 @@ cargo fmt --all --check && cargo clippy --workspace --all-targets --locked -- -D
 - Why the accepttests use a raw HTTP/1.1 client (`fixtures/client.rs`):
   general clients normalise paths and hide what a response carried, and
   these tests assert the bytes on the wire (the grund/website harness).
-- Tests use random account names and never clean up, so the dev database
-  can be shared by every run (skills D-22).
+- Each spawned instance gets its own database (`grund_accept_<random>`),
+  created from `GRUND_ACCEPT_DATABASE_URL` and dropped when its test ends,
+  because instances drain the outbox: sharing one database lets a finished
+  test's server take another test's mail with it. Account names are random
+  too, so a run needs no cleanup (skills D-22).
+- The store's `#[sqlx::test]`s need `DATABASE_URL`; `.cargo/config.toml`
+  points it at compose.dev.yaml's PostgreSQL unless the environment sets one.
+- Mail in tests is read back from Mailpit's API (`fixtures/mail.rs`). When a
+  flow sends a second link (sign-in resends verification), wait for it and
+  follow the newest: the older link is already invalid.
 - `compose.dev.yaml` keeps PostgreSQL on tmpfs: `docker compose -f
   compose.dev.yaml down` wipes it.
 - The revision in `/health/ready` comes from `CI_COMMIT_SHA` (or

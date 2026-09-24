@@ -1,0 +1,35 @@
+{% macro icon(name, class="") -%}
+<svg class="icon {{ class }}" aria-hidden="true"><use href="#i-{{ name }}"/></svg>
+{%- endmacro %}
+
+{% macro brand(href="/") -%}
+<a class="brand" href="{{ href }}"><svg class="brand-mark" aria-hidden="true"><use href="#mark"/></svg>grund</a>
+{%- endmacro %}
+
+{% macro csrf_field(token) -%}
+<input type="hidden" name="csrf" value="{{ token }}">
+{%- endmacro %}
+
+{% macro field(name, label, type="text", value="", autocomplete="", error="", hint="", required=true, autofocus=false) -%}
+<div class="field">
+  <label for="{{ name }}">{{ label }}</label>
+  <input id="{{ name }}" name="{{ name }}" type="{{ type }}"{% if value %} value="{{ value }}"{% endif %}{% if autocomplete %} autocomplete="{{ autocomplete }}"{% endif %}{% if required %} required{% endif %}{% if autofocus %} autofocus{% endif %}{% if error %} aria-invalid="true" aria-describedby="{{ name }}-error"{% elif hint %} aria-describedby="{{ name }}-hint"{% endif %}>
+  {%- if error %}
+  <p class="field-error" id="{{ name }}-error">{{ error }}</p>
+  {%- elif hint %}
+  <p class="hint" id="{{ name }}-hint">{{ hint }}</p>
+  {%- endif %}
+</div>
+{%- endmacro %}
+
+{% macro form_error(message) -%}
+{% if message %}<div class="form-error" role="alert"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-alert"/></svg><span>{{ message }}</span></div>{% endif %}
+{%- endmacro %}
+
+{% macro form_ok(message) -%}
+{% if message %}<div class="form-ok" role="status"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-ok"/></svg><span>{{ message }}</span></div>{% endif %}
+{%- endmacro %}
+
+{% macro status(text, tone="ok") -%}
+<span class="row-status"><svg class="icon tone-{{ tone }}" aria-hidden="true"><use href="#i-ok"/></svg>{{ text }}</span>
+{%- endmacro %}

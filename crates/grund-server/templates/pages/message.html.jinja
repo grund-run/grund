@@ -1,0 +1,7 @@
+{% extends "layout-auth.html.jinja" %}
+{% block title %}{{ title }} · grund{% endblock %}
+{% block card %}
+<h1 class="auth-title">{{ title }}</h1>
+<p class="auth-lede">{{ text }}</p>
+{% if link_href %}<div class="form-foot"><p><a class="link-more" href="{{ link_href }}">{{ link_text }}{{ ui.icon("arrow", "icon-sm") }}</a></p></div>{% endif %}
+{% endblock %}

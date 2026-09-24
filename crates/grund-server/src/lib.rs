@@ -4,19 +4,26 @@
 //!   grund serve
 //!     config ─► tracing ─► PostgreSQL ─► migrations ─► NATS (optional) ─► State
 //!     notmad, drained in this order on SIGTERM:
-//!       grund/http     pages, API, health            stops taking requests first
-//!       grund/health   nostatus checks               keeps readiness honest while draining
+//!       grund/http          pages and health                stops taking requests first
+//!       grund/health        nostatus checks                 keeps readiness honest while draining
+//!       grund/projections   read-model catch-up and rebuild
+//!       grund/sweeper       expired sessions, links, windows
+//!       grund/outbox        mail and reset requests         drains last, up to 5 s
 //! ```
 //!
 //! PostgreSQL is the truth. NATS, when configured, only wakes background work
 //! sooner; every worker also polls, so losing NATS costs latency, never work.
 
 pub mod config;
+pub mod crypto;
 pub mod db;
 pub mod health;
+pub mod projections;
 pub mod secrets;
 pub mod server;
+pub mod services;
 pub mod state;
+pub mod templates;
 pub mod web;
 
 use anyhow::Context;
@@ -31,7 +38,9 @@ pub async fn serve(config: ServeConfig) -> anyhow::Result<()> {
     let events = mire::EventStore::new(pool.clone());
     let nats = connect_nats(&config).await?;
 
-    let health = health::registry(pool.clone(), nats.clone(), &config);
+    let templates = templates::Templates::new()?;
+    let mailer = services::mail::Mailer::new(&config, templates.clone())?;
+    let health = health::registry(pool.clone(), nats.clone(), mailer.configured(), &config);
     let grace = config.shutdown_grace;
     let state = State {
         config: std::sync::Arc::new(config),
@@ -40,6 +49,8 @@ pub async fn serve(config: ServeConfig) -> anyhow::Result<()> {
         nats,
         secret: std::sync::Arc::new(secret),
         health,
+        passwords: services::passwords::Passwords::new()?,
+        templates,
         started: health::started(),
     };
 
@@ -51,6 +62,9 @@ pub async fn serve(config: ServeConfig) -> anyhow::Result<()> {
     notmad::Mad::builder()
         .add(server::Http::new(state.clone()))
         .add(health::Checks::new(&state))
+        .add(projections::Projections::new(&state))
+        .add(services::maintenance::Sweeper::new(state.clone()))
+        .add(services::outbox::OutboxDrain::new(state.clone(), mailer))
         .cancellation(Some(grace))
         .run()
         .await?;

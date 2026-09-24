@@ -1,0 +1,36 @@
+{% extends "layout-app.html.jinja" %}
+{% block title %}Sessions · grund{% endblock %}
+{% block crumbs %}<li>Settings</li>{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1 class="page-title">Sessions</h1>
+    <p class="status-line">Where your account is signed in. Signing a device out takes effect at once.</p>
+  </div>
+  {% if sessions | length > 1 %}
+  <form method="post" action="/settings/sessions/revoke-others">
+    {{ ui.csrf_field(csrf) }}
+    <button class="btn btn-secondary" type="submit">Sign out everywhere else</button>
+  </form>
+  {% endif %}
+</div>
+{{ ui.form_ok(notice) }}
+<ul class="rows">
+  {% for session in sessions %}
+  <li class="row">
+    <span class="row-icon">{{ ui.icon("monitor", "icon-lg tone-violet") }}</span>
+    <div>
+      <p class="row-name">{{ session.device }}</p>
+      <p class="row-sub">{% if session.address %}{{ session.address }} · {% endif %}signed in {{ session.created }}, last seen {{ session.last_seen }}</p>
+    </div>
+    {% if session.current %}{{ ui.status("This device") }}{% else %}<span></span>{% endif %}
+    {% if not session.current %}
+    <form class="row-end" method="post" action="/settings/sessions/{{ session.id }}/revoke">
+      {{ ui.csrf_field(csrf) }}
+      <button class="btn btn-danger btn-sm" type="submit">Sign out</button>
+    </form>
+    {% else %}<span></span>{% endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% endblock %}

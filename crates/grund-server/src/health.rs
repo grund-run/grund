@@ -35,10 +35,12 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// PostgreSQL is critical: without it no request can be served. NATS, when
 /// configured, is major: it only makes background work start sooner and
 /// polling is correct without it, so its loss degrades readiness but never
-/// takes the instance out of rotation.
+/// takes the instance out of rotation. Mail is minor: a backlog is reported,
+/// never a reason to stop serving, because the outbox holds it durably.
 pub fn registry(
     pool: sqlx::PgPool,
     nats: Option<async_nats::Client>,
+    mail_configured: bool,
     config: &crate::config::ServeConfig,
 ) -> StatusState {
     let mut registry = StatusRegistry::builder();
@@ -46,6 +48,7 @@ pub fn registry(
         .interval(config.health_interval)
         .check_timeout(std::time::Duration::from_secs(2));
 
+    let outbox_pool = pool.clone();
     registry.add_fn(
         CheckInfo::new("postgres")
             .description("SELECT 1 on the pool requests use")
@@ -78,6 +81,24 @@ pub fn registry(
             },
         );
     }
+    registry.add_fn(
+        CheckInfo::new("mail")
+            .description("unhealthy: mail is waiting and GRUND_SMTP_URL is unset; degraded: over 100 waiting")
+            .severity(Severity::Minor),
+        move || {
+            let pool = outbox_pool.clone();
+            async move {
+                let pending = grund_store::outbox::pending(&pool)
+                    .await
+                    .map_err(|error| StatusError::from(anyhow::Error::from(error)))?;
+                Ok(match (mail_configured, pending) {
+                    (false, 1..) => CheckStatus::Unhealthy,
+                    (_, 101..) => CheckStatus::Degraded,
+                    _ => CheckStatus::Healthy,
+                })
+            }
+        },
+    );
     registry.build()
 }
 

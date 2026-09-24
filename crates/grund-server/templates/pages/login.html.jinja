@@ -1,0 +1,26 @@
+{% extends "layout-auth.html.jinja" %}
+{% block title %}Sign in · grund{% endblock %}
+{% block card %}
+<h1 class="auth-title">Sign in</h1>
+<form class="form" method="post" action="/login" novalidate>
+  {{ ui.csrf_field(csrf) }}
+  {% if return_to %}<input type="hidden" name="return_to" value="{{ return_to }}">{% endif %}
+  {{ ui.form_ok(notice) }}
+  {{ ui.form_error(error) }}
+  {{ ui.field("login", "Email or username", value=login, autocomplete="username", autofocus=not login) }}
+  {{ ui.field("password", "Password", type="password", autocomplete="current-password", autofocus=login) }}
+  <button class="btn btn-primary btn-block" type="submit">Sign in</button>
+</form>
+{% if providers %}
+<p class="or">or</p>
+<div class="providers">
+  {% for provider in providers %}
+  <a class="btn btn-secondary btn-block" href="/auth/{{ provider.id }}/start">{{ ui.icon(provider.icon) }}Continue with {{ provider.name }}</a>
+  {% endfor %}
+</div>
+{% endif %}
+<div class="form-foot">
+  <p><a href="/reset">Forgot your password?</a></p>
+  {% if signup_enabled %}<p>New to grund? <a href="/signup">Create an account</a></p>{% endif %}
+</div>
+{% endblock %}

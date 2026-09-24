@@ -1,0 +1,10 @@
+{% extends "base.html.jinja" %}
+{% import "components/ui.html.jinja" as ui %}
+{% block body %}
+<main class="auth" id="main">
+  <div class="auth-card">
+    {{ ui.brand() }}
+    {% block card %}{% endblock %}
+  </div>
+</main>
+{% endblock %}
