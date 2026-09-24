@@ -1,10 +1,13 @@
 # Licensing and the commercial boundary
 
-Status: proposal. **No license is chosen.** The choice is Kasper's, and until
-he makes it no license is granted, the README says "License: to be decided",
-and Cargo.toml names none. What is built is only the verification seam
-(§7): grund can check a signed license key offline and turn features on
-from it. No key has been issued, and the production key list is empty.
+Status: **direction chosen by Kasper (2026-09-24): Metabase's model, priced
+lower.** In his words: "I think metabase is a really interesting model,
+they're just too expensive, so if we balance this then it makes sense."
+Not yet applied. There is no LICENSE file, and no license is named in
+README or Cargo.toml until he gives the go-ahead to publish one (§6, "What
+it would take"). What is built is only the verification seam (§7): grund
+can check a signed license key offline and turn features on from it. No
+key has been issued, and the production key list is empty.
 
 ## What exists today
 
@@ -230,10 +233,15 @@ features." Metabase ships two builds. grund can ship one binary whose
 `ee` features activate only with a key (§6), because the license, not the
 build, is what forbids unlicensed use.
 
-## 6. Recommendation
+## 6. The shape (direction chosen 2026-09-24)
 
-*Decision for Kasper.* The recommendation is **the AGPL open core, in
-Metabase's shape:**
+Kasper chose this direction on 2026-09-24 ("metabase is a really
+interesting model, they're just too expensive"). What is still his:
+- the go-ahead to publish the license;
+- the inbound rule (item 4);
+- the plan mapping (§6, "The balance").
+
+The shape is **the AGPL open core, in Metabase's shape:**
 
 1. **AGPL-3.0-only** for the server and the agent (`crates/grund`,
    `grund-server`, `grund-store`, `grund-domain`). "-only", as Zitadel and
@@ -268,6 +276,44 @@ What it would take, once decided:
 - a CONTRIBUTING.md that states the Apache-2.0 inbound rule and the DCO;
 - a license FAQ on grund.sh (§4), and the site's "open source" wording
   kept as it is.
+
+### The balance: Metabase's structure, grund's prices
+
+Metabase's prices, observed on 2026-09-24 at metabase.com/pricing:
+
+| Metabase plan | Price | What the money unlocks |
+|---|---|---|
+| Open source | free, self-hosted | the product |
+| Starter | $100/month for 5 users, +$6/user | support (cloud) |
+| Pro | $575/month for 10 users, +$12/user | SSO, row and column permissions, usage analytics and auditing, white-labelling |
+| Enterprise | custom, from $20,000/year | self-hosted and air-gapped, SLA |
+
+That is the part Kasper wants balanced. SSO and auditing start at about
+$6,900 a year, priced per seat. grund keeps Metabase's **structure**:
+- an AGPL core;
+- a commercially licensed `ee/`;
+- a signed key that unlocks it, on self-hosted instances too.
+
+It uses grund's own **prices**, decided in skills `product`: per machine,
+never per seat, never per traffic. A key is minted per paid period
+whichever plan buys it, and it works offline on a self-hosted instance
+exactly as on grund's hosting.
+
+*Proposal, for Kasper to confirm:* which licensed feature lands in which
+plan. The balancing move is to put the cheap conveniences low and keep
+only the organisational controls for Business:
+
+| grund plan (decided price) | Licensed features (proposed) |
+|---|---|
+| Self-hosted, free | everything outside `ee/`: deploy, releases, data, domains, a whole team with passwords |
+| Homelab: first machine free, then €3 per machine | GitHub and Google sign-in |
+| Pro: €10 per machine | the above, plus whatever `ee/` adds for teams (none yet) |
+| Business: €49/month + €10 per machine | the above, plus single sign-on with your own provider (generic OIDC, later SAML) and the audit log, as the decided pricing already lists |
+
+For comparison, a 10-person team on three machines pays €30 a month on
+Pro, and €79 on Business with SSO and audit. Metabase charges $575 a month
+before the first seat above ten. Metabase's gate is who you are (seats);
+grund's is how much you run (machines), and the controls a company needs.
 
 ## 7. License keys: offline, signed, no phone-home
 
