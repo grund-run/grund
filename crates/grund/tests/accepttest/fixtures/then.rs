@@ -49,12 +49,10 @@ impl Then {
         Ok(self)
     }
 
-    /// The parsed JSON body.
     pub fn json(&self) -> anyhow::Result<serde_json::Value> {
         serde_json::from_slice(&self.last()?.body).context("body is not JSON")
     }
 
-    /// A string field of the JSON body is present and non-empty.
     pub fn json_field_is_set(&self, field: &str) -> anyhow::Result<&Self> {
         let json = self.json()?;
         let value = json[field].as_str().unwrap_or_default();
@@ -62,7 +60,6 @@ impl Then {
         Ok(self)
     }
 
-    /// The security headers every response carries, whatever its status.
     pub fn carries_the_security_headers(&self) -> anyhow::Result<&Self> {
         self.header_contains("content-security-policy", "default-src 'none'")?
             .header_contains("content-security-policy", "script-src 'self'")?

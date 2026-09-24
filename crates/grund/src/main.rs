@@ -21,14 +21,13 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberI
     about = "grund: from zero to production, on your own premises"
 )]
 struct Cli {
-    /// Log line format. The image sets json.
-    #[arg(long, env = "GRUND_LOG_FORMAT", value_parser = ["compact", "json"], default_value = "compact", global = true)]
+    #[arg(long, env = "GRUND_LOG_FORMAT", help = "Log line format. The image sets json", value_parser = ["compact", "json"], default_value = "compact", global = true)]
     log_format: String,
 
-    /// Log filter, in tracing's EnvFilter syntax.
     #[arg(
         long,
         env = "RUST_LOG",
+        help = "Log filter, in tracing's EnvFilter syntax",
         default_value = "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
         global = true
     )]
@@ -40,14 +39,15 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run the control plane: dashboard, API and background work.
+    #[command(about = "Run the control plane: dashboard, API and background work")]
     Serve(Box<grund_server::config::ServeConfig>),
-    /// Apply database migrations and exit.
+    #[command(about = "Apply database migrations and exit")]
     Migrate(grund_server::config::DatabaseArgs),
-    /// Generate a fresh instance's secret key and database password, keeping
-    /// any that already exist.
+    #[command(
+        about = "Generate the instance secret key and database password, keeping any that exist"
+    )]
     Init(grund_server::secrets::InitArgs),
-    /// Exit 0 when the instance at --url is ready, 1 otherwise.
+    #[command(about = "Exit 0 when the instance at --address answers 200 on --path, 1 otherwise")]
     Probe(probe::ProbeArgs),
 }
 

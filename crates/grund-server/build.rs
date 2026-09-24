@@ -1,6 +1,3 @@
-//! Compiles the build revision into the binary, so a running instance can
-//! say what it is (`/health/ready` reports it). CI sets CI_COMMIT_SHA; a
-//! local build says "unknown" unless GRUND_REVISION overrides it.
 fn main() {
     println!("cargo:rerun-if-env-changed=GRUND_REVISION");
     println!("cargo:rerun-if-env-changed=CI_COMMIT_SHA");

@@ -31,6 +31,11 @@ pub const REVISION: &str = env!("GRUND_BUILD_REVISION");
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Builds the registry: what readiness depends on, and how much.
+///
+/// PostgreSQL is critical: without it no request can be served. NATS, when
+/// configured, is major: it only makes background work start sooner and
+/// polling is correct without it, so its loss degrades readiness but never
+/// takes the instance out of rotation.
 pub fn registry(
     pool: sqlx::PgPool,
     nats: Option<async_nats::Client>,
@@ -41,7 +46,6 @@ pub fn registry(
         .interval(config.health_interval)
         .check_timeout(std::time::Duration::from_secs(2));
 
-    // Every request needs PostgreSQL: without it the instance cannot serve.
     registry.add_fn(
         CheckInfo::new("postgres")
             .description("SELECT 1 on the pool requests use")
@@ -58,8 +62,6 @@ pub fn registry(
         },
     );
 
-    // NATS only makes background work start sooner; polling is correct
-    // without it. Down means slower, never broken: degraded, not unready.
     if let Some(client) = nats {
         registry.add_fn(
             CheckInfo::new("nats")

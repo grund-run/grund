@@ -67,8 +67,6 @@ pub async fn migrate(args: config::DatabaseArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Connects when GRUND_NATS_URL is set, and refuses to start if that fails:
-/// configured-but-unreachable is a mistake to surface, not to paper over.
 async fn connect_nats(config: &ServeConfig) -> anyhow::Result<Option<async_nats::Client>> {
     let Some(url) = &config.nats_url else {
         tracing::info!(

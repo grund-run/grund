@@ -1,9 +1,3 @@
-//! `grund probe`: a readiness check for container health checks.
-//!
-//! The image is `scratch`, with no shell and no curl, so compose cannot probe
-//! it any other way. One plain HTTP/1.1 GET to a local address, bounded by a
-//! timeout; anything but a 200 is a failure.
-
 use std::{
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
@@ -14,12 +8,18 @@ use anyhow::Context;
 
 #[derive(clap::Args)]
 pub struct ProbeArgs {
-    /// Address of the instance to probe.
-    #[arg(long, default_value = "127.0.0.1:8080")]
+    #[arg(
+        long,
+        default_value = "127.0.0.1:8080",
+        help = "Address of the instance to probe"
+    )]
     address: SocketAddr,
 
-    /// Path that must answer 200.
-    #[arg(long, default_value = "/health/ready")]
+    #[arg(
+        long,
+        default_value = "/health/ready",
+        help = "Path that must answer 200"
+    )]
     path: String,
 }
 
@@ -36,7 +36,6 @@ pub fn run(args: &ProbeArgs) -> anyhow::Result<()> {
     )?;
     let mut head = [0u8; 12];
     stream.read_exact(&mut head).context("read status line")?;
-    // "HTTP/1.1 200"
     anyhow::ensure!(
         &head[9..12] == b"200",
         "{} answered {}",

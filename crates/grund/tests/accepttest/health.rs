@@ -13,8 +13,6 @@ async fn liveness_answers_ok_as_json_and_is_never_cached() -> anyhow::Result<()>
     Ok(())
 }
 
-/// How a deployment is proven from the live origin: the commit the running
-/// binary was built from, and what readiness is based on.
 #[tokio::test]
 async fn readiness_reports_the_revision_and_its_checks() -> anyhow::Result<()> {
     let (_given, when, then) = testcase().await?;

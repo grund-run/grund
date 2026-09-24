@@ -1,0 +1,13 @@
+[package]
+name = "comment-policy"
+description = "Refuses any Rust comment that is not documentation on a public item"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+proc-macro2 = { version = "1", features = ["span-locations"] }
+syn = { version = "2", default-features = false, features = ["full", "parsing", "printing"] }

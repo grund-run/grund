@@ -1,10 +1,3 @@
-//! A deliberately small HTTP/1.1 client (from grund/website's accepttests).
-//!
-//! General clients normalise the request path (`/../x` and `%2e%2e` never
-//! leave the process) and hide what a HEAD response carried. This one writes
-//! the request line exactly as given and reads the response to EOF, so a test
-//! asserts the bytes the server actually sent.
-
 use std::{sync::Arc, time::Duration};
 
 use anyhow::Context;
@@ -13,7 +6,6 @@ use tokio::{
     net::TcpStream,
 };
 
-/// Where to connect: scheme, host and port of an origin.
 #[derive(Clone, Debug)]
 pub struct Origin {
     pub tls: bool,
@@ -22,7 +14,6 @@ pub struct Origin {
 }
 
 impl Origin {
-    /// `http://127.0.0.1:8080` or `https://grund.sh`. No path.
     pub fn parse(url: &str) -> anyhow::Result<Self> {
         let url = url.trim_end_matches('/');
         let (tls, rest) = if let Some(rest) = url.strip_prefix("https://") {
@@ -47,7 +38,6 @@ impl Origin {
         })
     }
 
-    /// The Host header value for this origin.
     pub fn authority(&self) -> String {
         let default = if self.tls { 443 } else { 80 };
         if self.port == default {
@@ -61,13 +51,11 @@ impl Origin {
 #[derive(Clone, Debug)]
 pub struct Response {
     pub status: u16,
-    /// Names lowercased, in the order received.
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
 }
 
 impl Response {
-    /// Every value of a repeated header, in order.
     pub fn headers_named(&self, name: &str) -> Vec<&str> {
         self.headers
             .iter()
@@ -88,8 +76,6 @@ impl Response {
     }
 }
 
-/// Sends one request on a fresh connection and reads the response to EOF.
-/// A body, when given, is sent with its Content-Length.
 pub async fn send(
     origin: &Origin,
     method: &str,
@@ -141,7 +127,6 @@ async fn roundtrip<S: AsyncRead + AsyncWrite + Unpin>(
     stream.write_all(request).await?;
     stream.flush().await?;
     let mut raw = Vec::new();
-    // A TLS peer may close without close_notify; what arrived is still the answer.
     if let Err(error) = stream.read_to_end(&mut raw).await {
         anyhow::ensure!(!raw.is_empty(), "read response: {error}");
     }

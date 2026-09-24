@@ -31,6 +31,11 @@ pub const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; 
 const PERMISSIONS_POLICY: &str =
     "camera=(), microphone=(), geolocation=(), payment=(), usb=(), browsing-topics=()";
 
+/// The whole HTTP surface. The security headers sit outside the timeout and
+/// the panic guard, so their answers carry them too; a handler that must be
+/// stricter (no-referrer on a page whose URL carries a token) sets its own and
+/// the layer leaves it alone. The trace span records method and path only,
+/// because query strings carry tokens.
 pub fn router(state: State) -> Router {
     let timeout = state.config.request_timeout;
     Router::new()
@@ -43,7 +48,6 @@ pub fn router(state: State) -> Router {
             timeout,
         ))
         .layer(CatchPanicLayer::new())
-        // Outside the timeout and panic guard, so their answers carry them too.
         .layer(header_layer(header::CONTENT_SECURITY_POLICY, CSP))
         .layer(header_layer(header::X_CONTENT_TYPE_OPTIONS, "nosniff"))
         .layer(header_layer(header::REFERRER_POLICY, "strict-origin-when-cross-origin"))
@@ -56,14 +60,11 @@ pub fn router(state: State) -> Router {
             HeaderName::from_static("permissions-policy"),
             PERMISSIONS_POLICY,
         ))
-        // Method and path only: query strings carry tokens.
         .layer(TraceLayer::new_for_http().make_span_with(|request: &Request| {
             tracing::info_span!("request", method = %request.method(), path = %request.uri().path())
         }))
 }
 
-/// Sets `name` unless the handler already did. Pages that must be stricter
-/// (no-referrer on pages whose URL carries a token) set their own.
 fn header_layer(name: HeaderName, value: &'static str) -> SetResponseHeaderLayer<HeaderValue> {
     SetResponseHeaderLayer::if_not_present(name, HeaderValue::from_static(value))
 }

@@ -21,6 +21,17 @@ github.com/grund-run/grund. Everything in it is public from the first push:
 The grund engineering skills (`/grund:principles` and the rest) are the
 rules. Where this repository deviates, the commit body says why.
 
+## Comments
+
+In Rust, **the only comments are doc comments on public items** (Kasper,
+2026-09-24). No `//` or `/* */` anywhere, and no `///`/`//!` on private
+items, tests included. `tools/comment-policy` enforces it in CI and in
+`cargo test`; `cargo run -q -p comment-policy` lists what it refuses. Say
+the why in a name, in the public item's docs, in a commit body or in
+`docs/`. This overrides the skills' "comments explain why" for this
+repository. Config files (YAML, CUE, SQL, Dockerfiles, shell) keep their
+comments: the rule is about Rust.
+
 ## Layout
 
 - `crates/grund` is the binary and the accepttests. Keep `main.rs` thin: it
@@ -46,6 +57,9 @@ cargo fmt --all --check && cargo clippy --workspace --all-targets --locked -- -D
   given/when/then flow (the forest-server and grund/website shape). Add a
   step to `fixtures/{given,when,then}.rs` when a flow needs one. Do not add
   shell assertion scripts.
+- Why the accepttests use a raw HTTP/1.1 client (`fixtures/client.rs`):
+  general clients normalise paths and hide what a response carried, and
+  these tests assert the bytes on the wire (the grund/website harness).
 - Tests use random account names and never clean up, so the dev database
   can be shared by every run (skills D-22).
 - `compose.dev.yaml` keeps PostgreSQL on tmpfs: `docker compose -f

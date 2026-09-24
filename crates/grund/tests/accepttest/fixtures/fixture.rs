@@ -1,22 +1,3 @@
-//! The instance under test: either the real binary, spawned per test against
-//! real PostgreSQL (and NATS and Mailpit when available), or an
-//! already-running instance named by `GRUND_ACCEPT_URL`.
-//!
-//! One suite, three audiences. `cargo test` spawns the binary cargo just
-//! built; CI points it at the release binary it is about to package;
-//! `check.sh` at the read-only scratch container; a person at a live origin:
-//!
-//! ```text
-//! GRUND_ACCEPT_URL=https://dev.app.grund.sh cargo test -p grund --test tests
-//! ```
-//!
-//! Spawned instances share one disposable database per run
-//! (`GRUND_ACCEPT_DATABASE_URL`); every test uses its own random account
-//! names, so tests never collide and never need cleanup (skills D-22).
-//!
-//! Local infrastructure: `docker compose -f compose.yaml -f compose.dev.yaml
-//! up -d postgres nats mailpit` publishes it on the default ports below.
-
 use std::{
     fs::File,
     process::{Child, Command, Stdio},
@@ -34,9 +15,7 @@ pub const DEFAULT_MAILPIT_URL: &str = "http://127.0.0.1:58410";
 
 pub struct Fixture {
     pub origin: Origin,
-    /// Mailpit's HTTP API, when this target's mail can be read.
     pub mailpit: Option<Origin>,
-    /// Spawned binaries only; killed when the test ends.
     child: Option<Child>,
 }
 
@@ -77,8 +56,6 @@ impl Fixture {
         Ok(fixture)
     }
 
-    /// Starts the binary cargo built for this test run on a free port, in
-    /// production mode, with `extra` layered over the defaults.
     pub async fn spawn(extra: &[(&str, &str)]) -> anyhow::Result<Self> {
         let port = std::net::TcpListener::bind("127.0.0.1:0")?
             .local_addr()?
@@ -101,7 +78,6 @@ impl Fixture {
             ("GRUND_SMTP_URL".into(), smtp_url),
             ("GRUND_MAIL_FROM".into(), "grund <grund@accept.test>".into()),
             ("GRUND_HEALTH_INTERVAL".into(), "1".into()),
-            // Many instances run at once against one database.
             ("GRUND_DATABASE_MAX_CONNECTIONS".into(), "4".into()),
             ("GRUND_WORK_POLL_INTERVAL".into(), "1".into()),
             (
@@ -109,8 +85,6 @@ impl Fixture {
                 "grund=debug,grund_server=debug,grund_store=debug,warn".into(),
             ),
         ];
-        // NATS is optional in grund; GRUND_ACCEPT_NO_NATS runs the suite on
-        // polling alone, which is how the wake-up path is proven unnecessary.
         if env("GRUND_ACCEPT_NO_NATS").is_none() {
             let nats = env("GRUND_ACCEPT_NATS_URL").unwrap_or(DEFAULT_NATS_URL.into());
             settings.push(("GRUND_NATS_URL".into(), nats));
@@ -139,8 +113,6 @@ impl Fixture {
         Ok(fixture)
     }
 
-    /// Fails with the cause: the last error, and the server's own log when we
-    /// started it.
     async fn wait_until_live(&self, log: Option<&std::path::Path>) -> anyhow::Result<()> {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {

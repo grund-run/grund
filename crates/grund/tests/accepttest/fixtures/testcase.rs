@@ -2,10 +2,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use super::{Fixture, client::Response, fixture::external_target};
 
-/// What a test carries from one step to the next.
 #[derive(Default)]
 pub struct Exchange {
-    /// The response the When step produced; Then asserts on it.
     pub last: Option<Response>,
 }
 
@@ -47,14 +45,10 @@ fn split(fixture: Fixture) -> (Given, When, Then) {
     )
 }
 
-/// A test against whatever target this run is pointed at.
 pub async fn testcase() -> anyhow::Result<(Given, When, Then)> {
     Ok(split(Fixture::start().await?))
 }
 
-/// A test that needs the binary started with specific configuration. `None`
-/// against an external target, whose configuration is not ours to choose; the
-/// unit tests and the default `cargo test` run cover it there.
 pub async fn testcase_configured(
     env: &[(&str, &str)],
 ) -> anyhow::Result<Option<(Given, When, Then)>> {

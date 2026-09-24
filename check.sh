@@ -24,9 +24,10 @@ echo "  ok   postgres, nats, mailpit"
 
 echo "cargo (host)"
 cargo fmt --all --check
+cargo run --locked -q -p comment-policy
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
-echo "  ok   fmt, clippy and tests"
+echo "  ok   fmt, comment policy, clippy and tests"
 
 echo "static binary ($rust_image, as CI builds it)"
 docker run --rm -v "$PWD":/src -w /src \

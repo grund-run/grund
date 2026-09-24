@@ -29,7 +29,9 @@ impl std::fmt::Debug for SecretKey {
 
 impl SecretKey {
     /// Parses 64 hex characters. `source` names the variable or file in the
-    /// error, so the operator knows what to fix.
+    /// error, so the operator knows what to fix. A key with fewer than 16
+    /// distinct byte values ("0000…", "abab…") is refused as typed in:
+    /// random keys have far more with overwhelming probability.
     pub fn from_hex(text: &str, source: &str) -> anyhow::Result<Self> {
         let text = text.trim();
         let bytes = hex::decode(text)
@@ -43,8 +45,6 @@ impl SecretKey {
             })?;
         let mut key = [0u8; 32];
         key.copy_from_slice(&bytes);
-        // A typed-in key ("0000…", "abab…") is not a secret. Random keys have
-        // at least 20 distinct byte values with overwhelming probability.
         let distinct = key.iter().collect::<std::collections::BTreeSet<_>>().len();
         anyhow::ensure!(
             distinct >= 16,
@@ -108,21 +108,23 @@ pub struct InitArgs {
 pub const SECRET_KEY_FILE: &str = "secret.key";
 pub const POSTGRES_PASSWORD_FILE: &str = "postgres-password";
 
+/// Writes `secret.key` (owner-only: nothing but grund reads it) and
+/// `postgres-password` into the data directory, keeping either if it exists.
+///
+/// The password file is world-readable within the volume because the
+/// postgres image reads it as its own user after dropping root; owner-only
+/// would stop the database from initialising. The volume is mounted only into
+/// grund and postgres.
 pub fn init(args: &InitArgs) -> anyhow::Result<()> {
     std::fs::create_dir_all(&args.data_dir)
         .with_context(|| format!("create GRUND_DATA_DIR {}", args.data_dir.display()))?;
 
-    // Owner-only: nothing but grund reads the instance key.
     write_new(
         &args.data_dir.join(SECRET_KEY_FILE),
         0o600,
         &format!("{}\n", SecretKey::generate().to_hex()),
     )?;
 
-    // World-readable within the volume: the postgres image reads its password
-    // file as its own user after dropping root, so owner-only would stop the
-    // database from initialising. The volume is mounted only into grund and
-    // postgres, and the database is not published outside the compose network.
     let mut password = [0u8; 24];
     getrandom::fill(&mut password).expect("the operating system provides randomness");
     write_new(
@@ -133,7 +135,6 @@ pub fn init(args: &InitArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Creates `path` with `contents`, or leaves an existing file untouched.
 fn write_new(path: &Path, mode: u32, contents: &str) -> anyhow::Result<()> {
     match std::fs::OpenOptions::new()
         .write(true)

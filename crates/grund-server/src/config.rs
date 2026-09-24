@@ -236,16 +236,15 @@ pub struct SocialArgs {
     pub oidc_name: String,
 }
 
-/// Placeholders that ship in .env.example and docs. A secret containing one
-/// was copied, not generated.
 const PLACEHOLDERS: &[&str] = &["change-me", "changeme", "replace-me"];
 
 impl ServeConfig {
     /// Refuses configuration that would run insecurely or not at all. Every
-    /// message names the variable to fix.
+    /// message names the variable to fix. An optional setting that is present
+    /// but empty (an uncommented `GRUND_LICENSE_KEY=` in .env) counts as unset,
+    /// and a secret containing a placeholder from the examples is refused
+    /// outside dev mode.
     pub fn validate(&mut self) -> anyhow::Result<()> {
-        // An uncommented `GRUND_LICENSE_KEY=` line in .env means "not set",
-        // not "set to nothing".
         for value in [
             &mut self.secret_key,
             &mut self.nats_url,
@@ -463,7 +462,6 @@ impl PublicOrigin {
         if authority.is_empty() || authority.contains(['/', '?', '#', '@']) {
             return None;
         }
-        // IPv6 literals are not supported: `is_hostname` refuses the brackets.
         let (host, port) = match authority.rsplit_once(':') {
             Some((host, port)) => (host, Some(port.parse::<u16>().ok()?)),
             None => (authority, None),
