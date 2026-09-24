@@ -9,9 +9,10 @@
 //! The agent that runs on each machine will be another subcommand of this
 //! binary, so there is one artifact to build, sign and ship.
 //!
-//! The `ee` feature (on by default) adds grund's commercial features from
-//! `ee/`, each of which still needs a license key to act. Build with
-//! `--no-default-features` for a binary made only of the AGPL core.
+//! Official builds are the AGPL core alone. The `ee` feature adds grund's
+//! commercial features from `ee/`, which are not licensed for production
+//! use yet (`ee/LICENSE`); build with `--features ee` to develop or test
+//! them.
 
 mod probe;
 

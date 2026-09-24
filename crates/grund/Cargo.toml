@@ -13,7 +13,7 @@ name = "grund"
 path = "src/main.rs"
 
 [features]
-default = ["ee"]
+default = []
 ee = ["dep:grund-ee"]
 
 [dependencies]

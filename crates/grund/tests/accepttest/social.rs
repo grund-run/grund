@@ -19,6 +19,11 @@ async fn assert_refused(
     then.status(200)?
         .body_lacks("Continue with")?
         .body_lacks("/auth/github/start")?;
+    let (status, text) = if cfg!(feature = "ee") {
+        (403, "Social sign-in needs a grund license")
+    } else {
+        (404, "Not found")
+    };
     for path in [
         "/auth/github/start",
         "/auth/oidc/start",
@@ -28,14 +33,14 @@ async fn assert_refused(
         "/auth/link",
     ] {
         when.visiting(path).await?;
-        then.status(403)
-            .and_then(|t| t.body_contains("Social sign-in needs a grund license"))
+        then.status(status)
+            .and_then(|t| t.body_contains(text))
             .and_then(|t| t.header_lacks("location", "github.com"))
             .map_err(|error| error.context(path))?;
     }
     when.posting_raw("/auth/complete", &[("username", "someone")], None)
         .await?;
-    then.status(403)?;
+    then.status(status)?;
     Ok(())
 }
 

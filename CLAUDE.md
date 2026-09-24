@@ -48,8 +48,11 @@ comments: the rule is about Rust.
 - `ee/grund-ee` holds the commercial features (social sign-in today). It
   plugs into the core only through `grund_server::extension::Extension`,
   and every feature asks `Entitlements` before acting. Core code never
-  imports from `ee/`. `cargo build -p grund --no-default-features` builds
-  the core alone, and CI keeps that building.
+  imports from `ee/`. Official builds (the default features) are the core
+  alone; `--features ee` adds `ee/`, and CI builds and tests it that way so
+  it does not rot. `ee/LICENSE` is an interim all-rights-reserved notice
+  until grund has a company; the full commercial license waits for that
+  (docs/design/licensing.md).
 - `crates/grund-domain` has no I/O. If a change needs a clock or a query
   there, it belongs in a service.
 - `crates/grund-store/migrations/` is forward-only. Never edit an applied

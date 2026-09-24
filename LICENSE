@@ -3,10 +3,10 @@ Copyright (c) 2026-present Kasper Juul Hermansen and the grund contributors.
 grund is open source, with a small set of commercial features on top.
 Source code in this repository is licensed as follows:
 
-* Everything in the top-level "ee/" directory is licensed under the grund
-  Commercial License in "ee/LICENSE". It is not open source: the source is
-  published so it can be read, and using it in production needs a grund
-  license key that includes the feature.
+* Everything in the top-level "ee/" directory is grund's commercial
+  features. It is not open source and not yet licensed for use: the notice
+  in "ee/LICENSE" reserves all rights, and allows reading it and building
+  it for development and testing.
 
 * Everything in "proto/" and "crates/grund-proto/" (grund's API contract and
   the generated clients) is licensed under the Apache License, Version 2.0,
@@ -19,9 +19,9 @@ Source code in this repository is licensed as follows:
 * Everything else is licensed under the GNU Affero General Public License,
   version 3 only (AGPL-3.0-only), in "LICENSES/AGPL-3.0-only.txt".
 
-Binaries built with the default features include the "ee/" code, which
-stays off without a license key. `cargo build -p grund --no-default-features`
-builds a binary made only of the AGPL and Apache-2.0 code.
+Official builds and images contain none of the "ee/" code: they are made
+only of the AGPL and Apache-2.0 code. `cargo build -p grund --features ee`
+adds it, for development and testing.
 
 Contributions are accepted under the Apache License, Version 2.0, with a
 Developer Certificate of Origin sign-off (see CONTRIBUTING.md).

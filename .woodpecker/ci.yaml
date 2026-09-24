@@ -47,12 +47,14 @@ steps:
       # Named step, so a refusal says what it is before clippy runs.
       - cargo run --locked -q -p comment-policy
       - cargo clippy --workspace --all-targets --locked -- -D warnings
-      # The open-source-only binary (no ee/) must keep building on its own.
-      - cargo clippy -p grund --no-default-features --all-targets --locked -- -D warnings
+      # Official builds leave ee/ out; the ee build must keep compiling and
+      # passing its accepttests anyway, so it is ready the day it ships.
+      - cargo clippy -p grund --features ee --all-targets --locked -- -D warnings
       # Fail with the cause, not with thirty accepttests timing out.
       - for i in $(seq 1 60); do nc -z postgres 5432 && nc -z nats 4222 && nc -z mailpit 1025 && break; sleep 1; done
       - nc -z postgres 5432 || { echo "postgres never accepted connections"; exit 1; }
       - cargo test --workspace --locked
+      - cargo test -p grund --features ee --locked --test tests
 
   proto:
     # The API contract is linted on every change, and a pull request may not

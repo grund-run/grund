@@ -8,14 +8,19 @@ deliver true value in our open source version with some additional
 features on top locked down to us."
 
 - The repository is licensed as LICENSE says: AGPL-3.0-only for the core,
-  Apache-2.0 for `proto/` and `crates/grund-proto`, and the grund
-  Commercial License (`ee/LICENSE`) for `ee/`.
+  and Apache-2.0 for `proto/` and `crates/grund-proto`.
+- **`ee/` is held back until grund has a company** (Kasper, 2026-09-24,
+  option C of four). `ee/LICENSE` is a short all-rights-reserved notice
+  that allows reading the code and building it for development and
+  testing, and grants no production use. Official builds and images leave
+  `ee/` out (the `ee` feature is off by default). CI still builds and tests
+  it with `--features ee`.
+- The full commercial license comes with the company and a lawyer's review.
+  Its draft is in history: `git show 0343032:ee/LICENSE`.
 - Contributions come in under Apache-2.0 with a DCO sign-off
   (CONTRIBUTING.md).
 - No license key has been issued, and the production key list is empty
-  (§7), so no commercial feature can be turned on anywhere yet.
-- `ee/LICENSE` was drafted without a lawyer. Have it reviewed before the
-  first key is sold.
+  (§7).
 
 ## What exists today
 
@@ -278,14 +283,16 @@ Applied on 2026-09-24:
   from developercertificate.org);
 - `license` in every crate's Cargo.toml (`ee/grund-ee` points at
   `ee/LICENSE`), and an SPDX line on the proto;
-- social sign-in in `ee/grund-ee`, behind the core's `Extension` seam, with
-  `--no-default-features` for a core-only binary;
+- social sign-in in `ee/grund-ee`, behind the core's `Extension` seam.
+  Official builds leave it out, and `--features ee` adds it;
 - README ("What is open, and what is paid") and CLAUDE.md.
 
 Not done yet:
 - the license FAQ on grund.sh (§4). The site's copy can now name the
   license, and skills `product` still says to name none;
-- a legal review of `ee/LICENSE`;
+- the company (an ApS), then the full commercial license for `ee/`,
+  reviewed by a lawyer and naming the company as licensor. Then the `ee`
+  feature goes on in official builds;
 - a CI check that every commit in a pull request is signed off.
 
 ### The balance: Metabase's structure, grund's prices
