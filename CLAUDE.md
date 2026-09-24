@@ -95,6 +95,25 @@ cargo fmt --all --check && cargo clippy --workspace --all-targets --locked -- -D
   `curl -s https://dev.app.grund.sh/health/ready` must report the commit as
   `revision`, sampled a few times (replicas can disagree mid-rollout).
 
+## Live
+
+- **dev**: namespace `dev` on clank-dev, host `dev.app.grund.sh`, with its
+  PostgreSQL as CNPG cluster `grund-db` (backups on). Verified 2026-09-24:
+  `/health/ready` through `kubectl -n dev port-forward deploy/grund`
+  reported revision 202bd223b726 on three samples, image
+  `git.kjuulh.io/grund/grund:main-202bd223b726…`. The public name does not
+  resolve until the DNS and gateway commits in grund/terraform and
+  kjuulh/clank-homelab are applied. Dev runs with GRUND_DEV_MODE (a
+  throwaway key) and no SMTP until the `grund-secrets` Secret exists
+  (forest.cue).
+- **prod**: not deployed. Promotion is Kasper's.
+- **compose**: verified 2026-09-24 from a clean clone of 202bd22 (no cached
+  image, no volumes). `docker compose up -d --wait` brought every service
+  healthy in 2 min 18 s, with a warm cargo cache on this machine. Sign-up,
+  the mailed link through Mailpit, verification, sign-in, the dashboard and
+  GetViewer all worked over HTTP. The published image ran the same way,
+  with GRUND_IMAGE and GRUND_PULL_POLICY=missing, reporting its revision.
+
 ## Gotchas
 
 - `compose.yaml` builds `grund:local` from source unless `GRUND_IMAGE` is set.
