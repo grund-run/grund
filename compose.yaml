@@ -1,0 +1,124 @@
+# grund on one machine: `docker compose up`, then open http://localhost:8080.
+#
+# This is how a self-hoster runs grund today, not only a development setup.
+# What it gives you, and what it deliberately does not (TLS, backups), is in
+# docs/self-hosting.md. Every setting is in .env.example; copy it to .env to
+# change one. Nothing here needs a secret typed in: `init` generates the
+# instance key and the database password on first start, into the grund-data
+# volume, and keeps them afterwards.
+#
+# Image: built from this checkout by default. Set GRUND_IMAGE in .env to run a
+# published build instead, e.g. git.kjuulh.io/grund/grund:main-<commit>.
+
+name: grund
+
+x-grund-image: &grund-image
+  image: ${GRUND_IMAGE:-grund:local}
+  build:
+    context: .
+    dockerfile: Dockerfile
+  pull_policy: missing
+
+services:
+  # Generates secret.key and postgres-password in grund-data if absent, then
+  # exits. Existing files are never overwritten.
+  init:
+    <<: *grund-image
+    command: ["init", "--data-dir", "/var/lib/grund"]
+    volumes:
+      - grund-data:/var/lib/grund
+    restart: "no"
+
+  postgres:
+    image: postgres:18-alpine
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    environment:
+      POSTGRES_DB: grund
+      POSTGRES_USER: grund
+      POSTGRES_PASSWORD_FILE: /run/grund/postgres-password
+    volumes:
+      # postgres 18 keeps its data under /var/lib/postgresql/<major>/.
+      - grund-postgres:/var/lib/postgresql
+      - grund-data:/run/grund:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U grund -d grund"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+    # Not published: only grund talks to it, on the compose network.
+
+  # Wake-ups for background work. Optional in grund (it polls without it);
+  # included so mail goes out immediately instead of on the next poll.
+  nats:
+    image: nats:2.15-alpine
+    command: ["-m", "8222"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8222/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  # Catches every mail grund sends, so sign-up works with no mail server.
+  # Read them at http://localhost:8025. To deliver real mail instead, set
+  # GRUND_SMTP_URL in .env (see docs/self-hosting.md).
+  mailpit:
+    image: axllent/mailpit:v1.31
+    ports:
+      - "127.0.0.1:${GRUND_MAILPIT_PORT:-8025}:8025"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  grund:
+    <<: *grund-image
+    command: ["serve"]
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      mailpit:
+        condition: service_healthy
+    # Every GRUND_* setting in .env reaches grund; the ones below are how this
+    # file wires grund to its neighbours, and win over .env.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      GRUND_PUBLIC_URL: ${GRUND_PUBLIC_URL:-http://localhost:8080}
+      DATABASE_URL: postgres://grund@postgres:5432/grund
+      GRUND_DATABASE_PASSWORD_FILE: /var/lib/grund/postgres-password
+      GRUND_SECRET_KEY_FILE: /var/lib/grund/secret.key
+      GRUND_NATS_URL: nats://nats:4222
+      GRUND_SMTP_URL: ${GRUND_SMTP_URL:-smtp://mailpit:1025}
+      GRUND_MAIL_FROM: ${GRUND_MAIL_FROM:-grund <grund@localhost>}
+      GRUND_LISTEN: 0.0.0.0:8080
+    ports:
+      - "${GRUND_BIND:-127.0.0.1}:${GRUND_PORT:-8080}:8080"
+    volumes:
+      - grund-data:/var/lib/grund:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "/grund", "probe", "--address", "127.0.0.1:8080"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  # The instance key and database password. Losing it signs everyone out and
+  # locks you out of the database volume below: back it up with the database.
+  grund-data:
+  grund-postgres:

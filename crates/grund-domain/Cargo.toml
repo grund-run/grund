@@ -1,0 +1,16 @@
+[package]
+name = "grund-domain"
+description = "grund's domain: aggregates, events and pure decisions. No I/O"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+chrono.workspace = true
+mire.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true

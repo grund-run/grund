@@ -1,0 +1,39 @@
+[package]
+name = "grund-server"
+description = "grund's control plane: the dashboard, the API and the background work behind them"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-nats.workspace = true
+axum.workspace = true
+chrono.workspace = true
+clap.workspace = true
+futures-util.workspace = true
+getrandom.workspace = true
+grund-domain.workspace = true
+grund-store.workspace = true
+hex.workspace = true
+hmac.workspace = true
+mire.workspace = true
+nostatus.workspace = true
+notmad.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sqlx.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+http-body-util = "0.1"

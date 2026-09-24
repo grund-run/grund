@@ -1,0 +1,23 @@
+# syntax=docker/dockerfile:1.7
+#
+# Packages the static musl binary that CI already built and tested. Nothing is
+# compiled here: the image holds exactly the artifact the accepttests ran
+# against. `Dockerfile` builds the same image from source for `docker compose
+# up`; keep the runtime stages of the two files identical.
+FROM alpine:3.22 AS runtime-files
+# A CA bundle, not compiled-in roots, so a root change is a rebuild, not a
+# code change. /var/lib/grund exists in the image, owned by the runtime user,
+# so a named volume mounted there starts out writable for `grund init`.
+RUN apk add --no-cache ca-certificates && mkdir -p /out/var/lib/grund
+
+FROM scratch
+COPY --from=runtime-files /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=runtime-files --chown=65532:65532 /out/var/lib/grund /var/lib/grund
+COPY grund /grund
+# Numeric because scratch has no /etc/passwd.
+USER 65532:65532
+ENV GRUND_LISTEN=0.0.0.0:8080 \
+    GRUND_LOG_FORMAT=json
+EXPOSE 8080
+ENTRYPOINT ["/grund"]
+CMD ["serve"]

@@ -1,0 +1,50 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+repository = "https://git.kjuulh.io/grund/grund"
+# No `license` field on purpose: the licence is not chosen yet (see
+# docs/design/licensing.md). Do not add one until it is decided.
+
+[workspace.dependencies]
+grund-domain = { path = "crates/grund-domain" }
+grund-server = { path = "crates/grund-server" }
+grund-store = { path = "crates/grund-store" }
+
+anyhow = "1"
+async-nats = "0.50"
+axum = { version = "0.8", default-features = false, features = ["form", "http1", "json", "matched-path", "original-uri", "query", "tokio", "tower-log"] }
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+clap = { version = "4", features = ["derive", "env"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+getrandom = { version = "0.3", features = ["std"] }
+hex = "0.4"
+hmac = "0.12"
+mire = "=0.3.1"
+nostatus = { version = "=0.1.1", default-features = false }
+notmad = "0.14"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sqlx = { version = "0.9", default-features = false, features = ["chrono", "json", "macros", "migrate", "postgres", "runtime-tokio", "tls-rustls-ring-webpki", "uuid"] }
+subtle = "2"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-util = "0.7"
+tower = { version = "0.5", default-features = false, features = ["util"] }
+tower-http = { version = "0.7", features = ["catch-panic", "limit", "set-header", "timeout", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+uuid = { version = "1", features = ["serde", "v4", "v7"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true

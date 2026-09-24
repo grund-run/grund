@@ -1,0 +1,31 @@
+[package]
+name = "grund"
+description = "grund: from zero to production, on your own premises"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "grund"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+grund-server.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+# The accepttests speak raw HTTP/1.1 so that what they assert is what went
+# over the wire. TLS is for running them against a live https origin. ring,
+# not the aws-lc-rs default, because aws-lc-rs needs cmake to build on alpine.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio = { workspace = true, features = ["io-util"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+webpki-roots = "1"
+getrandom.workspace = true

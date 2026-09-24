@@ -1,0 +1,45 @@
+# Infrastructure for developing and testing grund: PostgreSQL, NATS and
+# Mailpit on fixed local ports, with a throwaway password. Not a way to run
+# grund (that is compose.yaml). The accepttests default to these ports:
+#
+#   docker compose -f compose.dev.yaml up -d
+#   cargo test --workspace --locked
+#
+# A separate project name, so it never touches compose.yaml's volumes.
+
+name: grund-dev
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    # Each accepttest runs its own grund against this one database; many run
+    # at once, and each holds a pool.
+    command: ["postgres", "-c", "max_connections=400"]
+    environment:
+      POSTGRES_DB: grund
+      POSTGRES_USER: grund
+      POSTGRES_PASSWORD: grund
+    ports:
+      - "127.0.0.1:55410:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U grund -d grund"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+    tmpfs:
+      - /var/lib/postgresql
+
+  nats:
+    image: nats:2.15-alpine
+    command: ["-m", "8222"]
+    ports:
+      - "127.0.0.1:54210:4222"
+
+  mailpit:
+    image: axllent/mailpit:v1.31
+    environment:
+      # Plenty for a test run; the oldest are dropped beyond it.
+      MP_MAX_MESSAGES: "5000"
+    ports:
+      - "127.0.0.1:51410:1025"
+      - "127.0.0.1:58410:8025"
