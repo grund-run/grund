@@ -11,8 +11,10 @@ docker compose up -d
 ```
 
 Open http://localhost:8080. The first start builds the image from the
-checkout, which takes a few minutes. To run a published build instead, set
-`GRUND_IMAGE=git.kjuulh.io/grund/grund:main-<commit>` in `.env`.
+checkout, which takes a few minutes. Later starts rebuild only what changed.
+To run a published build instead, set
+`GRUND_IMAGE=git.kjuulh.io/grund/grund:main-<commit>` and
+`GRUND_PULL_POLICY=missing` in `.env`.
 
 ## What you get
 
@@ -54,10 +56,10 @@ checkout, which takes a few minutes. To run a published build instead, set
 - **Real mail.** Mailpit catches everything. For real users, set
   `GRUND_SMTP_URL` (and `GRUND_MAIL_FROM`) in `.env` to your provider, e.g.
   `smtp://user:password@smtp.example.com:587?tls=required`.
-- **Updates.** Nothing updates grund. Pull the new checkout (or change
-  `GRUND_IMAGE`) and `docker compose up -d`; migrations run on start and are
-  forward-only, so going back to an older build after a migration is not
-  supported.
+- **Updates.** Nothing updates grund on its own. `git pull` and
+  `docker compose up -d` rebuild and restart it (or change `GRUND_IMAGE`).
+  Migrations run on start and are forward-only, so going back to an older
+  build after a migration is not supported.
 - **More than one machine.** This is one machine. If it goes down, grund
   goes down with it.
 

@@ -7,8 +7,11 @@
 # instance key and the database password on first start, into the grund-data
 # volume, and keeps them afterwards.
 #
-# Image: built from this checkout by default. Set GRUND_IMAGE in .env to run a
-# published build instead, e.g. git.kjuulh.io/grund/grund:main-<commit>.
+# Image: built from this checkout on every `up` (docker's cache makes an
+# unchanged checkout instant), so pulling a new checkout and running `up`
+# updates grund. To run a published build instead, set GRUND_IMAGE to it
+# (e.g. git.kjuulh.io/grund/grund:main-<commit>) and GRUND_PULL_POLICY=missing
+# in .env.
 
 name: grund
 
@@ -17,7 +20,7 @@ x-grund-image: &grund-image
   build:
     context: .
     dockerfile: Dockerfile
-  pull_policy: missing
+  pull_policy: ${GRUND_PULL_POLICY:-build}
 
 services:
   # Generates secret.key and postgres-password in grund-data if absent, then
