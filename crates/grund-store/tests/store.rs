@@ -45,7 +45,8 @@ async fn register(events: &EventStore, username: &Username) -> Uuid {
     .unwrap();
     work.organisation(
         organisation_id,
-        OrganisationCommand::CreatePersonal {
+        OrganisationCommand::Create {
+            kind: grund_domain::organisation::OrganisationKind::Personal,
             slug: username.clone(),
             owner: account_id,
             at: Utc::now(),
@@ -386,4 +387,64 @@ async fn an_account_cannot_revoke_another_accounts_session(pool: PgPool) {
             .unwrap()
             .is_none()
     );
+}
+
+#[sqlx::test(migrations = false)]
+async fn replaying_an_organisation_stream_never_brings_a_removed_member_back(pool: PgPool) {
+    use grund_domain::organisation::{Departure, OrganisationEvent, OrganisationKind, Role};
+    grund_store::migrate(&pool).await.unwrap();
+    let organisation_id = Uuid::now_v7();
+    let (owner, member) = (Uuid::now_v7(), Uuid::now_v7());
+    let at = Utc::now();
+    let events = [
+        OrganisationEvent::Created {
+            slug: name("replay"),
+            kind: OrganisationKind::Shared,
+            created_by: owner,
+            created_at: at,
+        },
+        OrganisationEvent::MemberAdded {
+            account_id: owner,
+            role: Role::Owner,
+            added_at: at,
+        },
+        OrganisationEvent::MemberAdded {
+            account_id: member,
+            role: Role::Member,
+            added_at: at,
+        },
+        OrganisationEvent::MemberRemoved {
+            account_id: member,
+            departure: Departure::Removed,
+            removed_by: owner,
+            removed_at: at,
+        },
+    ];
+    let mut connection = pool.acquire().await.unwrap();
+    for _ in 0..2 {
+        for (offset, event) in events.iter().enumerate() {
+            projections::apply_organisation(
+                organisation_id,
+                offset as i64 + 1,
+                event,
+                &mut connection,
+            )
+            .await
+            .unwrap();
+        }
+    }
+    let members: Vec<Uuid> =
+        sqlx::query_scalar("SELECT account_id FROM grund_memberships WHERE organisation_id = $1")
+            .bind(organisation_id)
+            .fetch_all(&mut *connection)
+            .await
+            .unwrap();
+    assert_eq!(members, vec![owner]);
+    let kind: String =
+        sqlx::query_scalar("SELECT kind FROM grund_organisations WHERE organisation_id = $1")
+            .bind(organisation_id)
+            .fetch_one(&mut *connection)
+            .await
+            .unwrap();
+    assert_eq!(kind, "shared");
 }

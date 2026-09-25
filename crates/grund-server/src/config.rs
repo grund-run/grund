@@ -56,6 +56,15 @@ impl DatabaseArgs {
     }
 }
 
+/// How an instance hands out organisations (GRUND_ORGANISATIONS).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum OrganisationMode {
+    /// One organisation for the whole instance.
+    Single,
+    /// An organisation per sign-up, and more on request.
+    Multi,
+}
+
 /// `grund serve`: the control plane (dashboard, API, background work).
 #[derive(Clone, Debug, Args)]
 pub struct ServeConfig {
@@ -128,8 +137,22 @@ pub struct ServeConfig {
     )]
     pub mail_from: String,
 
-    /// Whether anyone who can reach the instance may create an account. Turn
-    /// it off after creating yours on a private instance.
+    /// How the instance hands out organisations. `single` (the default, for
+    /// self-hosting): one organisation, created with the first account, which
+    /// owns it; everyone after that joins by invitation. `multi` (grund's
+    /// hosted instance): every sign-up gets an organisation named after it,
+    /// and anyone signed in may create more.
+    #[arg(
+        long,
+        env = "GRUND_ORGANISATIONS",
+        value_enum,
+        default_value = "single"
+    )]
+    pub organisations: OrganisationMode,
+
+    /// Whether sign-up without an invitation is open at all. Off, only
+    /// invitations create accounts (and, in `single` mode, the first
+    /// account cannot be created: leave it on until the admin exists).
     #[arg(long, env = "GRUND_SIGNUP_ENABLED", default_value_t = true, action = clap::ArgAction::Set)]
     pub signup_enabled: bool,
 

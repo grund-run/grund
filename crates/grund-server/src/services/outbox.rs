@@ -100,6 +100,7 @@ impl OutboxDrain {
             Kind::VerifyEmailMail => Mail::VerifyEmail,
             Kind::PasswordResetMail => Mail::PasswordReset,
             Kind::SignupExistingMail => Mail::SignupExisting,
+            Kind::InvitationMail => Mail::Invitation,
         };
         match self.mailer.send(mail, &row.recipient, &row.payload).await {
             Ok(()) => {

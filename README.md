@@ -80,8 +80,15 @@ confirmed (see [.env.example](.env.example)). Without them nothing is queued.
 - `GET /health/live` answers `{"status":"ok"}` and checks nothing.
 - `GET /health/ready` answers 200 or 503 from the last dependency checks,
   with the build `revision` and each check's state.
-- Pages: `/signup`, `/verify`, `/login`, `/reset`, `/`, `/settings/sessions`,
-  and `/style-guide`, which renders every component with example data.
+- Everything grund manages belongs to an organisation, and so does billing.
+  A self-hosted instance has one (`GRUND_ORGANISATIONS=single`, the default):
+  the first account becomes its admin, and everyone after joins by
+  invitation. `multi` gives every sign-up its own organisation and lets
+  anyone create more, as grund's hosted service does.
+- Pages: `/signup`, `/verify`, `/login`, `/reset`, `/` (which opens your
+  organisation), `/{org}`, `/{org}/members`, `/{org}/settings`, `/orgs/new`,
+  `/invite`, `/settings/sessions`, and `/style-guide`, which renders every
+  component with example data.
 - The API is ConnectRPC (`proto/`, generated at build time; Connect, gRPC and
   gRPC-Web on the same routes). `grund.account.v1.AccountService` has
   `GetViewer`, `ListSessions` and `RevokeSession`. Today it takes the

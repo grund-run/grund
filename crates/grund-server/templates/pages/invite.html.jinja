@@ -1,0 +1,36 @@
+{% extends "layout-auth.html.jinja" %}
+{% block title %}Join {{ organisation }} · grund{% endblock %}
+{% block card %}
+<h1 class="auth-title">Join {{ organisation }}</h1>
+<p class="auth-lede">{{ invited_by }} invited {{ email }} to {{ organisation }} as {{ "an" if role == "admin" else "a" }} {{ role }}.</p>
+{% if mode == "join" %}
+<form class="form" method="post" action="/invite">
+  {{ ui.csrf_field(csrf) }}
+  <input type="hidden" name="token" value="{{ token }}">
+  <button class="btn btn-primary btn-block" type="submit">Join {{ organisation }}</button>
+</form>
+<div class="form-foot"><p>Signed in as {{ signed_in_as }}.</p></div>
+{% elif mode == "other-account" %}
+{{ ui.form_error("You are signed in as " ~ signed_in_as ~ ", whose address is not " ~ email ~ ". Sign out, then open the link again.") }}
+<form class="form" method="post" action="/logout">
+  {{ ui.csrf_field(csrf) }}
+  <button class="btn btn-secondary btn-block" type="submit">Sign out</button>
+</form>
+{% elif mode == "sign-in" %}
+<p class="auth-lede">{{ email }} already has a grund account. Sign in, and you come back here to join.</p>
+<a class="btn btn-primary btn-block" href="/login?{{ return_to }}">Sign in to join</a>
+{% else %}
+<p class="auth-lede">Create your account to join. Opening this link confirmed your address.</p>
+<form class="form" method="post" action="/invite" novalidate>
+  {{ ui.csrf_field(csrf) }}
+  <input type="hidden" name="token" value="{{ token }}">
+  <div class="field">
+    <label for="invited-email">Email</label>
+    <input id="invited-email" type="email" value="{{ email }}" disabled>
+  </div>
+  {{ ui.field("username", "Username", value=username, autocomplete="username", error=errors.username, hint="3 to 32 letters, digits and single hyphens. It is public.", autofocus=true) }}
+  {{ ui.field("password", "Password", type="password", autocomplete="new-password", error=errors.password, hint="At least 12 characters.") }}
+  <button class="btn btn-primary btn-block" type="submit">Create account and join</button>
+</form>
+{% endif %}
+{% endblock %}

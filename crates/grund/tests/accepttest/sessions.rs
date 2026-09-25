@@ -26,9 +26,9 @@ async fn the_sessions_page_lists_every_device_and_signs_one_out() -> anyhow::Res
     when.submitting_on_current_page(&action, &[]).await?;
     then.redirects_to("/settings/sessions?done=revoked")?;
 
-    laptop.visiting("/").await?;
+    laptop.visiting_home().await?;
     laptop_then.status(303)?;
-    when.visiting("/").await?;
+    when.visiting_home().await?;
     then.status(200)?;
     Ok(())
 }
@@ -53,7 +53,7 @@ async fn another_accounts_session_is_not_found_and_keeps_working() -> anyhow::Re
     when.visiting("/settings/sessions").await?;
     when.submitting_on_current_page(&victim_action, &[]).await?;
     then.status(404)?;
-    victim_laptop.visiting("/").await?;
+    victim_laptop.visiting_home().await?;
     victim_laptop_then.status(200)?;
 
     when.visiting("/settings/sessions").await?;
@@ -78,9 +78,9 @@ async fn signing_out_everywhere_else_keeps_only_this_device() -> anyhow::Result<
     when.submitting_on_current_page("/settings/sessions/revoke-others", &[])
         .await?;
     then.redirects_to("/settings/sessions?done=others")?;
-    phone.visiting("/").await?;
+    phone.visiting_home().await?;
     phone_then.status(303)?;
-    when.visiting("/").await?;
+    when.visiting_home().await?;
     then.status(200)?;
     Ok(())
 }

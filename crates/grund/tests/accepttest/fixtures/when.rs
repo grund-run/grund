@@ -80,6 +80,23 @@ impl When {
         self.requesting("GET", path).await
     }
 
+    pub async fn visiting_home(&self) -> anyhow::Result<&Self> {
+        self.visiting("/").await?;
+        let location = {
+            let data = self.testcase.data();
+            let last = data.last.as_ref().context("no response")?;
+            (last.status == 303)
+                .then(|| last.header("location").map(str::to_string))
+                .flatten()
+        };
+        match location {
+            Some(to) if to.starts_with('/') && !to.starts_with("/login") => {
+                self.visiting(&to).await
+            }
+            _ => Ok(self),
+        }
+    }
+
     pub async fn posting_raw(
         &self,
         path: &str,
@@ -177,10 +194,22 @@ impl When {
         .await
     }
 
+    pub async fn inviting(&self, org: &str, email: &str, role: &str) -> anyhow::Result<&Self> {
+        self.submitting(
+            &format!("/{org}/members"),
+            &format!("/{org}/members/invite"),
+            &[("email", email), ("role", role)],
+        )
+        .await
+    }
+
     pub async fn signing_in(&self, login: &str, password: &str) -> anyhow::Result<&Self> {
         let mut form = self.send("GET", "/login", &[], None).await?;
         if form.status == 303 {
             form = self.send("GET", "/", &[], None).await?;
+            if let Some(to) = form.header("location").map(str::to_string) {
+                form = self.send("GET", &to, &[], None).await?;
+            }
         }
         let csrf = csrf_of(&form.text()).context("no csrf field to sign in with")?;
         self.submitting_with_token("/login", &csrf, &[("login", login), ("password", password)])

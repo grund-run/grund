@@ -75,41 +75,80 @@ pub async fn apply_account(
 }
 
 /// Applies one organisation event at `version` to `grund_organisations` and
-/// `grund_memberships`.
+/// `grund_memberships`. Every event after `Created` first claims its version
+/// on the organisation's row; an event at or below the row's version was
+/// applied already and changes nothing, which is what makes a removal safe to
+/// replay.
 pub async fn apply_organisation(
     organisation_id: Uuid,
     version: i64,
     event: &OrganisationEvent,
     connection: &mut PgConnection,
 ) -> Result<(), sqlx::Error> {
+    if let OrganisationEvent::Created {
+        slug,
+        kind,
+        created_at,
+        ..
+    } = event
+    {
+        sqlx::query(
+            "INSERT INTO grund_organisations (organisation_id, slug, kind, created_at, stream_version) \
+             VALUES ($1, $2, $3, $4, $5) \
+             ON CONFLICT (organisation_id) DO UPDATE SET \
+               slug = EXCLUDED.slug, kind = EXCLUDED.kind, created_at = EXCLUDED.created_at, \
+               stream_version = EXCLUDED.stream_version \
+             WHERE grund_organisations.stream_version < EXCLUDED.stream_version",
+        )
+        .bind(organisation_id)
+        .bind(slug.as_str())
+        .bind(kind.as_str())
+        .bind(created_at)
+        .bind(version)
+        .execute(&mut *connection)
+        .await?;
+        return Ok(());
+    }
+    let claimed = sqlx::query(
+        "UPDATE grund_organisations SET stream_version = $2 \
+         WHERE organisation_id = $1 AND stream_version < $2",
+    )
+    .bind(organisation_id)
+    .bind(version)
+    .execute(&mut *connection)
+    .await?
+    .rows_affected();
+    if claimed == 0 {
+        return Ok(());
+    }
     match event {
-        OrganisationEvent::Created {
-            slug, created_at, ..
+        OrganisationEvent::Created { .. } => {}
+        OrganisationEvent::MemberAdded {
+            account_id,
+            role,
+            added_at,
         } => {
             sqlx::query(
-                "INSERT INTO grund_organisations (organisation_id, slug, kind, created_at, stream_version) \
-                 VALUES ($1, $2, 'personal', $3, $4) \
-                 ON CONFLICT (organisation_id) DO UPDATE SET \
-                   slug = EXCLUDED.slug, created_at = EXCLUDED.created_at, \
-                   stream_version = EXCLUDED.stream_version \
-                 WHERE grund_organisations.stream_version < EXCLUDED.stream_version",
+                "INSERT INTO grund_memberships (organisation_id, account_id, role, stream_version, joined_at) \
+                 VALUES ($1, $2, $3, $4, $5) \
+                 ON CONFLICT (organisation_id, account_id) DO UPDATE SET \
+                   role = EXCLUDED.role, stream_version = EXCLUDED.stream_version, \
+                   joined_at = EXCLUDED.joined_at",
             )
             .bind(organisation_id)
-            .bind(slug.as_str())
-            .bind(created_at)
+            .bind(account_id)
+            .bind(role.as_str())
             .bind(version)
+            .bind(added_at)
             .execute(&mut *connection)
             .await?;
         }
-        OrganisationEvent::MemberAdded {
+        OrganisationEvent::MemberRoleChanged {
             account_id, role, ..
         } => {
             sqlx::query(
-                "INSERT INTO grund_memberships (organisation_id, account_id, role, stream_version) \
-                 VALUES ($1, $2, $3, $4) \
-                 ON CONFLICT (organisation_id, account_id) DO UPDATE SET \
-                   role = EXCLUDED.role, stream_version = EXCLUDED.stream_version \
-                 WHERE grund_memberships.stream_version < EXCLUDED.stream_version",
+                "UPDATE grund_memberships SET role = $3, stream_version = $4 \
+                 WHERE organisation_id = $1 AND account_id = $2",
             )
             .bind(organisation_id)
             .bind(account_id)
@@ -117,15 +156,19 @@ pub async fn apply_organisation(
             .bind(version)
             .execute(&mut *connection)
             .await?;
+        }
+        OrganisationEvent::MemberRemoved { account_id, .. } => {
             sqlx::query(
-                "UPDATE grund_organisations SET stream_version = $2 \
-                 WHERE organisation_id = $1 AND stream_version < $2",
+                "DELETE FROM grund_memberships WHERE organisation_id = $1 AND account_id = $2",
             )
             .bind(organisation_id)
-            .bind(version)
+            .bind(account_id)
             .execute(&mut *connection)
             .await?;
         }
+        OrganisationEvent::InvitationIssued { .. }
+        | OrganisationEvent::InvitationWithdrawn { .. }
+        | OrganisationEvent::InvitationAccepted { .. } => {}
     }
     Ok(())
 }

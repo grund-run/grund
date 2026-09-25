@@ -119,6 +119,7 @@ impl Fixture {
             ("GRUND_HEALTH_INTERVAL".into(), "1".into()),
             ("GRUND_DATABASE_MAX_CONNECTIONS".into(), "4".into()),
             ("GRUND_WORK_POLL_INTERVAL".into(), "1".into()),
+            ("GRUND_ORGANISATIONS".into(), "multi".into()),
             (
                 "RUST_LOG".into(),
                 "grund=debug,grund_server=debug,grund_store=debug,warn".into(),

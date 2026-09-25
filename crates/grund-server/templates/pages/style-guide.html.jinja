@@ -72,6 +72,35 @@
   <p class="sg-caption">Tags: <span class="tag">Soon</span> <span class="tag tag-ok">Current</span></p>
 </section>
 
+<section class="section" aria-labelledby="sg-orgs">
+  <div class="section-head"><h2 class="section-title" id="sg-orgs">Organisations</h2></div>
+  <p class="sg-caption">The switcher tops the sidebar: the current organisation and the viewer's role, and a menu of the others (a <code>&lt;details&gt;</code>, so it needs no script). Members are listed as rows; an owner or admin gets a role select and a remove button on each row they may change.</p>
+  <ul class="rows">
+    <li class="row">
+      <span class="row-icon"><span class="org-mark org-mark-lg" aria-hidden="true">a</span></span>
+      <div><p class="row-name">ada <span class="tag">You</span></p><p class="row-sub">ada@nord.studio · joined 2 Sep 2026</p></div>
+      {{ ui.status("Owner") }}
+      <span class="row-end"><span class="btn btn-ghost btn-sm">Leave</span></span>
+    </li>
+    <li class="row">
+      <span class="row-icon"><span class="org-mark org-mark-lg" aria-hidden="true">l</span></span>
+      <div><p class="row-name">linus</p><p class="row-sub">linus@nord.studio · joined 9 Sep 2026</p></div>
+      <div class="row-form">
+        <label class="visually-hidden" for="sg-role">Role of linus</label>
+        <select class="select" id="sg-role"><option>Member</option><option selected>Admin</option><option>Owner</option></select>
+        <span class="btn btn-secondary btn-sm">Change</span>
+      </div>
+      <span class="row-end"><span class="btn btn-danger btn-sm">Remove</span></span>
+    </li>
+    <li class="row">
+      <span class="row-icon">{{ ui.icon("mail", "icon-lg tone-violet") }}</span>
+      <div><p class="row-name">grace@nord.studio</p><p class="row-sub">invited by ada · expires 2 Oct 2026</p></div>
+      {{ ui.status("Member", "muted") }}
+      <span class="row-end"><span class="btn btn-danger btn-sm">Withdraw</span></span>
+    </li>
+  </ul>
+</section>
+
 <section class="section" aria-labelledby="sg-empty">
   <div class="section-head"><h2 class="section-title" id="sg-empty">Empty state</h2></div>
   <div class="empty"><strong>No applications yet</strong>Deploy one and it shows up here.</div>

@@ -13,7 +13,6 @@ use chrono::Utc;
 use grund_domain::{
     account::{AccountCommand, RegistrationMethod},
     names::{EmailAddress, Username},
-    organisation::OrganisationCommand,
 };
 use grund_store::{
     accounts::{self, Lookup},
@@ -33,11 +32,15 @@ use grund_server::{
         accounts::RequestMeta,
         insights,
         limits::{Limits, LimitsState},
+        organisations::{self, Home},
         outbox::wake as outbox_wake,
         passwords::{Passwords, PasswordsState},
     },
     state::State,
 };
+
+/// Why a social sign-up is refused on a `single` instance that has its admin.
+pub const INVITE_ONLY: &str = "This grund is invite-only. Ask its admin to invite your address, then open the link in the mail.";
 
 /// How long a flow lives, from the redirect to the last step.
 pub const FLOW_TTL: Duration = Duration::from_secs(600);
@@ -593,7 +596,11 @@ impl Social {
             Ok(username) => username,
             Err(error) => return Ok(CompleteOutcome::Invalid(format!("{error}."))),
         };
-        if accounts::username_taken(&self.state.pool, username.as_str()).await? {
+        let home = organisations::plan_home(&self.state).await?;
+        if home == Home::Closed {
+            return Ok(CompleteOutcome::Invalid(INVITE_ONLY.into()));
+        }
+        if grund_store::organisations::slug_taken(&self.state.pool, username.as_str()).await? {
             return Ok(CompleteOutcome::Invalid("That username is taken.".into()));
         }
         let Some(pending) = social::finish(&self.state.pool, &digest, "choose_username").await?
@@ -605,10 +612,13 @@ impl Social {
         };
         let account_id = Uuid::now_v7();
         match self
-            .create(account_id, &username, &email, &pending, meta)
+            .create(account_id, &username, &email, &pending, home, meta)
             .await
         {
             Ok(()) => Ok(CompleteOutcome::SignIn(account_id)),
+            Err(error) if organisations::is_instance_taken(&error) => {
+                Ok(CompleteOutcome::Invalid(INVITE_ONLY.into()))
+            }
             Err(error) if error.unique_violation().is_some() => Ok(CompleteOutcome::Invalid(
                 "That username or identity is already in use. Start again.".into(),
             )),
@@ -622,9 +632,10 @@ impl Social {
         username: &Username,
         email: &EmailAddress,
         pending: &social::Pending,
+        home: Home,
         meta: &RequestMeta,
     ) -> Result<(), WorkError> {
-        let organisation_id = Uuid::now_v7();
+        let organisation_id = home.organisation_id().unwrap_or_else(Uuid::now_v7);
         let identity_id = Uuid::now_v7();
         let now = Utc::now();
         let mut work = Work::begin(&self.state.events, meta.request_id, "social-signup").await?;
@@ -657,15 +668,7 @@ impl Social {
             },
         )
         .await?;
-        work.organisation(
-            organisation_id,
-            OrganisationCommand::CreatePersonal {
-                slug: username.clone(),
-                owner: account_id,
-                at: now,
-            },
-        )
-        .await?;
+        organisations::create_home(&mut work, home, account_id, username, now).await?;
         accounts::insert_email(work.sql(), account_id, email.as_str(), email.normalized()).await?;
         accounts::insert_identity(
             work.sql(),

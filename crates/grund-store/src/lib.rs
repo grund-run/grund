@@ -6,6 +6,7 @@
 //! replicas starting together are safe.
 
 pub mod accounts;
+pub mod organisations;
 pub mod outbox;
 pub mod projections;
 pub mod sessions;

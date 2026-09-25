@@ -15,6 +15,7 @@ pub enum Mail {
     VerifyEmail,
     PasswordReset,
     SignupExisting,
+    Invitation,
 }
 
 impl Mail {
@@ -23,14 +24,21 @@ impl Mail {
             Mail::VerifyEmail => "verify_email",
             Mail::PasswordReset => "password_reset",
             Mail::SignupExisting => "signup_existing",
+            Mail::Invitation => "invitation",
         }
     }
 
-    fn subject(self) -> &'static str {
+    fn subject(self, context: &serde_json::Value) -> String {
         match self {
-            Mail::VerifyEmail => "Confirm your email for grund",
-            Mail::PasswordReset => "Reset your grund password",
-            Mail::SignupExisting => "You already have a grund account",
+            Mail::VerifyEmail => "Confirm your email for grund".into(),
+            Mail::PasswordReset => "Reset your grund password".into(),
+            Mail::SignupExisting => "You already have a grund account".into(),
+            Mail::Invitation => format!(
+                "Join {} on grund",
+                context["organisation"]
+                    .as_str()
+                    .unwrap_or("an organisation")
+            ),
         }
     }
 }
@@ -100,6 +108,7 @@ impl Mailer {
             return Err(MailError::NotConfigured);
         };
         let to: Mailbox = to.parse().map_err(|_| MailError::Permanent)?;
+        let subject = mail.subject(context);
         let context = Value::from_serialize(context);
         let render = |ext: &str| {
             self.templates
@@ -115,7 +124,7 @@ impl Mailer {
         let message = Message::builder()
             .from(self.from.clone())
             .to(to)
-            .subject(mail.subject())
+            .subject(subject)
             .multipart(MultiPart::alternative_plain_html(
                 render("txt")?,
                 render("html")?,

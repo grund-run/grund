@@ -28,7 +28,7 @@ async fn a_new_account_can_sign_in_only_after_confirming_its_email() -> anyhow::
     when.signing_in(&account.username, &account.password)
         .await?;
     then.redirects_to("/")?;
-    when.visiting("/").await?;
+    when.visiting_home().await?;
     then.status(200)?
         .body_contains(&format!("Signed in as {}", account.username))?;
     Ok(())

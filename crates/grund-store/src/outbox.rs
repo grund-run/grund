@@ -17,6 +17,7 @@ pub enum Kind {
     SignupExistingMail,
     PasswordResetRequested,
     InsightsAccount,
+    InvitationMail,
 }
 
 impl Kind {
@@ -27,6 +28,7 @@ impl Kind {
             Kind::SignupExistingMail => "mail.signup_existing",
             Kind::PasswordResetRequested => "auth.password_reset_requested",
             Kind::InsightsAccount => "insights.account",
+            Kind::InvitationMail => "mail.invitation",
         }
     }
 
@@ -37,6 +39,7 @@ impl Kind {
             Kind::SignupExistingMail,
             Kind::PasswordResetRequested,
             Kind::InsightsAccount,
+            Kind::InvitationMail,
         ]
         .into_iter()
         .find(|kind| kind.as_str() == value)

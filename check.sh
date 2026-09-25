@@ -55,6 +55,7 @@ docker run -d --name "$name" --read-only --cap-drop ALL --network "$network" \
   -e GRUND_SMTP_URL=smtp://mailpit:1025 \
   -e GRUND_WORK_POLL_INTERVAL=1 -e GRUND_HEALTH_INTERVAL=1 \
   -e GRUND_LOGIN_ATTEMPTS_PER_ADDRESS=0 -e GRUND_MAIL_REQUESTS_PER_ADDRESS=0 \
+  -e GRUND_ORGANISATIONS=multi \
   "$img" >/dev/null
 if ! GRUND_ACCEPT_URL="http://127.0.0.1:$port" GRUND_ACCEPT_MAILPIT_URL=http://127.0.0.1:58410 \
   cargo test --locked -p grund --test tests; then

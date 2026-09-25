@@ -298,8 +298,17 @@ async fn a_licensed_instance_offers_the_provider_and_a_new_identity_becomes_an_a
         (StatusCode::SEE_OTHER, "/")
     );
     assert!(browser.has_session());
-    let home = browser.send("GET", "/", None).await;
-    assert!(home.body.contains(&format!("Signed in as {username}")));
+    let landing = browser.send("GET", "/", None).await;
+    assert_eq!(
+        (landing.status, landing.location.as_str()),
+        (StatusCode::SEE_OTHER, format!("/{username}").as_str()),
+        "the first account on a single-organisation instance owns its organisation"
+    );
+    let home = browser.send("GET", &landing.location, None).await;
+    assert!(
+        home.body
+            .contains(&format!("Signed in as {username}, owner of {username}"))
+    );
 
     let mut again = Browser {
         app: browser.app.clone(),

@@ -1,0 +1,41 @@
+{% extends "layout-app.html.jinja" %}
+{% set org = viewer.current %}
+{% block title %}Organisation · {{ org.slug }} · grund{% endblock %}
+{% block crumbs %}<li>Organisation</li>{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1 class="page-title">Organisation</h1>
+    <p class="status-line">What {{ org.slug }} is, and who pays for what it runs.</p>
+  </div>
+</div>
+<ul class="rows">
+  <li class="row row-plain">
+    <div><p class="row-name">Name</p><p class="row-sub">{{ org.slug }}</p></div>
+    <span class="row-end hint">Appears in the addresses of this organisation and of what it runs, so it cannot be changed yet.</span>
+  </li>
+  <li class="row row-plain">
+    <div><p class="row-name">Created</p><p class="row-sub">{{ org.since }}</p></div>
+    <span></span>
+  </li>
+  <li class="row row-plain">
+    <div><p class="row-name">Your role</p><p class="row-sub">{{ org.role }}</p></div>
+    <span></span>
+  </li>
+</ul>
+<section class="section" aria-labelledby="billing">
+  <div class="section-head">
+    <h2 class="section-title" id="billing">Billing</h2>
+  </div>
+  <ul class="rows">
+    <li class="row row-plain">
+      <div><p class="row-name">Plan</p><p class="row-sub">Free</p></div>
+      <span class="row-end hint">Billing arrives with machines. It will belong to {{ org.slug }}, never to a person.</span>
+    </li>
+    <li class="row row-plain">
+      <div><p class="row-name">Managed by</p><p class="row-sub">{{ owners | join(", ") }}</p></div>
+      <span class="row-end hint">Owners manage billing.</span>
+    </li>
+  </ul>
+</section>
+{% endblock %}

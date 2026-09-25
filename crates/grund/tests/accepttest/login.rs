@@ -107,7 +107,7 @@ async fn signing_out_ends_the_session() -> anyhow::Result<()> {
     given.a_signed_in_account().await?;
     let token = given.the_session_cookie().expect("signed in");
 
-    when.visiting("/").await?;
+    when.visiting_home().await?;
     when.submitting_on_current_page("/logout", &[]).await?;
     then.redirects_to("/login")?;
 

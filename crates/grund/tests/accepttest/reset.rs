@@ -71,7 +71,7 @@ async fn a_reset_link_sets_the_password_once_and_signs_every_device_out() -> any
         .status(200)?
         .body_contains("Your password is set")?;
 
-    when.visiting("/").await?;
+    when.visiting_home().await?;
     then.status(303)?;
     other
         .signing_in(&account.username, &account.password)

@@ -8,7 +8,6 @@ use chrono::Utc;
 use grund_domain::{
     account::{AccountCommand, PasswordChangeReason, RegistrationMethod},
     names::{self, EmailAddress, Username},
-    organisation::OrganisationCommand,
 };
 use grund_store::{
     accounts::{self, LoginRecord, Lookup, Viewer},
@@ -24,6 +23,7 @@ use crate::{
     services::{
         insights,
         limits::{Limits, LimitsState},
+        organisations::{self, Home, OrganisationsState},
         outbox::wake,
         passwords::{Passwords, PasswordsState},
     },
@@ -75,6 +75,21 @@ pub enum SignupOutcome {
     RateLimited,
 }
 
+/// How signing up through an invitation ended.
+#[derive(Debug)]
+pub enum InvitedSignupOutcome {
+    /// The account exists, confirmed, and is a member of `organisation`
+    /// (its slug); sign it in there.
+    SignedIn {
+        account_id: Uuid,
+        organisation: String,
+    },
+    Invalid(FieldErrors),
+    /// The invited address already has an account: sign in to accept.
+    HasAccount,
+    Expired,
+}
+
 /// How a sign-in ended.
 #[derive(Debug, PartialEq, Eq)]
 pub enum LoginOutcome {
@@ -122,13 +137,20 @@ impl Accounts {
         )
     }
 
-    /// Creates an account, its personal organisation and a verification link.
+    /// Creates an account, its home organisation (grund-docs
+    /// design/organisations.md) and a verification link. In `single` mode
+    /// only the first account signs up this way; later ones need an
+    /// invitation ([`Accounts::sign_up_invited`]).
     pub async fn sign_up(
         &self,
         form: SignupForm,
         meta: &RequestMeta,
     ) -> anyhow::Result<SignupOutcome> {
         if !self.state.config.signup_enabled {
+            return Ok(SignupOutcome::Closed);
+        }
+        let home = organisations::plan_home(&self.state).await?;
+        if home == Home::Closed {
             return Ok(SignupOutcome::Closed);
         }
         if !self.limits.admit_mail_address(&meta.address).await? {
@@ -147,7 +169,7 @@ impl Accounts {
             errors.password = Some(sentence(error));
         }
         if let Some(name) = &username
-            && accounts::username_taken(&self.state.pool, name.as_str()).await?
+            && grund_store::organisations::slug_taken(&self.state.pool, name.as_str()).await?
         {
             errors.username = Some(TAKEN.into());
         }
@@ -171,8 +193,9 @@ impl Accounts {
             return Ok(sent);
         }
 
-        match self.create(&username, &email, &phc, meta).await {
+        match self.create(&username, &email, &phc, home, meta).await {
             Ok(()) => Ok(sent),
+            Err(error) if organisations::is_instance_taken(&error) => Ok(SignupOutcome::Closed),
             Err(error) => match error.unique_violation().as_deref() {
                 Some("grund_accounts_username_idx" | "grund_organisations_slug_idx") => {
                     Ok(SignupOutcome::Invalid(FieldErrors {
@@ -189,15 +212,131 @@ impl Accounts {
         }
     }
 
+    /// Whether an account has this normalised address.
+    pub async fn has_account(&self, email_normalized: &str) -> anyhow::Result<bool> {
+        Ok(
+            accounts::login_record(&self.state.pool, Lookup::Email(email_normalized))
+                .await?
+                .is_some(),
+        )
+    }
+
+    /// Creates an account for the address an invitation was sent to and
+    /// joins it to the inviting organisation, in one transaction. Opening the
+    /// link proved the mailbox, so the account starts confirmed. In `multi`
+    /// mode it also gets its own organisation, like any sign-up.
+    pub async fn sign_up_invited(
+        &self,
+        token: &str,
+        username: &str,
+        password: &str,
+        meta: &RequestMeta,
+    ) -> anyhow::Result<InvitedSignupOutcome> {
+        let Some(invitation) = self.state.organisations().invitation(token).await? else {
+            return Ok(InvitedSignupOutcome::Expired);
+        };
+        if accounts::login_record(
+            &self.state.pool,
+            Lookup::Email(&invitation.email_normalized),
+        )
+        .await?
+        .is_some()
+        {
+            return Ok(InvitedSignupOutcome::HasAccount);
+        }
+        let email = EmailAddress::parse(&invitation.email)
+            .map_err(|_| anyhow::anyhow!("a stored invitation holds an unparseable address"))?;
+        let mut errors = FieldErrors::default();
+        let username = Username::parse(username)
+            .map_err(|e| errors.username = Some(sentence(e)))
+            .ok();
+        if let Err(error) = names::check_new_password(password, username.as_ref(), Some(&email)) {
+            errors.password = Some(sentence(error));
+        }
+        if let Some(name) = &username
+            && grund_store::organisations::slug_taken(&self.state.pool, name.as_str()).await?
+        {
+            errors.username = Some(TAKEN.into());
+        }
+        let Some(username) = username.filter(|_| errors.is_empty()) else {
+            return Ok(InvitedSignupOutcome::Invalid(errors));
+        };
+        let phc = self.passwords.hash(password).await?;
+        let home = match self.state.config.organisations {
+            crate::config::OrganisationMode::Multi => Home::Personal(Uuid::now_v7()),
+            crate::config::OrganisationMode::Single => Home::Closed,
+        };
+        let account_id = Uuid::now_v7();
+        let now = Utc::now();
+        let created: Result<(), WorkError> = async {
+            let mut work =
+                Work::begin(&self.state.events, meta.request_id, "invited-signup").await?;
+            work.account(
+                account_id,
+                AccountCommand::Register {
+                    username: username.clone(),
+                    organisation_id: home.organisation_id().unwrap_or(invitation.organisation_id),
+                    method: RegistrationMethod::Password,
+                    at: now,
+                },
+            )
+            .await?;
+            work.account(
+                account_id,
+                AccountCommand::VerifyEmail {
+                    email_digest: crypto::email_digest(email.normalized()),
+                    at: now,
+                },
+            )
+            .await?;
+            organisations::create_home(&mut work, home, account_id, &username, now).await?;
+            accounts::insert_email(work.sql(), account_id, email.as_str(), email.normalized())
+                .await?;
+            accounts::set_password(work.sql(), account_id, &phc).await?;
+            organisations::accept_in(&mut work, &invitation, account_id, now).await?;
+            insights::queue_account(&self.state, work.sql(), account_id, insights::PASSWORD)
+                .await?;
+            work.commit().await
+        }
+        .await;
+        match created {
+            Ok(()) => {}
+            Err(WorkError::Organisation(
+                grund_domain::organisation::OrganisationError::NoSuchInvitation,
+            )) => return Ok(InvitedSignupOutcome::Expired),
+            Err(error) => match error.unique_violation().as_deref() {
+                Some("grund_accounts_username_idx" | "grund_organisations_slug_idx") => {
+                    return Ok(InvitedSignupOutcome::Invalid(FieldErrors {
+                        username: Some(TAKEN.into()),
+                        ..Default::default()
+                    }));
+                }
+                Some("grund_account_emails_normalized_idx") => {
+                    return Ok(InvitedSignupOutcome::HasAccount);
+                }
+                _ => return Err(error.into()),
+            },
+        }
+        tracing::info!(%account_id, organisation_id = %invitation.organisation_id, "account created by invitation");
+        if self.state.config.insights.enabled() {
+            wake(&self.state).await;
+        }
+        Ok(InvitedSignupOutcome::SignedIn {
+            account_id,
+            organisation: invitation.slug,
+        })
+    }
+
     async fn create(
         &self,
         username: &Username,
         email: &EmailAddress,
         phc: &str,
+        home: Home,
         meta: &RequestMeta,
     ) -> Result<(), WorkError> {
         let account_id = Uuid::now_v7();
-        let organisation_id = Uuid::now_v7();
+        let organisation_id = home.organisation_id().unwrap_or_else(Uuid::now_v7);
         let now = Utc::now();
         let mail_allowed = self.limits.admit_mail_to(email.normalized()).await?;
         let mut work = Work::begin(&self.state.events, meta.request_id, "signup").await?;
@@ -211,15 +350,7 @@ impl Accounts {
             },
         )
         .await?;
-        work.organisation(
-            organisation_id,
-            OrganisationCommand::CreatePersonal {
-                slug: username.clone(),
-                owner: account_id,
-                at: now,
-            },
-        )
-        .await?;
+        organisations::create_home(&mut work, home, account_id, username, now).await?;
         accounts::insert_email(work.sql(), account_id, email.as_str(), email.normalized()).await?;
         accounts::set_password(work.sql(), account_id, phc).await?;
         if mail_allowed {
@@ -505,7 +636,8 @@ impl Accounts {
 
 const TAKEN: &str = "That username is taken.";
 
-fn sentence(error: impl std::fmt::Display) -> String {
+/// An error's text as a sentence for a form: capitalised, with a full stop.
+pub fn sentence(error: impl std::fmt::Display) -> String {
     let text = error.to_string();
     let mut chars = text.chars();
     match chars.next() {

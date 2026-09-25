@@ -10,6 +10,7 @@
 
 pub mod assets;
 pub mod browser;
+pub mod orgs;
 pub mod pages;
 
 use axum::{
@@ -62,7 +63,7 @@ pub fn router(state: State) -> Router {
         .route("/health/live", get(health::live))
         .route("/health/ready", get(health::ready))
         .route("/static/{*path}", get(assets::serve))
-        .route("/", get(pages::home))
+        .route("/", get(orgs::landing))
         .route("/login", get(pages::login_form).post(pages::login))
         .route("/logout", post(pages::logout))
         .route("/signup", get(pages::signup_form).post(pages::signup))
@@ -76,6 +77,15 @@ pub fn router(state: State) -> Router {
         .route("/settings/sessions/{id}/revoke", post(pages::revoke_session))
         .route("/licenses", get(pages::licenses))
         .route("/style-guide", get(pages::style_guide))
+        .route("/orgs/new", get(orgs::new_form).post(orgs::create))
+        .route("/invite", get(orgs::invitation_page).post(orgs::accept_invitation))
+        .route("/{org}", get(orgs::overview))
+        .route("/{org}/members", get(orgs::members_page))
+        .route("/{org}/members/invite", post(orgs::invite))
+        .route("/{org}/members/{account}/role", post(orgs::change_role))
+        .route("/{org}/members/{account}/remove", post(orgs::remove_member))
+        .route("/{org}/invitations/{invitation}/revoke", post(orgs::revoke_invitation))
+        .route("/{org}/settings", get(orgs::settings_page))
         .merge(extensions)
         .fallback(pages::not_found)
         .layer(middleware::from_fn_with_state(state.clone(), request_context))
@@ -152,4 +162,31 @@ fn bad_form(state: &State, status: StatusCode, request_id: Uuid) -> Response {
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use grund_domain::names::{NameError, Username};
+
+    #[test]
+    fn no_organisation_can_take_a_top_level_path_of_the_dashboard() {
+        for path in [
+            "health",
+            "static",
+            "login",
+            "logout",
+            "signup",
+            "verify",
+            "reset",
+            "settings",
+            "licenses",
+            "style-guide",
+            "orgs",
+            "invite",
+            "auth",
+            "api",
+        ] {
+            assert_eq!(Username::parse(path), Err(NameError::Reserved), "/{path}");
+        }
+    }
 }

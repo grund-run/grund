@@ -1,26 +1,51 @@
 {% extends "base.html.jinja" %}
 {% import "components/ui.html.jinja" as ui %}
 {% block body %}
+{% set org = viewer.current %}
 <div class="shell">
   <nav class="sidebar" aria-label="Main">
     {{ ui.brand() }}
+    {% if org %}
+    <details class="org-switch">
+      <summary class="org-switch-current">
+        <span class="org-mark" aria-hidden="true">{{ org.slug[:1] }}</span>
+        <span class="org-switch-text"><span class="org-switch-name">{{ org.slug }}</span><span class="org-switch-role">{{ org.role | capitalize }}</span></span>
+        {{ ui.icon("chevron", "icon-sm org-switch-chevron") }}
+      </summary>
+      <ul class="org-switch-menu">
+        {% for other in viewer.orgs %}
+        <li><a class="org-switch-item{% if other.current %} is-current{% endif %}" href="/{{ other.slug }}"{% if other.current %} aria-current="true"{% endif %}><span class="org-mark" aria-hidden="true">{{ other.slug[:1] }}</span>{{ other.slug }}</a></li>
+        {% endfor %}
+        {% if viewer.can_create %}
+        <li><a class="org-switch-item org-switch-new" href="/orgs/new">{{ ui.icon("plus", "icon-sm") }}New organisation</a></li>
+        {% endif %}
+      </ul>
+    </details>
     <ul class="nav">
-      <li><a class="nav-item{% if section == 'overview' %} is-active{% endif %}" href="/"{% if section == 'overview' %} aria-current="page"{% endif %}>{{ ui.icon("home") }}Overview</a></li>
+      <li><a class="nav-item{% if section == 'overview' %} is-active{% endif %}" href="/{{ org.slug }}"{% if section == 'overview' %} aria-current="page"{% endif %}>{{ ui.icon("home") }}Overview</a></li>
       <li><span class="nav-item" aria-disabled="true">{{ ui.icon("grid") }}Applications <span class="tag">Soon</span></span></li>
       <li><span class="nav-item" aria-disabled="true">{{ ui.icon("server") }}Fleet <span class="tag">Soon</span></span></li>
       <li><span class="nav-item" aria-disabled="true">{{ ui.icon("globe") }}Domains <span class="tag">Soon</span></span></li>
-      <li><span class="nav-item" aria-disabled="true">{{ ui.icon("clock") }}Activity <span class="tag">Soon</span></span></li>
+      <li><a class="nav-item{% if section == 'members' %} is-active{% endif %}" href="/{{ org.slug }}/members"{% if section == 'members' %} aria-current="page"{% endif %}>{{ ui.icon("users") }}Members</a></li>
+      <li><a class="nav-item{% if section == 'org-settings' %} is-active{% endif %}" href="/{{ org.slug }}/settings"{% if section == 'org-settings' %} aria-current="page"{% endif %}>{{ ui.icon("gear") }}Organisation</a></li>
     </ul>
+    {% else %}
+    <ul class="nav">
+      {% if viewer.can_create %}
+      <li><a class="nav-item{% if section == 'new-organisation' %} is-active{% endif %}" href="/orgs/new">{{ ui.icon("plus") }}New organisation</a></li>
+      {% endif %}
+    </ul>
+    {% endif %}
     <ul class="nav nav-foot">
       <li><a class="nav-item" href="https://git.kjuulh.io/grund/grund">{{ ui.icon("book") }}Docs &amp; community</a></li>
-      <li><a class="nav-item{% if section == 'settings' %} is-active{% endif %}" href="/settings/sessions"{% if section == 'settings' %} aria-current="page"{% endif %}>{{ ui.icon("gear") }}Settings</a></li>
+      <li><a class="nav-item{% if section == 'settings' %} is-active{% endif %}" href="/settings/sessions"{% if section == 'settings' %} aria-current="page"{% endif %}>{{ ui.icon("user") }}Account</a></li>
     </ul>
     <span class="avatar" title="{{ viewer.username }}">{{ viewer.initials }}</span>
   </nav>
   <div class="main">
     <header class="topbar">
       <ol class="crumbs">
-        <li>{{ viewer.organisation }}</li>
+        {% if org and section != 'settings' and section != 'new-organisation' %}<li><a href="/{{ org.slug }}">{{ org.slug }}</a></li>{% else %}<li>{{ viewer.username }}</li>{% endif %}
         {% block crumbs %}{% endblock %}
       </ol>
       <div class="topbar-end">

@@ -1,0 +1,94 @@
+{% extends "layout-app.html.jinja" %}
+{% set org = viewer.current %}
+{% block title %}Members · {{ org.slug }} · grund{% endblock %}
+{% block crumbs %}<li>Members</li>{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1 class="page-title">Members</h1>
+    <p class="status-line">Everyone here can use what {{ org.slug }} owns. Owners and admins manage who is in it; only owners manage billing.</p>
+  </div>
+</div>
+{{ ui.form_ok(notice) }}
+{{ ui.form_error(error) }}
+<ul class="rows">
+  {% for member in members %}
+  <li class="row">
+    <span class="row-icon"><span class="org-mark org-mark-lg" aria-hidden="true">{{ member.username[:1] }}</span></span>
+    <div>
+      <p class="row-name">{{ member.username }}{% if member.is_self %} <span class="tag">You</span>{% endif %}</p>
+      <p class="row-sub">{{ member.email }}{% if member.joined %} · joined {{ member.joined }}{% endif %}</p>
+    </div>
+    {% if member.manageable %}
+    <form class="row-form" method="post" action="/{{ org.slug }}/members/{{ member.id }}/role">
+      {{ ui.csrf_field(csrf) }}
+      <label class="visually-hidden" for="role-{{ member.id }}">Role of {{ member.username }}</label>
+      <select class="select" id="role-{{ member.id }}" name="role">
+        {% for option in roles %}<option value="{{ option }}"{% if option == member.role %} selected{% endif %}>{{ option | capitalize }}</option>{% endfor %}
+      </select>
+      <button class="btn btn-secondary btn-sm" type="submit">Change</button>
+    </form>
+    <form class="row-end" method="post" action="/{{ org.slug }}/members/{{ member.id }}/remove">
+      {{ ui.csrf_field(csrf) }}
+      <button class="btn btn-danger btn-sm" type="submit">Remove</button>
+    </form>
+    {% elif member.is_self %}
+    {{ ui.status(member.role | capitalize) }}
+    <form class="row-end" method="post" action="/{{ org.slug }}/members/{{ member.id }}/remove">
+      {{ ui.csrf_field(csrf) }}
+      <button class="btn btn-ghost btn-sm" type="submit">Leave</button>
+    </form>
+    {% else %}
+    {{ ui.status(member.role | capitalize) }}
+    <span></span>
+    {% endif %}
+  </li>
+  {% endfor %}
+</ul>
+
+{% if org.manages %}
+<section class="section" aria-labelledby="invite">
+  <div class="section-head">
+    <h2 class="section-title" id="invite">Invite someone</h2>
+  </div>
+  <form class="invite-form" method="post" action="/{{ org.slug }}/members/invite" novalidate>
+    {{ ui.csrf_field(csrf) }}
+    {{ ui.form_error(invite_error) }}
+    {{ ui.field("email", "Email", type="email", value=email, autocomplete="off", hint="We mail them a link that works for 7 days.") }}
+    <div class="field">
+      <label for="invite-role">Role</label>
+      <select class="select" id="invite-role" name="role">
+        <option value="member"{% if role == "member" %} selected{% endif %}>Member</option>
+        <option value="admin"{% if role == "admin" %} selected{% endif %}>Admin</option>
+      </select>
+    </div>
+    <button class="btn btn-primary" type="submit">{{ ui.icon("mail", "icon-sm") }}Send invitation</button>
+  </form>
+</section>
+{% endif %}
+
+<section class="section" aria-labelledby="pending">
+  <div class="section-head">
+    <h2 class="section-title" id="pending">Pending invitations<span class="count">{{ pending | length }}</span></h2>
+  </div>
+  {% if pending %}
+  <ul class="rows">
+    {% for invitation in pending %}
+    <li class="row">
+      <span class="row-icon">{{ ui.icon("mail", "icon-lg tone-violet") }}</span>
+      <div><p class="row-name">{{ invitation.email }}</p><p class="row-sub">invited by {{ invitation.invited_by }} · expires {{ invitation.expires }}</p></div>
+      {{ ui.status(invitation.role | capitalize, "muted") }}
+      {% if org.manages %}
+      <form class="row-end" method="post" action="/{{ org.slug }}/invitations/{{ invitation.id }}/revoke">
+        {{ ui.csrf_field(csrf) }}
+        <button class="btn btn-danger btn-sm" type="submit">Withdraw</button>
+      </form>
+      {% else %}<span></span>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="empty">No invitations are waiting.</p>
+  {% endif %}
+</section>
+{% endblock %}

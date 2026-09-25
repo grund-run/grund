@@ -65,7 +65,7 @@ async fn a_signed_in_form_needs_the_token_bound_to_that_session() -> anyhow::Res
 
     when.submitting_with_token("/logout", &stale, &[]).await?;
     then.status(403)?;
-    when.visiting("/").await?;
+    when.visiting_home().await?;
     then.status(200)?;
     Ok(())
 }

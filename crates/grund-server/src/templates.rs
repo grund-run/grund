@@ -30,12 +30,19 @@ pub const TEMPLATES: &[(&str, &str)] = embedded![
     "pages/sessions.html.jinja",
     "pages/licenses.html.jinja",
     "pages/style-guide.html.jinja",
+    "pages/members.html.jinja",
+    "pages/org-settings.html.jinja",
+    "pages/org-new.html.jinja",
+    "pages/no-organisation.html.jinja",
+    "pages/invite.html.jinja",
     "mail/verify_email.txt.jinja",
     "mail/verify_email.html.jinja",
     "mail/password_reset.txt.jinja",
     "mail/password_reset.html.jinja",
     "mail/signup_existing.txt.jinja",
     "mail/signup_existing.html.jinja",
+    "mail/invitation.txt.jinja",
+    "mail/invitation.html.jinja",
 ];
 
 /// The template environment. Cheap to clone.

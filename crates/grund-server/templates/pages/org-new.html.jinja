@@ -1,0 +1,16 @@
+{% extends "layout-app.html.jinja" %}
+{% block title %}New organisation · grund{% endblock %}
+{% block crumbs %}<li>New organisation</li>{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1 class="page-title">New organisation</h1>
+    <p class="status-line">An organisation owns applications, machines and domains, and pays for them. You will be its owner, and can invite others.</p>
+  </div>
+</div>
+<form class="form form-narrow" method="post" action="/orgs/new" novalidate>
+  {{ ui.csrf_field(csrf) }}
+  {{ ui.field("slug", "Name", value=slug, autocomplete="off", error=error, hint="3 to 32 letters, digits and single hyphens. It appears in addresses and cannot be changed yet.", autofocus=true) }}
+  <button class="btn btn-primary" type="submit">{{ ui.icon("plus", "icon-sm") }}Create organisation</button>
+</form>
+{% endblock %}

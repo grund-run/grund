@@ -1,10 +1,11 @@
 {% extends "layout-app.html.jinja" %}
-{% block title %}Overview · grund{% endblock %}
+{% set org = viewer.current %}
+{% block title %}{{ org.slug }} · grund{% endblock %}
 {% block content %}
 <div class="page-head">
   <div>
     <h1 class="page-title">Overview</h1>
-    <p class="status-line">{{ ui.icon("ok", "tone-ok") }}Signed in as {{ viewer.username }}.</p>
+    <p class="status-line">{{ ui.icon("ok", "tone-ok") }}Signed in as {{ viewer.username }}, {{ org.role }} of {{ org.slug }}.</p>
   </div>
   <span class="btn btn-primary" aria-disabled="true">{{ ui.icon("plus") }}Deploy application</span>
 </div>
@@ -12,22 +13,21 @@
   {{ ui.icon("box", "icon-lg tone-orange") }}
   <div class="callout-body">
     <p class="callout-title">Deploying applications is in development</p>
-    <p class="callout-text">Your account and your organisation, {{ viewer.organisation }}, are ready. Applications, machines and domains arrive here next.</p>
+    <p class="callout-text">{{ org.slug }} is ready. Its applications, machines and domains arrive here next, and everything it runs is billed to it, not to a person.</p>
   </div>
 </div>
-<section class="section" aria-labelledby="orgs">
+<section class="section" aria-labelledby="org">
   <div class="section-head">
-    <h2 class="section-title" id="orgs">Organisations<span class="count">{{ viewer.memberships | length }}</span></h2>
+    <h2 class="section-title" id="org">Organisation</h2>
+    <a class="link-more" href="/{{ org.slug }}/members">Members {{ ui.icon("arrow", "icon-sm") }}</a>
   </div>
   <ul class="rows">
-    {% for membership in viewer.memberships %}
     <li class="row">
-      <span class="row-icon">{{ ui.icon("grid", "icon-lg tone-blue") }}</span>
-      <div><p class="row-name">{{ membership.slug }}</p><p class="row-sub">{{ membership.slug }}</p></div>
-      {{ ui.status(membership.role | capitalize) }}
+      <span class="row-icon">{{ ui.icon("users", "icon-lg tone-blue") }}</span>
+      <div><p class="row-name">{{ members }} member{% if members != 1 %}s{% endif %}</p><p class="row-sub">/{{ org.slug }}/members</p></div>
+      {{ ui.status(org.role | capitalize) }}
       <span></span>
     </li>
-    {% endfor %}
   </ul>
 </section>
 <ul class="stats">

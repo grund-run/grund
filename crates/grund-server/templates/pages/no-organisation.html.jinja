@@ -1,0 +1,12 @@
+{% extends "layout-app.html.jinja" %}
+{% block title %}grund{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1 class="page-title">No organisation yet</h1>
+    <p class="status-line">Everything in grund belongs to an organisation. You are not a member of one.</p>
+  </div>
+  {% if viewer.can_create %}<a class="btn btn-primary" href="/orgs/new">{{ ui.icon("plus") }}New organisation</a>{% endif %}
+</div>
+<p class="empty">{% if viewer.can_create %}Create one, or ask someone to invite you to theirs.{% else %}Ask this grund's admin to invite you.{% endif %}</p>
+{% endblock %}

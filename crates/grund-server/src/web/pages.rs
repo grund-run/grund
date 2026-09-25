@@ -7,16 +7,20 @@ use axum::{
     http::{HeaderValue, StatusCode, Uri, header},
     response::{IntoResponse, Response},
 };
+use grund_domain::organisation::Role;
+use grund_store::organisations::Membership;
 use minijinja::{Value, context};
 use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::{
+    config::OrganisationMode,
     services::{
         accounts::{
             AccountsState, FieldErrors, LoginOutcome, ResetOutcome, ResetRequestOutcome,
             SignupForm, SignupOutcome,
         },
+        organisations::{Home, OrganisationsState},
         sessions::{Session, SessionsState},
     },
     state::State,
@@ -82,7 +86,10 @@ pub fn redirect(to: &str) -> Response {
     response
 }
 
-fn with_referrer_same_origin(mut response: Response) -> Response {
+/// Sets `Referrer-Policy: same-origin`, for a page whose address carries a
+/// token: other sites never see it, and the page's forms still post with
+/// their real `Origin` (web/mod.rs).
+pub fn with_referrer_same_origin(mut response: Response) -> Response {
     response.headers_mut().insert(
         header::REFERRER_POLICY,
         HeaderValue::from_static("same-origin"),
@@ -141,7 +148,8 @@ pub fn safe_return_to(value: Option<&str>) -> Option<String> {
     ok.then(|| value.to_string())
 }
 
-fn require_session(browser: &Browser, uri: &Uri) -> Result<Session, Box<Response>> {
+/// The signed-in session, or a redirect to sign-in that comes back here.
+pub fn require_session(browser: &Browser, uri: &Uri) -> Result<Session, Box<Response>> {
     browser.session.clone().ok_or_else(|| {
         let path = uri.path_and_query().map_or("/", |p| p.as_str());
         let query = serde_urlencoded::to_string([("return_to", path)]).unwrap_or_default();
@@ -149,51 +157,63 @@ fn require_session(browser: &Browser, uri: &Uri) -> Result<Session, Box<Response
     })
 }
 
-pub async fn home(AxumState(state): AxumState<State>, browser: Browser, uri: Uri) -> PageResult {
-    let session = match require_session(&browser, &uri) {
-        Ok(session) => session,
-        Err(redirect) => return Ok(*redirect),
-    };
-    let viewer = viewer_context(&state, &session).await?;
-    render(
-        &state,
-        &browser,
-        StatusCode::OK,
-        "pages/home.html.jinja",
-        context! {
-            viewer, csrf => browser.csrf_token(), section => "overview",
-        },
-    )
-}
-
-async fn viewer_context(state: &State, session: &Session) -> Result<Value, PageError> {
+/// What every signed-in page's layout shows: the person, their
+/// organisations for the switcher, and the organisation the page is about
+/// (`current`). Account pages pass `None`, and the layout uses the
+/// organisation `/` would open.
+pub async fn viewer_context(
+    state: &State,
+    session: &Session,
+    current: Option<&Membership>,
+) -> Result<Value, PageError> {
     let viewer = state
         .accounts()
         .viewer(session.account_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("session names an account that does not exist"))?;
-    let organisation = viewer
-        .memberships
-        .first()
-        .map(|m| m.slug.clone())
-        .unwrap_or_else(|| viewer.username.clone());
+    let organisations = state.organisations();
+    let memberships = organisations.memberships_of(session.account_id).await?;
+    let current = match current {
+        Some(current) => Some(current.clone()),
+        None => match organisations.landing(session.account_id).await? {
+            Some(slug) => memberships.iter().find(|m| m.slug == slug).cloned(),
+            None => None,
+        },
+    };
     let initials: String = viewer
         .username
         .split('-')
         .filter_map(|part| part.chars().next())
         .take(2)
         .collect();
-    let memberships: Vec<Value> = viewer
-        .memberships
+    let orgs: Vec<Value> = memberships
         .iter()
-        .map(|m| context! { slug => m.slug, role => m.role })
+        .map(|m| {
+            context! {
+                slug => m.slug,
+                role => m.role,
+                current => current.as_ref().is_some_and(|c| c.organisation_id == m.organisation_id),
+            }
+        })
         .collect();
+    let current = current.map(|c| {
+        let role = Role::parse(&c.role).unwrap_or(Role::Member);
+        context! {
+            slug => c.slug,
+            role => c.role,
+            kind => c.kind,
+            manages => role.manages_members(),
+            owner => role == Role::Owner,
+            since => c.created_at.format("%-d %B %Y").to_string(),
+        }
+    });
     Ok(context! {
         username => viewer.username,
         email => viewer.email,
         initials,
-        organisation,
-        memberships,
+        orgs,
+        current,
+        can_create => organisations.can_create(),
         registered_on => viewer.registered_at.format("%-d %B %Y").to_string(),
     })
 }
@@ -277,26 +297,13 @@ pub async fn login(
         .await?
     {
         LoginOutcome::SignedIn { account_id } => {
-            let (token, _) = state
-                .sessions()
-                .start(
-                    account_id,
-                    browser.session_token.as_deref(),
-                    &browser.client(),
-                )
-                .await?;
-            let mut response = redirect(return_to.as_deref().unwrap_or("/"));
-            let jar = browser.jar();
-            let headers = response.headers_mut();
-            headers.append(
-                header::SET_COOKIE,
-                jar.set(
-                    jar.session_name(),
-                    &token,
-                    state.sessions().max_age().as_secs(),
-                ),
-            );
-            headers.append(header::SET_COOKIE, jar.set(jar.csrf_name(), "", 0));
+            let response = start_session(
+                &state,
+                &browser,
+                account_id,
+                return_to.as_deref().unwrap_or("/"),
+            )
+            .await?;
             tracing::info!(%account_id, "signed in");
             Ok(response)
         }
@@ -340,6 +347,37 @@ pub async fn login(
     }
 }
 
+/// Signs the browser in as `account_id` (a new session, replacing any it
+/// had) and redirects to `to`.
+pub async fn start_session(
+    state: &State,
+    browser: &Browser,
+    account_id: Uuid,
+    to: &str,
+) -> PageResult {
+    let (token, _) = state
+        .sessions()
+        .start(
+            account_id,
+            browser.session_token.as_deref(),
+            &browser.client(),
+        )
+        .await?;
+    let mut response = redirect(to);
+    let jar = browser.jar();
+    let headers = response.headers_mut();
+    headers.append(
+        header::SET_COOKIE,
+        jar.set(
+            jar.session_name(),
+            &token,
+            state.sessions().max_age().as_secs(),
+        ),
+    );
+    headers.append(header::SET_COOKIE, jar.set(jar.csrf_name(), "", 0));
+    Ok(response)
+}
+
 #[derive(Deserialize)]
 pub struct CsrfForm {
     #[serde(default)]
@@ -372,6 +410,9 @@ pub async fn signup_form(AxumState(state): AxumState<State>, browser: Browser) -
     if !state.config.signup_enabled {
         return signup_closed(&state, &browser);
     }
+    if crate::services::organisations::plan_home(&state).await? == Home::Closed {
+        return signup_closed(&state, &browser);
+    }
     signup_page(
         &state,
         &browser,
@@ -388,7 +429,7 @@ fn signup_closed(state: &State, browser: &Browser) -> PageResult {
         browser,
         StatusCode::FORBIDDEN,
         "Sign-up is closed",
-        "This grund instance does not take new accounts. Ask whoever runs it for one.",
+        "This grund is invite-only. Ask its admin to invite your address, then open the link in the mail.",
         Some(("/login", "Sign in")),
     )
 }
@@ -407,6 +448,7 @@ fn signup_page(
         status,
         "pages/signup.html.jinja",
         context! {
+            single => state.config.organisations == OrganisationMode::Single,
             csrf => browser.csrf_token(),
             username => form.username,
             email => form.email,
@@ -691,7 +733,7 @@ pub async fn sessions_page(
         Ok(session) => session,
         Err(redirect) => return Ok(*redirect),
     };
-    let viewer = viewer_context(&state, &session).await?;
+    let viewer = viewer_context(&state, &session, None).await?;
     let sessions: Vec<Value> = state
         .sessions()
         .list(session.account_id)
@@ -800,7 +842,8 @@ pub fn describe_user_agent(user_agent: &str) -> String {
     }
 }
 
-fn not_found_page(state: &State, browser: &Browser) -> PageResult {
+/// The 404 page: the same for "does not exist" and "not yours to see".
+pub fn not_found_page(state: &State, browser: &Browser) -> PageResult {
     render(
         state,
         browser,
@@ -875,8 +918,15 @@ pub const SWATCHES: &[(&str, &str)] = &[
 
 pub async fn style_guide(AxumState(state): AxumState<State>, browser: Browser) -> PageResult {
     let viewer = context! {
-        username => "example", initials => "EX", organisation => "nord-studio", email => "",
-        memberships => Vec::<Value>::new(), registered_on => "",
+        username => "example", initials => "EX", email => "", registered_on => "",
+        current => context! {
+            slug => "nord-studio", role => "owner", kind => "shared", manages => true, owner => true, since => "",
+        },
+        orgs => vec![
+            context! { slug => "nord-studio", role => "owner", current => true },
+            context! { slug => "example", role => "owner", current => false },
+        ],
+        can_create => true,
     };
     render(
         &state,

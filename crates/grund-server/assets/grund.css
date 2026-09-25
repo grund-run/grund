@@ -774,6 +774,189 @@ a.nav-item:hover {
   display: inline;
 }
 
+/* ------------------------------------------------------------ organisations */
+
+.crumbs a {
+  color: inherit;
+}
+
+.crumbs a:hover {
+  color: var(--accent-text);
+}
+
+.org-mark {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: var(--radius-sm);
+  background: var(--active);
+  color: var(--accent-text);
+  font-weight: 600;
+  font-size: 0.875rem;
+  text-transform: uppercase;
+}
+
+.org-mark-lg {
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 50%;
+  font-size: 1rem;
+}
+
+.org-switch {
+  position: relative;
+  margin-top: -1.75rem;
+}
+
+.org-switch-current {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  cursor: pointer;
+  list-style: none;
+}
+
+.org-switch-current::-webkit-details-marker {
+  display: none;
+}
+
+.org-switch-current:hover {
+  background: var(--surface-hover);
+}
+
+.org-switch-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.org-switch-name {
+  color: var(--text);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.org-switch-role {
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+.org-switch-chevron {
+  margin-left: auto;
+  color: var(--muted);
+  transform: rotate(90deg);
+  transition: transform 0.15s ease;
+}
+
+.org-switch[open] .org-switch-chevron {
+  transform: rotate(-90deg);
+}
+
+.org-switch-menu {
+  position: absolute;
+  z-index: 10;
+  top: calc(100% + 0.375rem);
+  left: 0;
+  right: 0;
+  margin: 0;
+  padding: 0.375rem;
+  list-style: none;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.35);
+}
+
+.org-switch-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.625rem;
+  border-radius: 6px;
+  color: var(--text-2);
+}
+
+.org-switch-item:hover,
+.org-switch-item.is-current {
+  background: var(--active);
+  color: var(--text);
+}
+
+.org-switch-new {
+  margin-top: 0.25rem;
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 6px 6px;
+  color: var(--accent-text);
+}
+
+.select,
+.field select {
+  min-height: 2.5rem;
+  padding: 0.5rem 2.25rem 0.5rem 0.875rem;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font: inherit;
+}
+
+.field select {
+  min-height: 3rem;
+}
+
+.select:focus,
+.field select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgb(184 218 179 / 0.18);
+}
+
+.field input:disabled {
+  color: var(--muted);
+}
+
+.row-form {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.invite-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 11rem auto;
+  align-items: start;
+  gap: 1rem;
+}
+
+.invite-form .form-error {
+  grid-column: 1 / -1;
+}
+
+.invite-form > .btn {
+  margin-top: 2rem;
+}
+
+.form-narrow {
+  max-width: 32rem;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 /* ------------------------------------------------------------ style guide */
 
 .sg-swatches {
@@ -830,6 +1013,20 @@ a.nav-item:hover {
 /* ------------------------------------------------------------ small screens */
 
 @media (max-width: 900px) {
+  .invite-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .invite-form > .btn {
+    margin-top: 0;
+  }
+
+  .org-switch {
+    order: 2;
+    margin-top: 0;
+    min-width: 12rem;
+  }
+
   .shell {
     grid-template-columns: minmax(0, 1fr);
   }

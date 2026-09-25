@@ -2,7 +2,11 @@
 {% block title %}Create an account · grund{% endblock %}
 {% block card %}
 <h1 class="auth-title">Create an account</h1>
-<p class="auth-lede">Your account comes with its own organisation. Everything you deploy will belong to it.</p>
+{% if single %}
+<p class="auth-lede">The first account on this grund becomes its admin: the owner of its organisation, which everything you deploy belongs to. Everyone after you joins by invitation.</p>
+{% else %}
+<p class="auth-lede">Your account comes with its own organisation. Everything you deploy will belong to it, and you can invite others.</p>
+{% endif %}
 <form class="form" method="post" action="/signup" novalidate>
   {{ ui.csrf_field(csrf) }}
   {{ ui.form_error(error) }}
