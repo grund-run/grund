@@ -14,6 +14,15 @@ pub enum Purpose {
 }
 
 impl Purpose {
+    /// Whether a new link cancels the account's earlier unused ones. True for
+    /// a password reset, where an older link still sitting in a mailbox is a
+    /// risk. False for verification: signing in before confirming mails a
+    /// new link, and the one the person opens first must still work; using
+    /// any of them retires the rest.
+    pub fn newest_only(self) -> bool {
+        matches!(self, Purpose::ResetPassword)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Purpose::VerifyEmail => "verify_email",
@@ -22,8 +31,9 @@ impl Purpose {
     }
 }
 
-/// Stores a new link for the account, valid for `ttl`, and invalidates the
-/// account's earlier unused links for the same purpose.
+/// Stores a new link for the account, valid for `ttl`. For a purpose that is
+/// [`Purpose::newest_only`], the account's earlier unused links for it stop
+/// working.
 pub async fn issue(
     connection: &mut PgConnection,
     token_digest: &[u8; 32],
@@ -32,14 +42,9 @@ pub async fn issue(
     email_normalized: &str,
     ttl: Duration,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "UPDATE grund_email_tokens SET used_at = clock_timestamp() \
-         WHERE account_id = $1 AND purpose = $2 AND used_at IS NULL",
-    )
-    .bind(account_id)
-    .bind(purpose.as_str())
-    .execute(&mut *connection)
-    .await?;
+    if purpose.newest_only() {
+        retire_unused(&mut *connection, account_id, purpose).await?;
+    }
     sqlx::query(
         "INSERT INTO grund_email_tokens (token_digest, purpose, account_id, email_normalized, expires_at) \
          VALUES ($1, $2, $3, $4, clock_timestamp() + make_interval(secs => $5))",
@@ -78,14 +83,15 @@ pub async fn peek(
     .await
 }
 
-/// Uses a link: marks it used and returns whom it was for, or `None` if it
-/// is unknown, used, expired, or for an address the account no longer has.
+/// Uses a link: marks it used, retires the account's other unused links for
+/// the same purpose, and returns whom it was for. `None` if it is unknown,
+/// used, expired, or for an address the account no longer has.
 pub async fn redeem(
     connection: &mut PgConnection,
     token_digest: &[u8; 32],
     purpose: Purpose,
 ) -> Result<Option<Redeemable>, sqlx::Error> {
-    sqlx::query_as::<_, Redeemable>(
+    let redeemed = sqlx::query_as::<_, Redeemable>(
         "UPDATE grund_email_tokens t SET used_at = clock_timestamp() \
          FROM grund_account_emails e \
          WHERE t.token_digest = $1 AND t.purpose = $2 AND t.used_at IS NULL \
@@ -95,8 +101,28 @@ pub async fn redeem(
     )
     .bind(&token_digest[..])
     .bind(purpose.as_str())
-    .fetch_optional(connection)
-    .await
+    .fetch_optional(&mut *connection)
+    .await?;
+    if let Some(redeemed) = &redeemed {
+        retire_unused(&mut *connection, redeemed.account_id, purpose).await?;
+    }
+    Ok(redeemed)
+}
+
+async fn retire_unused(
+    connection: &mut PgConnection,
+    account_id: Uuid,
+    purpose: Purpose,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE grund_email_tokens SET used_at = clock_timestamp() \
+         WHERE account_id = $1 AND purpose = $2 AND used_at IS NULL",
+    )
+    .bind(account_id)
+    .bind(purpose.as_str())
+    .execute(connection)
+    .await?;
+    Ok(())
 }
 
 /// Deletes links that expired more than a day ago. Bounded per pass.

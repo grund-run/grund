@@ -190,7 +190,7 @@ impl When {
             .mailpit
             .clone()
             .context("no mailpit")?;
-        mail::link(&mailpit, to, subject, path, 1).await
+        mail::link(&mailpit, to, subject, path, 1, mail::Pick::Newest).await
     }
 
     pub async fn the_newest_of_mailed_links(
@@ -206,7 +206,23 @@ impl When {
             .mailpit
             .clone()
             .context("no mailpit")?;
-        mail::link(&mailpit, to, subject, path, count).await
+        mail::link(&mailpit, to, subject, path, count, mail::Pick::Newest).await
+    }
+
+    pub async fn the_oldest_of_mailed_links(
+        &self,
+        to: &str,
+        subject: &str,
+        path: &str,
+        count: usize,
+    ) -> anyhow::Result<String> {
+        let mailpit = self
+            .testcase
+            .fixture
+            .mailpit
+            .clone()
+            .context("no mailpit")?;
+        mail::link(&mailpit, to, subject, path, count, mail::Pick::Oldest).await
     }
 
     pub async fn timing_sign_ins_alternately(

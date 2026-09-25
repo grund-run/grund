@@ -35,6 +35,39 @@ async fn a_new_account_can_sign_in_only_after_confirming_its_email() -> anyhow::
 }
 
 #[tokio::test]
+async fn the_first_link_still_confirms_after_signing_in_mailed_a_second() -> anyhow::Result<()> {
+    let Some((given, when, then)) = testcase_with_mail().await? else {
+        return Ok(());
+    };
+    let account = given.an_unconfirmed_account().await?;
+    let first = when
+        .the_mailed_link(&account.email, "Confirm your email", "/verify?token=")
+        .await?;
+    when.signing_in(&account.username, &account.password)
+        .await?;
+    then.body_contains("Confirm your email first")?;
+    let second = when
+        .the_newest_of_mailed_links(&account.email, "Confirm your email", "/verify?token=", 2)
+        .await?;
+    let oldest = when
+        .the_oldest_of_mailed_links(&account.email, "Confirm your email", "/verify?token=", 2)
+        .await?;
+    assert_eq!(oldest, first, "the first mail is the oldest");
+    assert_ne!(first, second, "signing in mailed a new link");
+
+    when.visiting(&first).await?;
+    then.status(200)?.body_contains("Confirm email")?;
+    let token = given.last_token()?;
+    when.submitting_on_current_page("/verify", &[("token", &token)])
+        .await?;
+    then.status(200)?.body_contains("Your email is confirmed")?;
+
+    when.visiting(&second).await?;
+    then.status(200)?.body_contains("This link has expired")?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_verification_link_works_once() -> anyhow::Result<()> {
     let Some((given, when, then)) = testcase_with_mail().await? else {
         return Ok(());

@@ -19,11 +19,17 @@ pub async fn messages_to(mailpit: &Origin, to: &str) -> anyhow::Result<Vec<serde
     Ok(json["messages"].as_array().cloned().unwrap_or_default())
 }
 
+pub enum Pick {
+    Newest,
+    Oldest,
+}
+
 pub async fn wait_for(
     mailpit: &Origin,
     to: &str,
     subject: &str,
     at_least: usize,
+    pick: Pick,
 ) -> anyhow::Result<serde_json::Value> {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
@@ -33,6 +39,9 @@ pub async fn wait_for(
             .filter(|m| m["Subject"].as_str().is_some_and(|s| s.contains(subject)))
             .collect();
         found.sort_by(|a, b| b["Created"].as_str().cmp(&a["Created"].as_str()));
+        if matches!(pick, Pick::Oldest) {
+            found.reverse();
+        }
         if found.len() >= at_least
             && let Some(message) = found.first()
         {
@@ -55,8 +64,9 @@ pub async fn link(
     subject: &str,
     path: &str,
     at_least: usize,
+    pick: Pick,
 ) -> anyhow::Result<String> {
-    let message = wait_for(mailpit, to, subject, at_least).await?;
+    let message = wait_for(mailpit, to, subject, at_least, pick).await?;
     let text = message["Text"].as_str().context("mail without text")?;
     let start = text
         .find(path)

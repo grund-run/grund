@@ -256,7 +256,7 @@ async fn a_throttle_window_counts_hits_and_a_new_window_starts_again(pool: PgPoo
 }
 
 #[sqlx::test(migrations = false)]
-async fn a_link_works_once_and_a_newer_one_replaces_it(pool: PgPool) {
+async fn a_reset_link_works_once_and_a_newer_one_replaces_it(pool: PgPool) {
     let events = store(&pool).await;
     let username = name("link");
     let account_id = register(&events, &username).await;
@@ -305,6 +305,48 @@ async fn a_link_works_once_and_a_newer_one_replaces_it(pool: PgPool) {
     assert_eq!(redeemed.account_id, account_id);
     assert!(
         tokens::redeem(&mut connection, &new, Purpose::ResetPassword)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn every_unexpired_verification_link_works_until_one_is_used(pool: PgPool) {
+    let events = store(&pool).await;
+    let username = name("verify");
+    let account_id = register(&events, &username).await;
+    let email = format!("{username}@example.com");
+    let (first, second) = ([3u8; 32], [4u8; 32]);
+    let mut tx = pool.begin().await.unwrap();
+    for digest in [&first, &second] {
+        tokens::issue(
+            &mut tx,
+            digest,
+            Purpose::VerifyEmail,
+            account_id,
+            &email,
+            Duration::from_secs(60),
+        )
+        .await
+        .unwrap();
+    }
+    tx.commit().await.unwrap();
+
+    assert!(
+        tokens::peek(&pool, &first, Purpose::VerifyEmail)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let mut connection = pool.acquire().await.unwrap();
+    let redeemed = tokens::redeem(&mut connection, &first, Purpose::VerifyEmail)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(redeemed.account_id, account_id);
+    assert!(
+        tokens::redeem(&mut connection, &second, Purpose::VerifyEmail)
             .await
             .unwrap()
             .is_none()

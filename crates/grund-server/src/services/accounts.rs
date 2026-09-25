@@ -372,6 +372,7 @@ impl Accounts {
             accounts::upgrade_password(&self.state.pool, record.account_id, old, &new).await?;
         }
         if !record.email_verified {
+            tracing::info!(account_id = %record.account_id, "sign-in before confirming; mailing a new link");
             self.resend_verification(&record).await?;
             return Ok(LoginOutcome::Unverified);
         }
