@@ -17,6 +17,7 @@
 //! presenting one is refused as unauthenticated.
 
 pub mod account;
+pub mod organisation;
 
 use std::{sync::Arc, time::Duration};
 
@@ -30,7 +31,9 @@ use connectrpc::{
     ConnectError, ConnectRpcService, DeadlinePolicy, Limits,
     interceptor::{Interceptor, Next as InterceptNext, UnaryRequest, UnaryResponse},
 };
-use grund_proto::grund::account::v1::ACCOUNT_SERVICE_SERVICE_NAME;
+use grund_proto::grund::{
+    account::v1::ACCOUNT_SERVICE_SERVICE_NAME, organisation::v1::ORGANISATION_SERVICE_SERVICE_NAME,
+};
 use uuid::Uuid;
 
 use crate::{
@@ -72,6 +75,50 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
         "/grund.account.v1.AccountService/RevokeSession",
         Requirement::Session,
     ),
+    (
+        "/grund.organisation.v1.OrganisationService/ListOrganisations",
+        Requirement::Session,
+    ),
+    (
+        "/grund.organisation.v1.OrganisationService/GetOrganisation",
+        Requirement::Session,
+    ),
+    (
+        "/grund.organisation.v1.OrganisationService/CreateOrganisation",
+        Requirement::Session,
+    ),
+    (
+        "/grund.organisation.v1.OrganisationService/RenameOrganisation",
+        Requirement::Session,
+    ),
+    (
+        "/grund.organisation.v1.OrganisationService/DeleteOrganisation",
+        Requirement::Session,
+    ),
+    (
+        "/grund.organisation.v1.OrganisationService/ListMembers",
+        Requirement::Session,
+    ),
+    (
+        "/grund.organisation.v1.OrganisationService/ChangeMemberRole",
+        Requirement::Session,
+    ),
+    (
+        "/grund.organisation.v1.OrganisationService/RemoveMember",
+        Requirement::Session,
+    ),
+    (
+        "/grund.organisation.v1.OrganisationService/ListInvitations",
+        Requirement::Session,
+    ),
+    (
+        "/grund.organisation.v1.OrganisationService/InviteMember",
+        Requirement::Session,
+    ),
+    (
+        "/grund.organisation.v1.OrganisationService/RevokeInvitation",
+        Requirement::Session,
+    ),
 ];
 
 /// The API routes, to merge into the page router.
@@ -92,6 +139,10 @@ pub fn router(state: State) -> axum::Router {
     axum::Router::new()
         .route_service(
             &format!("/{ACCOUNT_SERVICE_SERVICE_NAME}/{{method}}"),
+            service.clone(),
+        )
+        .route_service(
+            &format!("/{ORGANISATION_SERVICE_SERVICE_NAME}/{{method}}"),
             service,
         )
         .layer(middleware::from_fn_with_state(state, authenticate))
@@ -99,7 +150,9 @@ pub fn router(state: State) -> axum::Router {
 
 /// The Connect router with every service registered.
 pub fn connect_router(state: State) -> connectrpc::Router {
-    connectrpc::Router::new().add_service(Arc::new(account::AccountApi::new(state)))
+    connectrpc::Router::new()
+        .add_service(Arc::new(account::AccountApi::new(state.clone())))
+        .add_service(Arc::new(organisation::OrganisationApi::new(state)))
 }
 
 fn refuse(error: ConnectError) -> Response {
@@ -205,6 +258,8 @@ mod tests {
         ListSessionsResponse, RevokeSessionRequest, RevokeSessionResponse,
     };
 
+    use grund_proto::grund::organisation::v1 as org;
+
     use super::*;
 
     struct Unused;
@@ -234,9 +289,94 @@ mod tests {
         }
     }
 
+    struct UnusedOrganisations;
+
+    #[allow(refining_impl_trait)]
+    impl org::OrganisationService for UnusedOrganisations {
+        async fn list_organisations(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, org::ListOrganisationsRequest>,
+        ) -> ServiceResult<org::ListOrganisationsResponse> {
+            unreachable!()
+        }
+        async fn get_organisation(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, org::GetOrganisationRequest>,
+        ) -> ServiceResult<org::GetOrganisationResponse> {
+            unreachable!()
+        }
+        async fn create_organisation(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, org::CreateOrganisationRequest>,
+        ) -> ServiceResult<org::CreateOrganisationResponse> {
+            unreachable!()
+        }
+        async fn rename_organisation(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, org::RenameOrganisationRequest>,
+        ) -> ServiceResult<org::RenameOrganisationResponse> {
+            unreachable!()
+        }
+        async fn delete_organisation(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, org::DeleteOrganisationRequest>,
+        ) -> ServiceResult<org::DeleteOrganisationResponse> {
+            unreachable!()
+        }
+        async fn list_members(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, org::ListMembersRequest>,
+        ) -> ServiceResult<org::ListMembersResponse> {
+            unreachable!()
+        }
+        async fn change_member_role(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, org::ChangeMemberRoleRequest>,
+        ) -> ServiceResult<org::ChangeMemberRoleResponse> {
+            unreachable!()
+        }
+        async fn remove_member(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, org::RemoveMemberRequest>,
+        ) -> ServiceResult<org::RemoveMemberResponse> {
+            unreachable!()
+        }
+        async fn list_invitations(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, org::ListInvitationsRequest>,
+        ) -> ServiceResult<org::ListInvitationsResponse> {
+            unreachable!()
+        }
+        async fn invite_member(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, org::InviteMemberRequest>,
+        ) -> ServiceResult<org::InviteMemberResponse> {
+            unreachable!()
+        }
+        async fn revoke_invitation(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, org::RevokeInvitationRequest>,
+        ) -> ServiceResult<org::RevokeInvitationResponse> {
+            unreachable!()
+        }
+    }
+
     #[test]
     fn every_procedure_has_an_authorization_entry() {
-        let router = connectrpc::Router::new().add_service(Arc::new(Unused));
+        let router = connectrpc::Router::new()
+            .add_service(Arc::new(Unused))
+            .add_service(Arc::new(UnusedOrganisations));
         let served: BTreeSet<String> = router
             .methods()
             .map(|m| format!("/{}", m.trim_start_matches('/')))

@@ -1,0 +1,187 @@
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+package grund.organisation.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// Organisations the caller belongs to, their members and invitations. Every
+// method acts as the caller, identified by the dashboard session. An
+// organisation is named by its slug; one the caller is not a member of is
+// not_found, exactly as if it did not exist. A role that does not allow the
+// call is permission_denied, and the rule that an organisation keeps at least
+// one owner is failed_precondition. Accepting an invitation happens in the
+// browser, where opening the mailed link proves the address.
+service OrganisationService {
+  // The caller's organisations, by slug.
+  rpc ListOrganisations(ListOrganisationsRequest) returns (ListOrganisationsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  rpc GetOrganisation(GetOrganisationRequest) returns (GetOrganisationResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // Creates an organisation owned by the caller. unimplemented on an
+  // instance with one organisation (GRUND_ORGANISATIONS=single). A slug that
+  // is taken, reserved or malformed is invalid_argument.
+  rpc CreateOrganisation(CreateOrganisationRequest) returns (CreateOrganisationResponse);
+
+  // Owners only. The old slug stays reserved for this organisation.
+  rpc RenameOrganisation(RenameOrganisationRequest) returns (RenameOrganisationResponse);
+
+  // Owners only. Asks to delete: billing answers first, so the organisation
+  // is gone shortly after, or its deletion_refusal says why not. confirm_slug
+  // must repeat the slug. The instance's organisation cannot be deleted.
+  rpc DeleteOrganisation(DeleteOrganisationRequest) returns (DeleteOrganisationResponse);
+
+  // Owners first, then admins, then members.
+  rpc ListMembers(ListMembersRequest) returns (ListMembersResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // Owners and admins; only owners make or unmake owners.
+  rpc ChangeMemberRole(ChangeMemberRoleRequest) returns (ChangeMemberRoleResponse);
+
+  // Owners and admins remove members and admins; owners remove owners.
+  // Removing yourself is leaving.
+  rpc RemoveMember(RemoveMemberRequest) returns (RemoveMemberResponse);
+
+  // Pending invitations, newest first.
+  rpc ListInvitations(ListInvitationsRequest) returns (ListInvitationsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // Owners and admins. Mails a link that works once, for 7 days. Inviting an
+  // address again replaces its invitation. Answers the same whether or not
+  // the address has an account.
+  rpc InviteMember(InviteMemberRequest) returns (InviteMemberResponse);
+
+  // Owners and admins.
+  rpc RevokeInvitation(RevokeInvitationRequest) returns (RevokeInvitationResponse);
+}
+
+message Organisation {
+  // UUIDv7.
+  string organisation_id = 1;
+  string slug = 2;
+  // The caller's role in it.
+  Role role = 3;
+  google.protobuf.Timestamp created_at = 4;
+  // Set while a deletion waits on billing.
+  google.protobuf.Timestamp deletion_requested_at = 5;
+  // Why the last deletion did not happen; empty if none was refused.
+  string deletion_refusal = 6;
+}
+
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  ROLE_OWNER = 1;
+  ROLE_ADMIN = 2;
+  ROLE_MEMBER = 3;
+}
+
+message ListOrganisationsRequest {}
+
+message ListOrganisationsResponse {
+  repeated Organisation organisations = 1;
+}
+
+message GetOrganisationRequest {
+  string slug = 1;
+}
+
+message GetOrganisationResponse {
+  Organisation organisation = 1;
+}
+
+message CreateOrganisationRequest {
+  // 3-32 characters of a-z, 0-9 and single hyphens.
+  string slug = 1;
+}
+
+message CreateOrganisationResponse {
+  Organisation organisation = 1;
+}
+
+message RenameOrganisationRequest {
+  string slug = 1;
+  string new_slug = 2;
+}
+
+message RenameOrganisationResponse {
+  Organisation organisation = 1;
+}
+
+message DeleteOrganisationRequest {
+  string slug = 1;
+  string confirm_slug = 2;
+}
+
+message DeleteOrganisationResponse {}
+
+message Member {
+  string account_id = 1;
+  string username = 2;
+  string email = 3;
+  Role role = 4;
+  // Unset for memberships older than 2026-09-25.
+  google.protobuf.Timestamp joined_at = 5;
+}
+
+message ListMembersRequest {
+  string slug = 1;
+}
+
+message ListMembersResponse {
+  repeated Member members = 1;
+}
+
+message ChangeMemberRoleRequest {
+  string slug = 1;
+  string account_id = 2;
+  Role role = 3;
+}
+
+message ChangeMemberRoleResponse {}
+
+message RemoveMemberRequest {
+  string slug = 1;
+  string account_id = 2;
+}
+
+message RemoveMemberResponse {}
+
+message Invitation {
+  string invitation_id = 1;
+  string email = 2;
+  Role role = 3;
+  // The inviter's username.
+  string invited_by = 4;
+  google.protobuf.Timestamp expires_at = 5;
+}
+
+message ListInvitationsRequest {
+  string slug = 1;
+}
+
+message ListInvitationsResponse {
+  repeated Invitation invitations = 1;
+}
+
+message InviteMemberRequest {
+  string slug = 1;
+  string email = 2;
+  // ROLE_MEMBER or ROLE_ADMIN.
+  Role role = 3;
+}
+
+message InviteMemberResponse {}
+
+message RevokeInvitationRequest {
+  string slug = 1;
+  string invitation_id = 2;
+}
+
+message RevokeInvitationResponse {}

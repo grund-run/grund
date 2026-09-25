@@ -5,6 +5,8 @@ use crate::accepttest::fixtures::{
     testcase_configured, testcase_with_mail,
 };
 
+const ORGS: &str = "/grund.organisation.v1.OrganisationService";
+
 async fn a_team(given: &Given, when: &When, then: &Then) -> anyhow::Result<String> {
     let slug = given.a_fresh_name("team");
     when.submitting("/orgs/new", "/orgs/new", &[("slug", &slug)])
@@ -246,5 +248,113 @@ async fn a_deletion_waits_while_billing_is_down_and_completes_once_it_answers() 
                 && c.body["slug"] == team.as_str()),
         "{changes:?}"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_api_manages_organisations_and_hides_other_peoples() -> anyhow::Result<()> {
+    let Some((given, when, then)) = testcase_with_mail().await? else {
+        return Ok(());
+    };
+    let account = given.a_signed_in_account().await?;
+    let slug = given.a_fresh_name("api");
+
+    when.calling(
+        &format!("{ORGS}/CreateOrganisation"),
+        &format!(r#"{{"slug":"{slug}"}}"#),
+    )
+    .await?;
+    then.status(200)?;
+    anyhow::ensure!(then.json()?["organisation"]["role"] == "ROLE_OWNER");
+
+    when.calling(&format!("{ORGS}/ListOrganisations"), "{}")
+        .await?;
+    let listed: Vec<String> = then.json()?["organisations"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|o| o["slug"].as_str().map(str::to_string))
+        .collect();
+    anyhow::ensure!(
+        listed.contains(&slug) && listed.contains(&account.username),
+        "{listed:?}"
+    );
+
+    when.calling(
+        &format!("{ORGS}/InviteMember"),
+        &format!(r#"{{"slug":"{slug}","email":"friend-{slug}@accept.test","role":"ROLE_MEMBER"}}"#),
+    )
+    .await?;
+    then.status(200)?;
+    when.calling(
+        &format!("{ORGS}/ListInvitations"),
+        &format!(r#"{{"slug":"{slug}"}}"#),
+    )
+    .await?;
+    anyhow::ensure!(then.json()?["invitations"].as_array().map(Vec::len) == Some(1));
+
+    when.calling(
+        &format!("{ORGS}/InviteMember"),
+        &format!(r#"{{"slug":"{slug}","email":"x@accept.test","role":"ROLE_OWNER"}}"#),
+    )
+    .await?;
+    then.status(400)?.connect_code("invalid_argument")?;
+
+    when.calling(
+        &format!("{ORGS}/ListMembers"),
+        &format!(r#"{{"slug":"{slug}"}}"#),
+    )
+    .await?;
+    let members = then.json()?["members"].clone();
+    let me = members[0]["accountId"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    when.calling(
+        &format!("{ORGS}/RemoveMember"),
+        &format!(r#"{{"slug":"{slug}","accountId":"{me}"}}"#),
+    )
+    .await?;
+    then.status_in(&[400, 412])?
+        .connect_code("failed_precondition")?;
+
+    let (outsider, outsider_when, outsider_then) = given.testcase.another_browser();
+    outsider.a_signed_in_account().await?;
+    for method in ["GetOrganisation", "ListMembers", "ListInvitations"] {
+        outsider_when
+            .calling(
+                &format!("{ORGS}/{method}"),
+                &format!(r#"{{"slug":"{slug}"}}"#),
+            )
+            .await?;
+        outsider_then
+            .status(404)
+            .and_then(|t| t.connect_code("not_found"))
+            .map_err(|e| e.context(method))?;
+    }
+    outsider_when
+        .calling(
+            &format!("{ORGS}/DeleteOrganisation"),
+            &format!(r#"{{"slug":"{slug}","confirmSlug":"{slug}"}}"#),
+        )
+        .await?;
+    outsider_then.status(404)?;
+
+    let renamed = given.a_fresh_name("api-renamed");
+    when.calling(
+        &format!("{ORGS}/RenameOrganisation"),
+        &format!(r#"{{"slug":"{slug}","newSlug":"{renamed}"}}"#),
+    )
+    .await?;
+    then.status(200)?;
+    anyhow::ensure!(then.json()?["organisation"]["slug"] == renamed.as_str());
+    when.calling(
+        &format!("{ORGS}/DeleteOrganisation"),
+        &format!(r#"{{"slug":"{renamed}","confirmSlug":"{renamed}"}}"#),
+    )
+    .await?;
+    then.status(200)?;
+    eventually_status(&when, &then, &format!("/{renamed}"), 404).await?;
     Ok(())
 }

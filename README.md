@@ -91,8 +91,17 @@ confirmed (see [.env.example](.env.example)). Without them nothing is queued.
   component with example data.
 - The API is ConnectRPC (`proto/`, generated at build time; Connect, gRPC and
   gRPC-Web on the same routes). `grund.account.v1.AccountService` has
-  `GetViewer`, `ListSessions` and `RevokeSession`. Today it takes the
-  dashboard's session cookie, from this origin only.
+  `GetViewer`, `ListSessions` and `RevokeSession`;
+  `grund.organisation.v1.OrganisationService` lists, creates, renames and
+  deletes organisations and manages their members and invitations, with the
+  same rules as the pages. Today it takes the dashboard's session cookie,
+  from this origin only.
+- Organisations can be renamed (the old name redirects members and stays
+  reserved) and deleted by their owners. A deletion is a mire saga: billing
+  answers first, and while it cannot be reached grund keeps asking.
+- Billing is a separate service (`proto/grund/billing/v1`), run only by
+  grund's hosted service. Without `GRUND_BILLING_URL` every organisation is
+  free and nothing is sent anywhere.
 
 ```bash
 curl -s -X POST -H 'Content-Type: application/json' -d '{}' \
