@@ -82,10 +82,10 @@ pub fn redirect(to: &str) -> Response {
     response
 }
 
-fn with_referrer_off(mut response: Response) -> Response {
+fn with_referrer_same_origin(mut response: Response) -> Response {
     response.headers_mut().insert(
         header::REFERRER_POLICY,
-        HeaderValue::from_static("no-referrer"),
+        HeaderValue::from_static("same-origin"),
     );
     response
 }
@@ -500,7 +500,7 @@ pub async fn verify_form(
             csrf => browser.csrf_token(), token => query.token, valid,
         },
     )?;
-    Ok(with_referrer_off(response))
+    Ok(with_referrer_same_origin(response))
 }
 
 #[derive(Deserialize)]
@@ -624,7 +624,7 @@ pub async fn reset_confirm_form(
             csrf => browser.csrf_token(), token => query.token, valid, error => "", password_error => "",
         },
     )?;
-    Ok(with_referrer_off(response))
+    Ok(with_referrer_same_origin(response))
 }
 
 pub async fn reset_confirm(

@@ -18,7 +18,7 @@ async fn a_new_account_can_sign_in_only_after_confirming_its_email() -> anyhow::
         .await?;
     when.visiting(&newest).await?;
     then.status(200)?
-        .header("referrer-policy", "no-referrer")?
+        .header("referrer-policy", "same-origin")?
         .body_contains("Confirm email")?;
     let token = given.last_token()?;
     when.submitting_on_current_page("/verify", &[("token", &token)])

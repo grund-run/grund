@@ -68,12 +68,13 @@ async fn the_stylesheet_each_page_links_is_served_and_cached_for_a_year() -> any
 }
 
 #[tokio::test]
-async fn pages_whose_address_carries_a_token_send_no_referrer() -> anyhow::Result<()> {
+async fn pages_whose_address_carries_a_token_send_referrers_only_to_this_origin()
+-> anyhow::Result<()> {
     let (_given, when, then) = testcase().await?;
     for path in ["/verify?token=abc", "/reset/confirm?token=abc"] {
         when.visiting(path).await?;
         then.status(200)?
-            .header("referrer-policy", "no-referrer")
+            .header("referrer-policy", "same-origin")
             .map_err(|e| e.context(path))?;
     }
     Ok(())

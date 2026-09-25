@@ -45,8 +45,10 @@ pub const MAX_BODY_BYTES: usize = 16 * 1024;
 
 /// The whole HTTP surface. The security headers sit outside the timeout and
 /// the panic guard, so their answers carry them too; a handler that must be
-/// stricter (no-referrer on a page whose URL carries a token) sets its own and
-/// the layer leaves it alone. The trace span records method and path only,
+/// stricter sets its own and the layer leaves it alone: a page whose URL
+/// carries a token sends `Referrer-Policy: same-origin`, so the token never
+/// reaches another site. Not `no-referrer`: under it a browser posts that
+/// page's form with `Origin: null`, which the origin check refuses. The trace span records method and path only,
 /// because query strings carry tokens.
 pub fn router(state: State) -> Router {
     let timeout = state.config.request_timeout;

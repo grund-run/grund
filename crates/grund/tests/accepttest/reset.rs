@@ -50,7 +50,7 @@ async fn a_reset_link_sets_the_password_once_and_signs_every_device_out() -> any
     other.visiting(&link).await?;
     other_then
         .status(200)?
-        .header("referrer-policy", "no-referrer")?;
+        .header("referrer-policy", "same-origin")?;
     let token = link.split("token=").nth(1).unwrap_or_default().to_string();
     other
         .submitting_on_current_page(

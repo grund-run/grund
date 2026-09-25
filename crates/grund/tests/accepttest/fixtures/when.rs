@@ -104,7 +104,31 @@ impl When {
         let form = self.send("GET", page, &[], None).await?;
         anyhow::ensure!(form.status == 200, "GET {page}: status {}", form.status);
         let csrf = csrf_of(&form.text()).with_context(|| format!("{page} has no csrf field"))?;
-        self.submitting_with_token(action, &csrf, fields).await
+        let origin = self.origin_a_browser_sends(form.header("referrer-policy"));
+        let mut all = vec![("csrf", csrf.as_str())];
+        all.extend_from_slice(fields);
+        self.posting_raw(action, &all, Some(&origin)).await
+    }
+
+    pub fn form_origin(&self) -> String {
+        let policy = self
+            .testcase
+            .data()
+            .last
+            .as_ref()
+            .and_then(|page| page.header("referrer-policy").map(str::to_string));
+        self.origin_a_browser_sends(policy.as_deref())
+    }
+
+    pub fn origin_a_browser_sends(&self, referrer_policy: Option<&str>) -> String {
+        let effective = referrer_policy
+            .and_then(|policy| policy.split(',').next_back())
+            .map(|policy| policy.trim().to_ascii_lowercase());
+        if effective.as_deref() == Some("no-referrer") {
+            "null".to_string()
+        } else {
+            self.testcase.fixture.origin.serialized()
+        }
     }
 
     pub async fn submitting_with_token(
@@ -113,7 +137,7 @@ impl When {
         csrf: &str,
         fields: &[(&str, &str)],
     ) -> anyhow::Result<&Self> {
-        let origin = self.testcase.fixture.origin.serialized();
+        let origin = self.form_origin();
         let mut all = vec![("csrf", csrf)];
         all.extend_from_slice(fields);
         self.posting_raw(action, &all, Some(&origin)).await
