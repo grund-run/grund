@@ -103,6 +103,9 @@ Dockerfile             builds the image from source (compose); Dockerfile.prebui
 check.sh               the static binary in a read-only scratch container, against the accepttests
 ```
 
+The design documents, threat model and agent notes live in
+[grund/grund-docs](https://git.kjuulh.io/grund/grund-docs) (private).
+
 ## Develop and verify
 
 ```bash
