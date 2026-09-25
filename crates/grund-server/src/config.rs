@@ -181,6 +181,9 @@ pub struct ServeConfig {
     #[command(flatten)]
     pub social: SocialArgs,
 
+    #[command(flatten)]
+    pub insights: InsightsArgs,
+
     /// Upper bound on one request. Sign-in hashes a password (~50 ms), so
     /// anything near this is a stuck dependency, not slow work.
     #[arg(long, env = "GRUND_REQUEST_TIMEOUT", value_parser = secs, default_value = "15")]
@@ -236,6 +239,53 @@ pub struct SocialArgs {
     pub oidc_name: String,
 }
 
+/// Reporting new accounts to a grund insights service, for the people who
+/// operate this instance. Off unless both settings are present: an instance
+/// without them sends nothing anywhere and queues nothing.
+#[derive(Clone, Debug, Default, Args)]
+pub struct InsightsArgs {
+    /// The insights ingest endpoint, e.g. http://insights:8081. Once an
+    /// account's address is confirmed, grund sends its username, address,
+    /// sign-in method and the two times to `<url>/v1/accounts`, from the
+    /// outbox, at least once. Set with GRUND_INSIGHTS_TOKEN.
+    #[arg(long, env = "GRUND_INSIGHTS_URL")]
+    pub insights_url: Option<String>,
+
+    /// The bearer token that insights expects (its INSIGHTS_INGEST_TOKEN), at
+    /// least 32 printable ASCII characters.
+    #[arg(long, env = "GRUND_INSIGHTS_TOKEN", hide_env_values = true)]
+    pub insights_token: Option<String>,
+}
+
+impl InsightsArgs {
+    /// Whether accounts are reported.
+    pub fn enabled(&self) -> bool {
+        self.insights_url.is_some() && self.insights_token.is_some()
+    }
+
+    fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.insights_url.is_some() == self.insights_token.is_some(),
+            "GRUND_INSIGHTS_URL and GRUND_INSIGHTS_TOKEN must be set together"
+        );
+        if let Some(url) = &self.insights_url {
+            anyhow::ensure!(
+                (url.starts_with("http://") || url.starts_with("https://"))
+                    && !url.ends_with('/')
+                    && !url.contains(['?', '#']),
+                "GRUND_INSIGHTS_URL must be an http or https URL without a trailing slash"
+            );
+        }
+        if let Some(token) = &self.insights_token {
+            anyhow::ensure!(
+                token.len() >= 32 && token.bytes().all(|b| b.is_ascii_graphic()),
+                "GRUND_INSIGHTS_TOKEN must be at least 32 printable ASCII characters"
+            );
+        }
+        Ok(())
+    }
+}
+
 const PLACEHOLDERS: &[&str] = &["change-me", "changeme", "replace-me"];
 
 impl ServeConfig {
@@ -257,6 +307,8 @@ impl ServeConfig {
             &mut self.social.oidc_issuer,
             &mut self.social.oidc_client_id,
             &mut self.social.oidc_client_secret,
+            &mut self.insights.insights_url,
+            &mut self.insights.insights_token,
         ] {
             if value.as_deref().is_some_and(|v| v.trim().is_empty()) {
                 *value = None;
@@ -308,6 +360,10 @@ impl ServeConfig {
                 (
                     "GRUND_OIDC_CLIENT_SECRET",
                     self.social.oidc_client_secret.as_deref(),
+                ),
+                (
+                    "GRUND_INSIGHTS_TOKEN",
+                    self.insights.insights_token.as_deref(),
                 ),
             ] {
                 if let Some(value) = value {
@@ -385,6 +441,7 @@ impl ServeConfig {
             "GRUND_SHUTDOWN_GRACE must be at most 30 s, the kubelet's default grace period"
         );
         self.social.validate()?;
+        self.insights.validate()?;
         Ok(())
     }
 
@@ -549,6 +606,7 @@ mod tests {
         assert_eq!(config.public_origin().serialized, "http://localhost:8080");
         assert!(config.signup_enabled);
         assert!(!config.social.social_login);
+        assert!(!config.insights.enabled(), "nothing is reported by default");
     }
 
     #[test]
@@ -628,6 +686,49 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("GRUND_GITHUB_CLIENT_SECRET"), "{error}");
+    }
+
+    #[test]
+    fn insights_needs_its_url_and_token_together_and_a_long_token() {
+        let token = "0123456789abcdef0123456789abcdef";
+        let error = parse(&["--insights-url", "http://insights:8081"])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("GRUND_INSIGHTS_TOKEN"), "{error}");
+        let error = parse(&["--insights-token", token]).unwrap_err().to_string();
+        assert!(error.contains("GRUND_INSIGHTS_URL"), "{error}");
+        let error = parse(&[
+            "--insights-url",
+            "http://insights:8081",
+            "--insights-token",
+            "short",
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("at least 32"), "{error}");
+        let error = parse(&[
+            "--insights-url",
+            "insights:8081/",
+            "--insights-token",
+            token,
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("GRUND_INSIGHTS_URL"), "{error}");
+        let config = parse(&[
+            "--insights-url",
+            "http://insights:8081",
+            "--insights-token",
+            token,
+        ])
+        .unwrap();
+        assert!(config.insights.enabled());
+    }
+
+    #[test]
+    fn empty_insights_settings_count_as_unset() {
+        let config = parse(&["--insights-url", "", "--insights-token", " "]).unwrap();
+        assert!(!config.insights.enabled());
     }
 
     #[test]

@@ -153,6 +153,12 @@ impl Fixture {
         Ok(fixture)
     }
 
+    pub fn database_url(&self) -> Option<String> {
+        let (admin, name) = self.database.as_ref()?;
+        let (base, _) = admin.rsplit_once('/')?;
+        Some(format!("{base}/{name}"))
+    }
+
     async fn wait_until_live(&self, log: Option<&std::path::Path>) -> anyhow::Result<()> {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {

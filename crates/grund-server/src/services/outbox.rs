@@ -1,5 +1,5 @@
-//! The outbox drain (skills `messaging` §2): delivers mail and resolves reset
-//! requests after commit, at least once. Added last to notmad, so it drains
+//! The outbox drain (skills `messaging` §2): delivers mail, resolves reset
+//! requests and reports accounts to insights after commit, at least once. Added last to notmad, so it drains
 //! last.
 //!
 //! It wakes on a NATS hint (`<prefix>.outbox`) when one is configured, and
@@ -20,7 +20,10 @@ use uuid::Uuid;
 
 use crate::{
     crypto,
-    services::mail::{Mail, MailError, Mailer},
+    services::{
+        insights::{ReportError, Reporter},
+        mail::{Mail, MailError, Mailer},
+    },
     state::State,
 };
 
@@ -52,11 +55,16 @@ pub async fn wake(state: &State) {
 pub struct OutboxDrain {
     state: State,
     mailer: Mailer,
+    reporter: Reporter,
 }
 
 impl OutboxDrain {
-    pub fn new(state: State, mailer: Mailer) -> Self {
-        Self { state, mailer }
+    pub fn new(state: State, mailer: Mailer, reporter: Reporter) -> Self {
+        Self {
+            state,
+            mailer,
+            reporter,
+        }
     }
 
     async fn drain(&self) {
@@ -88,6 +96,7 @@ impl OutboxDrain {
         };
         let mail = match kind {
             Kind::PasswordResetRequested => return self.resolve_reset(row).await,
+            Kind::InsightsAccount => return self.report(row).await,
             Kind::VerifyEmailMail => Mail::VerifyEmail,
             Kind::PasswordResetMail => Mail::PasswordReset,
             Kind::SignupExistingMail => Mail::SignupExisting,
@@ -102,6 +111,29 @@ impl OutboxDrain {
                 outbox::delivered(&self.state.pool, row.outbox_id).await?;
             }
             Err(error @ (MailError::NotConfigured | MailError::Transient)) => {
+                outbox::failed(
+                    &self.state.pool,
+                    row.outbox_id,
+                    row.attempts,
+                    &error.to_string(),
+                )
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn report(&self, row: Claimed) -> anyhow::Result<()> {
+        match self.reporter.send(&row).await {
+            Ok(()) => {
+                outbox::delivered(&self.state.pool, row.outbox_id).await?;
+                tracing::info!(outbox_id = %row.outbox_id, "account reported to insights");
+            }
+            Err(error @ (ReportError::NotConfigured | ReportError::Permanent)) => {
+                tracing::warn!(outbox_id = %row.outbox_id, reason = %error, "account report dropped");
+                outbox::delivered(&self.state.pool, row.outbox_id).await?;
+            }
+            Err(error @ ReportError::Transient) => {
                 outbox::failed(
                     &self.state.pool,
                     row.outbox_id,

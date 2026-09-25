@@ -71,6 +71,12 @@ One binary, `grund`, with subcommands: `serve` (the control plane),
 check for the scratch image). `grund serve --help` lists every setting with
 its environment variable.
 
+grund contacts no service you have not configured: no telemetry, no update
+check. The one report it can send is opt-in, for operators who run grund
+insights for their own users: with `GRUND_INSIGHTS_URL` and
+`GRUND_INSIGHTS_TOKEN` set, each account is reported once its address is
+confirmed (see [.env.example](.env.example)). Without them nothing is queued.
+
 - `GET /health/live` answers `{"status":"ok"}` and checks nothing.
 - `GET /health/ready` answers 200 or 503 from the last dependency checks,
   with the build `revision` and each check's state.

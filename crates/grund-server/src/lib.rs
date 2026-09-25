@@ -8,7 +8,7 @@
 //!       grund/health        nostatus checks                 keeps readiness honest while draining
 //!       grund/projections   read-model catch-up and rebuild
 //!       grund/sweeper       expired sessions, links, windows
-//!       grund/outbox        mail and reset requests         drains last, up to 5 s
+//!       grund/outbox        mail, resets, insights reports  drains last, up to 5 s
 //! ```
 //!
 //! PostgreSQL is the truth. NATS, when configured, only wakes background work
@@ -51,6 +51,7 @@ pub async fn serve(
         .collect();
     let templates = templates::Templates::new(&extra)?;
     let mailer = services::mail::Mailer::new(&config, templates.clone())?;
+    let reporter = services::insights::Reporter::new(&config.insights)?;
     let health = health::registry(pool.clone(), nats.clone(), mailer.configured(), &config);
     let entitlements = entitlements(&config)?;
     let grace = config.shutdown_grace;
@@ -74,6 +75,7 @@ pub async fn serve(
         );
     }
     tracing::info!(
+        insights = state.config.insights.enabled(),
         extensions = ?state.extensions.iter().map(|e| e.name()).collect::<Vec<_>>(),
         revision = health::REVISION,
         version = health::VERSION,
@@ -84,7 +86,11 @@ pub async fn serve(
         .add(health::Checks::new(&state))
         .add(projections::Projections::new(&state))
         .add(services::maintenance::Sweeper::new(state.clone()))
-        .add(services::outbox::OutboxDrain::new(state.clone(), mailer))
+        .add(services::outbox::OutboxDrain::new(
+            state.clone(),
+            mailer,
+            reporter,
+        ))
         .cancellation(Some(grace))
         .run()
         .await?;

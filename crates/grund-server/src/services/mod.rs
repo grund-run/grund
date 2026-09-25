@@ -4,6 +4,7 @@
 
 pub mod accounts;
 pub mod entitlements;
+pub mod insights;
 pub mod limits;
 pub mod mail;
 pub mod maintenance;

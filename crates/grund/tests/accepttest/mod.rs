@@ -4,6 +4,7 @@ mod fixtures;
 mod api;
 mod csrf;
 mod health;
+mod insights;
 mod login;
 mod pages;
 mod reset;

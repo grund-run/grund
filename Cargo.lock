@@ -1146,6 +1146,8 @@ dependencies = [
  "mire",
  "nostatus",
  "notmad",
+ "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "serde_urlencoded",

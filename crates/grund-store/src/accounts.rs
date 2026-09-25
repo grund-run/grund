@@ -62,6 +62,32 @@ pub async fn login_record_by_id(
         .await
 }
 
+/// What a report to grund insights says about a confirmed account.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ConfirmedAccount {
+    pub account_id: Uuid,
+    pub username: String,
+    pub email: String,
+    pub registered_at: DateTime<Utc>,
+    pub verified_at: DateTime<Utc>,
+}
+
+/// The account, if its address is confirmed. Reads the read model, so inside
+/// the unit of work that confirmed it, it sees the confirmation.
+pub async fn confirmed(
+    executor: impl PgExecutor<'_>,
+    account_id: Uuid,
+) -> Result<Option<ConfirmedAccount>, sqlx::Error> {
+    sqlx::query_as::<_, ConfirmedAccount>(
+        "SELECT a.account_id, a.username, e.email, a.registered_at, a.email_verified_at AS verified_at \
+         FROM grund_accounts a JOIN grund_account_emails e ON e.account_id = a.account_id \
+         WHERE a.account_id = $1 AND a.email_verified_at IS NOT NULL",
+    )
+    .bind(account_id)
+    .fetch_optional(executor)
+    .await
+}
+
 /// Whether a username is taken.
 pub async fn username_taken(
     executor: impl PgExecutor<'_>,

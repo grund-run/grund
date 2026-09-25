@@ -31,7 +31,9 @@ use grund_server::{
     crypto,
     services::{
         accounts::RequestMeta,
+        insights,
         limits::{Limits, LimitsState},
+        outbox::wake as outbox_wake,
         passwords::{Passwords, PasswordsState},
     },
     state::State,
@@ -673,8 +675,12 @@ impl Social {
             account_id,
         )
         .await?;
+        insights::queue_account(&self.state, work.sql(), account_id, &pending.provider).await?;
         work.commit().await?;
         tracing::info!(%account_id, provider = %pending.provider, "account created by social sign-in");
+        if self.state.config.insights.enabled() {
+            outbox_wake(&self.state).await;
+        }
         Ok(())
     }
 

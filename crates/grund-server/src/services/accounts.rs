@@ -22,6 +22,7 @@ use uuid::Uuid;
 use crate::{
     crypto,
     services::{
+        insights,
         limits::{Limits, LimitsState},
         outbox::wake,
         passwords::{Passwords, PasswordsState},
@@ -304,16 +305,29 @@ impl Accounts {
         else {
             return Ok(false);
         };
-        work.account(
-            redeemed.account_id,
-            AccountCommand::VerifyEmail {
-                email_digest: crypto::email_digest(&redeemed.email_normalized),
-                at: Utc::now(),
-            },
-        )
-        .await?;
+        let verified = work
+            .account(
+                redeemed.account_id,
+                AccountCommand::VerifyEmail {
+                    email_digest: crypto::email_digest(&redeemed.email_normalized),
+                    at: Utc::now(),
+                },
+            )
+            .await?;
+        if !verified.is_empty() {
+            insights::queue_account(
+                &self.state,
+                work.sql(),
+                redeemed.account_id,
+                insights::PASSWORD,
+            )
+            .await?;
+        }
         work.commit().await?;
         tracing::info!(account_id = %redeemed.account_id, "email verified");
+        if !verified.is_empty() && self.state.config.insights.enabled() {
+            wake(&self.state).await;
+        }
         Ok(true)
     }
 

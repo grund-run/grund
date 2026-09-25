@@ -1,5 +1,5 @@
-//! Work to do after commit (skills `messaging` §2): mail, and resolving
-//! password-reset requests. Rows are written in the transaction of the change
+//! Work to do after commit (skills `messaging` §2): mail, resolving
+//! password-reset requests, and reports to grund insights. Rows are written in the transaction of the change
 //! they announce and claimed by the drain with `SKIP LOCKED`, so replicas
 //! share the work without doing any of it twice at once.
 
@@ -16,6 +16,7 @@ pub enum Kind {
     PasswordResetMail,
     SignupExistingMail,
     PasswordResetRequested,
+    InsightsAccount,
 }
 
 impl Kind {
@@ -25,6 +26,7 @@ impl Kind {
             Kind::PasswordResetMail => "mail.password_reset",
             Kind::SignupExistingMail => "mail.signup_existing",
             Kind::PasswordResetRequested => "auth.password_reset_requested",
+            Kind::InsightsAccount => "insights.account",
         }
     }
 
@@ -34,6 +36,7 @@ impl Kind {
             Kind::PasswordResetMail,
             Kind::SignupExistingMail,
             Kind::PasswordResetRequested,
+            Kind::InsightsAccount,
         ]
         .into_iter()
         .find(|kind| kind.as_str() == value)
@@ -98,7 +101,7 @@ pub async fn claim(
 }
 
 /// Marks a row done and scrubs its recipient and payload, which may hold a
-/// live link.
+/// live link or an account's details.
 pub async fn delivered(executor: impl PgExecutor<'_>, outbox_id: Uuid) -> Result<(), sqlx::Error> {
     sqlx::query(
         "UPDATE grund_outbox SET delivered_at = clock_timestamp(), recipient = '', payload = '{}', last_error = NULL \
