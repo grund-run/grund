@@ -95,9 +95,13 @@ kjuulh: "kubernetes-app": {
 		]
 
 		env_vars: {
-			GRUND_LISTEN:     "0.0.0.0:8080"
-			GRUND_LOG_FORMAT: "json"
-			RUST_LOG:         "grund=info,grund_server=info,grund_store=info,notmad=info,warn"
+			// grund's hosted service: every sign-up gets its own organisation
+			// and may create more. The binary's default, single, is for
+			// self-hosting (grund-docs design/organisations.md).
+			GRUND_ORGANISATIONS: "multi"
+			GRUND_LISTEN:        "0.0.0.0:8080"
+			GRUND_LOG_FORMAT:    "json"
+			RUST_LOG:            "grund=info,grund_server=info,grund_store=info,notmad=info,warn"
 			// The ingress controller is the one proxy that appends to
 			// X-Forwarded-For. The edge in front of it forwards TLS without
 			// passing the client address on, so every request arrives from the
