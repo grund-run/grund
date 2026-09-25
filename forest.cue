@@ -41,6 +41,9 @@ kjuulh: "kubernetes-app": {
 				env_vars: {
 					GRUND_PUBLIC_URL: "https://dev.app.grund.sh"
 					GRUND_MAIL_FROM:  "grund dev <grund@dev.app.grund.sh>"
+					// Confirmed accounts are reported to the insights service in
+					// the same namespace, in-cluster, plain http.
+					GRUND_INSIGHTS_URL: "http://grund-insights:8081"
 				}
 				// grund-secrets is applied by the cluster's operators, not by
 				// forest. Dev's smtp_url is the namespace's shared development
@@ -49,6 +52,10 @@ kjuulh: "kubernetes-app": {
 					{name: "DATABASE_URL", secret: "grund-db-app", key: "uri"},
 					{name: "GRUND_SECRET_KEY", secret: "grund-secrets", key: "secret_key"},
 					{name: "GRUND_SMTP_URL", secret: "grund-secrets", key: "smtp_url"},
+					// Its own Secret, created by hand, so the script that rewrites
+					// grund-secrets cannot remove it. Shared with the insights and
+					// website deployments in dev.
+					{name: "GRUND_INSIGHTS_TOKEN", secret: "grund-insights-ingest", key: "token"},
 				]
 			}
 		}
