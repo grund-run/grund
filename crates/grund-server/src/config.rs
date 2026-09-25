@@ -207,6 +207,9 @@ pub struct ServeConfig {
     #[command(flatten)]
     pub insights: InsightsArgs,
 
+    #[command(flatten)]
+    pub billing: BillingArgs,
+
     /// Upper bound on one request. Sign-in hashes a password (~50 ms), so
     /// anything near this is a stuck dependency, not slow work.
     #[arg(long, env = "GRUND_REQUEST_TIMEOUT", value_parser = secs, default_value = "15")]
@@ -309,6 +312,52 @@ impl InsightsArgs {
     }
 }
 
+/// A billing service for this instance (grund-docs design/billing.md). Only
+/// grund's hosted service has one; without it every organisation is free and
+/// nothing is charged.
+#[derive(Clone, Debug, Default, Args)]
+pub struct BillingArgs {
+    /// The billing service, e.g. http://billing:8080, reached from grund's
+    /// servers only. grund calls `grund.billing.v1.BillingService` on it. Set
+    /// with GRUND_BILLING_TOKEN.
+    #[arg(long, env = "GRUND_BILLING_URL")]
+    pub billing_url: Option<String>,
+
+    /// The bearer token the billing service expects, at least 32 printable
+    /// ASCII characters.
+    #[arg(long, env = "GRUND_BILLING_TOKEN", hide_env_values = true)]
+    pub billing_token: Option<String>,
+}
+
+impl BillingArgs {
+    /// Whether a billing service is configured.
+    pub fn enabled(&self) -> bool {
+        self.billing_url.is_some() && self.billing_token.is_some()
+    }
+
+    fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.billing_url.is_some() == self.billing_token.is_some(),
+            "GRUND_BILLING_URL and GRUND_BILLING_TOKEN must be set together"
+        );
+        if let Some(url) = &self.billing_url {
+            anyhow::ensure!(
+                (url.starts_with("http://") || url.starts_with("https://"))
+                    && !url.ends_with('/')
+                    && !url.contains(['?', '#']),
+                "GRUND_BILLING_URL must be an http or https URL without a trailing slash"
+            );
+        }
+        if let Some(token) = &self.billing_token {
+            anyhow::ensure!(
+                token.len() >= 32 && token.bytes().all(|b| b.is_ascii_graphic()),
+                "GRUND_BILLING_TOKEN must be at least 32 printable ASCII characters"
+            );
+        }
+        Ok(())
+    }
+}
+
 const PLACEHOLDERS: &[&str] = &["change-me", "changeme", "replace-me"];
 
 impl ServeConfig {
@@ -332,6 +381,8 @@ impl ServeConfig {
             &mut self.social.oidc_client_secret,
             &mut self.insights.insights_url,
             &mut self.insights.insights_token,
+            &mut self.billing.billing_url,
+            &mut self.billing.billing_token,
         ] {
             if value.as_deref().is_some_and(|v| v.trim().is_empty()) {
                 *value = None;
@@ -372,6 +423,7 @@ impl ServeConfig {
                 ("DATABASE_URL", Some(self.database.database_url.as_str())),
                 ("GRUND_SECRET_KEY", self.secret_key.as_deref()),
                 ("GRUND_SMTP_URL", self.smtp_url.as_deref()),
+                ("GRUND_BILLING_TOKEN", self.billing.billing_token.as_deref()),
                 (
                     "GRUND_GITHUB_CLIENT_SECRET",
                     self.social.github_client_secret.as_deref(),
@@ -465,6 +517,7 @@ impl ServeConfig {
         );
         self.social.validate()?;
         self.insights.validate()?;
+        self.billing.validate()?;
         Ok(())
     }
 

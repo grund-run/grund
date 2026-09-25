@@ -166,6 +166,73 @@ pub async fn apply_organisation(
             .execute(&mut *connection)
             .await?;
         }
+        OrganisationEvent::Renamed {
+            from,
+            to,
+            renamed_at,
+            ..
+        } => {
+            sqlx::query("UPDATE grund_organisations SET slug = $2 WHERE organisation_id = $1")
+                .bind(organisation_id)
+                .bind(to.as_str())
+                .execute(&mut *connection)
+                .await?;
+            sqlx::query(
+                "DELETE FROM grund_organisation_aliases WHERE slug = $1 AND organisation_id = $2",
+            )
+            .bind(to.as_str())
+            .bind(organisation_id)
+            .execute(&mut *connection)
+            .await?;
+            sqlx::query(
+                "INSERT INTO grund_organisation_aliases (slug, organisation_id, created_at) \
+                 VALUES ($1, $2, $3) ON CONFLICT (slug) DO NOTHING",
+            )
+            .bind(from.as_str())
+            .bind(organisation_id)
+            .bind(renamed_at)
+            .execute(&mut *connection)
+            .await?;
+        }
+        OrganisationEvent::DeletionRequested {
+            request_id,
+            requested_at,
+            ..
+        } => {
+            sqlx::query(
+                "UPDATE grund_organisations SET deletion_requested_at = $2, deletion_request_id = $3, \
+                   deletion_refusal = NULL WHERE organisation_id = $1",
+            )
+            .bind(organisation_id)
+            .bind(requested_at)
+            .bind(request_id)
+            .execute(&mut *connection)
+            .await?;
+        }
+        OrganisationEvent::DeletionCancelled { reason, .. } => {
+            let reason: String = reason.chars().take(500).collect();
+            sqlx::query(
+                "UPDATE grund_organisations SET deletion_requested_at = NULL, deletion_request_id = NULL, \
+                   deletion_refusal = $2 WHERE organisation_id = $1",
+            )
+            .bind(organisation_id)
+            .bind(reason)
+            .execute(&mut *connection)
+            .await?;
+        }
+        OrganisationEvent::Deleted { deleted_at, .. } => {
+            sqlx::query(
+                "UPDATE grund_organisations SET deleted_at = $2 WHERE organisation_id = $1",
+            )
+            .bind(organisation_id)
+            .bind(deleted_at)
+            .execute(&mut *connection)
+            .await?;
+            sqlx::query("DELETE FROM grund_memberships WHERE organisation_id = $1")
+                .bind(organisation_id)
+                .execute(&mut *connection)
+                .await?;
+        }
         OrganisationEvent::InvitationIssued { .. }
         | OrganisationEvent::InvitationWithdrawn { .. }
         | OrganisationEvent::InvitationAccepted { .. } => {}

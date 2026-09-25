@@ -14,6 +14,11 @@ pub struct Membership {
     pub kind: String,
     pub role: String,
     pub created_at: DateTime<Utc>,
+    /// Set while a deletion waits on billing.
+    pub deletion_requested_at: Option<DateTime<Utc>>,
+    pub deletion_request_id: Option<Uuid>,
+    /// Why the last deletion did not happen.
+    pub deletion_refusal: Option<String>,
 }
 
 /// The organisation `slug`, if `account_id` is a member. `None` both when it
@@ -25,7 +30,8 @@ pub async fn membership(
     account_id: Uuid,
 ) -> Result<Option<Membership>, sqlx::Error> {
     sqlx::query_as::<_, Membership>(
-        "SELECT o.organisation_id, o.slug, o.kind, m.role, o.created_at FROM grund_organisations o \
+        "SELECT o.organisation_id, o.slug, o.kind, m.role, o.created_at, \
+                o.deletion_requested_at, o.deletion_request_id, o.deletion_refusal FROM grund_organisations o \
          JOIN grund_memberships m ON m.organisation_id = o.organisation_id \
          WHERE o.slug = $1 AND m.account_id = $2",
     )
@@ -41,7 +47,8 @@ pub async fn memberships_of(
     account_id: Uuid,
 ) -> Result<Vec<Membership>, sqlx::Error> {
     sqlx::query_as::<_, Membership>(
-        "SELECT o.organisation_id, o.slug, o.kind, m.role, o.created_at FROM grund_memberships m \
+        "SELECT o.organisation_id, o.slug, o.kind, m.role, o.created_at, \
+                o.deletion_requested_at, o.deletion_request_id, o.deletion_refusal FROM grund_memberships m \
          JOIN grund_organisations o ON o.organisation_id = m.organisation_id \
          WHERE m.account_id = $1 ORDER BY o.slug",
     )
@@ -95,14 +102,81 @@ pub async fn has_member_with_email(
     .await
 }
 
-/// Whether a slug is used, by an organisation or an account: the two share
-/// one namespace.
+/// Whether a slug is used: by an organisation (deleted ones included), by an
+/// organisation's earlier name, or by an account. They share one namespace.
 pub async fn slug_taken(executor: impl PgExecutor<'_>, slug: &str) -> Result<bool, sqlx::Error> {
     sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM grund_organisations WHERE slug = $1) \
+             OR EXISTS (SELECT 1 FROM grund_organisation_aliases WHERE slug = $1) \
              OR EXISTS (SELECT 1 FROM grund_accounts WHERE username = $1)",
     )
     .bind(slug)
+    .fetch_one(executor)
+    .await
+}
+
+/// Whether `slug` is free for `organisation_id` to rename to: unused, or one
+/// of its own earlier names.
+pub async fn slug_free_for(
+    executor: impl PgExecutor<'_>,
+    slug: &str,
+    organisation_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT NOT (EXISTS (SELECT 1 FROM grund_organisations WHERE slug = $1) \
+             OR EXISTS (SELECT 1 FROM grund_organisation_aliases \
+                        WHERE slug = $1 AND organisation_id <> $2) \
+             OR EXISTS (SELECT 1 FROM grund_accounts WHERE username = $1))",
+    )
+    .bind(slug)
+    .bind(organisation_id)
+    .fetch_one(executor)
+    .await
+}
+
+/// The current slug of the organisation that used to be called `alias`, if
+/// `account_id` is one of its members.
+pub async fn renamed_to(
+    executor: impl PgExecutor<'_>,
+    alias: &str,
+    account_id: Uuid,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT o.slug FROM grund_organisation_aliases a \
+         JOIN grund_organisations o ON o.organisation_id = a.organisation_id \
+         JOIN grund_memberships m ON m.organisation_id = o.organisation_id AND m.account_id = $2 \
+         WHERE a.slug = $1 AND o.deleted_at IS NULL",
+    )
+    .bind(alias)
+    .bind(account_id)
+    .fetch_optional(executor)
+    .await
+}
+
+/// Withdraws every pending invitation of an organisation (it is being
+/// deleted).
+pub async fn withdraw_all(
+    connection: &mut PgConnection,
+    organisation_id: Uuid,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE grund_invitations SET withdrawn_at = clock_timestamp() \
+         WHERE organisation_id = $1 AND accepted_at IS NULL AND withdrawn_at IS NULL",
+    )
+    .bind(organisation_id)
+    .execute(connection)
+    .await?;
+    Ok(())
+}
+
+/// How many organisations exist and are not deleted, and the first of them.
+pub async fn live_organisations(
+    executor: impl PgExecutor<'_>,
+) -> Result<(i64, Option<Uuid>), sqlx::Error> {
+    sqlx::query_as(
+        "SELECT count(*), min(organisation_id::text)::uuid FROM grund_organisations \
+         WHERE deleted_at IS NULL",
+    )
     .fetch_one(executor)
     .await
 }
@@ -296,4 +370,52 @@ pub async fn landing(
     .bind(account_id)
     .fetch_optional(executor)
     .await
+}
+
+/// What a `single` instance found at startup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstanceCheck {
+    /// It already has its organisation, or none exists yet (the first
+    /// sign-up creates it).
+    Ready,
+    /// It had no instance row and one organisation, which it now owns.
+    Adopted(Uuid),
+    /// It had no instance row and this many organisations: `single` cannot
+    /// choose one.
+    TooMany(i64),
+}
+
+/// Makes sure a `single` instance knows its organisation: adopts the only
+/// organisation there is when switching from `multi`, and refuses to choose
+/// between several.
+pub async fn prepare_single_instance(pool: &sqlx::PgPool) -> Result<InstanceCheck, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("LOCK TABLE grund_instance IN EXCLUSIVE MODE")
+        .execute(&mut *tx)
+        .await?;
+    if instance(&mut *tx).await?.is_some() {
+        return Ok(InstanceCheck::Ready);
+    }
+    let (count, first) = live_organisations(&mut *tx).await?;
+    let check = match (count, first) {
+        (0, _) => InstanceCheck::Ready,
+        (1, Some(organisation_id)) => {
+            claim_instance(&mut tx, organisation_id).await?;
+            InstanceCheck::Adopted(organisation_id)
+        }
+        (count, _) => InstanceCheck::TooMany(count),
+    };
+    tx.commit().await?;
+    Ok(check)
+}
+
+/// An organisation's current slug, deleted or not.
+pub async fn slug_of(
+    executor: impl PgExecutor<'_>,
+    organisation_id: Uuid,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar("SELECT slug FROM grund_organisations WHERE organisation_id = $1")
+        .bind(organisation_id)
+        .fetch_optional(executor)
+        .await
 }

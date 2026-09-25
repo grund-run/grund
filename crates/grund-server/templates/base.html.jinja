@@ -7,6 +7,7 @@
   <title>{% block title %}grund{% endblock %}</title>
   <link rel="stylesheet" href="{{ css_href }}">
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  {% block head %}{% endblock %}
 </head>
 <body class="{% block body_class %}{% endblock %}">
 <a class="skip" href="#main">Skip to content</a>

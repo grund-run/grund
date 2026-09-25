@@ -20,8 +20,10 @@ use uuid::Uuid;
 use crate::{
     services::{
         accounts::{AccountsState, FieldErrors, InvitedSignupOutcome},
+        billing::BillingView,
         organisations::{
-            AcceptOutcome, ChangeOutcome, CreateOutcome, InviteOutcome, OrganisationsState,
+            AcceptOutcome, ChangeOutcome, CreateOutcome, DeleteOutcome, InviteOutcome,
+            OrganisationsState, RenameOutcome,
         },
         sessions::Session,
     },
@@ -46,11 +48,39 @@ async fn member_of(
     let session = require_session(browser, uri)?;
     match state.organisations().open(slug, session.account_id).await {
         Ok(Some(membership)) => Ok((session, membership)),
-        Ok(None) => Err(Box::new(
-            not_found_page(state, browser).unwrap_or_else(error_response),
-        )),
+        Ok(None) => match state
+            .organisations()
+            .renamed_to(slug, session.account_id)
+            .await
+        {
+            Ok(Some(current)) => {
+                let rest = uri.path().strip_prefix(&format!("/{slug}")).unwrap_or("");
+                let query = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
+                Err(Box::new(permanent_redirect(&format!(
+                    "/{current}{rest}{query}"
+                ))))
+            }
+            Ok(None) => Err(Box::new(
+                not_found_page(state, browser).unwrap_or_else(error_response),
+            )),
+            Err(error) => Err(Box::new(error_response(PageError::from(error)))),
+        },
         Err(error) => Err(Box::new(error_response(PageError::from(error)))),
     }
+}
+
+fn permanent_redirect(to: &str) -> Response {
+    let mut response = axum::response::IntoResponse::into_response(StatusCode::PERMANENT_REDIRECT);
+    if let Ok(location) = axum::http::HeaderValue::from_str(to) {
+        response
+            .headers_mut()
+            .insert(axum::http::header::LOCATION, location);
+    }
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    response
 }
 
 fn error_response(error: PageError) -> Response {
@@ -409,30 +439,218 @@ pub async fn revoke_invitation(
 }
 
 /// `/{org}/settings`: the organisation's name, its plan and who manages
-/// billing.
+/// billing, and for owners, renaming and deleting.
 pub async fn settings_page(
     AxumState(state): AxumState<State>,
     browser: Browser,
     uri: Uri,
     Path(slug): Path<String>,
+    Query(query): Query<NoticeQuery>,
 ) -> PageResult {
     let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
-    let owners: Vec<String> = state
-        .organisations()
+    let notice = match query.done.as_str() {
+        "renamed" => "Renamed. The old name keeps working as a redirect for members.",
+        _ => "",
+    };
+    settings_view(
+        &state,
+        &browser,
+        &session,
+        &membership,
+        StatusCode::OK,
+        SettingsForm {
+            notice,
+            ..Default::default()
+        },
+    )
+    .await
+}
+
+#[derive(Default)]
+struct SettingsForm<'a> {
+    notice: &'a str,
+    rename_error: String,
+    rename_value: String,
+    delete_error: String,
+}
+
+async fn settings_view(
+    state: &State,
+    browser: &Browser,
+    session: &Session,
+    membership: &Membership,
+    status: StatusCode,
+    form: SettingsForm<'_>,
+) -> PageResult {
+    let organisations = state.organisations();
+    let owners: Vec<String> = organisations
         .members(membership.organisation_id)
         .await?
         .into_iter()
         .filter(|m| m.role == Role::Owner.as_str())
         .map(|m| m.username)
         .collect();
-    let viewer = viewer_context(&state, &session, Some(&membership)).await?;
+    let billing = match organisations.billing(membership.organisation_id).await {
+        BillingView::Free => {
+            context! { state => "free", plan => "Free", past_due => false, manage_url => () }
+        }
+        BillingView::Account {
+            plan,
+            past_due,
+            manage_url,
+        } => context! { state => "account", plan, past_due, manage_url },
+        BillingView::Unavailable => {
+            context! { state => "unavailable", plan => "", past_due => false, manage_url => () }
+        }
+    };
+    let viewer = viewer_context(state, session, Some(membership)).await?;
+    let rename_value = if form.rename_value.is_empty() {
+        membership.slug.clone()
+    } else {
+        form.rename_value
+    };
     render(
+        state,
+        browser,
+        status,
+        "pages/org-settings.html.jinja",
+        context! {
+            viewer, owners, billing, rename_value,
+            deleting => membership.deletion_requested_at.is_some(),
+            refusal => membership.deletion_refusal.clone().unwrap_or_default(),
+            notice => form.notice,
+            rename_error => form.rename_error,
+            delete_error => form.delete_error,
+            csrf => browser.csrf_token(), section => "org-settings",
+        },
+    )
+}
+
+#[derive(Deserialize)]
+pub struct RenameForm {
+    #[serde(default)]
+    csrf: String,
+    #[serde(default)]
+    slug: String,
+}
+
+/// `POST /{org}/settings/rename`.
+pub async fn rename(
+    AxumState(state): AxumState<State>,
+    browser: Browser,
+    uri: Uri,
+    Path(slug): Path<String>,
+    Form(form): Form<RenameForm>,
+) -> PageResult {
+    if !browser.form_is_genuine(&form.csrf) {
+        return forged(&state, &browser);
+    }
+    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
+    let (status, rename_error) = match state
+        .organisations()
+        .rename(session.account_id, &membership, &form.slug, &browser.meta())
+        .await?
+    {
+        RenameOutcome::Renamed(new) => {
+            return Ok(redirect(&format!("/{new}/settings?done=renamed")));
+        }
+        RenameOutcome::Invalid(message) => (StatusCode::OK, message),
+        RenameOutcome::NotAllowed => (
+            StatusCode::FORBIDDEN,
+            "Only owners rename an organisation.".to_string(),
+        ),
+    };
+    settings_view(
         &state,
         &browser,
-        StatusCode::OK,
-        "pages/org-settings.html.jinja",
-        context! { viewer, owners, csrf => browser.csrf_token(), section => "org-settings" },
+        &session,
+        &membership,
+        status,
+        SettingsForm {
+            rename_error,
+            rename_value: form.slug,
+            ..Default::default()
+        },
     )
+    .await
+}
+
+#[derive(Deserialize)]
+pub struct DeleteForm {
+    #[serde(default)]
+    csrf: String,
+    #[serde(default)]
+    confirm: String,
+}
+
+/// `POST /{org}/settings/delete`: asks to delete; the settings page then
+/// shows the request until billing has answered.
+pub async fn delete(
+    AxumState(state): AxumState<State>,
+    browser: Browser,
+    uri: Uri,
+    Path(slug): Path<String>,
+    Form(form): Form<DeleteForm>,
+) -> PageResult {
+    if !browser.form_is_genuine(&form.csrf) {
+        return forged(&state, &browser);
+    }
+    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
+    let (status, delete_error) = match state
+        .organisations()
+        .request_deletion(
+            session.account_id,
+            &membership,
+            &form.confirm,
+            &browser.meta(),
+        )
+        .await?
+    {
+        DeleteOutcome::Requested => return Ok(redirect(&format!("/{slug}/settings"))),
+        DeleteOutcome::Unconfirmed => (
+            StatusCode::OK,
+            format!("Type {} exactly to delete it.", membership.slug),
+        ),
+        DeleteOutcome::NotAllowed => (
+            StatusCode::FORBIDDEN,
+            "Only owners delete an organisation.".to_string(),
+        ),
+        DeleteOutcome::Instance => (
+            StatusCode::OK,
+            "This is the instance's own organisation, and an instance needs it.".to_string(),
+        ),
+    };
+    settings_view(
+        &state,
+        &browser,
+        &session,
+        &membership,
+        status,
+        SettingsForm {
+            delete_error,
+            ..Default::default()
+        },
+    )
+    .await
+}
+
+/// `POST /{org}/settings/cancel-deletion`.
+pub async fn cancel_deletion(
+    AxumState(state): AxumState<State>,
+    browser: Browser,
+    uri: Uri,
+    Path(slug): Path<String>,
+    Form(form): Form<CsrfForm>,
+) -> PageResult {
+    if !browser.form_is_genuine(&form.csrf) {
+        return forged(&state, &browser);
+    }
+    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
+    state
+        .organisations()
+        .cancel_deletion(session.account_id, &membership, &browser.meta())
+        .await?;
+    Ok(redirect(&format!("/{slug}/settings")))
 }
 
 /// `/orgs/new`.

@@ -141,6 +141,33 @@ pub enum OrganisationEvent {
         account_id: Uuid,
         accepted_at: DateTime<Utc>,
     },
+    Renamed {
+        from: Username,
+        to: Username,
+        renamed_by: Uuid,
+        renamed_at: DateTime<Utc>,
+    },
+    /// An owner asked to delete. It carries the organisation's own id, so the
+    /// saga that serves the request knows it from the event alone.
+    DeletionRequested {
+        request_id: Uuid,
+        organisation_id: Uuid,
+        requested_by: Uuid,
+        requested_at: DateTime<Utc>,
+    },
+    /// A deletion that did not happen: billing refused it, or an owner
+    /// changed their mind (`cancelled_by`).
+    DeletionCancelled {
+        request_id: Uuid,
+        reason: String,
+        cancelled_by: Option<Uuid>,
+        cancelled_at: DateTime<Utc>,
+    },
+    Deleted {
+        request_id: Uuid,
+        deleted_by: Uuid,
+        deleted_at: DateTime<Utc>,
+    },
 }
 
 /// A member and their role.
@@ -169,6 +196,18 @@ pub struct Organisation {
     pub members: Vec<Member>,
     #[serde(default)]
     pub invitations: Vec<PendingInvitation>,
+    #[serde(default)]
+    pub deleted: bool,
+    #[serde(default)]
+    pub pending_deletion: Option<PendingDeletion>,
+}
+
+/// A deletion an owner asked for, waiting on billing (the
+/// `organisation-deletion` saga in grund-server).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingDeletion {
+    pub request_id: Uuid,
+    pub requested_by: Uuid,
 }
 
 impl Organisation {
@@ -257,6 +296,28 @@ impl mire::Aggregate for Organisation {
                 self.invitations
                     .retain(|i| i.invitation_id != *invitation_id);
             }
+            OrganisationEvent::Renamed { to, .. } => {
+                self.slug = Some(to.clone());
+            }
+            OrganisationEvent::DeletionRequested {
+                request_id,
+                requested_by,
+                ..
+            } => {
+                self.pending_deletion = Some(PendingDeletion {
+                    request_id: *request_id,
+                    requested_by: *requested_by,
+                });
+            }
+            OrganisationEvent::DeletionCancelled { .. } => {
+                self.pending_deletion = None;
+            }
+            OrganisationEvent::Deleted { .. } => {
+                self.deleted = true;
+                self.pending_deletion = None;
+                self.members.clear();
+                self.invitations.clear();
+            }
         }
     }
 }
@@ -309,6 +370,32 @@ pub enum OrganisationCommand {
         account_id: Uuid,
         at: DateTime<Utc>,
     },
+    /// Gives the organisation a new slug. Owners only.
+    Rename {
+        actor: Uuid,
+        slug: Username,
+        at: DateTime<Utc>,
+    },
+    /// Asks to delete the organisation. Owners only. Billing answers before
+    /// anything is deleted; asking again while one is pending changes nothing.
+    RequestDeletion {
+        actor: Uuid,
+        organisation_id: Uuid,
+        request_id: Uuid,
+        at: DateTime<Utc>,
+    },
+    /// Withdraws a pending deletion: billing refused it (`actor` is `None`),
+    /// or an owner cancelled it. Nothing if that request is not pending.
+    CancelDeletion {
+        request_id: Uuid,
+        actor: Option<Uuid>,
+        reason: String,
+        at: DateTime<Utc>,
+    },
+    /// Ends the organisation, and every membership and invitation with it,
+    /// once billing has allowed the pending request. Nothing if that request
+    /// is no longer pending.
+    Delete { request_id: Uuid, at: DateTime<Utc> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -368,9 +455,13 @@ impl mire::Command for OrganisationCommand {
                 },
             ]);
         }
-        if !organisation.exists {
+        if !organisation.exists || organisation.deleted {
             return Err(OrganisationError::NotFound);
         }
+        let owning = |actor: Uuid| match organisation.role_of(actor) {
+            Some(Role::Owner) => Ok(()),
+            _ => Err(OrganisationError::NotAllowed),
+        };
         let managing = |actor: Uuid| match organisation.role_of(actor) {
             Some(role) if role.manages_members() => Ok(role),
             _ => Err(OrganisationError::NotAllowed),
@@ -512,6 +603,72 @@ impl mire::Command for OrganisationCommand {
                     removed_by: actor,
                     removed_at: at,
                 }])
+            }
+            OrganisationCommand::Rename { actor, slug, at } => {
+                owning(actor)?;
+                let from = organisation
+                    .slug
+                    .clone()
+                    .ok_or(OrganisationError::NotFound)?;
+                if from == slug {
+                    return Ok(vec![]);
+                }
+                Ok(vec![OrganisationEvent::Renamed {
+                    from,
+                    to: slug,
+                    renamed_by: actor,
+                    renamed_at: at,
+                }])
+            }
+            OrganisationCommand::RequestDeletion {
+                actor,
+                organisation_id,
+                request_id,
+                at,
+            } => {
+                owning(actor)?;
+                if organisation.pending_deletion.is_some() {
+                    return Ok(vec![]);
+                }
+                Ok(vec![OrganisationEvent::DeletionRequested {
+                    request_id,
+                    organisation_id,
+                    requested_by: actor,
+                    requested_at: at,
+                }])
+            }
+            OrganisationCommand::CancelDeletion {
+                request_id,
+                actor,
+                reason,
+                at,
+            } => {
+                if let Some(actor) = actor {
+                    owning(actor)?;
+                }
+                match &organisation.pending_deletion {
+                    Some(pending) if pending.request_id == request_id => {
+                        Ok(vec![OrganisationEvent::DeletionCancelled {
+                            request_id,
+                            reason,
+                            cancelled_by: actor,
+                            cancelled_at: at,
+                        }])
+                    }
+                    _ => Ok(vec![]),
+                }
+            }
+            OrganisationCommand::Delete { request_id, at } => {
+                match &organisation.pending_deletion {
+                    Some(pending) if pending.request_id == request_id => {
+                        Ok(vec![OrganisationEvent::Deleted {
+                            request_id,
+                            deleted_by: pending.requested_by,
+                            deleted_at: at,
+                        }])
+                    }
+                    _ => Ok(vec![]),
+                }
             }
         }
     }
@@ -828,6 +985,84 @@ mod tests {
             }
         ));
         assert!(snapshot.invitations.is_empty());
+    }
+
+    #[test]
+    fn only_owners_rename_and_the_same_name_changes_nothing() {
+        let mut org = Org::new();
+        let admin = org.join(Role::Admin);
+        let rename = |actor, slug: &str| OrganisationCommand::Rename {
+            actor,
+            slug: Username::parse(slug).unwrap(),
+            at: at(),
+        };
+        assert_eq!(
+            org.run(rename(admin, "acme-two")),
+            Err(OrganisationError::NotAllowed)
+        );
+        org.run(rename(org.owner, "acme-two")).unwrap();
+        assert_eq!(org.root.state.slug.as_ref().unwrap().as_str(), "acme-two");
+        let before = org.root.pending_count();
+        org.run(rename(org.owner, "acme-two")).unwrap();
+        assert_eq!(org.root.pending_count(), before);
+    }
+
+    #[test]
+    fn a_deletion_is_requested_by_an_owner_and_happens_only_for_the_pending_request() {
+        let mut org = Org::new();
+        let admin = org.join(Role::Admin);
+        let request = |actor| OrganisationCommand::RequestDeletion {
+            actor,
+            organisation_id: Uuid::nil(),
+            request_id: Uuid::from_u128(1),
+            at: at(),
+        };
+        assert_eq!(org.run(request(admin)), Err(OrganisationError::NotAllowed));
+        org.run(request(org.owner)).unwrap();
+        org.run(OrganisationCommand::Delete {
+            request_id: Uuid::from_u128(2),
+            at: at(),
+        })
+        .unwrap();
+        assert!(!org.root.state.deleted, "another request deletes nothing");
+        org.run(OrganisationCommand::Delete {
+            request_id: Uuid::from_u128(1),
+            at: at(),
+        })
+        .unwrap();
+        assert!(org.root.state.deleted);
+        assert!(org.root.state.members.is_empty());
+        assert_eq!(
+            org.invite(org.owner, "d1", Role::Member),
+            Err(OrganisationError::NotFound)
+        );
+    }
+
+    #[test]
+    fn a_cancelled_deletion_cannot_be_concluded() {
+        let mut org = Org::new();
+        let request_id = Uuid::from_u128(7);
+        org.run(OrganisationCommand::RequestDeletion {
+            actor: org.owner,
+            organisation_id: Uuid::nil(),
+            request_id,
+            at: at(),
+        })
+        .unwrap();
+        org.run(OrganisationCommand::CancelDeletion {
+            request_id,
+            actor: None,
+            reason: "An invoice is unpaid.".into(),
+            at: at(),
+        })
+        .unwrap();
+        assert_eq!(org.root.state.pending_deletion, None);
+        org.run(OrganisationCommand::Delete {
+            request_id,
+            at: at(),
+        })
+        .unwrap();
+        assert!(!org.root.state.deleted);
     }
 
     #[test]

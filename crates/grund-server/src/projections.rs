@@ -26,6 +26,10 @@ impl Projections {
                 grund_store::projections::ORGANISATION_SUBSCRIPTION,
                 grund_store::projections::OrganisationProjection,
             )
+            .subscribe(
+                crate::sagas::DELETION_TRIGGER_SUBSCRIPTION,
+                crate::sagas::DeletionTrigger::new(&state.deletions),
+            )
             .build();
         Self {
             runner: std::sync::Mutex::new(Some(runner)),

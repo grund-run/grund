@@ -5,6 +5,7 @@ mod api;
 mod csrf;
 mod health;
 mod insights;
+mod lifecycle;
 mod login;
 mod organisations;
 mod pages;

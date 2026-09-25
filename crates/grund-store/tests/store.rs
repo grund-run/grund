@@ -448,3 +448,41 @@ async fn replaying_an_organisation_stream_never_brings_a_removed_member_back(poo
             .unwrap();
     assert_eq!(kind, "shared");
 }
+
+#[sqlx::test(migrations = false)]
+async fn a_single_instance_adopts_its_one_organisation_and_refuses_to_choose_between_two(
+    pool: PgPool,
+) {
+    use grund_store::organisations::{InstanceCheck, prepare_single_instance};
+    let events = store(&pool).await;
+    assert_eq!(
+        prepare_single_instance(&pool).await.unwrap(),
+        InstanceCheck::Ready,
+        "an empty database waits for its first sign-up"
+    );
+    let first = register(&events, &name("one")).await;
+    let organisation_id: Uuid =
+        sqlx::query_scalar("SELECT organisation_id FROM grund_accounts WHERE account_id = $1")
+            .bind(first)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        prepare_single_instance(&pool).await.unwrap(),
+        InstanceCheck::Adopted(organisation_id)
+    );
+    assert_eq!(
+        prepare_single_instance(&pool).await.unwrap(),
+        InstanceCheck::Ready
+    );
+
+    sqlx::query("DELETE FROM grund_instance")
+        .execute(&pool)
+        .await
+        .unwrap();
+    register(&events, &name("two")).await;
+    assert_eq!(
+        prepare_single_instance(&pool).await.unwrap(),
+        InstanceCheck::TooMany(2)
+    );
+}

@@ -127,9 +127,10 @@ async fn state(pool: PgPool, issuer: &str) -> State {
         client_id: "test-client".into(),
         client_secret: "test-secret".into(),
     };
+    let events = mire::EventStore::new(pool.clone());
     State {
         config: Arc::new(serve),
-        events: mire::EventStore::new(pool.clone()),
+        events: events.clone(),
         pool,
         nats: None,
         secret: Arc::new(grund_server::secrets::SecretKey::generate()),
@@ -137,6 +138,8 @@ async fn state(pool: PgPool, issuer: &str) -> State {
         passwords: Passwords::new().unwrap(),
         templates: Templates::new(TEMPLATES).unwrap(),
         entitlements: Arc::new(entitlements),
+        billing: grund_server::services::billing::Billing::Free,
+        deletions: grund_server::sagas::Deletions::new(events.clone()),
         extensions: Arc::new(vec![Arc::new(Registered(Arc::new(SocialLogin::with(
             vec![provider],
             grund_ee::social::http_client().unwrap(),

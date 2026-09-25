@@ -4,6 +4,7 @@
 //! `state.organisations()`.
 
 pub mod accounts;
+pub mod billing;
 pub mod entitlements;
 pub mod insights;
 pub mod limits;

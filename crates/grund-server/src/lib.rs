@@ -22,6 +22,7 @@ pub mod extension;
 pub mod health;
 pub mod license;
 pub mod projections;
+pub mod sagas;
 pub mod secrets;
 pub mod server;
 pub mod services;
@@ -42,7 +43,22 @@ pub async fn serve(
     let secret = secrets::SecretKey::load(&config)?;
     let pool = db::connect(&config.database).await?;
     grund_store::migrate(&pool).await?;
+    if config.organisations == config::OrganisationMode::Single {
+        use grund_store::organisations::{InstanceCheck, prepare_single_instance};
+        match prepare_single_instance(&pool).await? {
+            InstanceCheck::Ready => {}
+            InstanceCheck::Adopted(organisation_id) => tracing::info!(
+                %organisation_id,
+                "GRUND_ORGANISATIONS=single: adopted the one organisation as the instance's"
+            ),
+            InstanceCheck::TooMany(count) => anyhow::bail!(
+                "GRUND_ORGANISATIONS=single needs at most one organisation, and this database has \
+                 {count}. Run with GRUND_ORGANISATIONS=multi, or delete organisations first"
+            ),
+        }
+    }
     let events = mire::EventStore::new(pool.clone());
+    mire_sagas::migrate(&events).await?;
     let nats = connect_nats(&config).await?;
 
     let extra: Vec<(&'static str, &'static str)> = extensions
@@ -55,6 +71,8 @@ pub async fn serve(
     let health = health::registry(pool.clone(), nats.clone(), mailer.configured(), &config);
     let entitlements = entitlements(&config)?;
     let grace = config.shutdown_grace;
+    let config_billing = config.billing.clone();
+    let deletions = sagas::Deletions::new(events.clone());
     let state = State {
         config: std::sync::Arc::new(config),
         pool,
@@ -65,6 +83,8 @@ pub async fn serve(
         passwords: services::passwords::Passwords::new()?,
         templates,
         entitlements: std::sync::Arc::new(entitlements),
+        billing: services::billing::Billing::new(&config_billing)?,
+        deletions,
         extensions: std::sync::Arc::new(extensions),
         started: health::started(),
     };
@@ -76,6 +96,7 @@ pub async fn serve(
     }
     tracing::info!(
         insights = state.config.insights.enabled(),
+        billing = state.billing.enabled(),
         extensions = ?state.extensions.iter().map(|e| e.name()).collect::<Vec<_>>(),
         revision = health::REVISION,
         version = health::VERSION,
@@ -86,6 +107,7 @@ pub async fn serve(
         .add(health::Checks::new(&state))
         .add(projections::Projections::new(&state))
         .add(services::maintenance::Sweeper::new(state.clone()))
+        .add(sagas::DeletionWorker::new(&state))
         .add(services::outbox::OutboxDrain::new(
             state.clone(),
             mailer,

@@ -1,0 +1,89 @@
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+package grund.billing.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// What grund asks of a billing service. grund's hosted service runs one; a
+// self-hosted grund has none and never calls it. The billing service owns
+// plans, payment details and invoices; grund owns organisations and tells it
+// when they change. Calls carry `Authorization: Bearer <token>`, the token
+// grund is configured with (GRUND_BILLING_TOKEN), and come from grund's
+// servers only, never from browsers.
+service BillingService {
+  // The organisation's billing account as its owners should see it. An
+  // organisation billing has not heard of yet is on the free plan.
+  rpc GetAccount(GetAccountRequest) returns (GetAccountResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // An organisation was created, renamed or deleted. Sent at least once and
+  // not necessarily in order: changed_at orders the changes of one
+  // organisation, and the service must ignore an event_id it has seen.
+  rpc RecordOrganisation(RecordOrganisationRequest) returns (RecordOrganisationResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+
+  // Whether the organisation may be deleted now (for example, not while an
+  // invoice is unpaid). grund refuses the deletion unless allowed is true.
+  rpc CheckDeletion(CheckDeletionRequest) returns (CheckDeletionResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+}
+
+message GetAccountRequest {
+  // UUIDv7.
+  string organisation_id = 1;
+}
+
+message GetAccountResponse {
+  Account account = 1;
+}
+
+message Account {
+  // The plan's display name, e.g. "Homelab" or "Pro".
+  string plan = 1;
+  AccountStatus status = 2;
+  // The billing service's own page where owners manage payment details and
+  // invoices. Empty when there is nothing to manage.
+  string manage_url = 3;
+}
+
+enum AccountStatus {
+  ACCOUNT_STATUS_UNSPECIFIED = 0;
+  // Nothing is owed, or payment is up to date.
+  ACCOUNT_STATUS_ACTIVE = 1;
+  // A payment failed; owners should update payment details.
+  ACCOUNT_STATUS_PAST_DUE = 2;
+}
+
+message RecordOrganisationRequest {
+  // Unique per change; the same change is sent with the same id.
+  string event_id = 1;
+  string organisation_id = 2;
+  // The slug after the change.
+  string slug = 3;
+  OrganisationChange change = 4;
+  google.protobuf.Timestamp changed_at = 5;
+}
+
+enum OrganisationChange {
+  ORGANISATION_CHANGE_UNSPECIFIED = 0;
+  ORGANISATION_CHANGE_CREATED = 1;
+  ORGANISATION_CHANGE_RENAMED = 2;
+  ORGANISATION_CHANGE_DELETED = 3;
+}
+
+message RecordOrganisationResponse {}
+
+message CheckDeletionRequest {
+  string organisation_id = 1;
+}
+
+message CheckDeletionResponse {
+  bool allowed = 1;
+  // Shown to the owner when allowed is false, e.g. "An invoice is unpaid."
+  string reason = 2;
+}

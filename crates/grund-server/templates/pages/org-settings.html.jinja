@@ -1,6 +1,7 @@
 {% extends "layout-app.html.jinja" %}
 {% set org = viewer.current %}
 {% block title %}Organisation · {{ org.slug }} · grund{% endblock %}
+{% block head %}{% if deleting %}<meta http-equiv="refresh" content="3">{% endif %}{% endblock %}
 {% block crumbs %}<li>Organisation</li>{% endblock %}
 {% block content %}
 <div class="page-head">
@@ -9,10 +10,11 @@
     <p class="status-line">What {{ org.slug }} is, and who pays for what it runs.</p>
   </div>
 </div>
+{{ ui.form_ok(notice) }}
 <ul class="rows">
   <li class="row row-plain">
     <div><p class="row-name">Name</p><p class="row-sub">{{ org.slug }}</p></div>
-    <span class="row-end hint">Appears in the addresses of this organisation and of what it runs, so it cannot be changed yet.</span>
+    <span class="row-end hint">{% if org.owner %}Owners can rename it below.{% else %}Owners can rename it.{% endif %}</span>
   </li>
   <li class="row row-plain">
     <div><p class="row-name">Created</p><p class="row-sub">{{ org.since }}</p></div>
@@ -23,19 +25,77 @@
     <span></span>
   </li>
 </ul>
+
 <section class="section" aria-labelledby="billing">
   <div class="section-head">
     <h2 class="section-title" id="billing">Billing</h2>
   </div>
   <ul class="rows">
+    {% if billing.state == "unavailable" %}
     <li class="row row-plain">
-      <div><p class="row-name">Plan</p><p class="row-sub">Free</p></div>
-      <span class="row-end hint">Billing arrives with machines. It will belong to {{ org.slug }}, never to a person.</span>
+      <div><p class="row-name">Plan</p><p class="row-sub">Billing is unavailable right now</p></div>
+      <span class="row-end hint">Nothing else is affected. Try again in a few minutes.</span>
     </li>
+    {% else %}
+    <li class="row row-plain">
+      <div><p class="row-name">Plan</p><p class="row-sub">{{ billing.plan }}</p></div>
+      {% if billing.state == "free" %}
+      <span class="row-end hint">Nothing is charged. Billing belongs to {{ org.slug }}, never to a person.</span>
+      {% elif billing.past_due %}
+      <span class="row-end field-error">A payment failed. {% if org.owner %}Update the payment details.{% else %}An owner needs to update the payment details.{% endif %}</span>
+      {% else %}
+      <span></span>
+      {% endif %}
+    </li>
+    {% endif %}
     <li class="row row-plain">
       <div><p class="row-name">Managed by</p><p class="row-sub">{{ owners | join(", ") }}</p></div>
+      {% if org.owner and billing.manage_url %}
+      <a class="row-end link-more" href="{{ billing.manage_url }}">Manage billing {{ ui.icon("arrow", "icon-sm") }}</a>
+      {% else %}
       <span class="row-end hint">Owners manage billing.</span>
+      {% endif %}
     </li>
   </ul>
 </section>
+
+{% if org.owner %}
+<section class="section" aria-labelledby="rename">
+  <div class="section-head">
+    <h2 class="section-title" id="rename">Rename</h2>
+  </div>
+  <form class="form form-narrow" method="post" action="/{{ org.slug }}/settings/rename" novalidate>
+    {{ ui.csrf_field(csrf) }}
+    {{ ui.field("slug", "New name", value=rename_value, autocomplete="off", error=rename_error, hint="3 to 32 letters, digits and single hyphens. The old name stays reserved for this organisation and redirects its members.") }}
+    <button class="btn btn-secondary" type="submit">Rename</button>
+  </form>
+</section>
+
+<section class="section" aria-labelledby="delete">
+  <div class="section-head">
+    <h2 class="section-title" id="delete">Delete</h2>
+  </div>
+  {% if deleting %}
+  <div class="callout">
+    {{ ui.icon("clock", "icon-lg tone-orange") }}
+    <div class="callout-body">
+      <p class="callout-title">Deleting {{ org.slug }}</p>
+      <p class="callout-text">Waiting for billing to agree. If billing cannot be reached, grund keeps asking; nothing is deleted until it answers. This page refreshes itself.</p>
+    </div>
+  </div>
+  <form class="form form-narrow" method="post" action="/{{ org.slug }}/settings/cancel-deletion">
+    {{ ui.csrf_field(csrf) }}
+    <button class="btn btn-secondary" type="submit">Cancel the deletion</button>
+  </form>
+  {% else %}
+  {{ ui.form_error(refusal) }}
+  <p class="status-line">Deleting ends every membership and invitation, and cannot be undone. The name stays reserved.</p>
+  <form class="form form-narrow" method="post" action="/{{ org.slug }}/settings/delete" novalidate>
+    {{ ui.csrf_field(csrf) }}
+    {{ ui.field("confirm", "Type " ~ org.slug ~ " to confirm", autocomplete="off", error=delete_error) }}
+    <button class="btn btn-danger" type="submit">Delete {{ org.slug }}</button>
+  </form>
+  {% endif %}
+</section>
+{% endif %}
 {% endblock %}

@@ -10,7 +10,7 @@ use crate::{
     config::ServeConfig,
     extension::Extensions,
     secrets::SecretKey,
-    services::{entitlements::Entitlements, passwords::Passwords},
+    services::{billing::Billing, entitlements::Entitlements, passwords::Passwords},
     templates::Templates,
 };
 
@@ -26,6 +26,10 @@ pub struct State {
     pub passwords: Passwords,
     pub templates: Templates,
     pub entitlements: Arc<Entitlements>,
+    /// The billing shim: free, or a billing service (GRUND_BILLING_URL).
+    pub billing: Billing,
+    /// Starts organisation deletions, which wait on billing (sagas.rs).
+    pub deletions: crate::sagas::Deletions,
     /// Features built outside the core (the commercial `ee/`), if this
     /// binary includes them.
     pub extensions: Extensions,

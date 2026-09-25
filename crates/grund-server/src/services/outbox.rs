@@ -21,6 +21,7 @@ use uuid::Uuid;
 use crate::{
     crypto,
     services::{
+        billing::RecordError,
         insights::{ReportError, Reporter},
         mail::{Mail, MailError, Mailer},
     },
@@ -97,6 +98,7 @@ impl OutboxDrain {
         let mail = match kind {
             Kind::PasswordResetRequested => return self.resolve_reset(row).await,
             Kind::InsightsAccount => return self.report(row).await,
+            Kind::BillingOrganisation => return self.bill(row).await,
             Kind::VerifyEmailMail => Mail::VerifyEmail,
             Kind::PasswordResetMail => Mail::PasswordReset,
             Kind::SignupExistingMail => Mail::SignupExisting,
@@ -135,6 +137,29 @@ impl OutboxDrain {
                 outbox::delivered(&self.state.pool, row.outbox_id).await?;
             }
             Err(error @ ReportError::Transient) => {
+                outbox::failed(
+                    &self.state.pool,
+                    row.outbox_id,
+                    row.attempts,
+                    &error.to_string(),
+                )
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn bill(&self, row: Claimed) -> anyhow::Result<()> {
+        match self.state.billing.record(&row).await {
+            Ok(()) => {
+                outbox::delivered(&self.state.pool, row.outbox_id).await?;
+                tracing::info!(outbox_id = %row.outbox_id, "organisation change recorded by billing");
+            }
+            Err(error @ (RecordError::NotConfigured | RecordError::Permanent)) => {
+                tracing::warn!(outbox_id = %row.outbox_id, reason = %error, "billing change dropped");
+                outbox::delivered(&self.state.pool, row.outbox_id).await?;
+            }
+            Err(error @ RecordError::Transient) => {
                 outbox::failed(
                     &self.state.pool,
                     row.outbox_id,

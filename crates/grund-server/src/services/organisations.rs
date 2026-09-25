@@ -23,6 +23,7 @@ use crate::{
     crypto,
     services::{
         accounts::{RequestMeta, sentence},
+        billing::{self, BillingView, Change},
         limits::{Limits, LimitsState},
         outbox::wake,
     },
@@ -68,6 +69,7 @@ pub async fn plan_home(state: &State) -> Result<Home, sqlx::Error> {
 /// sign-ups one fails with a unique violation on `grund_instance_pkey`
 /// ([`is_instance_taken`]).
 pub async fn create_home(
+    state: &State,
     work: &mut Work<'_>,
     home: Home,
     account_id: Uuid,
@@ -92,6 +94,15 @@ pub async fn create_home(
     if kind == OrganisationKind::Instance {
         organisations::claim_instance(work.sql(), organisation_id).await?;
     }
+    billing::queue_change(
+        state,
+        work.sql(),
+        organisation_id,
+        username.as_str(),
+        Change::Created,
+        at,
+    )
+    .await?;
     Ok(())
 }
 
@@ -131,6 +142,26 @@ pub enum ChangeOutcome {
     NotFound,
 }
 
+/// How a rename ended.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RenameOutcome {
+    Renamed(String),
+    Invalid(String),
+    NotAllowed,
+}
+
+/// How a deletion request ended.
+#[derive(Debug, PartialEq, Eq)]
+pub enum DeleteOutcome {
+    /// Asked; billing answers, then it is deleted or the request cancelled.
+    Requested,
+    /// The typed slug did not match.
+    Unconfirmed,
+    NotAllowed,
+    /// The instance's organisation (`single`) cannot be deleted.
+    Instance,
+}
+
 /// How accepting an invitation ended.
 #[derive(Debug, PartialEq, Eq)]
 pub enum AcceptOutcome {
@@ -159,6 +190,16 @@ impl Organisations {
                 .await?;
         }
         Ok(membership)
+    }
+
+    /// The organisation `slug` if the account is a member, without remembering
+    /// it as the last one opened (for the API).
+    pub async fn membership(
+        &self,
+        slug: &str,
+        account_id: Uuid,
+    ) -> anyhow::Result<Option<Membership>> {
+        Ok(organisations::membership(&self.state.pool, slug, account_id).await?)
     }
 
     /// Where `/` sends the account.
@@ -201,6 +242,7 @@ impl Organisations {
             return Ok(CreateOutcome::Invalid(TAKEN.into()));
         }
         let organisation_id = Uuid::now_v7();
+        let now = Utc::now();
         let mut work =
             Work::begin(&self.state.events, meta.request_id, "create-organisation").await?;
         let created = work
@@ -210,7 +252,7 @@ impl Organisations {
                     slug: slug.clone(),
                     kind: OrganisationKind::Shared,
                     owner,
-                    at: Utc::now(),
+                    at: now,
                 },
             )
             .await;
@@ -221,6 +263,15 @@ impl Organisations {
             }
             Err(error) => return Err(error.into()),
         }
+        billing::queue_change(
+            &self.state,
+            work.sql(),
+            organisation_id,
+            slug.as_str(),
+            Change::Created,
+            now,
+        )
+        .await?;
         match work.commit().await {
             Ok(()) => {}
             Err(error) if error.unique_violation().is_some() => {
@@ -229,7 +280,178 @@ impl Organisations {
             Err(error) => return Err(error.into()),
         }
         tracing::info!(%organisation_id, %owner, "organisation created");
+        if self.state.billing.enabled() {
+            wake(&self.state).await;
+        }
         Ok(CreateOutcome::Created(slug.as_str().to_string()))
+    }
+
+    /// The slug an organisation has now, when `alias` is one of its earlier
+    /// names and the account is a member. `None` otherwise, so an alias says
+    /// nothing to anyone else.
+    pub async fn renamed_to(
+        &self,
+        alias: &str,
+        account_id: Uuid,
+    ) -> anyhow::Result<Option<String>> {
+        Ok(organisations::renamed_to(&self.state.pool, alias, account_id).await?)
+    }
+
+    /// Renames an organisation. Owners only; the old slug becomes an alias.
+    pub async fn rename(
+        &self,
+        actor: Uuid,
+        organisation: &Membership,
+        slug: &str,
+        meta: &RequestMeta,
+    ) -> anyhow::Result<RenameOutcome> {
+        let slug = match Username::parse(slug) {
+            Ok(slug) => slug,
+            Err(error) => return Ok(RenameOutcome::Invalid(sentence(error))),
+        };
+        if slug.as_str() == organisation.slug {
+            return Ok(RenameOutcome::Renamed(slug.as_str().to_string()));
+        }
+        if Role::parse(&organisation.role) != Some(Role::Owner) {
+            return Ok(RenameOutcome::NotAllowed);
+        }
+        if !organisations::slug_free_for(
+            &self.state.pool,
+            slug.as_str(),
+            organisation.organisation_id,
+        )
+        .await?
+        {
+            return Ok(RenameOutcome::Invalid(TAKEN.into()));
+        }
+        let now = Utc::now();
+        let mut work =
+            Work::begin(&self.state.events, meta.request_id, "rename-organisation").await?;
+        let renamed = work
+            .organisation(
+                organisation.organisation_id,
+                OrganisationCommand::Rename {
+                    actor,
+                    slug: slug.clone(),
+                    at: now,
+                },
+            )
+            .await;
+        match renamed {
+            Ok(_) => {}
+            Err(WorkError::Organisation(OrganisationError::NotAllowed)) => {
+                return Ok(RenameOutcome::NotAllowed);
+            }
+            Err(error) if error.unique_violation().is_some() => {
+                return Ok(RenameOutcome::Invalid(TAKEN.into()));
+            }
+            Err(error) => return Err(error.into()),
+        }
+        billing::queue_change(
+            &self.state,
+            work.sql(),
+            organisation.organisation_id,
+            slug.as_str(),
+            Change::Renamed,
+            now,
+        )
+        .await?;
+        match work.commit().await {
+            Ok(()) => {}
+            Err(error) if error.unique_violation().is_some() => {
+                return Ok(RenameOutcome::Invalid(TAKEN.into()));
+            }
+            Err(error) => return Err(error.into()),
+        }
+        tracing::info!(organisation_id = %organisation.organisation_id, "organisation renamed");
+        if self.state.billing.enabled() {
+            wake(&self.state).await;
+        }
+        Ok(RenameOutcome::Renamed(slug.as_str().to_string()))
+    }
+
+    /// Asks to delete an organisation once its owner has typed its slug.
+    /// Refused for the instance's organisation. Billing then answers in the
+    /// `organisation-deletion` saga (sagas.rs), which deletes it or cancels
+    /// the request with billing's reason.
+    pub async fn request_deletion(
+        &self,
+        actor: Uuid,
+        organisation: &Membership,
+        confirm: &str,
+        meta: &RequestMeta,
+    ) -> anyhow::Result<DeleteOutcome> {
+        if Role::parse(&organisation.role) != Some(Role::Owner) {
+            return Ok(DeleteOutcome::NotAllowed);
+        }
+        if confirm.trim() != organisation.slug {
+            return Ok(DeleteOutcome::Unconfirmed);
+        }
+        if organisations::instance(&self.state.pool).await? == Some(organisation.organisation_id) {
+            return Ok(DeleteOutcome::Instance);
+        }
+        let mut work = Work::begin(&self.state.events, meta.request_id, "request-deletion").await?;
+        let requested = work
+            .organisation(
+                organisation.organisation_id,
+                OrganisationCommand::RequestDeletion {
+                    actor,
+                    organisation_id: organisation.organisation_id,
+                    request_id: Uuid::now_v7(),
+                    at: Utc::now(),
+                },
+            )
+            .await;
+        let events = match requested {
+            Ok(events) => events,
+            Err(WorkError::Organisation(OrganisationError::NotAllowed)) => {
+                return Ok(DeleteOutcome::NotAllowed);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        work.commit().await?;
+        for event in &events {
+            if let Err(error) = self.state.deletions.start(event).await {
+                tracing::warn!(error = %error, "starting the deletion saga failed; the projection runner starts it");
+            }
+        }
+        tracing::info!(organisation_id = %organisation.organisation_id, %actor, "organisation deletion requested");
+        Ok(DeleteOutcome::Requested)
+    }
+
+    /// Withdraws a pending deletion. Owners only; nothing if none is pending.
+    pub async fn cancel_deletion(
+        &self,
+        actor: Uuid,
+        organisation: &Membership,
+        meta: &RequestMeta,
+    ) -> anyhow::Result<ChangeOutcome> {
+        let Some(request_id) = organisation.deletion_request_id else {
+            return Ok(ChangeOutcome::NotFound);
+        };
+        let mut work = Work::begin(&self.state.events, meta.request_id, "cancel-deletion").await?;
+        let result = work
+            .organisation(
+                organisation.organisation_id,
+                OrganisationCommand::CancelDeletion {
+                    request_id,
+                    actor: Some(actor),
+                    reason: "An owner cancelled the deletion.".into(),
+                    at: Utc::now(),
+                },
+            )
+            .await;
+        if let Some(outcome) = refused(&result) {
+            return Ok(outcome);
+        }
+        result?;
+        work.commit().await?;
+        Ok(ChangeOutcome::Done)
+    }
+
+    /// The organisation's billing, for its settings page.
+    pub async fn billing(&self, organisation_id: Uuid) -> BillingView {
+        self.state.billing.account(organisation_id).await
     }
 
     /// Invites `email` to the organisation as `role`, and mails the link.

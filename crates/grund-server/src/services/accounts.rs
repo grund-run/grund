@@ -289,7 +289,8 @@ impl Accounts {
                 },
             )
             .await?;
-            organisations::create_home(&mut work, home, account_id, &username, now).await?;
+            organisations::create_home(&self.state, &mut work, home, account_id, &username, now)
+                .await?;
             accounts::insert_email(work.sql(), account_id, email.as_str(), email.normalized())
                 .await?;
             accounts::set_password(work.sql(), account_id, &phc).await?;
@@ -350,7 +351,7 @@ impl Accounts {
             },
         )
         .await?;
-        organisations::create_home(&mut work, home, account_id, username, now).await?;
+        organisations::create_home(&self.state, &mut work, home, account_id, username, now).await?;
         accounts::insert_email(work.sql(), account_id, email.as_str(), email.normalized()).await?;
         accounts::set_password(work.sql(), account_id, phc).await?;
         if mail_allowed {

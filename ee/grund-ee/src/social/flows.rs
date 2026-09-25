@@ -668,7 +668,7 @@ impl Social {
             },
         )
         .await?;
-        organisations::create_home(&mut work, home, account_id, username, now).await?;
+        organisations::create_home(&self.state, &mut work, home, account_id, username, now).await?;
         accounts::insert_email(work.sql(), account_id, email.as_str(), email.normalized()).await?;
         accounts::insert_identity(
             work.sql(),
