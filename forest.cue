@@ -40,11 +40,16 @@ kjuulh: "kubernetes-app": {
 				replicas:  1
 				env_vars: {
 					GRUND_PUBLIC_URL: "https://dev.app.grund.sh"
-					// Until the grund-secrets Secret exists in the dev namespace
-					// (see secret_env below), dev runs with a throwaway key:
-					// every restart signs everyone out. Dev only.
-					GRUND_DEV_MODE: "true"
+					GRUND_MAIL_FROM:  "grund dev <grund@dev.app.grund.sh>"
 				}
+				// grund-secrets is applied by the cluster's operators, not by
+				// forest. Dev's smtp_url is the namespace's shared development
+				// mailbox, which delivers nowhere.
+				secret_env: [
+					{name: "DATABASE_URL", secret: "grund-db-app", key: "uri"},
+					{name: "GRUND_SECRET_KEY", secret: "grund-secrets", key: "secret_key"},
+					{name: "GRUND_SMTP_URL", secret: "grund-secrets", key: "smtp_url"},
+				]
 			}
 		}
 
@@ -59,6 +64,13 @@ kjuulh: "kubernetes-app": {
 				env_vars: {
 					GRUND_PUBLIC_URL: "https://app.grund.sh"
 				}
+				// No grund-secrets in prod yet: it needs a real mail provider
+				// first. Add GRUND_SECRET_KEY and GRUND_SMTP_URL here, as in
+				// dev, before the first promotion; without a key grund refuses
+				// to start, naming GRUND_SECRET_KEY.
+				secret_env: [
+					{name: "DATABASE_URL", secret: "grund-db-app", key: "uri"},
+				]
 			}
 		}
 	}
@@ -92,15 +104,6 @@ kjuulh: "kubernetes-app": {
 			// found by polling, which is correct on its own.
 			GRUND_WORK_POLL_INTERVAL: "2"
 		}
-
-		secret_env: [
-			{name: "DATABASE_URL", secret: "grund-db-app", key: "uri"},
-			// Enable once Kasper has created the Secret `grund-secrets` in the
-			// namespace (a reference to a missing Secret wedges the pod):
-			//   {name: "GRUND_SECRET_KEY", secret: "grund-secrets", key: "secret_key"},
-			//   {name: "GRUND_SMTP_URL", secret: "grund-secrets", key: "smtp_url"},
-			// then drop GRUND_DEV_MODE from dev.
-		]
 
 		postgres: {
 			instances:    1
