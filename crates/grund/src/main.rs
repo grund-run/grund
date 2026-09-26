@@ -79,6 +79,14 @@ struct AgentCommand {
     )]
     vm_firecracker: std::path::PathBuf,
 
+    #[arg(
+        long,
+        env = "GRUND_VM_JAILER",
+        default_value = "jailer",
+        help = "Firecracker's jailer, from the same release, for bridged VMs"
+    )]
+    vm_jailer: std::path::PathBuf,
+
     #[arg(long, env = "GRUND_VM_NETWORK", value_parser = ["auto", "bridged", "isolated"], default_value = "auto", help = "How VMs are networked: bridged (egress through grund's bridge and NAT; needs root), isolated (metadata only), or auto (bridged when root)")]
     vm_network: String,
 
@@ -117,6 +125,7 @@ fn firecracker(command: &AgentCommand) -> anyhow::Result<grund_vm::Firecracker> 
     grund_vm::Firecracker::new(grund_vm::Config {
         data_dir: command.agent.data_dir.join("vm"),
         firecracker: command.vm_firecracker.clone(),
+        jailer: Some(command.vm_jailer.clone()),
         network,
         budget: grund_vm::Budget {
             vcpus: command.vm_vcpus.unwrap_or(host.vcpus),

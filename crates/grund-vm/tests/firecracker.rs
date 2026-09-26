@@ -57,6 +57,7 @@ fn runtime_on(dir: &DataDir, found: &Artifacts, network: Network) -> Firecracker
     Firecracker::new(Config {
         data_dir: dir.0.clone(),
         firecracker: found.firecracker.clone(),
+        jailer: std::env::var_os("GRUND_VM_TEST_JAILER").map(PathBuf::from),
         network,
         budget: Budget {
             vcpus: 2,
@@ -287,6 +288,23 @@ async fn a_bridged_guest_reaches_the_internet_but_not_private_addresses() {
         .map(|id| std::fs::read_to_string(dir.0.join(format!("vms/{id}/address"))).unwrap())
         .collect();
     assert_ne!(addresses[0], addresses[1], "each VM has its own address");
+    for (id, address) in ["out", "lan"].iter().zip(&addresses) {
+        let pid = std::fs::read_to_string(dir.0.join(format!("vms/{id}/firecracker.pid"))).unwrap();
+        let status = std::fs::read_to_string(format!("/proc/{}/status", pid.trim())).unwrap();
+        let uid = 1_950_000_000 + address.trim().parse::<u32>().unwrap();
+        assert!(
+            status.lines().any(|l| l.starts_with("Uid:")
+                && l.split_whitespace().skip(1).all(|u| u == uid.to_string())),
+            "{id} runs as its own uid {uid}: {status}"
+        );
+        let root = PathBuf::from(format!("/proc/{}/root", pid.trim()));
+        assert!(
+            root.join("vmlinux").exists()
+                && root.join("fc.sock").exists()
+                && !root.join("etc").exists(),
+            "{id} sees only its chroot as /"
+        );
+    }
 
     let out_log = until_logged(
         &dir.0.join("vms/out/firecracker.log"),

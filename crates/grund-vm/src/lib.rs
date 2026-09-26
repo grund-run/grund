@@ -27,8 +27,8 @@
 //! - [`Network::Bridged`], as root: a tap per VM on grund's bridge, with
 //!   egress through NAT and nothing unsolicited let in ([`net`]). The VM's
 //!   address, `.<n>` of the bridge's /24, is kept in `<vm>/address`.
-//!   Firecracker runs as root without the jailer for now; the jailer is
-//!   next, and until then a VM escape is root on the host.
+//!   Firecracker runs under its jailer, as a uid of the VM's own, in a
+//!   chroot ([`jail`]).
 //!
 //! A VM's directory records its shape (size and image digests) but never
 //! its metadata, which holds a one-time token. Budget is checked under an
@@ -40,6 +40,7 @@
 
 pub mod api;
 pub mod image;
+pub mod jail;
 pub mod net;
 
 use std::{
@@ -54,7 +55,7 @@ use grund_agent::vm::{VmCapabilities, VmRuntime, VmSpec, VmState, VmStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::{api::Api, image::Images, net::Bridge};
+use crate::{api::Api, image::Images, jail::Jail, net::Bridge};
 
 /// The kernel command line every VM starts from, before its network.
 pub const BOOT_ARGS: &str = "console=ttyS0 reboot=k panic=1 pci=off";
@@ -107,6 +108,9 @@ pub struct Config {
     pub data_dir: PathBuf,
     /// The Firecracker binary.
     pub firecracker: PathBuf,
+    /// Firecracker's jailer, from the same release: required for
+    /// [`Network::Bridged`].
+    pub jailer: Option<PathBuf>,
     pub network: Network,
     pub budget: Budget,
 }
@@ -141,23 +145,38 @@ pub struct Firecracker {
 struct Inner {
     config: Config,
     bridge: Option<Bridge>,
+    jail: Option<Jail>,
     images: Images,
     children: Mutex<HashMap<String, tokio::process::Child>>,
     locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl Firecracker {
-    pub fn new(config: Config) -> anyhow::Result<Self> {
+    pub fn new(mut config: Config) -> anyhow::Result<Self> {
+        config.firecracker = on_path(&config.firecracker);
+        config.jailer = config.jailer.as_deref().map(on_path);
         std::fs::create_dir_all(config.data_dir.join("vms"))?;
         let images = Images::new(config.data_dir.join("images"))?;
-        let bridge = match config.network {
-            Network::Isolated => None,
-            Network::Bridged => Some(Bridge::prepare(&config.data_dir)?),
+        let (bridge, jail) = match config.network {
+            Network::Isolated => (None, None),
+            Network::Bridged => {
+                let jailer = config.jailer.clone().ok_or_else(|| {
+                    anyhow::anyhow!("bridged VMs run under Firecracker's jailer: give its path")
+                })?;
+                (
+                    Some(Bridge::prepare(&config.data_dir)?),
+                    Some(Jail {
+                        jailer,
+                        firecracker: config.firecracker.clone(),
+                    }),
+                )
+            }
         };
         Ok(Self {
             inner: Arc::new(Inner {
                 config,
                 bridge,
+                jail,
                 images,
                 children: Mutex::default(),
                 locks: Mutex::default(),
@@ -167,6 +186,13 @@ impl Firecracker {
 
     fn dir(&self, id: &str) -> PathBuf {
         self.inner.config.data_dir.join("vms").join(id)
+    }
+
+    fn socket(&self, dir: &Path) -> PathBuf {
+        match self.inner.jail {
+            Some(_) => jail::root(dir).join("fc.sock"),
+            None => dir.join("fc.sock"),
+        }
     }
 
     fn lock(&self, id: &str) -> Arc<tokio::sync::Mutex<()>> {
@@ -219,8 +245,17 @@ impl Firecracker {
         if !disk.exists() {
             copy_disk(&rootfs, &disk, spec.disk_gib).map_err(|e| format!("disk: {e}"))?;
         }
+        let kernel = match &self.inner.jail {
+            Some(jail) => {
+                let octet = read_address(&dir).ok_or("the VM has no address")?;
+                jail.prepare(&dir, jail::uid(octet), &kernel)
+                    .map_err(|e| format!("jail: {e}"))?;
+                PathBuf::from("vmlinux")
+            }
+            None => kernel,
+        };
         let pid = self.launch(&spec.id, &dir).await?;
-        let api = Api::new(dir.join("fc.sock"));
+        let api = Api::new(self.socket(&dir));
         let configured = async {
             for (path, body) in boot_sequence(spec, &kernel, self.guest_network(&dir)) {
                 api.put(path, &body).await?;
@@ -255,9 +290,8 @@ impl Firecracker {
     }
 
     async fn launch(&self, id: &str, dir: &Path) -> Result<u32, String> {
-        for stale in ["fc.sock", "firecracker.pid"] {
-            let _ = std::fs::remove_file(dir.join(stale));
-        }
+        let _ = std::fs::remove_file(self.socket(dir));
+        let _ = std::fs::remove_file(dir.join("firecracker.pid"));
         let log = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -282,9 +316,17 @@ impl Firecracker {
             }
             Some(bridge) => {
                 let octet = read_address(dir).ok_or("the VM has no address")?;
-                bridge.add_tap(octet).map_err(|e| format!("tap: {e:#}"))?;
-                let mut command = tokio::process::Command::new(&self.inner.config.firecracker);
-                command.args(["--api-sock", "fc.sock"]);
+                let jail = self
+                    .inner
+                    .jail
+                    .as_ref()
+                    .ok_or("bridged VMs need the jailer")?;
+                let uid = jail::uid(octet);
+                bridge
+                    .add_tap(octet, uid)
+                    .map_err(|e| format!("tap: {e:#}"))?;
+                let mut command = tokio::process::Command::new(&jail.jailer);
+                command.args(jail.args(dir, uid));
                 command
             }
         };
@@ -305,7 +347,7 @@ impl Firecracker {
             .lock()
             .expect("children")
             .insert(id.to_string(), child);
-        let socket = dir.join("fc.sock");
+        let socket = self.socket(dir);
         let deadline = Instant::now() + Duration::from_secs(5);
         while !socket.exists() {
             if !process_alive(pid) || Instant::now() > deadline {
@@ -433,7 +475,7 @@ impl VmRuntime for Firecracker {
         let _held = lock.lock().await;
         let dir = self.dir(id);
         if let Some(pid) = read_pid(&dir).filter(|pid| process_alive(*pid)) {
-            let asked = Api::new(dir.join("fc.sock"))
+            let asked = Api::new(self.socket(&dir))
                 .put("/actions", &json!({ "action_type": "SendCtrlAltDel" }))
                 .await;
             if asked.is_err() || !wait_gone(pid, STOP_GRACE).await {
@@ -531,6 +573,20 @@ fn boot_sequence(
         ),
         ("/mmds", spec.mmds.clone()),
     ]
+}
+
+/// `program` as found on PATH, when it is a bare name: the jailer copies
+/// Firecracker into each chroot and wants its real path.
+pub fn on_path(program: &Path) -> PathBuf {
+    if program.components().count() != 1 {
+        return program.to_path_buf();
+    }
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .map(|dir| dir.join(program))
+        .find(|candidate| candidate.is_file())
+        .unwrap_or_else(|| program.to_path_buf())
 }
 
 /// Whether this process runs as root, and so can use [`Network::Bridged`].

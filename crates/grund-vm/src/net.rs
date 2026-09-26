@@ -170,11 +170,18 @@ impl Bridge {
         foreign_forward_drop(&ruleset)
     }
 
-    /// Adds the tap of the VM at `.octet` to the bridge, replacing a stale one.
-    pub fn add_tap(&self, octet: u8) -> anyhow::Result<String> {
+    /// Adds the tap of the VM at `.octet` to the bridge, owned by `owner`
+    /// so only that VM's Firecracker can open it, replacing a stale one.
+    pub fn add_tap(&self, octet: u8, owner: u32) -> anyhow::Result<String> {
         let name = tap_name(octet);
+        let owner = owner.to_string();
         let _ = run("ip", &["link", "del", &name]);
-        run("ip", &["tuntap", "add", "dev", &name, "mode", "tap"])?;
+        run(
+            "ip",
+            &[
+                "tuntap", "add", "dev", &name, "mode", "tap", "user", &owner, "group", &owner,
+            ],
+        )?;
         run("ip", &["link", "set", &name, "master", BRIDGE])?;
         run("ip", &["link", "set", &name, "up"])?;
         Ok(name)
