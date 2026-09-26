@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1.7
-#
 # Packages the static musl binary that CI already built and tested. Nothing is
 # compiled here: the image holds exactly the artifact the accepttests ran
 # against. `Dockerfile` builds the same image from source for `docker compose
