@@ -1,0 +1,12 @@
+[package]
+name = "grund-guest"
+description = "PID 1 of a grund microVM: mounts the basics, then keeps grund join and grund agent running"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+license = "AGPL-3.0-only"
+
+[dependencies]
+libc = "0.2"

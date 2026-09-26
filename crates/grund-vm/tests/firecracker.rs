@@ -1,7 +1,7 @@
 use std::{path::PathBuf, time::Duration};
 
 use grund_agent::vm::{Artifact, VmImage, VmRuntime, VmSpec, VmState, metadata};
-use grund_vm::{Budget, Config, Firecracker, Network, image::file_digest};
+use grund_vm::{Budget, Config, Firecracker, Network, api::Api, image::file_digest};
 
 struct Artifacts {
     firecracker: PathBuf,
@@ -39,6 +39,28 @@ impl Drop for DataDir {
         }
         let _ = std::fs::remove_dir_all(&self.0);
     }
+}
+
+fn data_dir() -> DataDir {
+    let base = std::env::var_os("GRUND_VM_TEST_DATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let id = uuid::Uuid::now_v7().simple().to_string();
+    DataDir(base.join(format!("grund-vm-{}", &id[20..])))
+}
+
+fn runtime(dir: &DataDir, found: &Artifacts) -> Firecracker {
+    Firecracker::new(Config {
+        data_dir: dir.0.clone(),
+        firecracker: found.firecracker.clone(),
+        network: Network::Isolated,
+        budget: Budget {
+            vcpus: 2,
+            memory_mib: 1024,
+            disk_gib: 4,
+        },
+    })
+    .unwrap()
 }
 
 async fn spec(id: &str, found: &Artifacts, vcpus: u32) -> VmSpec {
@@ -85,22 +107,8 @@ async fn a_vm_boots_is_ensured_idempotently_is_seen_to_exit_and_is_stopped_with_
         );
         return;
     };
-    let base = std::env::var_os("GRUND_VM_TEST_DATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    let id = uuid::Uuid::now_v7().simple().to_string();
-    let dir = DataDir(base.join(format!("grund-vm-{}", &id[20..])));
-    let vms = Firecracker::new(Config {
-        data_dir: dir.0.clone(),
-        firecracker: found.firecracker.clone(),
-        network: Network::Isolated,
-        budget: Budget {
-            vcpus: 2,
-            memory_mib: 1024,
-            disk_gib: 4,
-        },
-    })
-    .unwrap();
+    let dir = data_dir();
+    let vms = runtime(&dir, &found);
 
     let first = spec("vm-a", &found, 1).await;
     let status = vms.ensure(&first).await.unwrap();
@@ -156,4 +164,68 @@ async fn a_vm_boots_is_ensured_idempotently_is_seen_to_exit_and_is_stopped_with_
         .filter(|s| s.id == "vm-a")
         .collect();
     assert!(left.is_empty(), "{left:?}");
+}
+
+async fn until_logged(path: &std::path::Path, needle: &str, within: Duration) -> String {
+    let deadline = std::time::Instant::now() + within;
+    loop {
+        let log = std::fs::read_to_string(path).unwrap_or_default();
+        if log.contains(needle) || std::time::Instant::now() > deadline {
+            return log;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+#[tokio::test]
+async fn the_grund_guest_reads_its_assignment_from_the_metadata_and_shuts_down_on_ctrl_alt_del() {
+    let (Some(mut found), Some(guest)) = (
+        artifacts(),
+        std::env::var_os("GRUND_VM_TEST_GUEST_ROOTFS").map(PathBuf::from),
+    ) else {
+        eprintln!(
+            "skipped: also needs GRUND_VM_TEST_GUEST_ROOTFS, an image from crates/grund-guest/build-image.sh"
+        );
+        return;
+    };
+    found.rootfs = guest;
+    let dir = data_dir();
+    let vms = runtime(&dir, &found);
+    let status = vms.ensure(&spec("guest", &found, 1).await).await.unwrap();
+    assert_eq!(status.state, VmState::Running, "{status:?}");
+    let console = dir.0.join("vms/guest/firecracker.log");
+
+    let log = until_logged(
+        &console,
+        "could not reach https://grund.example.com",
+        Duration::from_secs(30),
+    )
+    .await;
+    assert!(log.contains("grund-guest: started"), "{log}");
+    assert!(
+        log.contains("grund-guest: registering: grund join --mmds"),
+        "{log}"
+    );
+    assert!(
+        log.contains("could not reach https://grund.example.com"),
+        "grund join found the instance in the metadata and dialled it: {log}"
+    );
+    assert!(
+        !log.contains("grund_join_test"),
+        "the token never reaches the console"
+    );
+
+    Api::new(dir.0.join("vms/guest/fc.sock"))
+        .put(
+            "/actions",
+            &serde_json::json!({ "action_type": "SendCtrlAltDel" }),
+        )
+        .await
+        .unwrap();
+    let exited = until_state(&vms, "guest", |s| matches!(s, VmState::Exited { .. })).await;
+    assert!(matches!(exited, VmState::Exited { .. }), "{exited:?}");
+    let log = std::fs::read_to_string(&console).unwrap();
+    assert!(log.contains("grund-guest: stopping"), "{log}");
+    assert!(!log.contains("Kernel panic"), "{log}");
+    vms.stop("guest").await.unwrap();
 }
