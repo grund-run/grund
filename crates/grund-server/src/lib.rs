@@ -20,6 +20,7 @@ pub mod crypto;
 pub mod db;
 pub mod extension;
 pub mod health;
+pub mod keys;
 pub mod license;
 pub mod projections;
 pub mod sagas;
@@ -57,6 +58,12 @@ pub async fn serve(
             ),
         }
     }
+    keys::check_at_start(
+        &pool,
+        &keys::Keys::new(std::sync::Arc::new(secret.clone())),
+        config.dev_mode,
+    )
+    .await?;
     let events = mire::EventStore::new(pool.clone());
     mire_sagas::migrate(&events).await?;
     let nats = connect_nats(&config).await?;

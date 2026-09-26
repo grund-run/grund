@@ -42,9 +42,9 @@ pub async fn current_keys(executor: impl PgExecutor<'_>) -> Result<Vec<KeyRow>, 
     .await
 }
 
-/// Records a new current key. Of two racing inserts for one purpose, one
-/// fails on `grund_keys_current_idx` or `grund_keys_current_organisation_idx`
-/// and the caller reads the winner.
+/// Records a new current key, unless one already exists for the purpose (and
+/// organisation): of two racing inserts one wins, and the caller reads it.
+/// Nothing fails, so this is safe inside a larger transaction.
 pub async fn insert_key(
     executor: impl PgExecutor<'_>,
     key_id: Uuid,
@@ -53,7 +53,8 @@ pub async fn insert_key(
     public_key: &[u8; 32],
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO grund_keys (key_id, purpose, organisation_id, public_key) VALUES ($1, $2, $3, $4)",
+        "INSERT INTO grund_keys (key_id, purpose, organisation_id, public_key) VALUES ($1, $2, $3, $4) \
+         ON CONFLICT DO NOTHING",
     )
     .bind(key_id)
     .bind(purpose)
@@ -306,5 +307,33 @@ pub async fn organisation_live(
     )
     .bind(organisation_id)
     .fetch_one(executor)
+    .await
+}
+
+/// The organisation with this current slug, if it is not deleted.
+pub async fn live_organisation_by_slug(
+    executor: impl PgExecutor<'_>,
+    slug: &str,
+) -> Result<Option<Uuid>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT organisation_id FROM grund_organisations WHERE slug = $1 AND deleted_at IS NULL",
+    )
+    .bind(slug)
+    .fetch_optional(executor)
+    .await
+}
+
+/// The account's role in the organisation, if it is a member.
+pub async fn role_in(
+    executor: impl PgExecutor<'_>,
+    organisation_id: Uuid,
+    account_id: Uuid,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT role FROM grund_memberships WHERE organisation_id = $1 AND account_id = $2",
+    )
+    .bind(organisation_id)
+    .bind(account_id)
+    .fetch_optional(executor)
     .await
 }
