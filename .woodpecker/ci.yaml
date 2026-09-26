@@ -110,6 +110,10 @@ steps:
     depends_on: []
     environment:
       CARGO_TERM_COLOR: always
+      # The image's own toolchain, so rustup does not read rust-toolchain.toml
+      # and fetch clippy and rustfmt over the network in a step that never
+      # lints (mail pipeline 7 failed on exactly that download).
+      RUSTUP_TOOLCHAIN: 1.98.1-x86_64-unknown-linux-musl
       # rustc outputs are shared across pipelines through sccache on
       # clank-sccache (memcached, the homelab). sccache keys each compile on its inputs,
       # the compiler and the environment variables rustc reads (build.rs's
@@ -165,6 +169,10 @@ steps:
     depends_on: []
     environment:
       CARGO_TERM_COLOR: always
+      # The image's own toolchain, so rustup does not read rust-toolchain.toml
+      # and fetch clippy and rustfmt over the network in a step that never
+      # lints (mail pipeline 7 failed on exactly that download).
+      RUSTUP_TOOLCHAIN: 1.98.1-x86_64-unknown-linux-musl
       # rustc outputs are shared across pipelines through sccache on
       # clank-sccache (memcached, the homelab). sccache keys each compile on its inputs,
       # the compiler and the environment variables rustc reads (build.rs's
