@@ -150,6 +150,14 @@ pub struct ServeConfig {
     )]
     pub organisations: OrganisationMode,
 
+    /// The organisation whose owners and admins run the management pool: the
+    /// instance's own machines, leased to organisations (grund-docs
+    /// design/machines.md). A slug; renaming that organisation means changing
+    /// this setting. Unset: the instance's organisation in `single` mode, and
+    /// no management pool in `multi` mode.
+    #[arg(long, env = "GRUND_OPERATOR_ORGANISATION")]
+    pub operator_organisation: Option<String>,
+
     /// Whether sign-up without an invitation is open at all. Off, only
     /// invitations create accounts (and, in `single` mode, the first
     /// account cannot be created: leave it on until the admin exists).
@@ -383,6 +391,7 @@ impl ServeConfig {
             &mut self.insights.insights_token,
             &mut self.billing.billing_url,
             &mut self.billing.billing_token,
+            &mut self.operator_organisation,
         ] {
             if value.as_deref().is_some_and(|v| v.trim().is_empty()) {
                 *value = None;

@@ -1,0 +1,128 @@
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+package grund.agent.v1;
+
+// Where a machine registers into a pool (grund-docs design/machines.md). The
+// token in the request is the only credential: the call is not behind the
+// dashboard's session, and a machine is not a browser. A grund_reg_ token
+// opens the management pool (or brings back a machine whose lease ended); a
+// grund_join_ token opens one organisation's pool.
+//
+// Errors: an unknown, used, expired or malformed token, and a token whose
+// organisation is gone, all fail identically as permission_denied with the
+// reason token_invalid. A bad signature, a key that is not 32 bytes, or a
+// signed_at more than 300 seconds from the instance's clock is
+// invalid_argument (proof_invalid), and the token stays unused. A full pool
+// is failed_precondition (machine_limit); a taken name is
+// failed_precondition (name_taken); too many calls from one address is
+// resource_exhausted.
+service MachineEnrollmentService {
+  // Registers the calling machine under its key. Repeating the call with the
+  // same token and key while the token would still be valid returns the same
+  // answer, at most five times.
+  rpc EnrollMachine(EnrollMachineRequest) returns (EnrollMachineResponse);
+}
+
+message EnrollMachineRequest {
+  // grund_reg_… or grund_join_…
+  string token = 1;
+  // Ed25519, 32 bytes, generated on the machine for this registration.
+  bytes machine_public_key = 2;
+  // Seconds since the epoch; accepted within 300 seconds of the instance.
+  int64 signed_at_unix = 3;
+  // Ed25519 by the machine key over
+  // "grund-enroll-v1\n" || origin || "\n" || signed_at_unix (decimal) || "\n"
+  // || lowercase hex SHA-256 of the token. origin is the instance's public
+  // origin, for example https://app.grund.sh.
+  bytes signature = 4;
+  // Recorded, never used to authorize anything.
+  MachineFacts facts = 5;
+  // Used when the token binds no name. Empty: made from facts.hostname.
+  string requested_name = 6;
+}
+
+message MachineFacts {
+  string hostname = 1;
+  // x86_64 or aarch64.
+  string arch = 2;
+  string cpu_model = 3;
+  int32 cpus = 4;
+  int64 memory_mib = 5;
+  int64 disk_gib = 6;
+  // os-release PRETTY_NAME.
+  string os = 7;
+  string kernel = 8;
+  string agent_version = 9;
+  // Set by fleet guests; informational only.
+  string fleet_machine_id = 10;
+}
+
+message EnrollMachineResponse {
+  // UUIDv7, the same across re-registrations.
+  string machine_id = 1;
+  string machine_name = 2;
+  Pool pool = 3;
+  // Set for the organisation pool only.
+  string organisation_id = 4;
+  // The instance's identity; the machine pins it.
+  PublicKey instance_key = 5;
+  // What the machine trusts next: the management key (management pool), or
+  // the organisation's key (organisation pool).
+  PublicKey trust_key = 6;
+  int32 heartbeat_interval_seconds = 7;
+  // Where the machine's control link connects, by preference. Empty until the
+  // control link exists.
+  repeated string data_channel_urls = 8;
+}
+
+enum Pool {
+  POOL_UNSPECIFIED = 0;
+  POOL_MANAGEMENT = 1;
+  POOL_ORGANISATION = 2;
+}
+
+// An Ed25519 public key of the instance, and what it signs for.
+message PublicKey {
+  string key_id = 1;
+  // 32 bytes.
+  bytes public_key = 2;
+  KeyPurpose purpose = 3;
+}
+
+enum KeyPurpose {
+  KEY_PURPOSE_UNSPECIFIED = 0;
+  // The instance's identity to its machines.
+  KEY_PURPOSE_INSTANCE = 1;
+  // Signs lease grants.
+  KEY_PURPOSE_MANAGEMENT = 2;
+  // Signs one organisation's desired-state documents.
+  KEY_PURPOSE_ORGANISATION = 3;
+}
+
+// What the management key signs when a machine is leased: the machine may
+// accept documents signed by organisation_key, for itself, from now on.
+message LeaseGrant {
+  string lease_id = 1;
+  string machine_id = 2;
+  string organisation_id = 3;
+  PublicKey organisation_key = 4;
+  int64 issued_at_unix = 5;
+}
+
+// signature = Ed25519(management key, "grund-lease-grant-v1\n" || payload),
+// where payload is an encoded LeaseGrant. Verify the bytes, then decode them.
+message SignedLeaseGrant {
+  // The management key's id.
+  string key_id = 1;
+  bytes payload = 2;
+  bytes signature = 3;
+}
+
+// Attached as a detail to EnrollMachine errors: a stable reason a machine can
+// act on (token_invalid, proof_invalid, machine_limit, name_taken,
+// name_invalid, key_reused, rate_limited).
+message ErrorReason {
+  string reason = 1;
+}

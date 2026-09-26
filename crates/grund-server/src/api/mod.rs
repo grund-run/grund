@@ -17,6 +17,8 @@
 //! presenting one is refused as unauthenticated.
 
 pub mod account;
+pub mod enrollment;
+pub mod machine;
 pub mod organisation;
 
 use std::{sync::Arc, time::Duration};
@@ -32,14 +34,17 @@ use connectrpc::{
     interceptor::{Interceptor, Next as InterceptNext, UnaryRequest, UnaryResponse},
 };
 use grund_proto::grund::{
-    account::v1::ACCOUNT_SERVICE_SERVICE_NAME, organisation::v1::ORGANISATION_SERVICE_SERVICE_NAME,
+    account::v1::ACCOUNT_SERVICE_SERVICE_NAME,
+    agent::v1::MACHINE_ENROLLMENT_SERVICE_SERVICE_NAME,
+    machine::v1::{MACHINE_SERVICE_SERVICE_NAME, MANAGEMENT_POOL_SERVICE_SERVICE_NAME},
+    organisation::v1::ORGANISATION_SERVICE_SERVICE_NAME,
 };
 use uuid::Uuid;
 
 use crate::{
     services::sessions::SessionsState,
     state::State,
-    web::browser::{CookieJar, cookie, same_origin},
+    web::browser::{CookieJar, client_address, cookie, same_origin},
 };
 
 /// The largest request the API accepts. Its largest message is a session id.
@@ -53,11 +58,20 @@ pub struct Caller {
     pub session_id: Uuid,
 }
 
+/// The client address of a call that is not behind the session (machine
+/// enrollment), for its rate limit. Stamped by [`stamp_address`].
+#[derive(Debug, Clone)]
+pub struct ClientAddress(pub String);
+
 /// What a procedure requires of its caller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Requirement {
     /// Any signed-in person, acting on their own account.
     Session,
+    /// No session: a one-time token in the request is the credential, checked
+    /// by the handler (machine enrollment). Served on routes without the
+    /// session and same-origin checks.
+    Token,
 }
 
 /// Every procedure and what it requires. A procedure missing here is denied,
@@ -119,6 +133,58 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
         "/grund.organisation.v1.OrganisationService/RevokeInvitation",
         Requirement::Session,
     ),
+    (
+        "/grund.agent.v1.MachineEnrollmentService/EnrollMachine",
+        Requirement::Token,
+    ),
+    (
+        "/grund.machine.v1.ManagementPoolService/CreateRegistrationToken",
+        Requirement::Session,
+    ),
+    (
+        "/grund.machine.v1.ManagementPoolService/CreateReregistrationToken",
+        Requirement::Session,
+    ),
+    (
+        "/grund.machine.v1.ManagementPoolService/ListPoolMachines",
+        Requirement::Session,
+    ),
+    (
+        "/grund.machine.v1.ManagementPoolService/GetPoolMachine",
+        Requirement::Session,
+    ),
+    (
+        "/grund.machine.v1.ManagementPoolService/LeaseMachine",
+        Requirement::Session,
+    ),
+    (
+        "/grund.machine.v1.ManagementPoolService/EndLease",
+        Requirement::Session,
+    ),
+    (
+        "/grund.machine.v1.ManagementPoolService/RevokePoolMachine",
+        Requirement::Session,
+    ),
+    (
+        "/grund.machine.v1.MachineService/CreateJoinToken",
+        Requirement::Session,
+    ),
+    (
+        "/grund.machine.v1.MachineService/ListMachines",
+        Requirement::Session,
+    ),
+    (
+        "/grund.machine.v1.MachineService/GetMachine",
+        Requirement::Session,
+    ),
+    (
+        "/grund.machine.v1.MachineService/RevokeMachine",
+        Requirement::Session,
+    ),
+    (
+        "/grund.machine.v1.MachineService/GetOrganisationKey",
+        Requirement::Session,
+    ),
 ];
 
 /// The API routes, to merge into the page router.
@@ -143,16 +209,60 @@ pub fn router(state: State) -> axum::Router {
         )
         .route_service(
             &format!("/{ORGANISATION_SERVICE_SERVICE_NAME}/{{method}}"),
-            service,
+            service.clone(),
         )
-        .layer(middleware::from_fn_with_state(state, authenticate))
+        .route_service(
+            &format!("/{MANAGEMENT_POOL_SERVICE_SERVICE_NAME}/{{method}}"),
+            service.clone(),
+        )
+        .route_service(
+            &format!("/{MACHINE_SERVICE_SERVICE_NAME}/{{method}}"),
+            service.clone(),
+        )
+        .layer(middleware::from_fn_with_state(state.clone(), authenticate))
+        .merge(
+            axum::Router::new()
+                .route_service(
+                    &format!("/{MACHINE_ENROLLMENT_SERVICE_SERVICE_NAME}/{{method}}"),
+                    service,
+                )
+                .layer(middleware::from_fn_with_state(state, stamp_address)),
+        )
+}
+
+/// Stamps the client address on a call that is not behind the session, so
+/// its handler can rate-limit by it. Machines are not browsers: no cookie,
+/// origin or session is looked at here.
+pub async fn stamp_address(
+    AxumState(state): AxumState<State>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let peer = request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|info| info.0.ip().to_string());
+    let address = client_address(
+        request.headers(),
+        peer.as_deref(),
+        state.config.trusted_proxy_hops,
+    );
+    request.extensions_mut().insert(ClientAddress(address));
+    let mut response = next.run(request).await;
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 /// The Connect router with every service registered.
 pub fn connect_router(state: State) -> connectrpc::Router {
     connectrpc::Router::new()
         .add_service(Arc::new(account::AccountApi::new(state.clone())))
-        .add_service(Arc::new(organisation::OrganisationApi::new(state)))
+        .add_service(Arc::new(organisation::OrganisationApi::new(state.clone())))
+        .add_service(Arc::new(machine::ManagementPoolApi::new(state.clone())))
+        .add_service(Arc::new(machine::MachineApi::new(state.clone())))
+        .add_service(Arc::new(enrollment::EnrollmentApi::new(state)))
 }
 
 fn refuse(error: ConnectError) -> Response {
@@ -233,6 +343,7 @@ impl Interceptor for Authorize {
                 next.run(request).await
             }
             Some(Requirement::Session) => Err(ConnectError::unauthenticated("sign in first")),
+            Some(Requirement::Token) => next.run(request).await,
             None => Err(ConnectError::permission_denied(
                 "this procedure is not open to callers",
             )),
@@ -258,7 +369,7 @@ mod tests {
         ListSessionsResponse, RevokeSessionRequest, RevokeSessionResponse,
     };
 
-    use grund_proto::grund::organisation::v1 as org;
+    use grund_proto::grund::{agent::v1 as agent, machine::v1 as machine, organisation::v1 as org};
 
     use super::*;
 
@@ -372,11 +483,123 @@ mod tests {
         }
     }
 
+    struct UnusedPool;
+
+    #[allow(refining_impl_trait)]
+    impl machine::ManagementPoolService for UnusedPool {
+        async fn create_registration_token(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, machine::CreateRegistrationTokenRequest>,
+        ) -> ServiceResult<machine::CreateRegistrationTokenResponse> {
+            unreachable!()
+        }
+        async fn create_reregistration_token(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, machine::CreateReregistrationTokenRequest>,
+        ) -> ServiceResult<machine::CreateReregistrationTokenResponse> {
+            unreachable!()
+        }
+        async fn list_pool_machines(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, machine::ListPoolMachinesRequest>,
+        ) -> ServiceResult<machine::ListPoolMachinesResponse> {
+            unreachable!()
+        }
+        async fn get_pool_machine(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, machine::GetPoolMachineRequest>,
+        ) -> ServiceResult<machine::GetPoolMachineResponse> {
+            unreachable!()
+        }
+        async fn lease_machine(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, machine::LeaseMachineRequest>,
+        ) -> ServiceResult<machine::LeaseMachineResponse> {
+            unreachable!()
+        }
+        async fn end_lease(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, machine::EndLeaseRequest>,
+        ) -> ServiceResult<machine::EndLeaseResponse> {
+            unreachable!()
+        }
+        async fn revoke_pool_machine(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, machine::RevokePoolMachineRequest>,
+        ) -> ServiceResult<machine::RevokePoolMachineResponse> {
+            unreachable!()
+        }
+    }
+
+    struct UnusedMachines;
+
+    #[allow(refining_impl_trait)]
+    impl machine::MachineService for UnusedMachines {
+        async fn create_join_token(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, machine::CreateJoinTokenRequest>,
+        ) -> ServiceResult<machine::CreateJoinTokenResponse> {
+            unreachable!()
+        }
+        async fn list_machines(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, machine::ListMachinesRequest>,
+        ) -> ServiceResult<machine::ListMachinesResponse> {
+            unreachable!()
+        }
+        async fn get_machine(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, machine::GetMachineRequest>,
+        ) -> ServiceResult<machine::GetMachineResponse> {
+            unreachable!()
+        }
+        async fn revoke_machine(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, machine::RevokeMachineRequest>,
+        ) -> ServiceResult<machine::RevokeMachineResponse> {
+            unreachable!()
+        }
+        async fn get_organisation_key(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, machine::GetOrganisationKeyRequest>,
+        ) -> ServiceResult<machine::GetOrganisationKeyResponse> {
+            unreachable!()
+        }
+    }
+
+    struct UnusedEnrollment;
+
+    #[allow(refining_impl_trait)]
+    impl agent::MachineEnrollmentService for UnusedEnrollment {
+        async fn enroll_machine(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, agent::EnrollMachineRequest>,
+        ) -> ServiceResult<agent::EnrollMachineResponse> {
+            unreachable!()
+        }
+    }
+
     #[test]
     fn every_procedure_has_an_authorization_entry() {
         let router = connectrpc::Router::new()
             .add_service(Arc::new(Unused))
-            .add_service(Arc::new(UnusedOrganisations));
+            .add_service(Arc::new(UnusedOrganisations))
+            .add_service(Arc::new(UnusedPool))
+            .add_service(Arc::new(UnusedMachines))
+            .add_service(Arc::new(UnusedEnrollment));
         let served: BTreeSet<String> = router
             .methods()
             .map(|m| format!("/{}", m.trim_start_matches('/')))

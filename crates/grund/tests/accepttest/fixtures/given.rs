@@ -8,7 +8,12 @@ impl Given {
     }
 
     pub async fn an_unconfirmed_account(&self) -> anyhow::Result<Account> {
-        let username = self.a_fresh_name("acc");
+        self.an_unconfirmed_account_named(&self.a_fresh_name("acc"))
+            .await
+    }
+
+    pub async fn an_unconfirmed_account_named(&self, username: &str) -> anyhow::Result<Account> {
+        let username = username.to_string();
         let account = Account {
             email: format!("{username}@accept.test"),
             username,
@@ -26,7 +31,11 @@ impl Given {
     }
 
     pub async fn an_account(&self) -> anyhow::Result<Account> {
-        let account = self.an_unconfirmed_account().await?;
+        self.an_account_named(&self.a_fresh_name("acc")).await
+    }
+
+    pub async fn an_account_named(&self, username: &str) -> anyhow::Result<Account> {
+        let account = self.an_unconfirmed_account_named(username).await?;
         let when = When {
             testcase: self.testcase.clone(),
         };
@@ -40,7 +49,12 @@ impl Given {
     }
 
     pub async fn a_signed_in_account(&self) -> anyhow::Result<Account> {
-        let account = self.an_account().await?;
+        self.a_signed_in_account_named(&self.a_fresh_name("acc"))
+            .await
+    }
+
+    pub async fn a_signed_in_account_named(&self, username: &str) -> anyhow::Result<Account> {
+        let account = self.an_account_named(username).await?;
         let when = When {
             testcase: self.testcase.clone(),
         };

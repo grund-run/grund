@@ -1,0 +1,225 @@
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+package grund.machine.v1;
+
+import "google/protobuf/timestamp.proto";
+import "grund/agent/v1/enrollment.proto";
+
+// The management pool (grund-docs design/machines.md): the instance's own
+// machines, run by the operator organisation (GRUND_OPERATOR_ORGANISATION,
+// or the instance's organisation in single mode), leased to organisations.
+// Owners and admins of the operator organisation act; its members list and
+// get. Anyone else gets not_found for every call, as for an organisation they
+// are not a member of; an instance with no operator organisation answers
+// not_found too.
+service ManagementPoolService {
+  // A one-time grund_reg_ token for one new machine. Shown once. ttl_seconds
+  // 0 means 600; at most 900.
+  rpc CreateRegistrationToken(CreateRegistrationTokenRequest) returns (CreateRegistrationTokenResponse);
+
+  // A one-time grund_reg_ token that brings back this returning machine,
+  // wiped, under a new key.
+  rpc CreateReregistrationToken(CreateReregistrationTokenRequest) returns (CreateReregistrationTokenResponse);
+
+  // Newest first; state MACHINE_STATE_UNSPECIFIED lists every state.
+  rpc ListPoolMachines(ListPoolMachinesRequest) returns (ListPoolMachinesResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  rpc GetPoolMachine(GetPoolMachineRequest) returns (GetPoolMachineResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // Leases an available machine to an organisation, under name in that
+  // organisation's pool (empty: the machine's own name). Returns the lease
+  // grant the management key signed. failed_precondition if the machine is
+  // not available, the organisation's pool is full, or the name is taken
+  // there.
+  rpc LeaseMachine(LeaseMachineRequest) returns (LeaseMachineResponse);
+
+  // The machine leaves the organisation's pool at once and is returning:
+  // wipe it and bring it back with CreateReregistrationToken.
+  rpc EndLease(EndLeaseRequest) returns (EndLeaseResponse);
+
+  // For good. Its key is refused from now on.
+  rpc RevokePoolMachine(RevokePoolMachineRequest) returns (RevokePoolMachineResponse);
+}
+
+// An organisation's machines: its own, and the ones leased to it. Members list
+// and get; owners and admins mint join tokens and revoke own machines. An
+// organisation the caller is not a member of, and a machine not in its pool,
+// are not_found.
+service MachineService {
+  // A one-time grund_join_ token for one machine the organisation brings.
+  // Shown once. ttl_seconds 0 means 600; at most 900.
+  rpc CreateJoinToken(CreateJoinTokenRequest) returns (CreateJoinTokenResponse);
+
+  // By name.
+  rpc ListMachines(ListMachinesRequest) returns (ListMachinesResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  rpc GetMachine(GetMachineRequest) returns (GetMachineResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // Own machines only; a leased machine is failed_precondition.
+  rpc RevokeMachine(RevokeMachineRequest) returns (RevokeMachineResponse);
+
+  // The key the organisation's machines trust for its desired-state
+  // documents. Made on first use.
+  rpc GetOrganisationKey(GetOrganisationKeyRequest) returns (GetOrganisationKeyResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+}
+
+message Machine {
+  string machine_id = 1;
+  // In the organisation view, its name in that organisation's pool; in the
+  // management view, its name in the management pool.
+  string name = 2;
+  MachineState state = 3;
+  grund.agent.v1.Pool pool = 4;
+  // The organisation whose pool it is in now, if any.
+  string organisation = 5;
+  // Set while leased.
+  Lease lease = 6;
+  // 32 bytes; empty once revoked.
+  bytes public_key = 7;
+  grund.agent.v1.MachineFacts facts = 8;
+  google.protobuf.Timestamp registered_at = 9;
+  // When its current key was registered.
+  google.protobuf.Timestamp key_registered_at = 10;
+  // Who minted the token it registered with.
+  string minted_by = 11;
+}
+
+message Lease {
+  string lease_id = 1;
+  // The lessee's slug.
+  string organisation = 2;
+  // Its name in the lessee's pool.
+  string name = 3;
+  google.protobuf.Timestamp leased_at = 4;
+}
+
+enum MachineState {
+  MACHINE_STATE_UNSPECIFIED = 0;
+  MACHINE_STATE_AVAILABLE = 1;
+  MACHINE_STATE_LEASED = 2;
+  MACHINE_STATE_RETURNING = 3;
+  MACHINE_STATE_ACTIVE = 4;
+  MACHINE_STATE_REVOKED = 5;
+}
+
+message CreateRegistrationTokenRequest {
+  // Binds the machine's name; empty lets the machine choose.
+  string name = 1;
+  int32 ttl_seconds = 2;
+}
+
+message CreateRegistrationTokenResponse {
+  string token = 1;
+  google.protobuf.Timestamp expires_at = 2;
+}
+
+message CreateReregistrationTokenRequest {
+  string machine_id = 1;
+  int32 ttl_seconds = 2;
+}
+
+message CreateReregistrationTokenResponse {
+  string token = 1;
+  google.protobuf.Timestamp expires_at = 2;
+}
+
+message ListPoolMachinesRequest {
+  MachineState state = 1;
+}
+
+message ListPoolMachinesResponse {
+  repeated Machine machines = 1;
+}
+
+message GetPoolMachineRequest {
+  string machine_id = 1;
+}
+
+message GetPoolMachineResponse {
+  Machine machine = 1;
+}
+
+message LeaseMachineRequest {
+  string machine_id = 1;
+  // The lessee's slug.
+  string organisation = 2;
+  string name = 3;
+}
+
+message LeaseMachineResponse {
+  Machine machine = 1;
+  grund.agent.v1.SignedLeaseGrant grant = 2;
+}
+
+message EndLeaseRequest {
+  string machine_id = 1;
+}
+
+message EndLeaseResponse {
+  Machine machine = 1;
+}
+
+message RevokePoolMachineRequest {
+  string machine_id = 1;
+}
+
+message RevokePoolMachineResponse {
+  Machine machine = 1;
+}
+
+message CreateJoinTokenRequest {
+  string organisation = 1;
+  string name = 2;
+  int32 ttl_seconds = 3;
+}
+
+message CreateJoinTokenResponse {
+  string token = 1;
+  google.protobuf.Timestamp expires_at = 2;
+}
+
+message ListMachinesRequest {
+  string organisation = 1;
+}
+
+message ListMachinesResponse {
+  repeated Machine machines = 1;
+}
+
+message GetMachineRequest {
+  string organisation = 1;
+  string machine_id = 2;
+}
+
+message GetMachineResponse {
+  Machine machine = 1;
+}
+
+message RevokeMachineRequest {
+  string organisation = 1;
+  string machine_id = 2;
+}
+
+message RevokeMachineResponse {
+  Machine machine = 1;
+}
+
+message GetOrganisationKeyRequest {
+  string organisation = 1;
+}
+
+message GetOrganisationKeyResponse {
+  grund.agent.v1.PublicKey key = 1;
+}

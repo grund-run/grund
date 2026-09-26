@@ -13,6 +13,11 @@ use crate::{crypto, state::State};
 pub const LOGIN_WINDOW: Duration = Duration::from_secs(15 * 60);
 /// The mail window: requests are counted per hour.
 pub const MAIL_WINDOW: Duration = Duration::from_secs(3600);
+/// The enrollment window: machine registrations are counted per minute.
+pub const ENROLL_WINDOW: Duration = Duration::from_secs(60);
+/// Machine registrations one client address may attempt per minute. A real
+/// install makes one; probing for tokens needs many.
+pub const ENROLL_PER_ADDRESS: u32 = 10;
 
 /// The instance's limits.
 #[derive(Clone)]
@@ -74,6 +79,18 @@ impl Limits {
             address,
             self.mail_per_address,
             MAIL_WINDOW,
+        )
+        .await
+    }
+
+    /// Counts a machine registration attempt from `address`; `false` when
+    /// over [`ENROLL_PER_ADDRESS`] this minute.
+    pub async fn admit_enroll_address(&self, address: &str) -> Result<bool, sqlx::Error> {
+        self.admit(
+            Scope::EnrollAddress,
+            address,
+            ENROLL_PER_ADDRESS,
+            ENROLL_WINDOW,
         )
         .await
     }

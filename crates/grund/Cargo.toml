@@ -36,3 +36,9 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 webpki-roots = "1"
 getrandom.workspace = true
 sqlx.workspace = true
+# The machine tests play the machine's side of enrollment: an Ed25519 key,
+# the token's SHA-256, and protobuf JSON's base64 for bytes.
+base64.workspace = true
+ed25519-dalek = "2"
+hex.workspace = true
+sha2.workspace = true
