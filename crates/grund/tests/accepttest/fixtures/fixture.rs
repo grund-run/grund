@@ -16,13 +16,15 @@ pub const DEFAULT_MAILPIT_URL: &str = "http://127.0.0.1:58410";
 pub struct Fixture {
     pub origin: Origin,
     pub mailpit: Option<Origin>,
-    child: Option<Child>,
+    child: std::sync::Mutex<Option<Child>>,
     database: Option<(String, String)>,
+    settings: Vec<(String, String)>,
+    log_path: Option<std::path::PathBuf>,
 }
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        if let Some(child) = self.child.as_mut() {
+        if let Some(child) = self.child.get_mut().ok().and_then(Option::as_mut) {
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -87,8 +89,10 @@ impl Fixture {
             mailpit: env("GRUND_ACCEPT_MAILPIT_URL")
                 .map(|url| Origin::parse(&url))
                 .transpose()?,
-            child: None,
+            child: std::sync::Mutex::new(None),
             database: None,
+            settings: Vec::new(),
+            log_path: None,
         };
         fixture.wait_until_live(None).await?;
         Ok(fixture)
@@ -134,24 +138,39 @@ impl Fixture {
             settings.push((name.to_string(), value.to_string()));
         }
 
-        let mut command = Command::new(env!("CARGO_BIN_EXE_grund"));
-        command
-            .arg("serve")
-            .env_clear()
-            .stdout(Stdio::from(log.try_clone()?))
-            .stderr(Stdio::from(log));
-        for (name, value) in &settings {
-            command.env(name, value);
-        }
-
+        let child = serve(&settings, log)?;
         let fixture = Self {
             origin: Origin::parse(&public_url)?,
             mailpit: Some(Origin::parse(&mailpit_url)?),
-            child: Some(command.spawn().context("spawn grund")?),
+            child: std::sync::Mutex::new(Some(child)),
             database: Some((admin_url, database_name)),
+            settings,
+            log_path: Some(log_path.clone()),
         };
         fixture.wait_until_live(Some(&log_path)).await?;
         Ok(fixture)
+    }
+
+    pub async fn restart_with(&self, extra: &[(&str, &str)]) -> anyhow::Result<()> {
+        let log_path = self
+            .log_path
+            .clone()
+            .context("only a spawned instance can restart")?;
+        let mut settings = self.settings.clone();
+        for (name, value) in extra {
+            settings.retain(|(key, _)| key != name);
+            settings.push((name.to_string(), value.to_string()));
+        }
+        {
+            let mut child = self.child.lock().unwrap();
+            if let Some(mut running) = child.take() {
+                let _ = running.kill();
+                let _ = running.wait();
+            }
+            let log = std::fs::OpenOptions::new().append(true).open(&log_path)?;
+            *child = Some(serve(&settings, log)?);
+        }
+        self.wait_until_live(Some(&log_path)).await
     }
 
     pub fn database_url(&self) -> Option<String> {
@@ -183,6 +202,19 @@ impl Fixture {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
+}
+
+fn serve(settings: &[(String, String)], log: File) -> anyhow::Result<Child> {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_grund"));
+    command
+        .arg("serve")
+        .env_clear()
+        .stdout(Stdio::from(log.try_clone()?))
+        .stderr(Stdio::from(log));
+    for (name, value) in settings {
+        command.env(name, value);
+    }
+    command.spawn().context("spawn grund")
 }
 
 pub fn random_hex(bytes: usize) -> String {

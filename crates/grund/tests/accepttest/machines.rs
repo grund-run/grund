@@ -821,3 +821,40 @@ async fn grund_join_says_why_a_refused_code_was_refused() -> anyhow::Result<()> 
     let _ = std::fs::remove_dir_all(dir);
     Ok(())
 }
+
+#[tokio::test]
+async fn the_operator_organisation_may_be_named_by_its_id() -> anyhow::Result<()> {
+    let Some((given, when, then)) = testcase_configured(&[]).await? else {
+        return Ok(());
+    };
+    let operator = given.a_signed_in_account().await?;
+    when.calling(
+        "/grund.organisation.v1.OrganisationService/GetOrganisation",
+        &json!({"slug": operator.username}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    let organisation_id = json(&then)?["organisation"]["organisationId"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    when.calling(&format!("{POOL}/ListPoolMachines"), "{}")
+        .await?;
+    then.status(404)?.connect_code("not_found")?;
+
+    when.testcase
+        .fixture
+        .restart_with(&[("GRUND_OPERATOR_ORGANISATION", &organisation_id)])
+        .await?;
+    when.calling(&format!("{POOL}/ListPoolMachines"), "{}")
+        .await?;
+    then.status(200)?;
+    minting(
+        &when,
+        &then,
+        &format!("{POOL}/CreateRegistrationToken"),
+        json!({}),
+    )
+    .await?;
+    Ok(())
+}

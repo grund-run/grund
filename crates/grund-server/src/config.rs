@@ -152,9 +152,11 @@ pub struct ServeConfig {
 
     /// The organisation whose owners and admins run the management pool: the
     /// instance's own machines, leased to organisations (grund-docs
-    /// design/machines.md). A slug; renaming that organisation means changing
-    /// this setting. Unset: the instance's organisation in `single` mode, and
-    /// no management pool in `multi` mode.
+    /// design/machines.md). Its id (a UUID), or its slug. Prefer the id on an
+    /// instance with open sign-up: a slug names whoever holds it, so a slug
+    /// set before its organisation exists could be taken by anyone signing
+    /// up. Unset: the instance's organisation in `single` mode, and no
+    /// management pool in `multi` mode.
     #[arg(long, env = "GRUND_OPERATOR_ORGANISATION")]
     pub operator_organisation: Option<String>,
 
