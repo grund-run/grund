@@ -1,6 +1,10 @@
 //! Verified artifacts: a kernel or root filesystem named by URL and pinned by
 //! SHA-256, fetched once into `<data dir>/images/<sha256>` and reused.
 //!
+//! file://, https:// and http:// URLs: plain http is safe to fetch from
+//! because nothing is used until its digest matches, and it is what an image
+//! served on a LAN often has. RunVm accepts the same two network schemes.
+//!
 //! A download lands under a name no other fetch uses and is renamed into
 //! place only once its digest matches, so two VMs starting at once never
 //! write the same file, and a half-written file is never used. A cached file
@@ -93,7 +97,7 @@ impl Images {
             tokio::io::copy(&mut source, &mut out)
                 .await
                 .map_err(|e| ImageError::Fetch(e.into()))?;
-        } else if url.starts_with("https://") {
+        } else if url.starts_with("https://") || url.starts_with("http://") {
             let mut response = self
                 .http
                 .get(url)
@@ -186,6 +190,40 @@ mod tests {
         assert!(matches!(
             images.ensure(&ftp).await,
             Err(ImageError::Unsupported)
+        ));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_http_url_is_fetched_and_still_checked_by_its_digest() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0u8; 1024];
+                let _ = stream.read(&mut request).await;
+                let reply =
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\na rootfs";
+                stream.write_all(reply).await.unwrap();
+            }
+        });
+        let dir = scratch();
+        let images = Images::new(dir.join("images")).unwrap();
+        let artifact = Artifact {
+            url: format!("http://{address}/rootfs.ext4"),
+            sha256: hex::encode(Sha256::digest(b"a rootfs")),
+        };
+        let cached = images.ensure(&artifact).await.unwrap();
+        assert_eq!(std::fs::read(cached).unwrap(), b"a rootfs");
+        let swapped = Artifact {
+            sha256: hex::encode(Sha256::digest(b"another")),
+            ..artifact
+        };
+        assert!(matches!(
+            images.ensure(&swapped).await,
+            Err(ImageError::Digest)
         ));
         std::fs::remove_dir_all(dir).unwrap();
     }
