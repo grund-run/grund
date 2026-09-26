@@ -7,6 +7,7 @@ mod health;
 mod insights;
 mod lifecycle;
 mod login;
+mod machines;
 mod organisations;
 mod pages;
 mod reset;

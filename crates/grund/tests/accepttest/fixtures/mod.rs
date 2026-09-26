@@ -2,6 +2,7 @@ mod billing;
 mod client;
 mod fixture;
 mod insights;
+mod machine;
 mod mail;
 mod testcase;
 
@@ -15,5 +16,6 @@ pub use billing::{
 pub use fixture::*;
 pub use given::mail_count;
 pub use insights::{FakeInsights, TOKEN as INSIGHTS_TOKEN};
+pub use machine::{ENROLL, Enroll, MACHINES, MachineKey};
 pub use testcase::*;
 pub use when::csrf_of;

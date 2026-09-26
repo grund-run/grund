@@ -115,6 +115,72 @@ impl std::fmt::Display for Username {
     }
 }
 
+/// A machine's name: a DNS label, because a machine is reached as
+/// `<name>.machines.grund.internal` on its private network (grund/fleet
+/// docs/design/network.md §6.2). 1 to 63 of a–z, 0–9 and inner hyphens.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct MachineName(String);
+
+impl MachineName {
+    pub fn parse(input: &str) -> Result<Self, NameError> {
+        let name = input.trim().to_ascii_lowercase();
+        if !(1..=63).contains(&name.len()) {
+            return Err(NameError::Length);
+        }
+        let grammar = name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            && !name.starts_with('-')
+            && !name.ends_with('-');
+        if !grammar {
+            return Err(NameError::Characters);
+        }
+        Ok(Self(name))
+    }
+
+    /// A name made from what a machine reported (its hostname), or `None`
+    /// when nothing usable is left. Only the first DNS label counts.
+    pub fn suggest(input: &str) -> Option<Self> {
+        let label = input.trim().split('.').next().unwrap_or_default();
+        let mut name = String::new();
+        for c in label.chars() {
+            let c = c.to_ascii_lowercase();
+            if c.is_ascii_lowercase() || c.is_ascii_digit() {
+                name.push(c);
+            } else if !name.is_empty() && !name.ends_with('-') {
+                name.push('-');
+            }
+        }
+        let name: String = name.trim_end_matches('-').chars().take(63).collect();
+        Self::parse(name.trim_end_matches('-')).ok()
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for MachineName {
+    type Error = NameError;
+
+    fn try_from(value: String) -> Result<Self, NameError> {
+        Self::parse(&value)
+    }
+}
+
+impl From<MachineName> for String {
+    fn from(name: MachineName) -> String {
+        name.0
+    }
+}
+
+impl std::fmt::Display for MachineName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// An email address as typed (trimmed), and the lowercase form it is
 /// compared by. No plus-address or dot folding.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -288,5 +354,24 @@ mod tests {
             Err(PasswordError::SameAsName)
         );
         assert!(check_new_password("ææææææææææææ", None, None).is_ok());
+    }
+
+    #[test]
+    fn a_machine_name_is_a_dns_label() {
+        assert_eq!(MachineName::parse(" Web-1 ").unwrap().as_str(), "web-1");
+        assert_eq!(MachineName::parse("a").unwrap().as_str(), "a");
+        assert!(MachineName::parse("-web").is_err());
+        assert!(MachineName::parse("web_1").is_err());
+        assert!(MachineName::parse(&"a".repeat(64)).is_err());
+        assert!(MachineName::parse("").is_err());
+    }
+
+    #[test]
+    fn a_machine_name_is_suggested_from_a_hostname() {
+        assert_eq!(
+            MachineName::suggest("Kasper's NUC.local").unwrap().as_str(),
+            "kasper-s-nuc"
+        );
+        assert_eq!(MachineName::suggest("___").map(|n| n.0), None);
     }
 }

@@ -1,4 +1,4 @@
-//! The read models of the account and organisation streams.
+//! The read models of the account, organisation and machine streams.
 //!
 //! Each `apply_*` function is the single definition of what an event means for
 //! the read model. The write path ([`crate::work::Work`]) calls it inside the
@@ -9,6 +9,7 @@
 
 use grund_domain::{
     account::{Account, AccountEvent},
+    machine::{Machine, MachineEvent},
     organisation::{Organisation, OrganisationEvent},
 };
 use mire::{HandledEvent, TransactionalEventHandler};
@@ -18,6 +19,7 @@ use uuid::Uuid;
 /// Subscription ids; bump the suffix to rebuild a read model from scratch.
 pub const ACCOUNT_SUBSCRIPTION: &str = "grund-account-read-model-v1";
 pub const ORGANISATION_SUBSCRIPTION: &str = "grund-organisation-read-model-v1";
+pub const MACHINE_SUBSCRIPTION: &str = "grund-machine-read-model-v1";
 
 /// Applies one account event at `version` to `grund_accounts`.
 pub async fn apply_account(
@@ -240,6 +242,58 @@ pub async fn apply_organisation(
     Ok(())
 }
 
+pub async fn apply_machine(
+    machine_id: Uuid,
+    version: i64,
+    event: &MachineEvent,
+    connection: &mut PgConnection,
+) -> Result<(), sqlx::Error> {
+    match event {
+        MachineEvent::Enrolled {
+            organisation_id,
+            name,
+            public_key,
+            minted_by,
+            facts,
+            enrolled_at,
+        } => {
+            sqlx::query(
+                "INSERT INTO grund_machines (machine_id, organisation_id, name, public_key, minted_by, \
+                   facts, enrolled_at, stream_version) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
+                 ON CONFLICT (machine_id) DO UPDATE SET \
+                   organisation_id = EXCLUDED.organisation_id, name = EXCLUDED.name, \
+                   public_key = EXCLUDED.public_key, minted_by = EXCLUDED.minted_by, \
+                   facts = EXCLUDED.facts, enrolled_at = EXCLUDED.enrolled_at, \
+                   stream_version = EXCLUDED.stream_version \
+                 WHERE grund_machines.stream_version < EXCLUDED.stream_version",
+            )
+            .bind(machine_id)
+            .bind(organisation_id)
+            .bind(name.as_str())
+            .bind(public_key)
+            .bind(minted_by)
+            .bind(sqlx::types::Json(facts))
+            .bind(enrolled_at)
+            .bind(version)
+            .execute(&mut *connection)
+            .await?;
+        }
+        MachineEvent::Revoked { revoked_at, .. } => {
+            sqlx::query(
+                "UPDATE grund_machines SET revoked_at = $2, stream_version = $3 \
+                 WHERE machine_id = $1 AND stream_version < $3",
+            )
+            .bind(machine_id)
+            .bind(revoked_at)
+            .bind(version)
+            .execute(&mut *connection)
+            .await?;
+        }
+    }
+    Ok(())
+}
+
 /// The id inside a stream id such as `grund-account-<uuid>`.
 pub fn stream_uuid(stream_id: &str, category: &str) -> anyhow::Result<Uuid> {
     stream_id
@@ -282,6 +336,23 @@ impl TransactionalEventHandler for OrganisationProjection {
             grund_domain::organisation::ORGANISATION_CATEGORY,
         )?;
         apply_organisation(id, event.stream_version(), &event.event, connection).await?;
+        Ok(())
+    }
+}
+
+/// The machine read model, for a `mire::ProjectionRunner`.
+pub struct MachineProjection;
+
+impl TransactionalEventHandler for MachineProjection {
+    type Aggregate = Machine;
+
+    async fn handle(
+        &self,
+        event: HandledEvent<MachineEvent>,
+        connection: &mut PgConnection,
+    ) -> anyhow::Result<()> {
+        let id = stream_uuid(event.stream_id(), grund_domain::machine::MACHINE_CATEGORY)?;
+        apply_machine(id, event.stream_version(), &event.event, connection).await?;
         Ok(())
     }
 }

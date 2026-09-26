@@ -1,4 +1,4 @@
-//! Fixed-window counters for sign-in and mail limits.
+//! Fixed-window counters for sign-in, mail and machine enrollment limits.
 //! One statement per check; keys are HMAC digests made by the caller, never
 //! the counted value itself.
 
@@ -13,6 +13,7 @@ pub enum Scope {
     LoginAddress,
     MailEmail,
     MailAddress,
+    EnrollAddress,
 }
 
 impl Scope {
@@ -22,6 +23,7 @@ impl Scope {
             Scope::LoginAddress => "login_address",
             Scope::MailEmail => "mail_email",
             Scope::MailAddress => "mail_address",
+            Scope::EnrollAddress => "enroll_address",
         }
     }
 }

@@ -13,6 +13,8 @@ use crate::{crypto, state::State};
 pub const LOGIN_WINDOW: Duration = Duration::from_secs(15 * 60);
 /// The mail window: requests are counted per hour.
 pub const MAIL_WINDOW: Duration = Duration::from_secs(3600);
+/// The enrollment window: calls are counted per minute.
+pub const ENROLL_WINDOW: Duration = Duration::from_secs(60);
 
 /// The instance's limits.
 #[derive(Clone)]
@@ -23,6 +25,7 @@ pub struct Limits {
     login_attempts_per_address: u32,
     mail_per_email: u32,
     mail_per_address: u32,
+    enroll_per_address: u32,
 }
 
 impl Limits {
@@ -78,6 +81,18 @@ impl Limits {
         .await
     }
 
+    /// Counts an enrollment call from `address`; `false` when over the limit.
+    /// Probing tokens needs volume; a real install needs one call.
+    pub async fn admit_enroll_address(&self, address: &str) -> Result<bool, sqlx::Error> {
+        self.admit(
+            Scope::EnrollAddress,
+            address,
+            self.enroll_per_address,
+            ENROLL_WINDOW,
+        )
+        .await
+    }
+
     /// Counts a mail to `email` (normalised); `false` when this address has had
     /// its share this hour, in which case nothing is sent.
     pub async fn admit_mail_to(&self, email: &str) -> Result<bool, sqlx::Error> {
@@ -114,6 +129,7 @@ impl LimitsState for State {
             login_attempts_per_address: self.config.login_attempts_per_address,
             mail_per_email: self.config.mail_requests_per_email,
             mail_per_address: self.config.mail_requests_per_address,
+            enroll_per_address: self.config.enroll_requests_per_address,
         }
     }
 }

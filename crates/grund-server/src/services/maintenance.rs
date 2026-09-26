@@ -26,7 +26,7 @@ impl Sweeper {
         let pool = &self.state.pool;
         Ok((
             grund_store::sessions::sweep(pool).await?,
-            grund_store::tokens::sweep(pool).await?,
+            grund_store::tokens::sweep(pool).await? + grund_store::machines::sweep(pool).await?,
             grund_store::throttle::sweep(pool).await?,
             grund_store::social::sweep(pool).await?,
         ))

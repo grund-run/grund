@@ -1,4 +1,5 @@
-//! The Connect API (skills `connect-rpc`, D-18): `grund.account.v1`, served
+//! The Connect API (skills `connect-rpc`, D-18): `grund.account.v1`,
+//! `grund.organisation.v1`, `grund.machine.v1` and `grund.agent.v1`, served
 //! over Connect, gRPC and gRPC-Web from the same routes as the pages.
 //!
 //! ```text
@@ -15,14 +16,21 @@
 //! check does not rely on that alone. Bearer tokens (personal access tokens
 //! for the CLI) are designed and not built; a call
 //! presenting one is refused as unauthenticated.
+//!
+//! `grund.agent.v1.MachineEnrollmentService` is the one exception: a machine
+//! calls it with no session, from anywhere, and the enrollment token in the
+//! request is its credential. Its route skips [`authenticate`] and only
+//! records the client address for the rate limit ([`stamp_client`]).
 
 pub mod account;
+pub mod enrollment;
+pub mod machine;
 pub mod organisation;
 
 use std::{sync::Arc, time::Duration};
 
 use axum::{
-    extract::{Request, State as AxumState},
+    extract::{ConnectInfo, Request, State as AxumState},
     http::{HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -32,14 +40,15 @@ use connectrpc::{
     interceptor::{Interceptor, Next as InterceptNext, UnaryRequest, UnaryResponse},
 };
 use grund_proto::grund::{
-    account::v1::ACCOUNT_SERVICE_SERVICE_NAME, organisation::v1::ORGANISATION_SERVICE_SERVICE_NAME,
+    account::v1::ACCOUNT_SERVICE_SERVICE_NAME, agent::v1::MACHINE_ENROLLMENT_SERVICE_SERVICE_NAME,
+    machine::v1::MACHINE_SERVICE_SERVICE_NAME, organisation::v1::ORGANISATION_SERVICE_SERVICE_NAME,
 };
 use uuid::Uuid;
 
 use crate::{
     services::sessions::SessionsState,
     state::State,
-    web::browser::{CookieJar, cookie, same_origin},
+    web::browser::{CookieJar, client_address, cookie, same_origin},
 };
 
 /// The largest request the API accepts. Its largest message is a session id.
@@ -58,6 +67,9 @@ pub struct Caller {
 pub enum Requirement {
     /// Any signed-in person, acting on their own account.
     Session,
+    /// Anyone: the one-time enrollment token in the request is the
+    /// credential, checked by the handler.
+    EnrollmentToken,
 }
 
 /// Every procedure and what it requires. A procedure missing here is denied,
@@ -119,6 +131,22 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
         "/grund.organisation.v1.OrganisationService/RevokeInvitation",
         Requirement::Session,
     ),
+    (
+        "/grund.machine.v1.MachineService/CreateEnrollmentToken",
+        Requirement::Session,
+    ),
+    (
+        "/grund.machine.v1.MachineService/ListMachines",
+        Requirement::Session,
+    ),
+    (
+        "/grund.machine.v1.MachineService/RevokeMachine",
+        Requirement::Session,
+    ),
+    (
+        "/grund.agent.v1.MachineEnrollmentService/EnrollMachine",
+        Requirement::EnrollmentToken,
+    ),
 ];
 
 /// The API routes, to merge into the page router.
@@ -136,23 +164,36 @@ pub fn router(state: State) -> axum::Router {
                 .with_default_timeout(Duration::from_secs(10)),
         )
         .with_interceptor(Authorize);
-    axum::Router::new()
+    let signed_in = axum::Router::new()
         .route_service(
             &format!("/{ACCOUNT_SERVICE_SERVICE_NAME}/{{method}}"),
             service.clone(),
         )
         .route_service(
             &format!("/{ORGANISATION_SERVICE_SERVICE_NAME}/{{method}}"),
+            service.clone(),
+        )
+        .route_service(
+            &format!("/{MACHINE_SERVICE_SERVICE_NAME}/{{method}}"),
+            service.clone(),
+        )
+        .layer(middleware::from_fn_with_state(state.clone(), authenticate));
+    let machines = axum::Router::new()
+        .route_service(
+            &format!("/{MACHINE_ENROLLMENT_SERVICE_SERVICE_NAME}/{{method}}"),
             service,
         )
-        .layer(middleware::from_fn_with_state(state, authenticate))
+        .layer(middleware::from_fn_with_state(state, stamp_client));
+    signed_in.merge(machines)
 }
 
 /// The Connect router with every service registered.
 pub fn connect_router(state: State) -> connectrpc::Router {
     connectrpc::Router::new()
         .add_service(Arc::new(account::AccountApi::new(state.clone())))
-        .add_service(Arc::new(organisation::OrganisationApi::new(state)))
+        .add_service(Arc::new(organisation::OrganisationApi::new(state.clone())))
+        .add_service(Arc::new(machine::MachineApi::new(state.clone())))
+        .add_service(Arc::new(enrollment::EnrollmentApi::new(state)))
 }
 
 fn refuse(error: ConnectError) -> Response {
@@ -213,6 +254,39 @@ pub async fn authenticate(
     response
 }
 
+/// For the routes a machine calls without a session: records the client
+/// address (behind `GRUND_TRUSTED_PROXY_HOPS` proxies) for the rate limit,
+/// and marks the answer uncacheable. Authorization is the handler's, from the
+/// token in the request.
+pub async fn stamp_client(
+    AxumState(state): AxumState<State>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let peer = request
+        .extensions()
+        .get::<ConnectInfo<std::net::SocketAddr>>()
+        .map(|info| info.0.ip().to_string());
+    let address = client_address(
+        request.headers(),
+        peer.as_deref(),
+        state.config.trusted_proxy_hops,
+    );
+    request
+        .extensions_mut()
+        .insert(enrollment::ClientAddress(address));
+    let mut response = next.run(request).await;
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    if response.status() == StatusCode::NOT_FOUND
+        && response.headers().get(header::CONTENT_TYPE).is_none()
+    {
+        return refuse(ConnectError::unimplemented("no such procedure"));
+    }
+    response
+}
+
 /// Authorizes each call against [`AUTHORIZATION`], denying by default.
 pub struct Authorize;
 
@@ -233,6 +307,7 @@ impl Interceptor for Authorize {
                 next.run(request).await
             }
             Some(Requirement::Session) => Err(ConnectError::unauthenticated("sign in first")),
+            Some(Requirement::EnrollmentToken) => next.run(request).await,
             None => Err(ConnectError::permission_denied(
                 "this procedure is not open to callers",
             )),
@@ -258,7 +333,7 @@ mod tests {
         ListSessionsResponse, RevokeSessionRequest, RevokeSessionResponse,
     };
 
-    use grund_proto::grund::organisation::v1 as org;
+    use grund_proto::grund::{agent::v1 as agent, machine::v1 as mach, organisation::v1 as org};
 
     use super::*;
 
@@ -372,11 +447,53 @@ mod tests {
         }
     }
 
+    struct UnusedMachines;
+
+    #[allow(refining_impl_trait)]
+    impl mach::MachineService for UnusedMachines {
+        async fn create_enrollment_token(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, mach::CreateEnrollmentTokenRequest>,
+        ) -> ServiceResult<mach::CreateEnrollmentTokenResponse> {
+            unreachable!()
+        }
+        async fn list_machines(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, mach::ListMachinesRequest>,
+        ) -> ServiceResult<mach::ListMachinesResponse> {
+            unreachable!()
+        }
+        async fn revoke_machine(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, mach::RevokeMachineRequest>,
+        ) -> ServiceResult<mach::RevokeMachineResponse> {
+            unreachable!()
+        }
+    }
+
+    struct UnusedEnrollment;
+
+    #[allow(refining_impl_trait)]
+    impl agent::MachineEnrollmentService for UnusedEnrollment {
+        async fn enroll_machine(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, agent::EnrollMachineRequest>,
+        ) -> ServiceResult<agent::EnrollMachineResponse> {
+            unreachable!()
+        }
+    }
+
     #[test]
     fn every_procedure_has_an_authorization_entry() {
         let router = connectrpc::Router::new()
             .add_service(Arc::new(Unused))
-            .add_service(Arc::new(UnusedOrganisations));
+            .add_service(Arc::new(UnusedOrganisations))
+            .add_service(Arc::new(UnusedMachines))
+            .add_service(Arc::new(UnusedEnrollment));
         let served: BTreeSet<String> = router
             .methods()
             .map(|m| format!("/{}", m.trim_start_matches('/')))
