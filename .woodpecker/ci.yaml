@@ -185,7 +185,7 @@ steps:
       - if readelf -d target/release/grund | grep -q NEEDED; then echo "grund is dynamically linked; scratch cannot run it"; exit 1; fi
       # A compile cache must never ship another commit's build: the binary
       # has to carry this commit's revision (build.rs, /health/ready).
-      - grep -q "$${CI_COMMIT_SHA}" target/release/grund || { echo "grund does not carry revision $${CI_COMMIT_SHA}"; exit 1; }
+      - tr -c 0-9a-f "\n" < target/release/grund | grep -q "$${CI_COMMIT_SHA}" || { echo "grund does not carry revision $${CI_COMMIT_SHA}"; exit 1; }
       # Stage the binary first and run the staged file, so the process the
       # accepttests assert against is byte for byte the one that gets packaged.
       - mkdir -p .image && cp target/release/grund .image/grund
