@@ -24,7 +24,7 @@
     <ul class="nav">
       <li><a class="nav-item{% if section == 'overview' %} is-active{% endif %}" href="/{{ org.slug }}"{% if section == 'overview' %} aria-current="page"{% endif %}>{{ ui.icon("home") }}Overview</a></li>
       <li><span class="nav-item" aria-disabled="true">{{ ui.icon("grid") }}Applications <span class="tag">Soon</span></span></li>
-      <li><span class="nav-item" aria-disabled="true">{{ ui.icon("server") }}Fleet <span class="tag">Soon</span></span></li>
+      <li><a class="nav-item{% if section == 'machines' %} is-active{% endif %}" href="/{{ org.slug }}/machines"{% if section == 'machines' %} aria-current="page"{% endif %}>{{ ui.icon("server") }}Machines</a></li>
       <li><span class="nav-item" aria-disabled="true">{{ ui.icon("globe") }}Domains <span class="tag">Soon</span></span></li>
       <li><a class="nav-item{% if section in ['org-settings', 'members'] %} is-active{% endif %}" href="/{{ org.slug }}/settings"{% if section in ['org-settings', 'members'] %} aria-current="page"{% endif %}>{{ ui.icon("gear") }}Organisation</a></li>
     </ul>

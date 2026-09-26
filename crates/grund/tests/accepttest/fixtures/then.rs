@@ -104,6 +104,10 @@ impl Then {
         Ok(self)
     }
 
+    pub fn body(&self) -> anyhow::Result<String> {
+        Ok(self.last()?.text())
+    }
+
     pub fn body_lacks(&self, needle: &str) -> anyhow::Result<&Self> {
         let text = self.last()?.text();
         ensure!(!text.contains(needle), "body contains {needle:?}");

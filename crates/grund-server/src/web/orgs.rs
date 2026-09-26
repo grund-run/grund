@@ -39,7 +39,7 @@ use crate::{
 
 type PageResult = Result<Response, PageError>;
 
-async fn member_of(
+pub(super) async fn member_of(
     state: &State,
     browser: &Browser,
     uri: &Uri,

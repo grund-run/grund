@@ -396,7 +396,8 @@ impl Agents {
     }
 }
 
-fn cannot_host(host: &MachineRow) -> Option<String> {
+/// Why `host` cannot run a VM that registers, or `None` when it can.
+pub fn cannot_host(host: &MachineRow) -> Option<String> {
     let capabilities = host.capabilities.as_ref().map(|c| &c.0);
     let has = |name: &str| {
         capabilities

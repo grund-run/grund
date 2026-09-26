@@ -10,6 +10,7 @@
 
 pub mod assets;
 pub mod browser;
+pub mod machines;
 pub mod orgs;
 pub mod pages;
 
@@ -86,6 +87,11 @@ pub fn router(state: State) -> Router {
         .route("/{org}/settings/members/{account}/role", post(orgs::change_role))
         .route("/{org}/settings/members/{account}/remove", post(orgs::remove_member))
         .route("/{org}/settings/invitations/{invitation}/revoke", post(orgs::revoke_invitation))
+        .route("/{org}/machines", get(machines::machines_page))
+        .route("/{org}/machines/add", post(machines::add))
+        .route("/{org}/machines/vms", post(machines::run_vm))
+        .route("/{org}/machines/vms/{vm}/stop", post(machines::stop_vm))
+        .route("/{org}/machines/{machine}/remove", post(machines::remove))
         .route("/{org}/settings", get(orgs::settings_page))
         .route("/{org}/settings/rename", post(orgs::rename))
         .route("/{org}/settings/delete", post(orgs::delete))

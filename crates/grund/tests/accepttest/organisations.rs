@@ -54,7 +54,13 @@ async fn an_organisation_is_not_found_for_someone_outside_it_on_every_page() -> 
 
     outsider_when.visiting("/no-such-organisation").await?;
     let absent = outsider_then.status(404)?.page_without_its_token()?;
-    for path in ["", "/members", "/settings", "/settings/members"] {
+    for path in [
+        "",
+        "/members",
+        "/settings",
+        "/settings/members",
+        "/machines",
+    ] {
         outsider_when
             .visiting(&format!("/{}{path}", owner.username))
             .await?;

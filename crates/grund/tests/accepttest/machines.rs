@@ -1351,3 +1351,170 @@ async fn the_control_link_answers_only_a_live_machine_that_signed_the_request() 
     std::fs::remove_dir_all(device)?;
     Ok(())
 }
+
+fn setup_command(page: &str) -> anyhow::Result<Vec<String>> {
+    let start = page
+        .find("grund join --url ")
+        .ok_or_else(|| anyhow::anyhow!("the page shows no setup command"))?;
+    let line = &page[start..];
+    let end = line.find('<').unwrap_or(line.len());
+    Ok(line[..end]
+        .split_whitespace()
+        .skip(2)
+        .map(|arg| arg.replace("&#x2f;", "/"))
+        .collect())
+}
+
+#[tokio::test]
+async fn the_machines_page_adds_a_device_shows_it_connected_and_runs_a_vm_on_it()
+-> anyhow::Result<()> {
+    if crate::accepttest::fixtures::external_target().is_some() {
+        eprintln!("skipped: grund join signs for a loopback origin of a spawned instance");
+        return Ok(());
+    }
+    let Some((given, when, then)) = testcase_with_mail().await? else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let page = format!("/{}/machines", owner.username);
+
+    when.visiting(&page).await?;
+    then.status(200)?
+        .body_contains("No machines yet.")?
+        .body_contains("Get a setup code")?
+        .body_contains("None of your machines can run virtual machines yet")?;
+
+    when.submitting(&page, &format!("{page}/add"), &[("name", "desk")])
+        .await?;
+    then.status(200)?
+        .header("cache-control", "no-store")?
+        .body_contains("this is the only time it is shown")?;
+    let args = setup_command(&then.body()?)?;
+    anyhow::ensure!(args[0] == "--url" && args[1] == origin(&when), "{args:?}");
+    anyhow::ensure!(args[2].starts_with("grund_join_"), "{args:?}");
+
+    when.visiting(&page).await?;
+    then.status(200)?.body_lacks(&args[2])?;
+
+    let device = join_dir();
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let joined = grund_join(&device, &arg_refs, &[]).await;
+    anyhow::ensure!(
+        joined.status.success(),
+        "{}",
+        String::from_utf8_lossy(&joined.stderr)
+    );
+    let device_id = record(&device)?["machine_id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    when.visiting(&page).await?;
+    then.status(200)?
+        .body_contains("desk")?
+        .body_contains("Not connected yet")?;
+
+    grund_agent_once(&device).await;
+    when.visiting(&page).await?;
+    then.status(200)?
+        .body_contains("Runs VMs")?
+        .body_contains(&format!("<option value=\"{device_id}\">desk</option>"))?;
+
+    let sha = |c: char| c.to_string().repeat(64);
+    let (kernel_sha, rootfs_sha) = (sha('1'), sha('2'));
+    let run = |name: &'static str, vcpus: &'static str| {
+        vec![
+            ("host", device_id.clone()),
+            ("vm_name", name.to_string()),
+            ("vcpus", vcpus.to_string()),
+            ("memory_mib", "512".to_string()),
+            ("disk_gib", "2".to_string()),
+            (
+                "kernel_url",
+                "https://images.accept.test/vmlinux".to_string(),
+            ),
+            ("kernel_sha256", kernel_sha.clone()),
+            (
+                "rootfs_url",
+                "https://images.accept.test/rootfs.ext4".to_string(),
+            ),
+            ("rootfs_sha256", rootfs_sha.clone()),
+        ]
+    };
+    let fields = run("vm1", "one");
+    let refs: Vec<(&str, &str)> = fields.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    when.submitting(&page, &format!("{page}/vms"), &refs)
+        .await?;
+    then.status(200)?
+        .body_contains("vCPUs, memory and disk are whole numbers.")?
+        .body_contains("value=\"vm1\"")?;
+
+    let fields = run("vm1", "1");
+    let refs: Vec<(&str, &str)> = fields.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    when.submitting(&page, &format!("{page}/vms"), &refs)
+        .await?;
+    then.redirects_to(&format!("{page}?done=running"))?;
+
+    grund_agent_once(&device).await;
+    when.visiting(&page).await?;
+    then.status(200)?
+        .body_contains("vm1")?
+        .body_contains("on desk · 1 vCPU, 512 MiB, 2 GiB")?
+        .body_contains("Running")?;
+    let body = then.body()?;
+    let stop = body
+        .split("/machines/vms/")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .ok_or_else(|| anyhow::anyhow!("the page offers no stop"))?
+        .to_string();
+    when.submitting(&page, &format!("{page}/vms/{stop}"), &[])
+        .await?;
+    then.redirects_to(&format!("{page}?done=stopped"))?;
+
+    when.submitting(&page, &format!("{page}/{device_id}/remove"), &[])
+        .await?;
+    then.redirects_to(&format!("{page}?done=removed"))?;
+    when.visiting(&format!("{page}?done=removed")).await?;
+    then.status(200)?
+        .body_contains("Machine removed.")?
+        .body_lacks(&format!("{device_id}/remove"))?;
+    std::fs::remove_dir_all(device)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_member_sees_the_machines_page_but_cannot_add_or_remove() -> anyhow::Result<()> {
+    let Some((given, when, then)) = testcase_with_mail().await? else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let (guest, guest_when, guest_then) = given.testcase.another_browser();
+    let member = guest.a_signed_in_account().await?;
+    when.inviting(&owner.username, &member.email, "member")
+        .await?;
+    let link = guest_when
+        .the_mailed_link(
+            &member.email,
+            &format!("Join {} on grund", owner.username),
+            "/invite?token=",
+        )
+        .await?;
+    guest_when.visiting(&link).await?;
+    let token = guest.last_token()?;
+    guest_when
+        .submitting_on_current_page("/invite", &[("token", &token)])
+        .await?;
+    let page = format!("/{}/machines", owner.username);
+
+    guest_when.visiting(&page).await?;
+    guest_then
+        .status(200)?
+        .body_contains("Machines")?
+        .body_lacks("Get a setup code")?;
+    guest_when
+        .submitting(&page, &format!("{page}/add"), &[("name", "sneak")])
+        .await?;
+    guest_then.redirects_to(&format!("{page}?error=not-allowed"))?;
+    let _ = then;
+    Ok(())
+}
