@@ -23,10 +23,19 @@
 # cannot find its image if this tag stops being published. There is no latest
 # or main tag: a moving tag gives a rollback nothing to roll back to.
 
+# A push or pull request that changes only documentation (*.md)
+# runs nothing: no build reads those files. Woodpecker then also drops
+# rollout.yaml, which depends on this workflow, so no release is staged for
+# an image that was not built (checked on grund/fleet branch ci/pathtest,
+# 2026-09-26). The next change to anything else tests the whole tree.
 when:
   - event: push
     branch: main
+    path:
+      exclude: ["*.md"]
   - event: pull_request
+    path:
+      exclude: ["*.md"]
   - event: manual
 
 labels:
