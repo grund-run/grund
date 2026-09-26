@@ -7,3 +7,4 @@
 //! The control link, desired state and the runtime come later.
 
 pub mod join;
+pub mod vm;
