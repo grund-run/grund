@@ -108,9 +108,10 @@ kjuulh: "kubernetes-app": {
 			// same address: the per-address limits would throttle everyone
 			// together, and are off until the client address is preserved.
 			// Per-account limits apply regardless.
-			GRUND_TRUSTED_PROXY_HOPS:         "1"
-			GRUND_LOGIN_ATTEMPTS_PER_ADDRESS: "0"
-			GRUND_MAIL_REQUESTS_PER_ADDRESS:  "0"
+			GRUND_TRUSTED_PROXY_HOPS:          "1"
+			GRUND_LOGIN_ATTEMPTS_PER_ADDRESS:  "0"
+			GRUND_MAIL_REQUESTS_PER_ADDRESS:   "0"
+			GRUND_ENROLL_ATTEMPTS_PER_ADDRESS: "0"
 			// No NATS in these clusters for grund yet: background work is
 			// found by polling, which is correct on its own.
 			GRUND_WORK_POLL_INTERVAL: "2"

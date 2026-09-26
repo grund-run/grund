@@ -333,14 +333,7 @@ impl Machines {
                 });
             }
         }
-        machines::consume_token(
-            work.sql(),
-            token.token_id,
-            key.as_hex(),
-            machine_id,
-            now,
-        )
-        .await?;
+        machines::consume_token(work.sql(), token.token_id, key.as_hex(), machine_id, now).await?;
         let enrollment = self.enrollment(&mut work, machine_id, pool).await?;
         work.commit().await?;
         Ok(EnrollOutcome::Enrolled(enrollment))
