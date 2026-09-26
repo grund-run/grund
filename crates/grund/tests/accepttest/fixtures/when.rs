@@ -196,8 +196,8 @@ impl When {
 
     pub async fn inviting(&self, org: &str, email: &str, role: &str) -> anyhow::Result<&Self> {
         self.submitting(
-            &format!("/{org}/members"),
-            &format!("/{org}/members/invite"),
+            &format!("/{org}/settings/members"),
+            &format!("/{org}/settings/members/invite"),
             &[("email", email), ("role", role)],
         )
         .await

@@ -54,7 +54,7 @@ async fn an_organisation_is_not_found_for_someone_outside_it_on_every_page() -> 
 
     outsider_when.visiting("/no-such-organisation").await?;
     let absent = outsider_then.status(404)?.page_without_its_token()?;
-    for path in ["", "/members", "/settings"] {
+    for path in ["", "/members", "/settings", "/settings/members"] {
         outsider_when
             .visiting(&format!("/{}{path}", owner.username))
             .await?;
@@ -67,7 +67,7 @@ async fn an_organisation_is_not_found_for_someone_outside_it_on_every_page() -> 
     outsider_when.visiting_home().await?;
     outsider_when
         .submitting_on_current_page(
-            &format!("/{}/members/invite", owner.username),
+            &format!("/{}/settings/members/invite", owner.username),
             &[("email", "someone@accept.test"), ("role", "member")],
         )
         .await?;
@@ -86,7 +86,10 @@ async fn an_invited_account_joins_with_its_role_and_a_member_cannot_invite() -> 
 
     when.inviting(&owner.username, &member.email, "member")
         .await?;
-    then.redirects_to(&format!("/{}/members?done=invited", owner.username))?;
+    then.redirects_to(&format!(
+        "/{}/settings/members?done=invited",
+        owner.username
+    ))?;
 
     let link = guest_when
         .the_mailed_link(
@@ -107,7 +110,7 @@ async fn an_invited_account_joins_with_its_role_and_a_member_cannot_invite() -> 
     guest_then.redirects_to(&format!("/{}", owner.username))?;
 
     guest_when
-        .visiting(&format!("/{}/members", owner.username))
+        .visiting(&format!("/{}/settings/members", owner.username))
         .await?;
     guest_then
         .status(200)?
@@ -116,7 +119,7 @@ async fn an_invited_account_joins_with_its_role_and_a_member_cannot_invite() -> 
         .body_lacks("Send invitation")?;
     guest_when
         .submitting_on_current_page(
-            &format!("/{}/members/invite", owner.username),
+            &format!("/{}/settings/members/invite", owner.username),
             &[("email", "friend@accept.test"), ("role", "member")],
         )
         .await?;
@@ -136,7 +139,10 @@ async fn an_invitation_to_a_new_address_creates_a_confirmed_account_inside_it() 
     let owner = given.a_signed_in_account().await?;
     let address = format!("{}@accept.test", given.a_fresh_name("new"));
     when.inviting(&owner.username, &address, "admin").await?;
-    then.redirects_to(&format!("/{}/members?done=invited", owner.username))?;
+    then.redirects_to(&format!(
+        "/{}/settings/members?done=invited",
+        owner.username
+    ))?;
 
     let (stranger, stranger_when, stranger_then) = given.testcase.another_browser();
     let link = stranger_when
@@ -161,7 +167,7 @@ async fn an_invitation_to_a_new_address_creates_a_confirmed_account_inside_it() 
         .await?;
     stranger_then.redirects_to(&format!("/{}", owner.username))?;
     stranger_when
-        .visiting(&format!("/{}/members", owner.username))
+        .visiting(&format!("/{}/settings/members", owner.username))
         .await?;
     stranger_then
         .status(200)?
@@ -217,15 +223,18 @@ async fn a_withdrawn_invitation_stops_working() -> anyhow::Result<()> {
     let owner = given.a_signed_in_account().await?;
     let address = format!("{}@accept.test", given.a_fresh_name("gone"));
     when.inviting(&owner.username, &address, "member").await?;
-    when.visiting(&format!("/{}/members", owner.username))
+    when.visiting(&format!("/{}/settings/members", owner.username))
         .await?;
     then.body_contains(&address)?;
-    let before = format!("/{}/invitations/", owner.username);
+    let before = format!("/{}/settings/invitations/", owner.username);
     let ids = ids_in_actions(&page(&given), &before, "/revoke");
     anyhow::ensure!(ids.len() == 1, "one pending invitation, got {ids:?}");
     when.submitting_on_current_page(&format!("{before}{}/revoke", ids[0]), &[])
         .await?;
-    then.redirects_to(&format!("/{}/members?done=revoked", owner.username))?;
+    then.redirects_to(&format!(
+        "/{}/settings/members?done=revoked",
+        owner.username
+    ))?;
 
     let (_, stranger_when, stranger_then) = given.testcase.another_browser();
     let link = stranger_when
@@ -255,9 +264,9 @@ async fn the_last_owner_cannot_leave_and_an_admin_cannot_remove_an_owner() -> an
         .submitting_on_current_page("/invite", &[("token", &token)])
         .await?;
 
-    when.visiting(&format!("/{}/members", owner.username))
+    when.visiting(&format!("/{}/settings/members", owner.username))
         .await?;
-    let members = format!("/{}/members/", owner.username);
+    let members = format!("/{}/settings/members/", owner.username);
     let removable = ids_in_actions(&page(&given), &members, "/remove");
     anyhow::ensure!(
         removable.len() == 2,
@@ -275,22 +284,28 @@ async fn the_last_owner_cannot_leave_and_an_admin_cannot_remove_an_owner() -> an
 
     when.submitting_on_current_page(&format!("{members}{owner_id}/remove"), &[])
         .await?;
-    then.redirects_to(&format!("/{}/members?error=last-owner", owner.username))?;
+    then.redirects_to(&format!(
+        "/{}/settings/members?error=last-owner",
+        owner.username
+    ))?;
 
     guest_when
-        .visiting(&format!("/{}/members", owner.username))
+        .visiting(&format!("/{}/settings/members", owner.username))
         .await?;
     guest_when
         .submitting_on_current_page(&format!("{members}{owner_id}/remove"), &[])
         .await?;
-    guest_then.redirects_to(&format!("/{}/members?error=not-allowed", owner.username))?;
+    guest_then.redirects_to(&format!(
+        "/{}/settings/members?error=not-allowed",
+        owner.username
+    ))?;
 
-    when.visiting(&format!("/{}/members", owner.username))
+    when.visiting(&format!("/{}/settings/members", owner.username))
         .await?;
     when.submitting_on_current_page(&format!("{members}{admin_id}/role"), &[("role", "owner")])
         .await?;
-    then.redirects_to(&format!("/{}/members?done=role", owner.username))?;
-    when.visiting(&format!("/{}/members", owner.username))
+    then.redirects_to(&format!("/{}/settings/members?done=role", owner.username))?;
+    when.visiting(&format!("/{}/settings/members", owner.username))
         .await?;
     when.submitting_on_current_page(&format!("{members}{owner_id}/remove"), &[])
         .await?;

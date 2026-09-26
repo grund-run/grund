@@ -147,7 +147,7 @@ pub struct NoticeQuery {
     error: String,
 }
 
-/// `/{org}/members`: members, pending invitations, and (for owners and
+/// `/{org}/settings/members`: members, pending invitations, and (for owners and
 /// admins) the forms that change them.
 pub async fn members_page(
     AxumState(state): AxumState<State>,
@@ -185,6 +185,22 @@ pub async fn members_page(
         },
     )
     .await
+}
+
+/// `/{org}/members`, where the members page used to be: a permanent redirect
+/// to `/{org}/settings/members`, for members only.
+pub async fn members_moved(
+    AxumState(state): AxumState<State>,
+    browser: Browser,
+    uri: Uri,
+    Path(slug): Path<String>,
+) -> PageResult {
+    let (_, membership) = member_or_return!(&state, &browser, &uri, &slug);
+    let query = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
+    Ok(permanent_redirect(&format!(
+        "/{}/settings/members{query}",
+        membership.slug
+    )))
 }
 
 #[derive(Default)]
@@ -272,7 +288,7 @@ pub struct InviteForm {
     role: String,
 }
 
-/// `POST /{org}/members/invite`.
+/// `POST /{org}/settings/members/invite`.
 pub async fn invite(
     AxumState(state): AxumState<State>,
     browser: Browser,
@@ -302,7 +318,9 @@ pub async fn invite(
         )
         .await?;
     let (status, invite_error) = match outcome {
-        InviteOutcome::Sent(_) => return Ok(redirect(&format!("/{slug}/members?done=invited"))),
+        InviteOutcome::Sent(_) => {
+            return Ok(redirect(&format!("/{slug}/settings/members?done=invited")));
+        }
         InviteOutcome::AlreadyMember => (
             StatusCode::OK,
             "That address already belongs to a member.".to_string(),
@@ -358,10 +376,10 @@ fn after_change(slug: &str, outcome: ChangeOutcome, done: &str) -> Response {
         ChangeOutcome::LastOwner => "error=last-owner".into(),
         ChangeOutcome::NotFound => "error=gone".into(),
     };
-    redirect(&format!("/{slug}/members?{query}"))
+    redirect(&format!("/{slug}/settings/members?{query}"))
 }
 
-/// `POST /{org}/members/{account}/role`.
+/// `POST /{org}/settings/members/{account}/role`.
 pub async fn change_role(
     AxumState(state): AxumState<State>,
     browser: Browser,
@@ -386,7 +404,7 @@ pub async fn change_role(
     Ok(after_change(&slug, outcome, "role"))
 }
 
-/// `POST /{org}/members/{account}/remove`. Removing yourself is leaving,
+/// `POST /{org}/settings/members/{account}/remove`. Removing yourself is leaving,
 /// which lands on `/`.
 pub async fn remove_member(
     AxumState(state): AxumState<State>,
@@ -414,7 +432,7 @@ pub async fn remove_member(
     Ok(after_change(&slug, outcome, "removed"))
 }
 
-/// `POST /{org}/invitations/{invitation}/revoke`.
+/// `POST /{org}/settings/invitations/{invitation}/revoke`.
 pub async fn revoke_invitation(
     AxumState(state): AxumState<State>,
     browser: Browser,

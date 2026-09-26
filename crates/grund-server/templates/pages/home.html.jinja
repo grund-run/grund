@@ -19,12 +19,12 @@
 <section class="section" aria-labelledby="org">
   <div class="section-head">
     <h2 class="section-title" id="org">Organisation</h2>
-    <a class="link-more" href="/{{ org.slug }}/members">Members {{ ui.icon("arrow", "icon-sm") }}</a>
+    <a class="link-more" href="/{{ org.slug }}/settings/members">Members {{ ui.icon("arrow", "icon-sm") }}</a>
   </div>
   <ul class="rows">
     <li class="row">
       <span class="row-icon">{{ ui.icon("users", "icon-lg tone-blue") }}</span>
-      <div><p class="row-name">{{ members }} member{% if members != 1 %}s{% endif %}</p><p class="row-sub">/{{ org.slug }}/members</p></div>
+      <div><p class="row-name">{{ members }} member{% if members != 1 %}s{% endif %}</p><p class="row-sub">/{{ org.slug }}/settings/members</p></div>
       {{ ui.status(org.role | capitalize) }}
       <span></span>
     </li>

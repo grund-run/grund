@@ -57,9 +57,13 @@ async fn a_renamed_organisation_redirects_its_members_and_keeps_its_old_name_fro
     )
     .await?;
     then.redirects_to(&format!("/{new}/settings?done=renamed"))?;
-    when.visiting(&format!("/{old}/members?x=1")).await?;
+    when.visiting(&format!("/{old}/settings/members?x=1"))
+        .await?;
     then.status(308)?
-        .header("location", &format!("/{new}/members?x=1"))?;
+        .header("location", &format!("/{new}/settings/members?x=1"))?;
+    when.visiting(&format!("/{new}/members?x=1")).await?;
+    then.status(308)?
+        .header("location", &format!("/{new}/settings/members?x=1"))?;
 
     let (outsider, outsider_when, outsider_then) = given.testcase.another_browser();
     outsider.a_signed_in_account().await?;

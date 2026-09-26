@@ -33,3 +33,10 @@
 {% macro status(text, tone="ok") -%}
 <span class="row-status"><svg class="icon tone-{{ tone }}" aria-hidden="true"><use href="#i-ok"/></svg>{{ text }}</span>
 {%- endmacro %}
+
+{% macro org_tabs(org, active) -%}
+<nav class="tabs" aria-label="Organisation">
+  <a class="tab{% if active == 'general' %} is-active{% endif %}" href="/{{ org.slug }}/settings"{% if active == 'general' %} aria-current="page"{% endif %}>General</a>
+  <a class="tab{% if active == 'members' %} is-active{% endif %}" href="/{{ org.slug }}/settings/members"{% if active == 'members' %} aria-current="page"{% endif %}>Members</a>
+</nav>
+{%- endmacro %}

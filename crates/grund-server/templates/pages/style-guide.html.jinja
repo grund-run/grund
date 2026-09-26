@@ -74,7 +74,8 @@
 
 <section class="section" aria-labelledby="sg-orgs">
   <div class="section-head"><h2 class="section-title" id="sg-orgs">Organisations</h2></div>
-  <p class="sg-caption">The switcher tops the sidebar: the current organisation and the viewer's role, and a menu of the others (a <code>&lt;details&gt;</code>, so it needs no script). Members are listed as rows; an owner or admin gets a role select and a remove button on each row they may change.</p>
+  {{ ui.org_tabs(viewer.current, "members") }}
+  <p class="sg-caption">Tabs split one sidebar section into pages (the organisation's General and Members), so the sidebar keeps one item per area. The switcher tops the sidebar: the current organisation and the viewer's role, and a menu of the others (a <code>&lt;details&gt;</code>, so it needs no script). Members are listed as rows; an owner or admin gets a role select and a remove button on each row they may change.</p>
   <ul class="rows">
     <li class="row">
       <span class="row-icon"><span class="org-mark org-mark-lg" aria-hidden="true">a</span></span>

@@ -896,6 +896,30 @@ a.nav-item:hover {
   color: var(--accent-text);
 }
 
+.tabs {
+  display: flex;
+  gap: 0.25rem;
+  margin: -0.5rem 0 2rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.tab {
+  margin-bottom: -1px;
+  padding: 0.625rem 1rem;
+  border-bottom: 2px solid transparent;
+  color: var(--text-2);
+  font-weight: 500;
+}
+
+.tab:hover {
+  color: var(--text);
+}
+
+.tab.is-active {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+}
+
 .select,
 .field select {
   min-height: 2.5rem;
