@@ -21,6 +21,7 @@ pub struct Call {
 struct Shared {
     calls: Vec<Call>,
     unavailable: BTreeSet<String>,
+    boot_before_answer: Option<std::path::PathBuf>,
 }
 
 pub struct FakeCapacity {
@@ -59,6 +60,10 @@ impl FakeCapacity {
         } else {
             shared.unavailable.remove(method);
         }
+    }
+
+    pub fn boot_before_answering(&self, data_dir: std::path::PathBuf) {
+        self.shared.lock().unwrap().boot_before_answer = Some(data_dir);
     }
 
     pub fn calls(&self, method: &str) -> Vec<Call> {
@@ -113,6 +118,29 @@ async fn serve(mut stream: TcpStream, shared: Arc<Mutex<Shared>>) -> anyhow::Res
         .strip_prefix("/grund.capacity.v1.CapacityService/")
         .unwrap_or(&path)
         .to_string();
+    let boot = {
+        let shared = shared.lock().unwrap();
+        (method == "ProvisionMachine")
+            .then(|| shared.boot_before_answer.clone())
+            .flatten()
+    };
+    if let Some(data_dir) = boot {
+        let url = body["grundUrl"].as_str().unwrap_or_default().to_string();
+        let token = body["enrollmentToken"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        tokio::task::spawn_blocking(move || {
+            std::process::Command::new(env!("CARGO_BIN_EXE_grund"))
+                .args(["join", "--url", &url, &token])
+                .arg("--data-dir")
+                .arg(data_dir)
+                .env_clear()
+                .env("RUST_LOG", "warn")
+                .status()
+        })
+        .await??;
+    }
     let (status, answer) = {
         let mut shared = shared.lock().unwrap();
         shared.calls.push(Call {

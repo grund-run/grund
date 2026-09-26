@@ -281,6 +281,12 @@ pub enum MachineEvent {
         revoked_by: Uuid,
         revoked_at: DateTime<Utc>,
     },
+    /// The capacity provider's answer to grund's provisioning call arrived
+    /// after the machine had already registered with that call's token.
+    ProviderLinked {
+        provider_machine_id: String,
+        linked_at: DateTime<Utc>,
+    },
 }
 
 /// A lease in force.
@@ -301,6 +307,8 @@ pub struct Machine {
     pub retired_keys: Vec<MachineKey>,
     pub state: Option<MachineState>,
     pub lease: Option<Lease>,
+    #[serde(default)]
+    pub provider_machine_id: Option<String>,
 }
 
 impl Machine {
@@ -331,8 +339,13 @@ impl mire::Aggregate for Machine {
     fn apply(&mut self, event: &MachineEvent) {
         match event {
             MachineEvent::Registered {
-                pool, name, key, ..
+                pool,
+                name,
+                key,
+                provider_machine_id,
+                ..
             } => {
+                self.provider_machine_id = provider_machine_id.clone();
                 self.exists = true;
                 self.pool = Some(*pool);
                 self.name = Some(name.clone());
@@ -365,6 +378,12 @@ impl mire::Aggregate for Machine {
                 self.retired_keys.push(retired_key.clone());
                 self.key = Some(key.clone());
                 self.state = Some(MachineState::Available);
+            }
+            MachineEvent::ProviderLinked {
+                provider_machine_id,
+                ..
+            } => {
+                self.provider_machine_id = Some(provider_machine_id.clone());
             }
             MachineEvent::Revoked { .. } => {
                 if let Some(key) = self.key.take() {
@@ -414,6 +433,13 @@ pub enum MachineCommand {
         facts: MachineFacts,
         at: DateTime<Utc>,
     },
+    /// Records the capacity provider's id for a machine that registered
+    /// before grund stored the provider's answer. The same id again changes
+    /// nothing; another id is refused.
+    LinkProvider {
+        provider_machine_id: String,
+        at: DateTime<Utc>,
+    },
     /// Revokes the machine for good. Revoking a revoked machine changes
     /// nothing.
     Revoke {
@@ -439,6 +465,8 @@ pub enum MachineError {
     KeyReused,
     #[error("the machine is not yours to revoke")]
     NotAllowed,
+    #[error("the machine is already linked to another provider machine")]
+    ProviderConflict,
 }
 
 impl mire::Command for MachineCommand {
@@ -526,6 +554,17 @@ impl mire::Command for MachineCommand {
                     reregistered_at: at,
                 }])
             }
+            MachineCommand::LinkProvider {
+                provider_machine_id,
+                at,
+            } => match &machine.provider_machine_id {
+                Some(existing) if *existing == provider_machine_id => Ok(Vec::new()),
+                Some(_) => Err(MachineError::ProviderConflict),
+                None => Ok(vec![MachineEvent::ProviderLinked {
+                    provider_machine_id,
+                    linked_at: at,
+                }]),
+            },
             MachineCommand::Revoke {
                 actor,
                 authority,
@@ -773,6 +812,22 @@ mod tests {
         assert_eq!(
             run(&mut own, revoke(Authority::Organisation(org))),
             Ok(Vec::new())
+        );
+    }
+
+    #[test]
+    fn a_provider_id_links_once_and_never_changes() {
+        let mut machine = registered(Pool::Management);
+        let link = |id: &str| MachineCommand::LinkProvider {
+            provider_machine_id: id.into(),
+            at: at(),
+        };
+        run(&mut machine, link("fm-1")).unwrap();
+        assert_eq!(machine.provider_machine_id.as_deref(), Some("fm-1"));
+        assert_eq!(run(&mut machine, link("fm-1")), Ok(Vec::new()));
+        assert_eq!(
+            run(&mut machine, link("fm-2")),
+            Err(MachineError::ProviderConflict)
         );
     }
 

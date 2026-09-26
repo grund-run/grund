@@ -184,6 +184,23 @@ pub async fn consume_token(
     Ok(())
 }
 
+/// The token with this id, locked until the transaction ends: the provider's
+/// answer and the machine's registration queue on it, so whichever comes
+/// second sees the first.
+pub async fn token_by_id_for_update(
+    connection: &mut PgConnection,
+    token_id: Uuid,
+) -> Result<Option<TokenRow>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT token_id, kind, organisation_id, machine_id, name, minted_by, expires_at, \
+           consumed_key, consumed_machine_id, replays, provider_machine_id \
+         FROM grund_machine_tokens WHERE token_id = $1 FOR UPDATE",
+    )
+    .bind(token_id)
+    .fetch_optional(connection)
+    .await
+}
+
 /// Records the capacity provider's id for the machine a token was minted to
 /// provision, as the provider answered it.
 pub async fn set_token_provider(

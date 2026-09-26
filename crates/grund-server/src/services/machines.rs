@@ -582,12 +582,8 @@ impl Machines {
             .await
         {
             Ok(provider_machine_id) => {
-                machines::set_token_provider(
-                    &self.state.pool,
-                    minted.token_id,
-                    &provider_machine_id,
-                )
-                .await?;
+                self.link_provider(actor, minted.token_id, &provider_machine_id)
+                    .await?;
                 Ok(ProvisionOutcome::Provisioned {
                     provider_machine_id,
                     token_expires_at: minted.expires_at,
@@ -643,6 +639,36 @@ impl Machines {
         }
         let step = self.request_rebuild(actor, &row).await?;
         Ok((ChangeOutcome::Done(row), step))
+    }
+
+    async fn link_provider(
+        &self,
+        actor: Uuid,
+        token_id: Uuid,
+        provider_machine_id: &str,
+    ) -> anyhow::Result<()> {
+        let mut work = Work::begin(
+            &self.state.events,
+            Uuid::now_v7(),
+            &format!("account:{actor}"),
+        )
+        .await?;
+        let token = machines::token_by_id_for_update(work.sql(), token_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("a minted token has a row"))?;
+        machines::set_token_provider(&mut **work.sql(), token_id, provider_machine_id).await?;
+        if let Some(machine_id) = token.consumed_machine_id {
+            work.machine(
+                machine_id,
+                MachineCommand::LinkProvider {
+                    provider_machine_id: provider_machine_id.to_string(),
+                    at: Utc::now(),
+                },
+            )
+            .await?;
+        }
+        work.commit().await?;
+        Ok(())
     }
 
     async fn request_rebuild(&self, actor: Uuid, row: &MachineRow) -> anyhow::Result<ProviderStep> {
@@ -803,9 +829,10 @@ fn refused(
             MachineError::NotAvailable => ChangeOutcome::NotAvailable,
             MachineError::NotLeased => ChangeOutcome::NotLeased,
             MachineError::NotAllowed => ChangeOutcome::NotAllowed,
-            MachineError::AlreadyExists | MachineError::NotReturning | MachineError::KeyReused => {
-                ChangeOutcome::NotAllowed
-            }
+            MachineError::AlreadyExists
+            | MachineError::NotReturning
+            | MachineError::KeyReused
+            | MachineError::ProviderConflict => ChangeOutcome::NotAllowed,
         }),
         Err(error) => match error.unique_violation().as_deref() {
             Some("grund_machines_pool_name_idx") => Some(ChangeOutcome::NameTaken),

@@ -1051,3 +1051,44 @@ async fn without_a_capacity_provider_the_pool_is_filled_by_hand() -> anyhow::Res
     then.status(400)?.connect_code("failed_precondition")?;
     Ok(())
 }
+
+#[tokio::test]
+async fn a_machine_that_registers_before_the_provider_answers_still_gets_its_provider_id()
+-> anyhow::Result<()> {
+    use crate::accepttest::fixtures::{CAPACITY_TOKEN, FakeCapacity};
+    let capacity = FakeCapacity::start().await?;
+    let operator = format!("ops-{}", crate::accepttest::fixtures::random_hex(4));
+    let Some((given, when, then)) = testcase_configured(&[
+        ("GRUND_OPERATOR_ORGANISATION", &operator),
+        ("GRUND_CAPACITY_URL", &capacity.url),
+        ("GRUND_CAPACITY_TOKEN", CAPACITY_TOKEN),
+    ])
+    .await?
+    else {
+        return Ok(());
+    };
+    given.a_signed_in_account_named(&operator).await?;
+    let booted = join_dir();
+    capacity.boot_before_answering(booted.clone());
+
+    when.calling(&format!("{POOL}/ProvisionPoolMachine"), "{}")
+        .await?;
+    then.status(200)?;
+    let machine_id = record(&booted)?["machine_id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    when.calling(
+        &format!("{POOL}/GetPoolMachine"),
+        &json!({"machineId": machine_id}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    let machine = json(&then)?;
+    anyhow::ensure!(
+        machine["machine"]["providerMachineId"] == "fm-1",
+        "{machine}"
+    );
+    std::fs::remove_dir_all(booted)?;
+    Ok(())
+}

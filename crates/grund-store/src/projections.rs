@@ -352,6 +352,16 @@ pub async fn apply_machine(
             .execute(&mut *connection)
             .await?;
         }
+        MachineEvent::ProviderLinked {
+            provider_machine_id,
+            ..
+        } => {
+            sqlx::query("UPDATE grund_machines SET provider_machine_id = $2 WHERE machine_id = $1")
+                .bind(machine_id)
+                .bind(provider_machine_id)
+                .execute(&mut *connection)
+                .await?;
+        }
         MachineEvent::Revoked { revoked_at, .. } => {
             sqlx::query(
                 "UPDATE grund_machines SET state = 'revoked', public_key = NULL, revoked_at = $2, \
