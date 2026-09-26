@@ -133,6 +133,115 @@ impl VmRuntime for NoVms {
     }
 }
 
+/// A runtime that boots no VM: each "VM" is this binary running
+/// `grund join` with the VM's metadata, as the grund inside a real guest
+/// does, with its own data directory. It lets the whole flow (a VM placed, a
+/// token fetched, a machine registered into the organisation) run on a
+/// machine without KVM, for tests and demos. It reports kvm and egress.
+#[derive(Debug, Clone)]
+pub struct SimulatedVms {
+    dir: std::path::PathBuf,
+}
+
+impl SimulatedVms {
+    pub fn new(dir: std::path::PathBuf) -> Self {
+        Self { dir }
+    }
+
+    fn state_path(&self, id: &str) -> std::path::PathBuf {
+        self.dir.join(format!("{id}.json"))
+    }
+
+    fn write(&self, status: &VmStatus) -> anyhow::Result<()> {
+        std::fs::create_dir_all(&self.dir)?;
+        std::fs::write(self.state_path(&status.id), serde_json::to_vec(status)?)?;
+        Ok(())
+    }
+}
+
+impl VmRuntime for SimulatedVms {
+    async fn ensure(&self, spec: &VmSpec) -> anyhow::Result<VmStatus> {
+        if let Ok(text) = std::fs::read_to_string(self.state_path(&spec.id))
+            && let Ok(status) = serde_json::from_str::<VmStatus>(&text)
+            && status.state == VmState::Running
+        {
+            return Ok(status);
+        }
+        let guest = self.dir.join(&spec.id);
+        let url = spec.mmds["grund"]["url"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        let token = spec.mmds["grund"]["enrollment_token"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        let executable = std::env::current_exe()?;
+        let output = tokio::task::spawn_blocking(move || {
+            let mut command = std::process::Command::new(executable);
+            command
+                .arg("join")
+                .arg("--data-dir")
+                .arg(&guest)
+                .arg("--url")
+                .arg(url);
+            if !token.is_empty() {
+                command.arg(token);
+            }
+            command.env("RUST_LOG", "warn").output()
+        })
+        .await??;
+        let state = if output.status.success() {
+            VmState::Running
+        } else {
+            VmState::Failed {
+                reason: String::from_utf8_lossy(&output.stderr)
+                    .lines()
+                    .last()
+                    .unwrap_or("grund join failed")
+                    .chars()
+                    .take(300)
+                    .collect(),
+            }
+        };
+        let status = VmStatus {
+            id: spec.id.clone(),
+            state,
+        };
+        self.write(&status)?;
+        Ok(status)
+    }
+
+    async fn stop(&self, id: &str) -> anyhow::Result<()> {
+        self.write(&VmStatus {
+            id: id.to_string(),
+            state: VmState::Stopped,
+        })
+    }
+
+    async fn observe(&self) -> anyhow::Result<Vec<VmStatus>> {
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return Ok(Vec::new());
+        };
+        Ok(entries
+            .filter_map(Result::ok)
+            .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+            .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+            .filter_map(|text| serde_json::from_str(&text).ok())
+            .collect())
+    }
+
+    async fn capabilities(&self) -> VmCapabilities {
+        VmCapabilities {
+            kvm: true,
+            root: false,
+            egress: true,
+            free_vcpus: 64,
+            free_memory_mib: 65_536,
+        }
+    }
+}
+
 /// The metadata a VM boots with: where to register, the one-time token, and
 /// its own id. `grund join --mmds` reads `.grund`.
 pub fn metadata(

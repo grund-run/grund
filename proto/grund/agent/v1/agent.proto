@@ -1,0 +1,215 @@
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+package grund.agent.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// The control link: how a registered machine's agent talks to its instance
+// (grund-docs design/machines.md §7b). Until it moves onto iroh, it is HTTPS,
+// and every request is signed by the machine key: the headers
+// x-grund-machine (the machine id), x-grund-signed-at (Unix seconds, within
+// 300 s of the instance) and x-grund-signature (base64 of Ed25519 over
+// "grund-agent-request-v1\n" || path || "\n" || signed_at || "\n" ||
+// lowercase hex SHA-256 of the body). A missing, stale or wrong signature,
+// an unknown machine and a revoked one are all unauthenticated, alike.
+service AgentService {
+  // Says the machine is alive and what it can do, and learns the generation
+  // of its desired state, so it fetches a new document only when there is
+  // one. Capabilities are facts for placement, never authorization.
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+
+  // The machine's desired state, if newer than since_generation; empty
+  // otherwise.
+  rpc GetDesiredState(GetDesiredStateRequest) returns (GetDesiredStateResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // The one-time grund_join_ token a VM this machine was told to run boots
+  // with. Only for a running VM placed on the calling machine that has not
+  // registered yet; anything else is not_found. A token is a secret, so it
+  // never travels in a document (apps.md §6.5).
+  rpc GetMachineJoinToken(GetMachineJoinTokenRequest) returns (GetMachineJoinTokenResponse);
+
+  // What actually runs, level-triggered: the whole picture every time.
+  rpc ReportStatus(ReportStatusRequest) returns (ReportStatusResponse);
+}
+
+message HeartbeatRequest {
+  string agent_version = 1;
+  Capabilities capabilities = 2;
+}
+
+message Capabilities {
+  // A usable /dev/kvm.
+  bool kvm = 1;
+  // The VM runtime runs with root rather than in user namespaces.
+  bool root = 2;
+  // A guest can reach the internet, and so grund, to register.
+  bool egress = 3;
+  uint32 free_vcpus = 4;
+  uint32 free_memory_mib = 5;
+}
+
+message HeartbeatResponse {
+  // The newest generation of this machine's desired state; 0 for none yet.
+  uint64 generation = 1;
+  int32 heartbeat_interval_seconds = 2;
+}
+
+message GetDesiredStateRequest {
+  uint64 since_generation = 1;
+}
+
+message GetDesiredStateResponse {
+  // Unset when the instance has nothing newer than since_generation.
+  SignedDesiredState document = 1;
+}
+
+// signature = Ed25519(organisation key, "grund-desired-state-v1\n" ||
+// payload), where payload is an encoded DesiredState. The agent verifies the
+// bytes it received against the key it pinned, then decodes them.
+message SignedDesiredState {
+  // The organisation key's id.
+  string key_id = 1;
+  bytes payload = 2;
+  bytes signature = 3;
+}
+
+// Everything one machine should run, every time, never a diff (apps.md §6.2).
+// One generation and one signature cover replicas and machines together.
+message DesiredState {
+  string machine_id = 1;
+  string organisation_id = 2;
+  // +1 for every document for this machine, never reused. The agent refuses
+  // an older one.
+  uint64 generation = 3;
+  int64 issued_at_unix = 4;
+  // Features the agent must know to apply this document; it refuses the whole
+  // document otherwise, rather than silently ignore a part. "machines" when
+  // machines is not empty.
+  repeated string required_features = 5;
+  // Containers (apps.md §6.2). No instance issues replicas yet.
+  repeated Replica replicas = 6;
+  // VMs to run on this machine, each of which registers into the same
+  // organisation (design/machines.md §7b).
+  repeated Vm machines = 7;
+}
+
+message Replica {
+  string replica_id = 1;
+  string app = 2;
+  uint32 release = 3;
+  uint32 slot = 4;
+  uint64 placement = 5;
+  Image image = 6;
+  repeated string command = 7;
+  repeated EnvVar env = 8;
+  repeated Port ports = 9;
+  uint64 memory_mib = 10;
+  uint32 cpu_millis = 11;
+  ReplicaState state = 12;
+  // Names and versions only; values are fetched over the control link.
+  repeated SecretRef secrets = 13;
+  // For a public port: its grund.run name and verified custom domains.
+  repeated string hostnames = 14;
+}
+
+message Image {
+  // For display.
+  string reference = 1;
+  // sha256:<64 hex>: what runs.
+  string digest = 2;
+}
+
+message EnvVar {
+  string name = 1;
+  string value = 2;
+}
+
+message Port {
+  string name = 1;
+  uint32 port = 2;
+  // http, h2c or tcp.
+  string protocol = 3;
+  bool public = 4;
+}
+
+message SecretRef {
+  string name = 1;
+  uint32 version = 2;
+}
+
+enum ReplicaState {
+  REPLICA_STATE_UNSPECIFIED = 0;
+  REPLICA_STATE_RUNNING = 1;
+  REPLICA_STATE_DRAINING = 2;
+}
+
+message Vm {
+  // grund's id for the VM.
+  string vm_id = 1;
+  // The name it registers under.
+  string name = 2;
+  uint32 vcpus = 3;
+  uint32 memory_mib = 4;
+  uint32 disk_gib = 5;
+  VmImage image = 6;
+  VmDesiredState state = 7;
+}
+
+message VmImage {
+  Artifact kernel = 1;
+  Artifact rootfs = 2;
+}
+
+// A file pinned by digest.
+message Artifact {
+  string url = 1;
+  // Lowercase hex SHA-256.
+  string sha256 = 2;
+}
+
+enum VmDesiredState {
+  VM_DESIRED_STATE_UNSPECIFIED = 0;
+  VM_DESIRED_STATE_RUNNING = 1;
+  VM_DESIRED_STATE_STOPPED = 2;
+}
+
+message GetMachineJoinTokenRequest {
+  string vm_id = 1;
+}
+
+message GetMachineJoinTokenResponse {
+  string token = 1;
+  google.protobuf.Timestamp expires_at = 2;
+}
+
+message ReportStatusRequest {
+  // The generation the agent applied last.
+  uint64 applied_generation = 1;
+  repeated VmObserved machines = 2;
+  // Why the agent refused a document or a part of one, for the dashboard.
+  repeated string refusals = 3;
+}
+
+message VmObserved {
+  string vm_id = 1;
+  VmObservedState state = 2;
+  // For failed: why, for the user.
+  string reason = 3;
+  // For exited, when known.
+  int32 exit_code = 4;
+}
+
+enum VmObservedState {
+  VM_OBSERVED_STATE_UNSPECIFIED = 0;
+  VM_OBSERVED_STATE_STARTING = 1;
+  VM_OBSERVED_STATE_RUNNING = 2;
+  VM_OBSERVED_STATE_STOPPED = 3;
+  VM_OBSERVED_STATE_EXITED = 4;
+  VM_OBSERVED_STATE_FAILED = 5;
+}
+
+message ReportStatusResponse {}

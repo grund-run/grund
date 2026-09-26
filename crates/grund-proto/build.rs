@@ -2,6 +2,7 @@ fn main() {
     connectrpc_build::Config::new()
         .files(&[
             "../../proto/grund/account/v1/account.proto",
+            "../../proto/grund/agent/v1/agent.proto",
             "../../proto/grund/agent/v1/enrollment.proto",
             "../../proto/grund/machine/v1/machine.proto",
             "../../proto/grund/organisation/v1/organisation.proto",

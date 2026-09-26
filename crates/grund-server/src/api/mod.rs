@@ -17,6 +17,7 @@
 //! presenting one is refused as unauthenticated.
 
 pub mod account;
+pub mod agent;
 pub mod enrollment;
 pub mod machine;
 pub mod organisation;
@@ -35,14 +36,14 @@ use connectrpc::{
 };
 use grund_proto::grund::{
     account::v1::ACCOUNT_SERVICE_SERVICE_NAME,
-    agent::v1::MACHINE_ENROLLMENT_SERVICE_SERVICE_NAME,
+    agent::v1::{AGENT_SERVICE_SERVICE_NAME, MACHINE_ENROLLMENT_SERVICE_SERVICE_NAME},
     machine::v1::{MACHINE_SERVICE_SERVICE_NAME, MANAGEMENT_POOL_SERVICE_SERVICE_NAME},
     organisation::v1::ORGANISATION_SERVICE_SERVICE_NAME,
 };
 use uuid::Uuid;
 
 use crate::{
-    services::sessions::SessionsState,
+    services::{agents::AgentsState, sessions::SessionsState},
     state::State,
     web::browser::{CookieJar, client_address, cookie, same_origin},
 };
@@ -72,6 +73,9 @@ pub enum Requirement {
     /// by the handler (machine enrollment). Served on routes without the
     /// session and same-origin checks.
     Token,
+    /// A registered machine, proven by its key's signature over the request
+    /// ([`authenticate_machine`]): the control link.
+    Machine,
 }
 
 /// Every procedure and what it requires. A procedure missing here is denied,
@@ -193,6 +197,34 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
         "/grund.machine.v1.MachineService/GetOrganisationKey",
         Requirement::Session,
     ),
+    (
+        "/grund.agent.v1.AgentService/Heartbeat",
+        Requirement::Machine,
+    ),
+    (
+        "/grund.agent.v1.AgentService/GetDesiredState",
+        Requirement::Machine,
+    ),
+    (
+        "/grund.agent.v1.AgentService/GetMachineJoinToken",
+        Requirement::Machine,
+    ),
+    (
+        "/grund.agent.v1.AgentService/ReportStatus",
+        Requirement::Machine,
+    ),
+    (
+        "/grund.machine.v1.MachineService/RunVm",
+        Requirement::Session,
+    ),
+    (
+        "/grund.machine.v1.MachineService/StopVm",
+        Requirement::Session,
+    ),
+    (
+        "/grund.machine.v1.MachineService/ListVms",
+        Requirement::Session,
+    ),
 ];
 
 /// The API routes, to merge into the page router.
@@ -232,10 +264,76 @@ pub fn router(state: State) -> axum::Router {
             axum::Router::new()
                 .route_service(
                     &format!("/{MACHINE_ENROLLMENT_SERVICE_SERVICE_NAME}/{{method}}"),
+                    service.clone(),
+                )
+                .layer(middleware::from_fn_with_state(state.clone(), stamp_address)),
+        )
+        .merge(
+            axum::Router::new()
+                .route_service(
+                    &format!("/{AGENT_SERVICE_SERVICE_NAME}/{{method}}"),
                     service,
                 )
-                .layer(middleware::from_fn_with_state(state, stamp_address)),
+                .layer(middleware::from_fn_with_state(state, authenticate_machine)),
         )
+}
+
+/// The largest control-link request: a status report of every VM a machine
+/// hosts.
+pub const MAX_AGENT_REQUEST_BYTES: usize = 256 * 1024;
+
+/// Authenticates a control-link request by the machine key's signature over
+/// its path, time and body (grund-docs design/machines.md §7b), before any
+/// handler runs. A bad or missing signature, an unknown machine and a revoked
+/// one are refused alike.
+pub async fn authenticate_machine(
+    AxumState(state): AxumState<State>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let (mut parts, body) = request.into_parts();
+    let header = |name: &str| {
+        parts
+            .headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let (machine, signed_at, signature) = (
+        header("x-grund-machine"),
+        header("x-grund-signed-at"),
+        header("x-grund-signature"),
+    );
+    let Ok(bytes) = axum::body::to_bytes(body, MAX_AGENT_REQUEST_BYTES).await else {
+        return refuse(ConnectError::resource_exhausted("the request is too large"));
+    };
+    let caller = match state
+        .agents()
+        .authenticate(&machine, &signed_at, &signature, parts.uri.path(), &bytes)
+        .await
+    {
+        Ok(Some(caller)) => caller,
+        Ok(None) => {
+            return refuse(ConnectError::unauthenticated(
+                "sign the request with the machine key",
+            ));
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, "machine authentication failed");
+            return refuse(ConnectError::unavailable(
+                "grund is temporarily unavailable",
+            ));
+        }
+    };
+    parts.extensions.insert(caller);
+    let mut response = next
+        .run(Request::from_parts(parts, axum::body::Body::from(bytes)))
+        .await;
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 /// Stamps the client address on a call that is not behind the session, so
@@ -270,7 +368,8 @@ pub fn connect_router(state: State) -> connectrpc::Router {
         .add_service(Arc::new(organisation::OrganisationApi::new(state.clone())))
         .add_service(Arc::new(machine::ManagementPoolApi::new(state.clone())))
         .add_service(Arc::new(machine::MachineApi::new(state.clone())))
-        .add_service(Arc::new(enrollment::EnrollmentApi::new(state)))
+        .add_service(Arc::new(enrollment::EnrollmentApi::new(state.clone())))
+        .add_service(Arc::new(agent::AgentApi::new(state)))
 }
 
 fn refuse(error: ConnectError) -> Response {
@@ -352,6 +451,18 @@ impl Interceptor for Authorize {
             }
             Some(Requirement::Session) => Err(ConnectError::unauthenticated("sign in first")),
             Some(Requirement::Token) => next.run(request).await,
+            Some(Requirement::Machine)
+                if request
+                    .ctx
+                    .extensions()
+                    .get::<crate::services::agents::MachineCaller>()
+                    .is_some() =>
+            {
+                next.run(request).await
+            }
+            Some(Requirement::Machine) => Err(ConnectError::unauthenticated(
+                "sign the request with the machine key",
+            )),
             None => Err(ConnectError::permission_denied(
                 "this procedure is not open to callers",
             )),
@@ -599,6 +710,61 @@ mod tests {
         ) -> ServiceResult<machine::GetOrganisationKeyResponse> {
             unreachable!()
         }
+        async fn run_vm(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, machine::RunVmRequest>,
+        ) -> ServiceResult<machine::RunVmResponse> {
+            unreachable!()
+        }
+        async fn stop_vm(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, machine::StopVmRequest>,
+        ) -> ServiceResult<machine::StopVmResponse> {
+            unreachable!()
+        }
+        async fn list_vms(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, machine::ListVmsRequest>,
+        ) -> ServiceResult<machine::ListVmsResponse> {
+            unreachable!()
+        }
+    }
+
+    struct UnusedAgent;
+
+    #[allow(refining_impl_trait)]
+    impl agent::AgentService for UnusedAgent {
+        async fn heartbeat(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, agent::HeartbeatRequest>,
+        ) -> ServiceResult<agent::HeartbeatResponse> {
+            unreachable!()
+        }
+        async fn get_desired_state(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, agent::GetDesiredStateRequest>,
+        ) -> ServiceResult<agent::GetDesiredStateResponse> {
+            unreachable!()
+        }
+        async fn get_machine_join_token(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, agent::GetMachineJoinTokenRequest>,
+        ) -> ServiceResult<agent::GetMachineJoinTokenResponse> {
+            unreachable!()
+        }
+        async fn report_status(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, agent::ReportStatusRequest>,
+        ) -> ServiceResult<agent::ReportStatusResponse> {
+            unreachable!()
+        }
     }
 
     struct UnusedEnrollment;
@@ -621,7 +787,8 @@ mod tests {
             .add_service(Arc::new(UnusedOrganisations))
             .add_service(Arc::new(UnusedPool))
             .add_service(Arc::new(UnusedMachines))
-            .add_service(Arc::new(UnusedEnrollment));
+            .add_service(Arc::new(UnusedEnrollment))
+            .add_service(Arc::new(UnusedAgent));
         let served: BTreeSet<String> = router
             .methods()
             .map(|m| format!("/{}", m.trim_start_matches('/')))

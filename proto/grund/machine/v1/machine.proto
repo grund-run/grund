@@ -5,6 +5,7 @@ syntax = "proto3";
 package grund.machine.v1;
 
 import "google/protobuf/timestamp.proto";
+import "grund/agent/v1/agent.proto";
 import "grund/agent/v1/enrollment.proto";
 
 // The management pool (grund-docs design/machines.md): the instance's own
@@ -87,6 +88,20 @@ service MachineService {
   rpc GetOrganisationKey(GetOrganisationKeyRequest) returns (GetOrganisationKeyResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
   }
+
+  // Owners and admins. Runs a VM on one of the organisation's machines; the
+  // grund inside it registers into the organisation as a machine of its own,
+  // named `name`. The host must have reported a usable /dev/kvm and egress
+  // (failed_precondition otherwise). The image is pinned by SHA-256.
+  rpc RunVm(RunVmRequest) returns (RunVmResponse);
+
+  // Owners and admins. Asks the VM to stop; its host frees what it held.
+  rpc StopVm(StopVmRequest) returns (StopVmResponse);
+
+  // The organisation's VMs, newest first, with what their hosts report.
+  rpc ListVms(ListVmsRequest) returns (ListVmsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
 }
 
 message Machine {
@@ -111,6 +126,31 @@ message Machine {
   // The capacity provider's id for it, when grund asked a provider for it.
   // Management view only.
   string provider_machine_id = 12;
+  // Whether its agent sent a heartbeat in the last 30 seconds.
+  bool connected = 13;
+  google.protobuf.Timestamp last_seen_at = 14;
+  // What its agent last reported it can do.
+  grund.agent.v1.Capabilities capabilities = 15;
+}
+
+// A VM an organisation runs on one of its machines.
+message Vm {
+  string vm_id = 1;
+  string name = 2;
+  // The machine it runs on, and that machine's name.
+  string host_machine_id = 3;
+  string host_name = 4;
+  uint32 vcpus = 5;
+  uint32 memory_mib = 6;
+  uint32 disk_gib = 7;
+  grund.agent.v1.VmImage image = 8;
+  grund.agent.v1.VmDesiredState state = 9;
+  // What its host last reported, and why, for a failure.
+  grund.agent.v1.VmObservedState observed_state = 10;
+  string observed_reason = 11;
+  // The machine it registered as, once it did.
+  string machine_id = 12;
+  google.protobuf.Timestamp created_at = 13;
 }
 
 // What asking the capacity provider to act on a machine came to.
@@ -282,4 +322,36 @@ message GetOrganisationKeyRequest {
 
 message GetOrganisationKeyResponse {
   grund.agent.v1.PublicKey key = 1;
+}
+
+message RunVmRequest {
+  string organisation = 1;
+  // The organisation's machine to run it on.
+  string on_machine_id = 2;
+  string name = 3;
+  uint32 vcpus = 4;
+  uint32 memory_mib = 5;
+  uint32 disk_gib = 6;
+  grund.agent.v1.VmImage image = 7;
+}
+
+message RunVmResponse {
+  Vm vm = 1;
+}
+
+message StopVmRequest {
+  string organisation = 1;
+  string vm_id = 2;
+}
+
+message StopVmResponse {
+  Vm vm = 1;
+}
+
+message ListVmsRequest {
+  string organisation = 1;
+}
+
+message ListVmsResponse {
+  repeated Vm vms = 1;
 }

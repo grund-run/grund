@@ -6,7 +6,8 @@
 //! - `probe`: exit 0 when an instance's readiness answers 200, for container
 //!   health checks (the image has no shell or curl);
 //! - `join`: register this machine with an instance, with a one-time setup
-//!   code (the machine agent, `grund-agent`).
+//!   code (the machine agent, `grund-agent`);
+//! - `agent`: keep it connected, and run the VMs its desired state asks for.
 //!
 //! The agent is part of this binary, so there is one artifact to build, sign
 //! and ship.
@@ -58,6 +59,17 @@ enum Command {
     Probe(probe::ProbeArgs),
     #[command(about = "Register this machine with a grund instance, using a one-time setup code")]
     Join(grund_agent::join::JoinArgs),
+    #[command(about = "Keep this machine connected to its instance and run what it asks for")]
+    Agent(AgentCommand),
+}
+
+#[derive(clap::Args)]
+struct AgentCommand {
+    #[command(flatten)]
+    agent: grund_agent::agent::AgentArgs,
+
+    #[arg(long, env = "GRUND_VM_RUNTIME", value_parser = ["none", "simulated"], default_value = "none", help = "What runs VMs: none, or simulated (each VM is `grund join` run with its metadata; for tests and demos)")]
+    vm_runtime: String,
 }
 
 #[tokio::main]
@@ -77,6 +89,14 @@ async fn main() -> anyhow::Result<()> {
         Command::Init(args) => grund_server::secrets::init(&args),
         Command::Probe(args) => probe::run(&args),
         Command::Join(args) => grund_agent::join::run(&args).await,
+        Command::Agent(command) => match command.vm_runtime.as_str() {
+            "simulated" => {
+                let dir = command.agent.data_dir.join("simulated-vms");
+                grund_agent::agent::run(&command.agent, grund_agent::vm::SimulatedVms::new(dir))
+                    .await
+            }
+            _ => grund_agent::agent::run(&command.agent, grund_agent::vm::NoVms).await,
+        },
     }
 }
 

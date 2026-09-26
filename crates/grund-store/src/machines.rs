@@ -88,6 +88,7 @@ pub struct NewToken<'a> {
     pub name: Option<&'a str>,
     pub minted_by: &'a str,
     pub expires_at: DateTime<Utc>,
+    pub vm_id: Option<Uuid>,
 }
 
 pub async fn insert_token(
@@ -96,8 +97,8 @@ pub async fn insert_token(
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO grund_machine_tokens \
-           (token_id, token_digest, kind, organisation_id, machine_id, name, minted_by, expires_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+           (token_id, token_digest, kind, organisation_id, machine_id, name, minted_by, expires_at, vm_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(token.token_id)
     .bind(&token.digest[..])
@@ -107,6 +108,7 @@ pub async fn insert_token(
     .bind(token.name)
     .bind(token.minted_by)
     .bind(token.expires_at)
+    .bind(token.vm_id)
     .execute(executor)
     .await?;
     Ok(())
@@ -145,6 +147,7 @@ pub struct TokenRow {
     pub consumed_machine_id: Option<Uuid>,
     pub replays: i32,
     pub provider_machine_id: Option<String>,
+    pub vm_id: Option<Uuid>,
 }
 
 /// The token with this digest, locked until the transaction ends so two
@@ -155,7 +158,7 @@ pub async fn token_for_update(
 ) -> Result<Option<TokenRow>, sqlx::Error> {
     sqlx::query_as(
         "SELECT token_id, kind, organisation_id, machine_id, name, minted_by, expires_at, \
-           consumed_key, consumed_machine_id, replays, provider_machine_id \
+           consumed_key, consumed_machine_id, replays, provider_machine_id, vm_id \
          FROM grund_machine_tokens WHERE token_digest = $1 FOR UPDATE",
     )
     .bind(&digest[..])
@@ -193,7 +196,7 @@ pub async fn token_by_id_for_update(
 ) -> Result<Option<TokenRow>, sqlx::Error> {
     sqlx::query_as(
         "SELECT token_id, kind, organisation_id, machine_id, name, minted_by, expires_at, \
-           consumed_key, consumed_machine_id, replays, provider_machine_id \
+           consumed_key, consumed_machine_id, replays, provider_machine_id, vm_id \
          FROM grund_machine_tokens WHERE token_id = $1 FOR UPDATE",
     )
     .bind(token_id)
@@ -250,6 +253,8 @@ pub struct MachineRow {
     pub key_registered_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
     pub provider_machine_id: Option<String>,
+    pub last_seen_at: Option<DateTime<Utc>>,
+    pub capabilities: Option<sqlx::types::Json<Value>>,
 }
 
 macro_rules! select_machines {
@@ -259,9 +264,10 @@ macro_rules! select_machines {
                m.public_key, m.lease_id, m.lessee_organisation_id, o.slug AS lessee_slug, \
                m.lease_name, m.leased_at, m.pool_organisation_id, m.pool_name, m.facts, \
                m.minted_by, m.registered_at, m.key_registered_at, m.revoked_at, \
-               m.provider_machine_id \
+               m.provider_machine_id, p.last_seen_at, p.capabilities \
              FROM grund_machines m LEFT JOIN grund_organisations o \
-               ON o.organisation_id = m.lessee_organisation_id ",
+               ON o.organisation_id = m.lessee_organisation_id \
+             LEFT JOIN grund_machine_presence p ON p.machine_id = m.machine_id ",
             $tail
         )
     };

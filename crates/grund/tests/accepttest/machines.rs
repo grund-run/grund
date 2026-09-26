@@ -1092,3 +1092,262 @@ async fn a_machine_that_registers_before_the_provider_answers_still_gets_its_pro
     std::fs::remove_dir_all(booted)?;
     Ok(())
 }
+
+async fn grund_agent_once(dir: &std::path::Path) -> std::process::Output {
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_grund"));
+    command
+        .args(["agent", "--once", "--vm-runtime", "simulated", "--data-dir"])
+        .arg(dir)
+        .env_clear()
+        .env("RUST_LOG", "grund_agent=info");
+    tokio::task::spawn_blocking(move || command.output().expect("run grund agent"))
+        .await
+        .expect("grund agent's thread")
+}
+
+async fn signed_agent_call(
+    when: &When,
+    machine_id: &str,
+    key: &SigningKey,
+    procedure: &str,
+    body: &str,
+) -> anyhow::Result<()> {
+    let path = format!("/grund.agent.v1.AgentService/{procedure}");
+    let signed_at = now();
+    let message = format!(
+        "grund-agent-request-v1\n{path}\n{signed_at}\n{}",
+        hex::encode(Sha256::digest(body.as_bytes()))
+    );
+    let signature = STANDARD.encode(key.sign(message.as_bytes()).to_bytes());
+    when.calling_with(
+        &path,
+        body,
+        &[
+            ("x-grund-machine", machine_id),
+            ("x-grund-signed-at", &signed_at.to_string()),
+            ("x-grund-signature", &signature),
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
+fn device_key(dir: &std::path::Path) -> anyhow::Result<SigningKey> {
+    let seed: [u8; 32] = hex::decode(std::fs::read_to_string(dir.join("machine.key"))?.trim())?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("a machine key is 32 bytes"))?;
+    Ok(SigningKey::from_bytes(&seed))
+}
+
+const IMAGE: &str = r#"{"kernel": {"url": "https://images.accept.test/vmlinux", "sha256": "1111111111111111111111111111111111111111111111111111111111111111"},
+                       "rootfs": {"url": "https://images.accept.test/rootfs.ext4", "sha256": "2222222222222222222222222222222222222222222222222222222222222222"}}"#;
+
+#[tokio::test]
+async fn a_device_stays_connected_and_runs_a_vm_that_joins_the_same_organisation()
+-> anyhow::Result<()> {
+    if crate::accepttest::fixtures::external_target().is_some() {
+        eprintln!("skipped: the agent signs for a loopback origin of a spawned instance");
+        return Ok(());
+    }
+    let Some((given, when, then)) = testcase_with_mail().await? else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let token = minting(
+        &when,
+        &then,
+        &format!("{MACHINES}/CreateJoinToken"),
+        json!({"organisation": owner.username, "name": "haze"}),
+    )
+    .await?;
+    let device = join_dir();
+    let joined = grund_join(&device, &["--url", &origin(&when), &token], &[]).await;
+    anyhow::ensure!(
+        joined.status.success(),
+        "{}",
+        String::from_utf8_lossy(&joined.stderr)
+    );
+    let device_id = record(&device)?["machine_id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let list_path = format!("{MACHINES}/ListMachines");
+    let list_body = json!({"organisation": owner.username}).to_string();
+
+    when.calling(&list_path, &list_body).await?;
+    anyhow::ensure!(
+        json(&then)?["machines"][0].get("connected").is_none(),
+        "{}",
+        json(&then)?
+    );
+
+    let beat = grund_agent_once(&device).await;
+    anyhow::ensure!(
+        beat.status.success(),
+        "{}",
+        String::from_utf8_lossy(&beat.stderr)
+    );
+    when.calling(&list_path, &list_body).await?;
+    let listed = json(&then)?;
+    anyhow::ensure!(listed["machines"][0]["connected"] == true, "{listed}");
+    anyhow::ensure!(
+        listed["machines"][0]["capabilities"]["kvm"] == true,
+        "{listed}"
+    );
+
+    let run = format!(
+        r#"{{"organisation": "{}", "onMachineId": "{device_id}", "name": "vm1", "vcpus": 1, "memoryMib": 512, "diskGib": 2, "image": {IMAGE}}}"#,
+        owner.username
+    );
+    when.calling(&format!("{MACHINES}/RunVm"), &run).await?;
+    then.status(200)?;
+    let vm_id = json(&then)?["vm"]["vmId"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+
+    let applied = grund_agent_once(&device).await;
+    let logs = format!(
+        "{}{}",
+        String::from_utf8_lossy(&applied.stdout),
+        String::from_utf8_lossy(&applied.stderr)
+    );
+    anyhow::ensure!(logs.contains("applied a new desired state"), "{logs}");
+    when.calling(
+        &format!("{MACHINES}/ListVms"),
+        &json!({"organisation": owner.username}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    let vms = json(&then)?;
+    anyhow::ensure!(vms["vms"][0]["vmId"] == vm_id.as_str(), "{vms}");
+    anyhow::ensure!(
+        vms["vms"][0]["observedState"] == "VM_OBSERVED_STATE_RUNNING",
+        "{vms}"
+    );
+    let guest_id = vms["vms"][0]["machineId"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    anyhow::ensure!(
+        !guest_id.is_empty(),
+        "the VM registered as a machine: {vms}"
+    );
+
+    when.calling(&list_path, &list_body).await?;
+    let listed = json(&then)?;
+    let guest = listed["machines"]
+        .as_array()
+        .and_then(|m| m.iter().find(|m| m["machineId"] == guest_id.as_str()))
+        .ok_or_else(|| {
+            anyhow::anyhow!("the VM's machine is in the organisation's pool: {listed}")
+        })?;
+    anyhow::ensure!(guest["name"] == "vm1", "{guest}");
+    anyhow::ensure!(guest["state"] == "MACHINE_STATE_ACTIVE", "{guest}");
+
+    when.calling(
+        &format!("{MACHINES}/StopVm"),
+        &json!({"organisation": owner.username, "vmId": vm_id}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    grund_agent_once(&device).await;
+    when.calling(
+        &format!("{MACHINES}/ListVms"),
+        &json!({"organisation": owner.username}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    anyhow::ensure!(
+        json(&then)?["vms"][0]["observedState"] == "VM_OBSERVED_STATE_STOPPED",
+        "{}",
+        json(&then)?
+    );
+    std::fs::remove_dir_all(device)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_control_link_answers_only_a_live_machine_that_signed_the_request() -> anyhow::Result<()>
+{
+    if crate::accepttest::fixtures::external_target().is_some() {
+        eprintln!("skipped: needs a machine registered with a spawned instance");
+        return Ok(());
+    }
+    let Some((given, when, then)) = testcase_with_mail().await? else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let token = minting(
+        &when,
+        &then,
+        &format!("{MACHINES}/CreateJoinToken"),
+        json!({"organisation": owner.username}),
+    )
+    .await?;
+    let device = join_dir();
+    let joined = grund_join(&device, &["--url", &origin(&when), &token], &[]).await;
+    anyhow::ensure!(joined.status.success());
+    let machine_id = record(&device)?["machine_id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let key = device_key(&device)?;
+
+    signed_agent_call(&when, &machine_id, &key, "Heartbeat", "{}").await?;
+    then.status(200)?;
+
+    when.calling("/grund.agent.v1.AgentService/Heartbeat", "{}")
+        .await?;
+    then.status(401)?.connect_code("unauthenticated")?;
+    signed_agent_call(&when, &machine_id, &a_machine_key(), "Heartbeat", "{}").await?;
+    then.status(401)?.connect_code("unauthenticated")?;
+    let other_path = "/grund.agent.v1.AgentService/Heartbeat".to_string();
+    let signed_at = now();
+    let message = format!(
+        "grund-agent-request-v1\n{other_path}\n{signed_at}\n{}",
+        hex::encode(Sha256::digest(b"{\"agentVersion\": \"x\"}"))
+    );
+    when.calling_with(
+        &other_path,
+        "{}",
+        &[
+            ("x-grund-machine", &machine_id),
+            ("x-grund-signed-at", &signed_at.to_string()),
+            (
+                "x-grund-signature",
+                &STANDARD.encode(key.sign(message.as_bytes()).to_bytes()),
+            ),
+        ],
+    )
+    .await?;
+    then.status(401)?.connect_code("unauthenticated")?;
+
+    signed_agent_call(
+        &when,
+        &machine_id,
+        &key,
+        "GetMachineJoinToken",
+        &json!({"vmId": "01a0dd99-5679-7622-9f19-01b55c3ccf2f"}).to_string(),
+    )
+    .await?;
+    then.status(404)?.connect_code("not_found")?;
+
+    let run = format!(
+        r#"{{"organisation": "{}", "onMachineId": "{machine_id}", "name": "vm1", "vcpus": 1, "memoryMib": 512, "diskGib": 2, "image": {IMAGE}}}"#,
+        owner.username
+    );
+    when.calling(&format!("{MACHINES}/RunVm"), &run).await?;
+    then.status(400)?.connect_code("failed_precondition")?;
+
+    when.calling(
+        &format!("{MACHINES}/RevokeMachine"),
+        &json!({"organisation": owner.username, "machineId": machine_id}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    signed_agent_call(&when, &machine_id, &key, "Heartbeat", "{}").await?;
+    then.status(401)?.connect_code("unauthenticated")?;
+    std::fs::remove_dir_all(device)?;
+    Ok(())
+}

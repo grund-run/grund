@@ -17,20 +17,22 @@ use grund_proto::grund::{
         GetMachineResponse, GetOrganisationKeyRequest, GetOrganisationKeyResponse,
         GetPoolMachineRequest, GetPoolMachineResponse, Lease, LeaseMachineRequest,
         LeaseMachineResponse, ListMachinesRequest, ListMachinesResponse, ListPoolMachinesRequest,
-        ListPoolMachinesResponse, Machine, MachineService, MachineState, ManagementPoolService,
-        ProviderStep as ProviderStepProto, ProvisionPoolMachineRequest,
-        ProvisionPoolMachineResponse, RebuildPoolMachineRequest, RebuildPoolMachineResponse,
-        RevokeMachineRequest, RevokeMachineResponse, RevokePoolMachineRequest,
-        RevokePoolMachineResponse,
+        ListPoolMachinesResponse, ListVmsRequest, ListVmsResponse, Machine, MachineService,
+        MachineState, ManagementPoolService, ProviderStep as ProviderStepProto,
+        ProvisionPoolMachineRequest, ProvisionPoolMachineResponse, RebuildPoolMachineRequest,
+        RebuildPoolMachineResponse, RevokeMachineRequest, RevokeMachineResponse,
+        RevokePoolMachineRequest, RevokePoolMachineResponse, RunVmRequest, RunVmResponse,
+        StopVmRequest, StopVmResponse, Vm,
     },
 };
-use grund_store::{machines::MachineRow, organisations::Membership};
+use grund_store::{agents::VmRow, machines::MachineRow, organisations::Membership};
 use uuid::Uuid;
 
 use crate::{
     api::{Caller, caller},
     services::{
         OrganisationsState,
+        agents::{AgentsState, VmOutcome, VmRequest},
         machines::{
             Access, ChangeOutcome, MachinesState, MintOutcome, Minted, ProviderStep,
             ProvisionOutcome, public_key_message,
@@ -139,6 +141,13 @@ fn machine(row: &MachineRow, view: View, own_slug: Option<&str>) -> Machine {
             View::Management => row.provider_machine_id.clone().unwrap_or_default(),
             View::Organisation => String::new(),
         },
+        connected: crate::services::agents::connected(row.last_seen_at, Utc::now()),
+        last_seen_at: row.last_seen_at.map(timestamp).unwrap_or_default(),
+        capabilities: row
+            .capabilities
+            .as_ref()
+            .map(|c| MessageField::from(capabilities(&c.0)))
+            .unwrap_or_default(),
         ..Default::default()
     }
 }
@@ -154,6 +163,72 @@ fn provider_step(step: ProviderStep) -> (EnumValue<ProviderStepProto>, String) {
             String::new(),
         ),
         ProviderStep::Failed(message) => (ProviderStepProto::PROVIDER_STEP_FAILED.into(), message),
+    }
+}
+
+fn capabilities(value: &serde_json::Value) -> agent::Capabilities {
+    agent::Capabilities {
+        kvm: value["kvm"].as_bool().unwrap_or(false),
+        root: value["root"].as_bool().unwrap_or(false),
+        egress: value["egress"].as_bool().unwrap_or(false),
+        free_vcpus: value["free_vcpus"].as_u64().unwrap_or(0) as u32,
+        free_memory_mib: value["free_memory_mib"].as_u64().unwrap_or(0) as u32,
+        ..Default::default()
+    }
+}
+
+fn vm(row: &VmRow) -> Vm {
+    let artifact = |url: &str, sha256: &str| agent::Artifact {
+        url: url.to_string(),
+        sha256: sha256.to_string(),
+        ..Default::default()
+    };
+    Vm {
+        vm_id: row.vm_id.to_string(),
+        name: row.name.clone(),
+        host_machine_id: row.host_machine_id.to_string(),
+        host_name: row.host_name.clone().unwrap_or_default(),
+        vcpus: row.vcpus as u32,
+        memory_mib: row.memory_mib as u32,
+        disk_gib: row.disk_gib as u32,
+        image: MessageField::from(agent::VmImage {
+            kernel: MessageField::from(artifact(&row.kernel_url, &row.kernel_sha256)),
+            rootfs: MessageField::from(artifact(&row.rootfs_url, &row.rootfs_sha256)),
+            ..Default::default()
+        }),
+        state: match row.state.as_str() {
+            "running" => agent::VmDesiredState::VM_DESIRED_STATE_RUNNING,
+            _ => agent::VmDesiredState::VM_DESIRED_STATE_STOPPED,
+        }
+        .into(),
+        observed_state: match row.observed_state.as_deref() {
+            Some("starting") => agent::VmObservedState::VM_OBSERVED_STATE_STARTING,
+            Some("running") => agent::VmObservedState::VM_OBSERVED_STATE_RUNNING,
+            Some("stopped") => agent::VmObservedState::VM_OBSERVED_STATE_STOPPED,
+            Some("exited") => agent::VmObservedState::VM_OBSERVED_STATE_EXITED,
+            Some("failed") => agent::VmObservedState::VM_OBSERVED_STATE_FAILED,
+            _ => agent::VmObservedState::VM_OBSERVED_STATE_UNSPECIFIED,
+        }
+        .into(),
+        observed_reason: row.observed_reason.clone().unwrap_or_default(),
+        machine_id: row.machine_id.map(|id| id.to_string()).unwrap_or_default(),
+        created_at: timestamp(row.created_at),
+        ..Default::default()
+    }
+}
+
+fn vm_done(outcome: VmOutcome) -> Result<VmRow, ConnectError> {
+    match outcome {
+        VmOutcome::Done(row) => Ok(*row),
+        VmOutcome::NotFound => Err(ConnectError::not_found("no such machine or VM")),
+        VmOutcome::CannotHost(reason) => Err(ConnectError::failed_precondition(reason)),
+        VmOutcome::Invalid(message) => Err(ConnectError::invalid_argument(message)),
+        VmOutcome::NameTaken => Err(ConnectError::failed_precondition(
+            "another machine or VM in this organisation has that name",
+        )),
+        VmOutcome::PoolFull => Err(ConnectError::failed_precondition(
+            "this organisation has all the machines it may have",
+        )),
     }
 }
 
@@ -635,6 +710,91 @@ impl MachineService for MachineApi {
             .map_err(internal)?;
         Response::ok(GetOrganisationKeyResponse {
             key: MessageField::from(public_key_message(&key)),
+            ..Default::default()
+        })
+    }
+
+    async fn run_vm(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, RunVmRequest>,
+    ) -> ServiceResult<RunVmResponse> {
+        let caller = caller(&ctx)?;
+        let membership = self
+            .member(&caller, request.organisation, Access::Manage)
+            .await?;
+        let host_machine_id = uuid(request.on_machine_id)?;
+        let image = request.image.as_option();
+        let kernel = image.and_then(|i| i.kernel.as_option());
+        let rootfs = image.and_then(|i| i.rootfs.as_option());
+        let outcome = self
+            .state
+            .agents()
+            .run_vm(
+                caller.account_id,
+                membership.organisation_id,
+                &VmRequest {
+                    host_machine_id,
+                    name: request.name.to_string(),
+                    vcpus: request.vcpus,
+                    memory_mib: request.memory_mib,
+                    disk_gib: request.disk_gib,
+                    kernel_url: kernel.map(|k| k.url.to_string()).unwrap_or_default(),
+                    kernel_sha256: kernel.map(|k| k.sha256.to_string()).unwrap_or_default(),
+                    rootfs_url: rootfs.map(|r| r.url.to_string()).unwrap_or_default(),
+                    rootfs_sha256: rootfs.map(|r| r.sha256.to_string()).unwrap_or_default(),
+                },
+            )
+            .await
+            .map_err(internal)?;
+        let row = vm_done(outcome)?;
+        Response::ok(RunVmResponse {
+            vm: MessageField::from(vm(&row)),
+            ..Default::default()
+        })
+    }
+
+    async fn stop_vm(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, StopVmRequest>,
+    ) -> ServiceResult<StopVmResponse> {
+        let caller = caller(&ctx)?;
+        let membership = self
+            .member(&caller, request.organisation, Access::Manage)
+            .await?;
+        let vm_id =
+            Uuid::parse_str(request.vm_id).map_err(|_| ConnectError::not_found("no such VM"))?;
+        let row = vm_done(
+            self.state
+                .agents()
+                .stop_vm(membership.organisation_id, vm_id)
+                .await
+                .map_err(internal)?,
+        )?;
+        Response::ok(StopVmResponse {
+            vm: MessageField::from(vm(&row)),
+            ..Default::default()
+        })
+    }
+
+    async fn list_vms(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, ListVmsRequest>,
+    ) -> ServiceResult<ListVmsResponse> {
+        let caller = caller(&ctx)?;
+        let membership = self
+            .member(&caller, request.organisation, Access::Read)
+            .await?;
+        let rows = self
+            .state
+            .agents()
+            .vms(membership.organisation_id)
+            .await
+            .map_err(internal)?;
+        Response::ok(ListVmsResponse {
+            vms: rows.iter().map(vm).collect(),
             ..Default::default()
         })
     }

@@ -4,6 +4,7 @@
 //! `state.organisations()`, `state.machines()`.
 
 pub mod accounts;
+pub mod agents;
 pub mod billing;
 pub mod capacity;
 pub mod entitlements;

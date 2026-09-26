@@ -173,7 +173,9 @@ pub fn has_system_roots() -> bool {
             .any(|path| std::fs::metadata(path).is_ok_and(|m| m.len() > 0))
 }
 
-fn http_client() -> anyhow::Result<reqwest::Client> {
+/// The HTTP client for the instance: 15 s per request, the system's
+/// certificate store or, without one, the Mozilla roots built in.
+pub fn http_client() -> anyhow::Result<reqwest::Client> {
     let builder = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .connect_timeout(Duration::from_secs(5))

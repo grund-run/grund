@@ -224,6 +224,51 @@ impl Machines {
         ttl_seconds: i32,
         minted_by: Uuid,
     ) -> anyhow::Result<MintOutcome> {
+        self.mint_with(
+            kind,
+            organisation_id,
+            machine_id,
+            name,
+            ttl_seconds,
+            &format!("account:{minted_by}"),
+            None,
+        )
+        .await
+    }
+
+    /// Mints the join token a VM boots with, for its host machine's agent:
+    /// bound to the VM's name and the VM, so the machine that registers with
+    /// it is known to be that VM.
+    pub async fn mint_for_vm(
+        &self,
+        organisation_id: Uuid,
+        vm_id: Uuid,
+        name: &str,
+        host_machine_id: Uuid,
+    ) -> anyhow::Result<MintOutcome> {
+        self.mint_with(
+            TokenKind::Organisation,
+            Some(organisation_id),
+            None,
+            name,
+            0,
+            &format!("machine:{host_machine_id}"),
+            Some(vm_id),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn mint_with(
+        &self,
+        kind: TokenKind,
+        organisation_id: Option<Uuid>,
+        machine_id: Option<Uuid>,
+        name: &str,
+        ttl_seconds: i32,
+        minted_by: &str,
+        vm_id: Option<Uuid>,
+    ) -> anyhow::Result<MintOutcome> {
         let ttl = match ttl_seconds {
             0 => TOKEN_TTL,
             s if s < 0 => {
@@ -272,8 +317,9 @@ impl Machines {
                 organisation_id,
                 machine_id,
                 name: name.as_ref().map(MachineName::as_str),
-                minted_by: &format!("account:{minted_by}"),
+                minted_by,
                 expires_at,
+                vm_id,
             },
         )
         .await?;
@@ -382,6 +428,9 @@ impl Machines {
             }
         }
         machines::consume_token(work.sql(), token.token_id, key.as_hex(), machine_id, now).await?;
+        if let Some(vm_id) = token.vm_id {
+            grund_store::agents::link_vm_machine(&mut **work.sql(), vm_id, machine_id).await?;
+        }
         let enrollment = self.enrollment(&mut work, machine_id, pool).await?;
         work.commit().await?;
         Ok(EnrollOutcome::Enrolled(enrollment))
