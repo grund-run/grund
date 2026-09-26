@@ -122,6 +122,7 @@ impl Fixture {
             ("GRUND_MAIL_FROM".into(), "grund <grund@accept.test>".into()),
             ("GRUND_HEALTH_INTERVAL".into(), "1".into()),
             ("GRUND_DATABASE_MAX_CONNECTIONS".into(), "4".into()),
+            ("GRUND_DATABASE_ACQUIRE_TIMEOUT".into(), "30".into()),
             ("GRUND_WORK_POLL_INTERVAL".into(), "1".into()),
             ("GRUND_ORGANISATIONS".into(), "multi".into()),
             (
