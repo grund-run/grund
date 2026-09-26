@@ -66,10 +66,23 @@ steps:
     depends_on: []
     environment:
       CARGO_TERM_COLOR: always
+      # rustc outputs are shared across pipelines through sccache on
+      # clank-sccache (memcached, the homelab). sccache keys each compile on its inputs,
+      # the compiler and the environment variables rustc reads (build.rs's
+      # revision too), so a hit is the output that compile would give; bin
+      # crates, linking and build scripts are never cached. The cache needs no
+      # credentials; if the host is unreachable, the step compiles without it.
+      RUSTC_WRAPPER: sccache
+      # From a secret: this repository is public and mirrored, and names no
+      # internal address.
+      SCCACHE_MEMCACHED_ENDPOINT:
+        from_secret: sccache_memcached_endpoint
+      CARGO_INCREMENTAL: "0"
       CARGO_TARGET_DIR: target/lint
     commands:
       # protobuf-dev: protoc and the well-known types, for the API codegen.
-      - apk add --no-cache musl-dev protobuf-dev
+      - apk add --no-cache musl-dev protobuf-dev sccache
+      - hp="$${SCCACHE_MEMCACHED_ENDPOINT#tcp://}"; nc -z -w 3 "$${hp%:*}" "$${hp##*:}" || { echo "the compile cache is unreachable, so this step compiles without it"; unset RUSTC_WRAPPER; }
       - rustup component add rustfmt clippy
       - cargo fmt --all --check
       # Kasper's rule: in Rust, the only comments are docs on public items.
@@ -81,6 +94,7 @@ steps:
       # --workspace, not -p grund: -p resolves features differently and
       # rebuilds most of the dependency tree instead of the crates ee touches.
       - cargo clippy --workspace --features grund/ee --all-targets --locked -- -D warnings
+      - if [ -n "$${RUSTC_WRAPPER:-}" ]; then sccache --show-stats; fi
 
   proto:
     # The API contract is linted on every change, and a pull request may not
@@ -96,6 +110,17 @@ steps:
     depends_on: []
     environment:
       CARGO_TERM_COLOR: always
+      # rustc outputs are shared across pipelines through sccache on
+      # clank-sccache (memcached, the homelab). sccache keys each compile on its inputs,
+      # the compiler and the environment variables rustc reads (build.rs's
+      # revision too), so a hit is the output that compile would give; bin
+      # crates, linking and build scripts are never cached. The cache needs no
+      # credentials; if the host is unreachable, the step compiles without it.
+      RUSTC_WRAPPER: sccache
+      # From a secret: this repository is public and mirrored, and names no
+      # internal address.
+      SCCACHE_MEMCACHED_ENDPOINT:
+        from_secret: sccache_memcached_endpoint
       # A CI build is never rebuilt incrementally, so writing incremental
       # state is pure cost; and full debuginfo makes the test binaries
       # slower to compile and link, while line tables keep file:line in a
@@ -110,7 +135,8 @@ steps:
       GRUND_ACCEPT_SMTP_URL: smtp://mailpit:1025
       GRUND_ACCEPT_MAILPIT_URL: http://mailpit:8025
     commands:
-      - apk add --no-cache musl-dev protobuf-dev
+      - apk add --no-cache musl-dev protobuf-dev sccache
+      - hp="$${SCCACHE_MEMCACHED_ENDPOINT#tcp://}"; nc -z -w 3 "$${hp%:*}" "$${hp##*:}" || { echo "the compile cache is unreachable, so this step compiles without it"; unset RUSTC_WRAPPER; }
       # Build every test binary first, and keep the path of the accepttest
       # binary: `contract` runs that same file against the release binary.
       # The same invocation as the run below, so the run compiles nothing.
@@ -129,6 +155,7 @@ steps:
       # this rebuilds only what the feature changes, and the filter reruns
       # only the accepttests, not the unit and store tests.
       - cargo test --workspace --features grund/ee --locked -- 'accepttest::'
+      - if [ -n "$${RUSTC_WRAPPER:-}" ]; then sccache --show-stats; fi
 
   release:
     # rust:*-alpine targets musl natively: the release binary is static, which
@@ -138,10 +165,27 @@ steps:
     depends_on: []
     environment:
       CARGO_TERM_COLOR: always
+      # rustc outputs are shared across pipelines through sccache on
+      # clank-sccache (memcached, the homelab). sccache keys each compile on its inputs,
+      # the compiler and the environment variables rustc reads (build.rs's
+      # revision too), so a hit is the output that compile would give; bin
+      # crates, linking and build scripts are never cached. The cache needs no
+      # credentials; if the host is unreachable, the step compiles without it.
+      RUSTC_WRAPPER: sccache
+      # From a secret: this repository is public and mirrored, and names no
+      # internal address.
+      SCCACHE_MEMCACHED_ENDPOINT:
+        from_secret: sccache_memcached_endpoint
+      CARGO_INCREMENTAL: "0"
     commands:
-      - apk add --no-cache musl-dev binutils protobuf-dev
+      - apk add --no-cache musl-dev binutils protobuf-dev sccache
+      - hp="$${SCCACHE_MEMCACHED_ENDPOINT#tcp://}"; nc -z -w 3 "$${hp%:*}" "$${hp##*:}" || { echo "the compile cache is unreachable, so this step compiles without it"; unset RUSTC_WRAPPER; }
       - cargo build --locked --release -p grund
+      - if [ -n "$${RUSTC_WRAPPER:-}" ]; then sccache --show-stats; fi
       - if readelf -d target/release/grund | grep -q NEEDED; then echo "grund is dynamically linked; scratch cannot run it"; exit 1; fi
+      # A compile cache must never ship another commit's build: the binary
+      # has to carry this commit's revision (build.rs, /health/ready).
+      - grep -q "$${CI_COMMIT_SHA}" target/release/grund || { echo "grund does not carry revision $${CI_COMMIT_SHA}"; exit 1; }
       # Stage the binary first and run the staged file, so the process the
       # accepttests assert against is byte for byte the one that gets packaged.
       - mkdir -p .image && cp target/release/grund .image/grund
