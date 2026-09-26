@@ -4,7 +4,8 @@
 #   lint ──────────────┐
 #   proto ─────────────┤
 #   test ────┐         ├─ image-publish (push to main) / image-dry-run (PR)
-#   release ─┴ contract┘
+#   release ─┴ contract┤
+#   release ─ guest-image ─ artifacts-publish (push to main)
 #
 # `test` runs the unit tests and the accepttests against a binary cargo
 # spawns; `release` builds the static binary that ships; `contract` runs the
@@ -17,6 +18,12 @@
 #   registry_token: a git.kjuulh.io token for user kjuulh with package write
 #   access to the grund organisation. Currently the instance-wide secret, the
 #   same one grund/website uses.
+#
+# Beside the image, the static binary and a microVM guest image, as the Gitea
+# generic package grund/generic/grund/main-<sha>/ (grund, grund-guest.ext4,
+# and a .sha256 of each), with the same secret: what a device's `grund agent`
+# runs, and the rootfs RunVm names by URL and SHA-256 (grund-docs
+# design/vm-runtime.md).
 #
 # One immutable tag, main-${CI_COMMIT_SHA}. kjuulh/woodpecker-forest computes
 # exactly that tag from the commit and pins the release to it, so a rollout
@@ -197,15 +204,16 @@ steps:
     commands:
       - apk add --no-cache musl-dev binutils protobuf-dev sccache
       - hp="$${SCCACHE_MEMCACHED_ENDPOINT#tcp://}"; nc -z -w 3 "$${hp%:*}" "$${hp##*:}" || { echo "the compile cache is unreachable, so this step compiles without it"; unset RUSTC_WRAPPER; }
-      - cargo build --locked --release -p grund
+      - cargo build --locked --release -p grund -p grund-guest
       - if [ -n "$${RUSTC_WRAPPER:-}" ]; then sccache --show-stats; fi
       - if readelf -d target/release/grund | grep -q NEEDED; then echo "grund is dynamically linked; scratch cannot run it"; exit 1; fi
+      - if readelf -d target/release/grund-guest | grep -q NEEDED; then echo "grund-guest is dynamically linked; the guest has no libc"; exit 1; fi
       # A compile cache must never ship another commit's build: the binary
       # has to carry this commit's revision (build.rs, /health/ready).
       - tr -c 0-9a-f "\n" < target/release/grund | grep -q "$${CI_COMMIT_SHA}" || { echo "grund does not carry revision $${CI_COMMIT_SHA}"; exit 1; }
       # Stage the binary first and run the staged file, so the process the
       # accepttests assert against is byte for byte the one that gets packaged.
-      - mkdir -p .image && cp target/release/grund .image/grund
+      - mkdir -p .image .dist && cp target/release/grund .image/grund && cp target/release/grund-guest .dist/grund-guest
 
   contract:
     # Assert against the real binary, not a mock of it: the accepttest binary
@@ -235,6 +243,35 @@ steps:
       # spawned-binary run in `test` covers the limits and single mode.
       # cargo runs a test binary from its package directory; so does this.
       - cd crates/grund && GRUND_ACCEPT_URL=http://127.0.0.1:8080 ../../.accept/tests || { echo "--- server log"; cat ../../server.log; exit 1; }
+
+  guest-image:
+    # The microVM root filesystem, from the release step's binaries: the grund
+    # that ships, and grund-guest as PID 1. Built without root; no compile.
+    image: alpine:3.22
+    depends_on: [release]
+    commands:
+      - apk add --no-cache bash coreutils e2fsprogs e2fsprogs-extra binutils git
+      - git config --global --add safe.directory "$$PWD"
+      - GRUND_BINARY=.image/grund GRUND_GUEST_BINARY=.dist/grund-guest crates/grund-guest/build-image.sh .dist/grund-guest.ext4
+      - cp .image/grund .dist/grund
+      - cd .dist && for f in grund grund-guest.ext4; do sha256sum "$$f" | cut -d' ' -f1 > "$$f.sha256"; done && ls -l
+
+  artifacts-publish:
+    # Versions are immutable: a re-run of the same commit is refused (409),
+    # which is correct, so it is tolerated.
+    image: alpine:3.22
+    depends_on: [lint, proto, contract, guest-image]
+    when:
+      - event: push
+        branch: main
+      - event: manual
+    environment:
+      REGISTRY_TOKEN:
+        from_secret: registry_token
+    commands:
+      - apk add --no-cache curl
+      # $$ escapes Woodpecker's own substitution; a single $ is swallowed.
+      - for f in grund grund.sha256 grund-guest.ext4 grund-guest.ext4.sha256; do code=$$(curl -s -o /dev/null -w '%{http_code}' --user "kjuulh:$${REGISTRY_TOKEN}" --upload-file .dist/$$f "https://git.kjuulh.io/api/packages/grund/generic/grund/main-$${CI_COMMIT_SHA}/$$f"); case $$code in 201|409) echo "$$f $$code";; *) echo "upload of $$f failed with $$code"; exit 1;; esac; done
 
   # A broken Dockerfile fails the pull request that broke it, not the next
   # push to main. Builds, never pushes, and needs no secret.
