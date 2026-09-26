@@ -20,6 +20,7 @@ ee = ["dep:grund-ee"]
 anyhow.workspace = true
 grund-ee = { workspace = true, optional = true }
 clap.workspace = true
+grund-agent.workspace = true
 grund-server.workspace = true
 tokio.workspace = true
 tracing.workspace = true

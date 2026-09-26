@@ -12,6 +12,7 @@ repository = "https://git.kjuulh.io/grund/grund"
 # Apache-2.0 for the API contract, the grund Commercial License for ee/.
 
 [workspace.dependencies]
+grund-agent = { path = "crates/grund-agent" }
 grund-domain = { path = "crates/grund-domain" }
 grund-ee = { path = "ee/grund-ee" }
 grund-proto = { path = "crates/grund-proto" }

@@ -1,0 +1,26 @@
+[package]
+name = "grund-agent"
+description = "grund's machine agent: what runs on every machine grund manages, starting with registering it"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+license = "AGPL-3.0-only"
+
+[dependencies]
+anyhow.workspace = true
+base64.workspace = true
+buffa = { version = "=0.9.2", features = ["json"] }
+clap.workspace = true
+ed25519-dalek = "2"
+getrandom.workspace = true
+grund-proto.workspace = true
+hex.workspace = true
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+tracing.workspace = true

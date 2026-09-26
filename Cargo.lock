@@ -1052,6 +1052,7 @@ dependencies = [
  "clap",
  "ed25519-dalek",
  "getrandom 0.3.4",
+ "grund-agent",
  "grund-ee",
  "grund-server",
  "hex",
@@ -1064,6 +1065,27 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "webpki-roots 1.0.9",
+]
+
+[[package]]
+name = "grund-agent"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "buffa",
+ "clap",
+ "ed25519-dalek",
+ "getrandom 0.3.4",
+ "grund-proto",
+ "hex",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

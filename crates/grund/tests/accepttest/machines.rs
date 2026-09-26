@@ -623,3 +623,201 @@ async fn an_instance_without_an_operator_organisation_has_no_management_pool() -
     then.status(404)?.connect_code("not_found")?;
     Ok(())
 }
+
+fn join_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
+        "join-{}",
+        crate::accepttest::fixtures::random_hex(6)
+    ))
+}
+
+async fn grund_join(
+    dir: &std::path::Path,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> std::process::Output {
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_grund"));
+    command
+        .arg("join")
+        .arg("--data-dir")
+        .arg(dir)
+        .args(args)
+        .env_clear()
+        .env("RUST_LOG", "warn");
+    for (name, value) in env {
+        command.env(name, value);
+    }
+    tokio::task::spawn_blocking(move || command.output().expect("run grund join"))
+        .await
+        .expect("grund join's thread")
+}
+
+fn record(dir: &std::path::Path) -> anyhow::Result<Value> {
+    Ok(serde_json::from_str(&std::fs::read_to_string(
+        dir.join("machine.json"),
+    )?)?)
+}
+
+async fn a_fake_mmds(document: Value) -> anyhow::Result<String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?.to_string();
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            let document = document.clone();
+            tokio::spawn(async move {
+                let mut buffer = vec![0u8; 8192];
+                let n = socket.read(&mut buffer).await.unwrap_or(0);
+                let request = String::from_utf8_lossy(&buffer[..n]).to_string();
+                let lower = request.to_ascii_lowercase();
+                let (status, body) = if request.starts_with("PUT /latest/api/token ")
+                    && lower.contains("x-metadata-token-ttl-seconds:")
+                {
+                    ("200 OK", "mmds-session".to_string())
+                } else if request.starts_with("GET / ")
+                    && lower.contains("x-metadata-token: mmds-session")
+                {
+                    ("200 OK", document.to_string())
+                } else {
+                    ("401 Unauthorized", String::new())
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-length: {}\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+            });
+        }
+    });
+    Ok(address)
+}
+
+#[tokio::test]
+async fn grund_join_registers_a_customer_machine_and_a_second_run_changes_nothing()
+-> anyhow::Result<()> {
+    if crate::accepttest::fixtures::external_target().is_some() {
+        eprintln!("skipped: grund join signs for a loopback origin of a spawned instance");
+        return Ok(());
+    }
+    let Some((given, when, then)) = testcase_with_mail().await? else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let token = minting(
+        &when,
+        &then,
+        &format!("{MACHINES}/CreateJoinToken"),
+        json!({"organisation": owner.username}),
+    )
+    .await?;
+    let dir = join_dir();
+    let url = origin(&when);
+
+    let first = grund_join(&dir, &["--url", &url, "--name", "closet", &token], &[]).await;
+    let stdout = String::from_utf8_lossy(&first.stdout);
+    anyhow::ensure!(
+        first.status.success(),
+        "grund join failed: {stdout}{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    anyhow::ensure!(stdout.contains("registered as closet"), "{stdout}");
+    let kept = record(&dir)?;
+    anyhow::ensure!(kept["pool"] == "organisation", "{kept}");
+    anyhow::ensure!(kept["trust_key"]["purpose"] == "organisation", "{kept}");
+    anyhow::ensure!(kept["instance_url"] == url.as_str(), "{kept}");
+    let key_mode = std::fs::metadata(dir.join("machine.key"))?.permissions();
+    anyhow::ensure!(std::os::unix::fs::PermissionsExt::mode(&key_mode) & 0o777 == 0o600);
+
+    let second = grund_join(&dir, &["--url", &url, &token], &[]).await;
+    anyhow::ensure!(second.status.success());
+    anyhow::ensure!(
+        String::from_utf8_lossy(&second.stdout).contains("already registered as closet")
+    );
+
+    when.calling(
+        &format!("{MACHINES}/ListMachines"),
+        &json!({"organisation": owner.username}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    let listed = json(&then)?;
+    anyhow::ensure!(
+        listed["machines"].as_array().map(Vec::len) == Some(1),
+        "{listed}"
+    );
+    anyhow::ensure!(
+        listed["machines"][0]["machineId"] == kept["machine_id"],
+        "{listed}"
+    );
+    std::fs::remove_dir_all(dir)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn grund_join_reads_a_grund_machines_assignment_from_mmds() -> anyhow::Result<()> {
+    let Some((_, when, then, _)) = operator_testcase().await? else {
+        return Ok(());
+    };
+    let token = minting(
+        &when,
+        &then,
+        &format!("{POOL}/CreateRegistrationToken"),
+        json!({"name": "gm-7"}),
+    )
+    .await?;
+    let mmds = a_fake_mmds(json!({
+        "grund": {"url": origin(&when), "enrollment_token": token, "expires_at": "later", "assignment_id": "a-1"},
+        "fleet": {"machine_id": "fm-123"},
+    }))
+    .await?;
+    let dir = join_dir();
+    let joined = grund_join(&dir, &["--mmds"], &[("GRUND_MMDS_ADDRESS", &mmds)]).await;
+    anyhow::ensure!(
+        joined.status.success(),
+        "grund join --mmds failed: {}{}",
+        String::from_utf8_lossy(&joined.stdout),
+        String::from_utf8_lossy(&joined.stderr)
+    );
+    let kept = record(&dir)?;
+    anyhow::ensure!(kept["pool"] == "management", "{kept}");
+    anyhow::ensure!(kept["trust_key"]["purpose"] == "management", "{kept}");
+
+    when.calling(
+        &format!("{POOL}/GetPoolMachine"),
+        &json!({"machineId": kept["machine_id"]}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    let machine = json(&then)?;
+    anyhow::ensure!(machine["machine"]["name"] == "gm-7", "{machine}");
+    anyhow::ensure!(
+        machine["machine"]["facts"]["fleetMachineId"] == "fm-123",
+        "{machine}"
+    );
+    std::fs::remove_dir_all(dir)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn grund_join_says_why_a_refused_code_was_refused() -> anyhow::Result<()> {
+    if crate::accepttest::fixtures::external_target().is_some() {
+        eprintln!("skipped: grund join signs for a loopback origin of a spawned instance");
+        return Ok(());
+    }
+    let Some((given, when, _)) = testcase_with_mail().await? else {
+        return Ok(());
+    };
+    given.a_signed_in_account().await?;
+    let dir = join_dir();
+    let unknown = format!("grund_join_{}", "b".repeat(52));
+    let refused = grund_join(&dir, &["--url", &origin(&when), &unknown], &[]).await;
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    anyhow::ensure!(!refused.status.success(), "an unknown code registered");
+    anyhow::ensure!(stderr.contains("token_invalid"), "{stderr}");
+    anyhow::ensure!(
+        !dir.join("machine.json").exists(),
+        "a refused join left a record"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+    Ok(())
+}

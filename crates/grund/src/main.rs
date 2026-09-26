@@ -4,10 +4,12 @@
 //! - `migrate`: apply database migrations and exit;
 //! - `init`: generate a fresh instance's secrets, keeping any that exist;
 //! - `probe`: exit 0 when an instance's readiness answers 200, for container
-//!   health checks (the image has no shell or curl).
+//!   health checks (the image has no shell or curl);
+//! - `join`: register this machine with an instance, with a one-time setup
+//!   code (the machine agent, `grund-agent`).
 //!
-//! The agent that runs on each machine will be another subcommand of this
-//! binary, so there is one artifact to build, sign and ship.
+//! The agent is part of this binary, so there is one artifact to build, sign
+//! and ship.
 //!
 //! Official builds are the AGPL core alone. The `ee` feature adds grund's
 //! commercial features from `ee/`, which are not licensed for production
@@ -54,6 +56,8 @@ enum Command {
     Init(grund_server::secrets::InitArgs),
     #[command(about = "Exit 0 when the instance at --address answers 200 on --path, 1 otherwise")]
     Probe(probe::ProbeArgs),
+    #[command(about = "Register this machine with a grund instance, using a one-time setup code")]
+    Join(grund_agent::join::JoinArgs),
 }
 
 #[tokio::main]
@@ -72,6 +76,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Migrate(args) => grund_server::migrate(args).await,
         Command::Init(args) => grund_server::secrets::init(&args),
         Command::Probe(args) => probe::run(&args),
+        Command::Join(args) => grund_agent::join::run(&args).await,
     }
 }
 
