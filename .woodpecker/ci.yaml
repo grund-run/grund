@@ -78,7 +78,9 @@ steps:
       - cargo clippy --workspace --all-targets --locked -- -D warnings
       # Official builds leave ee/ out; the ee build must keep compiling and
       # passing its accepttests anyway, so it is ready the day it ships.
-      - cargo clippy -p grund --features ee --all-targets --locked -- -D warnings
+      # --workspace, not -p grund: -p resolves features differently and
+      # rebuilds most of the dependency tree instead of the crates ee touches.
+      - cargo clippy --workspace --features grund/ee --all-targets --locked -- -D warnings
 
   proto:
     # The API contract is linted on every change, and a pull request may not
@@ -121,7 +123,12 @@ steps:
       - for i in $(seq 1 60); do nc -z postgres 5432 && nc -z nats 4222 && nc -z mailpit 1025 && break; sleep 1; done
       - nc -z postgres 5432 || { echo "postgres never accepted connections"; exit 1; }
       - cargo test --workspace --locked
-      - cargo test -p grund --features ee --locked --test tests
+      # The ee accepttests: the workspace's tests with grund/ee, filtered to
+      # the accepttests. Not `cargo test -p grund --features ee --test tests`:
+      # -p resolves features differently and rebuilt 104 crates (pipeline 32);
+      # this rebuilds only what the feature changes, and the filter reruns
+      # only the accepttests, not the unit and store tests.
+      - cargo test --workspace --features grund/ee --locked -- 'accepttest::'
 
   release:
     # rust:*-alpine targets musl natively: the release binary is static, which
