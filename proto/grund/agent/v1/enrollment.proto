@@ -75,6 +75,26 @@ message EnrollMachineResponse {
   // Where the machine's control link connects, by preference. Empty until the
   // control link exists.
   repeated string data_channel_urls = 8;
+  // The organisation's private network, for the organisation pool only; the
+  // machine pins its key. A management machine joins a network through a
+  // lease (not built).
+  Network network = 9;
+}
+
+// A private network a machine is a member of (grund-docs design/network.md
+// §5, §6).
+message Network {
+  // UUID.
+  string network_id = 1;
+  // Signs the network's membership lists, over
+  // "grund-net-membership-v1\n" || body.
+  PublicKey key = 2;
+  // The network's /48, written as its first address (fdXX:XXXX:XXXX::).
+  string prefix = 3;
+  // The machine's /64 in it; its own address is prefix:slot::1. Never 0.
+  uint32 slot = 4;
+  // grund's relays, by preference. Empty until the relay runs.
+  repeated string relay_urls = 5;
 }
 
 enum Pool {
@@ -99,6 +119,8 @@ enum KeyPurpose {
   KEY_PURPOSE_MANAGEMENT = 2;
   // Signs one organisation's desired-state documents.
   KEY_PURPOSE_ORGANISATION = 3;
+  // Signs one private network's membership lists.
+  KEY_PURPOSE_NETWORK = 4;
 }
 
 // What the management key signs when a machine is leased: the machine may

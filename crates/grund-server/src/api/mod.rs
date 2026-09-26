@@ -214,6 +214,10 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
         Requirement::Machine,
     ),
     (
+        "/grund.agent.v1.AgentService/GetMembership",
+        Requirement::Machine,
+    ),
+    (
         "/grund.machine.v1.MachineService/RunVm",
         Requirement::Session,
     ),
@@ -763,6 +767,13 @@ mod tests {
             _: RequestContext,
             _: ServiceRequest<'_, agent::ReportStatusRequest>,
         ) -> ServiceResult<agent::ReportStatusResponse> {
+            unreachable!()
+        }
+        async fn get_membership(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, agent::GetMembershipRequest>,
+        ) -> ServiceResult<agent::GetMembershipResponse> {
             unreachable!()
         }
     }

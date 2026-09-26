@@ -93,6 +93,21 @@ pub struct Record {
     pub trust_key: PinnedKey,
     pub heartbeat_interval_seconds: i32,
     pub registered_at_unix: i64,
+    /// The organisation's private network, for the organisation pool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<NetworkRecord>,
+}
+
+/// A private network the machine joined at registration: its key, pinned,
+/// and the machine's place in it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkRecord {
+    pub network_id: String,
+    pub key: PinnedKey,
+    /// The /48's first address.
+    pub prefix: String,
+    pub slot: u16,
+    pub relay_urls: Vec<String>,
 }
 
 /// A key of the instance, pinned at registration.
@@ -101,7 +116,7 @@ pub struct PinnedKey {
     pub key_id: String,
     /// 32 bytes, lowercase hex.
     pub public_key: String,
-    /// `instance`, `management` or `organisation`.
+    /// `instance`, `management`, `organisation` or `network`.
     pub purpose: String,
 }
 
@@ -371,6 +386,7 @@ fn pinned(key: Option<&PublicKey>) -> anyhow::Result<PinnedKey> {
             Some(KeyPurpose::KEY_PURPOSE_INSTANCE) => "instance",
             Some(KeyPurpose::KEY_PURPOSE_MANAGEMENT) => "management",
             Some(KeyPurpose::KEY_PURPOSE_ORGANISATION) => "organisation",
+            Some(KeyPurpose::KEY_PURPOSE_NETWORK) => "network",
             _ => bail!("the instance answered a key with no purpose"),
         }
         .to_string(),
@@ -394,6 +410,25 @@ pub fn record(origin: &str, response: &EnrollMachineResponse) -> anyhow::Result<
         trust_key: pinned(response.trust_key.as_option())?,
         heartbeat_interval_seconds: response.heartbeat_interval_seconds,
         registered_at_unix: unix_now(),
+        network: response
+            .network
+            .as_option()
+            .map(|network| -> anyhow::Result<NetworkRecord> {
+                let key = pinned(network.key.as_option())?;
+                anyhow::ensure!(key.purpose == "network", "a network's key is a network key");
+                anyhow::ensure!(
+                    (1..=u32::from(u16::MAX)).contains(&network.slot),
+                    "a network slot is between 1 and 65535"
+                );
+                Ok(NetworkRecord {
+                    network_id: network.network_id.to_string(),
+                    key,
+                    prefix: network.prefix.to_string(),
+                    slot: network.slot as u16,
+                    relay_urls: network.relay_urls.iter().map(|u| u.to_string()).collect(),
+                })
+            })
+            .transpose()?,
     })
 }
 

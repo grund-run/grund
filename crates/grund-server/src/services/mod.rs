@@ -13,6 +13,7 @@ pub mod limits;
 pub mod machines;
 pub mod mail;
 pub mod maintenance;
+pub mod networks;
 pub mod organisations;
 pub mod outbox;
 pub mod passwords;

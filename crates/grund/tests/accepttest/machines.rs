@@ -725,6 +725,8 @@ async fn grund_join_registers_a_customer_machine_and_a_second_run_changes_nothin
     anyhow::ensure!(kept["pool"] == "organisation", "{kept}");
     anyhow::ensure!(kept["trust_key"]["purpose"] == "organisation", "{kept}");
     anyhow::ensure!(kept["instance_url"] == url.as_str(), "{kept}");
+    anyhow::ensure!(kept["network"]["key"]["purpose"] == "network", "{kept}");
+    anyhow::ensure!(kept["network"]["slot"] == 1, "{kept}");
     let key_mode = std::fs::metadata(dir.join("machine.key"))?.permissions();
     anyhow::ensure!(std::os::unix::fs::PermissionsExt::mode(&key_mode) & 0o777 == 0o600);
 
@@ -1516,5 +1518,197 @@ async fn a_member_sees_the_machines_page_but_cannot_add_or_remove() -> anyhow::R
         .await?;
     guest_then.redirects_to(&format!("{page}?error=not-allowed"))?;
     let _ = then;
+    Ok(())
+}
+
+async fn a_member(
+    when: &When,
+    then: &Then,
+    organisation: &str,
+    name: &str,
+) -> anyhow::Result<(SigningKey, Value)> {
+    let token = minting(
+        when,
+        then,
+        &format!("{MACHINES}/CreateJoinToken"),
+        json!({"organisation": organisation, "name": name}),
+    )
+    .await?;
+    let key = a_machine_key();
+    enrolling(when, &token, &key, name).await?;
+    then.status(200)?;
+    Ok((key, json(then)?))
+}
+
+fn membership(
+    then: &Then,
+    network_key: &Value,
+) -> anyhow::Result<grund_net::membership::MembershipList> {
+    let answer = json(then)?;
+    let list = &answer["list"];
+    anyhow::ensure!(list["keyId"] == network_key["keyId"], "{answer}");
+    let pinned: [u8; 32] = STANDARD
+        .decode(network_key["publicKey"].as_str().unwrap_or_default())?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("a network key is 32 bytes"))?;
+    let signed = grund_net::membership::SignedList {
+        body: STANDARD.decode(list["body"].as_str().unwrap_or_default())?,
+        signature: STANDARD.decode(list["signature"].as_str().unwrap_or_default())?,
+    };
+    Ok(signed.verify(&VerifyingKey::from_bytes(&pinned)?)?)
+}
+
+fn slots(list: &grund_net::membership::MembershipList) -> Vec<(String, u16)> {
+    let mut slots: Vec<(String, u16)> = list
+        .members
+        .iter()
+        .map(|m| (m.endpoint_id.clone(), m.slot))
+        .collect();
+    slots.sort_by_key(|(_, slot)| *slot);
+    slots
+}
+
+fn endpoint(key: &SigningKey) -> String {
+    hex::encode(key.verifying_key().to_bytes())
+}
+
+#[tokio::test]
+async fn an_organisations_machines_share_its_signed_network_and_a_revoked_one_leaves_it()
+-> anyhow::Result<()> {
+    let Some((given, when, then)) = testcase_with_mail().await? else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let (a, first) = a_member(&when, &then, &owner.username, "net-a").await?;
+    let (b, second) = a_member(&when, &then, &owner.username, "net-b").await?;
+    let network = &first["network"];
+    anyhow::ensure!(
+        network["key"]["purpose"] == "KEY_PURPOSE_NETWORK",
+        "{first}"
+    );
+    anyhow::ensure!(
+        network["slot"] == 1 && second["network"]["slot"] == 2,
+        "{second}"
+    );
+    anyhow::ensure!(
+        second["network"]["networkId"] == network["networkId"],
+        "{second}"
+    );
+    anyhow::ensure!(second["network"]["key"] == network["key"], "{second}");
+    let prefix: std::net::Ipv6Addr = network["prefix"].as_str().unwrap_or_default().parse()?;
+    anyhow::ensure!(
+        prefix.octets()[0] == 0xfd && prefix.octets()[6..].iter().all(|b| *b == 0),
+        "{prefix}"
+    );
+    let a_id = first["machineId"].as_str().unwrap_or_default().to_string();
+    let b_id = second["machineId"].as_str().unwrap_or_default().to_string();
+
+    signed_agent_call(&when, &a_id, &a, "GetMembership", r#"{"sinceEpoch": "0"}"#).await?;
+    then.status(200)?;
+    let list = membership(&then, &network["key"])?;
+    anyhow::ensure!(list.network_id == network["networkId"].as_str().unwrap_or_default());
+    anyhow::ensure!(list.prefix == prefix);
+    anyhow::ensure!(
+        slots(&list) == vec![(endpoint(&a), 1), (endpoint(&b), 2)],
+        "{list:?}"
+    );
+    let epoch = list.epoch;
+
+    when.calling(
+        &format!("{MACHINES}/RevokeMachine"),
+        &json!({"organisation": owner.username, "machineId": b_id}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    signed_agent_call(
+        &when,
+        &a_id,
+        &a,
+        "GetMembership",
+        &json!({"sinceEpoch": epoch.to_string()}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    let after = membership(&then, &network["key"])?;
+    anyhow::ensure!(after.epoch > epoch, "{after:?}");
+    anyhow::ensure!(slots(&after) == vec![(endpoint(&a), 1)], "{after:?}");
+    signed_agent_call(&when, &b_id, &b, "GetMembership", r#"{"sinceEpoch": "0"}"#).await?;
+    then.status(401)?;
+
+    let (c, third) = a_member(&when, &then, &owner.username, "net-c").await?;
+    anyhow::ensure!(
+        third["network"]["slot"] == 3,
+        "a freed slot is held for 24 hours: {third}"
+    );
+    let c_id = third["machineId"].as_str().unwrap_or_default().to_string();
+    signed_agent_call(&when, &c_id, &c, "GetMembership", r#"{"sinceEpoch": "0"}"#).await?;
+    then.status(200)?;
+    anyhow::ensure!(
+        slots(&membership(&then, &network["key"])?) == vec![(endpoint(&a), 1), (endpoint(&c), 3)]
+    );
+
+    let (outsider, outsider_when, outsider_then) = given.testcase.another_browser();
+    let stranger = outsider.a_signed_in_account().await?;
+    let (s, theirs) = a_member(&outsider_when, &outsider_then, &stranger.username, "net-s").await?;
+    anyhow::ensure!(
+        theirs["network"]["networkId"] != network["networkId"],
+        "{theirs}"
+    );
+    anyhow::ensure!(theirs["network"]["prefix"] != network["prefix"], "{theirs}");
+    signed_agent_call(
+        &outsider_when,
+        theirs["machineId"].as_str().unwrap_or_default(),
+        &s,
+        "GetMembership",
+        &json!({"networkId": network["networkId"], "sinceEpoch": "0"}).to_string(),
+    )
+    .await?;
+    outsider_then.status(404)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_waiting_member_hears_of_a_revocation_within_seconds() -> anyhow::Result<()> {
+    let Some((given, when, then)) = testcase_with_mail().await? else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let (a, first) = a_member(&when, &then, &owner.username, "wait-a").await?;
+    let (_, second) = a_member(&when, &then, &owner.username, "wait-b").await?;
+    let a_id = first["machineId"].as_str().unwrap_or_default().to_string();
+    let (_, machine_when, machine_then) = given.testcase.another_browser();
+    signed_agent_call(
+        &machine_when,
+        &a_id,
+        &a,
+        "GetMembership",
+        r#"{"sinceEpoch": "0"}"#,
+    )
+    .await?;
+    let epoch = membership(&machine_then, &first["network"]["key"])?.epoch;
+
+    let since = json!({"sinceEpoch": epoch.to_string()}).to_string();
+    let started = std::time::Instant::now();
+    let waiting = signed_agent_call(&machine_when, &a_id, &a, "GetMembership", &since);
+    let revoking = async {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        when.calling(
+            &format!("{MACHINES}/RevokeMachine"),
+            &json!({"organisation": owner.username, "machineId": second["machineId"]}).to_string(),
+        )
+        .await
+    };
+    let (waited, revoked) = tokio::join!(waiting, revoking);
+    waited?;
+    revoked?;
+    then.status(200)?;
+    machine_then.status(200)?;
+    let list = membership(&machine_then, &first["network"]["key"])?;
+    anyhow::ensure!(list.epoch > epoch && list.members.len() == 1, "{list:?}");
+    anyhow::ensure!(
+        started.elapsed() < std::time::Duration::from_secs(8),
+        "the answer came when membership changed, not at the end of the wait: {:?}",
+        started.elapsed()
+    );
     Ok(())
 }

@@ -8,6 +8,7 @@
 pub mod accounts;
 pub mod agents;
 pub mod machines;
+pub mod networks;
 pub mod organisations;
 pub mod outbox;
 pub mod projections;

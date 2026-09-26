@@ -507,6 +507,7 @@ mod tests {
             },
             heartbeat_interval_seconds: 5,
             registered_at_unix: 0,
+            network: None,
         }
     }
 

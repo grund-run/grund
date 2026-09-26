@@ -23,6 +23,7 @@ ed25519-dalek = "2"
 futures-util.workspace = true
 getrandom.workspace = true
 grund-domain.workspace = true
+grund-net.workspace = true
 grund-proto.workspace = true
 grund-store.workspace = true
 hex.workspace = true

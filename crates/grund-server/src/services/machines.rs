@@ -949,6 +949,7 @@ pub fn public_key_message(key: &PublicKey) -> agent::PublicKey {
             KeyPurpose::Instance => agent::KeyPurpose::KEY_PURPOSE_INSTANCE,
             KeyPurpose::Management => agent::KeyPurpose::KEY_PURPOSE_MANAGEMENT,
             KeyPurpose::Organisation => agent::KeyPurpose::KEY_PURPOSE_ORGANISATION,
+            KeyPurpose::Network => agent::KeyPurpose::KEY_PURPOSE_NETWORK,
         }
         .into(),
         ..Default::default()

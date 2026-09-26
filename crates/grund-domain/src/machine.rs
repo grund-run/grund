@@ -57,6 +57,8 @@ pub enum KeyPurpose {
     Management,
     /// One per organisation; signs its desired-state documents.
     Organisation,
+    /// One per private network; signs its membership lists.
+    Network,
 }
 
 impl KeyPurpose {
@@ -65,6 +67,7 @@ impl KeyPurpose {
             KeyPurpose::Instance => "instance",
             KeyPurpose::Management => "management",
             KeyPurpose::Organisation => "organisation",
+            KeyPurpose::Network => "network",
         }
     }
 
@@ -73,6 +76,7 @@ impl KeyPurpose {
             "instance" => Some(KeyPurpose::Instance),
             "management" => Some(KeyPurpose::Management),
             "organisation" => Some(KeyPurpose::Organisation),
+            "network" => Some(KeyPurpose::Network),
             _ => None,
         }
     }

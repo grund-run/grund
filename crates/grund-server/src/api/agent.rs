@@ -8,13 +8,17 @@ use buffa_types::google::protobuf::Timestamp;
 use connectrpc::{ConnectError, RequestContext, Response, ServiceRequest, ServiceResult};
 use grund_proto::grund::agent::v1::{
     AgentService, GetDesiredStateRequest, GetDesiredStateResponse, GetMachineJoinTokenRequest,
-    GetMachineJoinTokenResponse, HeartbeatRequest, HeartbeatResponse, ReportStatusRequest,
-    ReportStatusResponse, SignedDesiredState, VmObservedState,
+    GetMachineJoinTokenResponse, GetMembershipRequest, GetMembershipResponse, HeartbeatRequest,
+    HeartbeatResponse, ReportStatusRequest, ReportStatusResponse, SignedDesiredState,
+    SignedMembershipList, VmObservedState,
 };
 use uuid::Uuid;
 
 use crate::{
-    services::agents::{AgentsState, HEARTBEAT_INTERVAL_SECONDS, MachineCaller},
+    services::{
+        agents::{AgentsState, HEARTBEAT_INTERVAL_SECONDS, MachineCaller},
+        networks::{MembershipOutcome, NetworksState},
+    },
     state::State,
 };
 
@@ -156,5 +160,45 @@ impl AgentService for AgentApi {
             .await
             .map_err(internal)?;
         Response::ok(ReportStatusResponse::default())
+    }
+
+    async fn get_membership(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, GetMembershipRequest>,
+    ) -> ServiceResult<GetMembershipResponse> {
+        let caller = machine(&ctx)?;
+        let not_found = || ConnectError::not_found("no such network for this machine");
+        let network_id = match request.network_id {
+            "" => None,
+            id => Some(Uuid::parse_str(id).map_err(|_| not_found())?),
+        };
+        let outcome = self
+            .state
+            .networks()
+            .membership(&caller, network_id, request.since_epoch)
+            .await
+            .map_err(internal)?;
+        match outcome {
+            MembershipOutcome::Newer(network) => Response::ok(GetMembershipResponse {
+                network_id: network.network_id.to_string(),
+                epoch: network.epoch,
+                list: MessageField::from(SignedMembershipList {
+                    key_id: network.key.key_id.to_string(),
+                    body: network.body,
+                    signature: network.signature,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            MembershipOutcome::Unchanged { network_id, epoch } => {
+                Response::ok(GetMembershipResponse {
+                    network_id: network_id.to_string(),
+                    epoch,
+                    ..Default::default()
+                })
+            }
+            MembershipOutcome::NotFound => Err(not_found()),
+        }
     }
 }

@@ -15,8 +15,12 @@ use grund_proto::grund::agent::v1::{
 
 use crate::{
     api::ClientAddress,
-    services::machines::{
-        EnrollOutcome, EnrollRequest, HEARTBEAT_INTERVAL_SECONDS, MachinesState, public_key_message,
+    services::{
+        machines::{
+            EnrollOutcome, EnrollRequest, HEARTBEAT_INTERVAL_SECONDS, MachinesState,
+            public_key_message,
+        },
+        networks::{NetworkView, NetworksState},
     },
     state::State,
 };
@@ -30,6 +34,17 @@ impl EnrollmentApi {
     pub fn new(state: State) -> Self {
         Self { state }
     }
+}
+
+fn network_message(network: &NetworkView, machine_id: uuid::Uuid) -> Option<agent::Network> {
+    Some(agent::Network {
+        network_id: network.network_id.to_string(),
+        key: MessageField::from(public_key_message(&network.key)),
+        prefix: network.prefix.to_string(),
+        slot: u32::from(*network.slots.get(&machine_id)?),
+        relay_urls: Vec::new(),
+        ..Default::default()
+    })
 }
 
 fn refusal(error: ConnectError, reason: &str) -> ConnectError {
@@ -141,10 +156,23 @@ impl MachineEnrollmentService for EnrollmentApi {
                 ));
             }
         };
-        let (pool, organisation_id) = match enrollment.pool {
-            Pool::Management => (agent::Pool::POOL_MANAGEMENT, String::new()),
+        let (pool, organisation_id, network) = match enrollment.pool {
+            Pool::Management => (agent::Pool::POOL_MANAGEMENT, String::new(), None),
             Pool::Organisation { organisation_id } => {
-                (agent::Pool::POOL_ORGANISATION, organisation_id.to_string())
+                let network = self
+                    .state
+                    .networks()
+                    .reconcile(organisation_id)
+                    .await
+                    .map_err(|error| {
+                        tracing::error!(error = %error, "a registered machine's network failed");
+                        ConnectError::unavailable("grund could not register the machine; try again")
+                    })?;
+                (
+                    agent::Pool::POOL_ORGANISATION,
+                    organisation_id.to_string(),
+                    network_message(&network, enrollment.machine_id),
+                )
             }
         };
         Response::ok(EnrollMachineResponse {
@@ -156,6 +184,7 @@ impl MachineEnrollmentService for EnrollmentApi {
             trust_key: MessageField::from(public_key_message(&enrollment.trust_key)),
             heartbeat_interval_seconds: HEARTBEAT_INTERVAL_SECONDS,
             data_channel_urls: Vec::new(),
+            network: network.map(MessageField::from).unwrap_or_default(),
             ..Default::default()
         })
     }

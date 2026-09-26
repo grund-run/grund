@@ -34,6 +34,38 @@ service AgentService {
 
   // What actually runs, level-triggered: the whole picture every time.
   rpc ReportStatus(ReportStatusRequest) returns (ReportStatusResponse);
+
+  // The newest signed membership list of a private network the machine is a
+  // member of, once its epoch is newer than since_epoch: at once if it
+  // already is, otherwise when membership changes, or after at most 10 s
+  // with the list left empty. A network the machine is not a member of is
+  // not_found, whether it exists or not.
+  rpc GetMembership(GetMembershipRequest) returns (GetMembershipResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+}
+
+message GetMembershipRequest {
+  // The network; empty for the network of the machine's pool.
+  string network_id = 1;
+  uint64 since_epoch = 2;
+}
+
+message GetMembershipResponse {
+  string network_id = 1;
+  // The network's current epoch, whether or not a list is sent.
+  uint64 epoch = 2;
+  // Set when epoch is newer than since_epoch: grund_net's SignedList, the
+  // list's bytes (serde_json of MembershipList) and Ed25519 over
+  // "grund-net-membership-v1\n" || body, by the key the machine pinned.
+  SignedMembershipList list = 3;
+}
+
+message SignedMembershipList {
+  // The key that signed it; the machine refuses one it did not pin.
+  string key_id = 1;
+  bytes body = 2;
+  bytes signature = 3;
 }
 
 message HeartbeatRequest {
