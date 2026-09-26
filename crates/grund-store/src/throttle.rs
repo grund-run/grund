@@ -13,6 +13,7 @@ pub enum Scope {
     LoginAddress,
     MailEmail,
     MailAddress,
+    EnrollAddress,
 }
 
 impl Scope {
@@ -22,6 +23,7 @@ impl Scope {
             Scope::LoginAddress => "login_address",
             Scope::MailEmail => "mail_email",
             Scope::MailAddress => "mail_address",
+            Scope::EnrollAddress => "enroll_address",
         }
     }
 }

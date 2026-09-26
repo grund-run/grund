@@ -9,6 +9,7 @@
 
 use grund_domain::{
     account::{Account, AccountEvent},
+    machine::{Machine, MachineEvent, Pool},
     organisation::{Organisation, OrganisationEvent},
 };
 use mire::{HandledEvent, TransactionalEventHandler};
@@ -18,6 +19,7 @@ use uuid::Uuid;
 /// Subscription ids; bump the suffix to rebuild a read model from scratch.
 pub const ACCOUNT_SUBSCRIPTION: &str = "grund-account-read-model-v1";
 pub const ORGANISATION_SUBSCRIPTION: &str = "grund-organisation-read-model-v1";
+pub const MACHINE_SUBSCRIPTION: &str = "grund-machine-read-model-v1";
 
 /// Applies one account event at `version` to `grund_accounts`.
 pub async fn apply_account(
@@ -240,6 +242,130 @@ pub async fn apply_organisation(
     Ok(())
 }
 
+/// Applies one machine event at `version` to `grund_machines`. Every event
+/// after `Registered` claims its version on the machine's row first, so a
+/// replay changes nothing.
+pub async fn apply_machine(
+    machine_id: Uuid,
+    version: i64,
+    event: &MachineEvent,
+    connection: &mut PgConnection,
+) -> Result<(), sqlx::Error> {
+    if let MachineEvent::Registered {
+        pool,
+        name,
+        key,
+        minted_by,
+        facts,
+        registered_at,
+        ..
+    } = event
+    {
+        let (home, state) = match pool {
+            Pool::Management => (None, "available"),
+            Pool::Organisation { organisation_id } => (Some(*organisation_id), "active"),
+        };
+        sqlx::query(
+            "INSERT INTO grund_machines (machine_id, pool, home_organisation_id, name, state, \
+               public_key, pool_organisation_id, pool_name, facts, minted_by, registered_at, \
+               key_registered_at, stream_version) \
+             VALUES ($1, $2, $3, $4, $5, $6, $3, CASE WHEN $3 IS NULL THEN NULL ELSE $4 END, \
+               $7, $8, $9, $9, $10) \
+             ON CONFLICT (machine_id) DO NOTHING",
+        )
+        .bind(machine_id)
+        .bind(pool.as_str())
+        .bind(home)
+        .bind(name.as_str())
+        .bind(state)
+        .bind(key.as_hex())
+        .bind(sqlx::types::Json(facts))
+        .bind(minted_by)
+        .bind(registered_at)
+        .bind(version)
+        .execute(&mut *connection)
+        .await?;
+        return Ok(());
+    }
+    let claimed = sqlx::query(
+        "UPDATE grund_machines SET stream_version = $2 WHERE machine_id = $1 AND stream_version < $2",
+    )
+    .bind(machine_id)
+    .bind(version)
+    .execute(&mut *connection)
+    .await?
+    .rows_affected();
+    if claimed == 0 {
+        return Ok(());
+    }
+    match event {
+        MachineEvent::Registered { .. } => {}
+        MachineEvent::Leased {
+            lease_id,
+            organisation_id,
+            name,
+            leased_at,
+            ..
+        } => {
+            sqlx::query(
+                "UPDATE grund_machines SET state = 'leased', lease_id = $2, \
+                   lessee_organisation_id = $3, lease_name = $4, leased_at = $5, \
+                   pool_organisation_id = $3, pool_name = $4 \
+                 WHERE machine_id = $1",
+            )
+            .bind(machine_id)
+            .bind(lease_id)
+            .bind(organisation_id)
+            .bind(name.as_str())
+            .bind(leased_at)
+            .execute(&mut *connection)
+            .await?;
+        }
+        MachineEvent::LeaseEnded { .. } => {
+            sqlx::query(
+                "UPDATE grund_machines SET state = 'returning', lease_id = NULL, \
+                   lessee_organisation_id = NULL, lease_name = NULL, leased_at = NULL, \
+                   pool_organisation_id = NULL, pool_name = NULL \
+                 WHERE machine_id = $1",
+            )
+            .bind(machine_id)
+            .execute(&mut *connection)
+            .await?;
+        }
+        MachineEvent::Reregistered {
+            key,
+            facts,
+            reregistered_at,
+            ..
+        } => {
+            sqlx::query(
+                "UPDATE grund_machines SET state = 'available', public_key = $2, facts = $3, \
+                   key_registered_at = $4 \
+                 WHERE machine_id = $1",
+            )
+            .bind(machine_id)
+            .bind(key.as_hex())
+            .bind(sqlx::types::Json(facts))
+            .bind(reregistered_at)
+            .execute(&mut *connection)
+            .await?;
+        }
+        MachineEvent::Revoked { revoked_at, .. } => {
+            sqlx::query(
+                "UPDATE grund_machines SET state = 'revoked', public_key = NULL, revoked_at = $2, \
+                   lease_id = NULL, lessee_organisation_id = NULL, lease_name = NULL, \
+                   leased_at = NULL, pool_organisation_id = NULL, pool_name = NULL \
+                 WHERE machine_id = $1",
+            )
+            .bind(machine_id)
+            .bind(revoked_at)
+            .execute(&mut *connection)
+            .await?;
+        }
+    }
+    Ok(())
+}
+
 /// The id inside a stream id such as `grund-account-<uuid>`.
 pub fn stream_uuid(stream_id: &str, category: &str) -> anyhow::Result<Uuid> {
     stream_id
@@ -282,6 +408,23 @@ impl TransactionalEventHandler for OrganisationProjection {
             grund_domain::organisation::ORGANISATION_CATEGORY,
         )?;
         apply_organisation(id, event.stream_version(), &event.event, connection).await?;
+        Ok(())
+    }
+}
+
+/// The machine read model, for a `mire::ProjectionRunner`.
+pub struct MachineProjection;
+
+impl TransactionalEventHandler for MachineProjection {
+    type Aggregate = Machine;
+
+    async fn handle(
+        &self,
+        event: HandledEvent<MachineEvent>,
+        connection: &mut PgConnection,
+    ) -> anyhow::Result<()> {
+        let id = stream_uuid(event.stream_id(), grund_domain::machine::MACHINE_CATEGORY)?;
+        apply_machine(id, event.stream_version(), &event.event, connection).await?;
         Ok(())
     }
 }

@@ -486,3 +486,171 @@ async fn a_single_instance_adopts_its_one_organisation_and_refuses_to_choose_bet
         InstanceCheck::TooMany(2)
     );
 }
+
+fn machine_name(text: &str) -> grund_domain::names::MachineName {
+    grund_domain::names::MachineName::parse(text).unwrap()
+}
+
+fn machine_key(byte: u8) -> grund_domain::machine::MachineKey {
+    grund_domain::machine::MachineKey::from_bytes(&[byte; 32]).unwrap()
+}
+
+async fn machine(
+    events: &EventStore,
+    pool: grund_domain::machine::Pool,
+    name: &str,
+    key: u8,
+) -> Uuid {
+    let machine_id = Uuid::now_v7();
+    let mut work = Work::begin(events, Uuid::now_v7(), "test").await.unwrap();
+    work.machine(
+        machine_id,
+        grund_domain::machine::MachineCommand::Register {
+            pool,
+            name: machine_name(name),
+            key: machine_key(key),
+            token_id: Uuid::now_v7(),
+            minted_by: "account:test".into(),
+            facts: grund_domain::machine::MachineFacts::default(),
+            at: Utc::now(),
+        },
+    )
+    .await
+    .unwrap();
+    work.commit().await.unwrap();
+    machine_id
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_lease_moves_a_machine_into_the_lessee_pool_and_back_out(pool: PgPool) {
+    use grund_domain::machine::{MachineCommand, Pool};
+    use grund_store::machines;
+    let events = store(&pool).await;
+    let username = name("lessee");
+    register(&events, &username).await;
+    let organisation_id: Uuid =
+        sqlx::query_scalar("SELECT organisation_id FROM grund_organisations WHERE slug = $1")
+            .bind(username.as_str())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let machine_id = machine(&events, Pool::Management, "gm-1", 1).await;
+    assert_eq!(
+        machines::machine(&pool, machine_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        "available"
+    );
+    assert!(
+        machines::organisation_machines(&pool, organisation_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();
+    work.machine(
+        machine_id,
+        MachineCommand::Lease {
+            actor: Uuid::now_v7(),
+            lease_id: Uuid::now_v7(),
+            organisation_id,
+            name: machine_name("web-1"),
+            at: Utc::now(),
+        },
+    )
+    .await
+    .unwrap();
+    work.commit().await.unwrap();
+    let listed = machines::organisation_machines(&pool, organisation_id)
+        .await
+        .unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].pool_name.as_deref(), Some("web-1"));
+    assert_eq!(listed[0].lessee_slug.as_deref(), Some(username.as_str()));
+
+    let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();
+    work.machine(
+        machine_id,
+        MachineCommand::EndLease {
+            actor: Uuid::now_v7(),
+            at: Utc::now(),
+        },
+    )
+    .await
+    .unwrap();
+    work.commit().await.unwrap();
+    assert!(
+        machines::organisation_machines(&pool, organisation_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let row = machines::machine(&pool, machine_id).await.unwrap().unwrap();
+    assert_eq!(row.state, "returning");
+    assert_eq!(row.lease_id, None);
+}
+
+#[sqlx::test(migrations = false)]
+async fn replaying_a_machine_event_leaves_its_row_unchanged(pool: PgPool) {
+    use grund_domain::machine::{MachineEvent, Pool};
+    use grund_store::machines;
+    let events = store(&pool).await;
+    let machine_id = machine(&events, Pool::Management, "gm-2", 2).await;
+    let mut connection = pool.acquire().await.unwrap();
+    projections::apply_machine(
+        machine_id,
+        1,
+        &MachineEvent::Revoked {
+            revoked_by: Uuid::now_v7(),
+            revoked_at: Utc::now(),
+        },
+        &mut connection,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        machines::machine(&pool, machine_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        "available"
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn two_live_machines_cannot_share_a_name_in_one_pool_or_a_key_anywhere(pool: PgPool) {
+    use grund_domain::machine::{MachineCommand, Pool};
+    let events = store(&pool).await;
+    machine(&events, Pool::Management, "gm-3", 3).await;
+    let register = |name: &str, key: u8| MachineCommand::Register {
+        pool: Pool::Management,
+        name: machine_name(name),
+        key: machine_key(key),
+        token_id: Uuid::now_v7(),
+        minted_by: "account:test".into(),
+        facts: grund_domain::machine::MachineFacts::default(),
+        at: Utc::now(),
+    };
+    let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();
+    let error = work
+        .machine(Uuid::now_v7(), register("gm-3", 4))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.unique_violation().as_deref(),
+        Some("grund_machines_management_name_idx")
+    );
+    let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();
+    let error = work
+        .machine(Uuid::now_v7(), register("gm-4", 3))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.unique_violation().as_deref(),
+        Some("grund_machines_key_idx")
+    );
+}
