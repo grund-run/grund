@@ -160,7 +160,8 @@ pub fn verify(
     Ok(state)
 }
 
-struct Link {
+#[derive(Clone)]
+pub(crate) struct Link {
     http: reqwest::Client,
     origin: String,
     machine_id: String,
@@ -168,7 +169,7 @@ struct Link {
 }
 
 impl Link {
-    async fn call<Req: Message, Resp: Message>(
+    pub(crate) async fn call<Req: Message, Resp: Message>(
         &self,
         procedure: &str,
         request: &Req,
@@ -223,6 +224,14 @@ pub async fn run<R: VmRuntime>(args: &AgentArgs, runtime: R) -> anyhow::Result<(
     };
     let mut applied = read_applied(&args.data_dir)?;
     tracing::info!(machine = %record.machine_id, name = %record.name, "agent running");
+    if let Some(network) = record.network.clone().filter(|_| !args.once) {
+        let (link, seed) = (link.clone(), link.key.to_bytes());
+        tokio::spawn(async move {
+            if let Err(error) = crate::net::run(link, network, seed).await {
+                tracing::error!(error = %format!("{error:#}"), "private network stopped");
+            }
+        });
+    }
     loop {
         let interval = match round(
             &link,

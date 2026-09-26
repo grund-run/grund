@@ -9,4 +9,5 @@
 
 pub mod agent;
 pub mod join;
+pub mod net;
 pub mod vm;
