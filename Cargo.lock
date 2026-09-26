@@ -1055,6 +1055,7 @@ dependencies = [
  "grund-agent",
  "grund-ee",
  "grund-server",
+ "grund-vm",
  "hex",
  "rustls",
  "serde_json",

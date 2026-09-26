@@ -68,8 +68,62 @@ struct AgentCommand {
     #[command(flatten)]
     agent: grund_agent::agent::AgentArgs,
 
-    #[arg(long, env = "GRUND_VM_RUNTIME", value_parser = ["none", "simulated"], default_value = "none", help = "What runs VMs: none, or simulated (each VM is `grund join` run with its metadata; for tests and demos)")]
+    #[arg(long, env = "GRUND_VM_RUNTIME", value_parser = ["none", "simulated", "firecracker"], default_value = "none", help = "What runs VMs: none, firecracker (microVMs, needs /dev/kvm), or simulated (each VM is `grund join` run with its metadata; for tests and demos)")]
     vm_runtime: String,
+
+    #[arg(
+        long,
+        env = "GRUND_VM_FIRECRACKER",
+        default_value = "firecracker",
+        help = "The Firecracker binary, for --vm-runtime firecracker"
+    )]
+    vm_firecracker: std::path::PathBuf,
+
+    #[arg(long, env = "GRUND_VM_NETWORK", value_parser = ["auto", "bridged", "isolated"], default_value = "auto", help = "How VMs are networked: bridged (egress through grund's bridge and NAT; needs root), isolated (metadata only), or auto (bridged when root)")]
+    vm_network: String,
+
+    #[arg(
+        long,
+        env = "GRUND_VM_VCPUS",
+        help = "vCPUs all VMs may use together. Default: all CPUs but one"
+    )]
+    vm_vcpus: Option<u32>,
+
+    #[arg(
+        long,
+        env = "GRUND_VM_MEMORY_MIB",
+        help = "Memory all VMs may use together, MiB. Default: half the host's"
+    )]
+    vm_memory_mib: Option<u32>,
+
+    #[arg(
+        long,
+        env = "GRUND_VM_DISK_GIB",
+        help = "Disk all VMs may use together, GiB. Default: 20"
+    )]
+    vm_disk_gib: Option<u32>,
+}
+
+fn firecracker(command: &AgentCommand) -> anyhow::Result<grund_vm::Firecracker> {
+    let host = grund_vm::Budget::of_host();
+    let root = grund_vm::running_as_root();
+    let network = match (command.vm_network.as_str(), root) {
+        ("isolated", _) | ("auto", false) => grund_vm::Network::Isolated,
+        ("bridged", false) => anyhow::bail!(
+            "--vm-network bridged needs root: it sets up grund's bridge and NAT (GRUND_VM_NETWORK)"
+        ),
+        _ => grund_vm::Network::Bridged,
+    };
+    grund_vm::Firecracker::new(grund_vm::Config {
+        data_dir: command.agent.data_dir.join("vm"),
+        firecracker: command.vm_firecracker.clone(),
+        network,
+        budget: grund_vm::Budget {
+            vcpus: command.vm_vcpus.unwrap_or(host.vcpus),
+            memory_mib: command.vm_memory_mib.unwrap_or(host.memory_mib),
+            disk_gib: command.vm_disk_gib.unwrap_or(host.disk_gib),
+        },
+    })
 }
 
 #[tokio::main]
@@ -95,6 +149,7 @@ async fn main() -> anyhow::Result<()> {
                 grund_agent::agent::run(&command.agent, grund_agent::vm::SimulatedVms::new(dir))
                     .await
             }
+            "firecracker" => grund_agent::agent::run(&command.agent, firecracker(&command)?).await,
             _ => grund_agent::agent::run(&command.agent, grund_agent::vm::NoVms).await,
         },
     }

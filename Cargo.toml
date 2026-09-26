@@ -13,6 +13,7 @@ repository = "https://git.kjuulh.io/grund/grund"
 
 [workspace.dependencies]
 grund-agent = { path = "crates/grund-agent" }
+grund-vm = { path = "crates/grund-vm" }
 grund-domain = { path = "crates/grund-domain" }
 grund-ee = { path = "ee/grund-ee" }
 grund-proto = { path = "crates/grund-proto" }

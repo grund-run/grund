@@ -17,12 +17,18 @@
 //! its output in a file, so VMs outlive the agent: an agent restart finds
 //! them by their pid files. The state lives on disk, not in memory.
 //!
-//! Isolation today is [`Network::Isolated`]: each Firecracker runs in a new
-//! unprivileged user and network namespace with a tap `fc0` of its own, so
-//! the guest reaches its metadata and nothing else. That needs no root and
-//! gives no egress, so [`VmRuntime::capabilities`] says `egress: false`
-//! and grund places no machine that must register there. Root hosts get the
-//! jailer, grund's own bridge and NAT next.
+//! Two networks:
+//!
+//! - [`Network::Isolated`], without root: each Firecracker runs in a new
+//!   unprivileged user and network namespace with a tap `fc0` of its own,
+//!   so the guest reaches its metadata and nothing else.
+//!   [`VmRuntime::capabilities`] says `egress: false`, and grund places no
+//!   machine that must register there.
+//! - [`Network::Bridged`], as root: a tap per VM on grund's bridge, with
+//!   egress through NAT and nothing unsolicited let in ([`net`]). The VM's
+//!   address, `.<n>` of the bridge's /24, is kept in `<vm>/address`.
+//!   Firecracker runs as root without the jailer for now; the jailer is
+//!   next, and until then a VM escape is root on the host.
 //!
 //! A VM's directory records its shape (size and image digests) but never
 //! its metadata, which holds a one-time token. Budget is checked under an
@@ -34,6 +40,7 @@
 
 pub mod api;
 pub mod image;
+pub mod net;
 
 use std::{
     collections::HashMap,
@@ -47,7 +54,7 @@ use grund_agent::vm::{VmCapabilities, VmRuntime, VmSpec, VmState, VmStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::{api::Api, image::Images};
+use crate::{api::Api, image::Images, net::Bridge};
 
 /// The kernel command line every VM starts from, before its network.
 pub const BOOT_ARGS: &str = "console=ttyS0 reboot=k panic=1 pci=off";
@@ -61,6 +68,8 @@ pub enum Network {
     /// A tap alone in the VM's own user and network namespace: metadata
     /// only, no egress, no root.
     Isolated,
+    /// A tap on grund's bridge, with egress through NAT. Needs root.
+    Bridged,
 }
 
 /// The most every VM on this machine may use together.
@@ -69,6 +78,27 @@ pub struct Budget {
     pub vcpus: u32,
     pub memory_mib: u32,
     pub disk_gib: u32,
+}
+
+impl Budget {
+    /// What VMs may use when nobody says: all but one of the CPUs, half the
+    /// memory, and 20 GiB of disk.
+    pub fn of_host() -> Self {
+        let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let memory_kib: u64 = std::fs::read_to_string("/proc/meminfo")
+            .ok()
+            .and_then(|text| {
+                text.lines()
+                    .find_map(|line| line.strip_prefix("MemTotal:"))
+                    .and_then(|rest| rest.trim().trim_end_matches("kB").trim().parse().ok())
+            })
+            .unwrap_or(0);
+        Self {
+            vcpus: u32::try_from(cpus.saturating_sub(1).max(1)).unwrap_or(1),
+            memory_mib: u32::try_from(memory_kib / 1024 / 2).unwrap_or(u32::MAX),
+            disk_gib: 20,
+        }
+    }
 }
 
 /// How the runtime is set up.
@@ -110,6 +140,7 @@ pub struct Firecracker {
 
 struct Inner {
     config: Config,
+    bridge: Option<Bridge>,
     images: Images,
     children: Mutex<HashMap<String, tokio::process::Child>>,
     locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
@@ -119,9 +150,14 @@ impl Firecracker {
     pub fn new(config: Config) -> anyhow::Result<Self> {
         std::fs::create_dir_all(config.data_dir.join("vms"))?;
         let images = Images::new(config.data_dir.join("images"))?;
+        let bridge = match config.network {
+            Network::Isolated => None,
+            Network::Bridged => Some(Bridge::prepare(&config.data_dir)?),
+        };
         Ok(Self {
             inner: Arc::new(Inner {
                 config,
+                bridge,
                 images,
                 children: Mutex::default(),
                 locks: Mutex::default(),
@@ -186,7 +222,7 @@ impl Firecracker {
         let pid = self.launch(&spec.id, &dir).await?;
         let api = Api::new(dir.join("fc.sock"));
         let configured = async {
-            for (path, body) in boot_sequence(spec, &kernel) {
+            for (path, body) in boot_sequence(spec, &kernel, self.guest_network(&dir)) {
                 api.put(path, &body).await?;
             }
             api.put("/actions", &json!({ "action_type": "InstanceStart" }))
@@ -200,6 +236,24 @@ impl Firecracker {
         Ok(())
     }
 
+    fn guest_network(&self, dir: &Path) -> GuestNetwork {
+        match (&self.inner.bridge, read_address(dir)) {
+            (Some(bridge), Some(octet)) => GuestNetwork {
+                kernel_ip: bridge.kernel_ip(octet, &hostname_of(dir)),
+                tap: net::tap_name(octet),
+                mac: Some(net::mac(bridge.subnet, octet)),
+            },
+            _ => GuestNetwork {
+                kernel_ip: format!(
+                    "ip=169.254.0.2::0.0.0.0:255.255.0.0:{}:eth0:off",
+                    hostname_of(dir)
+                ),
+                tap: "fc0".into(),
+                mac: None,
+            },
+        }
+    }
+
     async fn launch(&self, id: &str, dir: &Path) -> Result<u32, String> {
         for stale in ["fc.sock", "firecracker.pid"] {
             let _ = std::fs::remove_file(dir.join(stale));
@@ -210,18 +264,31 @@ impl Firecracker {
             .open(dir.join("firecracker.log"))
             .map_err(|e| format!("log: {e}"))?;
         let err = log.try_clone().map_err(|e| format!("log: {e}"))?;
-        let Network::Isolated = self.inner.config.network;
-        let child = tokio::process::Command::new("unshare")
-            .args([
-                "--user",
-                "--map-root-user",
-                "--net",
-                "--",
-                "sh",
-                "-c",
-                "ip link set lo up && ip tuntap add dev fc0 mode tap && ip link set fc0 up && exec \"$0\" --api-sock fc.sock",
-            ])
-            .arg(&self.inner.config.firecracker)
+        let mut command = match &self.inner.bridge {
+            None => {
+                let mut command = tokio::process::Command::new("unshare");
+                command
+                    .args([
+                        "--user",
+                        "--map-root-user",
+                        "--net",
+                        "--",
+                        "sh",
+                        "-c",
+                        "ip link set lo up && ip tuntap add dev fc0 mode tap && ip link set fc0 up && exec \"$0\" --api-sock fc.sock",
+                    ])
+                    .arg(&self.inner.config.firecracker);
+                command
+            }
+            Some(bridge) => {
+                let octet = read_address(dir).ok_or("the VM has no address")?;
+                bridge.add_tap(octet).map_err(|e| format!("tap: {e:#}"))?;
+                let mut command = tokio::process::Command::new(&self.inner.config.firecracker);
+                command.args(["--api-sock", "fc.sock"]);
+                command
+            }
+        };
+        let child = command
             .current_dir(dir)
             .stdin(Stdio::null())
             .stdout(Stdio::from(log))
@@ -280,10 +347,30 @@ impl Firecracker {
         if disk + u64::from(shape.disk_gib) > u64::from(budget.disk_gib) {
             return Err("budget_exceeded: disk".into());
         }
+        if self.inner.bridge.is_some() && read_address(&dir).is_none() {
+            let taken: Vec<u8> = self
+                .vm_dirs()
+                .iter()
+                .filter(|other| other.as_path() != dir)
+                .filter_map(|other| read_address(other))
+                .collect();
+            let octet = net::free_octet(&taken).ok_or("budget_exceeded: addresses")?;
+            std::fs::write(dir.join("address"), octet.to_string())
+                .map_err(|e| format!("address: {e}"))?;
+        }
         let tmp = dir.join("spec.json.tmp");
         std::fs::write(&tmp, serde_json::to_vec_pretty(shape).unwrap_or_default())
             .and_then(|()| std::fs::rename(&tmp, dir.join("spec.json")))
             .map_err(|e| format!("spec: {e}"))
+    }
+
+    fn vm_dirs(&self) -> Vec<PathBuf> {
+        std::fs::read_dir(self.inner.config.data_dir.join("vms"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .collect()
     }
 
     fn shapes(&self) -> Vec<(String, Shape)> {
@@ -355,6 +442,9 @@ impl VmRuntime for Firecracker {
             }
         }
         self.inner.children.lock().expect("children").remove(id);
+        if let (Some(bridge), Some(octet)) = (&self.inner.bridge, read_address(&dir)) {
+            bridge.remove_tap(octet);
+        }
         match std::fs::remove_dir_all(&dir) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -384,21 +474,42 @@ impl VmRuntime for Firecracker {
             .fold((0u32, 0u32), |(v, m), (_, s)| {
                 (v.saturating_add(s.vcpus), m.saturating_add(s.memory_mib))
             });
+        let egress = match &self.inner.bridge {
+            None => false,
+            Some(bridge) => match bridge.egress_blocked() {
+                None => true,
+                Some(reason) => {
+                    tracing::warn!(%reason, "VMs here would have no egress");
+                    false
+                }
+            },
+        };
         VmCapabilities {
             kvm: kvm_usable(),
-            root: false,
-            egress: false,
+            root: self.inner.bridge.is_some(),
+            egress,
             free_vcpus: budget.vcpus.saturating_sub(vcpus),
             free_memory_mib: budget.memory_mib.saturating_sub(memory),
         }
     }
 }
 
-fn boot_sequence(spec: &VmSpec, kernel: &Path) -> Vec<(&'static str, serde_json::Value)> {
-    let boot_args = format!(
-        "{BOOT_ARGS} ip=169.254.0.2::0.0.0.0:255.255.0.0:{}:eth0:off",
-        spec.id
-    );
+struct GuestNetwork {
+    kernel_ip: String,
+    tap: String,
+    mac: Option<String>,
+}
+
+fn boot_sequence(
+    spec: &VmSpec,
+    kernel: &Path,
+    network: GuestNetwork,
+) -> Vec<(&'static str, serde_json::Value)> {
+    let boot_args = format!("{BOOT_ARGS} {}", network.kernel_ip);
+    let mut interface = json!({ "iface_id": "eth0", "host_dev_name": network.tap });
+    if let Some(mac) = network.mac {
+        interface["guest_mac"] = json!(mac);
+    }
     vec![
         (
             "/boot-source",
@@ -413,16 +524,18 @@ fn boot_sequence(spec: &VmSpec, kernel: &Path) -> Vec<(&'static str, serde_json:
             "/machine-config",
             json!({ "vcpu_count": spec.vcpus, "mem_size_mib": spec.memory_mib }),
         ),
-        (
-            "/network-interfaces/eth0",
-            json!({ "iface_id": "eth0", "host_dev_name": "fc0" }),
-        ),
+        ("/network-interfaces/eth0", interface),
         (
             "/mmds/config",
             json!({ "version": "V2", "network_interfaces": ["eth0"] }),
         ),
         ("/mmds", spec.mmds.clone()),
     ]
+}
+
+/// Whether this process runs as root, and so can use [`Network::Bridged`].
+pub fn running_as_root() -> bool {
+    unsafe { libc::geteuid() == 0 }
 }
 
 /// A VM id names a directory and a guest: a DNS label.
@@ -437,6 +550,21 @@ pub fn valid_id(id: &str) -> bool {
 
 fn read_shape(dir: &Path) -> Option<Shape> {
     serde_json::from_slice(&std::fs::read(dir.join("spec.json")).ok()?).ok()
+}
+
+fn read_address(dir: &Path) -> Option<u8> {
+    std::fs::read_to_string(dir.join("address"))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+        .filter(|octet| (2..=254).contains(octet))
+}
+
+fn hostname_of(dir: &Path) -> String {
+    dir.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 fn read_pid(dir: &Path) -> Option<u32> {

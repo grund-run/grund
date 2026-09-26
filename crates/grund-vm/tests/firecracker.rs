@@ -50,10 +50,14 @@ fn data_dir() -> DataDir {
 }
 
 fn runtime(dir: &DataDir, found: &Artifacts) -> Firecracker {
+    runtime_on(dir, found, Network::Isolated)
+}
+
+fn runtime_on(dir: &DataDir, found: &Artifacts, network: Network) -> Firecracker {
     Firecracker::new(Config {
         data_dir: dir.0.clone(),
         firecracker: found.firecracker.clone(),
-        network: Network::Isolated,
+        network,
         budget: Budget {
             vcpus: 2,
             memory_mib: 1024,
@@ -64,6 +68,10 @@ fn runtime(dir: &DataDir, found: &Artifacts) -> Firecracker {
 }
 
 async fn spec(id: &str, found: &Artifacts, vcpus: u32) -> VmSpec {
+    spec_for(id, found, vcpus, "https://grund.example.com").await
+}
+
+async fn spec_for(id: &str, found: &Artifacts, vcpus: u32, url: &str) -> VmSpec {
     let artifact = |path: &PathBuf, digest: String| Artifact {
         url: format!("file://{}", path.display()),
         sha256: digest,
@@ -77,7 +85,7 @@ async fn spec(id: &str, found: &Artifacts, vcpus: u32) -> VmSpec {
             kernel: artifact(&found.kernel, file_digest(&found.kernel).await.unwrap()),
             rootfs: artifact(&found.rootfs, file_digest(&found.rootfs).await.unwrap()),
         },
-        mmds: metadata(id, "https://grund.example.com", "grund_join_test", "later"),
+        mmds: metadata(id, url, "grund_join_test", "later"),
     }
 }
 
@@ -228,4 +236,84 @@ async fn the_grund_guest_reads_its_assignment_from_the_metadata_and_shuts_down_o
     assert!(log.contains("grund-guest: stopping"), "{log}");
     assert!(!log.contains("Kernel panic"), "{log}");
     vms.stop("guest").await.unwrap();
+}
+
+fn nft_counter(chain: &str, marker: &str) -> u64 {
+    let listed = std::process::Command::new("nft")
+        .args(["list", "chain", "inet", "grund", chain])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&listed.stdout)
+        .lines()
+        .find(|line| line.contains(marker) && line.contains("counter packets"))
+        .and_then(|line| line.split("counter packets ").nth(1))
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0)
+}
+
+#[tokio::test]
+async fn a_bridged_guest_reaches_the_internet_but_not_private_addresses() {
+    let (Some(mut found), Some(guest), true) = (
+        artifacts(),
+        std::env::var_os("GRUND_VM_TEST_GUEST_ROOTFS").map(PathBuf::from),
+        std::env::var_os("GRUND_VM_TEST_BRIDGED").is_some() && grund_vm::running_as_root(),
+    ) else {
+        eprintln!(
+            "skipped: needs root, GRUND_VM_TEST_BRIDGED=1 and GRUND_VM_TEST_GUEST_ROOTFS; it sets up grundbr0 and the inet grund table"
+        );
+        return;
+    };
+    found.rootfs = guest;
+    let private = std::env::var("GRUND_VM_TEST_PRIVATE_URL").unwrap_or("https://10.0.2.2".into());
+    let dir = data_dir();
+    let vms = runtime_on(&dir, &found, Network::Bridged);
+    let caps = vms.capabilities().await;
+    assert!(caps.kvm && caps.root && caps.egress, "{caps:?}");
+    let dropped_before = nft_counter("forward", "10.0.0.0/8");
+
+    let out = vms
+        .ensure(&spec_for("out", &found, 1, "https://example.com").await)
+        .await
+        .unwrap();
+    assert_eq!(out.state, VmState::Running, "{out:?}");
+    let lan = vms
+        .ensure(&spec_for("lan", &found, 1, &private).await)
+        .await
+        .unwrap();
+    assert_eq!(lan.state, VmState::Running, "{lan:?}");
+    let addresses: Vec<String> = ["out", "lan"]
+        .iter()
+        .map(|id| std::fs::read_to_string(dir.0.join(format!("vms/{id}/address"))).unwrap())
+        .collect();
+    assert_ne!(addresses[0], addresses[1], "each VM has its own address");
+
+    let out_log = until_logged(
+        &dir.0.join("vms/out/firecracker.log"),
+        "refused to register this machine",
+        Duration::from_secs(60),
+    )
+    .await;
+    assert!(
+        out_log.contains("refused to register this machine"),
+        "the guest resolved example.com, reached it over TLS and got an answer: {out_log}"
+    );
+    let lan_log = until_logged(
+        &dir.0.join("vms/lan/firecracker.log"),
+        "could not reach",
+        Duration::from_secs(60),
+    )
+    .await;
+    assert!(lan_log.contains("could not reach"), "{lan_log}");
+    assert!(
+        nft_counter("forward", "10.0.0.0/8") > dropped_before,
+        "the private address was dropped by grund's table"
+    );
+
+    vms.stop("out").await.unwrap();
+    vms.stop("lan").await.unwrap();
+    for address in addresses {
+        let tap = format!("/sys/class/net/grundvm{}", address.trim());
+        assert!(!std::path::Path::new(&tap).exists(), "{tap} is removed");
+    }
 }
