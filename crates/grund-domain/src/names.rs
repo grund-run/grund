@@ -143,9 +143,18 @@ impl MachineName {
     }
 
     /// A name made from what a machine reported (its hostname), or `None`
-    /// when nothing usable is left.
+    /// when nothing usable is left. A hostname that is an address (a guest
+    /// with no name reports its IP, `198.18.64.10`) or whose first label is
+    /// only digits names nothing, and gives `None`.
     pub fn suggest(input: &str) -> Option<Self> {
-        let first_label = input.trim().split('.').next().unwrap_or_default();
+        let input = input.trim();
+        if input.parse::<std::net::IpAddr>().is_ok() {
+            return None;
+        }
+        let first_label = input.split('.').next().unwrap_or_default();
+        if first_label.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
         let mut name = String::new();
         for c in first_label.chars() {
             let c = c.to_ascii_lowercase();
@@ -341,6 +350,10 @@ mod tests {
             "closet-box"
         );
         assert_eq!(MachineName::suggest("..."), None);
+        assert_eq!(MachineName::suggest("198.18.64.10"), None);
+        assert_eq!(MachineName::suggest("fd3c::1"), None);
+        assert_eq!(MachineName::suggest("1234.local"), None);
+        assert_eq!(MachineName::suggest("web1.local").unwrap().as_str(), "web1");
     }
 
     #[test]
