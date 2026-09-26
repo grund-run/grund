@@ -128,6 +128,7 @@ fn firecracker(command: &AgentCommand) -> anyhow::Result<grund_vm::Firecracker> 
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    grund_server::health::set_revision(env!("GRUND_BUILD_REVISION"));
     let cli = Cli::parse();
     init_tracing(&cli);
     match cli.command {

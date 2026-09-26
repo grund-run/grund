@@ -108,7 +108,7 @@ pub async fn serve(
         billing = state.billing.enabled(),
         capacity = state.capacity.enabled(),
         extensions = ?state.extensions.iter().map(|e| e.name()).collect::<Vec<_>>(),
-        revision = health::REVISION,
+        revision = health::revision(),
         version = health::VERSION,
         "grund starting"
     );

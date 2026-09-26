@@ -26,8 +26,21 @@ use tokio_util::sync::CancellationToken;
 
 use crate::state::State;
 
-/// The commit this binary was built from.
-pub const REVISION: &str = env!("GRUND_BUILD_REVISION");
+static REVISION: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
+/// Records the commit this binary was built from. The binary crate calls it
+/// once, before anything else: the revision is compiled there, not here, so
+/// this crate is the same for every commit that does not change it, and CI's
+/// compile cache can reuse it.
+pub fn set_revision(revision: &'static str) {
+    let _ = REVISION.set(revision);
+}
+
+/// The commit this binary was built from, as recorded by [`set_revision`];
+/// "unknown" if it never was.
+pub fn revision() -> &'static str {
+    REVISION.get().copied().unwrap_or("unknown")
+}
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Builds the registry: what readiness depends on, and how much.
@@ -157,7 +170,7 @@ pub async fn ready(AxumState(state): AxumState<State>) -> Response {
     let snapshot = state.health.snapshot().await;
     let body = Readiness {
         status: snapshot.overall_status,
-        revision: REVISION,
+        revision: revision(),
         version: VERSION,
         uptime_seconds: state.started.elapsed().as_secs(),
         checks: snapshot
