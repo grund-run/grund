@@ -1713,15 +1713,26 @@ async fn a_waiting_member_hears_of_a_revocation_within_seconds() -> anyhow::Resu
     Ok(())
 }
 
-async fn comes_online_through(relay: &str, key: &SigningKey) -> anyhow::Result<bool> {
+async fn relayed_endpoint(relay: &str, key: &SigningKey) -> anyhow::Result<iroh::Endpoint> {
     let config = grund_net::endpoint::NetConfig {
         relays: vec![relay.parse::<iroh::RelayUrl>()?],
         bind: grund_net::endpoint::Bind::Addrs(vec!["127.0.0.1:0".parse()?]),
         ..Default::default()
     };
-    let endpoint =
-        grund_net::endpoint::bind(grund_net::key::secret_key(&key.to_bytes()), &config, vec![])
-            .await?;
+    grund_net::endpoint::bind(grund_net::key::secret_key(&key.to_bytes()), &config, vec![]).await
+}
+
+fn relay_connected(endpoint: &iroh::Endpoint) -> bool {
+    use iroh::Watcher;
+    endpoint
+        .home_relay_status()
+        .get()
+        .iter()
+        .any(|status| status.is_connected())
+}
+
+async fn comes_online_through(relay: &str, key: &SigningKey) -> anyhow::Result<bool> {
+    let endpoint = relayed_endpoint(relay, key).await?;
     let online = tokio::time::timeout(std::time::Duration::from_secs(1), endpoint.online())
         .await
         .is_ok();
@@ -1759,12 +1770,26 @@ async fn the_relay_admits_only_registered_machines_that_are_not_revoked() -> any
         "a key grund does not know is refused"
     );
 
+    let held = relayed_endpoint(&relay, &key).await?;
+    anyhow::ensure!(
+        relay_connected(&held),
+        "the machine holds a relay connection"
+    );
     when.calling(
         &format!("{MACHINES}/RevokeMachine"),
         &json!({"organisation": owner.username, "machineId": enrolled["machineId"]}).to_string(),
     )
     .await?;
     then.status(200)?;
+    let revoked = std::time::Instant::now();
+    while relay_connected(&held) {
+        anyhow::ensure!(
+            revoked.elapsed() < std::time::Duration::from_secs(8),
+            "the relay cuts a connection admitted before the revocation"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    held.close().await;
     anyhow::ensure!(
         !comes_online_through(&relay, &key).await?,
         "a revoked machine is refused from its next connection"

@@ -44,6 +44,20 @@ pub async fn key_is_current(
         .await
 }
 
+/// Which of `public_keys` (lowercase hex) are the current key of a
+/// registered machine.
+pub async fn current_keys_among(
+    executor: impl PgExecutor<'_>,
+    public_keys: &[String],
+) -> Result<std::collections::HashSet<String>, sqlx::Error> {
+    let found: Vec<String> =
+        sqlx::query_scalar("SELECT public_key FROM grund_machines WHERE public_key = ANY($1)")
+            .bind(public_keys)
+            .fetch_all(executor)
+            .await?;
+    Ok(found.into_iter().collect())
+}
+
 /// Every key not retired, for the check at start.
 pub async fn current_keys(executor: impl PgExecutor<'_>) -> Result<Vec<KeyRow>, sqlx::Error> {
     sqlx::query_as(

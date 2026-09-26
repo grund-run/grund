@@ -29,8 +29,8 @@ use anyhow::Context;
 use axum::{Router, body::Body, http::StatusCode, routing::get};
 use hyper::{Request, Response, body::Incoming, server::conn::http1, service::Service as _};
 use hyper_util::rt::TokioIo;
-use iroh::EndpointId;
-pub use iroh_relay::server::{Access, AccessControl, ClientRequest};
+pub use iroh::EndpointId;
+pub use iroh_relay::server::{Access, AccessControl, ClientRequest, ConnectionId};
 use iroh_relay::{
     KeyCache,
     server::{
@@ -66,6 +66,13 @@ impl Relay {
             Arc::new(Metrics::default()),
         );
         Self { service }
+    }
+
+    /// Disconnects every connection of `endpoint_id`, for a key the host no
+    /// longer admits: [`AccessControl`] is asked only when a connection
+    /// starts. `false` when it had none.
+    pub fn disconnect(&self, endpoint_id: EndpointId) -> bool {
+        self.service.clients().disconnect(endpoint_id, None)
     }
 
     /// The probe routes iroh clients use (`/ping`, `/generate_204`). They are

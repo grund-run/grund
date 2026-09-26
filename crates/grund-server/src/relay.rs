@@ -4,29 +4,63 @@
 //!
 //! The relay admits a connection only if the key that proved itself in the
 //! relay handshake is the current key of a machine registered with this
-//! instance: a revoked machine's key is cleared, so it is refused from its
-//! next connection. A connection admitted before the revocation lasts until
-//! it drops; the membership list, not the relay, is what cuts a revoked
-//! machine off from its peers.
+//! instance: a revoked machine's key is cleared, so it is refused. A
+//! connection admitted before the revocation is cut by a sweep that checks
+//! every connected key again each [`SWEEP_INTERVAL`] and disconnects those
+//! no longer current (network.md §10.2). A sweep, not a hook on
+//! RevokeMachine, because the revocation may reach another replica than the
+//! one holding the connection.
 
-use std::sync::Arc;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use anyhow::Context;
-use grund_net::relay::{Access, AccessControl, ClientRequest, Relay};
+use grund_net::relay::{Access, AccessControl, ClientRequest, ConnectionId, EndpointId, Relay};
 use notmad::{Component, ComponentInfo, MadError};
 use tokio_util::sync::CancellationToken;
 
 use crate::state::State;
 
-/// Admits the keys of this instance's registered, unrevoked machines.
+/// How often the connected keys are checked again.
+pub const SWEEP_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Admits the keys of this instance's registered, unrevoked machines, and
+/// remembers which are connected. Clones share what they remember.
 #[derive(Debug, Clone)]
 pub struct MachineAccess {
     pool: sqlx::PgPool,
+    connected: Arc<Mutex<HashMap<EndpointId, HashSet<ConnectionId>>>>,
 }
 
 impl MachineAccess {
     pub fn new(pool: sqlx::PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            connected: Arc::default(),
+        }
+    }
+
+    /// The connected keys that are no longer a registered machine's.
+    pub async fn stale(&self) -> anyhow::Result<Vec<EndpointId>> {
+        let connected: Vec<EndpointId> = self
+            .connected
+            .lock()
+            .expect("relay connections lock")
+            .keys()
+            .copied()
+            .collect();
+        if connected.is_empty() {
+            return Ok(Vec::new());
+        }
+        let keys: Vec<String> = connected.iter().map(ToString::to_string).collect();
+        let current = grund_store::machines::current_keys_among(&self.pool, &keys).await?;
+        Ok(connected
+            .into_iter()
+            .filter(|id| !current.contains(&id.to_string()))
+            .collect())
     }
 }
 
@@ -34,7 +68,15 @@ impl AccessControl for MachineAccess {
     async fn on_connect(&self, request: &ClientRequest) -> Access {
         let key = request.endpoint_id().to_string();
         match grund_store::machines::key_is_current(&self.pool, &key).await {
-            Ok(true) => Access::Allow,
+            Ok(true) => {
+                self.connected
+                    .lock()
+                    .expect("relay connections lock")
+                    .entry(request.endpoint_id())
+                    .or_default()
+                    .insert(request.connection_id());
+                Access::Allow
+            }
             Ok(false) => Access::Deny {
                 reason: Some("not a machine of this grund".into()),
             },
@@ -43,6 +85,16 @@ impl AccessControl for MachineAccess {
                 Access::Deny {
                     reason: Some("grund could not check the key; try again".into()),
                 }
+            }
+        }
+    }
+
+    fn on_disconnect(&self, endpoint_id: EndpointId, connection_id: ConnectionId) {
+        let mut connected = self.connected.lock().expect("relay connections lock");
+        if let Some(connections) = connected.get_mut(&endpoint_id) {
+            connections.remove(&connection_id);
+            if connections.is_empty() {
+                connected.remove(&endpoint_id);
             }
         }
     }
@@ -95,13 +147,32 @@ impl Component for RelayServer {
             quic = ?config.relay_quic_address,
             "relay listening"
         );
-        let relay = Relay::new(MachineAccess::new(self.state.pool.clone()));
+        let access = MachineAccess::new(self.state.pool.clone());
+        let relay = Relay::new(access.clone());
         tokio::select! {
-            served = grund_net::relay::serve(listener, tls.map(Arc::new), relay, Relay::probe_routes()) => {
+            served = grund_net::relay::serve(listener, tls.map(Arc::new), relay.clone(), Relay::probe_routes()) => {
                 served.map_err(anyhow::Error::from)?;
             }
+            () = sweep(&access, &relay) => {}
             () = cancellation.cancelled() => {}
         }
         Ok(())
+    }
+}
+
+async fn sweep(access: &MachineAccess, relay: &Relay) {
+    let mut interval = tokio::time::interval(SWEEP_INTERVAL);
+    loop {
+        interval.tick().await;
+        match access.stale().await {
+            Ok(stale) => {
+                for endpoint_id in stale {
+                    if relay.disconnect(endpoint_id) {
+                        tracing::info!(%endpoint_id, "relay: cut a key that is no longer a machine's");
+                    }
+                }
+            }
+            Err(error) => tracing::warn!(error = %error, "relay: could not check connected keys"),
+        }
     }
 }
