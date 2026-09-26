@@ -5,6 +5,13 @@
 # roots compiled into it when the machine has none.
 #
 #   crates/grund-guest/build-image.sh <out.ext4>
+#   GRUND_BINARY=… GRUND_GUEST_BINARY=… crates/grund-guest/build-image.sh <out.ext4>
+#
+# With both binaries given (CI's release step built them), nothing is
+# compiled. The image is small (GRUND_GUEST_SIZE_MIB, default 48): the VM's
+# disk is this image grown to its size, and grund-guest grows / to fill it
+# at boot. mkfs's default reserve (256 GDT blocks, 64-bit descriptors) lets
+# it grow online to 2 TiB; a larger disk keeps a 2 TiB filesystem.
 #
 # Built without root: `mkfs.ext4 -d` fills the filesystem from a staging
 # directory, then debugfs sets every inode to uid/gid 0 and one timestamp,
@@ -14,7 +21,7 @@
 set -euo pipefail
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
 image="${1:?usage: build-image.sh <out.ext4>}"
-size_mib="${GRUND_GUEST_SIZE_MIB:-160}"
+size_mib="${GRUND_GUEST_SIZE_MIB:-48}"
 uuid=4b8f2a61-9c3e-4d7a-b5e0-2f6c8d1a3e97
 target=x86_64-unknown-linux-musl
 epoch="${SOURCE_DATE_EPOCH:-$(git -C "$repo" log -1 --format=%ct 2>/dev/null || echo 0)}"
@@ -24,9 +31,16 @@ for tool in mkfs.ext4 debugfs e2fsck readelf; do
   command -v "$tool" >/dev/null || fail "$tool is required (e2fsprogs, binutils)"
 done
 
-(cd "$repo" && cargo build --locked --release --target "$target" -q -p grund-guest -p grund)
-for binary in grund-guest grund; do
-  if readelf -d "$repo/target/$target/release/$binary" | grep -q NEEDED; then
+grund="${GRUND_BINARY:-}"
+guest="${GRUND_GUEST_BINARY:-}"
+if [[ -z "$grund" || -z "$guest" ]]; then
+  (cd "$repo" && cargo build --locked --release --target "$target" -q -p grund-guest -p grund)
+  grund="$repo/target/$target/release/grund"
+  guest="$repo/target/$target/release/grund-guest"
+fi
+for binary in "$guest" "$grund"; do
+  [[ -f "$binary" ]] || fail "no binary at $binary"
+  if readelf -d "$binary" | grep -q NEEDED; then
     fail "$binary is dynamically linked; the guest has no libc to load"
   fi
 done
@@ -34,8 +48,8 @@ done
 stage="$(mktemp -d "${TMPDIR:-/tmp}/grund-guest-stage.XXXXXX")"
 trap 'rm -rf "$stage" "$stage.debugfs" "$stage.err"' EXIT
 mkdir -p "$stage"/{sbin,usr/local/bin,dev,proc,sys,run,tmp,etc,var/lib/grund}
-install -m 0755 "$repo/target/$target/release/grund-guest" "$stage/sbin/init"
-install -m 0755 "$repo/target/$target/release/grund" "$stage/usr/local/bin/grund"
+install -m 0755 "$guest" "$stage/sbin/init"
+install -m 0755 "$grund" "$stage/usr/local/bin/grund"
 printf 'NAME="grund"\nID=grund\nPRETTY_NAME="grund microVM"\n' > "$stage/etc/os-release"
 chmod 0644 "$stage/etc/os-release"
 chmod 1777 "$stage/tmp"

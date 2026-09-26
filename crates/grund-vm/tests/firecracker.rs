@@ -218,6 +218,10 @@ async fn the_grund_guest_reads_its_assignment_from_the_metadata_and_shuts_down_o
     .await;
     assert!(log.contains("grund-guest: started"), "{log}");
     assert!(
+        log.contains("grund-guest: grew / to 1024 MiB"),
+        "the small image's filesystem fills the VM's 1 GiB disk: {log}"
+    );
+    assert!(
         log.contains("grund-guest: registering: grund join --mmds"),
         "{log}"
     );

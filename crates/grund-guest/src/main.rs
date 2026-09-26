@@ -2,7 +2,9 @@
 //!
 //! ```text
 //!   boot     mount /proc /sys /dev /run /tmp, / read-write, Ctrl-Alt-Del to SIGINT,
-//!            /etc/resolv.conf from the resolvers the kernel's ip= argument names
+//!            /etc/resolv.conf from the resolvers the kernel's ip= argument names,
+//!            / grown online to fill its disk, up to 2 TiB (the image is small;
+//!            grund-vm grows the disk file to the VM's size)
 //!   register grund join --mmds, again with backoff from 2 s to 60 s until
 //!            /var/lib/grund/agent/machine.json exists: the machine is registered
 //!   run      grund agent, restarted with the same backoff whenever it ends
@@ -82,6 +84,7 @@ fn boot() {
         libc::signal(libc::SIGINT, on_stop as *const () as libc::sighandler_t);
         libc::signal(libc::SIGTERM, on_stop as *const () as libc::sighandler_t);
     }
+    grow_root();
     if let Some(resolv) = std::fs::read_to_string("/proc/net/pnp")
         .ok()
         .as_deref()
@@ -90,6 +93,48 @@ fn boot() {
         let _ = std::fs::create_dir_all("/etc");
         let _ = std::fs::write("/etc/resolv.conf", resolv);
     }
+}
+
+const EXT4_IOC_RESIZE_FS: libc::c_ulong = 0x4008_6610;
+const MAX_ROOT_BYTES: u64 = 2 << 40;
+
+fn grow_root() {
+    let sectors = std::fs::read_to_string("/sys/block/vda/size")
+        .ok()
+        .and_then(|text| text.trim().parse::<u64>().ok());
+    let root = cstr("/");
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(root.as_ptr(), &mut stat) } != 0 {
+        return;
+    }
+    let (Some(sectors), block) = (sectors, stat.f_frsize as u64) else {
+        return;
+    };
+    let Some(target) = blocks_to_fill(sectors, block, stat.f_blocks as u64) else {
+        return;
+    };
+    let fd = unsafe { libc::open(root.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY) };
+    if fd < 0 {
+        return;
+    }
+    let grown = unsafe { libc::ioctl(fd, EXT4_IOC_RESIZE_FS as _, &target) };
+    unsafe { libc::close(fd) };
+    if grown == 0 {
+        log!("grew / to {} MiB", target * block / 1024 / 1024);
+    } else {
+        log!(
+            "could not grow / to fill its disk: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+}
+
+fn blocks_to_fill(sectors: u64, block: u64, current: u64) -> Option<u64> {
+    if block == 0 {
+        return None;
+    }
+    let target = (sectors * 512).min(MAX_ROOT_BYTES) / block;
+    (target > current).then_some(target)
 }
 
 fn resolv_conf(pnp: &str) -> Option<String> {
@@ -213,6 +258,23 @@ mod tests {
         let pnp = "#PROTO: MANUAL\nnameserver 1.1.1.1\nnameserver 0.0.0.0\n";
         assert_eq!(resolv_conf(pnp).as_deref(), Some("nameserver 1.1.1.1\n"));
         assert_eq!(resolv_conf("#PROTO: MANUAL\n"), None);
+    }
+
+    #[test]
+    fn the_root_grows_only_when_its_disk_is_larger() {
+        let one_gib_in_sectors = 2 * 1024 * 1024;
+        assert_eq!(
+            blocks_to_fill(one_gib_in_sectors, 4096, 12_288),
+            Some(262_144)
+        );
+        assert_eq!(blocks_to_fill(one_gib_in_sectors, 4096, 262_144), None);
+        assert_eq!(blocks_to_fill(one_gib_in_sectors, 0, 1), None);
+        let four_tib_in_sectors = 8 << 30;
+        assert_eq!(
+            blocks_to_fill(four_tib_in_sectors, 4096, 12_288),
+            Some(512 << 20),
+            "no further than the image's reserve allows"
+        );
     }
 
     #[test]
