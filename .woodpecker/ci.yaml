@@ -94,6 +94,13 @@ steps:
     depends_on: []
     environment:
       CARGO_TERM_COLOR: always
+      # A CI build is never rebuilt incrementally, so writing incremental
+      # state is pure cost; and full debuginfo makes the test binaries
+      # slower to compile and link, while line tables keep file:line in a
+      # panic's backtrace. Neither changes what the code does, and neither
+      # reaches `release`.
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
       # The store's #[sqlx::test]s create a database per test from this one.
       DATABASE_URL: postgres://grund:grund@postgres:5432/grund
       GRUND_ACCEPT_DATABASE_URL: postgres://grund:grund@postgres:5432/grund
