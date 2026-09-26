@@ -1,8 +1,27 @@
-# Fast gates for every push and pull request: formatting, lints as errors, the
-# unit tests, and the accepttests against a binary cargo spawns, with real
-# PostgreSQL, NATS and Mailpit as services. images.yaml runs the accepttests
-# again against the release binary it packages, because that is the artifact
-# that ships and Woodpecker workflows share no workspace.
+# Every gate, and the image, in one workflow, so the steps share one
+# workspace and run side by side:
+#
+#   lint ──────────────┐
+#   proto ─────────────┤
+#   test ────┐         ├─ image-publish (push to main) / image-dry-run (PR)
+#   release ─┴ contract┘
+#
+# `test` runs the unit tests and the accepttests against a binary cargo
+# spawns; `release` builds the static binary that ships; `contract` runs the
+# accepttest binary `test` already compiled against that staged release
+# binary, so the artifact that ships is the one the accepttests assert
+# against, and the accepttests are compiled once. The image is published only
+# when every gate passed.
+#
+# Required Woodpecker secret (push to main only; pull requests use none):
+#   registry_token: a git.kjuulh.io token for user kjuulh with package write
+#   access to the grund organisation. Currently the instance-wide secret, the
+#   same one grund/website uses.
+#
+# One immutable tag, main-${CI_COMMIT_SHA}. kjuulh/woodpecker-forest computes
+# exactly that tag from the commit and pins the release to it, so a rollout
+# cannot find its image if this tag stops being published. There is no latest
+# or main tag: a moving tag gives a rollback nothing to roll back to.
 
 when:
   - event: push
@@ -14,6 +33,7 @@ labels:
   platform: linux/amd64
 
 services:
+  # For `test`: the store's #[sqlx::test]s and the spawned-binary accepttests.
   postgres:
     image: postgres:18-alpine
     environment:
@@ -24,20 +44,29 @@ services:
     image: nats:2.15-alpine
   mailpit:
     image: axllent/mailpit:v1.31
+  # For `contract`: its own infrastructure, so the release binary starts on
+  # an empty database and mailbox, as it did when this was its own workflow.
+  contract-postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: grund
+      POSTGRES_USER: grund
+      POSTGRES_PASSWORD: grund
+  contract-nats:
+    image: nats:2.15-alpine
+  contract-mailpit:
+    image: axllent/mailpit:v1.31
 
 steps:
-  check:
-    # The same image images.yaml builds the shipped binary in, so a toolchain
-    # difference cannot pass here and fail there.
+  lint:
+    # The same image the shipped binary is built in, so a toolchain
+    # difference cannot pass here and fail there. Its own target directory:
+    # cargo locks a target directory per build, and lint runs beside test.
     image: rust:1.98-alpine
+    depends_on: []
     environment:
       CARGO_TERM_COLOR: always
-      # The store's #[sqlx::test]s create a database per test from this one.
-      DATABASE_URL: postgres://grund:grund@postgres:5432/grund
-      GRUND_ACCEPT_DATABASE_URL: postgres://grund:grund@postgres:5432/grund
-      GRUND_ACCEPT_NATS_URL: nats://nats:4222
-      GRUND_ACCEPT_SMTP_URL: smtp://mailpit:1025
-      GRUND_ACCEPT_MAILPIT_URL: http://mailpit:8025
+      CARGO_TARGET_DIR: target/lint
     commands:
       # protobuf-dev: protoc and the well-known types, for the API codegen.
       - apk add --no-cache musl-dev protobuf-dev
@@ -50,16 +79,120 @@ steps:
       # Official builds leave ee/ out; the ee build must keep compiling and
       # passing its accepttests anyway, so it is ready the day it ships.
       - cargo clippy -p grund --features ee --all-targets --locked -- -D warnings
+
+  proto:
+    # The API contract is linted on every change, and a pull request may not
+    # break it against main (skills D-19): generated clients depend on it.
+    image: bufbuild/buf:1.73.0
+    depends_on: []
+    commands:
+      - buf lint proto
+      - if [ "$${CI_PIPELINE_EVENT}" = "pull_request" ]; then buf breaking proto --against "https://git.kjuulh.io/grund/grund.git#branch=main,subdir=proto"; fi
+
+  test:
+    image: rust:1.98-alpine
+    depends_on: []
+    environment:
+      CARGO_TERM_COLOR: always
+      # The store's #[sqlx::test]s create a database per test from this one.
+      DATABASE_URL: postgres://grund:grund@postgres:5432/grund
+      GRUND_ACCEPT_DATABASE_URL: postgres://grund:grund@postgres:5432/grund
+      GRUND_ACCEPT_NATS_URL: nats://nats:4222
+      GRUND_ACCEPT_SMTP_URL: smtp://mailpit:1025
+      GRUND_ACCEPT_MAILPIT_URL: http://mailpit:8025
+    commands:
+      - apk add --no-cache musl-dev protobuf-dev
+      # Build every test binary first, and keep the path of the accepttest
+      # binary: `contract` runs that same file against the release binary.
+      # The same invocation as the run below, so the run compiles nothing.
+      - mkdir -p .accept
+      - cargo test --workspace --locked --no-run --message-format=json-render-diagnostics > .accept/build.json
+      - grep '"reason":"compiler-artifact"' .accept/build.json | grep '/crates/grund#' | grep '"name":"tests"' | sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' > .accept/path
+      - test "$$(wc -l < .accept/path)" -eq 1 || { echo "expected one grund accepttest binary, found:"; cat .accept/path; exit 1; }
+      - cp "$$(cat .accept/path)" .accept/tests
       # Fail with the cause, not with thirty accepttests timing out.
       - for i in $(seq 1 60); do nc -z postgres 5432 && nc -z nats 4222 && nc -z mailpit 1025 && break; sleep 1; done
       - nc -z postgres 5432 || { echo "postgres never accepted connections"; exit 1; }
       - cargo test --workspace --locked
       - cargo test -p grund --features ee --locked --test tests
 
-  proto:
-    # The API contract is linted on every change, and a pull request may not
-    # break it against main (skills D-19): generated clients depend on it.
-    image: bufbuild/buf:1.73.0
+  release:
+    # rust:*-alpine targets musl natively: the release binary is static, which
+    # is what lets it run on scratch. build.rs compiles CI_COMMIT_SHA into
+    # /health/ready as "revision".
+    image: rust:1.98-alpine
+    depends_on: []
+    environment:
+      CARGO_TERM_COLOR: always
     commands:
-      - buf lint proto
-      - if [ "$${CI_PIPELINE_EVENT}" = "pull_request" ]; then buf breaking proto --against "https://git.kjuulh.io/grund/grund.git#branch=main,subdir=proto"; fi
+      - apk add --no-cache musl-dev binutils protobuf-dev
+      - cargo build --locked --release -p grund
+      - if readelf -d target/release/grund | grep -q NEEDED; then echo "grund is dynamically linked; scratch cannot run it"; exit 1; fi
+      # Stage the binary first and run the staged file, so the process the
+      # accepttests assert against is byte for byte the one that gets packaged.
+      - mkdir -p .image && cp target/release/grund .image/grund
+
+  contract:
+    # Assert against the real binary, not a mock of it: the accepttest binary
+    # `test` compiled and ran against a spawned binary, pointed at the staged
+    # release binary. The harness is a black-box HTTP client, so it does not
+    # need to be compiled in release itself.
+    image: rust:1.98-alpine
+    depends_on: [test, release]
+    environment:
+      GRUND_ACCEPT_MAILPIT_URL: http://contract-mailpit:8025
+    commands:
+      - apk add --no-cache openssl
+      - for i in $(seq 1 60); do nc -z contract-postgres 5432 && nc -z contract-nats 4222 && nc -z contract-mailpit 1025 && break; sleep 1; done
+      - >-
+        GRUND_LISTEN=127.0.0.1:8080 GRUND_PUBLIC_URL=http://127.0.0.1:8080
+        DATABASE_URL=postgres://grund:grund@contract-postgres:5432/grund
+        GRUND_SECRET_KEY=$$(openssl rand -hex 32)
+        GRUND_NATS_URL=nats://contract-nats:4222 GRUND_SMTP_URL=smtp://contract-mailpit:1025
+        GRUND_WORK_POLL_INTERVAL=1 GRUND_HEALTH_INTERVAL=1
+        GRUND_LOGIN_ATTEMPTS_PER_ADDRESS=0 GRUND_MAIL_REQUESTS_PER_ADDRESS=0
+        GRUND_ENROLL_ATTEMPTS_PER_ADDRESS=0
+        GRUND_ORGANISATIONS=multi
+        ./.image/grund serve > server.log 2>&1 &
+      # Every test reaches this one server from one address, so the
+      # per-address limits are off here, and it runs as grund's hosted
+      # service does (multi), because the tests sign up many accounts. The
+      # spawned-binary run in `test` covers the limits and single mode.
+      # cargo runs a test binary from its package directory; so does this.
+      - cd crates/grund && GRUND_ACCEPT_URL=http://127.0.0.1:8080 ../../.accept/tests || { echo "--- server log"; cat ../../server.log; exit 1; }
+
+  # A broken Dockerfile fails the pull request that broke it, not the next
+  # push to main. Builds, never pushes, and needs no secret.
+  image-dry-run:
+    image: woodpeckerci/plugin-docker-buildx:5
+    depends_on: [lint, proto, contract]
+    when:
+      - event: pull_request
+    settings:
+      dockerfile: Dockerfile.prebuilt
+      context: .image
+      repo: git.kjuulh.io/grund/grund
+      platforms: linux/amd64
+      dry_run: true
+      auto_tag: false
+      tags: ci-${CI_COMMIT_SHA_SHORT}
+
+  image-publish:
+    image: woodpeckerci/plugin-docker-buildx:5
+    depends_on: [lint, proto, contract]
+    when:
+      - event: push
+        branch: main
+      - event: manual
+    settings:
+      registry: git.kjuulh.io
+      repo: git.kjuulh.io/grund/grund
+      dockerfile: Dockerfile.prebuilt
+      context: .image
+      username: kjuulh
+      password:
+        from_secret: registry_token
+      platforms: linux/amd64
+      auto_tag: false
+      tags:
+        - main-${CI_COMMIT_SHA}

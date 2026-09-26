@@ -8,7 +8,7 @@ when:
   - event: manual
 
 depends_on:
-  - images
+  - ci
 
 labels:
   platform: linux/amd64

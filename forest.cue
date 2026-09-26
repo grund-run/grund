@@ -165,6 +165,8 @@ kjuulh: "woodpecker-forest": config: {
 	server:          "https://api.forest.kjuulh.io"
 	artifact_image:  "git.kjuulh.io/grund/grund"
 	manual_prod_job: false
+	// Every gate and the image are one workflow, .woodpecker/ci.yaml.
+	depends_on: ["ci"]
 }
 
 commands: {
