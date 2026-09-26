@@ -3,8 +3,6 @@ fn main() {
         .files(&[
             "../../proto/grund/account/v1/account.proto",
             "../../proto/grund/organisation/v1/organisation.proto",
-            "../../proto/grund/machine/v1/machine.proto",
-            "../../proto/grund/agent/v1/enrollment.proto",
         ])
         .includes(&["../../proto"])
         .include_file("_connectrpc.rs")

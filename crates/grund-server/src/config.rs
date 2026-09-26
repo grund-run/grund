@@ -184,12 +184,6 @@ pub struct ServeConfig {
     #[arg(long, env = "GRUND_MAIL_REQUESTS_PER_ADDRESS", default_value_t = 20)]
     pub mail_requests_per_address: u32,
 
-    /// Machine enrollment calls allowed per client address per minute; 0
-    /// turns the per-address limit off (the per-token limit of 5 stays). At
-    /// most 60.
-    #[arg(long, env = "GRUND_ENROLL_REQUESTS_PER_ADDRESS", default_value_t = 10)]
-    pub enroll_requests_per_address: u32,
-
     /// A session ends after this long without a request.
     #[arg(long, env = "GRUND_SESSION_IDLE_TIMEOUT", value_parser = hours, default_value = "168")]
     pub session_idle_timeout: Duration,
@@ -486,10 +480,6 @@ impl ServeConfig {
         anyhow::ensure!(
             self.trusted_proxy_hops <= 5,
             "GRUND_TRUSTED_PROXY_HOPS must be at most 5"
-        );
-        anyhow::ensure!(
-            self.enroll_requests_per_address <= 60,
-            "GRUND_ENROLL_REQUESTS_PER_ADDRESS must be at most 60"
         );
         anyhow::ensure!(
             self.login_failures_per_account >= 3,

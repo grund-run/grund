@@ -94,16 +94,8 @@ confirmed (see [.env.example](.env.example)). Without them nothing is queued.
   `GetViewer`, `ListSessions` and `RevokeSession`;
   `grund.organisation.v1.OrganisationService` lists, creates, renames and
   deletes organisations and manages their members and invitations, with the
-  same rules as the pages. `grund.machine.v1.MachineService` mints one-time
-  enrollment tokens for new machines (owners and admins), and lists and
-  revokes an organisation's machines. Today these take the dashboard's
-  session cookie, from this origin only.
-- Machines enroll with `grund.agent.v1.MachineEnrollmentService/EnrollMachine`,
-  the one procedure that needs no session: the one-time token in the
-  request is the credential, and the machine signs the request with the
-  Ed25519 key it enrolls, bound to this instance's origin. Your own hardware
-  and grund machines enroll the same way. The agent that calls it is not
-  built yet.
+  same rules as the pages. Today it takes the dashboard's session cookie,
+  from this origin only.
 - Organisations can be renamed (the old name redirects members and stays
   reserved) and deleted by their owners. A deletion is a mire saga: billing
   answers first, and while it cannot be reached grund keeps asking.

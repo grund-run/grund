@@ -39,26 +39,6 @@ pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && bool::from(a.ct_eq(b))
 }
 
-/// RFC 4648 base32, lowercase, without padding.
-pub fn base32(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
-    let mut out = String::with_capacity(bytes.len().div_ceil(5) * 8);
-    let mut buffer: u32 = 0;
-    let mut bits = 0;
-    for &byte in bytes {
-        buffer = (buffer << 8) | u32::from(byte);
-        bits += 8;
-        while bits >= 5 {
-            bits -= 5;
-            out.push(ALPHABET[((buffer >> bits) & 31) as usize] as char);
-        }
-    }
-    if bits > 0 {
-        out.push(ALPHABET[((buffer << (5 - bits)) & 31) as usize] as char);
-    }
-    out
-}
-
 /// Base64url without padding, the form tokens travel in.
 pub fn encode(bytes: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(bytes)
@@ -90,13 +70,5 @@ mod tests {
         assert!(constant_time_eq(b"abc", b"abc"));
         assert!(!constant_time_eq(b"abc", b"abd"));
         assert!(!constant_time_eq(b"abc", b"ab"));
-    }
-
-    #[test]
-    fn base32_matches_rfc_4648() {
-        assert_eq!(base32(b""), "");
-        assert_eq!(base32(b"f"), "my");
-        assert_eq!(base32(b"foobar"), "mzxw6ytboi");
-        assert_eq!(base32(&[0u8; 32]).len(), 52);
     }
 }

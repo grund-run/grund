@@ -11,7 +11,6 @@
 
 use grund_domain::{
     account::{Account, AccountCommand, AccountError, AccountEvent},
-    machine::{Machine, MachineCommand, MachineError, MachineEvent},
     organisation::{Organisation, OrganisationCommand, OrganisationError, OrganisationEvent},
 };
 use mire::{AggregateRoot, EventMetadata, EventStore, EventStoreError, Snapshot, TransactionScope};
@@ -27,8 +26,6 @@ pub enum WorkError {
     Account(#[from] AccountError),
     #[error(transparent)]
     Organisation(#[from] OrganisationError),
-    #[error(transparent)]
-    Machine(#[from] MachineError),
     #[error("event store: {0}")]
     Events(#[from] EventStoreError),
     #[error("database: {0}")]
@@ -51,7 +48,6 @@ impl WorkError {
 enum Touched {
     Account(Uuid, Account, i64, i64),
     Organisation(Uuid, Organisation, i64, i64),
-    Machine(Uuid, Machine, i64, i64),
 }
 
 /// A transaction spanning the event log, the read models and plain tables.
@@ -146,35 +142,6 @@ impl<'a> Work<'a> {
         Ok(events)
     }
 
-    /// As [`Work::account`], for a machine.
-    pub async fn machine(
-        &mut self,
-        machine_id: Uuid,
-        command: MachineCommand,
-    ) -> Result<Vec<MachineEvent>, WorkError> {
-        let mut root = self.load::<Machine>(machine_id).await?;
-        let base = root.version;
-        let events = mire::Command::handle(command, &root.state)?;
-        if events.is_empty() {
-            return Ok(events);
-        }
-        root.set_metadata(self.metadata.clone());
-        root.record_many(events.clone());
-        self.scope.save(&mut root).await?;
-        for (offset, event) in events.iter().enumerate() {
-            projections::apply_machine(
-                machine_id,
-                base + 1 + offset as i64,
-                event,
-                self.scope.tx(),
-            )
-            .await?;
-        }
-        self.touched
-            .push(Touched::Machine(machine_id, root.state, base, root.version));
-        Ok(events)
-    }
-
     async fn load<A: Snapshot>(&mut self, id: Uuid) -> Result<AggregateRoot<A>, WorkError> {
         let id = id.to_string();
         let stream_id = format!("{}-{id}", A::stream_category());
@@ -210,9 +177,6 @@ impl<'a> Work<'a> {
                 }
                 Touched::Organisation(id, state, before, after) => {
                     snapshot::<Organisation>(store, id, state, before, after)
-                }
-                Touched::Machine(id, state, before, after) => {
-                    snapshot::<Machine>(store, id, state, before, after)
                 }
             }
         }

@@ -59,7 +59,6 @@ steps:
         GRUND_NATS_URL=nats://nats:4222 GRUND_SMTP_URL=smtp://mailpit:1025
         GRUND_WORK_POLL_INTERVAL=1 GRUND_HEALTH_INTERVAL=1
         GRUND_LOGIN_ATTEMPTS_PER_ADDRESS=0 GRUND_MAIL_REQUESTS_PER_ADDRESS=0
-        GRUND_ENROLL_REQUESTS_PER_ADDRESS=0
         GRUND_ORGANISATIONS=multi
         ./.image/grund serve > server.log 2>&1 &
       # Every test reaches this one server from one address, so the
