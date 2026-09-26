@@ -44,6 +44,16 @@ kjuulh: "kubernetes-app": {
 					// Confirmed accounts are reported to the insights service in
 					// the same namespace, in-cluster, plain http.
 					GRUND_INSIGHTS_URL: "http://grund-insights:8081"
+					// The Machines page's defaults. The installer is the one on
+					// main; the guest image is the one CI published for a91694b,
+					// pinned by the digest in its .sha256, so a later build
+					// cannot change what "Run it" boots. The kernel is fleet's
+					// pinned Firecracker CI kernel.
+					GRUND_AGENT_INSTALL_URL: "https://git.kjuulh.io/grund/grund/raw/branch/main/crates/grund-agent/install.sh"
+					GRUND_VM_KERNEL_URL:     "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260923-6f82ac4cf331-0/x86_64/vmlinux-6.18.48"
+					GRUND_VM_KERNEL_SHA256:  "9204218e8bcca6ac23848d74f45df2eb19d7f31e8277840a7d145a0df8b078d2"
+					GRUND_VM_ROOTFS_URL:     "https://git.kjuulh.io/api/packages/grund/generic/grund/main-a91694bfd5665209973a250dc4c3cf41652ced6b/grund-guest.ext4"
+					GRUND_VM_ROOTFS_SHA256:  "da6278094d71efd66f1c2b8eac27ef9a1e658bdf0f9b896b9f1465c0f956a332"
 				}
 				// grund-secrets is applied by the cluster's operators, not by
 				// forest. Dev's smtp_url is the namespace's shared development

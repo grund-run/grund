@@ -1796,3 +1796,63 @@ async fn the_relay_admits_only_registered_machines_that_are_not_revoked() -> any
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn the_machines_page_offers_the_configured_installer_and_vm_image() -> anyhow::Result<()> {
+    let kernel_sha = "a".repeat(64);
+    let rootfs_sha = "b".repeat(64);
+    let Some((given, when, then)) = testcase_configured(&[
+        (
+            "GRUND_AGENT_INSTALL_URL",
+            "https://example.accept.test/install.sh",
+        ),
+        ("GRUND_VM_KERNEL_URL", "https://images.accept.test/vmlinux"),
+        ("GRUND_VM_KERNEL_SHA256", &kernel_sha),
+        (
+            "GRUND_VM_ROOTFS_URL",
+            "https://images.accept.test/guest.ext4",
+        ),
+        ("GRUND_VM_ROOTFS_SHA256", &rootfs_sha),
+    ])
+    .await?
+    else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let page = format!("/{}/machines", owner.username);
+
+    when.submitting(&page, &format!("{page}/add"), &[("name", "desk")])
+        .await?;
+    let body = then.status(200)?.body()?.replace("&#x2f;", "/");
+    let expected = format!(
+        "curl -fsSL https://example.accept.test/install.sh | sudo sh -s -- --url {} --code grund_join_",
+        origin(&when)
+    );
+    anyhow::ensure!(body.contains(&expected), "{body}");
+
+    let token = body
+        .split("--code ")
+        .nth(1)
+        .and_then(|rest| rest.split('<').next())
+        .unwrap_or_default()
+        .to_string();
+    let device = join_dir();
+    let joined = grund_join(&device, &["--url", &origin(&when), &token], &[]).await;
+    anyhow::ensure!(
+        joined.status.success(),
+        "{}",
+        String::from_utf8_lossy(&joined.stderr)
+    );
+    grund_agent_once(&device).await;
+    when.visiting(&page).await?;
+    then.status(200)?
+        .body_contains(&format!("value=\"{kernel_sha}\""))?
+        .body_contains(&format!("value=\"{rootfs_sha}\""))?;
+    let body = then.body()?.replace("&#x2f;", "/");
+    anyhow::ensure!(
+        body.contains("value=\"https://images.accept.test/guest.ext4\""),
+        "{body}"
+    );
+    std::fs::remove_dir_all(device)?;
+    Ok(())
+}

@@ -17,8 +17,14 @@
   <div class="section-head">
     <h2 class="section-title" id="setup">Set up your machine</h2>
   </div>
-  <p>On the machine, with the grund binary installed, run this within {{ setup.minutes }} minutes. The code works once, and this is the only time it is shown.</p>
+  {% if setup.install %}
+  <p>On the machine, run this within {{ setup.minutes }} minutes. It installs grund and its agent, and connects the machine here. The code works once, and this is the only time it is shown.</p>
+  <p class="mono" id="setup-install">{{ setup.install }}</p>
+  <p class="status-line">With grund already installed, register it with <span class="mono">{{ setup.command }}</span> and keep <span class="mono">grund agent</span> running.</p>
+  {% else %}
+  <p>On the machine, with the grund binary installed, run this within {{ setup.minutes }} minutes, then keep <span class="mono">grund agent</span> running. The code works once, and this is the only time it is shown.</p>
   <p class="mono" id="setup-command">{{ setup.command }}</p>
+  {% endif %}
 </section>
 {% endif %}
 

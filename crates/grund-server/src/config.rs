@@ -233,6 +233,9 @@ pub struct ServeConfig {
     #[command(flatten)]
     pub relay: RelayArgs,
 
+    #[command(flatten)]
+    pub machine_defaults: MachineDefaultsArgs,
+
     /// Upper bound on one request. Sign-in hashes a password (~50 ms), so
     /// anything near this is a stuck dependency, not slow work.
     #[arg(long, env = "GRUND_REQUEST_TIMEOUT", value_parser = secs, default_value = "15")]
@@ -350,6 +353,79 @@ pub struct BillingArgs {
     /// ASCII characters.
     #[arg(long, env = "GRUND_BILLING_TOKEN", hide_env_values = true)]
     pub billing_token: Option<String>,
+}
+
+/// What the Machines page offers by default: the script that installs the
+/// agent on a device, and the image a new VM boots. All optional; without
+/// them the page shows `grund join` alone and an empty image form.
+#[derive(Clone, Debug, Args)]
+pub struct MachineDefaultsArgs {
+    /// A script that installs grund and its agent service on a device, run as
+    /// `curl -fsSL <url> | sudo sh -s -- --url <instance> --code <setup code>`
+    /// (grund's own is crates/grund-agent/install.sh).
+    #[arg(long, env = "GRUND_AGENT_INSTALL_URL")]
+    pub agent_install_url: Option<String>,
+
+    /// The kernel a new VM boots by default, with GRUND_VM_KERNEL_SHA256.
+    #[arg(long, env = "GRUND_VM_KERNEL_URL")]
+    pub vm_kernel_url: Option<String>,
+
+    /// Lowercase hex SHA-256 of GRUND_VM_KERNEL_URL.
+    #[arg(long, env = "GRUND_VM_KERNEL_SHA256")]
+    pub vm_kernel_sha256: Option<String>,
+
+    /// The root filesystem a new VM boots by default, with
+    /// GRUND_VM_ROOTFS_SHA256.
+    #[arg(long, env = "GRUND_VM_ROOTFS_URL")]
+    pub vm_rootfs_url: Option<String>,
+
+    /// Lowercase hex SHA-256 of GRUND_VM_ROOTFS_URL.
+    #[arg(long, env = "GRUND_VM_ROOTFS_SHA256")]
+    pub vm_rootfs_sha256: Option<String>,
+}
+
+impl MachineDefaultsArgs {
+    fn validate(&self) -> anyhow::Result<()> {
+        let url = |name: &str, value: &Option<String>, https_only: bool| -> anyhow::Result<()> {
+            if let Some(value) = value {
+                let ok =
+                    value.starts_with("https://") || (!https_only && value.starts_with("http://"));
+                anyhow::ensure!(
+                    ok,
+                    "{name} must be an {} URL, not {value:?}",
+                    if https_only { "https" } else { "http or https" }
+                );
+            }
+            Ok(())
+        };
+        url("GRUND_AGENT_INSTALL_URL", &self.agent_install_url, true)?;
+        url("GRUND_VM_KERNEL_URL", &self.vm_kernel_url, false)?;
+        url("GRUND_VM_ROOTFS_URL", &self.vm_rootfs_url, false)?;
+        for (name, image, sha) in [
+            (
+                "GRUND_VM_KERNEL",
+                &self.vm_kernel_url,
+                &self.vm_kernel_sha256,
+            ),
+            (
+                "GRUND_VM_ROOTFS",
+                &self.vm_rootfs_url,
+                &self.vm_rootfs_sha256,
+            ),
+        ] {
+            anyhow::ensure!(
+                image.is_some() == sha.is_some(),
+                "{name}_URL and {name}_SHA256 must be set together: a VM image is pinned by its digest"
+            );
+            if let Some(sha) = sha {
+                anyhow::ensure!(
+                    sha.len() == 64 && sha.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
+                    "{name}_SHA256 must be 64 lowercase hex characters"
+                );
+            }
+        }
+        Ok(())
+    }
 }
 
 /// grund's relay (grund-docs design/network.md §10): the lighthouse machines
@@ -672,6 +748,7 @@ impl ServeConfig {
         self.billing.validate()?;
         self.capacity.validate()?;
         self.relay.validate()?;
+        self.machine_defaults.validate()?;
         Ok(())
     }
 

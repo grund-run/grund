@@ -176,6 +176,15 @@ async fn machines_view(
         .iter()
         .map(vm_context)
         .collect();
+    let mut run = form.run;
+    if run.is_fresh() {
+        let defaults = &state.config.machine_defaults;
+        let or_empty = |value: &Option<String>| value.clone().unwrap_or_default();
+        run.kernel_url = or_empty(&defaults.vm_kernel_url);
+        run.kernel_sha256 = or_empty(&defaults.vm_kernel_sha256);
+        run.rootfs_url = or_empty(&defaults.vm_rootfs_url);
+        run.rootfs_sha256 = or_empty(&defaults.vm_rootfs_sha256);
+    }
     let viewer = viewer_context(state, session, Some(membership)).await?;
     render(
         state,
@@ -186,7 +195,7 @@ async fn machines_view(
             viewer, machines, hosts, vms,
             notice => form.notice, error => form.error,
             setup => form.setup, add_error => form.add_error, name => form.name,
-            run_error => form.run_error, run => Value::from_serialize(&form.run),
+            run_error => form.run_error, run => Value::from_serialize(&run),
             csrf => browser.csrf_token(), section => "machines",
         },
     )
@@ -235,7 +244,19 @@ pub async fn add(
         MintOutcome::Minted(minted) => {
             let origin = state.config.public_origin().serialized;
             let minutes = (minted.expires_at - Utc::now()).num_minutes().max(1);
+            let install = state
+                .config
+                .machine_defaults
+                .agent_install_url
+                .as_ref()
+                .map(|url| {
+                    format!(
+                        "curl -fsSL {url} | sudo sh -s -- --url {origin} --code {}",
+                        minted.token
+                    )
+                });
             page.setup = Some(context! {
+                install,
                 command => format!("grund join --url {origin} {}", minted.token),
                 minutes,
             });
@@ -331,6 +352,24 @@ pub struct RunForm {
     rootfs_url: String,
     #[serde(default)]
     rootfs_sha256: String,
+}
+
+impl RunForm {
+    fn is_fresh(&self) -> bool {
+        [
+            &self.host,
+            &self.vm_name,
+            &self.vcpus,
+            &self.memory_mib,
+            &self.disk_gib,
+            &self.kernel_url,
+            &self.kernel_sha256,
+            &self.rootfs_url,
+            &self.rootfs_sha256,
+        ]
+        .iter()
+        .all(|field| field.is_empty())
+    }
 }
 
 /// `POST /{org}/machines/vms`: places a VM on one of the organisation's
