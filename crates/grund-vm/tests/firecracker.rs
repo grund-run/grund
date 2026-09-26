@@ -314,6 +314,19 @@ async fn a_bridged_guest_reaches_the_internet_but_not_private_addresses() {
                 && !root.join("etc").exists(),
             "{id} sees only its chroot as /"
         );
+        if std::env::var_os("GRUND_VM_TEST_CGROUPS").is_some() {
+            let cgroup = std::fs::read_to_string(format!("/proc/{}/cgroup", pid.trim())).unwrap();
+            let path = cgroup.trim().strip_prefix("0::").unwrap().to_string();
+            assert!(
+                path.ends_with(&format!("/vms/{}", grund_vm::jail::short(id))),
+                "{id} is in its own cgroup: {path}"
+            );
+            let dir = PathBuf::from("/sys/fs/cgroup").join(path.trim_start_matches('/'));
+            let memory = std::fs::read_to_string(dir.join("memory.max")).unwrap();
+            assert_eq!(memory.trim(), ((256 + 128) * 1024 * 1024).to_string());
+            let cpu = std::fs::read_to_string(dir.join("cpu.max")).unwrap();
+            assert_eq!(cpu.trim(), "100000 100000");
+        }
     }
 
     let out_log = until_logged(

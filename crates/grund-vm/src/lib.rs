@@ -29,7 +29,8 @@
 //!   egress through NAT and nothing unsolicited let in ([`net`]). The VM's
 //!   address, `.<n>` of the bridge's /24, is kept in `<vm>/address`.
 //!   Firecracker runs under its jailer, as a uid of the VM's own, in a
-//!   chroot ([`jail`]).
+//!   chroot ([`jail`]), and in a cgroup of its own with CPU and memory
+//!   limits when the agent's cgroup is delegated ([`cgroup`]).
 //!
 //! A VM's directory records its shape (size and image digests) but never
 //! its metadata, which holds a one-time token. Budget is checked under an
@@ -40,6 +41,7 @@
 //! its metadata (MMDS V2) on eth0.
 
 pub mod api;
+pub mod cgroup;
 pub mod image;
 pub mod jail;
 pub mod net;
@@ -147,6 +149,7 @@ struct Inner {
     config: Config,
     bridge: Option<Bridge>,
     jail: Option<Jail>,
+    cgroups: Option<cgroup::Cgroups>,
     images: Images,
     children: Mutex<HashMap<String, tokio::process::Child>>,
     locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
@@ -186,11 +189,22 @@ impl Firecracker {
                 )
             }
         };
+        let cgroups = match &jail {
+            None => None,
+            Some(_) => match cgroup::delegate() {
+                Ok(cgroups) => Some(cgroups),
+                Err(reason) => {
+                    tracing::warn!(%reason, "VMs run without cgroup limits");
+                    None
+                }
+            },
+        };
         Ok(Self {
             inner: Arc::new(Inner {
                 config,
                 bridge,
                 jail,
+                cgroups,
                 images,
                 children: Mutex::default(),
                 locks: Mutex::default(),
@@ -350,8 +364,15 @@ impl Firecracker {
                 bridge
                     .add_tap(octet, uid)
                     .map_err(|e| format!("tap: {e:#}"))?;
+                let limits = match (&self.inner.cgroups, read_shape(dir)) {
+                    (Some(cgroups), Some(shape)) => {
+                        cgroups.remove(&jail::id(dir));
+                        cgroups.args(shape.vcpus, shape.memory_mib)
+                    }
+                    _ => Vec::new(),
+                };
                 let mut command = tokio::process::Command::new(&jail.jailer);
-                command.args(jail.args(dir, uid));
+                command.args(jail.args(dir, uid, &limits));
                 command
             }
         };
@@ -515,6 +536,9 @@ impl VmRuntime for Firecracker {
         let _ = std::fs::remove_file(self.socket(&dir));
         if let Some(jail) = &self.inner.jail {
             jail.remove(&dir)?;
+        }
+        if let Some(cgroups) = &self.inner.cgroups {
+            cgroups.remove(&jail::id(&dir));
         }
         match std::fs::remove_dir_all(&dir) {
             Ok(()) => Ok(()),

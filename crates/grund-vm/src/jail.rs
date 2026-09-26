@@ -24,9 +24,8 @@
 //! readable. The jailer execs Firecracker in place, so the pid recorded is
 //! Firecracker's.
 //!
-//! Not done yet: cgroup limits. Firecracker's own memory is bounded by the
-//! guest's, and the VM's vCPUs by its configuration, but a runaway VMM is
-//! not capped.
+//! Under a delegated cgroup, each VM also gets its own cgroup with CPU and
+//! memory limits ([`crate::cgroup`]).
 
 use std::{
     io,
@@ -113,9 +112,11 @@ impl Jail {
         chown(&root, uid)
     }
 
-    /// The jailer's arguments for the VM in `dir`.
-    pub fn args(&self, dir: &Path, uid: u32) -> Vec<String> {
-        vec![
+    /// The jailer's arguments for the VM in `dir`, with `limits` (its
+    /// cgroup arguments, [`crate::cgroup::Cgroups::args`]) before
+    /// Firecracker's own.
+    pub fn args(&self, dir: &Path, uid: u32, limits: &[String]) -> Vec<String> {
+        let mut args: Vec<String> = vec![
             "--id".into(),
             id(dir),
             "--exec-file".into(),
@@ -128,10 +129,10 @@ impl Jail {
             self.base.display().to_string(),
             "--resource-limit".into(),
             "no-file=1024".into(),
-            "--".into(),
-            "--api-sock".into(),
-            "fc.sock".into(),
-        ]
+        ];
+        args.extend(limits.iter().cloned());
+        args.extend(["--".into(), "--api-sock".into(), "fc.sock".into()]);
+        args
     }
 }
 
@@ -173,7 +174,7 @@ mod tests {
         assert!(jail.root(&dir).join("fc.sock").as_os_str().len() < 108);
         assert_eq!(uid(2), 1_950_000_002);
         assert!(uid(254) < 1 << 31);
-        let args = jail.args(&dir, uid(7)).join(" ");
+        let args = jail.args(&dir, uid(7), &[]).join(" ");
         assert!(
             args.starts_with(&format!(
                 "--id {short} --exec-file /usr/local/bin/firecracker --uid 1950000007 --gid 1950000007 --chroot-base-dir /var/lib/grund/agent/vm/jail "
