@@ -32,6 +32,18 @@ pub async fn current_key(
     .await
 }
 
+/// Whether `public_key` (lowercase hex) is the current key of a registered
+/// machine. A revoked machine's key is cleared, so it is not.
+pub async fn key_is_current(
+    executor: impl PgExecutor<'_>,
+    public_key: &str,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM grund_machines WHERE public_key = $1)")
+        .bind(public_key)
+        .fetch_one(executor)
+        .await
+}
+
 /// Every key not retired, for the check at start.
 pub async fn current_keys(executor: impl PgExecutor<'_>) -> Result<Vec<KeyRow>, sqlx::Error> {
     sqlx::query_as(

@@ -46,3 +46,4 @@ hex.workspace = true
 sha2.workspace = true
 # The network tests verify membership lists as a machine does.
 grund-net.workspace = true
+iroh = "=1.2.0"

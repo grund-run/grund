@@ -36,13 +36,17 @@ impl EnrollmentApi {
     }
 }
 
-fn network_message(network: &NetworkView, machine_id: uuid::Uuid) -> Option<agent::Network> {
+fn network_message(
+    network: &NetworkView,
+    machine_id: uuid::Uuid,
+    relay_urls: Vec<String>,
+) -> Option<agent::Network> {
     Some(agent::Network {
         network_id: network.network_id.to_string(),
         key: MessageField::from(public_key_message(&network.key)),
         prefix: network.prefix.to_string(),
         slot: u32::from(*network.slots.get(&machine_id)?),
-        relay_urls: Vec::new(),
+        relay_urls,
         ..Default::default()
     })
 }
@@ -171,7 +175,11 @@ impl MachineEnrollmentService for EnrollmentApi {
                 (
                     agent::Pool::POOL_ORGANISATION,
                     organisation_id.to_string(),
-                    network_message(&network, enrollment.machine_id),
+                    network_message(
+                        &network,
+                        enrollment.machine_id,
+                        self.state.config.relay.urls(),
+                    ),
                 )
             }
         };

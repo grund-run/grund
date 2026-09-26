@@ -1712,3 +1712,62 @@ async fn a_waiting_member_hears_of_a_revocation_within_seconds() -> anyhow::Resu
     );
     Ok(())
 }
+
+async fn comes_online_through(relay: &str, key: &SigningKey) -> anyhow::Result<bool> {
+    let config = grund_net::endpoint::NetConfig {
+        relays: vec![relay.parse::<iroh::RelayUrl>()?],
+        bind: grund_net::endpoint::Bind::Addrs(vec!["127.0.0.1:0".parse()?]),
+        ..Default::default()
+    };
+    let endpoint =
+        grund_net::endpoint::bind(grund_net::key::secret_key(&key.to_bytes()), &config, vec![])
+            .await?;
+    let online = tokio::time::timeout(std::time::Duration::from_secs(1), endpoint.online())
+        .await
+        .is_ok();
+    endpoint.close().await;
+    Ok(online)
+}
+
+#[tokio::test]
+async fn the_relay_admits_only_registered_machines_that_are_not_revoked() -> anyhow::Result<()> {
+    let port = std::net::TcpListener::bind("127.0.0.1:0")?
+        .local_addr()?
+        .port();
+    let relay = format!("http://127.0.0.1:{port}");
+    let Some((given, when, then)) = testcase_configured(&[
+        ("GRUND_RELAY_ADDRESS", &format!("127.0.0.1:{port}")),
+        ("GRUND_RELAY_URL", &relay),
+    ])
+    .await?
+    else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let (key, enrolled) = a_member(&when, &then, &owner.username, "relayed").await?;
+    anyhow::ensure!(
+        enrolled["network"]["relayUrls"] == json!([relay]),
+        "{enrolled}"
+    );
+
+    anyhow::ensure!(
+        comes_online_through(&relay, &key).await?,
+        "a registered machine is admitted"
+    );
+    anyhow::ensure!(
+        !comes_online_through(&relay, &a_machine_key()).await?,
+        "a key grund does not know is refused"
+    );
+
+    when.calling(
+        &format!("{MACHINES}/RevokeMachine"),
+        &json!({"organisation": owner.username, "machineId": enrolled["machineId"]}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    anyhow::ensure!(
+        !comes_online_through(&relay, &key).await?,
+        "a revoked machine is refused from its next connection"
+    );
+    Ok(())
+}

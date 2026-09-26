@@ -5,6 +5,7 @@
 //!     config ─► tracing ─► PostgreSQL ─► migrations ─► NATS (optional) ─► State
 //!     notmad, drained in this order on SIGTERM:
 //!       grund/http          pages and health                stops taking requests first
+//!       grund/relay         machines' relay (network.md)    only with GRUND_RELAY_ADDRESS
 //!       grund/health        nostatus checks                 keeps readiness honest while draining
 //!       grund/projections   read-model catch-up and rebuild
 //!       grund/sweeper       expired sessions, links, windows
@@ -23,6 +24,7 @@ pub mod health;
 pub mod keys;
 pub mod license;
 pub mod projections;
+pub mod relay;
 pub mod sagas;
 pub mod secrets;
 pub mod server;
@@ -114,6 +116,7 @@ pub async fn serve(
     );
     notmad::Mad::builder()
         .add(server::Http::new(state.clone()))
+        .add(relay::RelayServer::new(state.clone()))
         .add(health::Checks::new(&state))
         .add(projections::Projections::new(&state))
         .add(services::maintenance::Sweeper::new(state.clone()))

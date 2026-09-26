@@ -230,6 +230,9 @@ pub struct ServeConfig {
     #[command(flatten)]
     pub capacity: CapacityArgs,
 
+    #[command(flatten)]
+    pub relay: RelayArgs,
+
     /// Upper bound on one request. Sign-in hashes a password (~50 ms), so
     /// anything near this is a stuck dependency, not slow work.
     #[arg(long, env = "GRUND_REQUEST_TIMEOUT", value_parser = secs, default_value = "15")]
@@ -347,6 +350,81 @@ pub struct BillingArgs {
     /// ASCII characters.
     #[arg(long, env = "GRUND_BILLING_TOKEN", hide_env_values = true)]
     pub billing_token: Option<String>,
+}
+
+/// grund's relay (grund-docs design/network.md §10): the lighthouse machines
+/// reach from behind their NATs, and QUIC address discovery, which tells a
+/// machine its public address. Off unless GRUND_RELAY_ADDRESS is set. Only
+/// machines registered with this instance and not revoked are admitted.
+#[derive(Clone, Debug, Args)]
+pub struct RelayArgs {
+    /// Where the relay listens (TCP), e.g. 0.0.0.0:8443. Its own listener,
+    /// not GRUND_LISTEN: the relay's WebSocket upgrade needs an HTTP/1 loop
+    /// that axum's server is not.
+    #[arg(long, env = "GRUND_RELAY_ADDRESS")]
+    pub relay_address: Option<std::net::SocketAddr>,
+
+    /// The relay's URL as machines reach it, e.g. https://relay.example.com.
+    /// Registration tells machines this URL. Plain http only for loopback.
+    #[arg(long, env = "GRUND_RELAY_URL")]
+    pub relay_url: Option<String>,
+
+    /// The relay's certificate chain (PEM). Without it the relay listens in
+    /// plain HTTP, for a proxy in front that terminates TLS and passes the
+    /// WebSocket upgrade through.
+    #[arg(long, env = "GRUND_RELAY_TLS_CERT_FILE")]
+    pub relay_tls_cert_file: Option<std::path::PathBuf>,
+
+    /// The private key of GRUND_RELAY_TLS_CERT_FILE (PEM).
+    #[arg(long, env = "GRUND_RELAY_TLS_KEY_FILE")]
+    pub relay_tls_key_file: Option<std::path::PathBuf>,
+
+    /// Where QUIC address discovery listens (UDP), e.g. 0.0.0.0:7842. Needs
+    /// the relay's certificate; without it machines behind NAT fall back to
+    /// the relay more often.
+    #[arg(long, env = "GRUND_RELAY_QUIC_ADDRESS")]
+    pub relay_quic_address: Option<std::net::SocketAddr>,
+}
+
+impl RelayArgs {
+    /// The relay URLs machines are told at registration: none when the relay
+    /// is off.
+    pub fn urls(&self) -> Vec<String> {
+        match (&self.relay_address, &self.relay_url) {
+            (Some(_), Some(url)) => vec![url.clone()],
+            _ => Vec::new(),
+        }
+    }
+
+    fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.relay_address.is_some() == self.relay_url.is_some(),
+            "GRUND_RELAY_ADDRESS and GRUND_RELAY_URL must be set together"
+        );
+        if let Some(url) = &self.relay_url {
+            let origin = PublicOrigin::parse(url.trim_end_matches('/')).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "GRUND_RELAY_URL must be a URL like https://relay.example.com, not {url:?}"
+                )
+            })?;
+            anyhow::ensure!(
+                origin.https || origin.is_loopback(),
+                "GRUND_RELAY_URL must be https, except on loopback: machines trust the relay's \
+                 certificate to know they reached grund's relay"
+            );
+        }
+        anyhow::ensure!(
+            self.relay_tls_cert_file.is_some() == self.relay_tls_key_file.is_some(),
+            "GRUND_RELAY_TLS_CERT_FILE and GRUND_RELAY_TLS_KEY_FILE must be set together"
+        );
+        anyhow::ensure!(
+            self.relay_quic_address.is_none()
+                || (self.relay_address.is_some() && self.relay_tls_cert_file.is_some()),
+            "GRUND_RELAY_QUIC_ADDRESS needs the relay (GRUND_RELAY_ADDRESS) and its certificate \
+             (GRUND_RELAY_TLS_CERT_FILE): QUIC always speaks TLS"
+        );
+        Ok(())
+    }
 }
 
 /// A capacity provider for the management pool (grund-docs
@@ -593,6 +671,7 @@ impl ServeConfig {
         self.insights.validate()?;
         self.billing.validate()?;
         self.capacity.validate()?;
+        self.relay.validate()?;
         Ok(())
     }
 
