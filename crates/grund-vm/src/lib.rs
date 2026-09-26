@@ -9,8 +9,9 @@
 //!   <data dir>/vms/<id>/spec.json    the VM's shape and image (never its metadata:
 //!                                    that holds a one-time token)
 //!                       rootfs.ext4  its disk, a copy of the image grown to its size
-//!                       fc.sock      Firecracker's API
 //!                       firecracker.pid, firecracker.log
+//!   <data dir>/run/<short>.sock      an isolated VM's API socket
+//!   <data dir>/jail/firecracker/<short>/root/fc.sock   a jailed VM's ([`jail`])
 //! ```
 //!
 //! Every VM is its own Firecracker process in its own process group, with
@@ -156,6 +157,18 @@ impl Firecracker {
         config.firecracker = on_path(&config.firecracker);
         config.jailer = config.jailer.as_deref().map(on_path);
         std::fs::create_dir_all(config.data_dir.join("vms"))?;
+        std::fs::create_dir_all(config.data_dir.join("run"))?;
+        let longest = match config.network {
+            Network::Isolated => config.data_dir.join("run/0123456789abcdef.sock"),
+            Network::Bridged => config
+                .data_dir
+                .join("jail/firecracker/0123456789abcdef/root/fc.sock"),
+        };
+        anyhow::ensure!(
+            longest.as_os_str().len() < 108,
+            "the VM data directory {} is too long: a VM's API socket under it would not fit a Unix socket address (108 bytes); use a shorter GRUND_AGENT_DATA_DIR",
+            config.data_dir.display()
+        );
         let images = Images::new(config.data_dir.join("images"))?;
         let (bridge, jail) = match config.network {
             Network::Isolated => (None, None),
@@ -168,6 +181,7 @@ impl Firecracker {
                     Some(Jail {
                         jailer,
                         firecracker: config.firecracker.clone(),
+                        base: config.data_dir.join("jail"),
                     }),
                 )
             }
@@ -189,10 +203,20 @@ impl Firecracker {
     }
 
     fn socket(&self, dir: &Path) -> PathBuf {
-        match self.inner.jail {
-            Some(_) => jail::root(dir).join("fc.sock"),
-            None => dir.join("fc.sock"),
+        match &self.inner.jail {
+            Some(jail) => jail.root(dir).join("fc.sock"),
+            None => self
+                .inner
+                .config
+                .data_dir
+                .join("run")
+                .join(format!("{}.sock", jail::id(dir))),
         }
+    }
+
+    /// Where the VM `id`'s Firecracker answers its API.
+    pub fn api_socket(&self, id: &str) -> PathBuf {
+        self.socket(&self.dir(id))
     }
 
     fn lock(&self, id: &str) -> Arc<tokio::sync::Mutex<()>> {
@@ -309,9 +333,10 @@ impl Firecracker {
                         "--",
                         "sh",
                         "-c",
-                        "ip link set lo up && ip tuntap add dev fc0 mode tap && ip link set fc0 up && exec \"$0\" --api-sock fc.sock",
+                        "ip link set lo up && ip tuntap add dev fc0 mode tap && ip link set fc0 up && exec \"$0\" --api-sock \"$1\"",
                     ])
-                    .arg(&self.inner.config.firecracker);
+                    .arg(&self.inner.config.firecracker)
+                    .arg(self.socket(dir));
                 command
             }
             Some(bridge) => {
@@ -486,6 +511,10 @@ impl VmRuntime for Firecracker {
         self.inner.children.lock().expect("children").remove(id);
         if let (Some(bridge), Some(octet)) = (&self.inner.bridge, read_address(&dir)) {
             bridge.remove_tap(octet);
+        }
+        let _ = std::fs::remove_file(self.socket(&dir));
+        if let Some(jail) = &self.inner.jail {
+            jail.remove(&dir)?;
         }
         match std::fs::remove_dir_all(&dir) {
             Ok(()) => Ok(()),

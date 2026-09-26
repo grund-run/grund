@@ -3,6 +3,12 @@ use std::{path::PathBuf, time::Duration};
 use grund_agent::vm::{Artifact, VmImage, VmRuntime, VmSpec, VmState, metadata};
 use grund_vm::{Budget, Config, Firecracker, Network, api::Api, image::file_digest};
 
+const VM_A: &str = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b-vm-a-xxxxxxxxxxxxxxxxxxxxx";
+const VM_B: &str = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b-vm-b-xxxxxxxxxxxxxxxxxxxxx";
+const GUEST: &str = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b-guest-xxxxxxxxxxxxxxxxxxxx";
+const OUT: &str = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b-out-xxxxxxxxxxxxxxxxxxxxxx";
+const LAN: &str = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b-lan-xxxxxxxxxxxxxxxxxxxxxx";
+
 struct Artifacts {
     firecracker: PathBuf,
     kernel: PathBuf,
@@ -119,23 +125,23 @@ async fn a_vm_boots_is_ensured_idempotently_is_seen_to_exit_and_is_stopped_with_
     let dir = data_dir();
     let vms = runtime(&dir, &found);
 
-    let first = spec("vm-a", &found, 1).await;
+    let first = spec(VM_A, &found, 1).await;
     let status = vms.ensure(&first).await.unwrap();
     assert_eq!(status.state, VmState::Running, "{status:?}");
-    let pid = std::fs::read_to_string(dir.0.join("vms/vm-a/firecracker.pid")).unwrap();
+    let pid = std::fs::read_to_string(dir.0.join(format!("vms/{VM_A}/firecracker.pid"))).unwrap();
     assert_eq!(vms.ensure(&first).await.unwrap().state, VmState::Running);
     assert_eq!(
-        std::fs::read_to_string(dir.0.join("vms/vm-a/firecracker.pid")).unwrap(),
+        std::fs::read_to_string(dir.0.join(format!("vms/{VM_A}/firecracker.pid"))).unwrap(),
         pid,
         "ensuring a running VM with the same spec starts nothing"
     );
-    let recorded = std::fs::read_to_string(dir.0.join("vms/vm-a/spec.json")).unwrap();
+    let recorded = std::fs::read_to_string(dir.0.join(format!("vms/{VM_A}/spec.json"))).unwrap();
     assert!(
         !recorded.contains("grund_join_test"),
         "the token is never written down"
     );
 
-    let too_big = vms.ensure(&spec("vm-b", &found, 2).await).await.unwrap();
+    let too_big = vms.ensure(&spec(VM_B, &found, 2).await).await.unwrap();
     assert_eq!(
         too_big.state,
         VmState::Failed {
@@ -151,7 +157,7 @@ async fn a_vm_boots_is_ensured_idempotently_is_seen_to_exit_and_is_stopped_with_
         .args(["-9", pid.trim()])
         .status()
         .unwrap();
-    let exited = until_state(&vms, "vm-a", |s| matches!(s, VmState::Exited { .. })).await;
+    let exited = until_state(&vms, VM_A, |s| matches!(s, VmState::Exited { .. })).await;
     assert!(matches!(exited, VmState::Exited { .. }), "{exited:?}");
     assert_eq!(
         vms.ensure(&first).await.unwrap().state,
@@ -159,18 +165,18 @@ async fn a_vm_boots_is_ensured_idempotently_is_seen_to_exit_and_is_stopped_with_
         "an exited VM starts again on its disk"
     );
 
-    vms.stop("vm-a").await.unwrap();
+    vms.stop(VM_A).await.unwrap();
     assert!(
         !dir.0.join("vms/vm-a").exists(),
         "a stopped VM leaves nothing"
     );
-    vms.stop("vm-a").await.unwrap();
+    vms.stop(VM_A).await.unwrap();
     let left: Vec<_> = vms
         .observe()
         .await
         .unwrap()
         .into_iter()
-        .filter(|s| s.id == "vm-a")
+        .filter(|s| s.id == VM_A)
         .collect();
     assert!(left.is_empty(), "{left:?}");
 }
@@ -200,9 +206,9 @@ async fn the_grund_guest_reads_its_assignment_from_the_metadata_and_shuts_down_o
     found.rootfs = guest;
     let dir = data_dir();
     let vms = runtime(&dir, &found);
-    let status = vms.ensure(&spec("guest", &found, 1).await).await.unwrap();
+    let status = vms.ensure(&spec(GUEST, &found, 1).await).await.unwrap();
     assert_eq!(status.state, VmState::Running, "{status:?}");
-    let console = dir.0.join("vms/guest/firecracker.log");
+    let console = dir.0.join(format!("vms/{GUEST}/firecracker.log"));
 
     let log = until_logged(
         &console,
@@ -224,19 +230,19 @@ async fn the_grund_guest_reads_its_assignment_from_the_metadata_and_shuts_down_o
         "the token never reaches the console"
     );
 
-    Api::new(dir.0.join("vms/guest/fc.sock"))
+    Api::new(vms.api_socket(GUEST))
         .put(
             "/actions",
             &serde_json::json!({ "action_type": "SendCtrlAltDel" }),
         )
         .await
         .unwrap();
-    let exited = until_state(&vms, "guest", |s| matches!(s, VmState::Exited { .. })).await;
+    let exited = until_state(&vms, GUEST, |s| matches!(s, VmState::Exited { .. })).await;
     assert!(matches!(exited, VmState::Exited { .. }), "{exited:?}");
     let log = std::fs::read_to_string(&console).unwrap();
     assert!(log.contains("grund-guest: stopping"), "{log}");
     assert!(!log.contains("Kernel panic"), "{log}");
-    vms.stop("guest").await.unwrap();
+    vms.stop(GUEST).await.unwrap();
 }
 
 fn nft_counter(chain: &str, marker: &str) -> u64 {
@@ -274,21 +280,21 @@ async fn a_bridged_guest_reaches_the_internet_but_not_private_addresses() {
     let dropped_before = nft_counter("forward", "10.0.0.0/8");
 
     let out = vms
-        .ensure(&spec_for("out", &found, 1, "https://example.com").await)
+        .ensure(&spec_for(OUT, &found, 1, "https://example.com").await)
         .await
         .unwrap();
     assert_eq!(out.state, VmState::Running, "{out:?}");
     let lan = vms
-        .ensure(&spec_for("lan", &found, 1, &private).await)
+        .ensure(&spec_for(LAN, &found, 1, &private).await)
         .await
         .unwrap();
     assert_eq!(lan.state, VmState::Running, "{lan:?}");
-    let addresses: Vec<String> = ["out", "lan"]
+    let addresses: Vec<String> = [OUT, LAN]
         .iter()
         .map(|id| std::fs::read_to_string(dir.0.join(format!("vms/{id}/address"))).unwrap())
         .collect();
     assert_ne!(addresses[0], addresses[1], "each VM has its own address");
-    for (id, address) in ["out", "lan"].iter().zip(&addresses) {
+    for (id, address) in [OUT, LAN].iter().zip(&addresses) {
         let pid = std::fs::read_to_string(dir.0.join(format!("vms/{id}/firecracker.pid"))).unwrap();
         let status = std::fs::read_to_string(format!("/proc/{}/status", pid.trim())).unwrap();
         let uid = 1_950_000_000 + address.trim().parse::<u32>().unwrap();
@@ -307,7 +313,7 @@ async fn a_bridged_guest_reaches_the_internet_but_not_private_addresses() {
     }
 
     let out_log = until_logged(
-        &dir.0.join("vms/out/firecracker.log"),
+        &dir.0.join(format!("vms/{OUT}/firecracker.log")),
         "refused to register this machine",
         Duration::from_secs(60),
     )
@@ -317,7 +323,7 @@ async fn a_bridged_guest_reaches_the_internet_but_not_private_addresses() {
         "the guest resolved example.com, reached it over TLS and got an answer: {out_log}"
     );
     let lan_log = until_logged(
-        &dir.0.join("vms/lan/firecracker.log"),
+        &dir.0.join(format!("vms/{LAN}/firecracker.log")),
         "could not reach",
         Duration::from_secs(60),
     )
@@ -328,8 +334,8 @@ async fn a_bridged_guest_reaches_the_internet_but_not_private_addresses() {
         "the private address was dropped by grund's table"
     );
 
-    vms.stop("out").await.unwrap();
-    vms.stop("lan").await.unwrap();
+    vms.stop(OUT).await.unwrap();
+    vms.stop(LAN).await.unwrap();
     for address in addresses {
         let tap = format!("/sys/class/net/grundvm{}", address.trim());
         assert!(!std::path::Path::new(&tap).exists(), "{tap} is removed");
