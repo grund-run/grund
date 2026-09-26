@@ -1086,6 +1086,7 @@ dependencies = [
  "sha2 0.10.9",
  "tokio",
  "tracing",
+ "webpki-roots 1.0.9",
 ]
 
 [[package]]

@@ -123,12 +123,7 @@ pub async fn run(args: &JoinArgs) -> anyhow::Result<()> {
         );
         return Ok(());
     }
-    let http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .connect_timeout(Duration::from_secs(5))
-        .user_agent(concat!("grund-agent/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .context("build the HTTP client")?;
+    let http = http_client()?;
     let source = match (args.mmds, &args.token, &args.url) {
         (true, _, _) => from_mmds(&http, &args.mmds_address).await?,
         (false, Some(token), Some(url)) => Source {
@@ -159,6 +154,43 @@ pub async fn run(args: &JoinArgs) -> anyhow::Result<()> {
         record.name, record.machine_id, record.pool, record.instance_url
     );
     Ok(())
+}
+
+/// Where Linux systems keep their trusted certificate authorities.
+pub const SYSTEM_ROOTS: &[&str] = &[
+    "/etc/ssl/certs/ca-certificates.crt",
+    "/etc/pki/tls/certs/ca-bundle.crt",
+    "/etc/ssl/ca-bundle.pem",
+    "/etc/ssl/cert.pem",
+];
+
+/// Whether this machine has a store of trusted certificate authorities: one
+/// of [`SYSTEM_ROOTS`], or SSL_CERT_FILE.
+pub fn has_system_roots() -> bool {
+    std::env::var_os("SSL_CERT_FILE").is_some()
+        || SYSTEM_ROOTS
+            .iter()
+            .any(|path| std::fs::metadata(path).is_ok_and(|m| m.len() > 0))
+}
+
+fn http_client() -> anyhow::Result<reqwest::Client> {
+    let builder = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .connect_timeout(Duration::from_secs(5))
+        .user_agent(concat!("grund-agent/", env!("CARGO_PKG_VERSION")));
+    let builder = if has_system_roots() {
+        builder
+    } else {
+        tracing::info!("no system certificate store; trusting the Mozilla roots built into grund");
+        let roots =
+            rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        builder.use_preconfigured_tls(
+            rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+        )
+    };
+    builder.build().context("build the HTTP client")
 }
 
 /// The instance's origin (scheme, host, optional port), as the enrollment
