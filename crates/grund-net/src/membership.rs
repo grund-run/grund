@@ -3,8 +3,11 @@
 //! grund is the only authority on who is a member. It signs each version of
 //! the list with the network's Ed25519 key, and a machine accepts a list only
 //! if the signature verifies and its epoch is newer than the one it holds.
-//! The signature covers the exact bytes grund sent (`SignedList::body`), so
-//! no canonical encoding has to agree between the two ends.
+//! The signature covers [`SIGNING_PREFIX`] followed by the exact bytes grund
+//! sent (`SignedList::body`), so no canonical encoding has to agree between
+//! the two ends, and nothing else the network key might ever sign can be
+//! read as a membership list. The body is `serde_json` of
+//! [`MembershipList`] ([`MembershipList::encode`]).
 //!
 //! Addresses come from the list, never from a key or the machine: the
 //! network's prefix is a /48 from `fd00::/8`, each member owns
@@ -17,6 +20,11 @@ use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use iroh::EndpointId;
 use serde::{Deserialize, Serialize};
+
+/// What every membership signature covers before the body: grund's domain
+/// separation for this kind of message (grund-server `keys.rs`,
+/// `sign(key_id, prefix, payload)`; grund-docs machines.md §4).
+pub const SIGNING_PREFIX: &[u8] = b"grund-net-membership-v1\n";
 
 /// One version of a private network's membership, as grund signs it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,14 +53,15 @@ pub struct Member {
     pub slot: u16,
 }
 
-/// A membership list as it travels: the bytes grund signed, and the
-/// signature over exactly those bytes.
+/// A membership list as it travels: the list's bytes, and the signature over
+/// [`SIGNING_PREFIX`] followed by exactly those bytes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SignedList {
     /// The list, JSON-encoded, base64 on the wire.
     #[serde(with = "b64")]
     pub body: Vec<u8>,
-    /// Ed25519 over `body` by the network's key, base64 on the wire.
+    /// Ed25519 over `SIGNING_PREFIX || body` by the network's key, base64 on
+    /// the wire.
     #[serde(with = "b64")]
     pub signature: Vec<u8>,
 }
@@ -87,14 +96,23 @@ impl SignedList {
     /// Signs `list` with the network's key. grund-server calls this, or
     /// [`SignedList::sign_bytes`] with bytes it encoded itself.
     pub fn sign(list: &MembershipList, network_key: &SigningKey) -> Self {
-        let body = serde_json::to_vec(list).expect("a membership list always encodes");
-        Self::sign_bytes(body, network_key)
+        Self::sign_bytes(list.encode(), network_key)
     }
 
     /// Signs already-encoded list bytes with the network's key.
     pub fn sign_bytes(body: Vec<u8>, network_key: &SigningKey) -> Self {
-        let signature = network_key.sign(&body).to_bytes().to_vec();
+        let signature = network_key
+            .sign(&Self::signed_message(&body))
+            .to_bytes()
+            .to_vec();
         Self { body, signature }
+    }
+
+    /// The exact bytes the signature covers: [`SIGNING_PREFIX`] then `body`.
+    /// A signer that holds the key elsewhere (grund-server's `keys.rs`) signs
+    /// these, or signs `body` under the same prefix.
+    pub fn signed_message(body: &[u8]) -> Vec<u8> {
+        [SIGNING_PREFIX, body].concat()
     }
 
     /// Verifies the signature and the list's own rules, and returns the list.
@@ -102,7 +120,7 @@ impl SignedList {
         let signature =
             Signature::from_slice(&self.signature).map_err(|_| MembershipError::BadSignature)?;
         network_key
-            .verify(&self.body, &signature)
+            .verify(&Self::signed_message(&self.body), &signature)
             .map_err(|_| MembershipError::BadSignature)?;
         let list: MembershipList = serde_json::from_slice(&self.body)
             .map_err(|e| MembershipError::Malformed(e.to_string()))?;
@@ -112,6 +130,12 @@ impl SignedList {
 }
 
 impl MembershipList {
+    /// The body grund signs: `serde_json` of the list, fields in declaration
+    /// order.
+    pub fn encode(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("a membership list always encodes")
+    }
+
     /// Checks the rules every list keeps: a ULA /48 prefix, no slot 0, and no
     /// slot or key given twice.
     pub fn validate(&self) -> Result<(), MembershipError> {
@@ -203,6 +227,46 @@ mod tests {
                 },
             ],
         }
+    }
+
+    #[test]
+    fn the_body_format_is_pinned() {
+        let l = MembershipList {
+            network_id: "net_test".into(),
+            epoch: 3,
+            prefix: "fd12:3456:789a::".parse().unwrap(),
+            issued_at: 1_790_000_000,
+            members: vec![Member {
+                machine_id: "m_a".into(),
+                endpoint_id: "e".into(),
+                slot: 1,
+            }],
+        };
+        assert_eq!(
+            String::from_utf8(l.encode()).unwrap(),
+            r#"{"network_id":"net_test","epoch":3,"prefix":"fd12:3456:789a::","issued_at":1790000000,"members":[{"machine_id":"m_a","endpoint_id":"e","slot":1}]}"#
+        );
+    }
+
+    #[test]
+    fn the_signature_covers_the_domain_prefix_not_the_bare_body() {
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let body = list().encode();
+        let bare = SignedList {
+            body: body.clone(),
+            signature: key.sign(&body).to_bytes().to_vec(),
+        };
+        assert_eq!(
+            bare.verify(&key.verifying_key()),
+            Err(MembershipError::BadSignature)
+        );
+        let mut prefixed = SIGNING_PREFIX.to_vec();
+        prefixed.extend_from_slice(&body);
+        let external = SignedList {
+            body,
+            signature: key.sign(&prefixed).to_bytes().to_vec(),
+        };
+        assert_eq!(external.verify(&key.verifying_key()), Ok(list()));
     }
 
     #[test]
