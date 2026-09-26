@@ -1209,6 +1209,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "grund-vm"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "grund-agent",
+ "hex",
+ "libc",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "h2"
 version = "0.4.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
