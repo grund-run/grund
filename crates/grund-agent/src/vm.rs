@@ -213,10 +213,16 @@ impl VmRuntime for SimulatedVms {
     }
 
     async fn stop(&self, id: &str) -> anyhow::Result<()> {
-        self.write(&VmStatus {
-            id: id.to_string(),
-            state: VmState::Stopped,
-        })
+        match std::fs::remove_file(self.state_path(id)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        match std::fs::remove_dir_all(self.dir.join(id)) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
     }
 
     async fn observe(&self) -> anyhow::Result<Vec<VmStatus>> {

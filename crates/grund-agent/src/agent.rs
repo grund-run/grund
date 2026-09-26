@@ -399,7 +399,23 @@ async fn converge<R: VmRuntime>(
             runtime.stop(&status.id).await?;
         }
     }
-    runtime.observe().await
+    Ok(reported(runtime.observe().await?, wanted))
+}
+
+fn reported(
+    mut observed: Vec<VmStatus>,
+    wanted: &[grund_proto::grund::agent::v1::Vm],
+) -> Vec<VmStatus> {
+    for vm in wanted {
+        let stopped = vm.state.as_known() == Some(VmDesiredState::VM_DESIRED_STATE_STOPPED);
+        if stopped && !observed.iter().any(|o| o.id == vm.vm_id) {
+            observed.push(VmStatus {
+                id: vm.vm_id.clone(),
+                state: VmState::Stopped,
+            });
+        }
+    }
+    observed
 }
 
 fn spec(vm: &grund_proto::grund::agent::v1::Vm, mmds: serde_json::Value) -> VmSpec {
@@ -612,6 +628,37 @@ mod tests {
         assert_eq!(
             verify(&record, &trust, "k", &older, &older_signature, &kept),
             Err(Refusal::Older)
+        );
+    }
+
+    #[test]
+    fn a_vm_told_to_stop_that_the_runtime_freed_is_reported_stopped() {
+        let wanted = |id: &str, state: VmDesiredState| Vm {
+            vm_id: id.into(),
+            state: state.into(),
+            ..Default::default()
+        };
+        let running = VmStatus {
+            id: "kept".into(),
+            state: VmState::Running,
+        };
+        let report = reported(
+            vec![running.clone()],
+            &[
+                wanted("kept", VmDesiredState::VM_DESIRED_STATE_RUNNING),
+                wanted("freed", VmDesiredState::VM_DESIRED_STATE_STOPPED),
+                wanted("starting", VmDesiredState::VM_DESIRED_STATE_RUNNING),
+            ],
+        );
+        assert_eq!(
+            report,
+            vec![
+                running,
+                VmStatus {
+                    id: "freed".into(),
+                    state: VmState::Stopped,
+                },
+            ]
         );
     }
 }
