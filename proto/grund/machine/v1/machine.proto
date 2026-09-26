@@ -43,8 +43,22 @@ service ManagementPoolService {
   // wipe it and bring it back with CreateReregistrationToken.
   rpc EndLease(EndLeaseRequest) returns (EndLeaseResponse);
 
-  // For good. Its key is refused from now on.
+  // For good. Its key is refused from now on. A machine that came from a
+  // capacity provider is then given back to it; revoking again asks again.
   rpc RevokePoolMachine(RevokePoolMachineRequest) returns (RevokePoolMachineResponse);
+
+  // Asks the capacity provider (GRUND_CAPACITY_URL) for a new machine: grund
+  // mints a registration token and hands it to the provider, never to the
+  // caller, and the machine registers by itself. failed_precondition when no
+  // provider is configured: register machines by hand with
+  // CreateRegistrationToken. unavailable when the provider cannot act now.
+  rpc ProvisionPoolMachine(ProvisionPoolMachineRequest) returns (ProvisionPoolMachineResponse);
+
+  // Asks the provider again to wipe a returning machine and boot it with a
+  // re-registration token, when the request EndLease made failed or its token
+  // expired unused. failed_precondition for a machine that is not returning
+  // or did not come from a provider.
+  rpc RebuildPoolMachine(RebuildPoolMachineRequest) returns (RebuildPoolMachineResponse);
 }
 
 // An organisation's machines: its own, and the ones leased to it. Members list
@@ -94,6 +108,22 @@ message Machine {
   google.protobuf.Timestamp key_registered_at = 10;
   // Who minted the token it registered with.
   string minted_by = 11;
+  // The capacity provider's id for it, when grund asked a provider for it.
+  // Management view only.
+  string provider_machine_id = 12;
+}
+
+// What asking the capacity provider to act on a machine came to.
+enum ProviderStep {
+  PROVIDER_STEP_UNSPECIFIED = 0;
+  // The machine did not come from a provider: nothing to ask.
+  PROVIDER_STEP_NOT_NEEDED = 1;
+  // The provider took the request.
+  PROVIDER_STEP_REQUESTED = 2;
+  // The provider could not be asked, or refused (provider_message says
+  // why); the change itself stands. Ask again with RebuildPoolMachine or
+  // RevokePoolMachine.
+  PROVIDER_STEP_FAILED = 3;
 }
 
 message Lease {
@@ -169,6 +199,9 @@ message EndLeaseRequest {
 
 message EndLeaseResponse {
   Machine machine = 1;
+  // Whether the provider was asked to rebuild the machine.
+  ProviderStep provider_step = 2;
+  string provider_message = 3;
 }
 
 message RevokePoolMachineRequest {
@@ -177,6 +210,33 @@ message RevokePoolMachineRequest {
 
 message RevokePoolMachineResponse {
   Machine machine = 1;
+  // Whether the provider was asked to take the machine back.
+  ProviderStep provider_step = 2;
+  string provider_message = 3;
+}
+
+message ProvisionPoolMachineRequest {
+  // Binds the machine's name; empty lets the machine choose.
+  string name = 1;
+  // The provider's size name; empty for its default.
+  string size = 2;
+}
+
+message ProvisionPoolMachineResponse {
+  string provider_machine_id = 1;
+  // When the registration token the provider holds expires: the machine must
+  // register before then.
+  google.protobuf.Timestamp token_expires_at = 2;
+}
+
+message RebuildPoolMachineRequest {
+  string machine_id = 1;
+}
+
+message RebuildPoolMachineResponse {
+  Machine machine = 1;
+  ProviderStep provider_step = 2;
+  string provider_message = 3;
 }
 
 message CreateJoinTokenRequest {

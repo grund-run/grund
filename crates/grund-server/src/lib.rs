@@ -79,6 +79,7 @@ pub async fn serve(
     let entitlements = entitlements(&config)?;
     let grace = config.shutdown_grace;
     let config_billing = config.billing.clone();
+    let capacity = services::capacity::Capacity::new(&config.capacity)?;
     let deletions = sagas::Deletions::new(events.clone());
     let state = State {
         config: std::sync::Arc::new(config),
@@ -91,6 +92,7 @@ pub async fn serve(
         templates,
         entitlements: std::sync::Arc::new(entitlements),
         billing: services::billing::Billing::new(&config_billing)?,
+        capacity,
         deletions,
         extensions: std::sync::Arc::new(extensions),
         started: health::started(),
@@ -104,6 +106,7 @@ pub async fn serve(
     tracing::info!(
         insights = state.config.insights.enabled(),
         billing = state.billing.enabled(),
+        capacity = state.capacity.enabled(),
         extensions = ?state.extensions.iter().map(|e| e.name()).collect::<Vec<_>>(),
         revision = health::REVISION,
         version = health::VERSION,

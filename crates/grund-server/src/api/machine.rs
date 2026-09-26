@@ -18,6 +18,8 @@ use grund_proto::grund::{
         GetPoolMachineRequest, GetPoolMachineResponse, Lease, LeaseMachineRequest,
         LeaseMachineResponse, ListMachinesRequest, ListMachinesResponse, ListPoolMachinesRequest,
         ListPoolMachinesResponse, Machine, MachineService, MachineState, ManagementPoolService,
+        ProviderStep as ProviderStepProto, ProvisionPoolMachineRequest,
+        ProvisionPoolMachineResponse, RebuildPoolMachineRequest, RebuildPoolMachineResponse,
         RevokeMachineRequest, RevokeMachineResponse, RevokePoolMachineRequest,
         RevokePoolMachineResponse,
     },
@@ -29,7 +31,10 @@ use crate::{
     api::{Caller, caller},
     services::{
         OrganisationsState,
-        machines::{Access, ChangeOutcome, MachinesState, MintOutcome, Minted, public_key_message},
+        machines::{
+            Access, ChangeOutcome, MachinesState, MintOutcome, Minted, ProviderStep,
+            ProvisionOutcome, public_key_message,
+        },
     },
     state::State,
 };
@@ -130,7 +135,25 @@ fn machine(row: &MachineRow, view: View, own_slug: Option<&str>) -> Machine {
         registered_at: timestamp(row.registered_at),
         key_registered_at: timestamp(row.key_registered_at),
         minted_by: row.minted_by.clone(),
+        provider_machine_id: match view {
+            View::Management => row.provider_machine_id.clone().unwrap_or_default(),
+            View::Organisation => String::new(),
+        },
         ..Default::default()
+    }
+}
+
+fn provider_step(step: ProviderStep) -> (EnumValue<ProviderStepProto>, String) {
+    match step {
+        ProviderStep::NotNeeded => (
+            ProviderStepProto::PROVIDER_STEP_NOT_NEEDED.into(),
+            String::new(),
+        ),
+        ProviderStep::Requested => (
+            ProviderStepProto::PROVIDER_STEP_REQUESTED.into(),
+            String::new(),
+        ),
+        ProviderStep::Failed(message) => (ProviderStepProto::PROVIDER_STEP_FAILED.into(), message),
     }
 }
 
@@ -171,6 +194,13 @@ fn changed(outcome: ChangeOutcome) -> Result<MachineRow, ConnectError> {
             "another machine in that organisation has that name",
         )),
         ChangeOutcome::NameInvalid(message) => Err(ConnectError::invalid_argument(message)),
+        ChangeOutcome::NotReturning => Err(ConnectError::failed_precondition(
+            "only a machine whose lease ended can be rebuilt",
+        )),
+        ChangeOutcome::NoProvider => Err(ConnectError::failed_precondition(
+            "that machine did not come from a capacity provider; wipe it and register it again \
+             with CreateReregistrationToken",
+        )),
     }
 }
 
@@ -343,15 +373,18 @@ impl ManagementPoolService for ManagementPoolApi {
     ) -> ServiceResult<EndLeaseResponse> {
         let caller = caller(&ctx)?;
         self.access(&caller, Access::Manage).await?;
-        let row = changed(
-            self.state
-                .machines()
-                .end_lease(caller.account_id, uuid(request.machine_id)?)
-                .await
-                .map_err(internal)?,
-        )?;
+        let (outcome, step) = self
+            .state
+            .machines()
+            .end_lease(caller.account_id, uuid(request.machine_id)?)
+            .await
+            .map_err(internal)?;
+        let row = changed(outcome)?;
+        let (provider_step, provider_message) = provider_step(step);
         Response::ok(EndLeaseResponse {
             machine: MessageField::from(machine(&row, View::Management, None)),
+            provider_step,
+            provider_message,
             ..Default::default()
         })
     }
@@ -363,24 +396,79 @@ impl ManagementPoolService for ManagementPoolApi {
     ) -> ServiceResult<RevokePoolMachineResponse> {
         let caller = caller(&ctx)?;
         self.access(&caller, Access::Manage).await?;
-        let machine_id = uuid(request.machine_id)?;
-        let machines = self.state.machines();
-        if machines
-            .pool_machine(machine_id)
+        let (outcome, step) = self
+            .state
+            .machines()
+            .revoke_pool(caller.account_id, uuid(request.machine_id)?)
             .await
-            .map_err(internal)?
-            .is_none()
-        {
-            return Err(ConnectError::not_found("no such machine"));
-        }
-        let row = changed(
-            machines
-                .revoke(caller.account_id, machine_id, Authority::Operator)
-                .await
-                .map_err(internal)?,
-        )?;
+            .map_err(internal)?;
+        let row = changed(outcome)?;
+        let (provider_step, provider_message) = provider_step(step);
         Response::ok(RevokePoolMachineResponse {
             machine: MessageField::from(machine(&row, View::Management, None)),
+            provider_step,
+            provider_message,
+            ..Default::default()
+        })
+    }
+
+    async fn provision_pool_machine(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, ProvisionPoolMachineRequest>,
+    ) -> ServiceResult<ProvisionPoolMachineResponse> {
+        let caller = caller(&ctx)?;
+        self.access(&caller, Access::Manage).await?;
+        match self
+            .state
+            .machines()
+            .provision(caller.account_id, request.name, request.size)
+            .await
+            .map_err(internal)?
+        {
+            ProvisionOutcome::Provisioned {
+                provider_machine_id,
+                token_expires_at,
+            } => Response::ok(ProvisionPoolMachineResponse {
+                provider_machine_id,
+                token_expires_at: timestamp(token_expires_at),
+                ..Default::default()
+            }),
+            ProvisionOutcome::NotConfigured => Err(ConnectError::failed_precondition(
+                "this instance has no capacity provider; register machines by hand with a setup code",
+            )),
+            ProvisionOutcome::Invalid(message) => Err(ConnectError::invalid_argument(message)),
+            ProvisionOutcome::TooMany => Err(ConnectError::resource_exhausted(
+                "this pool has 20 unused setup codes; wait for some to expire",
+            )),
+            ProvisionOutcome::Unavailable => Err(ConnectError::unavailable(
+                "the capacity provider cannot provision now; try again",
+            )),
+            ProvisionOutcome::Refused(message) => Err(ConnectError::failed_precondition(format!(
+                "the capacity provider refused: {message}"
+            ))),
+        }
+    }
+
+    async fn rebuild_pool_machine(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, RebuildPoolMachineRequest>,
+    ) -> ServiceResult<RebuildPoolMachineResponse> {
+        let caller = caller(&ctx)?;
+        self.access(&caller, Access::Manage).await?;
+        let (outcome, step) = self
+            .state
+            .machines()
+            .rebuild(caller.account_id, uuid(request.machine_id)?)
+            .await
+            .map_err(internal)?;
+        let row = changed(outcome)?;
+        let (provider_step, provider_message) = provider_step(step);
+        Response::ok(RebuildPoolMachineResponse {
+            machine: MessageField::from(machine(&row, View::Management, None)),
+            provider_step,
+            provider_message,
             ..Default::default()
         })
     }

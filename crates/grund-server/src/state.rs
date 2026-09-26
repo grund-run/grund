@@ -28,6 +28,9 @@ pub struct State {
     pub entitlements: Arc<Entitlements>,
     /// The billing shim: free, or a billing service (GRUND_BILLING_URL).
     pub billing: Billing,
+    /// Where the management pool gets machines: none, or a capacity provider
+    /// (GRUND_CAPACITY_URL).
+    pub capacity: crate::services::capacity::Capacity,
     /// Starts organisation deletions, which wait on billing (sagas.rs).
     pub deletions: crate::sagas::Deletions,
     /// Features built outside the core (the commercial `ee/`), if this

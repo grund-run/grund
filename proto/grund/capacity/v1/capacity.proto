@@ -1,0 +1,77 @@
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+package grund.capacity.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// What grund asks of a capacity provider: somewhere its management pool gets
+// machines from (grund-docs design/machines.md). grund's hosted service uses
+// fleet, which implements this service; a self-hosted grund has no provider
+// and never calls one, and adds machines to its pool by hand. Calls carry
+// `Authorization: Bearer <token>`, the token grund is configured with
+// (GRUND_CAPACITY_TOKEN), and come from grund's servers only.
+//
+// The enrollment tokens in these requests are one-time grund_reg_ tokens,
+// valid for at most 15 minutes. The provider hands one to the machine it
+// boots (for example through a metadata service) and must never log or keep
+// it; the machine registers with it itself (`grund join`).
+//
+// Every call is idempotent by idempotency_key: a repeat with the same key has
+// no further effect and answers as the first did. Errors: unavailable for a
+// provider that cannot act now (grund may retry); failed_precondition for a
+// machine the provider cannot act on (released, moving, unknown), with the
+// reason in the message.
+service CapacityService {
+  // Boots a new machine that will register into grund's management pool
+  // with enrollment_token.
+  rpc ProvisionMachine(ProvisionMachineRequest) returns (ProvisionMachineResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+
+  // Wipes a machine (a fresh root disk from its image) and boots it with a
+  // re-registration token, after its lease ended. It keeps its identity at
+  // the provider.
+  rpc RebuildMachine(RebuildMachineRequest) returns (RebuildMachineResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+
+  // Stops the machine and gives it back; grund has revoked it first.
+  rpc ReleaseMachine(ReleaseMachineRequest) returns (ReleaseMachineResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+}
+
+message ProvisionMachineRequest {
+  string idempotency_key = 1;
+  // Where the machine registers, e.g. https://app.grund.sh.
+  string grund_url = 2;
+  string enrollment_token = 3;
+  google.protobuf.Timestamp token_expires_at = 4;
+  // The provider's size name; empty for its default.
+  string size = 5;
+}
+
+message ProvisionMachineResponse {
+  // The provider's id for the machine: what grund names in RebuildMachine and
+  // ReleaseMachine.
+  string provider_machine_id = 1;
+}
+
+message RebuildMachineRequest {
+  string idempotency_key = 1;
+  string provider_machine_id = 2;
+  string grund_url = 3;
+  string enrollment_token = 4;
+  google.protobuf.Timestamp token_expires_at = 5;
+}
+
+message RebuildMachineResponse {}
+
+message ReleaseMachineRequest {
+  string idempotency_key = 1;
+  string provider_machine_id = 2;
+}
+
+message ReleaseMachineResponse {}

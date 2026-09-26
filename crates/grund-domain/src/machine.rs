@@ -240,6 +240,9 @@ pub enum Authority {
 #[serde(tag = "type", rename_all = "snake_case")]
 #[mire(entity = "grund-machine")]
 pub enum MachineEvent {
+    /// A machine registered into a pool under `key`. `provider_machine_id`
+    /// is the capacity provider's id for it when grund asked a provider for
+    /// the machine: from grund's own call, never from the machine.
     Registered {
         #[serde(flatten)]
         pool: Pool,
@@ -249,6 +252,8 @@ pub enum MachineEvent {
         minted_by: String,
         facts: MachineFacts,
         registered_at: DateTime<Utc>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_machine_id: Option<String>,
     },
     Leased {
         lease_id: Uuid,
@@ -387,6 +392,7 @@ pub enum MachineCommand {
         token_id: Uuid,
         minted_by: String,
         facts: MachineFacts,
+        provider_machine_id: Option<String>,
         at: DateTime<Utc>,
     },
     /// Leases an available management machine to an organisation, under the
@@ -448,6 +454,7 @@ impl mire::Command for MachineCommand {
             token_id,
             minted_by,
             facts,
+            provider_machine_id,
             at,
         } = self
         {
@@ -462,6 +469,7 @@ impl mire::Command for MachineCommand {
                 minted_by,
                 facts,
                 registered_at: at,
+                provider_machine_id,
             }]);
         }
         if !machine.exists {
@@ -586,6 +594,7 @@ mod tests {
                 token_id: Uuid::now_v7(),
                 minted_by: "account:test".into(),
                 facts: MachineFacts::default(),
+                provider_machine_id: None,
                 at: at(),
             },
         )
@@ -800,6 +809,7 @@ mod tests {
                     token_id: Uuid::now_v7(),
                     minted_by: "account:test".into(),
                     facts: MachineFacts::default(),
+                    provider_machine_id: None,
                     at: at(),
                 }
             ),
@@ -851,8 +861,10 @@ mod tests {
             minted_by: "account:x".into(),
             facts: MachineFacts::default(),
             registered_at: at(),
+            provider_machine_id: None,
         };
         let json = serde_json::to_value(&event).unwrap();
+        assert!(json.get("provider_machine_id").is_none());
         assert_eq!(json["type"], "registered");
         assert_eq!(json["pool"], "organisation");
         assert_eq!(json["organisation_id"], org.to_string());

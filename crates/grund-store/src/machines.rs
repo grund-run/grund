@@ -144,6 +144,7 @@ pub struct TokenRow {
     pub consumed_key: Option<String>,
     pub consumed_machine_id: Option<Uuid>,
     pub replays: i32,
+    pub provider_machine_id: Option<String>,
 }
 
 /// The token with this digest, locked until the transaction ends so two
@@ -154,7 +155,7 @@ pub async fn token_for_update(
 ) -> Result<Option<TokenRow>, sqlx::Error> {
     sqlx::query_as(
         "SELECT token_id, kind, organisation_id, machine_id, name, minted_by, expires_at, \
-           consumed_key, consumed_machine_id, replays \
+           consumed_key, consumed_machine_id, replays, provider_machine_id \
          FROM grund_machine_tokens WHERE token_digest = $1 FOR UPDATE",
     )
     .bind(&digest[..])
@@ -180,6 +181,21 @@ pub async fn consume_token(
     .bind(machine_id)
     .execute(connection)
     .await?;
+    Ok(())
+}
+
+/// Records the capacity provider's id for the machine a token was minted to
+/// provision, as the provider answered it.
+pub async fn set_token_provider(
+    executor: impl PgExecutor<'_>,
+    token_id: Uuid,
+    provider_machine_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE grund_machine_tokens SET provider_machine_id = $2 WHERE token_id = $1")
+        .bind(token_id)
+        .bind(provider_machine_id)
+        .execute(executor)
+        .await?;
     Ok(())
 }
 
@@ -216,6 +232,7 @@ pub struct MachineRow {
     pub registered_at: DateTime<Utc>,
     pub key_registered_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
+    pub provider_machine_id: Option<String>,
 }
 
 macro_rules! select_machines {
@@ -224,7 +241,8 @@ macro_rules! select_machines {
             "SELECT m.machine_id, m.pool, m.home_organisation_id, m.name, m.state, \
                m.public_key, m.lease_id, m.lessee_organisation_id, o.slug AS lessee_slug, \
                m.lease_name, m.leased_at, m.pool_organisation_id, m.pool_name, m.facts, \
-               m.minted_by, m.registered_at, m.key_registered_at, m.revoked_at \
+               m.minted_by, m.registered_at, m.key_registered_at, m.revoked_at, \
+               m.provider_machine_id \
              FROM grund_machines m LEFT JOIN grund_organisations o \
                ON o.organisation_id = m.lessee_organisation_id ",
             $tail

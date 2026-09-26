@@ -139,6 +139,7 @@ async fn state(pool: PgPool, issuer: &str) -> State {
         templates: Templates::new(TEMPLATES).unwrap(),
         entitlements: Arc::new(entitlements),
         billing: grund_server::services::billing::Billing::Free,
+        capacity: grund_server::services::capacity::Capacity::None,
         deletions: grund_server::sagas::Deletions::new(events.clone()),
         extensions: Arc::new(vec![Arc::new(Registered(Arc::new(SocialLogin::with(
             vec![provider],

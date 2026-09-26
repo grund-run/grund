@@ -166,6 +166,14 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
         Requirement::Session,
     ),
     (
+        "/grund.machine.v1.ManagementPoolService/ProvisionPoolMachine",
+        Requirement::Session,
+    ),
+    (
+        "/grund.machine.v1.ManagementPoolService/RebuildPoolMachine",
+        Requirement::Session,
+    ),
+    (
         "/grund.machine.v1.MachineService/CreateJoinToken",
         Requirement::Session,
     ),
@@ -534,6 +542,20 @@ mod tests {
             _: RequestContext,
             _: ServiceRequest<'_, machine::RevokePoolMachineRequest>,
         ) -> ServiceResult<machine::RevokePoolMachineResponse> {
+            unreachable!()
+        }
+        async fn provision_pool_machine(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, machine::ProvisionPoolMachineRequest>,
+        ) -> ServiceResult<machine::ProvisionPoolMachineResponse> {
+            unreachable!()
+        }
+        async fn rebuild_pool_machine(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, machine::RebuildPoolMachineRequest>,
+        ) -> ServiceResult<machine::RebuildPoolMachineResponse> {
             unreachable!()
         }
     }

@@ -512,6 +512,7 @@ async fn machine(
             token_id: Uuid::now_v7(),
             minted_by: "account:test".into(),
             facts: grund_domain::machine::MachineFacts::default(),
+            provider_machine_id: None,
             at: Utc::now(),
         },
     )
@@ -633,6 +634,7 @@ async fn two_live_machines_cannot_share_a_name_in_one_pool_or_a_key_anywhere(poo
         token_id: Uuid::now_v7(),
         minted_by: "account:test".into(),
         facts: grund_domain::machine::MachineFacts::default(),
+        provider_machine_id: None,
         at: Utc::now(),
     };
     let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();

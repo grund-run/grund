@@ -28,7 +28,10 @@ use crate::{
     config::OrganisationMode,
     crypto,
     keys::{Keys, KeysState, PublicKey},
-    services::limits::LimitsState,
+    services::{
+        capacity::{CapacityError, CapacityState},
+        limits::LimitsState,
+    },
     state::State,
 };
 
@@ -60,8 +63,35 @@ impl Access {
 /// A minted token, shown once.
 #[derive(Debug, Clone)]
 pub struct Minted {
+    pub token_id: Uuid,
     pub token: String,
     pub expires_at: DateTime<Utc>,
+}
+
+/// What asking the capacity provider to act on a machine came to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderStep {
+    /// The machine did not come from a provider: nothing to ask.
+    NotNeeded,
+    /// The provider took the request.
+    Requested,
+    /// The provider could not be asked, or refused; ask again later.
+    Failed(String),
+}
+
+/// How asking the provider for a new pool machine ended.
+#[derive(Debug)]
+pub enum ProvisionOutcome {
+    Provisioned {
+        provider_machine_id: String,
+        token_expires_at: DateTime<Utc>,
+    },
+    /// No capacity provider: machines join the pool by hand.
+    NotConfigured,
+    Invalid(String),
+    TooMany,
+    Unavailable,
+    Refused(String),
 }
 
 /// How minting ended.
@@ -135,6 +165,10 @@ pub enum ChangeOutcome {
     PoolFull,
     NameTaken,
     NameInvalid(String),
+    /// Only a returning machine can be rebuilt.
+    NotReturning,
+    /// The machine did not come from a capacity provider.
+    NoProvider,
 }
 
 /// Machine flows.
@@ -228,10 +262,11 @@ impl Machines {
         }
         let token = format!("{}{}", kind.prefix(), base32(&random_bytes()));
         let expires_at = now + ttl;
+        let token_id = Uuid::now_v7();
         machines::insert_token(
             &self.state.pool,
             &NewToken {
-                token_id: Uuid::now_v7(),
+                token_id,
                 digest: crypto::digest(&token),
                 kind: kind.as_str(),
                 organisation_id,
@@ -242,7 +277,11 @@ impl Machines {
             },
         )
         .await?;
-        Ok(MintOutcome::Minted(Minted { token, expires_at }))
+        Ok(MintOutcome::Minted(Minted {
+            token_id,
+            token,
+            expires_at,
+        }))
     }
 
     /// Registers a machine with a one-time token (the contract's
@@ -321,6 +360,7 @@ impl Machines {
                     token_id: token.token_id,
                     minted_by: token.minted_by.clone(),
                     facts: request.facts.clone(),
+                    provider_machine_id: token.provider_machine_id.clone(),
                     at: now,
                 }
             }
@@ -505,20 +545,180 @@ impl Machines {
         ))
     }
 
-    /// Ends a management machine's lease.
-    pub async fn end_lease(&self, actor: Uuid, machine_id: Uuid) -> anyhow::Result<ChangeOutcome> {
-        if self.pool_machine(machine_id).await?.is_none() {
-            return Ok(ChangeOutcome::NotFound);
+    /// Asks the capacity provider for a new machine for the management pool:
+    /// mints a registration token (bound to `name`, if given) and hands it to
+    /// the provider, never to a person. The machine joins by itself.
+    pub async fn provision(
+        &self,
+        actor: Uuid,
+        name: &str,
+        size: &str,
+    ) -> anyhow::Result<ProvisionOutcome> {
+        let capacity = self.state.capacity();
+        if !capacity.enabled() {
+            return Ok(ProvisionOutcome::NotConfigured);
         }
-        self.change(
-            actor,
-            machine_id,
-            MachineCommand::EndLease {
+        let minted = match self
+            .mint(TokenKind::Management, None, None, name, 0, actor)
+            .await?
+        {
+            MintOutcome::Minted(minted) => minted,
+            MintOutcome::Invalid(message) => return Ok(ProvisionOutcome::Invalid(message)),
+            MintOutcome::TooMany => return Ok(ProvisionOutcome::TooMany),
+            MintOutcome::NotReturning | MintOutcome::NotFound => {
+                return Err(anyhow::anyhow!(
+                    "a pool token bound to no machine was refused"
+                ));
+            }
+        };
+        match capacity
+            .provision(
+                &minted.token_id.to_string(),
+                &self.state.config.public_origin().serialized,
+                &minted.token,
+                minted.expires_at,
+                size.trim(),
+            )
+            .await
+        {
+            Ok(provider_machine_id) => {
+                machines::set_token_provider(
+                    &self.state.pool,
+                    minted.token_id,
+                    &provider_machine_id,
+                )
+                .await?;
+                Ok(ProvisionOutcome::Provisioned {
+                    provider_machine_id,
+                    token_expires_at: minted.expires_at,
+                })
+            }
+            Err(CapacityError::Refused(message)) => Ok(ProvisionOutcome::Refused(message)),
+            Err(_) => Ok(ProvisionOutcome::Unavailable),
+        }
+    }
+
+    /// Ends a management machine's lease, then asks its provider, if it came
+    /// from one, to wipe it and boot it with a re-registration token.
+    pub async fn end_lease(
+        &self,
+        actor: Uuid,
+        machine_id: Uuid,
+    ) -> anyhow::Result<(ChangeOutcome, ProviderStep)> {
+        if self.pool_machine(machine_id).await?.is_none() {
+            return Ok((ChangeOutcome::NotFound, ProviderStep::NotNeeded));
+        }
+        let outcome = self
+            .change(
                 actor,
-                at: Utc::now(),
+                machine_id,
+                MachineCommand::EndLease {
+                    actor,
+                    at: Utc::now(),
+                },
+            )
+            .await?;
+        let step = match &outcome {
+            ChangeOutcome::Done(row) => self.request_rebuild(actor, row).await?,
+            _ => ProviderStep::NotNeeded,
+        };
+        Ok((outcome, step))
+    }
+
+    /// Asks the provider again to rebuild a returning machine (when the
+    /// request at the lease's end failed, or its token expired unused).
+    pub async fn rebuild(
+        &self,
+        actor: Uuid,
+        machine_id: Uuid,
+    ) -> anyhow::Result<(ChangeOutcome, ProviderStep)> {
+        let Some(row) = self.pool_machine(machine_id).await? else {
+            return Ok((ChangeOutcome::NotFound, ProviderStep::NotNeeded));
+        };
+        if row.state != "returning" {
+            return Ok((ChangeOutcome::NotReturning, ProviderStep::NotNeeded));
+        }
+        if row.provider_machine_id.is_none() {
+            return Ok((ChangeOutcome::NoProvider, ProviderStep::NotNeeded));
+        }
+        let step = self.request_rebuild(actor, &row).await?;
+        Ok((ChangeOutcome::Done(row), step))
+    }
+
+    async fn request_rebuild(&self, actor: Uuid, row: &MachineRow) -> anyhow::Result<ProviderStep> {
+        let Some(provider_machine_id) = &row.provider_machine_id else {
+            return Ok(ProviderStep::NotNeeded);
+        };
+        let minted = match self
+            .mint(
+                TokenKind::Management,
+                None,
+                Some(row.machine_id),
+                "",
+                0,
+                actor,
+            )
+            .await?
+        {
+            MintOutcome::Minted(minted) => minted,
+            MintOutcome::TooMany => {
+                return Ok(ProviderStep::Failed(
+                    "the management pool has 20 unused setup codes; ask again when some expire"
+                        .into(),
+                ));
+            }
+            other => {
+                return Ok(ProviderStep::Failed(format!(
+                    "no re-registration code: {other:?}"
+                )));
+            }
+        };
+        Ok(
+            match self
+                .state
+                .capacity()
+                .rebuild(
+                    &minted.token_id.to_string(),
+                    provider_machine_id,
+                    &self.state.config.public_origin().serialized,
+                    &minted.token,
+                    minted.expires_at,
+                )
+                .await
+            {
+                Ok(()) => ProviderStep::Requested,
+                Err(error) => ProviderStep::Failed(error.to_string()),
             },
         )
-        .await
+    }
+
+    /// Revokes a management machine, then gives it back to its provider, if
+    /// it came from one. Revoking again asks the provider again.
+    pub async fn revoke_pool(
+        &self,
+        actor: Uuid,
+        machine_id: Uuid,
+    ) -> anyhow::Result<(ChangeOutcome, ProviderStep)> {
+        if self.pool_machine(machine_id).await?.is_none() {
+            return Ok((ChangeOutcome::NotFound, ProviderStep::NotNeeded));
+        }
+        let outcome = self.revoke(actor, machine_id, Authority::Operator).await?;
+        let step = match &outcome {
+            ChangeOutcome::Done(row) => match &row.provider_machine_id {
+                None => ProviderStep::NotNeeded,
+                Some(provider_machine_id) => match self
+                    .state
+                    .capacity()
+                    .release(&format!("release-{machine_id}"), provider_machine_id)
+                    .await
+                {
+                    Ok(()) => ProviderStep::Requested,
+                    Err(error) => ProviderStep::Failed(error.to_string()),
+                },
+            },
+            _ => ProviderStep::NotNeeded,
+        };
+        Ok((outcome, step))
     }
 
     /// Revokes a machine, as the operator (a management machine) or as an

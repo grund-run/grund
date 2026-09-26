@@ -858,3 +858,196 @@ async fn the_operator_organisation_may_be_named_by_its_id() -> anyhow::Result<()
     .await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn a_capacity_provider_provisions_rebuilds_and_releases_a_pool_machine() -> anyhow::Result<()>
+{
+    use crate::accepttest::fixtures::{CAPACITY_TOKEN, FakeCapacity};
+    let capacity = FakeCapacity::start().await?;
+    let operator = format!("ops-{}", crate::accepttest::fixtures::random_hex(4));
+    let Some((given, when, then)) = testcase_configured(&[
+        ("GRUND_OPERATOR_ORGANISATION", &operator),
+        ("GRUND_CAPACITY_URL", &capacity.url),
+        ("GRUND_CAPACITY_TOKEN", CAPACITY_TOKEN),
+    ])
+    .await?
+    else {
+        return Ok(());
+    };
+    given.a_signed_in_account_named(&operator).await?;
+
+    when.calling(
+        &format!("{POOL}/ProvisionPoolMachine"),
+        &json!({"name": "gm-9"}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    anyhow::ensure!(
+        json(&then)?["providerMachineId"] == "fm-1",
+        "{}",
+        json(&then)?
+    );
+    let provision = capacity.calls("ProvisionMachine");
+    anyhow::ensure!(provision.len() == 1, "{provision:?}");
+    anyhow::ensure!(
+        provision[0].authorization.as_deref() == Some(&*format!("Bearer {CAPACITY_TOKEN}")),
+        "{provision:?}"
+    );
+    let token = provision[0].body["enrollmentToken"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    anyhow::ensure!(token.starts_with("grund_reg_"), "{token}");
+    anyhow::ensure!(
+        provision[0].body["grundUrl"] == origin(&when).as_str(),
+        "{provision:?}"
+    );
+    anyhow::ensure!(
+        provision[0].body["idempotencyKey"]
+            .as_str()
+            .is_some_and(|k| !k.is_empty()),
+        "{provision:?}"
+    );
+
+    let booted = join_dir();
+    let joined = grund_join(&booted, &["--url", &origin(&when), &token], &[]).await;
+    anyhow::ensure!(
+        joined.status.success(),
+        "{}",
+        String::from_utf8_lossy(&joined.stderr)
+    );
+    let machine_id = record(&booted)?["machine_id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    when.calling(
+        &format!("{POOL}/GetPoolMachine"),
+        &json!({"machineId": machine_id}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    let machine = json(&then)?;
+    anyhow::ensure!(machine["machine"]["name"] == "gm-9", "{machine}");
+    anyhow::ensure!(
+        machine["machine"]["providerMachineId"] == "fm-1",
+        "{machine}"
+    );
+
+    let (lessee, lessee_when, lessee_then) = given.testcase.another_browser();
+    let tenant = lessee.a_signed_in_account().await?;
+    when.calling(
+        &format!("{POOL}/LeaseMachine"),
+        &json!({"machineId": machine_id, "organisation": tenant.username}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    lessee_when
+        .calling(
+            &format!("{MACHINES}/GetMachine"),
+            &json!({"organisation": tenant.username, "machineId": machine_id}).to_string(),
+        )
+        .await?;
+    lessee_then.status(200)?;
+    anyhow::ensure!(
+        json(&lessee_then)?["machine"]
+            .get("providerMachineId")
+            .is_none(),
+        "the lessee does not see the provider's id: {}",
+        json(&lessee_then)?
+    );
+
+    capacity.unavailable_for("RebuildMachine", true);
+    when.calling(
+        &format!("{POOL}/EndLease"),
+        &json!({"machineId": machine_id}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    let ended = json(&then)?;
+    anyhow::ensure!(
+        ended["machine"]["state"] == "MACHINE_STATE_RETURNING",
+        "{ended}"
+    );
+    anyhow::ensure!(ended["providerStep"] == "PROVIDER_STEP_FAILED", "{ended}");
+
+    capacity.unavailable_for("RebuildMachine", false);
+    when.calling(
+        &format!("{POOL}/RebuildPoolMachine"),
+        &json!({"machineId": machine_id}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    anyhow::ensure!(
+        json(&then)?["providerStep"] == "PROVIDER_STEP_REQUESTED",
+        "{}",
+        json(&then)?
+    );
+    let rebuilds = capacity.calls("RebuildMachine");
+    let rebuild = rebuilds
+        .last()
+        .ok_or_else(|| anyhow::anyhow!("no rebuild call"))?;
+    anyhow::ensure!(rebuild.body["providerMachineId"] == "fm-1", "{rebuild:?}");
+    let again = rebuild.body["enrollmentToken"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    anyhow::ensure!(
+        again.starts_with("grund_reg_") && again != token,
+        "{rebuild:?}"
+    );
+
+    let rebuilt = join_dir();
+    let rejoined = grund_join(&rebuilt, &["--url", &origin(&when), &again], &[]).await;
+    anyhow::ensure!(
+        rejoined.status.success(),
+        "{}",
+        String::from_utf8_lossy(&rejoined.stderr)
+    );
+    anyhow::ensure!(record(&rebuilt)?["machine_id"] == machine_id.as_str());
+    when.calling(
+        &format!("{POOL}/GetPoolMachine"),
+        &json!({"machineId": machine_id}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    let machine = json(&then)?;
+    anyhow::ensure!(
+        machine["machine"]["state"] == "MACHINE_STATE_AVAILABLE",
+        "{machine}"
+    );
+    anyhow::ensure!(
+        machine["machine"]["providerMachineId"] == "fm-1",
+        "{machine}"
+    );
+
+    when.calling(
+        &format!("{POOL}/RevokePoolMachine"),
+        &json!({"machineId": machine_id}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    anyhow::ensure!(
+        json(&then)?["providerStep"] == "PROVIDER_STEP_REQUESTED",
+        "{}",
+        json(&then)?
+    );
+    let released = capacity.calls("ReleaseMachine");
+    anyhow::ensure!(
+        released.len() == 1 && released[0].body["providerMachineId"] == "fm-1",
+        "{released:?}"
+    );
+    std::fs::remove_dir_all(booted)?;
+    std::fs::remove_dir_all(rebuilt)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn without_a_capacity_provider_the_pool_is_filled_by_hand() -> anyhow::Result<()> {
+    let Some((_, when, then, _)) = operator_testcase().await? else {
+        return Ok(());
+    };
+    when.calling(&format!("{POOL}/ProvisionPoolMachine"), "{}")
+        .await?;
+    then.status(400)?.connect_code("failed_precondition")?;
+    Ok(())
+}

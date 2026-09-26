@@ -227,6 +227,9 @@ pub struct ServeConfig {
     #[command(flatten)]
     pub billing: BillingArgs,
 
+    #[command(flatten)]
+    pub capacity: CapacityArgs,
+
     /// Upper bound on one request. Sign-in hashes a password (~50 ms), so
     /// anything near this is a stuck dependency, not slow work.
     #[arg(long, env = "GRUND_REQUEST_TIMEOUT", value_parser = secs, default_value = "15")]
@@ -346,6 +349,53 @@ pub struct BillingArgs {
     pub billing_token: Option<String>,
 }
 
+/// A capacity provider for the management pool (grund-docs
+/// design/machines.md): where grund gets machines from. Only grund's hosted
+/// service has one (fleet); a self-hosted instance adds machines to its pool
+/// by hand.
+#[derive(Clone, Debug, Args)]
+pub struct CapacityArgs {
+    /// The capacity provider, e.g. http://fleet:8080, reached from grund's
+    /// servers only. grund calls `grund.capacity.v1.CapacityService` on it.
+    /// Set with GRUND_CAPACITY_TOKEN.
+    #[arg(long, env = "GRUND_CAPACITY_URL")]
+    pub capacity_url: Option<String>,
+
+    /// The bearer token the capacity provider expects, at least 32 printable
+    /// ASCII characters.
+    #[arg(long, env = "GRUND_CAPACITY_TOKEN", hide_env_values = true)]
+    pub capacity_token: Option<String>,
+}
+
+impl CapacityArgs {
+    /// Whether a capacity provider is configured.
+    pub fn enabled(&self) -> bool {
+        self.capacity_url.is_some() && self.capacity_token.is_some()
+    }
+
+    fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.capacity_url.is_some() == self.capacity_token.is_some(),
+            "GRUND_CAPACITY_URL and GRUND_CAPACITY_TOKEN must be set together"
+        );
+        if let Some(url) = &self.capacity_url {
+            anyhow::ensure!(
+                (url.starts_with("http://") || url.starts_with("https://"))
+                    && !url.ends_with('/')
+                    && !url.contains(['?', '#']),
+                "GRUND_CAPACITY_URL must be an http or https URL without a trailing slash"
+            );
+        }
+        if let Some(token) = &self.capacity_token {
+            anyhow::ensure!(
+                token.len() >= 32 && token.bytes().all(|b| b.is_ascii_graphic()),
+                "GRUND_CAPACITY_TOKEN must be at least 32 printable ASCII characters"
+            );
+        }
+        Ok(())
+    }
+}
+
 impl BillingArgs {
     /// Whether a billing service is configured.
     pub fn enabled(&self) -> bool {
@@ -400,6 +450,8 @@ impl ServeConfig {
             &mut self.insights.insights_token,
             &mut self.billing.billing_url,
             &mut self.billing.billing_token,
+            &mut self.capacity.capacity_url,
+            &mut self.capacity.capacity_token,
             &mut self.operator_organisation,
         ] {
             if value.as_deref().is_some_and(|v| v.trim().is_empty()) {
@@ -442,6 +494,10 @@ impl ServeConfig {
                 ("GRUND_SECRET_KEY", self.secret_key.as_deref()),
                 ("GRUND_SMTP_URL", self.smtp_url.as_deref()),
                 ("GRUND_BILLING_TOKEN", self.billing.billing_token.as_deref()),
+                (
+                    "GRUND_CAPACITY_TOKEN",
+                    self.capacity.capacity_token.as_deref(),
+                ),
                 (
                     "GRUND_GITHUB_CLIENT_SECRET",
                     self.social.github_client_secret.as_deref(),
@@ -536,6 +592,7 @@ impl ServeConfig {
         self.social.validate()?;
         self.insights.validate()?;
         self.billing.validate()?;
+        self.capacity.validate()?;
         Ok(())
     }
 

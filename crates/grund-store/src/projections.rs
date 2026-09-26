@@ -258,6 +258,7 @@ pub async fn apply_machine(
         minted_by,
         facts,
         registered_at,
+        provider_machine_id,
         ..
     } = event
     {
@@ -268,9 +269,9 @@ pub async fn apply_machine(
         sqlx::query(
             "INSERT INTO grund_machines (machine_id, pool, home_organisation_id, name, state, \
                public_key, pool_organisation_id, pool_name, facts, minted_by, registered_at, \
-               key_registered_at, stream_version) \
+               key_registered_at, stream_version, provider_machine_id) \
              VALUES ($1, $2, $3, $4, $5, $6, $3, CASE WHEN $3 IS NULL THEN NULL ELSE $4 END, \
-               $7, $8, $9, $9, $10) \
+               $7, $8, $9, $9, $10, $11) \
              ON CONFLICT (machine_id) DO NOTHING",
         )
         .bind(machine_id)
@@ -283,6 +284,7 @@ pub async fn apply_machine(
         .bind(minted_by)
         .bind(registered_at)
         .bind(version)
+        .bind(provider_machine_id)
         .execute(&mut *connection)
         .await?;
         return Ok(());

@@ -5,6 +5,7 @@
 
 pub mod accounts;
 pub mod billing;
+pub mod capacity;
 pub mod entitlements;
 pub mod insights;
 pub mod limits;
