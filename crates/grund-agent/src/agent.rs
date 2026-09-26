@@ -79,6 +79,15 @@ pub enum Refusal {
     Older,
     UnknownFeature(String),
     NoTrustKey,
+    /// Signed by a key other than the one pinned.
+    UnknownKey,
+    /// The document applied last, again: nothing to do, and nothing to
+    /// report.
+    Same,
+    /// The same generation as the one applied, with different content: the
+    /// instance signed two documents it should not have, a bug or a
+    /// compromise (apps.md §6.3).
+    Equivocation,
 }
 
 impl std::fmt::Display for Refusal {
@@ -91,21 +100,33 @@ impl std::fmt::Display for Refusal {
             Refusal::Older => f.write_str("document is not newer than the one applied"),
             Refusal::UnknownFeature(name) => write!(f, "document requires unknown feature {name}"),
             Refusal::NoTrustKey => f.write_str("this machine pinned no organisation key"),
+            Refusal::UnknownKey => f.write_str("document is signed by a key this machine did not pin"),
+            Refusal::Same => f.write_str("document is the one applied"),
+            Refusal::Equivocation => f.write_str(
+                "EQUIVOCATION: a second, different document for the generation already applied; the instance signed two",
+            ),
         }
     }
 }
 
 /// Verifies and decodes a signed document against the pinned organisation
-/// key, for this machine, newer than `applied`.
+/// key, for this machine, newer than what was applied. The same generation
+/// again is [`Refusal::Same`] with the same payload and
+/// [`Refusal::Equivocation`] with a different one; only a lower generation
+/// is [`Refusal::Older`].
 pub fn verify(
     record: &Record,
     trust: &VerifyingKey,
+    key_id: &str,
     payload: &[u8],
     signature: &[u8],
-    applied: u64,
+    applied: &Applied,
 ) -> Result<DesiredState, Refusal> {
     if payload.len() > MAX_DOCUMENT_BYTES {
         return Err(Refusal::TooLarge);
+    }
+    if key_id != record.trust_key.key_id {
+        return Err(Refusal::UnknownKey);
     }
     let signature = Signature::from_slice(signature).map_err(|_| Refusal::BadSignature)?;
     let mut message = b"grund-desired-state-v1\n".to_vec();
@@ -117,8 +138,17 @@ pub fn verify(
     if state.machine_id != record.machine_id || state.organisation_id != record.organisation_id {
         return Err(Refusal::WrongMachine);
     }
-    if state.generation <= applied {
+    if state.generation < applied.generation {
         return Err(Refusal::Older);
+    }
+    if state.generation == applied.generation && applied.generation > 0 {
+        let same = hex::decode(&applied.payload)
+            .is_ok_and(|kept| Sha256::digest(&kept) == Sha256::digest(payload));
+        return Err(if same {
+            Refusal::Same
+        } else {
+            Refusal::Equivocation
+        });
     }
     if let Some(unknown) = state
         .required_features
@@ -259,9 +289,10 @@ async fn round<R: VmRuntime>(
                 verify(
                     record,
                     trust,
+                    &document.key_id,
                     &document.payload,
                     &document.signature,
-                    applied.generation,
+                    applied,
                 )
             }) {
                 Ok(state) => {
@@ -271,6 +302,14 @@ async fn round<R: VmRuntime>(
                     };
                     write_applied(data_dir, applied)?;
                     tracing::info!(generation = state.generation, "applied a new desired state");
+                }
+                Err(Refusal::Same) => {}
+                Err(Refusal::Equivocation) => {
+                    tracing::error!(
+                        generation = applied.generation,
+                        "the instance signed two different documents for one generation; keeping the one applied"
+                    );
+                    refusals.push(Refusal::Equivocation.to_string());
                 }
                 Err(refusal) => {
                     tracing::warn!(%refusal, "refused a desired state; keeping the last good one");
@@ -492,51 +531,86 @@ mod tests {
         }
     }
 
+    fn applied(generation: u64, payload: &[u8]) -> Applied {
+        Applied {
+            generation,
+            payload: hex::encode(payload),
+        }
+    }
+
     #[test]
     fn a_document_applies_only_when_signed_for_this_machine_newer_and_understood() {
         let key = SigningKey::from_bytes(&[5; 32]);
         let record = record(&key);
         let trust = key.verifying_key();
+        let none = Applied::default();
         let (payload, signature) = signed(&key, &state(2));
         assert_eq!(
-            verify(&record, &trust, &payload, &signature, 1)
+            verify(&record, &trust, "k", &payload, &signature, &none)
                 .unwrap()
                 .generation,
             2
         );
         assert_eq!(
-            verify(&record, &trust, &payload, &signature, 2),
-            Err(Refusal::Older)
+            verify(&record, &trust, "other", &payload, &signature, &none),
+            Err(Refusal::UnknownKey)
         );
 
         let stranger = SigningKey::from_bytes(&[6; 32]);
-        let (payload, signature) = signed(&stranger, &state(3));
+        let (bad, bad_signature) = signed(&stranger, &state(3));
         assert_eq!(
-            verify(&record, &trust, &payload, &signature, 1),
+            verify(&record, &trust, "k", &bad, &bad_signature, &none),
             Err(Refusal::BadSignature)
         );
 
         let mut other = state(3);
         other.machine_id = "m-2".into();
-        let (payload, signature) = signed(&key, &other);
+        let (bad, bad_signature) = signed(&key, &other);
         assert_eq!(
-            verify(&record, &trust, &payload, &signature, 1),
+            verify(&record, &trust, "k", &bad, &bad_signature, &none),
             Err(Refusal::WrongMachine)
         );
 
         let mut newer = state(3);
         newer.required_features.push("volumes".into());
-        let (payload, signature) = signed(&key, &newer);
+        let (bad, bad_signature) = signed(&key, &newer);
         assert_eq!(
-            verify(&record, &trust, &payload, &signature, 1),
+            verify(&record, &trust, "k", &bad, &bad_signature, &none),
             Err(Refusal::UnknownFeature("volumes".into()))
         );
 
-        let (mut payload, signature) = signed(&key, &state(3));
-        payload[0] ^= 1;
+        let (mut bad, bad_signature) = signed(&key, &state(3));
+        bad[0] ^= 1;
         assert_eq!(
-            verify(&record, &trust, &payload, &signature, 1),
+            verify(&record, &trust, "k", &bad, &bad_signature, &none),
             Err(Refusal::BadSignature)
+        );
+    }
+
+    #[test]
+    fn the_same_generation_again_is_nothing_or_an_equivocation_and_only_a_lower_one_is_older() {
+        let key = SigningKey::from_bytes(&[5; 32]);
+        let record = record(&key);
+        let trust = key.verifying_key();
+        let (payload, signature) = signed(&key, &state(2));
+        let kept = applied(2, &payload);
+        assert_eq!(
+            verify(&record, &trust, "k", &payload, &signature, &kept),
+            Err(Refusal::Same)
+        );
+
+        let mut twin = state(2);
+        twin.machines.clear();
+        let (other, other_signature) = signed(&key, &twin);
+        assert_eq!(
+            verify(&record, &trust, "k", &other, &other_signature, &kept),
+            Err(Refusal::Equivocation)
+        );
+
+        let (older, older_signature) = signed(&key, &state(1));
+        assert_eq!(
+            verify(&record, &trust, "k", &older, &older_signature, &kept),
+            Err(Refusal::Older)
         );
     }
 }
