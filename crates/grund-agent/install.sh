@@ -20,8 +20,11 @@
 #   3. `grund join`, unless /var/lib/grund/agent/machine.json exists
 #   4. grund-agent.service, enabled and started: `grund agent`, with
 #      Firecracker VMs where step 2 ran. KillMode=process, so restarting
-#      the agent leaves its VMs running; Delegate=yes, so each VM gets a
-#      cgroup with CPU and memory limits.
+#      the agent leaves its VMs running; with systemd 254+, Delegate=yes
+#      and DelegateSubgroup=agent, so each VM gets a cgroup with CPU and
+#      memory limits and the agent still restarts (cgroup v2 lets no process
+#      sit beside child cgroups that have controllers, so systemd must start
+#      the agent in its own leaf).
 #
 # What it changes beyond those files: VMs get grund's bridge grundbr0, its
 # nftables table `inet grund` and IPv4 forwarding when the agent first runs
@@ -108,6 +111,14 @@ else
 fi
 
 step "grund-agent.service"
+delegate=""
+systemd_version="$(systemctl --version | sed -n '1s/^systemd \([0-9]*\).*/\1/p')"
+if [ "${systemd_version:-0}" -ge 254 ]; then
+  delegate="Delegate=yes
+DelegateSubgroup=agent"
+else
+  echo "    systemd ${systemd_version:-?} has no DelegateSubgroup (254+): VMs run without cgroup limits"
+fi
 cat > /etc/systemd/system/grund-agent.service <<UNIT
 [Unit]
 Description=grund agent: keeps this machine connected to its grund instance
@@ -122,7 +133,7 @@ ExecStart=/usr/local/bin/grund agent --vm-runtime $runtime --vm-firecracker /usr
 Restart=always
 RestartSec=5
 KillMode=process
-Delegate=yes
+$delegate
 
 [Install]
 WantedBy=multi-user.target

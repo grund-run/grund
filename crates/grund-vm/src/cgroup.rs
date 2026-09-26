@@ -1,12 +1,16 @@
 //! cgroup v2 limits for jailed VMs, in the cgroup systemd delegated to the
-//! agent (`Delegate=yes` on grund-agent.service).
+//! agent (`Delegate=yes` and `DelegateSubgroup=agent` on
+//! grund-agent.service, systemd 254+).
 //!
 //! ```text
 //!   <the agent's cgroup>/          delegated: grund may make children here
-//!       agent/                     the agent itself, moved in at start, so
-//!                                  the parent has no processes of its own
+//!       agent/                     the agent itself, where systemd starts it,
+//!                                  so the parent has no processes of its own
 //!                                  (cgroup v2 lets controllers be enabled for
-//!                                  children only then)
+//!                                  children only then). The agent never moves
+//!                                  itself: systemd starts a restarted agent
+//!                                  wherever DelegateSubgroup says, and in the
+//!                                  parent that would fail.
 //!       vms/                       cpu and memory enabled for its children
 //!           <short>/               one VM: made by the jailer, with cpu.max
 //!                                  and memory.max
@@ -17,8 +21,8 @@
 //! so the limit stops a runaway VMM and never a guest using its own RAM.
 //!
 //! Without a delegated cgroup (the agent not under systemd, or its unit
-//! without `Delegate=yes`), VMs run without these limits, and
-//! [`delegate`] says why.
+//! without both settings), VMs run without these limits, and [`delegate`]
+//! says why.
 
 use std::path::{Path, PathBuf};
 
@@ -74,24 +78,25 @@ pub fn own(proc_self_cgroup: &str) -> Option<String> {
         .map(|path| path.trim().to_string())
 }
 
-/// The delegated cgroup to build under: this process's own, or its parent
-/// when an earlier start already moved it into `agent`.
-pub fn base(own: &str) -> String {
-    own.strip_suffix("/agent").unwrap_or(own).to_string()
+/// The delegated cgroup to build under: the parent of this process's
+/// `agent` leaf, or `None` when systemd did not start it in one.
+pub fn base(own: &str) -> Option<String> {
+    own.strip_suffix("/agent")
+        .filter(|base| !base.is_empty())
+        .map(str::to_string)
 }
 
-/// Moves this process into `<its cgroup>/agent` and prepares `vms/` for the
-/// jailer. The error says why VMs will run without limits.
+/// Prepares `vms/` beside this process's `agent` leaf for the jailer. The
+/// error says why VMs will run without limits.
 pub fn delegate() -> Result<Cgroups, String> {
     let own = std::fs::read_to_string("/proc/self/cgroup")
         .ok()
         .as_deref()
         .and_then(own)
         .ok_or("no cgroup v2 hierarchy")?;
-    let base = base(&own);
-    if base == "/" || base.is_empty() {
-        return Err("the agent runs in the root cgroup".into());
-    }
+    let base = base(&own).ok_or_else(|| {
+        format!("the agent runs in {own}, not a delegated agent leaf: its unit needs Delegate=yes and DelegateSubgroup=agent (systemd 254+)")
+    })?;
     let dir = Path::new(ROOT).join(base.trim_start_matches('/'));
     let write = |path: PathBuf, value: &str| {
         std::fs::write(&path, value).map_err(|e| format!("{}: {e}", path.display()))
@@ -104,11 +109,6 @@ pub fn delegate() -> Result<Cgroups, String> {
             path.display()
         )),
     };
-    make(dir.join("agent"))?;
-    write(
-        dir.join("agent/cgroup.procs"),
-        &std::process::id().to_string(),
-    )?;
     write(dir.join("cgroup.subtree_control"), "+cpu +memory")?;
     make(dir.join("vms"))?;
     write(dir.join("vms/cgroup.subtree_control"), "+cpu +memory")?;
@@ -129,13 +129,11 @@ mod tests {
         );
         assert_eq!(own("1:name=systemd:/x\n"), None);
         assert_eq!(
-            base("/system.slice/grund-agent.service/agent"),
-            "/system.slice/grund-agent.service"
+            base("/system.slice/grund-agent.service/agent").as_deref(),
+            Some("/system.slice/grund-agent.service")
         );
-        assert_eq!(
-            base("/system.slice/grund-agent.service"),
-            "/system.slice/grund-agent.service"
-        );
+        assert_eq!(base("/system.slice/grund-agent.service"), None);
+        assert_eq!(base("/agent"), None);
     }
 
     #[test]
