@@ -209,9 +209,8 @@ code,
 }
 
 .brand-mark {
-  width: 2.375rem;
-  height: 1.8rem;
-  color: var(--accent);
+  width: 2.5rem;
+  height: 2.5rem;
 }
 
 /* ------------------------------------------------------------ app shell */
@@ -1047,6 +1046,11 @@ a.nav-item:hover {
     padding: 0;
     margin-right: auto;
     font-size: 1.375rem;
+  }
+
+  .sidebar .brand-mark {
+    width: 2rem;
+    height: 2rem;
   }
 
   .nav {

@@ -58,6 +58,7 @@ async fn the_stylesheet_each_page_links_is_served_and_cached_for_a_year() -> any
         "/static/fonts/inter-latin.woff2",
         "/static/fonts/jetbrains-mono-latin.woff2",
         "/static/favicon.svg",
+        "/static/mark.svg",
     ] {
         when.visiting(font).await?;
         then.status(200).map_err(|e| e.context(font))?;

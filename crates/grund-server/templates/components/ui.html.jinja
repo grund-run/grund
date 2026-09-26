@@ -3,7 +3,7 @@
 {%- endmacro %}
 
 {% macro brand(href="/") -%}
-<a class="brand" href="{{ href }}"><svg class="brand-mark" aria-hidden="true"><use href="#mark"/></svg>grund</a>
+<a class="brand" href="{{ href }}"><img class="brand-mark" src="/static/mark.svg" alt="" width="40" height="40">grund</a>
 {%- endmacro %}
 
 {% macro csrf_field(token) -%}
