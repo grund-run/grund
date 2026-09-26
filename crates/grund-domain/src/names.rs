@@ -63,6 +63,8 @@ pub enum NameError {
     Characters,
     #[error("that name is reserved")]
     Reserved,
+    #[error("use 1 to 32 characters")]
+    MachineLength,
 }
 
 impl Username {
@@ -110,6 +112,59 @@ impl Username {
 }
 
 impl std::fmt::Display for Username {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// A machine's name within its pool, also its label in
+/// `<machine>.machines.grund.internal`: 1–32 of `a-z 0-9`, single hyphens
+/// between them, stored lowercase.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct MachineName(String);
+
+impl MachineName {
+    pub fn parse(input: &str) -> Result<Self, NameError> {
+        let name = input.trim().to_ascii_lowercase();
+        if !(1..=32).contains(&name.len()) {
+            return Err(NameError::MachineLength);
+        }
+        let grammar = name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            && !name.starts_with('-')
+            && !name.ends_with('-')
+            && !name.contains("--");
+        if !grammar {
+            return Err(NameError::Characters);
+        }
+        Ok(Self(name))
+    }
+
+    /// A name made from what a machine reported (its hostname), or `None`
+    /// when nothing usable is left.
+    pub fn suggest(input: &str) -> Option<Self> {
+        let first_label = input.trim().split('.').next().unwrap_or_default();
+        let mut name = String::new();
+        for c in first_label.chars() {
+            let c = c.to_ascii_lowercase();
+            if c.is_ascii_lowercase() || c.is_ascii_digit() {
+                name.push(c);
+            } else if !name.is_empty() && !name.ends_with('-') {
+                name.push('-');
+            }
+        }
+        let name: String = name.trim_end_matches('-').chars().take(32).collect();
+        Self::parse(name.trim_end_matches('-')).ok()
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for MachineName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
     }
@@ -268,6 +323,24 @@ mod tests {
         ] {
             assert!(EmailAddress::parse(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn a_machine_name_may_be_short_but_keeps_the_grammar() {
+        assert_eq!(MachineName::parse(" Web-1 ").unwrap().as_str(), "web-1");
+        assert_eq!(MachineName::parse("a").unwrap().as_str(), "a");
+        for bad in ["", "-a", "a-", "a--b", "a_b", &"a".repeat(33)] {
+            assert!(MachineName::parse(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_hostname_becomes_a_machine_name_from_its_first_label() {
+        assert_eq!(
+            MachineName::suggest("Closet_Box.local").unwrap().as_str(),
+            "closet-box"
+        );
+        assert_eq!(MachineName::suggest("..."), None);
     }
 
     #[test]

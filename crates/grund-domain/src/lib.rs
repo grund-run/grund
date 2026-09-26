@@ -7,6 +7,7 @@
 //! these types, which is why they live apart from the server.
 
 pub mod account;
+pub mod machine;
 pub mod names;
 
 pub mod organisation;
