@@ -1,4 +1,8 @@
+# Exactly the toolchain in CI's image (rust:1.98.1-alpine3.24). A channel
+# like "1.98" names a different toolchain than the image's 1.98.1, so rustup
+# downloaded and installed a second full toolchain in every CI step. Move
+# this and the image tag together.
 [toolchain]
-channel = "1.98"
+channel = "1.98.1"
 components = ["clippy", "rustfmt"]
 profile = "minimal"

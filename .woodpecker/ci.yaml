@@ -62,7 +62,7 @@ steps:
     # The same image the shipped binary is built in, so a toolchain
     # difference cannot pass here and fail there. Its own target directory:
     # cargo locks a target directory per build, and lint runs beside test.
-    image: rust:1.98-alpine
+    image: rust:1.98.1-alpine3.24
     depends_on: []
     environment:
       CARGO_TERM_COLOR: always
@@ -90,7 +90,7 @@ steps:
       - if [ "$${CI_PIPELINE_EVENT}" = "pull_request" ]; then buf breaking proto --against "https://git.kjuulh.io/grund/grund.git#branch=main,subdir=proto"; fi
 
   test:
-    image: rust:1.98-alpine
+    image: rust:1.98.1-alpine3.24
     depends_on: []
     environment:
       CARGO_TERM_COLOR: always
@@ -120,7 +120,7 @@ steps:
     # rust:*-alpine targets musl natively: the release binary is static, which
     # is what lets it run on scratch. build.rs compiles CI_COMMIT_SHA into
     # /health/ready as "revision".
-    image: rust:1.98-alpine
+    image: rust:1.98.1-alpine3.24
     depends_on: []
     environment:
       CARGO_TERM_COLOR: always
@@ -137,7 +137,7 @@ steps:
     # `test` compiled and ran against a spawned binary, pointed at the staged
     # release binary. The harness is a black-box HTTP client, so it does not
     # need to be compiled in release itself.
-    image: rust:1.98-alpine
+    image: rust:1.98.1-alpine3.24
     depends_on: [test, release]
     environment:
       GRUND_ACCEPT_MAILPIT_URL: http://contract-mailpit:8025

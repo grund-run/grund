@@ -3,7 +3,7 @@
 # Builds grund from source, for `docker compose up` from a clone. CI does not
 # use this file: it builds and tests the binary once and packages that one
 # with Dockerfile.prebuilt. The runtime stages of the two files are identical.
-FROM rust:1.98-alpine AS build
+FROM rust:1.98.1-alpine3.24 AS build
 # musl-dev: rust:*-alpine targets musl, so the binary is static and runs on
 # scratch. protobuf-dev: protoc and the well-known types, for the API codegen.
 RUN apk add --no-cache musl-dev protobuf-dev
