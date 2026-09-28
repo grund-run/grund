@@ -51,6 +51,11 @@ pub struct Member {
     pub endpoint_id: String,
     /// The member's /64 within the network's prefix. Never 0.
     pub slot: u16,
+    /// The machine's name in its pool, a DNS label: it answers as
+    /// `<name>.machines.grund.internal` ([`crate::dns`]). Lists signed
+    /// before names were carried have none, and encode as they did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 /// A membership list as it travels: the list's bytes, and the signature over
@@ -90,6 +95,12 @@ pub enum MembershipError {
     /// Two members share a key.
     #[error("endpoint id {0} is listed twice")]
     DuplicateEndpointId(String),
+    /// A member's name is not a DNS label of `a-z 0-9` and inner hyphens.
+    #[error("member {0} has a name that is not a DNS label")]
+    BadName(String),
+    /// Two members share a name.
+    #[error("the name {0} is given to two members")]
+    DuplicateName(String),
 }
 
 impl SignedList {
@@ -145,6 +156,7 @@ impl MembershipList {
         }
         let mut slots = HashSet::new();
         let mut keys = HashSet::new();
+        let mut names = HashSet::new();
         for m in &self.members {
             if m.slot == 0 {
                 return Err(MembershipError::ReservedSlot(m.machine_id.clone()));
@@ -156,6 +168,14 @@ impl MembershipList {
                 .map_err(|_| MembershipError::BadEndpointId(m.machine_id.clone()))?;
             if !keys.insert(id) {
                 return Err(MembershipError::DuplicateEndpointId(m.endpoint_id.clone()));
+            }
+            if let Some(name) = &m.name {
+                if !is_label(name) {
+                    return Err(MembershipError::BadName(m.machine_id.clone()));
+                }
+                if !names.insert(name.as_str()) {
+                    return Err(MembershipError::DuplicateName(name.clone()));
+                }
             }
         }
         Ok(())
@@ -179,12 +199,30 @@ impl MembershipList {
         self.members.iter().find(|m| m.slot == slot)
     }
 
+    /// The member with this name, compared as DNS does, ignoring ASCII case.
+    pub fn member_by_name(&self, name: &str) -> Option<&Member> {
+        self.members.iter().find(|m| {
+            m.name
+                .as_deref()
+                .is_some_and(|n| n.eq_ignore_ascii_case(name))
+        })
+    }
+
     /// The member with this key, if any.
     pub fn member_by_id(&self, id: &EndpointId) -> Option<&Member> {
         self.members
             .iter()
             .find(|m| EndpointId::from_str(&m.endpoint_id).is_ok_and(|e| &e == id))
     }
+}
+
+fn is_label(name: &str) -> bool {
+    (1..=63).contains(&name.len())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && !name.starts_with('-')
+        && !name.ends_with('-')
 }
 
 mod b64 {
@@ -219,11 +257,13 @@ mod tests {
                     machine_id: "m_a".into(),
                     endpoint_id: id(1),
                     slot: 1,
+                    name: Some("a".into()),
                 },
                 Member {
                     machine_id: "m_b".into(),
                     endpoint_id: id(2),
                     slot: 2,
+                    name: Some("b".into()),
                 },
             ],
         }
@@ -240,12 +280,46 @@ mod tests {
                 machine_id: "m_a".into(),
                 endpoint_id: "e".into(),
                 slot: 1,
+                name: None,
             }],
         };
         assert_eq!(
             String::from_utf8(l.encode()).unwrap(),
             r#"{"network_id":"net_test","epoch":3,"prefix":"fd12:3456:789a::","issued_at":1790000000,"members":[{"machine_id":"m_a","endpoint_id":"e","slot":1}]}"#
         );
+    }
+
+    #[test]
+    fn a_named_member_carries_its_name_after_its_slot() {
+        let mut l = list();
+        l.members.truncate(1);
+        l.members[0].endpoint_id = "e".into();
+        assert_eq!(
+            String::from_utf8(l.encode()).unwrap(),
+            r#"{"network_id":"net_test","epoch":3,"prefix":"fd12:3456:789a::","issued_at":1790000000,"members":[{"machine_id":"m_a","endpoint_id":"e","slot":1,"name":"a"}]}"#
+        );
+    }
+
+    #[test]
+    fn names_are_dns_labels_given_once_and_found_in_any_case() {
+        let l = list();
+        assert_eq!(l.member_by_name("B").map(|m| m.slot), Some(2));
+        assert!(l.member_by_name("c").is_none());
+        let mut twice = list();
+        twice.members[1].name = Some("a".into());
+        assert_eq!(
+            twice.validate(),
+            Err(MembershipError::DuplicateName("a".into()))
+        );
+        for bad in ["", "-a", "a-", "A", "a.b", "a_b"] {
+            let mut l = list();
+            l.members[0].name = Some(bad.into());
+            assert_eq!(
+                l.validate(),
+                Err(MembershipError::BadName("m_a".into())),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]

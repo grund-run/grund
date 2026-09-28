@@ -14,6 +14,10 @@
 //! - a list is accepted only with a newer epoch. Until a newer one arrives the
 //!   mesh keeps the last one it verified (fail-static, network.md §5.3).
 //!
+//! The endpoint can be replaced while the mesh runs ([`Mesh::attach`]): a
+//! machine whose uplink address changed binds a new one with the same key,
+//! and its peers find it again through the relay.
+//!
 //! Not built yet: the closed-by-default filter on declared ports, epoch
 //! gossip between members, and containers' addresses in the /64.
 
@@ -67,7 +71,9 @@ pub struct Mesh {
 
 #[derive(Debug)]
 struct Inner {
-    endpoint: Endpoint,
+    own: EndpointId,
+    endpoint: RwLock<Option<Endpoint>>,
+    up: watch::Sender<Option<Ipv6Addr>>,
     config: MeshConfig,
     view: RwLock<Option<View>>,
     tun: tokio::sync::OnceCell<Tun>,
@@ -103,6 +109,7 @@ struct Counters {
     refused_non_members: AtomicU64,
     lists_applied: AtomicU64,
     lists_refused_stale: AtomicU64,
+    endpoints_attached: AtomicU64,
 }
 
 /// What a mesh is doing, for status output and tests.
@@ -130,14 +137,20 @@ pub struct PeerStatus {
     /// The selected path of the newest connection: `direct <addr>`,
     /// `relay <url>` or `none`.
     pub path: String,
+    /// The peer's direct addresses this machine knows, as the peer offered
+    /// them or as they were seen: its candidates for hole punching.
+    pub direct_addrs: Vec<std::net::SocketAddr>,
 }
 
 impl Mesh {
-    /// A mesh on `endpoint`. Nothing runs until [`Mesh::run`].
-    pub fn new(endpoint: Endpoint, config: MeshConfig) -> Self {
+    /// A mesh for the machine whose key is `own`. It moves packets once it
+    /// has an endpoint ([`Mesh::attach`]) and runs ([`Mesh::run`]).
+    pub fn new(own: EndpointId, config: MeshConfig) -> Self {
         Self {
             inner: Arc::new(Inner {
-                endpoint,
+                own,
+                endpoint: RwLock::new(None),
+                up: watch::Sender::new(None),
                 config,
                 view: RwLock::new(None),
                 tun: tokio::sync::OnceCell::new(),
@@ -145,6 +158,57 @@ impl Mesh {
                 counters: Counters::default(),
             }),
         }
+    }
+
+    /// Makes `endpoint` the one the mesh dials from, in place of any
+    /// earlier one, whose connections are closed: they ran over sockets the
+    /// machine no longer offers. Register the mesh with the new endpoint's
+    /// iroh `Router` for [`crate::NET_ALPN`] too.
+    pub fn attach(&self, endpoint: Endpoint) -> anyhow::Result<()> {
+        if endpoint.id() != self.inner.own {
+            bail!("the endpoint's key is not this machine's");
+        }
+        let old = self
+            .inner
+            .endpoint
+            .write()
+            .expect("endpoint lock")
+            .replace(endpoint);
+        if old.is_some() {
+            self.inner
+                .peers
+                .lock()
+                .expect("peers lock")
+                .drain()
+                .for_each(|(_, p)| close_all(p));
+        }
+        self.inner.counters.endpoints_attached.fetch_add(1, Relaxed);
+        Ok(())
+    }
+
+    /// The endpoint the mesh dials from now, if it has one.
+    pub fn endpoint(&self) -> Option<Endpoint> {
+        self.inner.endpoint.read().expect("endpoint lock").clone()
+    }
+
+    /// Waits until `grund0` is up, and returns the machine's address on it.
+    pub async fn up(&self) -> Ipv6Addr {
+        let mut up = self.inner.up.subscribe();
+        loop {
+            if let Some(address) = *up.borrow_and_update() {
+                return address;
+            }
+            if up.changed().await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        }
+    }
+
+    /// Gives `grund0` another address in the machine's /64, such as the
+    /// stub resolver's. Only once the mesh is [`Mesh::up`].
+    pub fn add_address(&self, address: Ipv6Addr) -> anyhow::Result<()> {
+        let tun = self.inner.tun.get().context("grund0 is not up yet")?;
+        tun.add_address(address, 48)
     }
 
     /// Runs the mesh: waits for the first verified list that names this
@@ -155,7 +219,7 @@ impl Mesh {
         &self,
         mut lists: watch::Receiver<Option<MembershipList>>,
     ) -> anyhow::Result<()> {
-        let own = self.inner.endpoint.id();
+        let own = self.inner.own;
         let first = loop {
             if let Some(list) = lists.borrow_and_update().clone()
                 && list.member_by_id(&own).is_some()
@@ -175,6 +239,7 @@ impl Mesh {
         let tun = Tun::create(&self.inner.config.tun_name, address, 48)?;
         self.inner.tun.set(tun).expect("run is called once");
         self.apply(first)?;
+        self.inner.up.send_replace(Some(address));
         tracing::info!(%address, "mesh: up");
 
         let reader = tokio::spawn(self.clone().tun_to_peers());
@@ -193,7 +258,36 @@ impl Mesh {
     }
 
     /// What the mesh is doing now.
-    pub fn status(&self) -> MeshStatus {
+    pub async fn status(&self) -> MeshStatus {
+        let mut status = self.snapshot();
+        if let Some(endpoint) = self.endpoint() {
+            for peer in &mut status.peers {
+                let Ok(id) = EndpointId::from_str(&peer.endpoint_id) else {
+                    continue;
+                };
+                let info = tokio::time::timeout(
+                    std::time::Duration::from_secs(1),
+                    endpoint.remote_info(id),
+                )
+                .await
+                .ok()
+                .flatten();
+                if let Some(info) = info {
+                    peer.direct_addrs = info
+                        .addrs()
+                        .filter_map(|a| match a.addr() {
+                            TransportAddr::Ip(ip) => Some(*ip),
+                            _ => None,
+                        })
+                        .collect();
+                    peer.direct_addrs.sort();
+                }
+            }
+        }
+        status
+    }
+
+    fn snapshot(&self) -> MeshStatus {
         let view = self.inner.view.read().expect("view lock").clone();
         let peers = self.inner.peers.lock().expect("peers lock");
         let c = &self.inner.counters;
@@ -211,6 +305,7 @@ impl Mesh {
             ("refused_non_members", &c.refused_non_members),
             ("lists_applied", &c.lists_applied),
             ("lists_refused_stale", &c.lists_refused_stale),
+            ("endpoints_attached", &c.endpoints_attached),
         ]
         .into_iter()
         .map(|(k, v)| (k, v.load(Relaxed)))
@@ -232,6 +327,7 @@ impl Mesh {
                         .last()
                         .map(describe_path)
                         .unwrap_or_else(|| "none".into()),
+                    direct_addrs: Vec::new(),
                 })
                 .collect(),
             counters,
@@ -240,7 +336,7 @@ impl Mesh {
 
     fn apply(&self, list: MembershipList) -> anyhow::Result<()> {
         list.validate()?;
-        let own = self.inner.endpoint.id();
+        let own = self.inner.own;
         let mut view = self.inner.view.write().expect("view lock");
         if let Some(current) = view.as_ref() {
             if list.epoch <= current.list.epoch {
@@ -371,13 +467,15 @@ impl Mesh {
         for url in &self.inner.config.relays {
             addr = addr.with_relay_url(url.clone());
         }
-        let result =
-            match tokio::time::timeout(DIAL_TIMEOUT, self.inner.endpoint.connect(addr, NET_ALPN))
-                .await
-            {
-                Ok(r) => r.map_err(|e| e.to_string()),
-                Err(_) => Err(format!("no connection within {DIAL_TIMEOUT:?}")),
-            };
+        let result = match self.endpoint() {
+            None => Err("no endpoint yet".to_string()),
+            Some(endpoint) => {
+                match tokio::time::timeout(DIAL_TIMEOUT, endpoint.connect(addr, NET_ALPN)).await {
+                    Ok(r) => r.map_err(|e| e.to_string()),
+                    Err(_) => Err(format!("no connection within {DIAL_TIMEOUT:?}")),
+                }
+            }
+        };
         {
             let mut peers = self.inner.peers.lock().expect("peers lock");
             if let Some(peer) = peers.get_mut(&target) {

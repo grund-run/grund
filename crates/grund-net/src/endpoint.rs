@@ -15,7 +15,9 @@
 //!   interface, tailnets, WireGuard and docker bridges included. So the
 //!   endpoint binds the addresses of the interface that carries the default
 //!   route ([`uplink_addrs`]), and iroh's address discovery adds the public
-//!   address a NAT maps them to.
+//!   address a NAT maps them to. iroh cannot move a bound socket to another
+//!   address, so when the uplink's addresses change, the machine binds a new
+//!   endpoint with the same key (grund-agent `net.rs`, [`uplinks`]).
 
 use std::{
     net::{IpAddr, SocketAddr},
@@ -49,8 +51,19 @@ pub const NOT_UPLINKS: &[&str] = &[
     "cni",
     "flannel",
     "cali",
+    "cilium",
+    "kube-",
+    "weave",
+    "vxlan",
+    "podman",
+    "lxcbr",
+    "lxdbr",
+    "vnet",
+    "tun",
+    "tap",
     "utun",
     "zt",
+    "nebula",
 ];
 
 /// How an endpoint is built.
@@ -113,11 +126,7 @@ pub async fn bind(
         .clear_ip_transports();
     let addrs = match &config.bind {
         Bind::Addrs(addrs) => addrs.clone(),
-        Bind::Uplinks(port) => uplink_addrs()
-            .await
-            .into_iter()
-            .map(|ip| SocketAddr::new(ip, *port))
-            .collect(),
+        Bind::Uplinks(port) => bind_addrs(&uplink_addrs().await, *port),
     };
     if addrs.is_empty() {
         anyhow::bail!("no uplink address to bind: no interface carries a default route");
@@ -146,28 +155,75 @@ pub async fn bind(
     Ok(endpoint)
 }
 
-/// The addresses a machine offers its peers: those of the interface that
-/// carries the default route, or, when there is none, of every interface
-/// that is not a tunnel or bridge ([`NOT_UPLINKS`]). Loopback, link-local
-/// and IPv6 unique-local addresses are left out: the last are what private
-/// networks and tailnets hand out.
-pub async fn uplink_addrs() -> Vec<IpAddr> {
+/// The uplink as the machine sees it now: the interface carrying the
+/// default route, and the addresses [`select_uplinks`] offers from it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Uplinks {
+    /// The interface with the default route, if any.
+    pub default_route: Option<String>,
+    /// What the endpoint binds and offers peers, sorted.
+    pub addrs: Vec<IpAddr>,
+}
+
+/// One interface as [`select_uplinks`] sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Interface {
+    pub name: String,
+    pub up: bool,
+    pub addrs: Vec<IpAddr>,
+}
+
+/// Reads the interfaces and picks the uplink ([`select_uplinks`]).
+pub async fn uplinks() -> Uplinks {
     let state = netwatch::interfaces::State::new().await;
+    let interfaces: Vec<Interface> = state
+        .interfaces
+        .values()
+        .map(|i| Interface {
+            name: i.name().to_string(),
+            up: i.is_up(),
+            addrs: i.addrs().map(|net| net.addr()).collect(),
+        })
+        .collect();
+    let default_route = state.default_route_interface.clone();
+    Uplinks {
+        addrs: select_uplinks(default_route.as_deref(), &interfaces),
+        default_route,
+    }
+}
+
+/// What an endpoint binds of `addrs`: the first of each address family, on
+/// `port`. A machine that has two IPv6 addresses on its uplink (a stable one
+/// and a temporary one) binds one, so a new temporary address is not a
+/// reason to rebind.
+pub fn bind_addrs(addrs: &[IpAddr], port: u16) -> Vec<SocketAddr> {
+    [true, false]
+        .into_iter()
+        .filter_map(|v4| addrs.iter().find(|a| a.is_ipv4() == v4))
+        .map(|ip| SocketAddr::new(*ip, port))
+        .collect()
+}
+
+/// The addresses a machine offers its peers ([`uplinks`]).
+pub async fn uplink_addrs() -> Vec<IpAddr> {
+    uplinks().await.addrs
+}
+
+/// The addresses a machine offers its peers: those of the interface that
+/// carries the default route, or, when there is none or it is itself a
+/// tunnel, of every interface that is not a tunnel or bridge
+/// ([`NOT_UPLINKS`]). Loopback, link-local and IPv6 unique-local addresses
+/// are left out: the last are what private networks and tailnets hand out.
+pub fn select_uplinks(default_route: Option<&str>, interfaces: &[Interface]) -> Vec<IpAddr> {
     let usable = |name: &str| !NOT_UPLINKS.iter().any(|p| name.starts_with(p));
-    let names: Vec<String> = match &state.default_route_interface {
-        Some(name) if usable(name) => vec![name.clone()],
-        _ => state
-            .interfaces
-            .keys()
-            .filter(|n| usable(n))
-            .cloned()
-            .collect(),
+    let chosen: Vec<&Interface> = match default_route {
+        Some(name) if usable(name) => interfaces.iter().filter(|i| i.name == name).collect(),
+        _ => interfaces.iter().filter(|i| usable(&i.name)).collect(),
     };
-    let mut out: Vec<IpAddr> = names
-        .iter()
-        .filter_map(|n| state.interfaces.get(n))
-        .filter(|i| i.is_up())
-        .flat_map(|i| i.addrs().map(|net| net.addr()).collect::<Vec<_>>())
+    let mut out: Vec<IpAddr> = chosen
+        .into_iter()
+        .filter(|i| i.up)
+        .flat_map(|i| i.addrs.iter().copied())
         .filter(is_offerable)
         .collect();
     out.sort();
@@ -191,6 +247,82 @@ fn is_offerable(ip: &IpAddr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn iface(name: &str, addrs: &[&str]) -> Interface {
+        Interface {
+            name: name.into(),
+            up: true,
+            addrs: addrs.iter().map(|a| a.parse().unwrap()).collect(),
+        }
+    }
+
+    fn a_busy_host() -> Vec<Interface> {
+        vec![
+            iface("lo", &["127.0.0.1", "::1"]),
+            iface("enp5s0", &["192.168.1.20", "2a01:4f8::20", "fe80::1"]),
+            iface("wg0", &["10.0.0.5"]),
+            iface("tailscale0", &["100.101.1.2", "fd7a:115c:a1e0::2"]),
+            iface("docker0", &["172.17.0.1"]),
+            iface("br-3f2a", &["172.18.0.1", "10.254.1.1"]),
+            iface("veth12ab", &["fe80::2"]),
+            iface("grund0", &["fd12:3456:789a:1::1"]),
+        ]
+    }
+
+    #[test]
+    fn only_the_default_routes_interface_is_offered_never_tunnels_or_bridges() {
+        let got = select_uplinks(Some("enp5s0"), &a_busy_host());
+        assert_eq!(
+            got,
+            vec![
+                "192.168.1.20".parse::<IpAddr>().unwrap(),
+                "2a01:4f8::20".parse().unwrap()
+            ]
+        );
+    }
+
+    #[test]
+    fn a_default_route_through_a_tunnel_falls_back_to_the_real_interfaces() {
+        for tunnel in ["wg0", "tailscale0", "tun0"] {
+            let got = select_uplinks(Some(tunnel), &a_busy_host());
+            assert_eq!(
+                got,
+                vec![
+                    "192.168.1.20".parse::<IpAddr>().unwrap(),
+                    "2a01:4f8::20".parse().unwrap()
+                ],
+                "{tunnel}"
+            );
+        }
+        assert_eq!(select_uplinks(None, &a_busy_host()).len(), 2);
+    }
+
+    #[test]
+    fn one_address_per_family_is_bound() {
+        let addrs: Vec<IpAddr> = [
+            "192.168.1.20",
+            "2a01:4f8::20",
+            "2a01:4f8::99",
+            "192.168.1.21",
+        ]
+        .iter()
+        .map(|a| a.parse().unwrap())
+        .collect();
+        assert_eq!(
+            bind_addrs(&addrs, 7),
+            vec![
+                "192.168.1.20:7".parse::<SocketAddr>().unwrap(),
+                "[2a01:4f8::20]:7".parse().unwrap()
+            ]
+        );
+    }
+
+    #[test]
+    fn a_down_uplink_offers_nothing() {
+        let mut interfaces = a_busy_host();
+        interfaces[1].up = false;
+        assert!(select_uplinks(Some("enp5s0"), &interfaces).is_empty());
+    }
 
     #[test]
     fn link_local_loopback_and_unique_local_addresses_are_never_offered() {

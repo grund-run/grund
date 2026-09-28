@@ -11,23 +11,46 @@
 //! and public key), is for the pinned network and prefix, and is newer than
 //! the last one. Otherwise the mesh keeps the last good list (fail-static).
 //!
+//! The endpoint binds only the uplink's addresses, so peers are never
+//! offered docker, WireGuard or tailnet addresses (grund-net `endpoint`).
+//! Every [`UPLINK_POLL`] the agent looks again: when an address it bound is
+//! gone it binds a new endpoint with the same key and hands it to the mesh;
+//! when only the route or the other addresses changed it tells iroh
+//! (`network_change`), which probes its paths again at once instead of at
+//! its next scheduled check.
+//!
+//! Once `grund0` is up, the agent answers `<name>.machines.grund.internal`
+//! on `prefix:slot::53` from the list (grund-net `dns`), and forwards other
+//! names to the resolvers in `/etc/resolv.conf`. It does not point the
+//! machine's own resolver at itself.
+//!
 //! The mesh needs `CAP_NET_ADMIN` for the TUN device, so a machine whose
 //! agent does not run as root skips it; service forwards for rootless
-//! machines are not built. With no relay URLs yet, members reach each other
-//! only where a direct path exists (the same LAN, or open UDP).
+//! machines are not built. Relays are trusted by the system's certificate
+//! store ([`relay_roots`]). With no relay, members reach each other only
+//! where a direct path exists (the same LAN, or open UDP).
 
-use std::{net::Ipv6Addr, str::FromStr, time::Duration};
+use std::{
+    net::{IpAddr, Ipv6Addr, SocketAddr},
+    str::FromStr,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering::Relaxed},
+    },
+    time::Duration,
+};
 
 use anyhow::{Context, bail};
 use ed25519_dalek::VerifyingKey;
 use grund_net::{
     NET_ALPN,
-    endpoint::{self, NetConfig},
+    endpoint::{self, Bind, NetConfig},
     membership::{MembershipList, SignedList},
     mesh::{Mesh, MeshConfig},
 };
 use grund_proto::grund::agent::v1::{GetMembershipRequest, GetMembershipResponse};
 use iroh::RelayUrl;
+use rustls::pki_types::CertificateDer;
 use tokio::sync::watch;
 
 use crate::{agent::Link, join::NetworkRecord};
@@ -96,7 +119,61 @@ fn pinned_key(network: &NetworkRecord) -> anyhow::Result<VerifyingKey> {
     VerifyingKey::from_bytes(&bytes).context("the pinned network key")
 }
 
-pub(crate) async fn run(link: Link, network: NetworkRecord, seed: [u8; 32]) -> anyhow::Result<()> {
+/// The file where the agent writes what its network is doing, every
+/// second, for operators and tests: the mesh's peers and paths, the uplink
+/// it offers, and how often it rebound.
+pub const STATUS_FILE: &str = "network.json";
+
+/// How often the agent looks at the uplink for a changed address or route.
+pub const UPLINK_POLL: Duration = Duration::from_secs(2);
+
+/// The root certificates the machine trusts for grund's relays: the
+/// system's store, as for the instance itself ([`crate::join::http_client`]),
+/// so a self-hosted relay with its own CA works once that CA is installed.
+/// `None` without a store: iroh's built-in web roots.
+pub fn relay_roots() -> anyhow::Result<Option<Vec<CertificateDer<'static>>>> {
+    use rustls::pki_types::pem::PemObject;
+    let path = std::env::var_os("SSL_CERT_FILE")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            crate::join::SYSTEM_ROOTS
+                .iter()
+                .map(std::path::PathBuf::from)
+                .find(|p| std::fs::metadata(p).is_ok_and(|m| m.len() > 0))
+        });
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let pem = std::fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+    let roots = CertificateDer::pem_slice_iter(&pem)
+        .filter_map(Result::ok)
+        .collect::<Vec<_>>();
+    Ok((!roots.is_empty()).then_some(roots))
+}
+
+/// Whether the endpoint bound to `bound` must be replaced for an uplink
+/// now offering `now`: an address it holds is gone, or an address family
+/// appeared or went. A new address beside ones still there is not a reason.
+pub fn needs_rebind(bound: &[SocketAddr], now: &[IpAddr]) -> bool {
+    let families = |v4: bool| now.iter().any(|a| a.is_ipv4() == v4);
+    bound.iter().any(|b| !now.contains(&b.ip()))
+        || [true, false]
+            .into_iter()
+            .any(|v4| families(v4) != bound.iter().any(|b| b.is_ipv4() == v4))
+}
+
+#[derive(Debug, Default)]
+struct Counters {
+    rebinds: AtomicU64,
+    network_changes: AtomicU64,
+}
+
+pub(crate) async fn run(
+    link: Link,
+    network: NetworkRecord,
+    seed: [u8; 32],
+    data_dir: std::path::PathBuf,
+) -> anyhow::Result<()> {
     if unsafe { libc::geteuid() } != 0 {
         tracing::warn!(
             "private network skipped: grund0 needs root (CAP_NET_ADMIN); rootless forwards are not built"
@@ -109,31 +186,138 @@ pub(crate) async fn run(link: Link, network: NetworkRecord, seed: [u8; 32]) -> a
         .iter()
         .map(|u| RelayUrl::from_str(u).with_context(|| format!("relay URL {u}")))
         .collect::<anyhow::Result<Vec<_>>>()?;
-    let config = NetConfig {
-        relays: relays.clone(),
-        ..NetConfig::default()
-    };
-    let endpoint = endpoint::bind(
-        grund_net::key::secret_key(&seed),
-        &config,
-        vec![NET_ALPN.to_vec()],
-    )
-    .await?;
+    let key = grund_net::key::secret_key(&seed);
+    let own_id = key.public();
     let mesh = Mesh::new(
-        endpoint.clone(),
+        own_id,
         MeshConfig {
             tun_name: TUN_NAME.into(),
-            relays,
+            relays: relays.clone(),
         },
     );
-    let _router = iroh::protocol::Router::builder(endpoint)
-        .accept(NET_ALPN, mesh.clone())
-        .spawn();
+    let config = NetConfig {
+        relays,
+        relay_roots: relay_roots()?,
+        ..NetConfig::default()
+    };
+    let counters = Arc::new(Counters::default());
     let (tx, rx) = watch::channel(None);
+    let lists = tx.subscribe();
     tracing::info!(network = %network.network_id, slot = network.slot, "private network: starting");
     tokio::select! {
         result = mesh.run(rx) => result,
         result = follow(&link, &network, tx) => result,
+        result = carry(&mesh, key, &config, &counters) => result,
+        result = resolve(&mesh, lists, own_id) => result,
+        () = report(&mesh, &counters, &data_dir) => Ok(()),
+    }
+}
+
+async fn carry(
+    mesh: &Mesh,
+    key: iroh::SecretKey,
+    config: &NetConfig,
+    counters: &Counters,
+) -> anyhow::Result<()> {
+    let mut bound: Option<(Vec<SocketAddr>, iroh::protocol::Router)> = None;
+    let mut last = endpoint::Uplinks::default();
+    let mut tick = tokio::time::interval(UPLINK_POLL);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tick.tick().await;
+        let now = endpoint::uplinks().await;
+        match &bound {
+            Some((addrs, router)) if !needs_rebind(addrs, &now.addrs) => {
+                if now != last {
+                    tracing::info!(uplink = ?now.default_route, addrs = ?now.addrs, "private network: the network changed; telling iroh");
+                    router.endpoint().network_change().await;
+                    counters.network_changes.fetch_add(1, Relaxed);
+                }
+            }
+            _ => {
+                let addrs = endpoint::bind_addrs(&now.addrs, 0);
+                if addrs.is_empty() {
+                    if now != last {
+                        tracing::warn!("private network: no uplink address; waiting for one");
+                    }
+                    last = now;
+                    continue;
+                }
+                let config = NetConfig {
+                    bind: Bind::Addrs(addrs),
+                    ..config.clone()
+                };
+                let endpoint = match endpoint::bind(key.clone(), &config, vec![NET_ALPN.to_vec()])
+                    .await
+                {
+                    Ok(endpoint) => endpoint,
+                    Err(error) => {
+                        tracing::warn!(error = %format!("{error:#}"), "private network: binding the uplink failed; trying again");
+                        continue;
+                    }
+                };
+                let addrs = endpoint.bound_sockets();
+                mesh.attach(endpoint.clone())?;
+                let router = iroh::protocol::Router::builder(endpoint)
+                    .accept(NET_ALPN, mesh.clone())
+                    .spawn();
+                if let Some((old, old_router)) = bound.replace((addrs.clone(), router)) {
+                    tracing::info!(from = ?old, to = ?addrs, "private network: the uplink's address changed; rebound");
+                    counters.rebinds.fetch_add(1, Relaxed);
+                    let _ = old_router.shutdown().await;
+                } else {
+                    tracing::info!(bound = ?addrs, "private network: bound to the uplink");
+                }
+            }
+        }
+        last = now;
+    }
+}
+
+async fn resolve(
+    mesh: &Mesh,
+    lists: watch::Receiver<Option<MembershipList>>,
+    own_id: iroh::EndpointId,
+) -> anyhow::Result<()> {
+    let own = mesh.up().await;
+    let address = {
+        let mut segments = own.segments();
+        segments[7] = grund_net::dns::RESOLVER_HOST;
+        Ipv6Addr::from(segments)
+    };
+    mesh.add_address(address)?;
+    let socket = tokio::net::UdpSocket::bind(SocketAddr::new(address.into(), 53))
+        .await
+        .with_context(|| format!("bind the stub resolver on [{address}]:53"))?;
+    let prefix = Ipv6Addr::from({
+        let mut o = own.octets();
+        o[6..].fill(0);
+        o
+    });
+    let upstreams = grund_net::dns::upstreams(
+        &std::fs::read_to_string("/etc/resolv.conf").unwrap_or_default(),
+        prefix,
+    );
+    tracing::info!(%address, ?upstreams, "private network: resolving *.machines.grund.internal");
+    grund_net::dns::serve(socket, lists, own_id, upstreams)
+        .await
+        .context("the stub resolver stopped")
+}
+
+async fn report(mesh: &Mesh, counters: &Counters, data_dir: &std::path::Path) {
+    let path = data_dir.join(STATUS_FILE);
+    let temporary = data_dir.join(format!("{STATUS_FILE}.tmp"));
+    loop {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let status = serde_json::json!({
+            "mesh": mesh.status().await,
+            "bound": mesh.endpoint().map(|e| e.bound_sockets()).unwrap_or_default(),
+            "rebinds": counters.rebinds.load(Relaxed),
+            "network_changes": counters.network_changes.load(Relaxed),
+        });
+        if std::fs::write(&temporary, status.to_string()).is_ok() {
+            let _ = std::fs::rename(&temporary, &path);
+        }
     }
 }
 
@@ -222,8 +406,40 @@ mod tests {
                 machine_id: "m1".into(),
                 endpoint_id: grund_net::key::endpoint_id(&[1; 32]).to_string(),
                 slot: 1,
+                name: Some("m1".into()),
             }],
         }
+    }
+
+    #[test]
+    fn only_a_lost_address_or_family_makes_the_agent_rebind() {
+        let bound: Vec<SocketAddr> = vec![
+            "192.168.1.20:4000".parse().unwrap(),
+            "[2a01:4f8::20]:4000".parse().unwrap(),
+        ];
+        let ips = |list: &[&str]| {
+            list.iter()
+                .map(|a| a.parse().unwrap())
+                .collect::<Vec<IpAddr>>()
+        };
+        assert!(!needs_rebind(
+            &bound,
+            &ips(&["192.168.1.20", "2a01:4f8::20"])
+        ));
+        assert!(!needs_rebind(
+            &bound,
+            &ips(&["192.168.1.20", "2a01:4f8::1", "2a01:4f8::20"])
+        ));
+        assert!(needs_rebind(
+            &bound,
+            &ips(&["192.168.1.21", "2a01:4f8::20"])
+        ));
+        assert!(needs_rebind(&bound, &ips(&["192.168.1.20"])));
+        assert!(needs_rebind(
+            &bound[..1],
+            &ips(&["192.168.1.20", "2a01:4f8::20"])
+        ));
+        assert!(needs_rebind(&bound, &[]));
     }
 
     #[test]

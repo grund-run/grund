@@ -101,7 +101,17 @@ impl Networks {
             now,
         );
         let prefix: Ipv6Addr = network.prefix.parse()?;
-        if plan.is_empty() && network.epoch > 0 {
+        let names: HashMap<Uuid, &str> = candidates
+            .iter()
+            .map(|c| (c.machine_id, c.name.as_str()))
+            .collect();
+        if plan.is_empty()
+            && network.epoch > 0
+            && network
+                .body
+                .as_deref()
+                .is_some_and(|body| same_members(body, &members(&slots, &names)))
+        {
             tx.commit().await?;
             return view(network, key, prefix, &slots);
         }
@@ -130,15 +140,7 @@ impl Networks {
             epoch: epoch as u64,
             prefix,
             issued_at: now.timestamp(),
-            members: slots
-                .iter()
-                .filter(|s| s.freed_at.is_none())
-                .map(|s| Member {
-                    machine_id: s.machine_id.to_string(),
-                    endpoint_id: s.endpoint_id.clone(),
-                    slot: s.slot as u16,
-                })
-                .collect(),
+            members: members(&slots, &names),
         };
         list.validate()?;
         let body = list.encode();
@@ -221,6 +223,23 @@ impl Networks {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
     }
+}
+
+fn members(slots: &[SlotRow], names: &HashMap<Uuid, &str>) -> Vec<Member> {
+    slots
+        .iter()
+        .filter(|s| s.freed_at.is_none())
+        .map(|s| Member {
+            machine_id: s.machine_id.to_string(),
+            endpoint_id: s.endpoint_id.clone(),
+            slot: s.slot as u16,
+            name: names.get(&s.machine_id).map(|n| n.to_string()),
+        })
+        .collect()
+}
+
+fn same_members(signed_body: &[u8], members: &[Member]) -> bool {
+    serde_json::from_slice::<MembershipList>(signed_body).is_ok_and(|list| list.members == members)
 }
 
 fn view(

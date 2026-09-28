@@ -224,12 +224,13 @@ async fn node(
         serde_json::json!({"event": "node", "endpoint_id": endpoint.id().to_string(), "bound": endpoint.bound_sockets()})
     );
     let mesh = Mesh::new(
-        endpoint.clone(),
+        endpoint.id(),
         MeshConfig {
             tun_name: tun,
             relays: vec![relay],
         },
     );
+    mesh.attach(endpoint.clone())?;
     let _router = IrohRouter::builder(endpoint)
         .accept(NET_ALPN, mesh.clone())
         .spawn();
@@ -257,7 +258,7 @@ async fn node(
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(1)).await;
-                if let Ok(json) = serde_json::to_vec(&mesh.status()) {
+                if let Ok(json) = serde_json::to_vec(&mesh.status().await) {
                     let tmp = status_path.with_extension("tmp");
                     if std::fs::write(&tmp, json).is_ok() {
                         let _ = std::fs::rename(&tmp, &status_path);

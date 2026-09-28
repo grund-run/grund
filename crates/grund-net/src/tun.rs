@@ -24,6 +24,7 @@ pub const MTU: u16 = 1280;
 pub struct Tun {
     fd: AsyncFd<File>,
     name: String,
+    ifindex: libc::c_int,
 }
 
 const TUNSETIFF: libc::c_ulong = 0x4004_54ca;
@@ -57,15 +58,7 @@ impl Tun {
         ioctl(inet.as_raw_fd(), libc::SIOCGIFINDEX, &mut ifr).context("SIOCGIFINDEX")?;
         let ifindex = unsafe { ifr.ifr_ifru.ifru_ifindex };
 
-        let inet6 = socket(libc::AF_INET6)?;
-        let mut req = In6Ifreq {
-            addr: libc::in6_addr {
-                s6_addr: address.octets(),
-            },
-            prefixlen: prefix_len as u32,
-            ifindex,
-        };
-        ioctl(inet6.as_raw_fd(), libc::SIOCSIFADDR, &mut req).context("SIOCSIFADDR (IPv6)")?;
+        add_ipv6(ifindex, address, prefix_len)?;
 
         let mut ifr = ifreq(name)?;
         ioctl(inet.as_raw_fd(), libc::SIOCGIFFLAGS, &mut ifr).context("SIOCGIFFLAGS")?;
@@ -75,7 +68,16 @@ impl Tun {
         Ok(Self {
             fd: AsyncFd::new(file)?,
             name: name.to_string(),
+            ifindex,
         })
+    }
+
+    /// Gives the device another address, `address/prefix_len`: the stub
+    /// resolver's `::53` beside the machine's `::1`. A TUN device has no
+    /// neighbour discovery, so the address is usable at once, with no
+    /// duplicate address detection to wait out.
+    pub fn add_address(&self, address: Ipv6Addr, prefix_len: u8) -> anyhow::Result<()> {
+        add_ipv6(self.ifindex, address, prefix_len)
     }
 
     /// The device's name.
@@ -119,6 +121,19 @@ fn ifreq(name: &str) -> anyhow::Result<libc::ifreq> {
         ifr.ifr_name[i] = b as libc::c_char;
     }
     Ok(ifr)
+}
+
+fn add_ipv6(ifindex: libc::c_int, address: Ipv6Addr, prefix_len: u8) -> anyhow::Result<()> {
+    let inet6 = socket(libc::AF_INET6)?;
+    let mut req = In6Ifreq {
+        addr: libc::in6_addr {
+            s6_addr: address.octets(),
+        },
+        prefixlen: prefix_len as u32,
+        ifindex,
+    };
+    ioctl(inet6.as_raw_fd(), libc::SIOCSIFADDR, &mut req)
+        .with_context(|| format!("SIOCSIFADDR (IPv6 {address})"))
 }
 
 fn ioctl<T>(fd: RawFd, request: libc::c_ulong, arg: &mut T) -> io::Result<()> {

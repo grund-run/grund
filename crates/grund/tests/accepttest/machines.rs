@@ -1612,6 +1612,11 @@ async fn an_organisations_machines_share_its_signed_network_and_a_revoked_one_le
         slots(&list) == vec![(endpoint(&a), 1), (endpoint(&b), 2)],
         "{list:?}"
     );
+    anyhow::ensure!(
+        list.member_by_name("net-a").map(|m| m.slot) == Some(1)
+            && list.member_by_name("net-b").map(|m| m.slot) == Some(2),
+        "every member is named as in its pool: {list:?}"
+    );
     let epoch = list.epoch;
 
     when.calling(

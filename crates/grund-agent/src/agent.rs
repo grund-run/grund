@@ -225,9 +225,9 @@ pub async fn run<R: VmRuntime>(args: &AgentArgs, runtime: R) -> anyhow::Result<(
     let mut applied = read_applied(&args.data_dir)?;
     tracing::info!(machine = %record.machine_id, name = %record.name, "agent running");
     if let Some(network) = record.network.clone().filter(|_| !args.once) {
-        let (link, seed) = (link.clone(), link.key.to_bytes());
+        let (link, seed, data_dir) = (link.clone(), link.key.to_bytes(), args.data_dir.clone());
         tokio::spawn(async move {
-            if let Err(error) = crate::net::run(link, network, seed).await {
+            if let Err(error) = crate::net::run(link, network, seed, data_dir).await {
                 tracing::error!(error = %format!("{error:#}"), "private network stopped");
             }
         });

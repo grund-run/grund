@@ -12,6 +12,8 @@
 //!   access check, plus QUIC address discovery, which hole punching needs.
 //! - [`membership`]: the signed list of a private network's members. grund
 //!   signs it; machines verify it and never allocate anything themselves.
+//! - [`dns`]: the stub resolver that answers `<machine>.machines.grund.internal`
+//!   from the membership list.
 //! - [`mesh`]: the private network itself: IPv6 packets from the `grund0`
 //!   TUN device to members, one QUIC datagram each, or two when a packet does
 //!   not fit the path, with the inbound filter that refuses non-members and
@@ -20,6 +22,7 @@
 //! How membership lists reach a machine is not this crate's concern: the
 //! mesh takes a stream of verified lists, today from the HTTPS control link.
 
+pub mod dns;
 pub mod endpoint;
 pub mod frame;
 pub mod key;
