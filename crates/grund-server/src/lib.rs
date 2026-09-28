@@ -25,6 +25,7 @@ pub mod keys;
 pub mod license;
 pub mod projections;
 pub mod relay;
+pub mod relay_command;
 pub mod sagas;
 pub mod secrets;
 pub mod server;

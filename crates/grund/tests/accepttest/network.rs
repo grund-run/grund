@@ -118,6 +118,20 @@ impl Machine {
             .unwrap_or_default()
     }
 
+    fn relays(&self) -> Vec<Value> {
+        self.status()["relays"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn relay(&self, url: &str) -> Value {
+        self.relays()
+            .into_iter()
+            .find(|r| r["url"].as_str().is_some_and(|u| u.starts_with(url)))
+            .unwrap_or(Value::Null)
+    }
+
     fn epoch(&self) -> u64 {
         self.status()["mesh"]["epoch"].as_u64().unwrap_or_default()
     }
@@ -190,6 +204,16 @@ impl Net {
         name: &str,
         token: &str,
     ) -> anyhow::Result<Machine> {
+        self.join_with_env(node, name, token, &[]).await
+    }
+
+    async fn join_with_env(
+        &self,
+        node: &'static str,
+        name: &str,
+        token: &str,
+        env: &[(&str, &str)],
+    ) -> anyhow::Result<Machine> {
         let dir = self.lab.work.join(format!("agent-{node}"));
         let ca = self.lab.ca.to_string_lossy().into_owned();
         let out = self
@@ -219,8 +243,10 @@ impl Net {
         let record: Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join("machine.json"))?)?;
         anyhow::ensure!(
-            record["network"]["relay_urls"] == json!([RELAY_URL]),
-            "the machine is told grund's relay: {record}"
+            record["network"]["relay_urls"]
+                .as_array()
+                .is_some_and(|r| !r.is_empty()),
+            "the machine is told grund's relays: {record}"
         );
         self.lab.spawn(
             node,
@@ -233,9 +259,13 @@ impl Net {
                 &dir.to_string_lossy(),
             ],
             &[
-                ("SSL_CERT_FILE", &ca),
-                ("RUST_LOG", "grund_agent=debug,grund_net=debug,info"),
-            ],
+                &[
+                    ("SSL_CERT_FILE", ca.as_str()),
+                    ("RUST_LOG", "grund_agent=debug,grund_net=debug,info"),
+                ][..],
+                env,
+            ]
+            .concat(),
             &format!("agent-{node}.log"),
         )?;
         let machine = Machine {
@@ -810,5 +840,173 @@ async fn a_new_address_beside_the_bound_one_is_a_network_change_not_a_rebind() -
         a.status()
     );
     eprintln!("network_change after {told:?}, no rebind");
+    Ok(())
+}
+
+const RELAY_TOKEN: &str = "relay-token-0123456789abcdef01234567";
+
+fn relays_elsewhere(relays: &str) -> Vec<(&'static str, String)> {
+    vec![
+        ("GRUND_RELAY_ADDRESS", String::new()),
+        ("GRUND_RELAY_URL", String::new()),
+        ("GRUND_RELAY_TLS_CERT_FILE", String::new()),
+        ("GRUND_RELAY_TLS_KEY_FILE", String::new()),
+        ("GRUND_RELAY_QUIC_ADDRESS", String::new()),
+        ("GRUND_RELAYS", relays.to_string()),
+        ("GRUND_RELAY_ACCESS_TOKEN", RELAY_TOKEN.to_string()),
+    ]
+}
+
+fn as_env<'a>(settings: &'a [(&'static str, String)]) -> Vec<(&'static str, &'a str)> {
+    settings.iter().map(|(k, v)| (*k, v.as_str())).collect()
+}
+
+#[tokio::test]
+async fn grund_relay_on_its_own_host_carries_the_mesh_and_a_second_is_picked_up_without_a_rejoin()
+-> anyhow::Result<()> {
+    use crate::accepttest::fixtures::netlab::{RELAY_1, RELAY_2};
+    let Some(lab) = Lab::start().await? else {
+        return Ok(());
+    };
+    let first = format!("https://{RELAY_1}");
+    let second = format!("https://{RELAY_2}");
+    lab.spawn_relay("rl1", RELAY_1, RELAY_TOKEN)?;
+    let settings = relays_elsewhere(&format!("lab-1={first}"));
+    let Some(net) = a_lab_with(lab, &as_env(&settings)).await? else {
+        return Ok(());
+    };
+    let a = net.join("a", "a").await?;
+    let b = net.join("b", "b").await?;
+    anyhow::ensure!(
+        a.record["network"]["relay_urls"] == json!([first]),
+        "{}",
+        a.record
+    );
+    anyhow::ensure!(
+        net.reaches_by_name(&a, &b, Duration::from_secs(30))
+            .await
+            .is_some(),
+        "a never reached b through grund relay: {}\n{}",
+        a.status(),
+        net.log("relay-rl1.log")
+    );
+    let punched = eventually(Duration::from_secs(30), || async {
+        net.pings(&a, &b.address().to_string()).await && a.path_to(&b).starts_with("direct")
+    })
+    .await;
+    anyhow::ensure!(
+        punched.is_some(),
+        "no punch via grund relay's address discovery: {}",
+        a.status()
+    );
+    anyhow::ensure!(a.relay(&first)["connected"] == true, "{}", a.status());
+    let epoch = a.epoch();
+
+    net.lab.spawn_relay("rl2", RELAY_2, RELAY_TOKEN)?;
+    let both = relays_elsewhere(&format!("lab-1={first},lab-2={second}"));
+    net.when
+        .testcase
+        .fixture
+        .restart_in_lab(&as_env(&both))
+        .await?;
+    let picked = eventually(Duration::from_secs(30), || async {
+        !a.relay(&second).is_null() && !b.relay(&second).is_null() && a.epoch() > epoch
+    })
+    .await;
+    anyhow::ensure!(
+        picked.is_some(),
+        "the second relay never reached the machines: {}",
+        a.status()
+    );
+    anyhow::ensure!(
+        a.status()["rebinds"] == 0 && a.counter("endpoints_attached") == 1,
+        "a picked up the relay by rebinding: {}",
+        a.status()
+    );
+
+    net.lab.stop("relay-rl1.log");
+    net.lab.cut_direct_udp().await?;
+    let moved = eventually(Duration::from_secs(60), || async {
+        net.pings(&a, &b.address().to_string()).await
+            && a.path_to(&b).starts_with(&format!("relay {second}"))
+    })
+    .await;
+    anyhow::ensure!(
+        moved.is_some(),
+        "with the first relay gone and no direct UDP, a never reached b over the second: {}\nb: {}\n{}",
+        a.status(),
+        b.status(),
+        net.log("relay-rl2.log")
+    );
+    anyhow::ensure!(net.pings(&b, &a.fqdn()).await, "b does not reach a by name");
+    eprintln!(
+        "by name and direct through grund relay; second relay picked up {picked:?} after grund restarted; over it {moved:?} after the first stopped"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn grund_relay_on_its_own_host_refuses_a_revoked_machine() -> anyhow::Result<()> {
+    use crate::accepttest::fixtures::netlab::RELAY_1;
+    let Some(lab) = Lab::start().await? else {
+        return Ok(());
+    };
+    let first = format!("https://{RELAY_1}");
+    lab.spawn_relay("rl1", RELAY_1, RELAY_TOKEN)?;
+    let settings = relays_elsewhere(&first);
+    let Some(net) = a_lab_with(lab, &as_env(&settings)).await? else {
+        return Ok(());
+    };
+    let a = net.join("a", "a").await?;
+    let b = net.join("b", "b").await?;
+    anyhow::ensure!(
+        net.reaches_by_name(&a, &b, Duration::from_secs(30))
+            .await
+            .is_some()
+    );
+    anyhow::ensure!(
+        eventually(Duration::from_secs(10), || async {
+            b.relay(&first)["connected"] == true
+        })
+        .await
+        .is_some(),
+        "{}",
+        b.status()
+    );
+
+    net.when
+        .calling(
+            &format!("{MACHINES}/RevokeMachine"),
+            &json!({"organisation": net.owner, "machineId": b.id()}).to_string(),
+        )
+        .await?;
+    net.then.status(200)?;
+    let cut = eventually(Duration::from_secs(15), || async {
+        b.relay(&first)["connected"] == false
+    })
+    .await;
+    anyhow::ensure!(
+        cut.is_some(),
+        "the relay kept the revoked machine: {}",
+        b.status()
+    );
+    let denied = eventually(Duration::from_secs(30), || async {
+        b.relay(&first)["denied"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("not a machine"))
+    })
+    .await;
+    anyhow::ensure!(
+        denied.is_some(),
+        "the revoked machine was not refused at reconnect: {}\n{}",
+        b.status(),
+        net.log("relay-rl1.log")
+    );
+    anyhow::ensure!(
+        a.relay(&first)["connected"] == true,
+        "the relay dropped a machine still in the network: {}",
+        a.status()
+    );
+    eprintln!("revoked: cut after {cut:?}, refused at reconnect after {denied:?} more");
     Ok(())
 }

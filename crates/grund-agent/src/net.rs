@@ -24,6 +24,10 @@
 //! names to the resolvers in `/etc/resolv.conf`. It does not point the
 //! machine's own resolver at itself.
 //!
+//! The relays come from the signed list when it names any, and otherwise
+//! from join. A change in the list reaches the live endpoint at once
+//! (`insert_relay`, `remove_relay`), with no re-join and no rebind.
+//!
 //! The mesh needs `CAP_NET_ADMIN` for the TUN device, so a machine whose
 //! agent does not run as root skips it; service forwards for rootless
 //! machines are not built. Relays are trusted by the system's certificate
@@ -124,6 +128,11 @@ fn pinned_key(network: &NetworkRecord) -> anyhow::Result<VerifyingKey> {
 /// it offers, and how often it rebound.
 pub const STATUS_FILE: &str = "network.json";
 
+/// How long a home relay that stopped answering is left out of the
+/// endpoint's relays, so that iroh homes on another at once rather than
+/// retrying it (it took about 25 s in the lab). Peers still dial through it.
+pub const RELAY_BENCH: Duration = Duration::from_secs(30);
+
 /// How often the agent looks at the uplink for a changed address or route.
 pub const UPLINK_POLL: Duration = Duration::from_secs(2);
 
@@ -162,10 +171,21 @@ pub fn needs_rebind(bound: &[SocketAddr], now: &[IpAddr]) -> bool {
             .any(|v4| families(v4) != bound.iter().any(|b| b.is_ipv4() == v4))
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Counters {
     rebinds: AtomicU64,
     network_changes: AtomicU64,
+    relay_failovers: AtomicU64,
+}
+
+impl Default for Counters {
+    fn default() -> Self {
+        Self {
+            rebinds: AtomicU64::new(0),
+            network_changes: AtomicU64::new(0),
+            relay_failovers: AtomicU64::new(0),
+        }
+    }
 }
 
 pub(crate) async fn run(
@@ -203,13 +223,50 @@ pub(crate) async fn run(
     let counters = Arc::new(Counters::default());
     let (tx, rx) = watch::channel(None);
     let lists = tx.subscribe();
+    let (relays_tx, relays_rx) = watch::channel(config.relays.clone());
     tracing::info!(network = %network.network_id, slot = network.slot, "private network: starting");
     tokio::select! {
         result = mesh.run(rx) => result,
-        result = follow(&link, &network, tx) => result,
-        result = carry(&mesh, key, &config, &counters) => result,
-        result = resolve(&mesh, lists, own_id) => result,
+        result = follow(&link, &network, tx, relays_tx) => result,
+        result = carry(&mesh, key, &config, relays_rx.clone(), &counters) => result,
+        () = track_relays(&mesh, relays_rx) => Ok(()),
+        () = resolve_or_warn(resolve(&mesh, lists, own_id)) => Ok(()),
         () = report(&mesh, &counters, &data_dir) => Ok(()),
+    }
+}
+
+/// The relays a list names, when it names any: lists signed before relays
+/// were carried leave the ones from join in force.
+pub fn relays_of(list: &MembershipList) -> Option<Vec<RelayUrl>> {
+    let relays: Vec<RelayUrl> = list
+        .relays
+        .iter()
+        .filter_map(|r| RelayUrl::from_str(&r.url).ok())
+        .collect();
+    (!relays.is_empty()).then_some(relays)
+}
+
+async fn sync_relays(endpoint: &iroh::Endpoint, have: &[RelayUrl], wanted: &[RelayUrl]) {
+    for url in have.iter().filter(|u| !wanted.contains(u)) {
+        endpoint.remove_relay(url).await;
+        tracing::info!(relay = %url, "private network: relay removed");
+    }
+    for url in wanted.iter().filter(|u| !have.contains(u)) {
+        endpoint
+            .insert_relay(url.clone(), Arc::new(iroh::RelayConfig::from(url.clone())))
+            .await;
+        tracing::info!(relay = %url, "private network: relay added");
+    }
+}
+
+async fn track_relays(mesh: &Mesh, mut relays: watch::Receiver<Vec<RelayUrl>>) {
+    while relays.changed().await.is_ok() {
+        let wanted = relays.borrow_and_update().clone();
+        let have = mesh.relays();
+        mesh.set_relays(wanted.clone());
+        if let Some(endpoint) = mesh.endpoint() {
+            sync_relays(&endpoint, &have, &wanted).await;
+        }
     }
 }
 
@@ -217,14 +274,46 @@ async fn carry(
     mesh: &Mesh,
     key: iroh::SecretKey,
     config: &NetConfig,
+    relays: watch::Receiver<Vec<RelayUrl>>,
     counters: &Counters,
 ) -> anyhow::Result<()> {
     let mut bound: Option<(Vec<SocketAddr>, iroh::protocol::Router)> = None;
     let mut last = endpoint::Uplinks::default();
+    let mut homeless = 0u32;
+    let mut benched: Vec<(RelayUrl, tokio::time::Instant)> = Vec::new();
     let mut tick = tokio::time::interval(UPLINK_POLL);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tick.tick().await;
+        if let Some((_, router)) = &bound {
+            let endpoint = router.endpoint();
+            let wanted = relays.borrow().clone();
+            let back: Vec<RelayUrl> = benched
+                .iter()
+                .filter(|(url, since)| since.elapsed() >= RELAY_BENCH && wanted.contains(url))
+                .map(|(url, _)| url.clone())
+                .collect();
+            benched.retain(|(url, since)| since.elapsed() < RELAY_BENCH && wanted.contains(url));
+            for url in back {
+                endpoint
+                    .insert_relay(url.clone(), Arc::new(iroh::RelayConfig::from(url.clone())))
+                    .await;
+                tracing::info!(relay = %url, "private network: trying a benched relay again");
+            }
+            match unanswering_home(endpoint) {
+                Some(home) if wanted.len() > benched.len() + 1 => {
+                    homeless += 1;
+                    if homeless >= 2 {
+                        tracing::info!(relay = %home, "private network: the home relay does not answer; benching it so iroh homes on another");
+                        endpoint.remove_relay(&home).await;
+                        benched.push((home, tokio::time::Instant::now()));
+                        counters.relay_failovers.fetch_add(1, Relaxed);
+                        homeless = 0;
+                    }
+                }
+                _ => homeless = 0,
+            }
+        }
         let now = endpoint::uplinks().await;
         match &bound {
             Some((addrs, router)) if !needs_rebind(addrs, &now.addrs) => {
@@ -243,8 +332,10 @@ async fn carry(
                     last = now;
                     continue;
                 }
+                let bound_relays = relays.borrow().clone();
                 let config = NetConfig {
                     bind: Bind::Addrs(addrs),
+                    relays: bound_relays.clone(),
                     ..config.clone()
                 };
                 let endpoint = match endpoint::bind(key.clone(), &config, vec![NET_ALPN.to_vec()])
@@ -258,6 +349,8 @@ async fn carry(
                 };
                 let addrs = endpoint.bound_sockets();
                 mesh.attach(endpoint.clone())?;
+                let wanted = relays.borrow().clone();
+                sync_relays(&endpoint, &bound_relays, &wanted).await;
                 let router = iroh::protocol::Router::builder(endpoint)
                     .accept(NET_ALPN, mesh.clone())
                     .spawn();
@@ -274,6 +367,35 @@ async fn carry(
     }
 }
 
+async fn resolve_or_warn(resolving: impl std::future::Future<Output = anyhow::Result<()>>) {
+    if let Err(error) = resolving.await {
+        tracing::warn!(
+            error = %format!("{error:#}"),
+            "private network: the stub resolver stopped; the mesh carries on without names"
+        );
+    }
+    std::future::pending::<()>().await;
+}
+
+async fn bind_resolver(address: Ipv6Addr) -> anyhow::Result<tokio::net::UdpSocket> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        match tokio::net::UdpSocket::bind(SocketAddr::new(address.into(), 53)).await {
+            Ok(socket) => return Ok(socket),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::AddrNotAvailable
+                    && tokio::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("bind the stub resolver on [{address}]:53"));
+            }
+        }
+    }
+}
+
 async fn resolve(
     mesh: &Mesh,
     lists: watch::Receiver<Option<MembershipList>>,
@@ -286,9 +408,7 @@ async fn resolve(
         Ipv6Addr::from(segments)
     };
     mesh.add_address(address)?;
-    let socket = tokio::net::UdpSocket::bind(SocketAddr::new(address.into(), 53))
-        .await
-        .with_context(|| format!("bind the stub resolver on [{address}]:53"))?;
+    let socket = bind_resolver(address).await?;
     let prefix = Ipv6Addr::from({
         let mut o = own.octets();
         o[6..].fill(0);
@@ -304,6 +424,32 @@ async fn resolve(
         .context("the stub resolver stopped")
 }
 
+fn unanswering_home(endpoint: &iroh::Endpoint) -> Option<RelayUrl> {
+    use iroh::Watcher;
+    let homes = endpoint.home_relay_status().get();
+    if homes.iter().any(|s| s.is_connected()) {
+        return None;
+    }
+    homes.first().map(|s| s.url().clone())
+}
+
+fn relay_status(endpoint: &iroh::Endpoint, relays: &[RelayUrl]) -> Vec<serde_json::Value> {
+    use iroh::Watcher;
+    let home = endpoint.home_relay_status().get();
+    relays
+        .iter()
+        .map(|url| {
+            let status = home.iter().find(|s| s.url() == url);
+            serde_json::json!({
+                "url": url.to_string(),
+                "home": status.is_some(),
+                "connected": status.is_some_and(|s| s.is_connected()),
+                "denied": status.and_then(|s| s.auth_denied_reason()),
+            })
+        })
+        .collect()
+}
+
 async fn report(mesh: &Mesh, counters: &Counters, data_dir: &std::path::Path) {
     let path = data_dir.join(STATUS_FILE);
     let temporary = data_dir.join(format!("{STATUS_FILE}.tmp"));
@@ -312,8 +458,10 @@ async fn report(mesh: &Mesh, counters: &Counters, data_dir: &std::path::Path) {
         let status = serde_json::json!({
             "mesh": mesh.status().await,
             "bound": mesh.endpoint().map(|e| e.bound_sockets()).unwrap_or_default(),
+            "relays": mesh.endpoint().map(|e| relay_status(&e, &mesh.relays())).unwrap_or_default(),
             "rebinds": counters.rebinds.load(Relaxed),
             "network_changes": counters.network_changes.load(Relaxed),
+            "relay_failovers": counters.relay_failovers.load(Relaxed),
         });
         if std::fs::write(&temporary, status.to_string()).is_ok() {
             let _ = std::fs::rename(&temporary, &path);
@@ -325,6 +473,7 @@ async fn follow(
     link: &Link,
     network: &NetworkRecord,
     tx: watch::Sender<Option<MembershipList>>,
+    relays: watch::Sender<Vec<RelayUrl>>,
 ) -> anyhow::Result<()> {
     let mut epoch = 0;
     loop {
@@ -355,6 +504,16 @@ async fn follow(
                                 "private network: list applied"
                             );
                             epoch = list.epoch;
+                            if let Some(named) = relays_of(&list) {
+                                relays.send_if_modified(|current| {
+                                    let changed = *current != named;
+                                    if changed {
+                                        tracing::info!(relays = ?named, "private network: the list names new relays");
+                                        *current = named;
+                                    }
+                                    changed
+                                });
+                            }
                             if tx.send(Some(list)).is_err() {
                                 return Ok(());
                             }
@@ -402,6 +561,7 @@ mod tests {
             epoch,
             prefix: "fd12:3456:789a::".parse().unwrap(),
             issued_at: 1_790_000_000,
+            relays: vec![],
             members: vec![Member {
                 machine_id: "m1".into(),
                 endpoint_id: grund_net::key::endpoint_id(&[1; 32]).to_string(),

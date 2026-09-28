@@ -318,6 +318,7 @@ mod tests {
             epoch: 2,
             prefix: "fd12:3456:789a::".parse().unwrap(),
             issued_at: 1_790_000_000,
+            relays: vec![],
             members: vec![
                 Member {
                     machine_id: "m_a".into(),

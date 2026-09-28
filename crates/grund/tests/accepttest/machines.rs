@@ -1719,9 +1719,18 @@ async fn a_waiting_member_hears_of_a_revocation_within_seconds() -> anyhow::Resu
 }
 
 async fn relayed_endpoint(relay: &str, key: &SigningKey) -> anyhow::Result<iroh::Endpoint> {
+    relayed_endpoint_trusting(relay, key, None).await
+}
+
+async fn relayed_endpoint_trusting(
+    relay: &str,
+    key: &SigningKey,
+    roots: Option<Vec<rustls::pki_types::CertificateDer<'static>>>,
+) -> anyhow::Result<iroh::Endpoint> {
     let config = grund_net::endpoint::NetConfig {
         relays: vec![relay.parse::<iroh::RelayUrl>()?],
         bind: grund_net::endpoint::Bind::Addrs(vec!["127.0.0.1:0".parse()?]),
+        relay_roots: roots,
         ..Default::default()
     };
     grund_net::endpoint::bind(grund_net::key::secret_key(&key.to_bytes()), &config, vec![]).await
@@ -1737,7 +1746,15 @@ fn relay_connected(endpoint: &iroh::Endpoint) -> bool {
 }
 
 async fn comes_online_through(relay: &str, key: &SigningKey) -> anyhow::Result<bool> {
-    let endpoint = relayed_endpoint(relay, key).await?;
+    comes_online_trusting(relay, key, None).await
+}
+
+async fn comes_online_trusting(
+    relay: &str,
+    key: &SigningKey,
+    roots: Option<Vec<rustls::pki_types::CertificateDer<'static>>>,
+) -> anyhow::Result<bool> {
+    let endpoint = relayed_endpoint_trusting(relay, key, roots).await?;
     let online = tokio::time::timeout(std::time::Duration::from_secs(1), endpoint.online())
         .await
         .is_ok();
@@ -1935,5 +1952,251 @@ async fn an_instance_serves_no_installer_unless_told_to() -> anyhow::Result<()> 
     .await?;
     then.status_in(&[303, 404])?
         .header_lacks("content-type", "application/octet-stream")?;
+    Ok(())
+}
+
+struct Running(std::process::Child);
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+struct RelayCertificate {
+    ca: rustls::pki_types::CertificateDer<'static>,
+    cert: std::path::PathBuf,
+    key: std::path::PathBuf,
+}
+
+fn a_relay_certificate(dir: &std::path::Path) -> anyhow::Result<RelayCertificate> {
+    let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new())?;
+    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    let ca = rcgen::CertifiedIssuer::self_signed(ca_params, rcgen::KeyPair::generate()?)?;
+    let mut leaf = rcgen::CertificateParams::new(vec!["127.0.0.1".to_string()])?;
+    leaf.is_ca = rcgen::IsCa::ExplicitNoCa;
+    leaf.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+    let leaf_key = rcgen::KeyPair::generate()?;
+    let leaf = leaf.signed_by(&leaf_key, &ca)?;
+    std::fs::create_dir_all(dir)?;
+    let (cert, key) = (dir.join("relay.crt"), dir.join("relay.key"));
+    std::fs::write(&cert, leaf.pem())?;
+    std::fs::write(&key, leaf_key.serialize_pem())?;
+    Ok(RelayCertificate {
+        ca: ca.der().clone(),
+        cert,
+        key,
+    })
+}
+
+fn free_port() -> anyhow::Result<u16> {
+    Ok(std::net::TcpListener::bind("127.0.0.1:0")?
+        .local_addr()?
+        .port())
+}
+
+const RELAY_TOKEN: &str = "relay-token-0123456789abcdef01234567";
+
+#[tokio::test]
+async fn a_relay_on_its_own_admits_only_what_grund_answers_and_cuts_a_revoked_machine()
+-> anyhow::Result<()> {
+    let port = free_port()?;
+    let relay = format!("https://127.0.0.1:{port}");
+    let Some((given, when, then)) = testcase_configured(&[
+        ("GRUND_RELAYS", &format!("lab={relay}")),
+        ("GRUND_RELAY_ACCESS_TOKEN", RELAY_TOKEN),
+    ])
+    .await?
+    else {
+        return Ok(());
+    };
+    let certificate = a_relay_certificate(&join_dir())?;
+    let log = std::fs::File::create(
+        std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("grund-relay-{port}.log")),
+    )?;
+    let _relay = Running(
+        std::process::Command::new(env!("CARGO_BIN_EXE_grund"))
+            .arg("relay")
+            .args(["--listen", &format!("127.0.0.1:{port}")])
+            .args(["--quic-listen", &format!("127.0.0.1:{}", free_port()?)])
+            .arg("--tls-cert-file")
+            .arg(&certificate.cert)
+            .arg("--tls-key-file")
+            .arg(&certificate.key)
+            .args(["--grund-url", &origin(&when), "--access-token", RELAY_TOKEN])
+            .env_clear()
+            .env("RUST_LOG", "grund_server=debug,info")
+            .stdout(std::process::Stdio::from(log.try_clone()?))
+            .stderr(std::process::Stdio::from(log))
+            .spawn()?,
+    );
+    let owner = given.a_signed_in_account().await?;
+    let (key, enrolled) = a_member(&when, &then, &owner.username, "relayed").await?;
+    anyhow::ensure!(
+        enrolled["network"]["relayUrls"] == json!([relay]),
+        "machines are told the relay from GRUND_RELAYS: {enrolled}"
+    );
+    let machine_id = enrolled["machineId"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    signed_agent_call(
+        &when,
+        &machine_id,
+        &key,
+        "GetMembership",
+        r#"{"sinceEpoch": "0"}"#,
+    )
+    .await?;
+    then.status(200)?;
+    let list = membership(&then, &enrolled["network"]["key"])?;
+    anyhow::ensure!(
+        list.relays
+            == vec![grund_net::membership::Relay {
+                url: relay.clone(),
+                region: Some("lab".into())
+            }],
+        "the signed list names the relay: {list:?}"
+    );
+
+    let roots = Some(vec![certificate.ca.clone()]);
+    let mut admitted = false;
+    for _ in 0..20 {
+        if comes_online_trusting(&relay, &key, roots.clone()).await? {
+            admitted = true;
+            break;
+        }
+    }
+    anyhow::ensure!(
+        admitted,
+        "a registered machine is admitted by the relay on its own"
+    );
+    anyhow::ensure!(
+        !comes_online_trusting(&relay, &a_machine_key(), roots.clone()).await?,
+        "a key grund does not know is refused"
+    );
+
+    let held = relayed_endpoint_trusting(&relay, &key, roots.clone()).await?;
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), held.online()).await;
+    anyhow::ensure!(
+        relay_connected(&held),
+        "the machine holds a relay connection"
+    );
+    when.calling(
+        &format!("{MACHINES}/RevokeMachine"),
+        &json!({"organisation": owner.username, "machineId": machine_id}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    let revoked = std::time::Instant::now();
+    while relay_connected(&held) {
+        anyhow::ensure!(
+            revoked.elapsed() < std::time::Duration::from_secs(8),
+            "the relay on its own cuts a connection admitted before the revocation"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    held.close().await;
+    anyhow::ensure!(
+        !comes_online_trusting(&relay, &key, roots).await?,
+        "a revoked machine is refused from its next connection"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_access_check_needs_the_relay_token_and_answers_as_iroh_relay_expects()
+-> anyhow::Result<()> {
+    let Some((given, when, then)) =
+        testcase_configured(&[("GRUND_RELAY_ACCESS_TOKEN", RELAY_TOKEN)]).await?
+    else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let (key, _) = a_member(&when, &then, &owner.username, "checked").await?;
+    let member = endpoint(&key);
+    let stranger = endpoint(&a_machine_key());
+    let bearer = format!("Bearer {RELAY_TOKEN}");
+
+    for token in ["Bearer wrong-token-0123456789abcdef0123456", ""] {
+        when.requesting_with(
+            "POST",
+            "/relay/v1/access",
+            &[("Authorization", token), ("X-Iroh-NodeId", &member)],
+            None,
+        )
+        .await?;
+        then.status(401)?;
+    }
+    when.requesting_with(
+        "POST",
+        "/relay/v1/access",
+        &[("Authorization", &bearer), ("X-Iroh-NodeId", &member)],
+        None,
+    )
+    .await?;
+    then.status(200)?;
+    anyhow::ensure!(
+        then.body()? == "true",
+        "iroh-relay admits only on the body true"
+    );
+    when.requesting_with(
+        "POST",
+        "/relay/v1/access",
+        &[("Authorization", &bearer), ("X-Iroh-NodeId", &stranger)],
+        None,
+    )
+    .await?;
+    then.status(403)?;
+
+    let body = json!({"keys": [member, stranger]}).to_string();
+    when.requesting_with(
+        "POST",
+        "/relay/v1/access/current",
+        &[
+            ("Authorization", &bearer),
+            ("Content-Type", "application/json"),
+        ],
+        Some(body.as_bytes()),
+    )
+    .await?;
+    then.status(200)?;
+    anyhow::ensure!(
+        then.json()? == json!({"admitted": [member]}),
+        "{}",
+        then.body()?
+    );
+    let too_many = json!({"keys": vec![stranger.clone(); 201]}).to_string();
+    when.requesting_with(
+        "POST",
+        "/relay/v1/access/current",
+        &[
+            ("Authorization", &bearer),
+            ("Content-Type", "application/json"),
+        ],
+        Some(too_many.as_bytes()),
+    )
+    .await?;
+    then.status_in(&[400, 413])?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn without_a_relay_token_there_is_no_access_check() -> anyhow::Result<()> {
+    let Some((_, when, then)) = testcase_configured(&[]).await? else {
+        return Ok(());
+    };
+    when.requesting_with(
+        "POST",
+        "/relay/v1/access",
+        &[
+            ("Authorization", "Bearer anything"),
+            ("X-Iroh-NodeId", &endpoint(&a_machine_key())),
+        ],
+        None,
+    )
+    .await?;
+    then.status(404)?;
     Ok(())
 }

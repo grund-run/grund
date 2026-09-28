@@ -21,6 +21,7 @@ pub mod agent;
 pub mod enrollment;
 pub mod machine;
 pub mod organisation;
+pub mod relay_access;
 
 use std::{sync::Arc, time::Duration};
 
@@ -278,8 +279,12 @@ pub fn router(state: State) -> axum::Router {
                     &format!("/{AGENT_SERVICE_SERVICE_NAME}/{{method}}"),
                     service,
                 )
-                .layer(middleware::from_fn_with_state(state, authenticate_machine)),
+                .layer(middleware::from_fn_with_state(
+                    state.clone(),
+                    authenticate_machine,
+                )),
         )
+        .merge(relay_access::router(state))
 }
 
 /// The largest control-link request: a status report of every VM a machine

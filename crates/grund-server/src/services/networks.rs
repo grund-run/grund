@@ -14,6 +14,12 @@
 //! taken since, otherwise the lowest slot that is neither held nor freed
 //! within [`SLOT_HOLD`]. A prefix is a /48 in `fd00::/8` with a random 40-bit
 //! global id (RFC 4193 §3.2).
+//!
+//! Each member is named as in its pool, and the list names grund's relays
+//! (GRUND_RELAY_URL's and GRUND_RELAYS). Neither lives in the slot rows, so
+//! the stored list is compared with the one that would be signed now: a
+//! renamed machine or a relay added to the configuration is a change, and
+//! reaches every member at the next epoch.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -22,7 +28,7 @@ use std::{
 
 use chrono::{DateTime, Duration, Utc};
 use grund_domain::machine::{KeyPurpose, prefix};
-use grund_net::membership::{Member, MembershipList};
+use grund_net::membership::{Member, MembershipList, Relay};
 use grund_store::networks::{self, NetworkRow, SlotRow};
 use uuid::Uuid;
 
@@ -105,12 +111,13 @@ impl Networks {
             .iter()
             .map(|c| (c.machine_id, c.name.as_str()))
             .collect();
+        let relays = self.relays();
         if plan.is_empty()
             && network.epoch > 0
             && network
                 .body
                 .as_deref()
-                .is_some_and(|body| same_members(body, &members(&slots, &names)))
+                .is_some_and(|body| same_contents(body, &members(&slots, &names), &relays))
         {
             tx.commit().await?;
             return view(network, key, prefix, &slots);
@@ -141,6 +148,7 @@ impl Networks {
             prefix,
             issued_at: now.timestamp(),
             members: members(&slots, &names),
+            relays,
         };
         list.validate()?;
         let body = list.encode();
@@ -162,6 +170,19 @@ impl Networks {
             prefix,
             &slots,
         )
+    }
+
+    fn relays(&self) -> Vec<Relay> {
+        self.state
+            .config
+            .relay
+            .list()
+            .into_iter()
+            .map(|r| Relay {
+                url: r.url,
+                region: r.region,
+            })
+            .collect()
     }
 
     async fn create(
@@ -238,8 +259,9 @@ fn members(slots: &[SlotRow], names: &HashMap<Uuid, &str>) -> Vec<Member> {
         .collect()
 }
 
-fn same_members(signed_body: &[u8], members: &[Member]) -> bool {
-    serde_json::from_slice::<MembershipList>(signed_body).is_ok_and(|list| list.members == members)
+fn same_contents(signed_body: &[u8], members: &[Member], relays: &[Relay]) -> bool {
+    serde_json::from_slice::<MembershipList>(signed_body)
+        .is_ok_and(|list| list.members == members && list.relays == relays)
 }
 
 fn view(

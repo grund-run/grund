@@ -14,6 +14,8 @@ pub const LIGHTHOUSE: &str = "198.51.100.1";
 pub const PUBLIC_URL: &str = "https://198.51.100.1";
 pub const RELAY_URL: &str = "https://198.51.100.1:8443";
 pub const NAT_A: &str = "198.51.100.11";
+pub const RELAY_1: &str = "198.51.100.2";
+pub const RELAY_2: &str = "198.51.100.3";
 pub const NAT_B: &str = "198.51.100.12";
 
 const TOPOLOGY: &str = r#"
@@ -80,6 +82,10 @@ for side in a:1:11 b:2:12; do
   nsx "$n" ip route add default via "10.$i.0.1"
   nat_router "r$n"
 done
+mk rl1
+plug rl1 198.51.100.2/24
+mk rl2
+plug rl2 198.51.100.3/24
 mk c own-mounts
 plug c 198.51.100.40/24
 nsx c ip link set wan down
@@ -217,7 +223,7 @@ impl Lab {
         std::fs::write(
             &ext,
             format!(
-                "subjectAltName=IP:{LIGHTHOUSE}\nbasicConstraints=critical,CA:FALSE\nextendedKeyUsage=serverAuth\n"
+                "subjectAltName=IP:{LIGHTHOUSE},IP:{RELAY_1},IP:{RELAY_2}\nbasicConstraints=critical,CA:FALSE\nextendedKeyUsage=serverAuth\n"
             ),
         )?;
         let steps: [Vec<String>; 3] = [
@@ -379,6 +385,39 @@ impl Lab {
             }
         }
         stopped
+    }
+
+    pub fn spawn_relay(&self, ns: &str, address: &str, token: &str) -> anyhow::Result<String> {
+        let (cert, key, ca) = (
+            self.cert.to_string_lossy().into_owned(),
+            self.key.to_string_lossy().into_owned(),
+            self.ca.to_string_lossy().into_owned(),
+        );
+        let log = format!("relay-{ns}.log");
+        self.spawn(
+            ns,
+            &[
+                env!("CARGO_BIN_EXE_grund"),
+                "relay",
+                "--listen",
+                &format!("{address}:443"),
+                "--quic-listen",
+                &format!("{address}:7842"),
+                "--tls-cert-file",
+                &cert,
+                "--tls-key-file",
+                &key,
+                "--grund-url",
+                PUBLIC_URL,
+            ],
+            &[
+                ("GRUND_RELAY_ACCESS_TOKEN", token),
+                ("SSL_CERT_FILE", &ca),
+                ("RUST_LOG", "grund_server=debug,iroh_relay=info,warn"),
+            ],
+            &log,
+        )?;
+        Ok(log)
     }
 
     pub fn socket(&self, name: &str) -> String {

@@ -478,16 +478,87 @@ pub struct RelayArgs {
     /// the relay more often.
     #[arg(long, env = "GRUND_RELAY_QUIC_ADDRESS")]
     pub relay_quic_address: Option<std::net::SocketAddr>,
+
+    /// The relays machines use besides the one in this process: `grund
+    /// relay`s elsewhere, comma-separated, each `https://relay.example.com`
+    /// or `region=https://relay.example.com`. Machines get the list, signed,
+    /// with their network's membership, so changing it reaches them at the
+    /// next epoch, with no re-join.
+    #[arg(long, env = "GRUND_RELAYS", value_delimiter = ',')]
+    pub relays: Vec<RelaySpec>,
+
+    /// The token `grund relay`s present to ask this instance which keys
+    /// they may admit (POST /relay/v1/access). At least 32 characters.
+    /// Unset: the access endpoint answers 404, and only the relay in this
+    /// process admits anyone.
+    #[arg(long, env = "GRUND_RELAY_ACCESS_TOKEN", hide_env_values = true)]
+    pub relay_access_token: Option<String>,
+}
+
+/// One relay in GRUND_RELAYS.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RelaySpec {
+    pub url: String,
+    pub region: Option<String>,
+}
+
+impl std::str::FromStr for RelaySpec {
+    type Err = String;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let input = input.trim();
+        let (region, url) = match input.split_once('=') {
+            Some((region, url)) if !region.contains("://") => (Some(region.trim()), url.trim()),
+            _ => (None, input),
+        };
+        if let Some(region) = region
+            && (region.is_empty()
+                || !region
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'))
+        {
+            return Err(format!(
+                "a relay's region is a-z, 0-9 and hyphens, not {region:?}"
+            ));
+        }
+        let origin = PublicOrigin::parse(url.trim_end_matches('/')).ok_or_else(|| {
+            format!("a relay is a URL like https://relay.example.com, not {url:?}")
+        })?;
+        if !(origin.https || origin.is_loopback()) {
+            return Err(format!(
+                "a relay must be https, except on loopback: {url:?}"
+            ));
+        }
+        Ok(Self {
+            url: url.trim_end_matches('/').to_string(),
+            region: region.map(str::to_string),
+        })
+    }
 }
 
 impl RelayArgs {
-    /// The relay URLs machines are told at registration: none when the relay
-    /// is off.
+    /// The relay URLs machines are told at registration and in every
+    /// membership list: the relay in this process first, when it is on,
+    /// then GRUND_RELAYS.
     pub fn urls(&self) -> Vec<String> {
-        match (&self.relay_address, &self.relay_url) {
-            (Some(_), Some(url)) => vec![url.clone()],
+        self.list().into_iter().map(|r| r.url).collect()
+    }
+
+    /// [`RelayArgs::urls`] with each relay's region.
+    pub fn list(&self) -> Vec<RelaySpec> {
+        let mut out: Vec<RelaySpec> = match (&self.relay_address, &self.relay_url) {
+            (Some(_), Some(url)) => vec![RelaySpec {
+                url: url.trim_end_matches('/').to_string(),
+                region: None,
+            }],
             _ => Vec::new(),
+        };
+        for relay in &self.relays {
+            if !out.iter().any(|r| r.url == relay.url) {
+                out.push(relay.clone());
+            }
         }
+        out
     }
 
     fn validate(&self) -> anyhow::Result<()> {
@@ -517,6 +588,12 @@ impl RelayArgs {
             "GRUND_RELAY_QUIC_ADDRESS needs the relay (GRUND_RELAY_ADDRESS) and its certificate \
              (GRUND_RELAY_TLS_CERT_FILE): QUIC always speaks TLS"
         );
+        if let Some(token) = &self.relay_access_token {
+            anyhow::ensure!(
+                token.len() >= 32,
+                "GRUND_RELAY_ACCESS_TOKEN must be at least 32 characters"
+            );
+        }
         Ok(())
     }
 }
@@ -919,6 +996,46 @@ mod tests {
         let mut config = Harness::try_parse_from(base.iter().chain(args).copied())?.serve;
         config.validate()?;
         Ok(config)
+    }
+
+    #[test]
+    fn machines_are_told_the_relay_in_this_process_first_then_grund_relays_once_each() {
+        let config = parse(&[
+            "--relay-address",
+            "0.0.0.0:8443",
+            "--relay-url",
+            "https://relay.example.com/",
+            "--relays",
+            "eu-central=https://relay-eu.example.com, https://relay.example.com,https://relay-us.example.com",
+        ])
+        .unwrap();
+        assert_eq!(
+            config.relay.list(),
+            vec![
+                RelaySpec {
+                    url: "https://relay.example.com".into(),
+                    region: None
+                },
+                RelaySpec {
+                    url: "https://relay-eu.example.com".into(),
+                    region: Some("eu-central".into())
+                },
+                RelaySpec {
+                    url: "https://relay-us.example.com".into(),
+                    region: None
+                },
+            ]
+        );
+        assert!(parse(&[]).unwrap().relay.urls().is_empty());
+    }
+
+    #[test]
+    fn a_plain_http_relay_a_bad_region_or_a_short_access_token_is_refused() {
+        assert!(parse(&["--relays", "http://relay.example.com"]).is_err());
+        assert!(parse(&["--relays", "http://127.0.0.1:3340"]).is_ok());
+        assert!(parse(&["--relays", "EU=https://relay.example.com"]).is_err());
+        assert!(parse(&["--relay-access-token", "short"]).is_err());
+        assert!(parse(&["--relay-access-token", "0123456789abcdef0123456789abcdef"]).is_ok());
     }
 
     #[test]

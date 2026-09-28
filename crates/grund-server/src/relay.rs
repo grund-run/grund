@@ -1,18 +1,30 @@
-//! grund's relay, as a notmad component (grund-docs design/network.md §10):
-//! grund-net's relay on its own listener, and QUIC address discovery when a
-//! certificate is configured. Off unless GRUND_RELAY_ADDRESS is set.
+//! grund's relays (grund-docs design/network.md §10): who they admit, the
+//! relay inside `grund serve`, and `grund relay` on its own host.
 //!
-//! The relay admits a connection only if the key that proved itself in the
-//! relay handshake is the current key of a machine registered with this
-//! instance: a revoked machine's key is cleared, so it is refused. A
-//! connection admitted before the revocation is cut by a sweep that checks
-//! every connected key again each [`SWEEP_INTERVAL`] and disconnects those
-//! no longer current (network.md §10.2). A sweep, not a hook on
-//! RevokeMachine, because the revocation may reach another replica than the
-//! one holding the connection.
+//! **One access policy.** A relay admits a key only if it is the current key
+//! of a machine registered with the instance and not revoked, or the
+//! instance's own key (grund-store `relay_keys_among`). The relay in `grund
+//! serve` asks the database ([`Database`]); a `grund relay` elsewhere asks
+//! its instance over HTTPS ([`Callout`], answered by `api/relay_access.rs`
+//! from the same query). Either way [`RelayAccess`] asks when a connection
+//! starts, and [`sweep`] asks again for every connected key each
+//! [`SWEEP_INTERVAL`], cutting those no longer admitted: a sweep rather than
+//! a hook on RevokeMachine, because the revocation may reach another replica,
+//! or another host, than the one holding the connection.
+//!
+//! When the policy cannot be asked, a new connection is refused and open ones
+//! are kept until it can: deny by default, without turning a blip in grund
+//! into every machine losing its relay.
+//!
+//! Metering and per-plan limits (hosted relays only, network.md §14) are not
+//! built. They belong where a key is admitted ([`RelayAccess`]'s
+//! `on_connect` and `on_disconnect`, which know the key and the connection)
+//! and in iroh-relay's per-client rate limit.
 
 use std::{
     collections::{HashMap, HashSet},
+    future::Future,
+    str::FromStr,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -27,23 +39,130 @@ use crate::state::State;
 /// How often the connected keys are checked again.
 pub const SWEEP_INTERVAL: Duration = Duration::from_secs(2);
 
-/// Admits the keys of this instance's registered, unrevoked machines, and
-/// remembers which are connected. Clones share what they remember.
+/// The most keys one access question may carry: 200 hex keys and their
+/// quoting fit the instance's 16 KiB request limit. A sweep of more keys
+/// asks in turns.
+pub const MAX_KEYS_PER_CHECK: usize = 200;
+
+/// Which of some keys a relay may admit.
+pub trait KeyPolicy: Clone + std::fmt::Debug + Send + Sync + 'static {
+    /// The subset of `keys` that may use the relay now.
+    fn admitted(
+        &self,
+        keys: &[EndpointId],
+    ) -> impl Future<Output = anyhow::Result<HashSet<EndpointId>>> + Send;
+}
+
+/// The policy read from the instance's own database.
 #[derive(Debug, Clone)]
-pub struct MachineAccess {
+pub struct Database {
     pool: sqlx::PgPool,
+}
+
+impl Database {
+    pub fn new(pool: sqlx::PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+impl KeyPolicy for Database {
+    async fn admitted(&self, keys: &[EndpointId]) -> anyhow::Result<HashSet<EndpointId>> {
+        if keys.is_empty() {
+            return Ok(HashSet::new());
+        }
+        let hex: Vec<String> = keys.iter().map(ToString::to_string).collect();
+        let found = grund_store::machines::relay_keys_among(&self.pool, &hex).await?;
+        Ok(keys
+            .iter()
+            .filter(|k| found.contains(&k.to_string()))
+            .copied()
+            .collect())
+    }
+}
+
+/// The policy asked of an instance over HTTPS, as `grund relay` does:
+/// `POST <instance>/relay/v1/access/current` with the relay's bearer token.
+#[derive(Debug, Clone)]
+pub struct Callout {
+    http: reqwest::Client,
+    url: String,
+    token: String,
+}
+
+/// How long one access question to the instance may take.
+pub const CALLOUT_TIMEOUT: Duration = Duration::from_secs(3);
+
+impl Callout {
+    /// A callout to the instance at `instance` (its origin) with `token`.
+    pub fn new(instance: &str, token: &str) -> anyhow::Result<Self> {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let http = reqwest::Client::builder()
+            .timeout(CALLOUT_TIMEOUT)
+            .connect_timeout(Duration::from_secs(2))
+            .user_agent("grund-relay")
+            .build()
+            .context("build the HTTP client for the access callout")?;
+        Ok(Self {
+            http,
+            url: format!("{}/relay/v1/access/current", instance.trim_end_matches('/')),
+            token: token.to_string(),
+        })
+    }
+}
+
+impl KeyPolicy for Callout {
+    async fn admitted(&self, keys: &[EndpointId]) -> anyhow::Result<HashSet<EndpointId>> {
+        let body = serde_json::json!({
+            "keys": keys.iter().map(ToString::to_string).collect::<Vec<_>>()
+        });
+        let response = self
+            .http
+            .post(&self.url)
+            .bearer_auth(&self.token)
+            .json(&body)
+            .send()
+            .await
+            .context("ask the instance which keys to admit")?;
+        let status = response.status();
+        anyhow::ensure!(
+            status.is_success(),
+            "the instance answered the access check with {status}"
+        );
+        let answer: serde_json::Value = response.json().await?;
+        Ok(answer["admitted"]
+            .as_array()
+            .map(|keys| {
+                keys.iter()
+                    .filter_map(|k| k.as_str())
+                    .filter_map(|k| EndpointId::from_str(k).ok())
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+}
+
+/// Admits whoever `policy` admits, and remembers which keys are connected.
+/// Clones share what they remember.
+#[derive(Debug, Clone)]
+pub struct RelayAccess<P> {
+    policy: P,
     connected: Arc<Mutex<HashMap<EndpointId, HashSet<ConnectionId>>>>,
 }
 
-impl MachineAccess {
-    pub fn new(pool: sqlx::PgPool) -> Self {
+impl<P: KeyPolicy> RelayAccess<P> {
+    pub fn new(policy: P) -> Self {
         Self {
-            pool,
+            policy,
             connected: Arc::default(),
         }
     }
 
-    /// The connected keys that are no longer a registered machine's.
+    /// The policy this relay asks.
+    pub fn policy(&self) -> &P {
+        &self.policy
+    }
+
+    /// The connected keys that are no longer admitted.
     pub async fn stale(&self) -> anyhow::Result<Vec<EndpointId>> {
         let connected: Vec<EndpointId> = self
             .connected
@@ -55,33 +174,35 @@ impl MachineAccess {
         if connected.is_empty() {
             return Ok(Vec::new());
         }
-        let keys: Vec<String> = connected.iter().map(ToString::to_string).collect();
-        let current = grund_store::machines::current_keys_among(&self.pool, &keys).await?;
+        let mut admitted = HashSet::new();
+        for chunk in connected.chunks(MAX_KEYS_PER_CHECK) {
+            admitted.extend(self.policy.admitted(chunk).await?);
+        }
         Ok(connected
             .into_iter()
-            .filter(|id| !current.contains(&id.to_string()))
+            .filter(|id| !admitted.contains(id))
             .collect())
     }
 }
 
-impl AccessControl for MachineAccess {
+impl<P: KeyPolicy> AccessControl for RelayAccess<P> {
     async fn on_connect(&self, request: &ClientRequest) -> Access {
-        let key = request.endpoint_id().to_string();
-        match grund_store::machines::key_is_current(&self.pool, &key).await {
-            Ok(true) => {
+        let key = request.endpoint_id();
+        match self.policy.admitted(&[key]).await {
+            Ok(admitted) if admitted.contains(&key) => {
                 self.connected
                     .lock()
                     .expect("relay connections lock")
-                    .entry(request.endpoint_id())
+                    .entry(key)
                     .or_default()
                     .insert(request.connection_id());
                 Access::Allow
             }
-            Ok(false) => Access::Deny {
+            Ok(_) => Access::Deny {
                 reason: Some("not a machine of this grund".into()),
             },
             Err(error) => {
-                tracing::warn!(error = %error, "relay: could not check a machine key; refusing");
+                tracing::warn!(error = %format!("{error:#}"), "relay: could not check a machine key; refusing");
                 Access::Deny {
                     reason: Some("grund could not check the key; try again".into()),
                 }
@@ -100,6 +221,32 @@ impl AccessControl for MachineAccess {
     }
 }
 
+/// Checks every connected key again each `interval`, and cuts those no
+/// longer admitted. Runs until dropped.
+pub async fn sweep<P: KeyPolicy>(access: &RelayAccess<P>, relay: &Relay, interval: Duration) {
+    let mut tick = tokio::time::interval(interval);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tick.tick().await;
+        match access.stale().await {
+            Ok(stale) => {
+                for endpoint_id in stale {
+                    if relay.disconnect(endpoint_id) {
+                        tracing::info!(%endpoint_id, "relay: cut a key that is no longer a machine's");
+                    }
+                }
+            }
+            Err(error) => tracing::warn!(
+                error = %format!("{error:#}"),
+                "relay: could not check connected keys; keeping them until grund answers"
+            ),
+        }
+    }
+}
+
+/// The relay inside `grund serve`, as a notmad component: grund-net's relay
+/// on its own listener, and QUIC address discovery when a certificate is
+/// configured. Off unless GRUND_RELAY_ADDRESS is set.
 pub struct RelayServer {
     state: State,
 }
@@ -123,11 +270,11 @@ impl Component for RelayServer {
         };
         let tls = match (&config.relay_tls_cert_file, &config.relay_tls_key_file) {
             (Some(cert), Some(key)) => Some(
-                grund_net::relay::tls_from_pem(
-                    &std::fs::read(cert).context("read GRUND_RELAY_TLS_CERT_FILE")?,
-                    &std::fs::read(key).context("read GRUND_RELAY_TLS_KEY_FILE")?,
-                )
-                .context("the relay's certificate")?,
+                crate::relay_command::RelayTls::Files {
+                    cert: cert.clone(),
+                    key: key.clone(),
+                }
+                .server_config()?,
             ),
             _ => None,
         };
@@ -147,32 +294,15 @@ impl Component for RelayServer {
             quic = ?config.relay_quic_address,
             "relay listening"
         );
-        let access = MachineAccess::new(self.state.pool.clone());
+        let access = RelayAccess::new(Database::new(self.state.pool.clone()));
         let relay = Relay::new(access.clone());
         tokio::select! {
             served = grund_net::relay::serve(listener, tls.map(Arc::new), relay.clone(), Relay::probe_routes()) => {
                 served.map_err(anyhow::Error::from)?;
             }
-            () = sweep(&access, &relay) => {}
+            () = sweep(&access, &relay, SWEEP_INTERVAL) => {}
             () = cancellation.cancelled() => {}
         }
         Ok(())
-    }
-}
-
-async fn sweep(access: &MachineAccess, relay: &Relay) {
-    let mut interval = tokio::time::interval(SWEEP_INTERVAL);
-    loop {
-        interval.tick().await;
-        match access.stale().await {
-            Ok(stale) => {
-                for endpoint_id in stale {
-                    if relay.disconnect(endpoint_id) {
-                        tracing::info!(%endpoint_id, "relay: cut a key that is no longer a machine's");
-                    }
-                }
-            }
-            Err(error) => tracing::warn!(error = %error, "relay: could not check connected keys"),
-        }
     }
 }

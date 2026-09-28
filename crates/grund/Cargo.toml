@@ -46,4 +46,7 @@ hex.workspace = true
 sha2.workspace = true
 # The network tests verify membership lists as a machine does.
 grund-net.workspace = true
+# The standalone relay's test gives it a certificate from a CA of its own,
+# as machines insist on one; ring, as above.
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
 iroh = "=1.2.0"

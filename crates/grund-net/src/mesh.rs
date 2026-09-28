@@ -52,6 +52,14 @@ use crate::{
 /// again. iroh's connect has no deadline of its own when no path answers.
 pub const DIAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// How long a connection may receive nothing at all, not even the
+/// acknowledgements of its own keep-alives (sent every 500 ms, [`crate::endpoint::PATH_KEEPALIVE`]),
+/// before the mesh closes it. Such a connection is stuck on a path that is
+/// gone, typically a relay that stopped while its peer moved to another. iroh
+/// keeps a relay path for 30 s and answers the peer's new handshake along it,
+/// so the two would not meet again; closed, the next dial tries every relay.
+pub const SILENT_LIMIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// How a mesh is set up.
 #[derive(Debug, Clone)]
 pub struct MeshConfig {
@@ -73,6 +81,7 @@ pub struct Mesh {
 struct Inner {
     own: EndpointId,
     endpoint: RwLock<Option<Endpoint>>,
+    relays: RwLock<Vec<RelayUrl>>,
     up: watch::Sender<Option<Ipv6Addr>>,
     config: MeshConfig,
     view: RwLock<Option<View>>,
@@ -92,6 +101,7 @@ struct Peer {
     connections: Vec<Connection>,
     dialing: bool,
     framer: Framer,
+    heard: HashMap<usize, (u64, Instant)>,
 }
 
 #[derive(Debug, Default)]
@@ -110,6 +120,7 @@ struct Counters {
     lists_applied: AtomicU64,
     lists_refused_stale: AtomicU64,
     endpoints_attached: AtomicU64,
+    closed_silent: AtomicU64,
 }
 
 /// What a mesh is doing, for status output and tests.
@@ -150,6 +161,7 @@ impl Mesh {
             inner: Arc::new(Inner {
                 own,
                 endpoint: RwLock::new(None),
+                relays: RwLock::new(config.relays.clone()),
                 up: watch::Sender::new(None),
                 config,
                 view: RwLock::new(None),
@@ -184,6 +196,18 @@ impl Mesh {
         }
         self.inner.counters.endpoints_attached.fetch_add(1, Relaxed);
         Ok(())
+    }
+
+    /// Makes `relays` the ones the mesh dials members through. A member is
+    /// reachable at whichever of them is its home, so every dial names them
+    /// all.
+    pub fn set_relays(&self, relays: Vec<RelayUrl>) {
+        *self.inner.relays.write().expect("relays lock") = relays;
+    }
+
+    /// The relays the mesh dials members through now.
+    pub fn relays(&self) -> Vec<RelayUrl> {
+        self.inner.relays.read().expect("relays lock").clone()
     }
 
     /// The endpoint the mesh dials from now, if it has one.
@@ -243,9 +267,11 @@ impl Mesh {
         tracing::info!(%address, "mesh: up");
 
         let reader = tokio::spawn(self.clone().tun_to_peers());
+        let watchdog = tokio::spawn(self.clone().close_silent_connections());
         loop {
             if lists.changed().await.is_err() {
                 reader.abort();
+                watchdog.abort();
                 return Ok(());
             }
             let Some(list) = lists.borrow_and_update().clone() else {
@@ -306,6 +332,7 @@ impl Mesh {
             ("lists_applied", &c.lists_applied),
             ("lists_refused_stale", &c.lists_refused_stale),
             ("endpoints_attached", &c.endpoints_attached),
+            ("closed_silent", &c.closed_silent),
         ]
         .into_iter()
         .map(|(k, v)| (k, v.load(Relaxed)))
@@ -393,6 +420,35 @@ impl Mesh {
         Ok(())
     }
 
+    async fn close_silent_connections(self) {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+        loop {
+            tick.tick().await;
+            let now = Instant::now();
+            let mut peers = self.inner.peers.lock().expect("peers lock");
+            for (id, peer) in peers.iter_mut() {
+                peer.connections.retain(|c| c.close_reason().is_none());
+                let live: Vec<usize> = peer.connections.iter().map(Connection::stable_id).collect();
+                peer.heard.retain(|conn, _| live.contains(conn));
+                for conn in &peer.connections {
+                    let received = conn.stats().udp_rx.datagrams;
+                    let heard = peer
+                        .heard
+                        .entry(conn.stable_id())
+                        .or_insert((received, now));
+                    if received != heard.0 {
+                        *heard = (received, now);
+                    } else if now.duration_since(heard.1) >= SILENT_LIMIT {
+                        tracing::info!(peer = %id, path = %describe_path(conn), "mesh: closing a connection that hears nothing");
+                        self.inner.counters.closed_silent.fetch_add(1, Relaxed);
+                        conn.close(2u32.into(), b"silent");
+                    }
+                }
+                peer.connections.retain(|c| c.close_reason().is_none());
+            }
+        }
+    }
+
     async fn tun_to_peers(self) {
         let tun = self.inner.tun.get().expect("tun is set before this runs");
         let c = &self.inner.counters;
@@ -464,7 +520,7 @@ impl Mesh {
 
     async fn dial(self, target: EndpointId) {
         let mut addr = EndpointAddr::new(target);
-        for url in &self.inner.config.relays {
+        for url in self.inner.relays.read().expect("relays lock").iter() {
             addr = addr.with_relay_url(url.clone());
         }
         let result = match self.endpoint() {

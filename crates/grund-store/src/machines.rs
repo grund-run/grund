@@ -58,6 +58,26 @@ pub async fn current_keys_among(
     Ok(found.into_iter().collect())
 }
 
+/// Which of `public_keys` (lowercase hex) a relay of this instance may
+/// admit: the current key of a registered machine, or the instance's own
+/// key while it is not retired.
+pub async fn relay_keys_among(
+    executor: impl PgExecutor<'_>,
+    public_keys: &[String],
+) -> Result<std::collections::HashSet<String>, sqlx::Error> {
+    let found: Vec<String> = sqlx::query_scalar(
+        "SELECT public_key FROM grund_machines WHERE public_key = ANY($1) \
+         UNION \
+         SELECT encode(public_key, 'hex') FROM grund_keys \
+         WHERE purpose = 'instance' AND retired_at IS NULL \
+           AND encode(public_key, 'hex') = ANY($1)",
+    )
+    .bind(public_keys)
+    .fetch_all(executor)
+    .await?;
+    Ok(found.into_iter().collect())
+}
+
 /// Every key not retired, for the check at start.
 pub async fn current_keys(executor: impl PgExecutor<'_>) -> Result<Vec<KeyRow>, sqlx::Error> {
     sqlx::query_as(

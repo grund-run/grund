@@ -40,6 +40,22 @@ pub struct MembershipList {
     pub issued_at: i64,
     /// Every member, in no particular order.
     pub members: Vec<Member>,
+    /// grund's relays, every one a member may use. It travels in the list,
+    /// signed, so adding a relay (a region) reaches every machine at its
+    /// next epoch, with no re-join. Lists signed before relays were carried
+    /// have none; a machine then uses the relays it was told at join.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relays: Vec<Relay>,
+}
+
+/// One of grund's relays, as the list names it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Relay {
+    /// Where machines reach it: `https://relay.example.com`.
+    pub url: String,
+    /// Where it runs, for choosing among relays later. Not used yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
 }
 
 /// One machine on a private network.
@@ -101,6 +117,9 @@ pub enum MembershipError {
     /// Two members share a name.
     #[error("the name {0} is given to two members")]
     DuplicateName(String),
+    /// A relay's URL is not an https URL (http only on loopback).
+    #[error("the relay URL {0} is not an https URL")]
+    BadRelay(String),
 }
 
 impl SignedList {
@@ -178,6 +197,11 @@ impl MembershipList {
                 }
             }
         }
+        for relay in &self.relays {
+            if !is_relay_url(&relay.url) {
+                return Err(MembershipError::BadRelay(relay.url.clone()));
+            }
+        }
         Ok(())
     }
 
@@ -216,6 +240,14 @@ impl MembershipList {
     }
 }
 
+fn is_relay_url(url: &str) -> bool {
+    let Ok(parsed) = iroh::RelayUrl::from_str(url) else {
+        return false;
+    };
+    let loopback = matches!(parsed.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+    parsed.scheme() == "https" || (parsed.scheme() == "http" && loopback)
+}
+
 fn is_label(name: &str) -> bool {
     (1..=63).contains(&name.len())
         && name
@@ -252,6 +284,7 @@ mod tests {
             epoch: 3,
             prefix: "fd12:3456:789a::".parse().unwrap(),
             issued_at: 1_790_000_000,
+            relays: vec![],
             members: vec![
                 Member {
                     machine_id: "m_a".into(),
@@ -276,6 +309,7 @@ mod tests {
             epoch: 3,
             prefix: "fd12:3456:789a::".parse().unwrap(),
             issued_at: 1_790_000_000,
+            relays: vec![],
             members: vec![Member {
                 machine_id: "m_a".into(),
                 endpoint_id: "e".into(),
@@ -298,6 +332,35 @@ mod tests {
             String::from_utf8(l.encode()).unwrap(),
             r#"{"network_id":"net_test","epoch":3,"prefix":"fd12:3456:789a::","issued_at":1790000000,"members":[{"machine_id":"m_a","endpoint_id":"e","slot":1,"name":"a"}]}"#
         );
+    }
+
+    #[test]
+    fn relays_travel_after_the_members_and_must_be_https() {
+        let mut l = list();
+        l.members.truncate(1);
+        l.members[0].endpoint_id = "e".into();
+        l.members[0].name = None;
+        l.relays = vec![Relay {
+            url: "https://relay.example.com/".into(),
+            region: Some("eu".into()),
+        }];
+        assert_eq!(
+            String::from_utf8(l.encode()).unwrap(),
+            r#"{"network_id":"net_test","epoch":3,"prefix":"fd12:3456:789a::","issued_at":1790000000,"members":[{"machine_id":"m_a","endpoint_id":"e","slot":1}],"relays":[{"url":"https://relay.example.com/","region":"eu"}]}"#
+        );
+        let mut l = list();
+        for (url, ok) in [
+            ("https://relay.example.com", true),
+            ("http://127.0.0.1:3340", true),
+            ("http://relay.example.com", false),
+            ("not a url", false),
+        ] {
+            l.relays = vec![Relay {
+                url: url.into(),
+                region: None,
+            }];
+            assert_eq!(l.validate().is_ok(), ok, "{url}");
+        }
     }
 
     #[test]

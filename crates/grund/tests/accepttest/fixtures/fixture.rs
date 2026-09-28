@@ -259,6 +259,33 @@ impl Fixture {
         self.wait_until_live(Some(&log_path)).await
     }
 
+    pub async fn restart_in_lab(&self, extra: &[(&str, &str)]) -> anyhow::Result<()> {
+        let lab = self
+            .lab
+            .clone()
+            .context("only a lab instance restarts in the lab")?;
+        let mut settings = self.settings.clone();
+        for (name, value) in extra {
+            settings.retain(|(key, _)| key != name);
+            if !value.is_empty() {
+                settings.push((name.to_string(), value.to_string()));
+            }
+        }
+        lab.stop("grund.log");
+        let env: Vec<(&str, &str)> = settings
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        lab.spawn(
+            "lh",
+            &[env!("CARGO_BIN_EXE_grund"), "serve"],
+            &env,
+            "grund.log",
+        )?;
+        self.wait_until_live(Some(&lab.work.join("grund.log")))
+            .await
+    }
+
     pub fn database_url(&self) -> Option<String> {
         let (admin, name) = self.database.as_ref()?;
         let (base, _) = admin.rsplit_once('/')?;
