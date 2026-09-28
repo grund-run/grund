@@ -78,13 +78,10 @@ pub struct ServeConfig {
     /// The origin people reach grund at, e.g. https://app.grund.sh. Links in
     /// mail point here, cookies are scoped to it, and a form posted from any
     /// other origin is refused. Plain http only for loopback, unless
-    /// GRUND_DEV_MODE is on.
-    #[arg(
-        long,
-        env = "GRUND_PUBLIC_URL",
-        default_value = "http://localhost:8080"
-    )]
-    pub public_url: String,
+    /// GRUND_DEV_MODE is on. Default: https://<GRUND_DOMAIN> when that is
+    /// set, else http://localhost:8080.
+    #[arg(long, env = "GRUND_PUBLIC_URL")]
+    pub public_url: Option<String>,
 
     /// Development mode: allows plain http on a non-loopback public URL and
     /// generates a throwaway secret key when none is configured (every restart
@@ -232,6 +229,9 @@ pub struct ServeConfig {
 
     #[command(flatten)]
     pub relay: RelayArgs,
+
+    #[command(flatten)]
+    pub tls: TlsArgs,
 
     #[command(flatten)]
     pub machine_defaults: MachineDefaultsArgs,
@@ -598,6 +598,198 @@ impl RelayArgs {
     }
 }
 
+/// This instance's own HTTPS (grund-docs design/traffic.md §5): grund
+/// terminates TLS itself for GRUND_DOMAIN, with a certificate it orders by
+/// ACME, or with one supplied in files. Off unless GRUND_DOMAIN or
+/// GRUND_TLS_CERT_FILE is set. Plain http on GRUND_LISTEN is served as
+/// before either way, for the local health probe and a proxy in front.
+#[derive(Clone, Debug, Args)]
+pub struct TlsArgs {
+    /// The name people reach this instance at, e.g. grund.example.com. Turns
+    /// on HTTPS on GRUND_TLS_LISTEN, with a certificate ordered from
+    /// GRUND_ACME_DIRECTORY unless GRUND_TLS_CERT_FILE supplies one.
+    /// GRUND_PUBLIC_URL then defaults to https://<GRUND_DOMAIN>.
+    #[arg(long, env = "GRUND_DOMAIN")]
+    pub domain: Option<String>,
+
+    /// Where HTTPS listens. ACME's TLS-ALPN-01 challenge is answered here,
+    /// so for ACME this must be what port 443 of GRUND_DOMAIN reaches.
+    #[arg(long, env = "GRUND_TLS_LISTEN", default_value = "0.0.0.0:443")]
+    pub tls_listen: SocketAddr,
+
+    /// A plain-http listener, e.g. 0.0.0.0:80, that redirects every request
+    /// to GRUND_PUBLIC_URL and answers ACME's HTTP-01 challenge. Needed for
+    /// GRUND_ACME_CHALLENGE=http-01. Off by default: TLS-ALPN-01 needs no
+    /// port 80.
+    #[arg(long, env = "GRUND_TLS_REDIRECT_LISTEN")]
+    pub tls_redirect_listen: Option<SocketAddr>,
+
+    /// A certificate chain (PEM, leaf first) to serve instead of ordering
+    /// one. Re-read when the file changes, so a renewal by another tool is
+    /// picked up. Set with GRUND_TLS_KEY_FILE.
+    #[arg(long, env = "GRUND_TLS_CERT_FILE")]
+    pub tls_cert_file: Option<PathBuf>,
+
+    /// The private key of GRUND_TLS_CERT_FILE (PEM).
+    #[arg(long, env = "GRUND_TLS_KEY_FILE")]
+    pub tls_key_file: Option<PathBuf>,
+
+    /// The ACME directory certificates are ordered from, e.g.
+    /// https://acme-v02.api.letsencrypt.org/directory. Setting it agrees to
+    /// that CA's subscriber agreement. No default in the binary, so nothing
+    /// talks to a CA unless told to; compose.yaml sets Let's Encrypt.
+    #[arg(long, env = "GRUND_ACME_DIRECTORY")]
+    pub acme_directory: Option<String>,
+
+    /// A contact address for the ACME account, e.g. ops@example.com. Optional:
+    /// Let's Encrypt no longer mails about expiry.
+    #[arg(long, env = "GRUND_ACME_CONTACT")]
+    pub acme_contact: Option<String>,
+
+    /// A PEM file of extra roots to trust for GRUND_ACME_DIRECTORY's own
+    /// HTTPS, for a private or test CA (step-ca, Pebble). Public CAs need
+    /// none.
+    #[arg(long, env = "GRUND_ACME_CA_FILE")]
+    pub acme_ca_file: Option<PathBuf>,
+
+    /// The ACME profile named on every order. Let's Encrypt's `classic` is
+    /// 90 days today (64 from 2027-02-10, 45 from 2028-02-16); renewal
+    /// follows the CA's renewal information, so a lifetime change needs no
+    /// configuration change.
+    #[arg(long, env = "GRUND_ACME_PROFILE", default_value = "classic")]
+    pub acme_profile: String,
+
+    /// How the CA checks this instance holds GRUND_DOMAIN: tls-alpn-01 on
+    /// GRUND_TLS_LISTEN (no port 80 needed), or http-01 on
+    /// GRUND_TLS_REDIRECT_LISTEN.
+    #[arg(
+        long,
+        env = "GRUND_ACME_CHALLENGE",
+        value_parser = ["tls-alpn-01", "http-01"],
+        default_value = "tls-alpn-01"
+    )]
+    pub acme_challenge: String,
+
+    /// The first wait after a failed order, in seconds; each further failure
+    /// doubles it, up to 12 hours, and a CA's Retry-After is waited out when
+    /// it asks for longer. 300 keeps a broken setup inside Let's Encrypt's 5
+    /// failed validations per name per hour. Lower only against a test CA.
+    #[arg(long, env = "GRUND_ACME_RETRY_BASE", value_parser = secs, default_value = "300")]
+    pub acme_retry_base: Duration,
+
+    /// How often each replica looks for a renewed certificate (in the
+    /// database, or GRUND_TLS_CERT_FILE's modification time), and for due
+    /// ACME work.
+    #[arg(long, env = "GRUND_TLS_REFRESH_INTERVAL", value_parser = secs, default_value = "10")]
+    pub tls_refresh_interval: Duration,
+}
+
+impl TlsArgs {
+    /// Whether this instance serves HTTPS itself.
+    pub fn enabled(&self) -> bool {
+        self.domain.is_some() || self.tls_cert_file.is_some()
+    }
+
+    /// Whether this instance orders its certificate by ACME.
+    pub fn acme(&self) -> bool {
+        self.domain.is_some() && self.tls_cert_file.is_none()
+    }
+
+    fn validate(&mut self) -> anyhow::Result<()> {
+        if let Some(domain) = &mut self.domain {
+            *domain = domain.trim().trim_end_matches('.').to_ascii_lowercase();
+            anyhow::ensure!(
+                is_hostname(domain)
+                    && domain.contains('.')
+                    && !domain
+                        .split('.')
+                        .all(|l| l.bytes().all(|b| b.is_ascii_digit())),
+                "GRUND_DOMAIN must be a DNS name like grund.example.com, not {domain:?}: no \
+                 scheme, port, wildcard or IP address"
+            );
+        }
+        anyhow::ensure!(
+            self.tls_cert_file.is_some() == self.tls_key_file.is_some(),
+            "GRUND_TLS_CERT_FILE and GRUND_TLS_KEY_FILE must be set together"
+        );
+        let acme_settings = [
+            ("GRUND_ACME_DIRECTORY", self.acme_directory.is_some()),
+            ("GRUND_ACME_CONTACT", self.acme_contact.is_some()),
+            ("GRUND_ACME_CA_FILE", self.acme_ca_file.is_some()),
+        ];
+        for (name, set) in acme_settings {
+            anyhow::ensure!(
+                !set || self.tls_cert_file.is_none(),
+                "{name} is set, but GRUND_TLS_CERT_FILE supplies the certificate: use ACME or \
+                 your own certificate, not both"
+            );
+            anyhow::ensure!(
+                !set || self.domain.is_some(),
+                "{name} is set, but GRUND_DOMAIN is not: ACME orders a certificate for \
+                 GRUND_DOMAIN"
+            );
+        }
+        if self.acme() {
+            let directory = self.acme_directory.as_deref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "GRUND_DOMAIN is set, so HTTPS needs a certificate: set GRUND_ACME_DIRECTORY \
+                     (for Let's Encrypt, https://acme-v02.api.letsencrypt.org/directory), or \
+                     supply one with GRUND_TLS_CERT_FILE and GRUND_TLS_KEY_FILE"
+                )
+            })?;
+            anyhow::ensure!(
+                directory.starts_with("https://") && !directory.contains(char::is_whitespace),
+                "GRUND_ACME_DIRECTORY must be an https URL, not {directory:?}"
+            );
+        }
+        if let Some(contact) = &mut self.acme_contact {
+            let address = contact.trim().trim_start_matches("mailto:").to_string();
+            anyhow::ensure!(
+                address
+                    .split_once('@')
+                    .is_some_and(|(local, host)| !local.is_empty() && is_hostname(host))
+                    && !address.contains([',', ' ', '<', '>']),
+                "GRUND_ACME_CONTACT must be one mail address, like ops@example.com"
+            );
+            *contact = format!("mailto:{address}");
+        }
+        anyhow::ensure!(
+            !self.acme_profile.is_empty()
+                && self.acme_profile.len() <= 64
+                && self
+                    .acme_profile
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.'),
+            "GRUND_ACME_PROFILE must be a profile name like classic"
+        );
+        anyhow::ensure!(
+            self.acme_challenge != "http-01" || self.tls_redirect_listen.is_some(),
+            "GRUND_ACME_CHALLENGE=http-01 needs GRUND_TLS_REDIRECT_LISTEN (e.g. 0.0.0.0:80): \
+             that is where the CA looks for the answer"
+        );
+        anyhow::ensure!(
+            self.tls_redirect_listen.is_none() || self.enabled(),
+            "GRUND_TLS_REDIRECT_LISTEN redirects to HTTPS, which is off: set GRUND_DOMAIN or \
+             GRUND_TLS_CERT_FILE"
+        );
+        anyhow::ensure!(
+            self.tls_redirect_listen
+                .is_none_or(|redirect| redirect != self.tls_listen),
+            "GRUND_TLS_REDIRECT_LISTEN and GRUND_TLS_LISTEN must differ"
+        );
+        anyhow::ensure!(
+            !self.acme_retry_base.is_zero() && self.acme_retry_base <= Duration::from_secs(3600),
+            "GRUND_ACME_RETRY_BASE must be between 1 and 3600 seconds"
+        );
+        anyhow::ensure!(
+            !self.tls_refresh_interval.is_zero()
+                && self.tls_refresh_interval <= Duration::from_secs(300),
+            "GRUND_TLS_REFRESH_INTERVAL must be between 1 and 300 seconds"
+        );
+        Ok(())
+    }
+}
+
 /// A capacity provider for the management pool (grund-docs
 /// design/machines.md): where grund gets machines from. Only grund's hosted
 /// service has one (fleet); a self-hosted instance adds machines to its pool
@@ -703,20 +895,53 @@ impl ServeConfig {
             &mut self.capacity.capacity_token,
             &mut self.operator_organisation,
             &mut self.machine_defaults.agent_install_url,
+            &mut self.public_url,
+            &mut self.tls.domain,
+            &mut self.tls.acme_directory,
+            &mut self.tls.acme_contact,
         ] {
             if value.as_deref().is_some_and(|v| v.trim().is_empty()) {
                 *value = None;
             }
         }
         self.database.validate()?;
+        self.tls.validate()?;
 
-        let origin = PublicOrigin::parse(&self.public_url).ok_or_else(|| {
+        let public_url = self
+            .public_url
+            .get_or_insert_with(|| match &self.tls.domain {
+                Some(domain) => format!("https://{domain}"),
+                None => "http://localhost:8080".into(),
+            })
+            .clone();
+        let origin = PublicOrigin::parse(&public_url).ok_or_else(|| {
             anyhow::anyhow!(
                 "GRUND_PUBLIC_URL must be an origin like https://app.example.com: a scheme and \
-                 host, an optional port, no path or trailing slash; got {:?}",
-                self.public_url
+                 host, an optional port, no path or trailing slash; got {public_url:?}"
             )
         })?;
+        if let Some(domain) = &self.tls.domain {
+            anyhow::ensure!(
+                origin.https && &origin.host == domain,
+                "GRUND_PUBLIC_URL is {public_url:?}, but GRUND_DOMAIN is {domain:?}: with \
+                 GRUND_DOMAIN set, GRUND_PUBLIC_URL must be https://{domain} (a port may follow), \
+                 or be left unset"
+            );
+        }
+        anyhow::ensure!(
+            !self.tls.enabled() || self.tls.tls_listen != self.listen,
+            "GRUND_TLS_LISTEN and GRUND_LISTEN are both {}: HTTPS and plain http need their own \
+             listeners",
+            self.listen
+        );
+        anyhow::ensure!(
+            self.tls
+                .tls_redirect_listen
+                .is_none_or(|redirect| redirect != self.listen),
+            "GRUND_TLS_REDIRECT_LISTEN and GRUND_LISTEN are both {}: the redirect listener \
+             answers nothing but redirects and ACME HTTP-01",
+            self.listen
+        );
         anyhow::ensure!(
             origin.https || origin.is_loopback() || self.dev_mode,
             "GRUND_PUBLIC_URL is plain http on {:?}: session cookies would cross the network \
@@ -849,7 +1074,10 @@ impl ServeConfig {
     }
 
     pub fn public_origin(&self) -> PublicOrigin {
-        PublicOrigin::parse(&self.public_url).expect("validated at startup")
+        self.public_url
+            .as_deref()
+            .and_then(PublicOrigin::parse)
+            .expect("validated at startup")
     }
 }
 
@@ -1200,6 +1428,187 @@ mod tests {
         assert!(parse(&["--agent-install-url", url]).is_ok());
         assert!(parse(&["--serve-installer", "true", "--agent-install-url", url]).is_err());
         assert!(parse(&["--serve-installer", "true", "--agent-install-url", ""]).is_ok());
+    }
+
+    const LE: &str = "https://acme-v02.api.letsencrypt.org/directory";
+
+    fn refused(args: &[&str], names: &str) {
+        let error = parse(args).unwrap_err().to_string();
+        assert!(error.contains(names), "{args:?}: {error}");
+    }
+
+    #[test]
+    fn a_domain_with_acme_serves_https_at_that_name() {
+        let config = parse(&["--domain", "Grund.Example.com.", "--acme-directory", LE]).unwrap();
+        assert_eq!(config.tls.domain.as_deref(), Some("grund.example.com"));
+        assert_eq!(
+            config.public_origin().serialized,
+            "https://grund.example.com"
+        );
+        assert!(config.tls.enabled() && config.tls.acme());
+        assert_eq!(config.tls.acme_profile, "classic");
+        assert_eq!(config.tls.acme_challenge, "tls-alpn-01");
+    }
+
+    #[test]
+    fn a_domain_without_a_certificate_source_is_refused_naming_both() {
+        let error = parse(&["--domain", "grund.example.com"])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("GRUND_ACME_DIRECTORY"), "{error}");
+        assert!(error.contains("GRUND_TLS_CERT_FILE"), "{error}");
+    }
+
+    #[test]
+    fn acme_and_a_supplied_certificate_are_refused_together() {
+        refused(
+            &[
+                "--domain",
+                "grund.example.com",
+                "--acme-directory",
+                LE,
+                "--tls-cert-file",
+                "/c",
+                "--tls-key-file",
+                "/k",
+            ],
+            "GRUND_ACME_DIRECTORY",
+        );
+        refused(&["--tls-cert-file", "/c"], "GRUND_TLS_KEY_FILE");
+    }
+
+    #[test]
+    fn a_supplied_certificate_needs_no_domain() {
+        let config = parse(&["--tls-cert-file", "/c", "--tls-key-file", "/k"]).unwrap();
+        assert!(config.tls.enabled() && !config.tls.acme());
+    }
+
+    #[test]
+    fn acme_settings_without_a_domain_are_refused() {
+        refused(&["--acme-directory", LE], "GRUND_DOMAIN");
+        refused(&["--acme-contact", "ops@example.com"], "GRUND_DOMAIN");
+    }
+
+    #[test]
+    fn a_domain_that_is_not_a_dns_name_is_refused() {
+        for domain in [
+            "https://grund.example.com",
+            "*.example.com",
+            "192.168.1.10",
+            "localhost",
+            "a:443",
+        ] {
+            refused(
+                &["--domain", domain, "--acme-directory", LE],
+                "GRUND_DOMAIN",
+            );
+        }
+    }
+
+    #[test]
+    fn a_public_url_for_another_name_or_plain_http_is_refused_with_a_domain() {
+        let domain = ["--domain", "grund.example.com", "--acme-directory", LE];
+        let with = |url: &'static str| [&domain[..], &["--public-url", url]].concat();
+        refused(&with("https://other.example.com"), "GRUND_PUBLIC_URL");
+        refused(&with("http://grund.example.com"), "GRUND_PUBLIC_URL");
+        assert!(parse(&with("https://grund.example.com:8443")).is_ok());
+    }
+
+    #[test]
+    fn the_acme_directory_must_be_https() {
+        refused(
+            &[
+                "--domain",
+                "grund.example.com",
+                "--acme-directory",
+                "http://ca.example/dir",
+            ],
+            "GRUND_ACME_DIRECTORY",
+        );
+    }
+
+    #[test]
+    fn a_contact_becomes_a_mailto_uri_and_a_list_is_refused() {
+        let config = parse(&[
+            "--domain",
+            "grund.example.com",
+            "--acme-directory",
+            LE,
+            "--acme-contact",
+            "ops@example.com",
+        ])
+        .unwrap();
+        assert_eq!(
+            config.tls.acme_contact.as_deref(),
+            Some("mailto:ops@example.com")
+        );
+        refused(
+            &[
+                "--domain",
+                "grund.example.com",
+                "--acme-directory",
+                LE,
+                "--acme-contact",
+                "a@example.com, b@example.com",
+            ],
+            "GRUND_ACME_CONTACT",
+        );
+    }
+
+    #[test]
+    fn http01_needs_the_redirect_listener_and_it_needs_https() {
+        let domain = ["--domain", "grund.example.com", "--acme-directory", LE];
+        refused(
+            &[&domain[..], &["--acme-challenge", "http-01"]].concat(),
+            "GRUND_TLS_REDIRECT_LISTEN",
+        );
+        assert!(
+            parse(
+                &[
+                    &domain[..],
+                    &[
+                        "--acme-challenge",
+                        "http-01",
+                        "--tls-redirect-listen",
+                        "0.0.0.0:80"
+                    ]
+                ]
+                .concat()
+            )
+            .is_ok()
+        );
+        refused(
+            &["--tls-redirect-listen", "0.0.0.0:80"],
+            "GRUND_TLS_REDIRECT_LISTEN",
+        );
+    }
+
+    #[test]
+    fn https_and_plain_http_cannot_share_a_listener() {
+        refused(
+            &[
+                "--domain",
+                "grund.example.com",
+                "--acme-directory",
+                LE,
+                "--listen",
+                "0.0.0.0:443",
+            ],
+            "GRUND_TLS_LISTEN",
+        );
+    }
+
+    #[test]
+    fn a_retry_base_outside_its_range_is_refused() {
+        let domain = ["--domain", "grund.example.com", "--acme-directory", LE];
+        refused(
+            &[&domain[..], &["--acme-retry-base", "0"]].concat(),
+            "GRUND_ACME_RETRY_BASE",
+        );
+        refused(
+            &[&domain[..], &["--acme-retry-base", "7200"]].concat(),
+            "GRUND_ACME_RETRY_BASE",
+        );
     }
 
     #[test]

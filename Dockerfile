@@ -26,6 +26,6 @@ COPY --from=build /grund /grund
 USER 65532:65532
 ENV GRUND_LISTEN=0.0.0.0:8080 \
     GRUND_LOG_FORMAT=json
-EXPOSE 8080
+EXPOSE 8080 443
 ENTRYPOINT ["/grund"]
 CMD ["serve"]

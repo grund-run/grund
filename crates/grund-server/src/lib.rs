@@ -5,17 +5,22 @@
 //!     config ─► tracing ─► PostgreSQL ─► migrations ─► NATS (optional) ─► State
 //!     notmad, drained in this order on SIGTERM:
 //!       grund/http          pages and health                stops taking requests first
+//!       grund/https         the same, over TLS               only with GRUND_DOMAIN or GRUND_TLS_CERT_FILE
+//!       grund/redirect      http to https, ACME HTTP-01     only with GRUND_TLS_REDIRECT_LISTEN
 //!       grund/relay         machines' relay (network.md)    only with GRUND_RELAY_ADDRESS
 //!       grund/health        nostatus checks                 keeps readiness honest while draining
 //!       grund/projections   read-model catch-up and rebuild
 //!       grund/sweeper       expired sessions, links, windows
+//!       grund/certificates  renewed certificates, ACME work  only with HTTPS on
 //!       grund/outbox        mail, resets, insights reports  drains last, up to 5 s
 //! ```
 //!
 //! PostgreSQL is the truth. NATS, when configured, only wakes background work
 //! sooner; every worker also polls, so losing NATS costs latency, never work.
 
+pub mod acme;
 pub mod api;
+pub mod certificates;
 pub mod config;
 pub mod crypto;
 pub mod db;
@@ -47,6 +52,7 @@ pub async fn serve(
     if config.machine_defaults.serve_installer {
         web::install::check()?;
     }
+    certificates::check_files(&config)?;
     let secret = secrets::SecretKey::load(&config)?;
     let pool = db::connect(&config.database).await?;
     grund_store::migrate(&pool).await?;
@@ -81,7 +87,16 @@ pub async fn serve(
     let templates = templates::Templates::new(&extra)?;
     let mailer = services::mail::Mailer::new(&config, templates.clone())?;
     let reporter = services::insights::Reporter::new(&config.insights)?;
-    let health = health::registry(pool.clone(), nats.clone(), mailer.configured(), &config);
+    let secret = std::sync::Arc::new(secret);
+    let certificates = certificates::Certificates::new(&config, pool.clone(), secret.clone());
+    certificates.start().await?;
+    let health = health::registry(
+        pool.clone(),
+        nats.clone(),
+        mailer.configured(),
+        &certificates,
+        &config,
+    );
     let entitlements = entitlements(&config)?;
     let grace = config.shutdown_grace;
     let config_billing = config.billing.clone();
@@ -92,7 +107,8 @@ pub async fn serve(
         pool,
         events,
         nats,
-        secret: std::sync::Arc::new(secret),
+        secret,
+        certificates,
         health,
         passwords: services::passwords::Passwords::new()?,
         templates,
@@ -120,10 +136,13 @@ pub async fn serve(
     );
     notmad::Mad::builder()
         .add(server::Http::new(state.clone()))
+        .add(certificates::Https::new(state.clone()))
+        .add(certificates::Redirect::new(state.clone()))
         .add(relay::RelayServer::new(state.clone()))
         .add(health::Checks::new(&state))
         .add(projections::Projections::new(&state))
         .add(services::maintenance::Sweeper::new(state.clone()))
+        .add(certificates::CertificateWork::new(&state))
         .add(sagas::DeletionWorker::new(&state))
         .add(services::outbox::OutboxDrain::new(
             state.clone(),

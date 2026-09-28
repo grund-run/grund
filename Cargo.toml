@@ -20,6 +20,7 @@ grund-ee = { path = "ee/grund-ee" }
 grund-proto = { path = "crates/grund-proto" }
 grund-server = { path = "crates/grund-server" }
 grund-store = { path = "crates/grund-store" }
+grund-tls = { path = "crates/grund-tls" }
 
 anyhow = "1"
 async-nats = "0.50"

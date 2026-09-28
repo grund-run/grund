@@ -1,7 +1,13 @@
 # grund on one machine: `docker compose up`, then open http://localhost:8080.
+# With a public name pointing at this machine and port 443 reachable:
+#
+#   GRUND_DOMAIN=grund.example.com docker compose up -d
+#
+# and grund serves https://grund.example.com itself, with a certificate it
+# orders from Let's Encrypt (TLS-ALPN-01 on 443: no port 80, no proxy).
 #
 # This is how a self-hoster runs grund today, not only a development setup.
-# What it gives you, and what it deliberately does not (TLS, backups), is in
+# What it gives you, and what it deliberately does not (backups), is in
 # the README, "Self-hosting". Every setting is in .env.example; copy it to .env to
 # change one. Nothing here needs a secret typed in: `init` generates the
 # instance key and the database password on first start, into the grund-data
@@ -97,7 +103,16 @@ services:
       - path: .env
         required: false
     environment:
-      GRUND_PUBLIC_URL: ${GRUND_PUBLIC_URL:-http://localhost:8080}
+      # Unset, grund uses https://<GRUND_DOMAIN>, or http://localhost:8080
+      # without a domain.
+      GRUND_PUBLIC_URL: ${GRUND_PUBLIC_URL:-${GRUND_DOMAIN:+https://${GRUND_DOMAIN}}}
+      # HTTPS, only with GRUND_DOMAIN. The certificate is ordered from
+      # GRUND_ACME_DIRECTORY (Let's Encrypt unless .env names another; an
+      # empty value there, with your own certificate mounted, turns ACME
+      # off) and kept in PostgreSQL, its key sealed with the instance key.
+      GRUND_DOMAIN: ${GRUND_DOMAIN:-}
+      GRUND_ACME_DIRECTORY: ${GRUND_DOMAIN:+${GRUND_ACME_DIRECTORY-https://acme-v02.api.letsencrypt.org/directory}}
+      GRUND_TLS_LISTEN: 0.0.0.0:443
       DATABASE_URL: postgres://grund@postgres:5432/grund
       GRUND_DATABASE_PASSWORD_FILE: /var/lib/grund/postgres-password
       GRUND_SECRET_KEY_FILE: /var/lib/grund/secret.key
@@ -114,6 +129,10 @@ services:
       GRUND_SERVE_INSTALLER: ${GRUND_SERVE_INSTALLER:-true}
     ports:
       - "${GRUND_BIND:-127.0.0.1}:${GRUND_PORT:-8080}:8080"
+      # 443 on every address, but only with GRUND_DOMAIN: without one this
+      # is the container's 443 on a random host port, where nothing listens,
+      # so an instance without a domain never takes the host's 443.
+      - "${GRUND_DOMAIN:+${GRUND_TLS_BIND:-0.0.0.0}:${GRUND_TLS_PORT:-443}:}443"
     volumes:
       - grund-data:/var/lib/grund:ro
     read_only: true

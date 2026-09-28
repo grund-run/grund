@@ -39,6 +39,7 @@ a sign-off ([CONTRIBUTING.md](CONTRIBUTING.md)).
 ```bash
 git clone https://git.kjuulh.io/grund/grund.git && cd grund
 docker compose up -d     # builds this checkout; then http://localhost:8080
+GRUND_DOMAIN=grund.example.com docker compose up -d     # or https, on 443
 ```
 
 That runs grund with PostgreSQL, NATS (wake-ups for background work) and
@@ -54,14 +55,24 @@ To add a machine, use "Add a machine" on the Machines page. The command it
 gives installs grund and its agent on a Linux machine (root, systemd,
 x86_64) and connects it. This instance serves the installer and its own
 binary at `/install`. On the machine running compose, the command works as
-given. A machine on another host needs the TLS proxy described below.
+given. A machine on another host needs https, below.
+
+**HTTPS.** With `GRUND_DOMAIN` set, grund terminates TLS itself on 443, with
+no proxy in front. It orders the certificate by ACME from Let's Encrypt
+(`GRUND_ACME_DIRECTORY` names another CA), proving the name with
+TLS-ALPN-01 on 443 itself, so port 80 can stay closed. It keeps the
+certificate in PostgreSQL, with the key sealed by the instance key, and
+renews in the window the CA's renewal information (ARI) suggests. The
+name's DNS must point at this machine, and 443 must be reachable from the
+internet. If the CA is unreachable, grund keeps serving the certificate it
+has and retries with backoff; `/health/ready` reports a `certificate` check
+(minor) that turns degraded within 14 days of expiry. Your own certificate
+works instead: set `GRUND_TLS_CERT_FILE` and `GRUND_TLS_KEY_FILE`
+(re-read when they change). Plain http stays on 127.0.0.1:8080. Every
+setting is in `grund serve --help` and [.env.example](.env.example).
 
 What compose deliberately does not do:
 
-- **TLS.** grund serves plain http on 127.0.0.1:8080, and refuses a plain
-  http `GRUND_PUBLIC_URL` anywhere but localhost. To serve other machines,
-  put a TLS proxy (Caddy, Traefik, nginx) in front, set
-  `GRUND_PUBLIC_URL=https://your.name` and `GRUND_TRUSTED_PROXY_HOPS=1`.
 - **Backups.** Nothing backs up the `grund-postgres` and `grund-data`
   volumes. `docker compose down -v` deletes them and every account with
   them. Back up both, and try a restore once.

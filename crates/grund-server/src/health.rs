@@ -49,11 +49,15 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// configured, is major: it only makes background work start sooner and
 /// polling is correct without it, so its loss degrades readiness but never
 /// takes the instance out of rotation. Mail is minor: a backlog is reported,
-/// never a reason to stop serving, because the outbox holds it durably.
+/// never a reason to stop serving, because the outbox holds it durably. The
+/// HTTPS certificate, when grund serves HTTPS, is minor too: plain http and
+/// every stored certificate keep working while a renewal is late, and an
+/// expiring certificate is something to see, not a reason to restart.
 pub fn registry(
     pool: sqlx::PgPool,
     nats: Option<async_nats::Client>,
     mail_configured: bool,
+    certificates: &crate::certificates::Certificates,
     config: &crate::config::ServeConfig,
 ) -> StatusState {
     let mut registry = StatusRegistry::builder();
@@ -112,6 +116,18 @@ pub fn registry(
             }
         },
     );
+    if certificates.enabled() {
+        let certificates = certificates.clone();
+        registry.add_fn(
+            CheckInfo::new("certificate")
+                .description("unhealthy: no certificate, or it expired; degraded: within 14 days of expiry (a third of a short lifetime)")
+                .severity(Severity::Minor),
+            move || {
+                let certificates = certificates.clone();
+                async move { Ok(certificates.health()) }
+            },
+        );
+    }
     registry.build()
 }
 

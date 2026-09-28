@@ -154,8 +154,12 @@ steps:
       GRUND_ACCEPT_NATS_URL: nats://nats:4222
       GRUND_ACCEPT_SMTP_URL: smtp://mailpit:1025
       GRUND_ACCEPT_MAILPIT_URL: http://mailpit:8025
+      # The certificate accepttests spawn Pebble (fetched below, pinned by
+      # version and SHA-256) and fail rather than skip when it is missing.
+      GRUND_ACCEPT_REQUIRE_PEBBLE: "1"
     commands:
       - apk add --no-cache musl-dev protobuf-dev sccache
+      - crates/grund/tests/pebble/fetch.sh
       - hp="$${SCCACHE_MEMCACHED_ENDPOINT#tcp://}"; nc -z -w 3 "$${hp%:*}" "$${hp##*:}" || { echo "the compile cache is unreachable, so this step compiles without it"; unset RUSTC_WRAPPER; }
       # Build every test binary first, and keep the path of the accepttest
       # binary: `contract` runs that same file against the release binary.

@@ -2,6 +2,7 @@
 mod fixtures;
 
 mod api;
+mod certificates;
 mod csrf;
 mod health;
 mod insights;

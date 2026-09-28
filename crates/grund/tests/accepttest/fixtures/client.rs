@@ -136,6 +136,33 @@ pub async fn send(
         .with_context(|| format!("{method} {path}: no complete response within 15 s"))?
 }
 
+pub async fn leaf_certificate(origin: &Origin) -> anyhow::Result<Vec<u8>> {
+    let (host, port) = origin
+        .connect
+        .clone()
+        .unwrap_or((origin.host.clone(), origin.port));
+    let handshake = async {
+        let tcp = TcpStream::connect((host.as_str(), port))
+            .await
+            .with_context(|| format!("connect to {host}:{port}"))?;
+        let server_name = rustls::pki_types::ServerName::try_from(origin.host.clone())?;
+        let stream = tls_connector(origin.roots.clone())
+            .connect(server_name, tcp)
+            .await
+            .context("TLS handshake")?;
+        stream
+            .get_ref()
+            .1
+            .peer_certificates()
+            .and_then(|chain| chain.first())
+            .map(|leaf| leaf.to_vec())
+            .context("no certificate")
+    };
+    tokio::time::timeout(Duration::from_secs(10), handshake)
+        .await
+        .context("no TLS handshake within 10 s")?
+}
+
 async fn roundtrip<S: AsyncRead + AsyncWrite + Unpin>(
     mut stream: S,
     request: &[u8],

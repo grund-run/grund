@@ -1,10 +1,11 @@
 mod billing;
 mod capacity;
-mod client;
+pub mod client;
 mod fixture;
 mod insights;
 mod mail;
 pub mod netlab;
+pub mod pebble;
 mod testcase;
 
 mod given;

@@ -22,6 +22,8 @@ pub struct State {
     pub events: mire::EventStore,
     pub nats: Option<async_nats::Client>,
     pub secret: Arc<SecretKey>,
+    /// What HTTPS serves, and the ACME work behind it (certificates.rs).
+    pub certificates: crate::certificates::Certificates,
     pub health: nostatus::StatusState,
     pub passwords: Passwords,
     pub templates: Templates,

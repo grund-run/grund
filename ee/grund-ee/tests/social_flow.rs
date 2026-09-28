@@ -128,12 +128,16 @@ async fn state(pool: PgPool, issuer: &str) -> State {
         client_secret: "test-secret".into(),
     };
     let events = mire::EventStore::new(pool.clone());
+    let secret = Arc::new(grund_server::secrets::SecretKey::generate());
+    let certificates =
+        grund_server::certificates::Certificates::new(&serve, pool.clone(), secret.clone());
     State {
         config: Arc::new(serve),
         events: events.clone(),
         pool,
         nats: None,
-        secret: Arc::new(grund_server::secrets::SecretKey::generate()),
+        secret,
+        certificates,
         health: nostatus::StatusState::empty(),
         passwords: Passwords::new().unwrap(),
         templates: Templates::new(TEMPLATES).unwrap(),

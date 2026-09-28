@@ -1745,6 +1745,7 @@ dependencies = [
  "base64 0.22.1",
  "buffa",
  "buffa-types",
+ "bytes",
  "chrono",
  "clap",
  "connectrpc",
@@ -1755,9 +1756,13 @@ dependencies = [
  "grund-net",
  "grund-proto",
  "grund-store",
+ "grund-tls",
  "hex",
  "hmac 0.12.1",
+ "http",
  "http-body-util",
+ "httpdate",
+ "instant-acme",
  "lettre",
  "minijinja",
  "mire",
@@ -1765,6 +1770,7 @@ dependencies = [
  "nostatus",
  "notmad",
  "reqwest",
+ "ring",
  "rustls",
  "serde",
  "serde_json",
@@ -1773,12 +1779,14 @@ dependencies = [
  "sqlx",
  "subtle",
  "thiserror 2.0.21",
+ "time",
  "tokio",
  "tokio-util",
  "tower",
  "tower-http 0.7.1",
  "tracing",
  "uuid",
+ "x509-parser",
 ]
 
 [[package]]
@@ -1796,6 +1804,20 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "grund-tls"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "rcgen",
+ "rustls",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "x509-parser",
 ]
 
 [[package]]
@@ -2017,6 +2039,8 @@ dependencies = [
  "hyper",
  "hyper-util",
  "rustls",
+ "rustls-native-certs",
+ "rustls-platform-verifier",
  "tokio",
  "tokio-rustls",
  "tower-service",
@@ -2217,6 +2241,31 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "879f10e63c20629ecabbb64a8010319738c66a5cd0c29b02d63d272b03751d01"
 dependencies = [
  "generic-array",
+]
+
+[[package]]
+name = "instant-acme"
+version = "0.8.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9f05ad37c421b962354c358d347d4a6130151df9407978372d3ad7f0c8f71a64"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "http",
+ "http-body",
+ "http-body-util",
+ "httpdate",
+ "hyper-rustls",
+ "rcgen",
+ "ring",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "time",
+ "tokio",
+ "x509-parser",
 ]
 
 [[package]]

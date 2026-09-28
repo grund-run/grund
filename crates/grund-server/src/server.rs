@@ -29,7 +29,7 @@ impl Component for Http {
         let listener = tokio::net::TcpListener::bind(address)
             .await
             .map_err(anyhow::Error::from)?;
-        tracing::info!(%address, public_url = %self.state.config.public_url, "grund listening");
+        tracing::info!(%address, public_url = %self.state.config.public_origin().serialized, "grund listening");
 
         let app = crate::web::router(self.state.clone())
             .into_make_service_with_connect_info::<std::net::SocketAddr>();

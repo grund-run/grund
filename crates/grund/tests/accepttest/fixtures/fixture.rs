@@ -286,6 +286,53 @@ impl Fixture {
             .await
     }
 
+    pub async fn spawn_replica(&self, extra: &[(&str, &str)]) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            self.lab.is_none(),
+            "a replica is spawned beside a local instance"
+        );
+        let port = std::net::TcpListener::bind("127.0.0.1:0")?
+            .local_addr()?
+            .port();
+        let log_path =
+            std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("grund-{port}.log"));
+        let log = File::create(&log_path)?;
+        let mut settings = self.settings.clone();
+        settings.retain(|(key, _)| key != "GRUND_LISTEN");
+        settings.push(("GRUND_LISTEN".into(), format!("127.0.0.1:{port}")));
+        for (name, value) in extra {
+            settings.retain(|(key, _)| key != name);
+            settings.push((name.to_string(), value.to_string()));
+        }
+        let child = serve(&settings, log)?;
+        let replica = Self {
+            origin: Origin::parse(&format!("http://127.0.0.1:{port}"))?,
+            mailpit: self.mailpit.clone(),
+            child: std::sync::Mutex::new(Some(child)),
+            database: None,
+            settings,
+            log_path: Some(log_path.clone()),
+            lab: None,
+        };
+        replica.wait_until_live(Some(&log_path)).await?;
+        Ok(replica)
+    }
+
+    pub fn log(&self) -> String {
+        self.log_path
+            .as_ref()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.child
+            .lock()
+            .unwrap()
+            .as_mut()
+            .is_some_and(|child| matches!(child.try_wait(), Ok(None)))
+    }
+
     pub fn database_url(&self) -> Option<String> {
         let (admin, name) = self.database.as_ref()?;
         let (base, _) = admin.rsplit_once('/')?;
@@ -328,6 +375,34 @@ fn serve(settings: &[(String, String)], log: File) -> anyhow::Result<Child> {
         command.env(name, value);
     }
     command.spawn().context("spawn grund")
+}
+
+pub async fn refused_at_start(extra: &[(&str, &str)]) -> anyhow::Result<String> {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_grund"));
+    command
+        .arg("serve")
+        .env_clear()
+        .env("DATABASE_URL", "postgres://grund@127.0.0.1:1/unreachable")
+        .env("GRUND_SECRET_KEY", random_hex(32))
+        .env("GRUND_LISTEN", "127.0.0.1:0");
+    for (name, value) in extra {
+        command.env(name, value);
+    }
+    let output = tokio::time::timeout(
+        Duration::from_secs(20),
+        tokio::task::spawn_blocking(move || command.output()),
+    )
+    .await
+    .context("grund neither started nor refused within 20 s")???;
+    anyhow::ensure!(
+        !output.status.success(),
+        "grund was expected to refuse {extra:?}, and exited successfully"
+    );
+    Ok(format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    ))
 }
 
 pub fn random_hex(bytes: usize) -> String {

@@ -1,0 +1,19 @@
+[package]
+name = "grund-tls"
+description = "Where grund's TLS terminates: certificate resolvers, keys and CSRs made in place, and a TLS listener that answers ACME TLS-ALPN-01"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+license = "AGPL-3.0-only"
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio = { workspace = true, features = ["net"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+tracing.workspace = true
+x509-parser = "0.18"
