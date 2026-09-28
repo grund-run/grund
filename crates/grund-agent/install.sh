@@ -115,7 +115,7 @@ if [ -n "$vms" ] && [ -c /dev/kvm ]; then
   if ! command -v nft >/dev/null && [ ! -x /usr/sbin/nft ]; then
     step "nftables, for the VMs' bridge"
     if command -v apt-get >/dev/null; then
-      DEBIAN_FRONTEND=noninteractive apt-get install -y -q nftables >/dev/null || { apt-get update -q >/dev/null && DEBIAN_FRONTEND=noninteractive apt-get install -y -q nftables >/dev/null; }
+      DEBIAN_FRONTEND=noninteractive apt-get install -y -q nftables >/dev/null 2>&1 || { apt-get update -q >/dev/null && DEBIAN_FRONTEND=noninteractive apt-get install -y -q nftables >/dev/null; }
     elif command -v dnf >/dev/null; then
       dnf install -y -q nftables
     elif command -v pacman >/dev/null; then
