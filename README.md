@@ -50,6 +50,12 @@ minutes. To run a published image instead, set `GRUND_IMAGE` and
 `GRUND_PULL_POLICY=missing` in `.env`. Every setting is documented in
 [.env.example](.env.example).
 
+To add a machine, use "Add a machine" on the Machines page. The command it
+gives installs grund and its agent on a Linux machine (root, systemd,
+x86_64) and connects it. This instance serves the installer and its own
+binary at `/install`. On the machine running compose, the command works as
+given. A machine on another host needs the TLS proxy described below.
+
 What compose deliberately does not do:
 
 - **TLS.** grund serves plain http on 127.0.0.1:8080, and refuses a plain
@@ -61,8 +67,9 @@ What compose deliberately does not do:
   them. Back up both, and try a restore once.
 - **Real mail.** Mailpit delivers nothing. Set `GRUND_SMTP_URL` and
   `GRUND_MAIL_FROM` for real users.
-- **Updates and more than one machine.** `git pull` and `docker compose up
-  -d` update grund. Migrations are forward-only. One machine is one machine.
+- **Updates.** `git pull` and `docker compose up -d` update grund.
+  Migrations are forward-only. Machines that joined keep the grund they
+  installed until you run the command on them again.
 
 ## The binary
 

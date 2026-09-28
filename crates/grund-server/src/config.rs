@@ -362,9 +362,22 @@ pub struct BillingArgs {
 pub struct MachineDefaultsArgs {
     /// A script that installs grund and its agent service on a device, run as
     /// `curl -fsSL <url> | sudo sh -s -- --url <instance> --code <setup code>`
-    /// (grund's own is crates/grund-agent/install.sh).
+    /// (grund's own is crates/grund-agent/install.sh). Not with
+    /// GRUND_SERVE_INSTALLER.
     #[arg(long, env = "GRUND_AGENT_INSTALL_URL")]
     pub agent_install_url: Option<String>,
+
+    /// Serve this instance's own installer and binary: `GET /install` (the
+    /// install.sh built into this binary) and `GET
+    /// /install/grund-linux-<arch>` (this executable) with its `.sha256`. The
+    /// Machines page then offers `curl -fsSL <instance>/install | sudo sh -s
+    /// -- --url <instance> --code <setup code> --from-instance`, and a
+    /// machine installs exactly the build the instance runs, published or
+    /// built from source. compose.yaml turns it on. Off by default, so an
+    /// instance that sets GRUND_AGENT_INSTALL_URL keeps its machines on
+    /// builds from grund's package registry.
+    #[arg(long, env = "GRUND_SERVE_INSTALLER", default_value_t = false, action = clap::ArgAction::Set)]
+    pub serve_installer: bool,
 
     /// The kernel a new VM boots by default, with GRUND_VM_KERNEL_SHA256.
     #[arg(long, env = "GRUND_VM_KERNEL_URL")]
@@ -398,6 +411,11 @@ impl MachineDefaultsArgs {
             }
             Ok(())
         };
+        anyhow::ensure!(
+            !(self.serve_installer && self.agent_install_url.is_some()),
+            "set GRUND_AGENT_INSTALL_URL or GRUND_SERVE_INSTALLER=true, not both: the Machines \
+             page offers one installer"
+        );
         url("GRUND_AGENT_INSTALL_URL", &self.agent_install_url, true)?;
         url("GRUND_VM_KERNEL_URL", &self.vm_kernel_url, false)?;
         url("GRUND_VM_ROOTFS_URL", &self.vm_rootfs_url, false)?;
@@ -607,6 +625,7 @@ impl ServeConfig {
             &mut self.capacity.capacity_url,
             &mut self.capacity.capacity_token,
             &mut self.operator_organisation,
+            &mut self.machine_defaults.agent_install_url,
         ] {
             if value.as_deref().is_some_and(|v| v.trim().is_empty()) {
                 *value = None;
@@ -1055,6 +1074,15 @@ mod tests {
     #[test]
     fn a_grace_period_longer_than_the_kubelets_is_refused() {
         assert!(parse(&["--shutdown-grace", "31"]).is_err());
+    }
+
+    #[test]
+    fn an_instance_offers_one_installer_its_own_or_another() {
+        let url = "https://example.com/install.sh";
+        assert!(parse(&["--serve-installer", "true"]).is_ok());
+        assert!(parse(&["--agent-install-url", url]).is_ok());
+        assert!(parse(&["--serve-installer", "true", "--agent-install-url", url]).is_err());
+        assert!(parse(&["--serve-installer", "true", "--agent-install-url", ""]).is_ok());
     }
 
     #[test]

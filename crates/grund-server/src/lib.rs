@@ -43,6 +43,9 @@ pub async fn serve(
     config: ServeConfig,
     extensions: Vec<std::sync::Arc<dyn extension::Extension>>,
 ) -> anyhow::Result<()> {
+    if config.machine_defaults.serve_installer {
+        web::install::check()?;
+    }
     let secret = secrets::SecretKey::load(&config)?;
     let pool = db::connect(&config.database).await?;
     grund_store::migrate(&pool).await?;

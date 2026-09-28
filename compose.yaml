@@ -105,6 +105,13 @@ services:
       GRUND_SMTP_URL: ${GRUND_SMTP_URL:-smtp://mailpit:1025}
       GRUND_MAIL_FROM: ${GRUND_MAIL_FROM:-grund <grund@localhost>}
       GRUND_LISTEN: 0.0.0.0:8080
+      # The Machines page offers `curl -fsSL <GRUND_PUBLIC_URL>/install | sudo
+      # sh ...`, and grund serves that script and its own binary, so a machine
+      # installs the build this instance runs, published or built from this
+      # checkout. A machine on another host needs GRUND_PUBLIC_URL to be https
+      # (README, "Self-hosting"). .env.example says how to point machines at
+      # another installer instead.
+      GRUND_SERVE_INSTALLER: ${GRUND_SERVE_INSTALLER:-true}
     ports:
       - "${GRUND_BIND:-127.0.0.1}:${GRUND_PORT:-8080}:8080"
     volumes:

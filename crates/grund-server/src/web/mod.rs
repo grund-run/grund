@@ -5,11 +5,13 @@
 //!   request ─► trace ─► security headers ─► panic guard ─► timeout ─► body limit
 //!           ─► request context (request id; failed pages rendered and logged)
 //!           ─► /health/live, /health/ready, /static/*
+//!           ─► /install, /install/* (only with GRUND_SERVE_INSTALLER)
 //!           └► pages (server-rendered minijinja)
 //! ```
 
 pub mod assets;
 pub mod browser;
+pub mod install;
 pub mod machines;
 pub mod orgs;
 pub mod pages;
@@ -60,6 +62,13 @@ pub fn router(state: State) -> Router {
         .fold(Router::new(), |router, extension| {
             router.merge(extension.routes())
         });
+    let installer = if state.config.machine_defaults.serve_installer {
+        Router::new()
+            .route("/install", get(install::script))
+            .route("/install/{file}", get(install::file))
+    } else {
+        Router::new()
+    };
     Router::new()
         .route("/health/live", get(health::live))
         .route("/health/ready", get(health::ready))
@@ -96,6 +105,7 @@ pub fn router(state: State) -> Router {
         .route("/{org}/settings/rename", post(orgs::rename))
         .route("/{org}/settings/delete", post(orgs::delete))
         .route("/{org}/settings/cancel-deletion", post(orgs::cancel_deletion))
+        .merge(installer)
         .merge(extensions)
         .fallback(pages::not_found)
         .layer(middleware::from_fn_with_state(state.clone(), request_context))
@@ -195,6 +205,7 @@ mod tests {
             "invite",
             "auth",
             "api",
+            "install",
         ] {
             assert_eq!(Username::parse(path), Err(NameError::Reserved), "/{path}");
         }

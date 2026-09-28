@@ -1856,3 +1856,79 @@ async fn the_machines_page_offers_the_configured_installer_and_vm_image() -> any
     std::fs::remove_dir_all(device)?;
     Ok(())
 }
+
+#[tokio::test]
+async fn an_instance_serving_its_installer_hands_out_its_script_and_its_own_binary()
+-> anyhow::Result<()> {
+    let Some((given, when, then)) =
+        testcase_configured(&[("GRUND_SERVE_INSTALLER", "true")]).await?
+    else {
+        return Ok(());
+    };
+    when.visiting("/install").await?;
+    then.status(200)?
+        .header("content-type", "text/x-shellscript; charset=utf-8")?
+        .header("cache-control", "no-cache")?;
+    anyhow::ensure!(
+        then.body()? == include_str!("../../../grund-agent/install.sh"),
+        "/install is not the install.sh this binary was built with"
+    );
+
+    let name = format!("grund-{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+    let executable = std::path::Path::new(env!("CARGO_BIN_EXE_grund"));
+    let expected = {
+        let path = executable.to_path_buf();
+        tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
+            let mut file = std::fs::File::open(path)?;
+            let mut hasher = Sha256::new();
+            std::io::copy(&mut file, &mut hasher)?;
+            Ok(hex::encode(hasher.finalize()))
+        })
+        .await??
+    };
+    when.visiting(&format!("/install/{name}.sha256")).await?;
+    then.status(200)?;
+    anyhow::ensure!(
+        then.body()? == format!("{expected}\n"),
+        "the served SHA-256 is not the running binary's"
+    );
+    when.requesting("HEAD", &format!("/install/{name}")).await?;
+    then.status(200)?
+        .header("content-type", "application/octet-stream")?
+        .header(
+            "content-length",
+            &std::fs::metadata(executable)?.len().to_string(),
+        )?;
+    when.visiting("/install/grund-plan9-mips").await?;
+    then.status(404)?;
+
+    let owner = given.a_signed_in_account().await?;
+    let page = format!("/{}/machines", owner.username);
+    when.submitting(&page, &format!("{page}/add"), &[("name", "desk")])
+        .await?;
+    let body = then.status(200)?.body()?.replace("&#x2f;", "/");
+    let origin = origin(&when);
+    let offered =
+        format!("curl -fsSL {origin}/install | sudo sh -s -- --url {origin} --code grund_join_");
+    anyhow::ensure!(
+        body.contains(&offered) && body.contains(" --from-instance"),
+        "{body}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_instance_serves_no_installer_unless_told_to() -> anyhow::Result<()> {
+    let (_, when, then) = crate::accepttest::fixtures::testcase().await?;
+    when.visiting("/install").await?;
+    then.status_in(&[303, 404])?.body_lacks("#!/bin/sh")?;
+    when.visiting(&format!(
+        "/install/grund-{}-{}",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    ))
+    .await?;
+    then.status_in(&[303, 404])?
+        .header_lacks("content-type", "application/octet-stream")?;
+    Ok(())
+}

@@ -4,16 +4,29 @@
 #   curl -fsSL https://git.kjuulh.io/grund/grund/raw/branch/main/crates/grund-agent/install.sh |
 #     sudo sh -s -- --url https://dev.app.grund.sh --code grund_join_...
 #
-#   --url URL     the grund instance (required)
-#   --code CODE   the one-time setup code from its Machines page (required
-#                 unless this device is already registered)
-#   --name NAME   the name to ask for (default: the hostname)
-#   --no-vms      install only the agent, never Firecracker
+# or, from an instance that serves its own installer (GRUND_SERVE_INSTALLER,
+# on in compose.yaml):
+#
+#   curl -fsSL https://grund.example.com/install |
+#     sudo sh -s -- --url https://grund.example.com --code grund_join_... --from-instance
+#
+#   --url URL        the grund instance (required)
+#   --code CODE      the one-time setup code from its Machines page (required
+#                    unless this device is already registered)
+#   --name NAME      the name to ask for (default: the hostname)
+#   --no-vms         install only the agent, never Firecracker
+#   --from-instance  take grund from the instance itself, not from grund's
+#                    package registry
 #
 # What it does, as root, each step checked:
-#   1. grund: the build the instance itself runs (its /health/ready
-#      revision), from grund's package registry, checked against its
-#      published SHA-256, to /usr/local/bin/grund
+#   1. grund: the build the instance itself runs, checked against a SHA-256,
+#      to /usr/local/bin/grund. By default from grund's package registry, by
+#      the full 40-character commit the instance's /health/ready names, so
+#      the instance chooses only among builds grund's CI published; a build
+#      from source names none and is refused. With --from-instance, the
+#      instance's own executable, from <url>/install/grund-linux-<arch>:
+#      any build works, and the bytes are as trustworthy as the instance's
+#      TLS (nothing is signed yet)
 #   2. with /dev/kvm: Firecracker and its jailer (a pinned release, checked
 #      against a pinned SHA-256) to /usr/local/bin, and nftables from the
 #      system's package manager if nft is missing
@@ -36,13 +49,14 @@ FIRECRACKER_VERSION=v1.17.0
 FIRECRACKER_TGZ_SHA256=06094a1108ae9e82aa4c23a775aa92758f53f1175d422270d9d6162cb9ade558
 PACKAGES=https://git.kjuulh.io/api/packages/grund/generic/grund
 
-url="" code="" name="" vms=1
+url="" code="" name="" vms=1 from_instance=
 while [ $# -gt 0 ]; do
   case "$1" in
     --url) url="$2"; shift 2 ;;
     --code) code="$2"; shift 2 ;;
     --name) name="$2"; shift 2 ;;
     --no-vms) vms=""; shift ;;
+    --from-instance) from_instance=1; shift ;;
     *) echo "install.sh: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -66,14 +80,27 @@ verify() { # file sha256
 }
 
 step "grund, the build $url runs"
-revision="$(curl -fsS "$url/health/ready" | sed -n 's/.*"revision":"\([0-9a-f]\{40\}\)".*/\1/p')"
+ready="$(curl -fsS "$url/health/ready")" ||
+  fail "$url/health/ready did not answer 200; is the instance up and ready, and is this its address?"
+revision="$(echo "$ready" | sed -n 's/.*"revision":"\([^"]*\)".*/\1/p')"
 [ -n "$revision" ] || fail "$url/health/ready names no revision; is it a grund instance?"
-base="$PACKAGES/main-$revision"
-curl -fsSL -o "$work/grund" "$base/grund" || fail "no published grund for revision $revision ($base/grund)"
-sum="$(curl -fsSL "$base/grund.sha256")" || fail "no published SHA-256 for grund $revision"
+if [ -n "$from_instance" ]; then
+  base="$url/install"
+  file="grund-linux-$(uname -m)"
+  curl -fsSL -o "$work/grund" "$base/$file" ||
+    fail "$url serves no $file: it does not serve its installer (GRUND_SERVE_INSTALLER), or runs grund for another architecture"
+  sum="$(curl -fsSL "$base/$file.sha256")" || fail "$url serves no SHA-256 for $file"
+else
+  echo "$revision" | grep -qx '[0-9a-f]\{40\}' ||
+    fail "$url runs a grund build that was not published (revision \"$revision\"; a build from source, such as compose from a clone, has none). Install from the instance itself: its Machines page offers the command when it serves its installer (GRUND_SERVE_INSTALLER=true, compose.yaml's default), or add --from-instance to this one. Or run a published image, git.kjuulh.io/grund/grund:main-<the full 40-character commit>"
+  base="$PACKAGES/main-$revision"
+  curl -fsSL -o "$work/grund" "$base/grund" || fail "no published grund for revision $revision ($base/grund)"
+  sum="$(curl -fsSL "$base/grund.sha256")" || fail "no published SHA-256 for grund $revision"
+fi
+echo "$sum" | grep -qx '[0-9a-f]\{64\}' || fail "the SHA-256 from $base is not 64 hex characters"
 verify "$work/grund" "$sum"
 install -m 0755 "$work/grund" /usr/local/bin/grund
-echo "    grund $revision, sha256 $(echo "$sum" | cut -c1-12)"
+echo "    grund $revision from $base, sha256 $(echo "$sum" | cut -c1-12)"
 
 runtime=none
 if [ -n "$vms" ] && [ -c /dev/kvm ]; then

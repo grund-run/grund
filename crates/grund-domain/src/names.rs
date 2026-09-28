@@ -21,6 +21,7 @@ const RESERVED: &[&str] = &[
     "health",
     "help",
     "info",
+    "install",
     "invitations",
     "invite",
     "licenses",
