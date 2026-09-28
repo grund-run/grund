@@ -92,3 +92,13 @@ pub async fn testcase_configured(
         data: Arc::default(),
     })))
 }
+
+pub async fn testcase_in_lab(
+    lab: Arc<super::netlab::Lab>,
+    env: &[(&str, &str)],
+) -> anyhow::Result<(Given, When, Then)> {
+    Ok(split(TestCase {
+        fixture: Arc::new(Fixture::spawn_in_lab(lab, env).await?),
+        data: Arc::default(),
+    }))
+}

@@ -13,6 +13,11 @@
 //!   one hand-made IPv6 packet with the given source and destination, so the
 //!   lab can check what the receiver's filter does with a spoofed source or a
 //!   non-member, which a well-behaved mesh never sends.
+//! - `forward`: copies connections from a TCP or Unix socket listener to a
+//!   TCP or Unix socket target, terminating TLS on the listener when given a
+//!   certificate. The accepttests use it to join a lab of network namespaces
+//!   to this host's PostgreSQL and mail (a Unix socket crosses the
+//!   namespaces, a route does not), and to put TLS in front of grund.
 
 use std::{net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
 
@@ -76,6 +81,16 @@ enum Command {
         bind: Option<SocketAddr>,
         #[arg(long)]
         status: PathBuf,
+    },
+    Forward {
+        #[arg(long)]
+        listen: String,
+        #[arg(long)]
+        to: String,
+        #[arg(long, requires = "tls_key")]
+        tls_cert: Option<PathBuf>,
+        #[arg(long)]
+        tls_key: Option<PathBuf>,
     },
     Inject {
         #[arg(long)]
@@ -143,6 +158,12 @@ async fn main() -> anyhow::Result<()> {
             bind,
             status,
         } => node(key, relay, relay_root, network_pub, list, tun, bind, status).await,
+        Command::Forward {
+            listen,
+            to,
+            tls_cert,
+            tls_key,
+        } => forward(listen, to, tls_cert, tls_key).await,
         Command::Inject {
             key,
             relay,
@@ -329,6 +350,69 @@ async fn inject(
     println!("{outcome}");
     endpoint.close().await;
     Ok(())
+}
+
+trait Stream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> Stream for T {}
+
+enum Listener {
+    Tcp(tokio::net::TcpListener),
+    Unix(tokio::net::UnixListener),
+}
+
+async fn forward(
+    listen: String,
+    to: String,
+    tls_cert: Option<PathBuf>,
+    tls_key: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let tls = match (tls_cert, tls_key) {
+        (Some(cert), Some(key)) => Some(tokio_rustls::TlsAcceptor::from(Arc::new(
+            relay::tls_from_pem(&std::fs::read(cert)?, &std::fs::read(key)?)?,
+        ))),
+        _ => None,
+    };
+    let listener = match listen.split_once(':') {
+        Some(("tcp", addr)) => Listener::Tcp(tokio::net::TcpListener::bind(addr).await?),
+        Some(("unix", path)) => {
+            let _ = std::fs::remove_file(path);
+            Listener::Unix(tokio::net::UnixListener::bind(path)?)
+        }
+        _ => bail!("--listen is tcp:ADDRESS or unix:PATH"),
+    };
+    let to = Arc::new(to);
+    eprintln!(
+        "{}",
+        serde_json::json!({"event": "forward", "listen": listen, "to": *to})
+    );
+    loop {
+        let inbound: Box<dyn Stream> = match &listener {
+            Listener::Tcp(l) => Box::new(l.accept().await?.0),
+            Listener::Unix(l) => Box::new(l.accept().await?.0),
+        };
+        let (tls, to) = (tls.clone(), to.clone());
+        tokio::spawn(async move {
+            let mut inbound: Box<dyn Stream> = match tls {
+                Some(tls) => match tls.accept(inbound).await {
+                    Ok(stream) => Box::new(stream),
+                    Err(_) => return,
+                },
+                None => inbound,
+            };
+            let outbound: std::io::Result<Box<dyn Stream>> = match to.split_once(':') {
+                Some(("tcp", addr)) => tokio::net::TcpStream::connect(addr)
+                    .await
+                    .map(|s| Box::new(s) as Box<dyn Stream>),
+                Some(("unix", path)) => tokio::net::UnixStream::connect(path)
+                    .await
+                    .map(|s| Box::new(s) as Box<dyn Stream>),
+                _ => return,
+            };
+            if let Ok(mut outbound) = outbound {
+                let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
+            }
+        });
+    }
 }
 
 fn read_list(path: &PathBuf, network_key: &VerifyingKey) -> anyhow::Result<MembershipList> {

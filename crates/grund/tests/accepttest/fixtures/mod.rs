@@ -4,6 +4,7 @@ mod client;
 mod fixture;
 mod insights;
 mod mail;
+pub mod netlab;
 mod testcase;
 
 mod given;

@@ -8,6 +8,7 @@ mod insights;
 mod lifecycle;
 mod login;
 mod machines;
+mod network;
 mod organisations;
 mod pages;
 mod reset;

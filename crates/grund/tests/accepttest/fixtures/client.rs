@@ -11,6 +11,8 @@ pub struct Origin {
     pub tls: bool,
     pub host: String,
     pub port: u16,
+    pub connect: Option<(String, u16)>,
+    pub roots: Option<Arc<rustls::RootCertStore>>,
 }
 
 impl Origin {
@@ -35,6 +37,8 @@ impl Origin {
             tls,
             host: host.to_string(),
             port,
+            connect: None,
+            roots: None,
         })
     }
 
@@ -108,12 +112,16 @@ pub async fn send(
     }
 
     let exchange = async {
-        let tcp = TcpStream::connect((origin.host.as_str(), origin.port))
+        let (host, port) = origin
+            .connect
+            .clone()
+            .unwrap_or((origin.host.clone(), origin.port));
+        let tcp = TcpStream::connect((host.as_str(), port))
             .await
-            .with_context(|| format!("connect to {}:{}", origin.host, origin.port))?;
+            .with_context(|| format!("connect to {host}:{port}"))?;
         let raw = if origin.tls {
             let server_name = rustls::pki_types::ServerName::try_from(origin.host.clone())?;
-            let stream = tls_connector()
+            let stream = tls_connector(origin.roots.clone())
                 .connect(server_name, tcp)
                 .await
                 .context("TLS handshake")?;
@@ -141,8 +149,12 @@ async fn roundtrip<S: AsyncRead + AsyncWrite + Unpin>(
     Ok(raw)
 }
 
-fn tls_connector() -> tokio_rustls::TlsConnector {
-    let roots = rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+fn tls_connector(roots: Option<Arc<rustls::RootCertStore>>) -> tokio_rustls::TlsConnector {
+    let roots = roots.unwrap_or_else(|| {
+        Arc::new(rustls::RootCertStore::from_iter(
+            webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
+        ))
+    });
     let config = rustls::ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))

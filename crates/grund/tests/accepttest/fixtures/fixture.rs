@@ -20,6 +20,7 @@ pub struct Fixture {
     database: Option<(String, String)>,
     settings: Vec<(String, String)>,
     log_path: Option<std::path::PathBuf>,
+    lab: Option<std::sync::Arc<super::netlab::Lab>>,
 }
 
 impl Drop for Fixture {
@@ -93,6 +94,7 @@ impl Fixture {
             database: None,
             settings: Vec::new(),
             log_path: None,
+            lab: None,
         };
         fixture.wait_until_live(None).await?;
         Ok(fixture)
@@ -147,6 +149,89 @@ impl Fixture {
             database: Some((admin_url, database_name)),
             settings,
             log_path: Some(log_path.clone()),
+            lab: None,
+        };
+        fixture.wait_until_live(Some(&log_path)).await?;
+        Ok(fixture)
+    }
+
+    pub async fn spawn_in_lab(
+        lab: std::sync::Arc<super::netlab::Lab>,
+        extra: &[(&str, &str)],
+    ) -> anyhow::Result<Self> {
+        use super::netlab::{LIGHTHOUSE, PUBLIC_URL, RELAY_URL};
+        let listen = "127.0.0.1:8080";
+        let port = lab.front_door(listen)?;
+        let admin_url = env("GRUND_ACCEPT_DATABASE_URL").unwrap_or(DEFAULT_DATABASE_URL.into());
+        let (_, database_name) = fresh_database(&admin_url).await?;
+        let mailpit_url = env("GRUND_ACCEPT_MAILPIT_URL").unwrap_or(DEFAULT_MAILPIT_URL.into());
+        let (user, _) = admin_url
+            .split_once("://")
+            .and_then(|(_, rest)| rest.rsplit_once('@'))
+            .context("GRUND_ACCEPT_DATABASE_URL has no user")?;
+        let database_url = format!(
+            "postgres://{user}@localhost/{database_name}?host={}",
+            lab.work.join("pg").display()
+        );
+        let mut settings: Vec<(String, String)> = vec![
+            ("GRUND_LISTEN".into(), listen.into()),
+            ("GRUND_PUBLIC_URL".into(), PUBLIC_URL.into()),
+            ("DATABASE_URL".into(), database_url),
+            ("GRUND_SECRET_KEY".into(), random_hex(32)),
+            ("GRUND_SMTP_URL".into(), "smtp://127.0.0.1:1025".into()),
+            ("GRUND_MAIL_FROM".into(), "grund <grund@accept.test>".into()),
+            ("GRUND_HEALTH_INTERVAL".into(), "1".into()),
+            ("GRUND_DATABASE_MAX_CONNECTIONS".into(), "8".into()),
+            ("GRUND_DATABASE_ACQUIRE_TIMEOUT".into(), "30".into()),
+            ("GRUND_WORK_POLL_INTERVAL".into(), "1".into()),
+            ("GRUND_ORGANISATIONS".into(), "multi".into()),
+            ("GRUND_RELAY_ADDRESS".into(), format!("{LIGHTHOUSE}:8443")),
+            ("GRUND_RELAY_URL".into(), RELAY_URL.into()),
+            (
+                "GRUND_RELAY_TLS_CERT_FILE".into(),
+                lab.cert.to_string_lossy().into_owned(),
+            ),
+            (
+                "GRUND_RELAY_TLS_KEY_FILE".into(),
+                lab.key.to_string_lossy().into_owned(),
+            ),
+            (
+                "GRUND_RELAY_QUIC_ADDRESS".into(),
+                format!("{LIGHTHOUSE}:7842"),
+            ),
+            (
+                "RUST_LOG".into(),
+                "grund=debug,grund_server=debug,grund_net=debug,warn".into(),
+            ),
+        ];
+        for (name, value) in extra {
+            settings.retain(|(key, _)| key != name);
+            if !value.is_empty() {
+                settings.push((name.to_string(), value.to_string()));
+            }
+        }
+        let env: Vec<(&str, &str)> = settings
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        lab.spawn(
+            "lh",
+            &[env!("CARGO_BIN_EXE_grund"), "serve"],
+            &env,
+            "grund.log",
+        )?;
+        let mut origin = Origin::parse(PUBLIC_URL)?;
+        origin.connect = Some(("127.0.0.1".into(), port));
+        origin.roots = Some(std::sync::Arc::new(lab.roots()?));
+        let log_path = lab.work.join("grund.log");
+        let fixture = Self {
+            origin,
+            mailpit: Some(Origin::parse(&mailpit_url)?),
+            child: std::sync::Mutex::new(None),
+            database: Some((admin_url, database_name)),
+            settings,
+            log_path: None,
+            lab: Some(lab),
         };
         fixture.wait_until_live(Some(&log_path)).await?;
         Ok(fixture)
