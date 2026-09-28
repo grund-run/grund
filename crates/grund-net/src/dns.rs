@@ -447,6 +447,88 @@ mod tests {
         );
     }
 
+    async fn fake_upstream() -> SocketAddr {
+        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = socket.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 512];
+            while let Ok((n, from)) = socket.recv_from(&mut buf).await {
+                let mut answer = buf[..n].to_vec();
+                answer[2] |= 0x80;
+                answer[3] = 0x80;
+                answer.extend_from_slice(b"upstream");
+                let _ = socket.send_to(&answer, from).await;
+            }
+        });
+        addr
+    }
+
+    async fn ask(stub: SocketAddr, query: &[u8]) -> Option<Vec<u8>> {
+        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        socket.send_to(query, stub).await.unwrap();
+        let mut buf = vec![0u8; 1500];
+        let n = tokio::time::timeout(Duration::from_secs(6), socket.recv(&mut buf))
+            .await
+            .ok()?
+            .ok()?;
+        buf.truncate(n);
+        Some(buf)
+    }
+
+    async fn a_stub(upstreams: Vec<SocketAddr>) -> SocketAddr {
+        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = socket.local_addr().unwrap();
+        let (tx, rx) = watch::channel(Some(list()));
+        let own = crate::key::endpoint_id(&[1; 32]);
+        tokio::spawn(async move {
+            let _keep = tx;
+            let _ = serve(socket, rx, own, upstreams).await;
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn the_stub_answers_its_zone_itself_and_asks_upstream_for_the_rest() {
+        let stub = a_stub(vec![fake_upstream().await]).await;
+        let own = ask(stub, &query("db.machines.grund.internal", TYPE_AAAA))
+            .await
+            .unwrap();
+        assert_eq!(
+            aaaa(&own),
+            vec!["fd12:3456:789a:2::1".parse::<Ipv6Addr>().unwrap()]
+        );
+        let forwarded = ask(stub, &query("example.com", TYPE_A)).await.unwrap();
+        assert!(forwarded.ends_with(b"upstream"), "{forwarded:?}");
+        assert_eq!(&forwarded[..2], &[0xab, 0xcd]);
+    }
+
+    #[tokio::test]
+    async fn without_upstreams_other_names_are_refused_and_a_silent_one_fails() {
+        let stub = a_stub(vec![]).await;
+        let refused = ask(stub, &query("example.com", TYPE_A)).await.unwrap();
+        assert_eq!(rcode(&refused), Rcode::Refused as u8);
+        let silent = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let stub = a_stub(vec![silent.local_addr().unwrap()]).await;
+        let failed = ask(stub, &query("example.com", TYPE_A)).await.unwrap();
+        assert_eq!(rcode(&failed), Rcode::ServFail as u8);
+    }
+
+    #[tokio::test]
+    async fn a_machine_that_left_the_list_resolves_nothing_in_the_zone() {
+        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let stub = socket.local_addr().unwrap();
+        let (tx, rx) = watch::channel(Some(list()));
+        let outsider = crate::key::endpoint_id(&[9; 32]);
+        tokio::spawn(async move {
+            let _keep = tx;
+            let _ = serve(socket, rx, outsider, vec![]).await;
+        });
+        let r = ask(stub, &query("db.machines.grund.internal", TYPE_AAAA))
+            .await
+            .unwrap();
+        assert_eq!(rcode(&r), Rcode::ServFail as u8);
+    }
+
     #[test]
     fn the_resolver_listens_on_the_machines_53() {
         assert_eq!(

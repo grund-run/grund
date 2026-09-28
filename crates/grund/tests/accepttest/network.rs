@@ -714,3 +714,101 @@ async fn a_relay_behind_a_tls_proxy_with_address_discovery_elsewhere_still_punch
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn names_and_paths_keep_working_from_the_last_list_while_grund_is_down() -> anyhow::Result<()>
+{
+    let Some(net) = a_lab().await? else {
+        return Ok(());
+    };
+    let a = net.join("a", "a").await?;
+    let b = net.join("b", "b").await?;
+    anyhow::ensure!(
+        net.reaches_by_name(&a, &b, Duration::from_secs(30))
+            .await
+            .is_some()
+    );
+    let direct = eventually(Duration::from_secs(30), || async {
+        net.pings(&a, &b.address().to_string()).await && a.path_to(&b).starts_with("direct")
+    })
+    .await;
+    anyhow::ensure!(direct.is_some(), "never direct: {}", a.status());
+    let epoch = a.epoch();
+
+    let failures = || {
+        net.log("agent-a.log")
+            .matches("GetMembership failed")
+            .count()
+    };
+    let before = failures();
+    anyhow::ensure!(net.lab.stop("grund.log"), "grund was not running");
+    let noticed = eventually(Duration::from_secs(30), || async { failures() > before }).await;
+    anyhow::ensure!(
+        noticed.is_some(),
+        "a never lost grund:\n{}",
+        net.log("agent-a.log")
+    );
+    tokio::time::sleep(Duration::from_secs(12)).await;
+    anyhow::ensure!(
+        a.epoch() == epoch,
+        "the list changed without grund: {}",
+        a.status()
+    );
+    let out = net
+        .lab
+        .run_async("a", &["getent", "ahostsv6", &b.fqdn()])
+        .await?;
+    anyhow::ensure!(
+        String::from_utf8_lossy(&out.stdout).contains(&b.address().to_string()),
+        "b's name stopped resolving with grund down: {out:?}"
+    );
+    anyhow::ensure!(
+        net.pings(&a, &b.fqdn()).await && net.pings(&b, &a.fqdn()).await,
+        "the members lost each other with grund down: {}",
+        a.status()
+    );
+    eprintln!("a noticed grund was gone after {noticed:?}; names and the direct path held");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_new_address_beside_the_bound_one_is_a_network_change_not_a_rebind() -> anyhow::Result<()>
+{
+    let Some(net) = a_lab().await? else {
+        return Ok(());
+    };
+    let a = net.join("a", "a").await?;
+    let b = net.join("b", "b").await?;
+    anyhow::ensure!(
+        net.reaches_by_name(&a, &b, Duration::from_secs(30))
+            .await
+            .is_some()
+    );
+    let before = a.status()["network_changes"].as_u64().unwrap_or_default();
+
+    let out = net
+        .lab
+        .run_async("a", &["ip", "addr", "add", "10.1.0.9/24", "dev", "eth0"])
+        .await?;
+    anyhow::ensure!(out.status.success(), "{out:?}");
+    let told = eventually(Duration::from_secs(10), || async {
+        a.status()["network_changes"].as_u64().unwrap_or_default() > before
+    })
+    .await;
+    anyhow::ensure!(told.is_some(), "iroh was not told: {}", a.status());
+    anyhow::ensure!(
+        a.status()["rebinds"].as_u64() == Some(0)
+            && ipv4_of(&a.status()["bound"]) == vec!["10.1.0.2".to_string()],
+        "a rebound for an address beside the one it holds: {}",
+        a.status()
+    );
+    anyhow::ensure!(
+        net.reaches_by_name(&a, &b, Duration::from_secs(10))
+            .await
+            .is_some(),
+        "a lost b after the change: {}",
+        a.status()
+    );
+    eprintln!("network_change after {told:?}, no rebind");
+    Ok(())
+}

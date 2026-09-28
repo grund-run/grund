@@ -96,14 +96,14 @@ pub struct Lab {
     pub cert: PathBuf,
     pub key: PathBuf,
     pids: HashMap<String, u32>,
-    children: Mutex<Vec<Child>>,
+    children: Mutex<Vec<(String, Child)>>,
     lab_bin: PathBuf,
 }
 
 impl Drop for Lab {
     fn drop(&mut self) {
         if let Ok(children) = self.children.get_mut() {
-            for child in children.iter_mut().rev() {
+            for (_, child) in children.iter_mut().rev() {
                 let _ = child.kill();
                 let _ = child.wait();
             }
@@ -169,7 +169,10 @@ impl Lab {
             .stderr(Stdio::from(log))
             .spawn()
             .context("start the lab's user namespace")?;
-        lab.children.lock().unwrap().push(holder);
+        lab.children
+            .lock()
+            .unwrap()
+            .push(("topology".into(), holder));
         let deadline = Instant::now() + Duration::from_secs(20);
         while !lab.work.join("ready").exists() {
             if Instant::now() > deadline {
@@ -332,6 +335,7 @@ impl Lab {
         env: &[(&str, &str)],
         log: &str,
     ) -> anyhow::Result<()> {
+        let log_name = log.to_string();
         let log = std::fs::File::create(self.work.join(log))?;
         let mut command = self.enter(ns);
         command
@@ -347,11 +351,12 @@ impl Lab {
         let child = command
             .spawn()
             .with_context(|| format!("spawn {args:?} in {ns}"))?;
-        self.children.lock().unwrap().push(child);
+        self.children.lock().unwrap().push((log_name, child));
         Ok(())
     }
 
     fn spawn_here(&self, args: &[&str], log: &str) -> anyhow::Result<()> {
+        let log_name = log.to_string();
         let log = std::fs::File::create(self.work.join(log))?;
         let child = Command::new(&self.lab_bin)
             .args(args)
@@ -359,8 +364,21 @@ impl Lab {
             .stdout(Stdio::from(log.try_clone()?))
             .stderr(Stdio::from(log))
             .spawn()?;
-        self.children.lock().unwrap().push(child);
+        self.children.lock().unwrap().push((log_name, child));
         Ok(())
+    }
+
+    pub fn stop(&self, log: &str) -> bool {
+        let mut children = self.children.lock().unwrap();
+        let mut stopped = false;
+        for (name, child) in children.iter_mut() {
+            if name == log {
+                let _ = child.kill();
+                let _ = child.wait();
+                stopped = true;
+            }
+        }
+        stopped
     }
 
     pub fn socket(&self, name: &str) -> String {
