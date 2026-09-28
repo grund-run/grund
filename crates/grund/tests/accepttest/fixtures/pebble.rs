@@ -8,6 +8,7 @@ use std::{
 use anyhow::Context;
 use rustls::pki_types::pem::PemObject;
 
+pub use super::free_port;
 use super::random_hex;
 
 pub const PEBBLE_VERSION: &str = "v2.10.1";
@@ -38,23 +39,6 @@ impl Drop for Pebble {
             let _ = child.wait();
         }
         let _ = std::fs::remove_dir_all(&self.work);
-    }
-}
-
-pub fn free_port() -> u16 {
-    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let base = 20_000 + (std::process::id() % 120) * 100;
-    loop {
-        let offset = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        assert!(offset < 100, "this test binary ran out of its 100 ports");
-        let port = u16::try_from(base + offset).expect("below 32000");
-        let free = ["127.0.0.1:", "0.0.0.0:"].iter().all(|host| {
-            std::net::TcpListener::bind(format!("{host}{port}")).is_ok()
-                && std::net::UdpSocket::bind(format!("{host}{port}")).is_ok()
-        });
-        if free {
-            return port;
-        }
     }
 }
 

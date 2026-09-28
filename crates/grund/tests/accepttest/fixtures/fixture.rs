@@ -101,9 +101,7 @@ impl Fixture {
     }
 
     pub async fn spawn(extra: &[(&str, &str)]) -> anyhow::Result<Self> {
-        let port = std::net::TcpListener::bind("127.0.0.1:0")?
-            .local_addr()?
-            .port();
+        let port = free_port();
         let log_path =
             std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("grund-{port}.log"));
         let log = File::create(&log_path)?;
@@ -291,9 +289,7 @@ impl Fixture {
             self.lab.is_none(),
             "a replica is spawned beside a local instance"
         );
-        let port = std::net::TcpListener::bind("127.0.0.1:0")?
-            .local_addr()?
-            .port();
+        let port = free_port();
         let log_path =
             std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("grund-{port}.log"));
         let log = File::create(&log_path)?;
@@ -403,6 +399,23 @@ pub async fn refused_at_start(extra: &[(&str, &str)]) -> anyhow::Result<String> 
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     ))
+}
+
+pub fn free_port() -> u16 {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let base = 20_000 + (std::process::id() % 24) * 500;
+    loop {
+        let offset = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        assert!(offset < 500, "this test binary ran out of its 500 ports");
+        let port = u16::try_from(base + offset).expect("below 32000");
+        let free = ["127.0.0.1:", "0.0.0.0:"].iter().all(|host| {
+            std::net::TcpListener::bind(format!("{host}{port}")).is_ok()
+                && std::net::UdpSocket::bind(format!("{host}{port}")).is_ok()
+        });
+        if free {
+            return port;
+        }
+    }
 }
 
 pub fn random_hex(bytes: usize) -> String {
