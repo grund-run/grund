@@ -29,4 +29,8 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 webpki-roots = "1"
+zbus = { version = "5", default-features = false, features = ["tokio"] }
 
+[dev-dependencies]
+# The resolved tests serve a fake resolve1 over a socket pair, with no bus.
+zbus = { version = "5", default-features = false, features = ["tokio", "p2p"] }

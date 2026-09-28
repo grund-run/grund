@@ -104,6 +104,7 @@ pub struct Lab {
     pids: HashMap<String, u32>,
     children: Mutex<Vec<(String, Child)>>,
     lab_bin: PathBuf,
+    many_ids: bool,
 }
 
 impl Drop for Lab {
@@ -156,18 +157,25 @@ impl Lab {
             pids: HashMap::new(),
             children: Mutex::new(Vec::new()),
             lab_bin,
+            many_ids: false,
         };
         lab.certificates()?;
         let log = std::fs::File::create(lab.work.join("topology.log"))?;
+        let ids = subordinate_ids();
+        lab.many_ids = ids.is_some();
+        let mapping: Vec<String> = match ids {
+            Some((uid, gid, count)) => vec![
+                "--map-user=0".into(),
+                "--map-group=0".into(),
+                format!("--map-users=1:{uid}:{count}"),
+                format!("--map-groups=1:{gid}:{count}"),
+                "-nm".into(),
+            ],
+            None => vec!["-Urnm".into()],
+        };
         let holder = Command::new("unshare")
-            .args([
-                "-Urnm",
-                "--fork",
-                "--kill-child",
-                "setpriv",
-                "--pdeathsig",
-                "KILL",
-            ])
+            .args(&mapping)
+            .args(["--fork", "--kill-child", "setpriv", "--pdeathsig", "KILL"])
             .args(["bash", "-c", TOPOLOGY, "topology"])
             .arg(&lab.work)
             .arg(std::process::id().to_string())
@@ -420,6 +428,92 @@ impl Lab {
         Ok(log)
     }
 
+    pub fn set_nsswitch(&self, node: &str, hosts: &str) -> anyhow::Result<()> {
+        std::fs::write(
+            self.work.join(format!("nsswitch-{node}")),
+            format!("hosts: {hosts}\n"),
+        )?;
+        Ok(())
+    }
+
+    pub async fn start_resolved(self: &Arc<Self>, node: &str) -> anyhow::Result<Option<String>> {
+        let resolved = Path::new("/usr/lib/systemd/systemd-resolved");
+        if !self.many_ids || !resolved.is_file() || which("dbus-daemon").is_none() {
+            return Ok(None);
+        }
+        let out = self
+            .run_async(node, &["mount", "-t", "tmpfs", "tmpfs", "/run/systemd"])
+            .await?;
+        anyhow::ensure!(
+            out.status.success(),
+            "tmpfs on /run/systemd in {node}: {out:?}"
+        );
+        let bus = "/run/systemd/grund-lab-bus";
+        let config = self.work.join(format!("bus-{node}.conf"));
+        std::fs::write(
+            &config,
+            format!(
+                "<!DOCTYPE busconfig PUBLIC \"-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN\" \
+                 \"http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd\">\n\
+                 <busconfig><type>system</type><listen>unix:path={bus}</listen><auth>EXTERNAL</auth>\
+                 <policy context=\"default\"><allow user=\"*\"/><allow own=\"*\"/>\
+                 <allow send_destination=\"*\"/><allow receive_sender=\"*\"/></policy></busconfig>\n"
+            ),
+        )?;
+        self.spawn(
+            node,
+            &[
+                "dbus-daemon",
+                "--nofork",
+                "--nopidfile",
+                "--config-file",
+                &config.to_string_lossy(),
+            ],
+            &[],
+            &format!("dbus-{node}.log"),
+        )?;
+        let address = format!("unix:path={bus}");
+        for _ in 0..40 {
+            if self.succeeds(node, &["test", "-S", bus]).await {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        self.spawn(
+            node,
+            &[&resolved.to_string_lossy()],
+            &[("DBUS_SYSTEM_BUS_ADDRESS", &address)],
+            &format!("resolved-{node}.log"),
+        )?;
+        for _ in 0..50 {
+            if self
+                .succeeds(
+                    node,
+                    &["test", "-S", "/run/systemd/resolve/io.systemd.Resolve"],
+                )
+                .await
+            {
+                return Ok(Some(address));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        anyhow::bail!(
+            "systemd-resolved did not start in {node}:\n{}",
+            std::fs::read_to_string(self.work.join(format!("resolved-{node}.log")))
+                .unwrap_or_default()
+        )
+    }
+
+    pub fn pid_of(&self, log: &str) -> Option<u32> {
+        self.children
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|(name, _)| name == log)
+            .map(|(_, child)| child.id())
+    }
+
     pub fn socket(&self, name: &str) -> String {
         self.work.join(name).to_string_lossy().into_owned()
     }
@@ -557,6 +651,26 @@ impl Lab {
         )?;
         Ok(())
     }
+}
+
+fn subordinate_ids() -> Option<(u64, u64, u64)> {
+    which("newuidmap")?;
+    which("newgidmap")?;
+    let user = String::from_utf8(Command::new("id").arg("-un").output().ok()?.stdout).ok()?;
+    let user = user.trim();
+    let find = |file: &str| -> Option<(u64, u64)> {
+        std::fs::read_to_string(file)
+            .ok()?
+            .lines()
+            .find_map(|line| {
+                let mut parts = line.split(':');
+                (parts.next()? == user).then_some(())?;
+                Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
+            })
+    };
+    let (uid, uids) = find("/etc/subuid")?;
+    let (gid, gids) = find("/etc/subgid")?;
+    Some((uid, gid, uids.min(gids).min(65535)))
 }
 
 fn wait_for_path(path: &Path) -> anyhow::Result<()> {

@@ -228,6 +228,11 @@ impl Mesh {
         }
     }
 
+    /// `grund0`'s interface index, once the mesh is [`Mesh::up`].
+    pub fn ifindex(&self) -> Option<i32> {
+        self.inner.tun.get().map(Tun::ifindex)
+    }
+
     /// Gives `grund0` another address in the machine's /64, such as the
     /// stub resolver's. Only once the mesh is [`Mesh::up`].
     pub fn add_address(&self, address: Ipv6Addr) -> anyhow::Result<()> {

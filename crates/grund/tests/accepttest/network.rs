@@ -1010,3 +1010,107 @@ async fn grund_relay_on_its_own_host_refuses_a_revoked_machine() -> anyhow::Resu
     eprintln!("revoked: cut after {cut:?}, refused at reconnect after {denied:?} more");
     Ok(())
 }
+
+#[tokio::test]
+async fn names_resolve_through_systemd_resolved_which_the_agent_points_at_the_stub()
+-> anyhow::Result<()> {
+    let Some(net) = a_lab().await? else {
+        return Ok(());
+    };
+    let Some(bus) = net.lab.start_resolved("a").await? else {
+        eprintln!(
+            "skipped: the lab cannot run systemd-resolved here (needs /etc/subuid, newuidmap, \
+             dbus-daemon and systemd-resolved); the D-Bus calls are tested against a fake"
+        );
+        return Ok(());
+    };
+    let token = net
+        .join_token(&net.when, &net.then, &net.owner, "a")
+        .await?;
+    let a = net
+        .join_with_env("a", "a", &token, &[("DBUS_SYSTEM_BUS_ADDRESS", &bus)])
+        .await?;
+    let b = net.join("b", "b").await?;
+    net.lab.use_resolver("a", "127.0.0.53")?;
+    net.lab
+        .set_nsswitch("a", "files resolve [!UNAVAIL=return] dns")?;
+    let configured = eventually(Duration::from_secs(10), || async {
+        a.status()["host_resolver"]["state"] == "configured"
+    })
+    .await;
+    anyhow::ensure!(
+        configured.is_some(),
+        "the agent did not configure resolved: {}\n{}",
+        a.status(),
+        net.log("resolved-a.log")
+    );
+    let resolvectl = |args: Vec<String>| {
+        let lab = net.lab.clone();
+        let bus = bus.clone();
+        async move {
+            let mut all = vec![
+                "env".to_string(),
+                format!("DBUS_SYSTEM_BUS_ADDRESS={bus}"),
+                "resolvectl".into(),
+            ];
+            all.extend(args);
+            let all: Vec<&str> = all.iter().map(String::as_str).collect();
+            lab.run_async("a", &all)
+                .await
+                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        }
+    };
+    let link = resolvectl(vec!["status".into(), "grund0".into()]).await?;
+    anyhow::ensure!(
+        link.contains(&a.resolver().to_string())
+            && link.contains("~grund.internal")
+            && link.contains("-DefaultRoute"),
+        "resolved's view of grund0: {link}"
+    );
+    let answer = resolvectl(vec!["query".into(), b.fqdn()]).await?;
+    anyhow::ensure!(
+        answer.contains(&b.address().to_string()),
+        "resolved did not answer {} from the stub: {answer}",
+        b.fqdn()
+    );
+    anyhow::ensure!(
+        net.reaches_by_name(&a, &b, Duration::from_secs(30))
+            .await
+            .is_some(),
+        "a did not reach b by name through resolved"
+    );
+    let unknown = net
+        .lab
+        .run_async(
+            "a",
+            &["getent", "ahostsv6", "cache.machines.grund.internal"],
+        )
+        .await?;
+    anyhow::ensure!(
+        !unknown.status.success(),
+        "a non-member resolves through resolved"
+    );
+
+    let pid = net
+        .lab
+        .pid_of("agent-a.log")
+        .map(|p| p.to_string())
+        .unwrap_or_default();
+    let out = std::process::Command::new("kill")
+        .args(["-TERM", &pid])
+        .output()?;
+    anyhow::ensure!(out.status.success(), "{out:?}");
+    let reverted = eventually(Duration::from_secs(10), || async {
+        net.log("agent-a.log")
+            .contains("settings for grund0 reverted")
+    })
+    .await;
+    anyhow::ensure!(reverted.is_some(), "the agent did not revert on SIGTERM");
+    let after = resolvectl(vec!["status".into()]).await?;
+    anyhow::ensure!(
+        !after.contains("~grund.internal"),
+        "grund0's settings outlived the agent: {after}"
+    );
+    eprintln!("resolved routed ~grund.internal on grund0 to the stub; reverted on SIGTERM");
+    Ok(())
+}

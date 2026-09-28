@@ -80,6 +80,11 @@ impl Tun {
         add_ipv6(self.ifindex, address, prefix_len)
     }
 
+    /// The device's interface index.
+    pub fn ifindex(&self) -> i32 {
+        self.ifindex
+    }
+
     /// The device's name.
     pub fn name(&self) -> &str {
         &self.name

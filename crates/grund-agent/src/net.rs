@@ -21,8 +21,9 @@
 //!
 //! Once `grund0` is up, the agent answers `<name>.machines.grund.internal`
 //! on `prefix:slot::53` from the list (grund-net `dns`), and forwards other
-//! names to the resolvers in `/etc/resolv.conf`. It does not point the
-//! machine's own resolver at itself.
+//! names to the resolvers in `/etc/resolv.conf`. Where systemd-resolved
+//! runs, the agent routes `~grund.internal` on `grund0` to the stub
+//! ([`crate::resolved`]); elsewhere it logs what to configure instead.
 //!
 //! The relays come from the signed list when it names any, and otherwise
 //! from join. A change in the list reaches the live endpoint at once
@@ -176,6 +177,7 @@ struct Counters {
     rebinds: AtomicU64,
     network_changes: AtomicU64,
     relay_failovers: AtomicU64,
+    host_resolver: std::sync::Mutex<crate::resolved::HostResolver>,
 }
 
 impl Default for Counters {
@@ -184,6 +186,7 @@ impl Default for Counters {
             rebinds: AtomicU64::new(0),
             network_changes: AtomicU64::new(0),
             relay_failovers: AtomicU64::new(0),
+            host_resolver: std::sync::Mutex::new(crate::resolved::HostResolver::Pending),
         }
     }
 }
@@ -230,7 +233,7 @@ pub(crate) async fn run(
         result = follow(&link, &network, tx, relays_tx) => result,
         result = carry(&mesh, key, &config, relays_rx.clone(), &counters) => result,
         () = track_relays(&mesh, relays_rx) => Ok(()),
-        () = resolve_or_warn(resolve(&mesh, lists, own_id)) => Ok(()),
+        () = resolve_or_warn(resolve(&mesh, lists, own_id, &counters)) => Ok(()),
         () = report(&mesh, &counters, &data_dir) => Ok(()),
     }
 }
@@ -400,6 +403,7 @@ async fn resolve(
     mesh: &Mesh,
     lists: watch::Receiver<Option<MembershipList>>,
     own_id: iroh::EndpointId,
+    counters: &Counters,
 ) -> anyhow::Result<()> {
     let own = mesh.up().await;
     let address = {
@@ -419,6 +423,27 @@ async fn resolve(
         prefix,
     );
     tracing::info!(%address, ?upstreams, "private network: resolving *.machines.grund.internal");
+    if let Some(ifindex) = mesh.ifindex() {
+        let (state, bus) = crate::resolved::apply(ifindex, address).await;
+        match &state {
+            crate::resolved::HostResolver::Configured { .. } => tracing::info!(
+                ifindex,
+                "private network: systemd-resolved sends ~grund.internal to the stub"
+            ),
+            crate::resolved::HostResolver::Absent { hint } => {
+                tracing::warn!("private network: {hint}")
+            }
+            crate::resolved::HostResolver::Failed { error } => tracing::warn!(
+                %error,
+                "private network: systemd-resolved refused the stub; names resolve only by asking it"
+            ),
+            crate::resolved::HostResolver::Pending => {}
+        }
+        *counters.host_resolver.lock().expect("host resolver lock") = state;
+        if let Some(bus) = bus {
+            tokio::spawn(revert_on_signal(bus, ifindex));
+        }
+    }
     grund_net::dns::serve(socket, lists, own_id, upstreams)
         .await
         .context("the stub resolver stopped")
@@ -450,6 +475,30 @@ fn relay_status(endpoint: &iroh::Endpoint, relays: &[RelayUrl]) -> Vec<serde_jso
         .collect()
 }
 
+async fn revert_on_signal(bus: zbus::Connection, ifindex: i32) {
+    use tokio::signal::unix::{SignalKind, signal};
+    let (Ok(mut term), Ok(mut int)) = (
+        signal(SignalKind::terminate()),
+        signal(SignalKind::interrupt()),
+    ) else {
+        return;
+    };
+    tokio::select! {
+        _ = term.recv() => {}
+        _ = int.recv() => {}
+    }
+    let reverted = tokio::time::timeout(
+        Duration::from_secs(1),
+        crate::resolved::revert(&bus, ifindex),
+    )
+    .await;
+    tracing::info!(
+        reverted = matches!(reverted, Ok(Ok(()))),
+        "private network: stopping; systemd-resolved's settings for grund0 reverted"
+    );
+    std::process::exit(0);
+}
+
 async fn report(mesh: &Mesh, counters: &Counters, data_dir: &std::path::Path) {
     let path = data_dir.join(STATUS_FILE);
     let temporary = data_dir.join(format!("{STATUS_FILE}.tmp"));
@@ -462,6 +511,7 @@ async fn report(mesh: &Mesh, counters: &Counters, data_dir: &std::path::Path) {
             "rebinds": counters.rebinds.load(Relaxed),
             "network_changes": counters.network_changes.load(Relaxed),
             "relay_failovers": counters.relay_failovers.load(Relaxed),
+            "host_resolver": *counters.host_resolver.lock().expect("host resolver lock"),
         });
         if std::fs::write(&temporary, status.to_string()).is_ok() {
             let _ = std::fs::rename(&temporary, &path);
