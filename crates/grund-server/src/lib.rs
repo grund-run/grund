@@ -11,7 +11,7 @@
 //!       grund/health        nostatus checks                 keeps readiness honest while draining
 //!       grund/projections   read-model catch-up and rebuild
 //!       grund/sweeper       expired sessions, links, windows
-//!       grund/certificates  renewed certificates, ACME work  only with HTTPS on
+//!       grund/certificates  renewed certificates, ACME work  with HTTPS, or GRUND_ACME_DIRECTORY
 //!       grund/outbox        mail, resets, insights reports  drains last, up to 5 s
 //! ```
 //!
@@ -31,7 +31,9 @@ pub mod keys;
 pub mod license;
 pub mod projections;
 pub mod relay;
+pub mod relay_certificate;
 pub mod relay_command;
+pub mod relays_command;
 pub mod sagas;
 pub mod secrets;
 pub mod server;

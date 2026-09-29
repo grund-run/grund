@@ -1,0 +1,159 @@
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+package grund.certificates.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// Certificates for TLS terminators on other hosts (grund-docs
+// design/traffic.md §5.7). The instance drives every ACME order; the
+// terminator makes its private key where TLS ends, and only a CSR travels.
+// The first terminator is `grund relay` on a host of its own; a machine's
+// gate and the entry edge come later, on the same service.
+//
+// The caller is the terminator, authenticated by its own key's signature
+// before the body is read: an enrolled relay (grund.relay.v1), or a
+// registered machine (grund.agent.v1's control-link headers). Who it is
+// decides everything: which names it may ask for (a relay: exactly the host
+// of its URL in GRUND_RELAYS; a machine: none yet, until the gate exists),
+// and which certificate it sees. Nothing in a request selects another
+// terminator's certificate. A name the caller may not have, and a
+// certificate it has not asked for, are not_found, the same as absence.
+//
+// Status: the shape is proposed, not settled (a decision for Kasper, before
+// anything outside grund depends on it).
+//
+// The flow, for one terminator:
+// 1. RequestCertificate {names, csr}. The instance orders, under the same
+//    lease, account and backoff as its own domain's certificate.
+// 2. WatchChallenges, held open while anything is pending, delivers each
+//    key authorization to answer. The terminator starts answering, then
+//    calls AnswerChallenge; only then does the instance tell the CA to
+//    validate.
+// 3. The watch says issued; GetCertificate returns the chain, which the
+//    terminator serves with its key.
+// 4. At renewal time (the CA's ARI window) the watch asks for a fresh CSR:
+//    a new key, and RequestCertificate again. The old chain is served until
+//    the new one is issued.
+service CertificateService {
+  // Asks for a certificate for names, with a CSR (PKCS#10, DER) naming
+  // exactly those names as DNS subjectAltNames, signed by the terminator's
+  // key. Idempotent: the same names and CSR change nothing; a new CSR
+  // replaces the one waiting (an order in flight for the old one is
+  // abandoned) and makes an order due now. invalid_argument for a CSR that
+  // does not parse, is not self-signed or does not name exactly names;
+  // failed_precondition (acme_off) when the instance orders no
+  // certificates.
+  rpc RequestCertificate(RequestCertificateRequest) returns (RequestCertificateResponse);
+
+  // What the terminator must do next, as it becomes due: a challenge to
+  // answer, a fresh CSR to send, or a new chain to fetch. Each event is
+  // sent at once for what is pending when the watch opens, then as it
+  // happens. The stream ends by itself after at most 25 seconds; call again.
+  rpc WatchChallenges(WatchChallengesRequest) returns (stream WatchChallengesResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // Says the terminator now answers the challenge with this token, so the
+  // instance may ask the CA to validate it. not_found for a token that is
+  // not one of the caller's pending challenges.
+  rpc AnswerChallenge(AnswerChallengeRequest) returns (AnswerChallengeResponse);
+
+  // The caller's certificate: its chain once issued, and where the order
+  // stands.
+  rpc GetCertificate(GetCertificateRequest) returns (GetCertificateResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+}
+
+// How the CA checks that a name reaches the terminator.
+enum ChallengeType {
+  CHALLENGE_TYPE_UNSPECIFIED = 0;
+  // RFC 8737 on the terminator's own port 443: the only one offered now.
+  CHALLENGE_TYPE_TLS_ALPN_01 = 1;
+}
+
+message RequestCertificateRequest {
+  // DNS names, lowercase, no trailing dot; at most 100.
+  repeated string names = 1;
+  // PKCS#10, DER, at most 4096 bytes.
+  bytes csr = 2;
+  // Unspecified: TLS-ALPN-01.
+  ChallengeType challenge = 3;
+}
+
+message RequestCertificateResponse {
+  Certificate certificate = 1;
+}
+
+message WatchChallengesRequest {}
+
+message WatchChallengesResponse {
+  oneof event {
+    Challenge challenge = 1;
+    CsrWanted csr_wanted = 2;
+    Issued issued = 3;
+  }
+}
+
+// A challenge the CA will check once the terminator calls AnswerChallenge.
+message Challenge {
+  ChallengeType type = 1;
+  // The name the CA connects to, with it as SNI.
+  string name = 2;
+  // The challenge's token, for AnswerChallenge.
+  string token = 3;
+  // For TLS-ALPN-01, the acmeIdentifier extension holds its SHA-256.
+  string key_authorization = 4;
+}
+
+// Renewal is due: make a new key and send its CSR with RequestCertificate.
+message CsrWanted {
+  repeated string names = 1;
+}
+
+// A new chain is ready: fetch it with GetCertificate.
+message Issued {
+  int64 version = 1;
+}
+
+message AnswerChallengeRequest {
+  string token = 1;
+}
+
+message AnswerChallengeResponse {}
+
+message GetCertificateRequest {}
+
+message GetCertificateResponse {
+  Certificate certificate = 1;
+}
+
+// Where the order stands.
+enum CertificateState {
+  CERTIFICATE_STATE_UNSPECIFIED = 0;
+  // An order is due or in flight for the CSR sent last.
+  CERTIFICATE_STATE_ORDERING = 1;
+  // The chain below is current; nothing is due.
+  CERTIFICATE_STATE_ISSUED = 2;
+  // Renewal is due, and the instance waits for a fresh CSR.
+  CERTIFICATE_STATE_CSR_WANTED = 3;
+}
+
+message Certificate {
+  repeated string names = 1;
+  CertificateState state = 2;
+  // PEM, leaf first; empty until the first issue. It stays set while a
+  // renewal is ordered.
+  string chain_pem = 3;
+  // Goes up by one with every chain issued; 0 before the first.
+  int64 version = 4;
+  google.protobuf.Timestamp not_before = 5;
+  google.protobuf.Timestamp not_after = 6;
+  // When the instance renews: a point in the CA's ARI window.
+  google.protobuf.Timestamp renew_at = 7;
+  // A stable code for the last failed attempt (acme_unreachable,
+  // authorization_failed, terminator_unreachable, …); empty after success.
+  string last_error = 8;
+}

@@ -18,10 +18,12 @@
 
 pub mod account;
 pub mod agent;
+pub mod certificates;
 pub mod enrollment;
 pub mod machine;
 pub mod organisation;
 pub mod relay_access;
+pub mod relay_enrollment;
 
 use std::{sync::Arc, time::Duration};
 
@@ -38,8 +40,10 @@ use connectrpc::{
 use grund_proto::grund::{
     account::v1::ACCOUNT_SERVICE_SERVICE_NAME,
     agent::v1::{AGENT_SERVICE_SERVICE_NAME, MACHINE_ENROLLMENT_SERVICE_SERVICE_NAME},
+    certificates::v1::CERTIFICATE_SERVICE_SERVICE_NAME,
     machine::v1::{MACHINE_SERVICE_SERVICE_NAME, MANAGEMENT_POOL_SERVICE_SERVICE_NAME},
     organisation::v1::ORGANISATION_SERVICE_SERVICE_NAME,
+    relay::v1::RELAY_ENROLLMENT_SERVICE_SERVICE_NAME,
 };
 use uuid::Uuid;
 
@@ -77,6 +81,10 @@ pub enum Requirement {
     /// A registered machine, proven by its key's signature over the request
     /// ([`authenticate_machine`]): the control link.
     Machine,
+    /// A TLS terminator on another host, an enrolled relay or a registered
+    /// machine, proven by its own key's signature
+    /// ([`authenticate_terminator`]): the certificate service.
+    Terminator,
 }
 
 /// Every procedure and what it requires. A procedure missing here is denied,
@@ -223,6 +231,26 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
         Requirement::Machine,
     ),
     (
+        "/grund.relay.v1.RelayEnrollmentService/EnrollRelay",
+        Requirement::Token,
+    ),
+    (
+        "/grund.certificates.v1.CertificateService/RequestCertificate",
+        Requirement::Terminator,
+    ),
+    (
+        "/grund.certificates.v1.CertificateService/WatchChallenges",
+        Requirement::Terminator,
+    ),
+    (
+        "/grund.certificates.v1.CertificateService/AnswerChallenge",
+        Requirement::Terminator,
+    ),
+    (
+        "/grund.certificates.v1.CertificateService/GetCertificate",
+        Requirement::Terminator,
+    ),
+    (
         "/grund.machine.v1.MachineService/RunVm",
         Requirement::Session,
     ),
@@ -275,7 +303,22 @@ pub fn router(state: State) -> axum::Router {
                     &format!("/{MACHINE_ENROLLMENT_SERVICE_SERVICE_NAME}/{{method}}"),
                     service.clone(),
                 )
+                .route_service(
+                    &format!("/{RELAY_ENROLLMENT_SERVICE_SERVICE_NAME}/{{method}}"),
+                    service.clone(),
+                )
                 .layer(middleware::from_fn_with_state(state.clone(), stamp_address)),
+        )
+        .merge(
+            axum::Router::new()
+                .route_service(
+                    &format!("/{CERTIFICATE_SERVICE_SERVICE_NAME}/{{method}}"),
+                    certificate_service(state.clone()),
+                )
+                .layer(middleware::from_fn_with_state(
+                    state.clone(),
+                    authenticate_terminator,
+                )),
         )
         .merge(
             axum::Router::new()
@@ -294,6 +337,99 @@ pub fn router(state: State) -> axum::Router {
 /// The largest control-link request: a status report of every VM a machine
 /// hosts.
 pub const MAX_AGENT_REQUEST_BYTES: usize = 256 * 1024;
+
+/// The largest certificate-service request: a 4 KiB CSR and its names.
+pub const MAX_TERMINATOR_REQUEST_BYTES: usize = 16 * 1024;
+
+/// The certificate service, on a Connect service of its own: its watch is a
+/// server stream that ends by itself after 25 s
+/// ([`certificates::WATCH_SPAN`]), so it gets a longer deadline than the
+/// rest of the API, enforced on streams too.
+pub fn certificate_service(state: State) -> ConnectRpcService {
+    ConnectRpcService::new(
+        connectrpc::Router::new().add_service(Arc::new(certificates::CertificatesApi::new(state))),
+    )
+    .with_limits(
+        Limits::default()
+            .with_max_request_body_size(MAX_TERMINATOR_REQUEST_BYTES)
+            .with_max_message_size(MAX_TERMINATOR_REQUEST_BYTES),
+    )
+    .with_deadline_policy(
+        DeadlinePolicy::new()
+            .with_min(Duration::from_millis(5))
+            .with_max(Duration::from_secs(60))
+            .with_default_timeout(Duration::from_secs(30))
+            .with_enforce_on_streams(true),
+    )
+    .with_interceptor(Authorize)
+}
+
+/// Authenticates a certificate-service request by the terminator's own key
+/// before any handler runs: an enrolled relay (`x-grund-relay`), or a
+/// registered machine (`x-grund-machine`), each signing the control link's
+/// way. A bad or missing signature, an unknown or revoked terminator are
+/// refused alike.
+pub async fn authenticate_terminator(
+    AxumState(state): AxumState<State>,
+    request: Request,
+    next: Next,
+) -> Response {
+    use crate::services::{relays::RelaysState, terminators::Terminator};
+    let (mut parts, body) = request.into_parts();
+    let header = |name: &str| {
+        parts
+            .headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let (relay, machine, signed_at, signature) = (
+        header("x-grund-relay"),
+        header("x-grund-machine"),
+        header("x-grund-signed-at"),
+        header("x-grund-signature"),
+    );
+    let Ok(bytes) = axum::body::to_bytes(body, MAX_TERMINATOR_REQUEST_BYTES).await else {
+        return refuse(ConnectError::resource_exhausted("the request is too large"));
+    };
+    let path = parts.uri.path().to_string();
+    let caller = if !relay.is_empty() {
+        state
+            .relays()
+            .authenticate(&relay, &signed_at, &signature, &path, &bytes)
+            .await
+            .map(|caller| caller.map(Terminator::Relay))
+    } else {
+        state
+            .agents()
+            .authenticate(&machine, &signed_at, &signature, &path, &bytes)
+            .await
+            .map(|caller| caller.map(Terminator::Machine))
+    };
+    let caller = match caller {
+        Ok(Some(caller)) => caller,
+        Ok(None) => {
+            return refuse(ConnectError::unauthenticated(
+                "sign the request with the relay's or the machine's key",
+            ));
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, "terminator authentication failed");
+            return refuse(ConnectError::unavailable(
+                "grund is temporarily unavailable",
+            ));
+        }
+    };
+    parts.extensions.insert(caller);
+    let mut response = next
+        .run(Request::from_parts(parts, axum::body::Body::from(bytes)))
+        .await;
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
 
 /// Authenticates a control-link request by the machine key's signature over
 /// its path, time and body (grund-docs design/machines.md §7b), before any
@@ -382,6 +518,9 @@ pub fn connect_router(state: State) -> connectrpc::Router {
         .add_service(Arc::new(machine::ManagementPoolApi::new(state.clone())))
         .add_service(Arc::new(machine::MachineApi::new(state.clone())))
         .add_service(Arc::new(enrollment::EnrollmentApi::new(state.clone())))
+        .add_service(Arc::new(relay_enrollment::RelayEnrollmentApi::new(
+            state.clone(),
+        )))
         .add_service(Arc::new(agent::AgentApi::new(state)))
 }
 
@@ -443,8 +582,49 @@ pub async fn authenticate(
     response
 }
 
-/// Authorizes each call against [`AUTHORIZATION`], denying by default.
+/// Authorizes each call against [`AUTHORIZATION`], denying by default:
+/// unary calls and streams alike, since connectrpc's default for a stream
+/// is to let it through.
 pub struct Authorize;
+
+/// Whether the caller stamped on `ctx` meets what [`AUTHORIZATION`] asks of
+/// the procedure it calls. A procedure with no entry is refused.
+pub fn authorized(ctx: &connectrpc::RequestContext) -> Result<(), ConnectError> {
+    let path = ctx.path().unwrap_or_default();
+    let requirement = AUTHORIZATION
+        .iter()
+        .find(|(procedure, _)| *procedure == path)
+        .map(|(_, r)| *r);
+    let extensions = ctx.extensions();
+    match requirement {
+        Some(Requirement::Session) if extensions.get::<Caller>().is_some() => Ok(()),
+        Some(Requirement::Session) => Err(ConnectError::unauthenticated("sign in first")),
+        Some(Requirement::Token) => Ok(()),
+        Some(Requirement::Machine)
+            if extensions
+                .get::<crate::services::agents::MachineCaller>()
+                .is_some() =>
+        {
+            Ok(())
+        }
+        Some(Requirement::Machine) => Err(ConnectError::unauthenticated(
+            "sign the request with the machine key",
+        )),
+        Some(Requirement::Terminator)
+            if extensions
+                .get::<crate::services::terminators::Terminator>()
+                .is_some() =>
+        {
+            Ok(())
+        }
+        Some(Requirement::Terminator) => Err(ConnectError::unauthenticated(
+            "sign the request with the relay's or the machine's key",
+        )),
+        None => Err(ConnectError::permission_denied(
+            "this procedure is not open to callers",
+        )),
+    }
+}
 
 #[connectrpc::async_trait]
 impl Interceptor for Authorize {
@@ -453,33 +633,18 @@ impl Interceptor for Authorize {
         request: UnaryRequest,
         next: InterceptNext<'_>,
     ) -> Result<UnaryResponse, ConnectError> {
-        let path = request.ctx.path().unwrap_or_default().to_string();
-        let requirement = AUTHORIZATION
-            .iter()
-            .find(|(procedure, _)| *procedure == path)
-            .map(|(_, r)| *r);
-        match requirement {
-            Some(Requirement::Session) if request.ctx.extensions().get::<Caller>().is_some() => {
-                next.run(request).await
-            }
-            Some(Requirement::Session) => Err(ConnectError::unauthenticated("sign in first")),
-            Some(Requirement::Token) => next.run(request).await,
-            Some(Requirement::Machine)
-                if request
-                    .ctx
-                    .extensions()
-                    .get::<crate::services::agents::MachineCaller>()
-                    .is_some() =>
-            {
-                next.run(request).await
-            }
-            Some(Requirement::Machine) => Err(ConnectError::unauthenticated(
-                "sign the request with the machine key",
-            )),
-            None => Err(ConnectError::permission_denied(
-                "this procedure is not open to callers",
-            )),
-        }
+        authorized(&request.ctx)?;
+        next.run(request).await
+    }
+
+    async fn intercept_streaming(
+        &self,
+        request: connectrpc::interceptor::StreamRequest,
+        inbound: connectrpc::interceptor::PayloadStream,
+        next: connectrpc::interceptor::NextStream<'_>,
+    ) -> Result<connectrpc::interceptor::StreamResponse, ConnectError> {
+        authorized(&request.ctx)?;
+        next.run(request, inbound).await
     }
 }
 
@@ -501,7 +666,10 @@ mod tests {
         ListSessionsResponse, RevokeSessionRequest, RevokeSessionResponse,
     };
 
-    use grund_proto::grund::{agent::v1 as agent, machine::v1 as machine, organisation::v1 as org};
+    use grund_proto::grund::{
+        agent::v1 as agent, certificates::v1 as certificates_proto, machine::v1 as machine,
+        organisation::v1 as org,
+    };
 
     use super::*;
 
@@ -807,6 +975,123 @@ mod tests {
         }
     }
 
+    struct UnusedRelayEnrollment;
+
+    #[allow(refining_impl_trait)]
+    impl grund_proto::grund::relay::v1::RelayEnrollmentService for UnusedRelayEnrollment {
+        async fn enroll_relay(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, grund_proto::grund::relay::v1::EnrollRelayRequest>,
+        ) -> ServiceResult<grund_proto::grund::relay::v1::EnrollRelayResponse> {
+            unreachable!()
+        }
+    }
+
+    struct UnusedCertificates;
+
+    #[allow(refining_impl_trait)]
+    impl certificates_proto::CertificateService for UnusedCertificates {
+        async fn request_certificate(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, certificates_proto::RequestCertificateRequest>,
+        ) -> ServiceResult<certificates_proto::RequestCertificateResponse> {
+            unreachable!()
+        }
+        async fn watch_challenges(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, certificates_proto::WatchChallengesRequest>,
+        ) -> ServiceResult<connectrpc::ServiceStream<certificates_proto::WatchChallengesResponse>>
+        {
+            unreachable!()
+        }
+        async fn answer_challenge(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, certificates_proto::AnswerChallengeRequest>,
+        ) -> ServiceResult<certificates_proto::AnswerChallengeResponse> {
+            unreachable!()
+        }
+        async fn get_certificate(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, certificates_proto::GetCertificateRequest>,
+        ) -> ServiceResult<certificates_proto::GetCertificateResponse> {
+            unreachable!()
+        }
+    }
+
+    fn context(path: &str, callers: &[&str]) -> RequestContext {
+        let mut extensions = http::Extensions::new();
+        for caller in callers {
+            match *caller {
+                "session" => {
+                    extensions.insert(Caller {
+                        account_id: Uuid::now_v7(),
+                        session_id: Uuid::now_v7(),
+                    });
+                }
+                "machine" => {
+                    extensions.insert(crate::services::agents::MachineCaller {
+                        machine_id: Uuid::now_v7(),
+                        organisation_id: None,
+                    });
+                }
+                _ => {
+                    extensions.insert(crate::services::terminators::Terminator::Relay(
+                        crate::services::relays::RelayCaller {
+                            relay_id: Uuid::now_v7(),
+                            host: "relay.example.com".into(),
+                        },
+                    ));
+                }
+            }
+        }
+        RequestContext::new(http::HeaderMap::new())
+            .with_path(path)
+            .with_extensions(extensions)
+    }
+
+    #[test]
+    fn a_procedure_missing_from_the_table_is_refused_whoever_calls() {
+        let everyone = ["session", "machine", "relay"];
+        for path in [
+            "/grund.certificates.v1.CertificateService/DeleteCertificate",
+            "/grund.relay.v1.RelayService/Anything",
+            "",
+        ] {
+            let error = authorized(&context(path, &everyone)).unwrap_err();
+            assert_eq!(
+                error.code,
+                connectrpc::ErrorCode::PermissionDenied,
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_certificate_service_admits_only_a_terminator() {
+        for procedure in [
+            "RequestCertificate",
+            "WatchChallenges",
+            "AnswerChallenge",
+            "GetCertificate",
+        ] {
+            let path = format!("/grund.certificates.v1.CertificateService/{procedure}");
+            for callers in [&[][..], &["session"], &["machine"], &["session", "machine"]] {
+                let error = authorized(&context(&path, callers)).unwrap_err();
+                assert_eq!(
+                    error.code,
+                    connectrpc::ErrorCode::Unauthenticated,
+                    "{path} {callers:?}"
+                );
+            }
+            authorized(&context(&path, &["relay"])).unwrap();
+        }
+    }
+
     #[test]
     fn every_procedure_has_an_authorization_entry() {
         let router = connectrpc::Router::new()
@@ -815,6 +1100,8 @@ mod tests {
             .add_service(Arc::new(UnusedPool))
             .add_service(Arc::new(UnusedMachines))
             .add_service(Arc::new(UnusedEnrollment))
+            .add_service(Arc::new(UnusedRelayEnrollment))
+            .add_service(Arc::new(UnusedCertificates))
             .add_service(Arc::new(UnusedAgent));
         let served: BTreeSet<String> = router
             .methods()

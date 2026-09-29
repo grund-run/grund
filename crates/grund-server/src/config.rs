@@ -584,12 +584,6 @@ impl RelayArgs {
             self.relay_tls_cert_file.is_some() == self.relay_tls_key_file.is_some(),
             "GRUND_RELAY_TLS_CERT_FILE and GRUND_RELAY_TLS_KEY_FILE must be set together"
         );
-        anyhow::ensure!(
-            self.relay_quic_address.is_none()
-                || (self.relay_address.is_some() && self.relay_tls_cert_file.is_some()),
-            "GRUND_RELAY_QUIC_ADDRESS needs the relay (GRUND_RELAY_ADDRESS) and its certificate \
-             (GRUND_RELAY_TLS_CERT_FILE): QUIC always speaks TLS"
-        );
         if let Some(token) = &self.relay_access_token {
             anyhow::ensure!(
                 token.len() >= 32,
@@ -637,9 +631,11 @@ pub struct TlsArgs {
     pub tls_key_file: Option<PathBuf>,
 
     /// The ACME directory certificates are ordered from, e.g.
-    /// https://acme-v02.api.letsencrypt.org/directory. Setting it agrees to
-    /// that CA's subscriber agreement. No default in the binary, so nothing
-    /// talks to a CA unless told to; compose.yaml sets Let's Encrypt.
+    /// https://acme-v02.api.letsencrypt.org/directory: GRUND_DOMAIN's, and
+    /// those of `grund relay`s on other hosts (grund.certificates.v1), which
+    /// is why it may be set without GRUND_DOMAIN. Setting it agrees to that
+    /// CA's subscriber agreement. No default in the binary, so nothing talks
+    /// to a CA unless told to; compose.yaml sets Let's Encrypt.
     #[arg(long, env = "GRUND_ACME_DIRECTORY")]
     pub acme_directory: Option<String>,
 
@@ -697,6 +693,12 @@ impl TlsArgs {
         self.domain.is_some() && self.tls_cert_file.is_none()
     }
 
+    /// Whether this instance orders certificates at all: its own, or those
+    /// of terminators on other hosts.
+    pub fn orders(&self) -> bool {
+        self.acme_directory.is_some()
+    }
+
     fn validate(&mut self) -> anyhow::Result<()> {
         if let Some(domain) = &mut self.domain {
             *domain = domain.trim().trim_end_matches('.').to_ascii_lowercase();
@@ -714,31 +716,23 @@ impl TlsArgs {
             self.tls_cert_file.is_some() == self.tls_key_file.is_some(),
             "GRUND_TLS_CERT_FILE and GRUND_TLS_KEY_FILE must be set together"
         );
-        let acme_settings = [
-            ("GRUND_ACME_DIRECTORY", self.acme_directory.is_some()),
+        for (name, set) in [
             ("GRUND_ACME_CONTACT", self.acme_contact.is_some()),
             ("GRUND_ACME_CA_FILE", self.acme_ca_file.is_some()),
-        ];
-        for (name, set) in acme_settings {
+        ] {
             anyhow::ensure!(
-                !set || self.tls_cert_file.is_none(),
-                "{name} is set, but GRUND_TLS_CERT_FILE supplies the certificate: use ACME or \
-                 your own certificate, not both"
-            );
-            anyhow::ensure!(
-                !set || self.domain.is_some(),
-                "{name} is set, but GRUND_DOMAIN is not: ACME orders a certificate for \
-                 GRUND_DOMAIN"
+                !set || self.acme_directory.is_some(),
+                "{name} is set, but GRUND_ACME_DIRECTORY is not: it is a setting of the ACME \
+                 account"
             );
         }
-        if self.acme() {
-            let directory = self.acme_directory.as_deref().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "GRUND_DOMAIN is set, so HTTPS needs a certificate: set GRUND_ACME_DIRECTORY \
-                     (for Let's Encrypt, https://acme-v02.api.letsencrypt.org/directory), or \
-                     supply one with GRUND_TLS_CERT_FILE and GRUND_TLS_KEY_FILE"
-                )
-            })?;
+        anyhow::ensure!(
+            !self.acme() || self.acme_directory.is_some(),
+            "GRUND_DOMAIN is set, so HTTPS needs a certificate: set GRUND_ACME_DIRECTORY (for \
+             Let's Encrypt, https://acme-v02.api.letsencrypt.org/directory), or supply one with \
+             GRUND_TLS_CERT_FILE and GRUND_TLS_KEY_FILE"
+        );
+        if let Some(directory) = &self.acme_directory {
             anyhow::ensure!(
                 directory.starts_with("https://") && !directory.contains(char::is_whitespace),
                 "GRUND_ACME_DIRECTORY must be an https URL, not {directory:?}"
@@ -1071,8 +1065,46 @@ impl ServeConfig {
         self.billing.validate()?;
         self.capacity.validate()?;
         self.relay.validate()?;
+        anyhow::ensure!(
+            self.relay.relay_quic_address.is_none()
+                || (self.relay.relay_address.is_some()
+                    && (self.relay.relay_tls_cert_file.is_some()
+                        || self.relay_serves_instance_certificate())),
+            "GRUND_RELAY_QUIC_ADDRESS needs the relay (GRUND_RELAY_ADDRESS) and its certificate \
+             (GRUND_RELAY_TLS_CERT_FILE, or GRUND_DOMAIN's when GRUND_RELAY_URL is on it): QUIC \
+             always speaks TLS"
+        );
         self.machine_defaults.validate()?;
         Ok(())
+    }
+
+    fn colocated_relay_host(&self) -> Option<String> {
+        if self.relay.relay_address.is_none() || self.relay.relay_tls_cert_file.is_some() {
+            return None;
+        }
+        let origin = PublicOrigin::parse(self.relay.relay_url.as_deref()?.trim_end_matches('/'))?;
+        origin.https.then_some(origin.host)
+    }
+
+    /// Whether the relay in this process serves the instance's own
+    /// certificate (grund-docs design/traffic.md §5.7): it has no files of
+    /// its own, and its URL is on GRUND_DOMAIN, or on a name the instance
+    /// adds to its own certificate ([`Self::instance_certificate_names`]).
+    pub fn relay_serves_instance_certificate(&self) -> bool {
+        self.colocated_relay_host().is_some_and(|host| {
+            self.tls.acme() || (self.tls.enabled() && self.tls.domain.as_deref() == Some(&host))
+        })
+    }
+
+    /// The names of the instance's own certificate when it orders it:
+    /// GRUND_DOMAIN, then the relay in this process's host when that is
+    /// another name, so both are served from one certificate and one key.
+    pub fn instance_certificate_names(&self) -> Vec<String> {
+        let Some(domain) = self.tls.domain.clone().filter(|_| self.tls.acme()) else {
+            return Vec::new();
+        };
+        let relay = self.colocated_relay_host().filter(|host| host != &domain);
+        std::iter::once(domain).chain(relay).collect()
     }
 
     pub fn public_origin(&self) -> PublicOrigin {
@@ -1462,20 +1494,19 @@ mod tests {
     }
 
     #[test]
-    fn acme_and_a_supplied_certificate_are_refused_together() {
-        refused(
-            &[
-                "--domain",
-                "grund.example.com",
-                "--acme-directory",
-                LE,
-                "--tls-cert-file",
-                "/c",
-                "--tls-key-file",
-                "/k",
-            ],
-            "GRUND_ACME_DIRECTORY",
-        );
+    fn a_supplied_certificate_beside_an_acme_directory_leaves_acme_to_the_relays() {
+        let config = parse(&[
+            "--domain",
+            "grund.example.com",
+            "--acme-directory",
+            LE,
+            "--tls-cert-file",
+            "/c",
+            "--tls-key-file",
+            "/k",
+        ])
+        .unwrap();
+        assert!(config.tls.enabled() && !config.tls.acme() && config.tls.orders());
         refused(&["--tls-cert-file", "/c"], "GRUND_TLS_KEY_FILE");
     }
 
@@ -1486,9 +1517,18 @@ mod tests {
     }
 
     #[test]
-    fn acme_settings_without_a_domain_are_refused() {
-        refused(&["--acme-directory", LE], "GRUND_DOMAIN");
-        refused(&["--acme-contact", "ops@example.com"], "GRUND_DOMAIN");
+    fn an_acme_directory_without_a_domain_orders_for_relays_only() {
+        let config = parse(&["--acme-directory", LE]).unwrap();
+        assert!(!config.tls.enabled() && !config.tls.acme() && config.tls.orders());
+        refused(
+            &["--acme-contact", "ops@example.com"],
+            "GRUND_ACME_DIRECTORY",
+        );
+        refused(&["--acme-ca-file", "/ca.pem"], "GRUND_ACME_DIRECTORY");
+        refused(
+            &["--acme-directory", "http://ca.example/dir"],
+            "GRUND_ACME_DIRECTORY",
+        );
     }
 
     #[test]

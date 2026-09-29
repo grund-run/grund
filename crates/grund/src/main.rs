@@ -13,7 +13,8 @@
 //! - `join`: register this machine with an instance, with a one-time setup
 //!   code (the machine agent, `grund-agent`);
 //! - `agent`: keep it connected, and run the VMs its desired state asks for;
-//! - `relay`: a relay for an instance's machines, on a host of its own.
+//! - `relay`: a relay for an instance's machines, on a host of its own;
+//! - `relays`: mint enrollment tokens for relays, revoke and list them.
 //!
 //! The agent is part of this binary, so there is one artifact to build, sign
 //! and ship.
@@ -80,6 +81,10 @@ enum Command {
         about = "Run a relay for an instance's machines: iroh's relay and QUIC address discovery, admitting only the keys the instance does"
     )]
     Relay(grund_server::relay_command::RelayCommand),
+    #[command(
+        about = "Mint a one-time enrollment token for a grund relay, revoke a relay, or list them"
+    )]
+    Relays(grund_server::relays_command::RelaysCommand),
 }
 
 #[derive(clap::Args)]
@@ -224,6 +229,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Doctor(command) => doctor(command).await,
         Command::Join(args) => grund_agent::join::run(&args).await,
         Command::Relay(command) => grund_server::relay_command::run(command).await,
+        Command::Relays(command) => grund_server::relays_command::run(command).await,
         Command::Agent(command) => match command.vm_runtime.as_str() {
             "simulated" => {
                 let dir = command.agent.data_dir.join("simulated-vms");

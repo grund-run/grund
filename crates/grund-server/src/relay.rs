@@ -81,12 +81,19 @@ impl KeyPolicy for Database {
 }
 
 /// The policy asked of an instance over HTTPS, as `grund relay` does:
-/// `POST <instance>/relay/v1/access/current` with the relay's bearer token.
+/// `POST <instance>/relay/v1/access/current`, signed by the relay's own key
+/// when it is enrolled, or with the shared bearer token (deprecated).
 #[derive(Debug, Clone)]
 pub struct Callout {
     http: reqwest::Client,
     url: String,
-    token: String,
+    credential: Credential,
+}
+
+#[derive(Debug, Clone)]
+enum Credential {
+    Token(String),
+    Relay(Box<crate::relay_certificate::RelayKey>),
 }
 
 /// How long one access question to the instance may take.
@@ -105,8 +112,17 @@ impl Callout {
         Ok(Self {
             http,
             url: format!("{}/relay/v1/access/current", instance.trim_end_matches('/')),
-            token: token.to_string(),
+            credential: Credential::Token(token.to_string()),
         })
+    }
+
+    /// A callout to the instance at `instance`, signed by the enrolled
+    /// relay's `key`.
+    pub fn signed(instance: &str, key: crate::relay_certificate::RelayKey) -> anyhow::Result<Self> {
+        let mut callout = Self::new(instance, "")?;
+        callout.http = crate::relay_certificate::http_client(Some(CALLOUT_TIMEOUT))?;
+        callout.credential = Credential::Relay(Box::new(key));
+        Ok(callout)
     }
 }
 
@@ -115,11 +131,22 @@ impl KeyPolicy for Callout {
         let body = serde_json::json!({
             "keys": keys.iter().map(ToString::to_string).collect::<Vec<_>>()
         });
-        let response = self
+        let body = serde_json::to_vec(&body)?;
+        let mut request = self
             .http
             .post(&self.url)
-            .bearer_auth(&self.token)
-            .json(&body)
+            .header(reqwest::header::CONTENT_TYPE, "application/json");
+        request = match &self.credential {
+            Credential::Token(token) => request.bearer_auth(token),
+            Credential::Relay(key) => key
+                .headers("/relay/v1/access/current", &body)
+                .into_iter()
+                .fold(request, |request, (name, value)| {
+                    request.header(name, value)
+                }),
+        };
+        let response = request
+            .body(body)
             .send()
             .await
             .context("ask the instance which keys to admit")?;
@@ -246,7 +273,9 @@ pub async fn sweep<P: KeyPolicy>(access: &RelayAccess<P>, relay: &Relay, interva
 
 /// The relay inside `grund serve`, as a notmad component: grund-net's relay
 /// on its own listener, and QUIC address discovery when a certificate is
-/// configured. Off unless GRUND_RELAY_ADDRESS is set.
+/// configured: its own files, or, when its URL is on GRUND_DOMAIN or on a
+/// name the instance adds to its own certificate, the instance's
+/// certificate itself. Off unless GRUND_RELAY_ADDRESS is set.
 pub struct RelayServer {
     state: State,
 }
@@ -276,6 +305,18 @@ impl Component for RelayServer {
                 }
                 .server_config()?,
             ),
+            _ if self.state.config.relay_serves_instance_certificate() => {
+                use crate::certificates::CertificatesState;
+                Some(
+                    crate::relay_command::RelayTls::Instance(
+                        crate::relay_certificate::InstanceTls {
+                            resolver: self.state.certificates().resolver(),
+                            answers: Default::default(),
+                        },
+                    )
+                    .server_config()?,
+                )
+            }
             _ => None,
         };
         let _discovery = match (config.relay_quic_address, &tls) {

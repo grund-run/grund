@@ -9,13 +9,13 @@ const ENROLL: &str = "/grund.agent.v1.MachineEnrollmentService/EnrollMachine";
 const POOL: &str = "/grund.machine.v1.ManagementPoolService";
 const MACHINES: &str = "/grund.machine.v1.MachineService";
 
-fn a_machine_key() -> SigningKey {
+pub(super) fn a_machine_key() -> SigningKey {
     let mut seed = [0u8; 32];
     getrandom::fill(&mut seed).expect("randomness");
     SigningKey::from_bytes(&seed)
 }
 
-fn origin(when: &When) -> String {
+pub(super) fn origin(when: &When) -> String {
     format!("http://{}", when.testcase.fixture.origin.authority())
 }
 
@@ -1107,7 +1107,7 @@ async fn grund_agent_once(dir: &std::path::Path) -> std::process::Output {
         .expect("grund agent's thread")
 }
 
-async fn signed_agent_call(
+pub(super) async fn signed_agent_call(
     when: &When,
     machine_id: &str,
     key: &SigningKey,
@@ -1521,7 +1521,7 @@ async fn a_member_sees_the_machines_page_but_cannot_add_or_remove() -> anyhow::R
     Ok(())
 }
 
-async fn a_member(
+pub(super) async fn a_member(
     when: &When,
     then: &Then,
     organisation: &str,
@@ -1568,7 +1568,7 @@ fn slots(list: &grund_net::membership::MembershipList) -> Vec<(String, u16)> {
     slots
 }
 
-fn endpoint(key: &SigningKey) -> String {
+pub(super) fn endpoint(key: &SigningKey) -> String {
     hex::encode(key.verifying_key().to_bytes())
 }
 
@@ -1722,7 +1722,7 @@ async fn relayed_endpoint(relay: &str, key: &SigningKey) -> anyhow::Result<iroh:
     relayed_endpoint_trusting(relay, key, None).await
 }
 
-async fn relayed_endpoint_trusting(
+pub(super) async fn relayed_endpoint_trusting(
     relay: &str,
     key: &SigningKey,
     roots: Option<Vec<rustls::pki_types::CertificateDer<'static>>>,
@@ -1736,7 +1736,7 @@ async fn relayed_endpoint_trusting(
     grund_net::endpoint::bind(grund_net::key::secret_key(&key.to_bytes()), &config, vec![]).await
 }
 
-fn relay_connected(endpoint: &iroh::Endpoint) -> bool {
+pub(super) fn relay_connected(endpoint: &iroh::Endpoint) -> bool {
     use iroh::Watcher;
     endpoint
         .home_relay_status()
@@ -1749,7 +1749,7 @@ async fn comes_online_through(relay: &str, key: &SigningKey) -> anyhow::Result<b
     comes_online_trusting(relay, key, None).await
 }
 
-async fn comes_online_trusting(
+pub(super) async fn comes_online_trusting(
     relay: &str,
     key: &SigningKey,
     roots: Option<Vec<rustls::pki_types::CertificateDer<'static>>>,
@@ -1955,7 +1955,7 @@ async fn an_instance_serves_no_installer_unless_told_to() -> anyhow::Result<()> 
     Ok(())
 }
 
-struct Running(std::process::Child);
+pub(super) struct Running(pub(super) std::process::Child);
 
 impl Drop for Running {
     fn drop(&mut self) {

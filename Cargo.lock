@@ -1772,6 +1772,7 @@ dependencies = [
  "mire-sagas",
  "nostatus",
  "notmad",
+ "rcgen",
  "reqwest",
  "ring",
  "rustls",
@@ -1789,6 +1790,7 @@ dependencies = [
  "tower-http 0.7.1",
  "tracing",
  "uuid",
+ "webpki-roots 1.0.9",
  "x509-parser",
 ]
 
@@ -1817,6 +1819,7 @@ dependencies = [
  "axum",
  "rcgen",
  "rustls",
+ "sha2 0.10.9",
  "tokio",
  "tokio-rustls",
  "tracing",

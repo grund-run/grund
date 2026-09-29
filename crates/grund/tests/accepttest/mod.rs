@@ -13,6 +13,7 @@ mod machines;
 mod network;
 mod organisations;
 mod pages;
+mod relay_certificates;
 mod reset;
 mod sessions;
 mod setup;

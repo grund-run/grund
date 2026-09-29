@@ -24,10 +24,13 @@
 //! `tls/seal` subkey, bound to what they are (account, order key,
 //! certificate key) as associated data.
 //!
-//! Only the instance's own domain is built. The relay, the gate and the edge
-//! will hand in a CSR instead of having the instance make their key
-//! (`grund_tls::KeyAndCsr`); that flow is designed in traffic.md §5.7, not
-//! built.
+//! Terminators on other hosts (`grund relay` first; the gate and the edge
+//! later) hand in a CSR instead of having the instance make their key
+//! (traffic.md §5.7, `api/certificates.rs`). Their rows are ordered by the
+//! same claim, lease, account and backoff; their challenges go to the
+//! terminator through `grund_acme_challenges`, and the CA is told to
+//! validate only once the terminator says it answers. No key of theirs is
+//! ever here.
 
 use std::{
     net::SocketAddr,
@@ -74,6 +77,11 @@ pub const ATTEMPT_DEADLINE: Duration = Duration::from_secs(300);
 /// How long a published challenge answer stays valid.
 pub const CHALLENGE_TTL: Duration = Duration::from_secs(900);
 
+/// How long an order waits for a remote terminator to say it answers a
+/// challenge before the attempt fails (`terminator_unreachable`) and is
+/// tried again with backoff. Its watch reconnects at least every 25 s.
+pub const ANSWER_WAIT: Duration = Duration::from_secs(60);
+
 /// A certificate with less than this left is reported as degraded, unless
 /// its lifetime is so short that a third of it is less (traffic.md §5.6).
 pub const EXPIRY_WARNING: Duration = Duration::from_secs(14 * 86400);
@@ -99,6 +107,7 @@ pub struct Certificates {
 
 struct Inner {
     source: Source,
+    acme: Option<AcmeSettings>,
     pool: sqlx::PgPool,
     secret: Arc<SecretKey>,
     dev_mode: bool,
@@ -109,43 +118,60 @@ struct Inner {
 enum Source {
     Off,
     Files(Mutex<grund_tls::Files>),
-    Acme(AcmeSettings),
+    Acme(Desired),
 }
 
 struct AcmeSettings {
-    desired: Desired,
+    directory: String,
+    profile: String,
     contact: Option<String>,
     ca_file: Option<PathBuf>,
     retry_base: Duration,
+}
+
+enum Keyed {
+    Own(KeyAndCsr),
+    Remote(Vec<u8>),
+}
+
+impl Keyed {
+    fn csr_der(&self) -> &[u8] {
+        match self {
+            Keyed::Own(made) => made.csr_der(),
+            Keyed::Remote(csr) => csr,
+        }
+    }
 }
 
 impl Certificates {
     /// From the validated configuration. Nothing is read yet: see [`Self::start`].
     pub fn new(config: &ServeConfig, pool: sqlx::PgPool, secret: Arc<SecretKey>) -> Self {
         let tls = &config.tls;
-        let source = match (&tls.tls_cert_file, &tls.tls_key_file, &tls.domain) {
+        let source = match (&tls.tls_cert_file, &tls.tls_key_file, tls.acme()) {
             (Some(cert), Some(key), _) => {
                 Source::Files(Mutex::new(grund_tls::Files::new(cert, key)))
             }
-            (_, _, Some(domain)) => Source::Acme(AcmeSettings {
-                desired: Desired {
-                    subject: SUBJECT.into(),
-                    names: vec![domain.clone()],
-                    directory: tls.acme_directory.clone().unwrap_or_default(),
-                    profile: tls.acme_profile.clone(),
-                    challenge: Challenge::parse(&tls.acme_challenge)
-                        .unwrap_or(Challenge::TlsAlpn01),
-                },
-                contact: tls.acme_contact.clone(),
-                ca_file: tls.acme_ca_file.clone(),
-                retry_base: tls.acme_retry_base,
+            (_, _, true) => Source::Acme(Desired {
+                subject: SUBJECT.into(),
+                names: config.instance_certificate_names(),
+                directory: tls.acme_directory.clone().unwrap_or_default(),
+                profile: tls.acme_profile.clone(),
+                challenge: Challenge::parse(&tls.acme_challenge).unwrap_or(Challenge::TlsAlpn01),
             }),
             _ => Source::Off,
         };
+        let acme = tls.acme_directory.clone().map(|directory| AcmeSettings {
+            directory,
+            profile: tls.acme_profile.clone(),
+            contact: tls.acme_contact.clone(),
+            ca_file: tls.acme_ca_file.clone(),
+            retry_base: tls.acme_retry_base,
+        });
         Self {
             resolver: Resolver::default(),
             inner: Arc::new(Inner {
                 source,
+                acme,
                 pool,
                 secret,
                 dev_mode: config.dev_mode,
@@ -153,6 +179,21 @@ impl Certificates {
                 known_version: AtomicI64::new(0),
             }),
         }
+    }
+
+    /// The directory and profile remote terminators' orders are placed with,
+    /// when this instance orders at all.
+    pub fn ordering(&self) -> Option<(String, String)> {
+        self.inner
+            .acme
+            .as_ref()
+            .map(|acme| (acme.directory.clone(), acme.profile.clone()))
+    }
+
+    /// Whether this instance orders certificates: its own, or remote
+    /// terminators'.
+    pub fn orders(&self) -> bool {
+        self.inner.acme.is_some()
     }
 
     /// What HTTPS serves. The relay, when it runs beside the instance, can
@@ -175,6 +216,9 @@ impl Certificates {
     /// cannot), or records what ACME should order and loads what was
     /// ordered before. A CA being unreachable never stops the start.
     pub async fn start(&self) -> anyhow::Result<()> {
+        if let Some(acme) = &self.inner.acme {
+            Http::new(acme.ca_file.as_deref())?;
+        }
         match &self.inner.source {
             Source::Off => Ok(()),
             Source::Files(files) => {
@@ -194,9 +238,8 @@ impl Certificates {
                 );
                 Ok(())
             }
-            Source::Acme(settings) => {
-                Http::new(settings.ca_file.as_deref())?;
-                store::desire(&self.inner.pool, &settings.desired)
+            Source::Acme(desired) => {
+                store::desire(&self.inner.pool, desired)
                     .await
                     .context("record the certificate GRUND_DOMAIN needs")?;
                 self.refresh().await?;
@@ -207,8 +250,8 @@ impl Certificates {
                         "https: serving the stored certificate; renewal is ACME's"
                     ),
                     None => tracing::info!(
-                        domain = %settings.desired.names[0],
-                        directory = %settings.desired.directory,
+                        names = ?desired.names,
+                        directory = %desired.directory,
                         "https: no certificate yet; HTTPS refuses handshakes until the first order succeeds"
                     ),
                 }
@@ -283,7 +326,7 @@ impl Certificates {
     /// order, or a renewal-information check. Returns whether it claimed
     /// anything. Failures are recorded and rescheduled, not returned.
     pub async fn work_once(&self) -> anyhow::Result<bool> {
-        let Source::Acme(settings) = &self.inner.source else {
+        let Some(settings) = &self.inner.acme else {
             return Ok(false);
         };
         let Some(claim) =
@@ -291,9 +334,21 @@ impl Certificates {
         else {
             return Ok(false);
         };
-        if claim.subject != SUBJECT {
-            store::release(&self.inner.pool, &claim.subject, self.inner.holder).await?;
-            return Ok(false);
+        let ours = match claim.terminator.as_str() {
+            "remote" => claim.csr.is_some(),
+            _ => claim.subject == SUBJECT && self.acme(),
+        };
+        if !ours {
+            store::record_failure(
+                &self.inner.pool,
+                &claim.subject,
+                self.inner.holder,
+                3600.0,
+                "not_configured",
+            )
+            .await?;
+            tracing::info!(subject = %claim.subject, "https: a certificate this instance no longer orders; looking again in an hour");
+            return Ok(true);
         }
         let http = Http::new(settings.ca_file.as_deref())?;
         let attempt = tokio::time::timeout(ATTEMPT_DEADLINE, self.attempt(settings, &http, &claim));
@@ -314,17 +369,25 @@ impl Certificates {
         );
         let recorded = store::record_failure(
             &self.inner.pool,
-            SUBJECT,
+            &claim.subject,
             self.inner.holder,
             delay.as_secs_f64(),
             failed.failure.code(),
         )
         .await?;
-        let serving = self
-            .resolver
-            .current()
-            .map(|served| DateTime::<Utc>::from(served.not_after).to_rfc3339());
+        let serving = match claim.terminator.as_str() {
+            "remote" => claim
+                .chain_pem
+                .as_deref()
+                .and_then(|chain| leaf(chain).ok())
+                .map(|(_, _, not_after)| not_after.to_rfc3339()),
+            _ => self
+                .resolver
+                .current()
+                .map(|served| DateTime::<Utc>::from(served.not_after).to_rfc3339()),
+        };
         tracing::warn!(
+            subject = %claim.subject,
             error = format!("{:#}", failed.error),
             code = failed.failure.code(),
             attempts = claim.attempts + 1,
@@ -349,6 +412,7 @@ impl Certificates {
         http: &Http,
         claim: &Claim,
     ) -> Result<(), Attempt> {
+        let remote = claim.terminator == "remote";
         let account = self.account(settings, http, &claim.directory).await?;
         let current = match &claim.chain_pem {
             Some(chain) => Some(leaf(chain).map_err(Attempt::internal)?),
@@ -362,14 +426,14 @@ impl Certificates {
                 renewal(&account, &leaf_der, not_before, not_after).await;
             store::record_renewal_info(
                 &self.inner.pool,
-                SUBJECT,
+                &claim.subject,
                 self.inner.holder,
                 renew_at,
                 ari_check_at,
             )
             .await
             .map_err(Attempt::store)?;
-            tracing::info!(%renew_at, "https: renewal window checked");
+            tracing::info!(subject = %claim.subject, %renew_at, "https: renewal window checked");
             return Ok(());
         }
         let profiles: Vec<String> = account.profiles().map(|p| p.name.to_string()).collect();
@@ -388,18 +452,43 @@ impl Certificates {
             .as_ref()
             .and_then(|(der, _, _)| CertificateIdentifier::try_from(der).ok())
             .map(CertificateIdentifier::into_owned);
-        let (order_id, mut order, csr) = self.order(&account, claim, replaces).await?;
+        let (order_id, mut order, keyed) = self.order(&account, claim, replaces).await?;
         let challenge = Challenge::parse(&claim.challenge).unwrap_or(Challenge::TlsAlpn01);
-        let published = self.authorize(&mut order, challenge).await?;
-        let result = self.finish(&mut order, order_id, claim, &csr).await;
+        let published = match self
+            .authorize(&mut order, &claim.subject, challenge, remote)
+            .await
+        {
+            Ok(published) => published,
+            Err(failed) => {
+                self.remove_challenges(&claim.subject, challenge).await;
+                return Err(failed);
+            }
+        };
+        let result = self
+            .finish(&mut order, order_id, claim, keyed.csr_der())
+            .await;
         for (name, token) in &published {
             let _ = store::remove_challenge(&self.inner.pool, challenge, name, token).await;
         }
         let chain = result?;
-        let served = Served::from_pkcs8(chain.as_bytes(), csr.key_pkcs8_der())
-            .context("the issued certificate")
-            .map_err(Attempt::internal)?;
-        if let Some(missing) = claim.names.iter().find(|name| !served.covers(name)) {
+        let served = match &keyed {
+            Keyed::Own(made) => Some(
+                Served::from_pkcs8(chain.as_bytes(), made.key_pkcs8_der())
+                    .context("the issued certificate")
+                    .map_err(Attempt::internal)?,
+            ),
+            Keyed::Remote(csr) => {
+                check_remote_chain(&chain, csr).map_err(|error| {
+                    Attempt::failed(Failure::Refused, error.context("the issued certificate"))
+                })?;
+                None
+            }
+        };
+        if let Some(missing) = claim
+            .names
+            .iter()
+            .find(|name| !chain_covers(&chain, name, served.as_ref()))
+        {
             return Err(Attempt::failed(
                 Failure::Refused,
                 anyhow::anyhow!("the issued certificate does not name {missing}"),
@@ -409,7 +498,12 @@ impl Certificates {
         let (renew_at, ari_check_at) = renewal(&account, &leaf_der, not_before, not_after).await;
         let issued = Issued {
             chain_pem: chain,
-            sealed_key: Some(self.seal(&certificate_aad(SUBJECT), csr.key_pkcs8_der())),
+            sealed_key: match &keyed {
+                Keyed::Own(made) => {
+                    Some(self.seal(&certificate_aad(SUBJECT), made.key_pkcs8_der()))
+                }
+                Keyed::Remote(_) => None,
+            },
             not_before,
             not_after,
             renew_at,
@@ -417,7 +511,7 @@ impl Certificates {
         };
         let recorded = store::record_issued(
             &self.inner.pool,
-            SUBJECT,
+            &claim.subject,
             self.inner.holder,
             order_id,
             &issued,
@@ -426,18 +520,36 @@ impl Certificates {
         .map_err(Attempt::store)?;
         if !recorded {
             tracing::warn!(
+                subject = %claim.subject,
                 "https: a certificate was issued after this replica lost its lease; discarded"
             );
             return Ok(());
         }
         tracing::info!(
+            subject = %claim.subject,
             names = ?claim.names,
             %not_after,
             %renew_at,
             "https: certificate issued"
         );
-        self.resolver.set(served);
+        if let Some(served) = served {
+            self.resolver.set(served);
+        }
         Ok(())
+    }
+
+    async fn remove_challenges(&self, subject: &str, challenge: Challenge) {
+        if let Ok(pending) = store::challenges_of(&self.inner.pool, subject).await {
+            for pending in pending {
+                let _ = store::remove_challenge(
+                    &self.inner.pool,
+                    challenge,
+                    &pending.name,
+                    &pending.token,
+                )
+                .await;
+            }
+        }
     }
 
     async fn order(
@@ -445,22 +557,31 @@ impl Certificates {
         account: &Account,
         claim: &Claim,
         replaces: Option<CertificateIdentifier<'static>>,
-    ) -> Result<(Uuid, instant_acme::Order, KeyAndCsr), Attempt> {
+    ) -> Result<(Uuid, instant_acme::Order, Keyed), Attempt> {
         let pool = &self.inner.pool;
-        if let Some(pending) = store::pending_order(pool, SUBJECT)
+        let remote_csr = match claim.terminator.as_str() {
+            "remote" => Some(claim.csr.clone().ok_or_else(|| {
+                Attempt::internal(anyhow::anyhow!("a remote terminator's order needs its CSR"))
+            })?),
+            _ => None,
+        };
+        if let Some(pending) = store::pending_order(pool, &claim.subject)
             .await
             .map_err(Attempt::store)?
         {
-            let key = pending
-                .sealed_key
-                .as_deref()
-                .and_then(|sealed| self.unseal(&order_aad(pending.order_id), sealed));
-            let resumed = match key {
-                Some(key) => match account.order(pending.url.clone()).await {
+            let keyed = match &remote_csr {
+                Some(csr) => Some(Keyed::Remote(csr.clone())),
+                None => pending
+                    .sealed_key
+                    .as_deref()
+                    .and_then(|sealed| self.unseal(&order_aad(pending.order_id), sealed))
+                    .and_then(|key| KeyAndCsr::from_pkcs8(&key, &claim.names).ok())
+                    .map(Keyed::Own),
+            };
+            let resumed = match keyed {
+                Some(keyed) => match account.order(pending.url.clone()).await {
                     Ok(mut order) => (!matches!(order_status(&mut order), OrderStatus::Invalid))
-                        .then(|| KeyAndCsr::from_pkcs8(&key, &claim.names).ok())
-                        .flatten()
-                        .map(|csr| (order, csr)),
+                        .then_some((order, keyed)),
                     Err(error) if Failure::of(&error) == Failure::Unreachable => {
                         return Err(Attempt::acme(error));
                     }
@@ -468,15 +589,18 @@ impl Certificates {
                 },
                 None => None,
             };
-            if let Some((order, csr)) = resumed {
-                tracing::info!(url = %pending.url, "https: resuming an order placed earlier");
-                return Ok((pending.order_id, order, csr));
+            if let Some((order, keyed)) = resumed {
+                tracing::info!(subject = %claim.subject, url = %pending.url, "https: resuming an order placed earlier");
+                return Ok((pending.order_id, order, keyed));
             }
             store::finish_order(pool, pending.order_id, "abandoned", "not_resumable")
                 .await
                 .map_err(Attempt::store)?;
         }
-        let csr = KeyAndCsr::generate(&claim.names).map_err(Attempt::internal)?;
+        let keyed = match remote_csr {
+            Some(csr) => Keyed::Remote(csr),
+            None => Keyed::Own(KeyAndCsr::generate(&claim.names).map_err(Attempt::internal)?),
+        };
         let identifiers: Vec<Identifier> = claim
             .names
             .iter()
@@ -506,23 +630,29 @@ impl Certificates {
         };
         let order = placed.map_err(Attempt::acme)?;
         let order_id = Uuid::now_v7();
+        let sealed = match &keyed {
+            Keyed::Own(made) => Some(self.seal(&order_aad(order_id), made.key_pkcs8_der())),
+            Keyed::Remote(_) => None,
+        };
         store::insert_order(
             pool,
             order_id,
-            SUBJECT,
+            &claim.subject,
             order.url(),
-            Some(&self.seal(&order_aad(order_id), csr.key_pkcs8_der())),
+            sealed.as_deref(),
         )
         .await
         .map_err(Attempt::store)?;
-        tracing::info!(url = %order.url(), profile = %claim.profile, "https: order placed");
-        Ok((order_id, order, csr))
+        tracing::info!(subject = %claim.subject, url = %order.url(), profile = %claim.profile, "https: order placed");
+        Ok((order_id, order, keyed))
     }
 
     async fn authorize(
         &self,
         order: &mut instant_acme::Order,
+        subject: &str,
         challenge: Challenge,
+        remote: bool,
     ) -> Result<Vec<(String, String)>, Attempt> {
         let kind = match challenge {
             Challenge::TlsAlpn01 => ChallengeType::TlsAlpn01,
@@ -552,6 +682,7 @@ impl Certificates {
             let token = handle.token.clone();
             store::put_challenge(
                 &self.inner.pool,
+                subject,
                 challenge,
                 &name,
                 &token,
@@ -560,11 +691,37 @@ impl Certificates {
             )
             .await
             .map_err(Attempt::store)?;
+            if remote {
+                self.await_answer(subject, &token).await?;
+            }
             handle.set_ready().await.map_err(Attempt::acme)?;
-            tracing::info!(%name, challenge = challenge.as_str(), "https: challenge ready");
+            tracing::info!(%subject, %name, challenge = challenge.as_str(), "https: challenge ready");
             published.push((name, token));
         }
         Ok(published)
+    }
+
+    async fn await_answer(&self, subject: &str, token: &str) -> Result<(), Attempt> {
+        let deadline = tokio::time::Instant::now() + ANSWER_WAIT;
+        loop {
+            if store::answering(&self.inner.pool, subject, token)
+                .await
+                .map_err(Attempt::store)?
+            {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(Attempt::failed(
+                    Failure::TerminatorUnreachable,
+                    anyhow::anyhow!(
+                        "{subject} did not say it answers its challenge within {}s; is it \
+                         watching (WatchChallenges)?",
+                        ANSWER_WAIT.as_secs()
+                    ),
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
     }
 
     async fn finish(
@@ -572,7 +729,7 @@ impl Certificates {
         order: &mut instant_acme::Order,
         order_id: Uuid,
         claim: &Claim,
-        csr: &KeyAndCsr,
+        csr_der: &[u8],
     ) -> Result<String, Attempt> {
         let policy = RetryPolicy::new()
             .initial_delay(Duration::from_millis(250))
@@ -606,10 +763,7 @@ impl Certificates {
             }
         }
         if matches!(order_status(order), OrderStatus::Ready) {
-            order
-                .finalize_csr(csr.csr_der())
-                .await
-                .map_err(Attempt::acme)?;
+            order.finalize_csr(csr_der).await.map_err(Attempt::acme)?;
         }
         if matches!(order_status(order), OrderStatus::Invalid) {
             store::finish_order(&self.inner.pool, order_id, "invalid", "order_invalid")
@@ -701,9 +855,9 @@ impl Certificates {
     /// orders; nothing when it does not order by ACME.
     pub fn challenges(&self) -> StoredChallenges {
         match &self.inner.source {
-            Source::Acme(settings) => StoredChallenges {
+            Source::Acme(desired) => StoredChallenges {
                 pool: Some(self.inner.pool.clone()),
-                names: settings.desired.names.clone().into(),
+                names: desired.names.clone().into(),
             },
             _ => StoredChallenges {
                 pool: None,
@@ -717,7 +871,7 @@ impl Certificates {
         if !self.acme() {
             return None;
         }
-        store::http01(&self.inner.pool, token)
+        store::http01(&self.inner.pool, SUBJECT, token)
             .await
             .map_err(|error| tracing::warn!(error = %error, "https: HTTP-01 lookup failed"))
             .ok()
@@ -756,7 +910,7 @@ impl grund_tls::Challenges for StoredChallenges {
         if !self.names.iter().any(|n| n == name) {
             return None;
         }
-        let key_authorization = store::tls_alpn01(pool, name)
+        let key_authorization = store::tls_alpn01(pool, SUBJECT, name)
             .await
             .map_err(|error| tracing::warn!(error = %error, "https: TLS-ALPN-01 lookup failed"))
             .ok()
@@ -818,6 +972,52 @@ fn leaf(
     let validity = parsed.validity();
     let (not_before, not_after) = (at(validity.not_before)?, at(validity.not_after)?);
     Ok((der, not_before, not_after))
+}
+
+fn leaf_parts(chain_pem: &str) -> anyhow::Result<(Vec<String>, Vec<u8>)> {
+    let (der, _, _) = leaf(chain_pem)?;
+    let (_, parsed) = x509_parser::parse_x509_certificate(&der)
+        .map_err(|error| anyhow::anyhow!("parse the certificate: {error}"))?;
+    let names = parsed
+        .subject_alternative_name()
+        .ok()
+        .flatten()
+        .map(|extension| {
+            extension
+                .value
+                .general_names
+                .iter()
+                .filter_map(|name| match name {
+                    x509_parser::extensions::GeneralName::DNSName(dns) => {
+                        Some(dns.to_ascii_lowercase())
+                    }
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok((names, parsed.tbs_certificate.subject_pki.raw.to_vec()))
+}
+
+fn check_remote_chain(chain_pem: &str, csr_der: &[u8]) -> anyhow::Result<()> {
+    use x509_parser::prelude::FromDer;
+    let (_, csr) = x509_parser::certification_request::X509CertificationRequest::from_der(csr_der)
+        .map_err(|error| anyhow::anyhow!("parse the CSR: {error}"))?;
+    let (_, spki) = leaf_parts(chain_pem)?;
+    anyhow::ensure!(
+        spki == csr.certification_request_info.subject_pki.raw,
+        "the leaf is not for the key the terminator's CSR names"
+    );
+    Ok(())
+}
+
+fn chain_covers(chain_pem: &str, name: &str, served: Option<&Served>) -> bool {
+    match served {
+        Some(served) => served.covers(name),
+        None => leaf_parts(chain_pem)
+            .map(|(names, _)| names.iter().any(|n| n == &name.to_ascii_lowercase()))
+            .unwrap_or(false),
+    }
 }
 
 async fn renewal(
@@ -1069,7 +1269,7 @@ impl Component for CertificateWork {
     }
 
     async fn run(&self, cancellation: CancellationToken) -> Result<(), MadError> {
-        if !self.certificates.enabled() {
+        if !self.certificates.enabled() && !self.certificates.orders() {
             cancellation.cancelled().await;
             return Ok(());
         }

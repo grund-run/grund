@@ -74,6 +74,18 @@ works instead: set `GRUND_TLS_CERT_FILE` and `GRUND_TLS_KEY_FILE`
 (re-read when they change). Plain http stays on 127.0.0.1:8080. Every
 setting is in `grund serve --help` and [.env.example](.env.example).
 
+**A relay on another host.** Machines behind different NATs need a relay
+with a public address: `grund relay` on a host of its own, listed in the
+instance's `GRUND_RELAYS`. Its certificate comes from the instance, which
+orders it by ACME; the relay makes its key and answers TLS-ALPN-01 on its
+own 443, and the key never leaves its host. Enroll it once:
+`docker compose exec grund grund relays token relay.example.com` prints a
+one-time token for that host, which the relay takes as
+`GRUND_RELAY_ENROLLMENT_TOKEN` on its first start. From then on it signs
+every call with a key of its own, kept in `GRUND_RELAY_DATA_DIR`.
+`grund relays revoke relay.example.com` shuts it out. Every setting is in
+`grund relay --help`.
+
 What compose deliberately does not do:
 
 - **Backups.** Nothing backs up the `grund-postgres` and `grund-data`

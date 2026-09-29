@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+package grund.relay.v1;
+
+// Where a `grund relay` on a host of its own enrolls with its instance
+// (grund-docs design/traffic.md §5.7). The relay makes an Ed25519 key of its
+// own and presents it once, with a one-time grund_relay_ token the operator
+// minted for one relay host (`grund relays token <host>`). The host must be
+// in the instance's GRUND_RELAYS. From then on the relay signs every call to
+// its instance with that key, as a machine signs its control link: the
+// headers x-grund-relay (the relay id), x-grund-signed-at (Unix seconds,
+// within 300 s of the instance) and x-grund-signature (base64 of Ed25519
+// over "grund-agent-request-v1\n" || path || "\n" || signed_at || "\n" ||
+// lowercase hex SHA-256 of the body). A missing, stale or wrong signature,
+// an unknown relay, a revoked one and one whose host left GRUND_RELAYS are
+// all unauthenticated, alike.
+//
+// Errors: an unknown, used, expired or malformed token, and a token whose
+// host is no longer in GRUND_RELAYS, all fail identically as
+// permission_denied with the reason token_invalid. A bad signature, a key
+// that is not 32 bytes, or a signed_at more than 300 seconds from the
+// instance's clock is invalid_argument (proof_invalid), and the token stays
+// unused. A key already enrolled is failed_precondition (key_reused); too
+// many calls from one address is resource_exhausted (rate_limited).
+service RelayEnrollmentService {
+  // Enrolls the calling relay under its key, for the token's host. A relay
+  // enrolled for that host before is revoked by this: one host, one relay.
+  // Repeating the call with the same token and key while the token would
+  // still be valid returns the same answer.
+  rpc EnrollRelay(EnrollRelayRequest) returns (EnrollRelayResponse);
+}
+
+message EnrollRelayRequest {
+  // grund_relay_…
+  string token = 1;
+  // Ed25519, 32 bytes, generated on the relay's host and kept there.
+  bytes relay_public_key = 2;
+  // Seconds since the epoch; accepted within 300 seconds of the instance.
+  int64 signed_at_unix = 3;
+  // Ed25519 by the relay key over
+  // "grund-relay-enroll-v1\n" || origin || "\n" || signed_at_unix (decimal)
+  // || "\n" || lowercase hex SHA-256 of the token. origin is the instance's
+  // public origin, for example https://grund.example.com.
+  bytes signature = 4;
+}
+
+message EnrollRelayResponse {
+  // UUIDv7.
+  string relay_id = 1;
+  // The host this relay serves, from the token: the host of its URL in
+  // GRUND_RELAYS, and the only name it may ask a certificate for.
+  string host = 2;
+}
+
+// Attached as a detail to EnrollRelay errors: a stable reason a relay can
+// act on (token_invalid, proof_invalid, key_reused, rate_limited).
+message ErrorReason {
+  string reason = 1;
+}

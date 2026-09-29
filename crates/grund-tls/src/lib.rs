@@ -15,16 +15,22 @@
 //! - [`server_config`] builds a rustls configuration around a resolver.
 //! - [`TlsListener`] accepts TLS connections for axum and answers ACME
 //!   TLS-ALPN-01 (RFC 8737) from whatever [`Challenges`] it is given.
+//! - [`Answers`] holds TLS-ALPN-01 answers in memory, for a terminator on
+//!   another host that is handed them by its instance, and
+//!   [`answering_server_config`] serves them beside its certificate from
+//!   any rustls acceptor (the relay's own accept loop, QUIC).
 //!
 //! The TLS-ALPN-01 certificate carries a critical acmeIdentifier extension
 //! that rustls refuses to load through `ServerConfig::with_single_cert`
 //! (`UnsupportedCriticalExtension`, traffic.md §5.1), so it is handed out
 //! through a resolver that does not check it.
 
+pub mod answers;
 pub mod keys;
 pub mod listener;
 pub mod resolver;
 
+pub use answers::{Answers, answering_server_config};
 pub use keys::KeyAndCsr;
 pub use listener::{Challenges, NoChallenges, TlsListener};
 pub use resolver::{Files, Resolver, Served};
@@ -63,6 +69,23 @@ pub fn tls_alpn01_config(
     name: &str,
     key_authorization_digest: &[u8],
 ) -> anyhow::Result<Arc<rustls::ServerConfig>> {
+    let certified = tls_alpn01_key(name, key_authorization_digest)?;
+    let mut config = rustls::ServerConfig::builder_with_provider(provider())
+        .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
+        .context("TLS versions")?
+        .with_no_client_auth()
+        .with_cert_resolver(Arc::new(Fixed(Arc::new(certified))));
+    config.alpn_protocols = vec![ACME_TLS_ALPN.to_vec()];
+    Ok(Arc::new(config))
+}
+
+/// The TLS-ALPN-01 answer for `name`: a self-signed certificate whose
+/// critical acmeIdentifier extension holds `key_authorization_digest`, with
+/// its key.
+pub fn tls_alpn01_key(
+    name: &str,
+    key_authorization_digest: &[u8],
+) -> anyhow::Result<rustls::sign::CertifiedKey> {
     let key = rcgen::KeyPair::generate().context("generate the challenge key")?;
     let mut params = rcgen::CertificateParams::new(vec![name.to_string()])
         .context("the challenge certificate's name")?;
@@ -76,14 +99,10 @@ pub fn tls_alpn01_config(
         .map_err(|error| anyhow::anyhow!("the challenge key: {error}"))?;
     let signing =
         rustls::crypto::ring::sign::any_supported_type(&der).context("load the challenge key")?;
-    let certified = rustls::sign::CertifiedKey::new(vec![certificate.der().clone()], signing);
-    let mut config = rustls::ServerConfig::builder_with_provider(provider())
-        .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
-        .context("TLS versions")?
-        .with_no_client_auth()
-        .with_cert_resolver(Arc::new(Fixed(Arc::new(certified))));
-    config.alpn_protocols = vec![ACME_TLS_ALPN.to_vec()];
-    Ok(Arc::new(config))
+    Ok(rustls::sign::CertifiedKey::new(
+        vec![certificate.der().clone()],
+        signing,
+    ))
 }
 
 #[derive(Debug)]

@@ -151,6 +151,8 @@ pub enum Failure {
     /// The order did not finish within the attempt's deadline; it is
     /// resumed next time.
     TimedOut,
+    /// A remote terminator did not say it answers its challenge in time.
+    TerminatorUnreachable,
     /// Anything on this side: the database, sealing, a bad chain.
     Internal,
 }
@@ -164,6 +166,7 @@ impl Failure {
             Failure::AuthorizationFailed => "authorization_failed",
             Failure::Refused => "acme_refused",
             Failure::TimedOut => "order_timed_out",
+            Failure::TerminatorUnreachable => "terminator_unreachable",
             Failure::Internal => "internal",
         }
     }

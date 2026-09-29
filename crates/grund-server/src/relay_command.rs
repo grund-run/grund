@@ -13,8 +13,12 @@
 //! punching starts from that answer. So it runs on a host with a public
 //! address and nothing that rewrites the source of UDP 7842 in front of it.
 //!
-//! Its certificate comes from [`RelayTls`]: files today; a certificate the
-//! instance obtains for it later (grund-tls), as another variant.
+//! Its certificate comes from [`RelayTls`]: files, or its instance
+//! (`Instance`, grund-docs design/traffic.md §5.7). For the latter the relay
+//! enrolls its own key with the instance once
+//! (GRUND_RELAY_ENROLLMENT_TOKEN), makes its certificate key and a CSR in
+//! GRUND_RELAY_DATA_DIR, answers the CA's TLS-ALPN-01 on its own listener
+//! and renews when the instance asks ([`crate::relay_certificate`]).
 
 use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
@@ -25,7 +29,10 @@ use grund_net::relay::Relay;
 use notmad::{Component, ComponentInfo, MadError};
 use tokio_util::sync::CancellationToken;
 
-use crate::relay::{Callout, KeyPolicy, RelayAccess, sweep};
+use crate::{
+    relay::{Callout, KeyPolicy, RelayAccess, sweep},
+    relay_certificate::{CertificateClient, Instance, RelayKey},
+};
 
 /// Where a relay's TLS certificate comes from. The relay and its address
 /// discovery use the same one.
@@ -33,6 +40,11 @@ use crate::relay::{Callout, KeyPolicy, RelayAccess, sweep};
 pub enum RelayTls {
     /// A certificate chain and its key, PEM files, read at start.
     Files { cert: PathBuf, key: PathBuf },
+    /// A certificate its instance orders for it, served as it is renewed,
+    /// with the CA's TLS-ALPN-01 answered from `answers`. Beside `grund
+    /// serve` this is the instance's own resolver and nothing is answered
+    /// here: the instance's HTTPS answers for both names.
+    Instance(crate::relay_certificate::InstanceTls),
 }
 
 impl RelayTls {
@@ -45,6 +57,7 @@ impl RelayTls {
                 &std::fs::read(key).with_context(|| format!("read {}", key.display()))?,
             )
             .context("the relay's certificate"),
+            RelayTls::Instance(tls) => tls.server_config(),
         }
     }
 }
@@ -64,13 +77,30 @@ pub struct RelayCommand {
 
     /// The relay's certificate chain (PEM), for the name machines reach it
     /// by. It must chain to a CA the machines trust: iroh refuses a
-    /// self-signed one.
+    /// self-signed one. Unset: the instance orders the relay's certificate
+    /// (the relay must be enrolled).
     #[arg(long, env = "GRUND_RELAY_TLS_CERT_FILE")]
-    pub tls_cert_file: PathBuf,
+    pub tls_cert_file: Option<PathBuf>,
 
     /// The private key of --tls-cert-file (PEM).
     #[arg(long, env = "GRUND_RELAY_TLS_KEY_FILE")]
-    pub tls_key_file: PathBuf,
+    pub tls_key_file: Option<PathBuf>,
+
+    /// Where the relay keeps its own key, its enrollment and its certificate
+    /// (each file 0600). The default is inside the image's /var/lib/grund,
+    /// which belongs to the image's user, so a volume there is writable.
+    #[arg(
+        long,
+        env = "GRUND_RELAY_DATA_DIR",
+        default_value = "/var/lib/grund/relay"
+    )]
+    pub data_dir: PathBuf,
+
+    /// A one-time grund_relay_ token from `grund relays token <host>` on the
+    /// instance: the relay enrolls its key with it at its first start, and
+    /// ignores it once enrolled.
+    #[arg(long, env = "GRUND_RELAY_ENROLLMENT_TOKEN", hide_env_values = true)]
+    pub enrollment_token: Option<String>,
 
     /// The instance whose machines this relay serves, e.g.
     /// https://grund.example.com. Plain http only for loopback.
@@ -78,9 +108,10 @@ pub struct RelayCommand {
     pub grund_url: String,
 
     /// The instance's GRUND_RELAY_ACCESS_TOKEN, presented when the relay
-    /// asks which keys to admit.
+    /// asks which keys to admit. Deprecated: an enrolled relay signs that
+    /// question with its own key instead, and needs no shared token.
     #[arg(long, env = "GRUND_RELAY_ACCESS_TOKEN", hide_env_values = true)]
-    pub access_token: String,
+    pub access_token: Option<String>,
 
     /// Seconds between checks of every connected key, which cut a revoked
     /// machine's open connection.
@@ -112,10 +143,23 @@ impl RelayCommand {
             origin.https || origin.is_loopback(),
             "GRUND_URL must be https, except on loopback: the relay sends its access token there"
         );
+        if let Some(token) = &self.access_token {
+            anyhow::ensure!(
+                token.len() >= 32,
+                "GRUND_RELAY_ACCESS_TOKEN must be at least 32 characters"
+            );
+        }
         anyhow::ensure!(
-            self.access_token.len() >= 32,
-            "GRUND_RELAY_ACCESS_TOKEN must be at least 32 characters"
+            self.tls_cert_file.is_some() == self.tls_key_file.is_some(),
+            "GRUND_RELAY_TLS_CERT_FILE and GRUND_RELAY_TLS_KEY_FILE must be set together"
         );
+        if let Some(token) = &self.enrollment_token {
+            anyhow::ensure!(
+                token.starts_with(crate::services::relays::TOKEN_PREFIX),
+                "GRUND_RELAY_ENROLLMENT_TOKEN must be a grund_relay_ token from `grund relays \
+                 token <host>`"
+            );
+        }
         anyhow::ensure!(
             !self.sweep.is_zero(),
             "GRUND_RELAY_SWEEP_SECONDS must be at least 1"
@@ -123,11 +167,63 @@ impl RelayCommand {
         Ok(())
     }
 
-    /// Where the certificate comes from.
+    /// The instance's origin, as the relay enrolls with it.
+    pub fn instance(&self) -> String {
+        crate::config::PublicOrigin::parse(self.grund_url.trim_end_matches('/'))
+            .map(|origin| origin.serialized)
+            .unwrap_or_else(|| self.grund_url.trim_end_matches('/').to_string())
+    }
+
+    /// The relay's enrollment: the one in GRUND_RELAY_DATA_DIR, or a new one
+    /// made with GRUND_RELAY_ENROLLMENT_TOKEN. None when it has neither and
+    /// does not need one (files and the shared token). Refuses to start,
+    /// naming the variable, when it needs one and cannot get it.
+    pub async fn enrollment(&self) -> anyhow::Result<Option<RelayKey>> {
+        let instance = self.instance();
+        if let Some(key) = RelayKey::load(&self.data_dir).with_context(|| {
+            format!(
+                "the relay's enrollment in GRUND_RELAY_DATA_DIR {}",
+                self.data_dir.display()
+            )
+        })? {
+            anyhow::ensure!(
+                key.instance == instance,
+                "the relay in GRUND_RELAY_DATA_DIR {} is enrolled with {}, not GRUND_URL {instance}; \
+                 give it a new data directory to enroll with this one",
+                self.data_dir.display(),
+                key.instance
+            );
+            if self.enrollment_token.is_some() {
+                tracing::info!(relay_id = %key.relay_id, "relay: enrolled already; GRUND_RELAY_ENROLLMENT_TOKEN is not used");
+            }
+            return Ok(Some(key));
+        }
+        let Some(token) = &self.enrollment_token else {
+            anyhow::ensure!(
+                self.tls_cert_file.is_some() && self.access_token.is_some(),
+                "the relay is not enrolled with its instance: set GRUND_RELAY_ENROLLMENT_TOKEN (from \
+                 `grund relays token <host>` on the instance), or give it GRUND_RELAY_TLS_CERT_FILE \
+                 and the deprecated GRUND_RELAY_ACCESS_TOKEN"
+            );
+            return Ok(None);
+        };
+        let http =
+            crate::relay_certificate::http_client(Some(crate::relay_certificate::CALL_TIMEOUT))?;
+        let key = RelayKey::enroll(&self.data_dir, &instance, token, &http)
+            .await
+            .context("GRUND_RELAY_ENROLLMENT_TOKEN: the instance did not enroll this relay")?;
+        tracing::info!(relay_id = %key.relay_id, host = %key.host, "relay: enrolled with the instance");
+        Ok(Some(key))
+    }
+
+    /// Where the certificate comes from: the files, or the instance.
     pub fn tls(&self) -> RelayTls {
-        RelayTls::Files {
-            cert: self.tls_cert_file.clone(),
-            key: self.tls_key_file.clone(),
+        match (&self.tls_cert_file, &self.tls_key_file) {
+            (Some(cert), Some(key)) => RelayTls::Files {
+                cert: cert.clone(),
+                key: key.clone(),
+            },
+            _ => RelayTls::Instance(Default::default()),
         }
     }
 }
@@ -135,18 +231,31 @@ impl RelayCommand {
 /// Runs `grund relay` until SIGTERM or SIGINT.
 pub async fn run(command: RelayCommand) -> anyhow::Result<()> {
     command.validate()?;
-    let tls = command.tls().server_config()?;
-    let policy = Callout::new(&command.grund_url, &command.access_token)?;
+    let enrollment = command.enrollment().await?;
+    let relay_tls = command.tls();
+    let tls = relay_tls.server_config()?;
+    let policy = match &enrollment {
+        Some(key) => Callout::signed(&command.grund_url, key.clone())?,
+        None => Callout::new(
+            &command.grund_url,
+            command.access_token.as_deref().unwrap_or_default(),
+        )?,
+    };
     let grace = command.shutdown_grace;
-    notmad::Mad::builder()
-        .add(StandaloneRelay {
-            command,
-            tls,
-            policy,
-        })
-        .cancellation(Some(grace))
-        .run()
-        .await?;
+    let mut mad = notmad::Mad::builder();
+    mad.add(StandaloneRelay {
+        command: command.clone(),
+        tls,
+        policy,
+    });
+    if let (RelayTls::Instance(instance_tls), Some(key)) = (relay_tls, enrollment) {
+        mad.add(CertificateClient::new(
+            Instance::new(key)?,
+            instance_tls,
+            &command.data_dir,
+        ));
+    }
+    mad.cancellation(Some(grace)).run().await?;
     Ok(())
 }
 
@@ -249,7 +358,67 @@ mod tests {
         assert_eq!(relay.quic_listen, "0.0.0.0:7842".parse().unwrap());
         assert_eq!(relay.sweep, Duration::from_secs(2));
         relay.validate().unwrap();
-        assert!(parse(&["--grund-url", "https://grund.example.com"]).is_err());
+        assert!(matches!(relay.tls(), RelayTls::Files { .. }));
+        assert!(parse(&["--access-token", TOKEN]).is_err());
+    }
+
+    #[test]
+    fn without_certificate_files_the_instance_orders_the_relays_certificate() {
+        let relay = parse(&["--grund-url", "https://grund.example.com/"]).unwrap();
+        relay.validate().unwrap();
+        assert!(matches!(relay.tls(), RelayTls::Instance(_)));
+        assert_eq!(relay.instance(), "https://grund.example.com");
+        assert_eq!(relay.data_dir, PathBuf::from("/var/lib/grund/relay"));
+        let half = parse(&[
+            "--grund-url",
+            "https://grund.example.com",
+            "--tls-cert-file",
+            "c.pem",
+        ])
+        .unwrap();
+        assert!(half.validate().is_err());
+        let not_a_token = parse(&[
+            "--grund-url",
+            "https://grund.example.com",
+            "--enrollment-token",
+            "grund_join_abc",
+        ])
+        .unwrap();
+        let error = not_a_token.validate().unwrap_err().to_string();
+        assert!(error.contains("GRUND_RELAY_ENROLLMENT_TOKEN"), "{error}");
+        assert!(
+            !error.contains("grund_join_abc"),
+            "the token is never echoed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_relay_that_is_not_enrolled_and_has_no_token_is_refused_naming_it() {
+        let dir =
+            std::env::temp_dir().join(format!("grund-relay-cmd-{}", uuid::Uuid::now_v7().simple()));
+        let relay = parse(&[
+            "--grund-url",
+            "https://grund.example.com",
+            "--data-dir",
+            dir.to_str().unwrap(),
+        ])
+        .unwrap();
+        let error = format!("{:#}", relay.enrollment().await.unwrap_err());
+        assert!(error.contains("GRUND_RELAY_ENROLLMENT_TOKEN"), "{error}");
+        let legacy = parse(&[
+            "--grund-url",
+            "https://grund.example.com",
+            "--data-dir",
+            dir.to_str().unwrap(),
+            "--tls-cert-file",
+            "c.pem",
+            "--tls-key-file",
+            "k.pem",
+            "--access-token",
+            TOKEN,
+        ])
+        .unwrap();
+        assert!(legacy.enrollment().await.unwrap().is_none());
     }
 
     #[test]

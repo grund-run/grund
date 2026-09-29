@@ -218,6 +218,42 @@ impl Pebble {
         Ok(Arc::new(roots))
     }
 
+    pub async fn root_ders(
+        &self,
+    ) -> anyhow::Result<Vec<rustls::pki_types::CertificateDer<'static>>> {
+        let mut api =
+            super::client::Origin::parse(&format!("https://localhost:{}", self.management_port))?;
+        let mut trust = rustls::RootCertStore::empty();
+        for cert in
+            rustls::pki_types::CertificateDer::pem_slice_iter(&std::fs::read(&self.ca_file)?)
+        {
+            trust.add(cert?)?;
+        }
+        api.roots = Some(Arc::new(trust));
+        let response = super::client::send(&api, "GET", "/roots/0", &[], None).await?;
+        anyhow::ensure!(
+            response.status == 200,
+            "pebble /roots/0: {}",
+            response.status
+        );
+        Ok(
+            rustls::pki_types::CertificateDer::pem_slice_iter(&response.body)
+                .collect::<Result<Vec<_>, _>>()?,
+        )
+    }
+
+    pub fn acme_settings(&self) -> Vec<(String, String)> {
+        vec![
+            ("GRUND_ACME_DIRECTORY".into(), self.directory.clone()),
+            (
+                "GRUND_ACME_CA_FILE".into(),
+                self.ca_file.to_string_lossy().into_owned(),
+            ),
+            ("GRUND_ACME_RETRY_BASE".into(), "1".into()),
+            ("GRUND_TLS_REFRESH_INTERVAL".into(), "1".into()),
+        ]
+    }
+
     pub fn grund_settings(&self, domain: &str) -> Vec<(String, String)> {
         vec![
             ("GRUND_DOMAIN".into(), domain.into()),

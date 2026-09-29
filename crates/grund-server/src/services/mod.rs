@@ -17,7 +17,9 @@ pub mod networks;
 pub mod organisations;
 pub mod outbox;
 pub mod passwords;
+pub mod relays;
 pub mod sessions;
+pub mod terminators;
 
 pub use accounts::AccountsState;
 pub use entitlements::EntitlementsState;
@@ -25,4 +27,5 @@ pub use limits::LimitsState;
 pub use machines::MachinesState;
 pub use organisations::OrganisationsState;
 pub use passwords::PasswordsState;
+pub use relays::RelaysState;
 pub use sessions::SessionsState;

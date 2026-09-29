@@ -9,9 +9,12 @@
 //!   [...]}` to `{"admitted": [...]}`: what `grund relay` sends when a
 //!   machine connects, and every sweep of the keys connected to it.
 //!
-//! Both need `Authorization: Bearer <GRUND_RELAY_ACCESS_TOKEN>`, compared in
-//! constant time. Without the token configured they answer 404, as if they
-//! did not exist.
+//! Both need an enrolled relay's signature (`x-grund-relay`, grund.relay.v1:
+//! the relay's own key, revocable one relay at a time), or `Authorization:
+//! Bearer <GRUND_RELAY_ACCESS_TOKEN>`, compared in constant time. The shared
+//! token is deprecated: it cannot be revoked for one relay, and whoever
+//! holds it is every relay. Without a signature or the token configured they
+//! answer 404, as if they did not exist.
 
 use std::str::FromStr;
 
@@ -44,7 +47,40 @@ fn refused(status: StatusCode, code: &str) -> Response {
     (status, Json(json!({ "code": code }))).into_response()
 }
 
-fn unauthorised(state: &State, headers: &HeaderMap) -> Option<Response> {
+async fn unauthorised(
+    state: &State,
+    headers: &HeaderMap,
+    path: &str,
+    body: &[u8],
+) -> Option<Response> {
+    use crate::services::relays::RelaysState;
+    if let Some(relay) = headers.get("x-grund-relay").and_then(|v| v.to_str().ok()) {
+        let header = |name: &str| {
+            headers
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_string()
+        };
+        return match state
+            .relays()
+            .authenticate(
+                relay,
+                &header("x-grund-signed-at"),
+                &header("x-grund-signature"),
+                path,
+                body,
+            )
+            .await
+        {
+            Ok(Some(_)) => None,
+            Ok(None) => Some(refused(StatusCode::UNAUTHORIZED, "unauthenticated")),
+            Err(error) => {
+                tracing::warn!(error = %format!("{error:#}"), "relay access: could not check a relay's signature");
+                Some(refused(StatusCode::SERVICE_UNAVAILABLE, "unavailable"))
+            }
+        };
+    }
     let Some(expected) = state.config.relay.relay_access_token.as_deref() else {
         return Some(refused(StatusCode::NOT_FOUND, "not_found"));
     };
@@ -60,8 +96,8 @@ fn unauthorised(state: &State, headers: &HeaderMap) -> Option<Response> {
     }
 }
 
-async fn one(AxumState(state): AxumState<State>, headers: HeaderMap) -> Response {
-    if let Some(response) = unauthorised(&state, &headers) {
+async fn one(AxumState(state): AxumState<State>, headers: HeaderMap, body: Bytes) -> Response {
+    if let Some(response) = unauthorised(&state, &headers, "/relay/v1/access", &body).await {
         return response;
     }
     let Some(key) = headers
@@ -82,7 +118,8 @@ async fn one(AxumState(state): AxumState<State>, headers: HeaderMap) -> Response
 }
 
 async fn many(AxumState(state): AxumState<State>, headers: HeaderMap, body: Bytes) -> Response {
-    if let Some(response) = unauthorised(&state, &headers) {
+    if let Some(response) = unauthorised(&state, &headers, "/relay/v1/access/current", &body).await
+    {
         return response;
     }
     let Ok(request) = serde_json::from_slice::<serde_json::Value>(&body) else {

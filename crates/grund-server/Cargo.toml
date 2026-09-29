@@ -58,8 +58,10 @@ tower.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
 uuid.workspace = true
-x509-parser = "0.18"
+webpki-roots = "1"
+x509-parser = { version = "0.18", features = ["verify"] }
 
 [dev-dependencies]
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
 grund-proto = { workspace = true, features = ["client"] }
 http-body-util = "0.1"
