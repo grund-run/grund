@@ -42,6 +42,7 @@
 
 pub mod api;
 pub mod cgroup;
+pub mod doctor;
 pub mod image;
 pub mod jail;
 pub mod net;

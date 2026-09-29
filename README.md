@@ -93,8 +93,14 @@ What compose deliberately does not do:
 
 One binary, `grund`, with subcommands: `serve` (the control plane),
 `migrate`, `init` (generate the instance's secrets), `setup-link` (the
-owner's one-time link, run with `serve`'s settings) and `probe` (a health
-check for the scratch image). `grund serve --help` lists every setting with
+owner's one-time link, run with `serve`'s settings), `doctor` and `probe`
+(a health check for the scratch image).
+
+`grund doctor instance` (in compose: `docker compose exec grund /grund
+doctor instance`) and `grund doctor machine` (on a machine, as root) check
+without changing anything, one line per check (`ok`, `warn`, `fail` or
+`skip`, its name, what was seen, and a `fix:` line), or one JSON document
+with `--json`. The exit code is 1 when any check fails. `grund serve --help` lists every setting with
 its environment variable.
 
 grund contacts no service you have not configured: no telemetry, no update

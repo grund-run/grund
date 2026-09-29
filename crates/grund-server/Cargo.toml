@@ -35,6 +35,7 @@ http-body-util = "0.1"
 httpdate = "1"
 instant-acme = { version = "=0.8.5", default-features = false, features = ["ring", "time", "x509-parser"] }
 lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "smtp-transport", "tokio1-rustls-tls"] }
+libc = "0.2"
 mire.workspace = true
 mire-sagas.workspace = true
 minijinja = { version = "2.24", features = ["json"] }

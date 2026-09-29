@@ -4,6 +4,7 @@ mod fixtures;
 mod api;
 mod certificates;
 mod csrf;
+mod doctor;
 mod health;
 mod insights;
 mod lifecycle;

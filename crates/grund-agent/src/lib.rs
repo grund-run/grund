@@ -8,6 +8,7 @@
 //! VMs that state asks for, through a [`vm::VmRuntime`].
 
 pub mod agent;
+pub mod doctor;
 pub mod join;
 pub mod net;
 pub mod resolved;

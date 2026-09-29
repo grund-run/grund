@@ -5,6 +5,9 @@
 //! - `init`: generate a fresh instance's secrets, keeping any that exist;
 //! - `setup-link`: print the one-time link that creates a fresh instance's
 //!   owner, with no mail (run where `serve` runs, with its settings);
+//! - `doctor`: a read-only check of an instance (`doctor instance`, with
+//!   `serve`'s settings) or of a machine (`doctor machine`), naming each
+//!   problem and its fix; exits 1 when a check fails;
 //! - `probe`: exit 0 when an instance's readiness answers 200, for container
 //!   health checks (the image has no shell or curl);
 //! - `join`: register this machine with an instance, with a one-time setup
@@ -63,6 +66,10 @@ enum Command {
         about = "Print a one-time link that creates this instance's owner account. Run it where grund serve runs, with the same settings, before any account exists"
     )]
     SetupLink(Box<grund_server::config::ServeConfig>),
+    #[command(
+        about = "Check this instance or machine without changing it: each problem and what to do. Exits 1 when a check fails"
+    )]
+    Doctor(DoctorCommand),
     #[command(about = "Exit 0 when the instance at --address answers 200 on --path, 1 otherwise")]
     Probe(probe::ProbeArgs),
     #[command(about = "Register this machine with a grund instance, using a one-time setup code")]
@@ -73,6 +80,54 @@ enum Command {
         about = "Run a relay for an instance's machines: iroh's relay and QUIC address discovery, admitting only the keys the instance does"
     )]
     Relay(grund_server::relay_command::RelayCommand),
+}
+
+#[derive(clap::Args)]
+struct DoctorCommand {
+    #[arg(
+        long,
+        global = true,
+        help = "Print one JSON document instead of one line per check"
+    )]
+    json: bool,
+
+    #[command(subcommand)]
+    target: DoctorTarget,
+}
+
+#[derive(Subcommand)]
+enum DoctorTarget {
+    #[command(
+        about = "The instance: run where grund serve runs, with its settings (docker compose exec grund /grund doctor instance)"
+    )]
+    Instance(Box<grund_server::config::ServeConfig>),
+    #[command(
+        about = "This machine, for grund's agent: prerequisites, the agent, its instance and the clock. As root, to answer every check"
+    )]
+    Machine(grund_agent::doctor::MachineArgs),
+}
+
+async fn doctor(command: DoctorCommand) -> anyhow::Result<()> {
+    let report = match command.target {
+        DoctorTarget::Instance(config) => grund_server::doctor::run(*config).await,
+        DoctorTarget::Machine(args) => {
+            grund_agent::doctor::run(
+                &args,
+                grund_vm::doctor::checks(),
+                grund_server::health::revision(),
+            )
+            .await
+        }
+    };
+    if command.json {
+        println!("{}", report.json());
+    } else {
+        print!("{}", report.text());
+    }
+    if report.failed() {
+        std::process::exit(1);
+    }
+    Ok(())
 }
 
 #[derive(clap::Args)]
@@ -151,7 +206,8 @@ fn firecracker(command: &AgentCommand) -> anyhow::Result<grund_vm::Firecracker> 
 async fn main() -> anyhow::Result<()> {
     grund_server::health::set_revision(env!("GRUND_BUILD_REVISION"));
     let cli = Cli::parse();
-    init_tracing(&cli);
+    let to_stderr = matches!(cli.command, Command::Doctor(_) | Command::SetupLink(_));
+    init_tracing(&cli, to_stderr);
     match cli.command {
         Command::Serve(mut config) => {
             config.validate()?;
@@ -165,6 +221,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Init(args) => grund_server::secrets::init(&args),
         Command::SetupLink(config) => grund_server::setup_link::run(*config).await,
         Command::Probe(args) => probe::run(&args),
+        Command::Doctor(command) => doctor(command).await,
         Command::Join(args) => grund_agent::join::run(&args).await,
         Command::Relay(command) => grund_server::relay_command::run(command).await,
         Command::Agent(command) => match command.vm_runtime.as_str() {
@@ -179,13 +236,24 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-fn init_tracing(cli: &Cli) {
+fn init_tracing(cli: &Cli, to_stderr: bool) {
     let filter = EnvFilter::try_new(&cli.log).unwrap_or_else(|_| EnvFilter::new("grund=info,warn"));
     let registry = tracing_subscriber::registry().with(filter);
+    let writer = move || -> Box<dyn std::io::Write> {
+        if to_stderr {
+            Box::new(std::io::stderr())
+        } else {
+            Box::new(std::io::stdout())
+        }
+    };
     if cli.log_format == "json" {
-        registry.with(fmt::layer().json()).init();
+        registry
+            .with(fmt::layer().json().with_writer(writer))
+            .init();
     } else {
-        registry.with(fmt::layer().compact()).init();
+        registry
+            .with(fmt::layer().compact().with_writer(writer))
+            .init();
     }
 }
 

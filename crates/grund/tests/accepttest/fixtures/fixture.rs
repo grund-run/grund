@@ -315,6 +315,10 @@ impl Fixture {
     }
 
     pub async fn running(&self, args: &[&str]) -> anyhow::Result<Ran> {
+        self.running_with(args, &[]).await
+    }
+
+    pub async fn running_with(&self, args: &[&str], extra: &[(&str, &str)]) -> anyhow::Result<Ran> {
         anyhow::ensure!(
             self.lab.is_none() && self.log_path.is_some(),
             "commands run beside a spawned local instance"
@@ -322,6 +326,11 @@ impl Fixture {
         let mut command = Command::new(env!("CARGO_BIN_EXE_grund"));
         command.args(args).env_clear();
         for (name, value) in &self.settings {
+            if !extra.iter().any(|(key, _)| key == name) {
+                command.env(name, value);
+            }
+        }
+        for (name, value) in extra {
             command.env(name, value);
         }
         let output = tokio::time::timeout(
@@ -332,6 +341,7 @@ impl Fixture {
         .with_context(|| format!("grund {args:?} did not finish within 30 s"))???;
         Ok(Ran {
             success: output.status.success(),
+            code: output.status.code(),
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         })
@@ -416,11 +426,22 @@ impl Fixture {
 
 pub struct Ran {
     pub success: bool,
+    pub code: Option<i32>,
     pub stdout: String,
     pub stderr: String,
 }
 
 impl Ran {
+    pub fn line(&self, status: &str, check: &str) -> Option<String> {
+        self.stdout
+            .lines()
+            .find(|line| {
+                let mut words = line.split_whitespace();
+                words.next() == Some(status) && words.next() == Some(check)
+            })
+            .map(str::to_string)
+    }
+
     pub fn setup_link_path(&self) -> Option<String> {
         self.stdout
             .split_whitespace()

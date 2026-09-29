@@ -12,9 +12,11 @@ license = "AGPL-3.0-only"
 anyhow.workspace = true
 base64.workspace = true
 buffa = { version = "=0.9.2", features = ["json"] }
+chrono.workspace = true
 clap.workspace = true
 ed25519-dalek = "2"
 getrandom.workspace = true
+grund-domain.workspace = true
 grund-net.workspace = true
 grund-proto.workspace = true
 hex.workspace = true

@@ -8,6 +8,7 @@
 pub mod accounts;
 pub mod agents;
 pub mod certificates;
+pub mod doctor;
 pub mod machines;
 pub mod networks;
 pub mod organisations;

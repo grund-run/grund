@@ -24,6 +24,7 @@ pub mod certificates;
 pub mod config;
 pub mod crypto;
 pub mod db;
+pub mod doctor;
 pub mod extension;
 pub mod health;
 pub mod keys;
