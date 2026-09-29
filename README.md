@@ -38,9 +38,9 @@ a sign-off ([CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ```bash
 git clone https://git.kjuulh.io/grund/grund.git && cd grund
-docker compose up -d     # builds this checkout; then http://localhost:8080
-GRUND_DOMAIN=grund.example.com docker compose up -d     # or https, on 443
-docker compose exec grund /grund setup-link             # the owner's one-time link
+docker compose up -d --wait     # builds this checkout; then http://localhost:8080
+GRUND_DOMAIN=grund.example.com docker compose up -d --wait     # or https, on 443
+docker compose exec grund /grund setup-link                    # the owner's one-time link
 ```
 
 That runs grund with PostgreSQL and NATS (wake-ups for background work).
