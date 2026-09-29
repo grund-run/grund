@@ -230,6 +230,58 @@ pub struct MachineFacts {
     pub fleet_machine_id: String,
 }
 
+/// The most ports one machine may declare open on its private network.
+pub const MAX_DECLARED_PORTS: usize = 64;
+
+/// A transport a declared port is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Transport {
+    Tcp,
+    Udp,
+}
+
+impl Transport {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Transport::Tcp => "tcp",
+            Transport::Udp => "udp",
+        }
+    }
+}
+
+/// A port a machine accepts connections on from the other members of its
+/// private network (grund-docs design/network.md §11.4). Everything not
+/// declared is closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct NetworkPort {
+    pub transport: Transport,
+    pub port: u16,
+}
+
+/// Why a set of ports was refused.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PortsError {
+    #[error("port 0 cannot be declared")]
+    Zero,
+    #[error("declare at most {MAX_DECLARED_PORTS} ports")]
+    TooMany,
+}
+
+/// The ports a machine declares, sorted and without repeats.
+pub fn declared_ports(ports: Vec<NetworkPort>) -> Result<Vec<NetworkPort>, PortsError> {
+    if ports.iter().any(|p| p.port == 0) {
+        return Err(PortsError::Zero);
+    }
+    let mut ports = ports;
+    ports.sort();
+    ports.dedup();
+    if ports.len() > MAX_DECLARED_PORTS {
+        return Err(PortsError::TooMany);
+    }
+    Ok(ports)
+}
+
 /// Who asks to revoke, as the service established it from the caller's
 /// memberships.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -291,6 +343,13 @@ pub enum MachineEvent {
         provider_machine_id: String,
         linked_at: DateTime<Utc>,
     },
+    /// The ports the machine accepts from its network's other members, all
+    /// of them: the set replaces the one before.
+    PortsDeclared {
+        ports: Vec<NetworkPort>,
+        declared_by: Uuid,
+        declared_at: DateTime<Utc>,
+    },
 }
 
 /// A lease in force.
@@ -313,6 +372,9 @@ pub struct Machine {
     pub lease: Option<Lease>,
     #[serde(default)]
     pub provider_machine_id: Option<String>,
+    /// What it accepts from its network's other members; nothing else.
+    #[serde(default)]
+    pub ports: Vec<NetworkPort>,
 }
 
 impl Machine {
@@ -375,6 +437,7 @@ impl mire::Aggregate for Machine {
             MachineEvent::LeaseEnded { .. } => {
                 self.state = Some(MachineState::Returning);
                 self.lease = None;
+                self.ports.clear();
             }
             MachineEvent::Reregistered {
                 key, retired_key, ..
@@ -395,6 +458,10 @@ impl mire::Aggregate for Machine {
                 }
                 self.state = Some(MachineState::Revoked);
                 self.lease = None;
+                self.ports.clear();
+            }
+            MachineEvent::PortsDeclared { ports, .. } => {
+                self.ports = ports.clone();
             }
         }
     }
@@ -449,6 +516,15 @@ pub enum MachineCommand {
     Revoke {
         actor: Uuid,
         authority: Authority,
+        at: DateTime<Utc>,
+    },
+    /// Declares the ports the machine accepts from its network's other
+    /// members, replacing those declared before. Only the organisation whose
+    /// pool the machine is in now may; the same set again changes nothing.
+    DeclarePorts {
+        actor: Uuid,
+        organisation_id: Uuid,
+        ports: Vec<NetworkPort>,
         at: DateTime<Utc>,
     },
 }
@@ -591,6 +667,24 @@ impl mire::Command for MachineCommand {
                 Ok(vec![MachineEvent::Revoked {
                     revoked_by: actor,
                     revoked_at: at,
+                }])
+            }
+            MachineCommand::DeclarePorts {
+                actor,
+                organisation_id,
+                ports,
+                at,
+            } => {
+                if machine.organisation() != Some(organisation_id) {
+                    return Err(MachineError::NotAllowed);
+                }
+                if machine.ports == ports {
+                    return Ok(Vec::new());
+                }
+                Ok(vec![MachineEvent::PortsDeclared {
+                    ports,
+                    declared_by: actor,
+                    declared_at: at,
                 }])
             }
         }
@@ -780,6 +874,73 @@ mod tests {
                 }
             ),
             Err(MachineError::NotReturning)
+        );
+    }
+
+    fn tcp(port: u16) -> NetworkPort {
+        NetworkPort {
+            transport: Transport::Tcp,
+            port,
+        }
+    }
+
+    #[test]
+    fn only_the_organisation_whose_pool_it_is_in_declares_its_ports_and_a_lease_end_closes_them() {
+        let org = Uuid::now_v7();
+        let other = Uuid::now_v7();
+        let declare = |organisation_id, ports| MachineCommand::DeclarePorts {
+            actor: Uuid::now_v7(),
+            organisation_id,
+            ports,
+            at: at(),
+        };
+        let mut own = registered(Pool::Organisation {
+            organisation_id: org,
+        });
+        assert_eq!(
+            run(&mut own, declare(other, vec![tcp(22)])),
+            Err(MachineError::NotAllowed)
+        );
+        assert_eq!(run(&mut own, declare(org, vec![tcp(22)])).unwrap().len(), 1);
+        assert_eq!(own.ports, vec![tcp(22)]);
+        assert!(
+            run(&mut own, declare(org, vec![tcp(22)]))
+                .unwrap()
+                .is_empty()
+        );
+
+        let mut leased = registered(Pool::Management);
+        assert_eq!(
+            run(&mut leased, declare(org, vec![tcp(80)])),
+            Err(MachineError::NotAllowed)
+        );
+        lease(&mut leased, org).unwrap();
+        run(&mut leased, declare(org, vec![tcp(80)])).unwrap();
+        run(
+            &mut leased,
+            MachineCommand::EndLease {
+                actor: Uuid::now_v7(),
+                at: at(),
+            },
+        )
+        .unwrap();
+        assert!(leased.ports.is_empty(), "the next lessee inherits nothing");
+    }
+
+    #[test]
+    fn declared_ports_are_sorted_once_each_never_zero_and_at_most_sixty_four() {
+        let udp = |port| NetworkPort {
+            transport: Transport::Udp,
+            port,
+        };
+        assert_eq!(
+            declared_ports(vec![tcp(443), udp(53), tcp(22), tcp(443)]),
+            Ok(vec![tcp(22), tcp(443), udp(53)])
+        );
+        assert_eq!(declared_ports(vec![tcp(0)]), Err(PortsError::Zero));
+        assert_eq!(
+            declared_ports((1..=65).map(tcp).collect()),
+            Err(PortsError::TooMany)
         );
     }
 

@@ -72,7 +72,29 @@ pub struct Member {
     /// before names were carried have none, and encode as they did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// What the machine accepts from the other members: nothing else gets
+    /// in ([`crate::filter`]). Empty, or absent in older lists, is closed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ports: Vec<Port>,
 }
+
+/// A transport of a declared port.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Transport {
+    Tcp,
+    Udp,
+}
+
+/// A port a member accepts connections on from the other members.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct Port {
+    pub transport: Transport,
+    pub port: u16,
+}
+
+/// The most ports a member may declare, as grund allows.
+pub const MAX_PORTS: usize = 64;
 
 /// A membership list as it travels: the list's bytes, and the signature over
 /// [`SIGNING_PREFIX`] followed by exactly those bytes.
@@ -117,6 +139,9 @@ pub enum MembershipError {
     /// Two members share a name.
     #[error("the name {0} is given to two members")]
     DuplicateName(String),
+    /// A member declares port 0, or more than [`MAX_PORTS`].
+    #[error("member {0} declares port 0 or more than 64 ports")]
+    BadPorts(String),
     /// A relay's URL is not an https URL (http only on loopback).
     #[error("the relay URL {0} is not an https URL")]
     BadRelay(String),
@@ -187,6 +212,9 @@ impl MembershipList {
                 .map_err(|_| MembershipError::BadEndpointId(m.machine_id.clone()))?;
             if !keys.insert(id) {
                 return Err(MembershipError::DuplicateEndpointId(m.endpoint_id.clone()));
+            }
+            if m.ports.len() > MAX_PORTS || m.ports.iter().any(|p| p.port == 0) {
+                return Err(MembershipError::BadPorts(m.machine_id.clone()));
             }
             if let Some(name) = &m.name {
                 if !is_label(name) {
@@ -291,12 +319,14 @@ mod tests {
                     endpoint_id: id(1),
                     slot: 1,
                     name: Some("a".into()),
+                    ports: vec![],
                 },
                 Member {
                     machine_id: "m_b".into(),
                     endpoint_id: id(2),
                     slot: 2,
                     name: Some("b".into()),
+                    ports: vec![],
                 },
             ],
         }
@@ -315,6 +345,7 @@ mod tests {
                 endpoint_id: "e".into(),
                 slot: 1,
                 name: None,
+                ports: vec![],
             }],
         };
         assert_eq!(

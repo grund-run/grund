@@ -325,12 +325,14 @@ mod tests {
                     endpoint_id: crate::key::endpoint_id(&[1; 32]).to_string(),
                     slot: 1,
                     name: Some("web-1".into()),
+                    ports: vec![],
                 },
                 Member {
                     machine_id: "m_b".into(),
                     endpoint_id: crate::key::endpoint_id(&[2; 32]).to_string(),
                     slot: 2,
                     name: Some("db".into()),
+                    ports: vec![],
                 },
             ],
         }

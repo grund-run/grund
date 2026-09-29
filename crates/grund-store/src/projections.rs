@@ -327,7 +327,7 @@ pub async fn apply_machine(
             sqlx::query(
                 "UPDATE grund_machines SET state = 'returning', lease_id = NULL, \
                    lessee_organisation_id = NULL, lease_name = NULL, leased_at = NULL, \
-                   pool_organisation_id = NULL, pool_name = NULL \
+                   pool_organisation_id = NULL, pool_name = NULL, network_ports = '[]' \
                  WHERE machine_id = $1",
             )
             .bind(machine_id)
@@ -362,11 +362,19 @@ pub async fn apply_machine(
                 .execute(&mut *connection)
                 .await?;
         }
+        MachineEvent::PortsDeclared { ports, .. } => {
+            sqlx::query("UPDATE grund_machines SET network_ports = $2 WHERE machine_id = $1")
+                .bind(machine_id)
+                .bind(sqlx::types::Json(ports))
+                .execute(&mut *connection)
+                .await?;
+        }
         MachineEvent::Revoked { revoked_at, .. } => {
             sqlx::query(
                 "UPDATE grund_machines SET state = 'revoked', public_key = NULL, revoked_at = $2, \
                    lease_id = NULL, lessee_organisation_id = NULL, lease_name = NULL, \
-                   leased_at = NULL, pool_organisation_id = NULL, pool_name = NULL \
+                   leased_at = NULL, pool_organisation_id = NULL, pool_name = NULL, \
+                   network_ports = '[]' \
                  WHERE machine_id = $1",
             )
             .bind(machine_id)

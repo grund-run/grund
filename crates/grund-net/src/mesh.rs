@@ -18,8 +18,11 @@
 //! machine whose uplink address changed binds a new one with the same key,
 //! and its peers find it again through the relay.
 //!
-//! Not built yet: the closed-by-default filter on declared ports, epoch
-//! gossip between members, and containers' addresses in the /64.
+//! Past those checks, a packet reaches `grund0` only through the
+//! closed-by-default filter ([`crate::filter`]): a port this machine
+//! declares in the list, a reply to its own flow, or ICMPv6 IPv6 needs.
+//!
+//! Not built yet: containers' addresses in the /64.
 
 use std::{
     collections::HashMap,
@@ -87,6 +90,7 @@ struct Inner {
     view: RwLock<Option<View>>,
     tun: tokio::sync::OnceCell<Tun>,
     peers: Mutex<HashMap<EndpointId, Peer>>,
+    filter: crate::filter::Filter,
     counters: Counters,
 }
 
@@ -121,6 +125,8 @@ struct Counters {
     lists_refused_stale: AtomicU64,
     endpoints_attached: AtomicU64,
     closed_silent: AtomicU64,
+    dropped_closed_in: AtomicU64,
+    admitted_replies: AtomicU64,
 }
 
 /// What a mesh is doing, for status output and tests.
@@ -167,6 +173,7 @@ impl Mesh {
                 view: RwLock::new(None),
                 tun: tokio::sync::OnceCell::new(),
                 peers: Mutex::new(HashMap::new()),
+                filter: crate::filter::Filter::default(),
                 counters: Counters::default(),
             }),
         }
@@ -338,6 +345,8 @@ impl Mesh {
             ("lists_refused_stale", &c.lists_refused_stale),
             ("endpoints_attached", &c.endpoints_attached),
             ("closed_silent", &c.closed_silent),
+            ("dropped_closed_in", &c.dropped_closed_in),
+            ("admitted_replies", &c.admitted_replies),
         ]
         .into_iter()
         .map(|(k, v)| (k, v.load(Relaxed)))
@@ -491,6 +500,7 @@ impl Mesh {
                 c.dropped_no_member.fetch_add(1, Relaxed);
                 continue;
             };
+            self.inner.filter.note_outbound(packet, Instant::now());
             self.send(target, packet);
         }
     }
@@ -588,9 +598,14 @@ impl Mesh {
             let Some(packet) = reassembler.push(datagram, Instant::now()) else {
                 continue;
             };
-            let verdict = {
+            let (verdict, open) = {
                 let view = self.inner.view.read().expect("view lock");
-                match view.as_ref() {
+                let open: Vec<crate::membership::Port> = view
+                    .as_ref()
+                    .and_then(|v| v.list.members.iter().find(|m| m.slot == v.own_slot))
+                    .map(|m| m.ports.clone())
+                    .unwrap_or_default();
+                let verdict = match view.as_ref() {
                     Some(v) => match v.list.member_by_id(&sender) {
                         None => Verdict::NotMember,
                         Some(m) => match ipv6_addrs(&packet) {
@@ -609,10 +624,21 @@ impl Mesh {
                         },
                     },
                     None => Verdict::NotMember,
-                }
+                };
+                (verdict, open)
             };
             match verdict {
                 Verdict::Deliver => {
+                    match self.inner.filter.inbound(&packet, &open, Instant::now()) {
+                        crate::filter::Inbound::Closed => {
+                            c.dropped_closed_in.fetch_add(1, Relaxed);
+                            continue;
+                        }
+                        crate::filter::Inbound::Reply => {
+                            c.admitted_replies.fetch_add(1, Relaxed);
+                        }
+                        _ => {}
+                    }
                     c.received.fetch_add(1, Relaxed);
                     let _ = tun.write(&packet).await;
                 }

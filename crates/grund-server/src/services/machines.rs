@@ -816,6 +816,28 @@ impl Machines {
         .await
     }
 
+    /// Sets the ports a machine accepts from its private network's other
+    /// members, as `organisation_id`, the organisation whose pool it is in.
+    pub async fn declare_ports(
+        &self,
+        actor: Uuid,
+        machine_id: Uuid,
+        organisation_id: Uuid,
+        ports: Vec<grund_domain::machine::NetworkPort>,
+    ) -> anyhow::Result<ChangeOutcome> {
+        self.change(
+            actor,
+            machine_id,
+            MachineCommand::DeclarePorts {
+                actor,
+                organisation_id,
+                ports,
+                at: Utc::now(),
+            },
+        )
+        .await
+    }
+
     async fn change(
         &self,
         actor: Uuid,

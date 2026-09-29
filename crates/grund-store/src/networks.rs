@@ -186,6 +186,7 @@ pub struct CandidateRow {
     pub machine_id: Uuid,
     pub public_key: String,
     pub name: String,
+    pub network_ports: sqlx::types::Json<Vec<grund_domain::machine::NetworkPort>>,
 }
 
 pub async fn candidates(
@@ -193,7 +194,8 @@ pub async fn candidates(
     organisation_id: Uuid,
 ) -> Result<Vec<CandidateRow>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT machine_id, public_key, COALESCE(pool_name, name) AS name FROM grund_machines \
+        "SELECT machine_id, public_key, COALESCE(pool_name, name) AS name, network_ports \
+         FROM grund_machines \
          WHERE pool_organisation_id = $1 AND state IN ('active', 'leased') \
            AND public_key IS NOT NULL ORDER BY registered_at, machine_id",
     )

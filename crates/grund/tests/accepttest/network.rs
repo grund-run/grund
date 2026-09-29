@@ -1114,3 +1114,145 @@ async fn names_resolve_through_systemd_resolved_which_the_agent_points_at_the_st
     eprintln!("resolved routed ~grund.internal on grund0 to the stub; reverted on SIGTERM");
     Ok(())
 }
+
+const ECHO_SERVER: &str = r#"
+import socket, sys
+s = socket.socket(socket.AF_INET6)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("::", int(sys.argv[1])))
+s.listen(16)
+while True:
+    c, _ = s.accept()
+    c.sendall(c.recv(64))
+    c.close()
+"#;
+
+const ECHO_CLIENT: &str = r#"
+import socket, sys
+c = socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=2)
+c.sendall(b"hello")
+sys.exit(0 if c.recv(64) == b"hello" else 1)
+"#;
+
+impl Net {
+    async fn echoes(&self, from: &Machine, to: &Machine, port: u16) -> bool {
+        self.lab
+            .succeeds(
+                from.node,
+                &[
+                    "python3",
+                    "-c",
+                    ECHO_CLIENT,
+                    &to.address().to_string(),
+                    &port.to_string(),
+                ],
+            )
+            .await
+    }
+
+    async fn declare(&self, machine: &Machine, ports: Value) -> anyhow::Result<()> {
+        self.when
+            .calling(
+                &format!("{MACHINES}/DeclareMachinePorts"),
+                &json!({"organisation": self.owner, "machineId": machine.id(), "ports": ports})
+                    .to_string(),
+            )
+            .await?;
+        self.then.status(200)?;
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn a_member_reaches_only_the_ports_another_declares_and_a_change_applies_at_once()
+-> anyhow::Result<()> {
+    let Some(net) = a_lab().await? else {
+        return Ok(());
+    };
+    let a = net.join("a", "a").await?;
+    let b = net.join("b", "b").await?;
+    anyhow::ensure!(
+        net.reaches_by_name(&a, &b, Duration::from_secs(30))
+            .await
+            .is_some()
+    );
+    for port in ["8080", "8081"] {
+        net.lab.spawn(
+            "b",
+            &["python3", "-c", ECHO_SERVER, port],
+            &[],
+            &format!("echo-{port}.log"),
+        )?;
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let listening = net.lab.run_async("b", &["ss", "-ltn"]).await?;
+    anyhow::ensure!(
+        String::from_utf8_lossy(&listening.stdout).contains(":8081"),
+        "{listening:?}"
+    );
+
+    anyhow::ensure!(
+        !net.echoes(&a, &b, 8080).await,
+        "an undeclared port answered"
+    );
+    anyhow::ensure!(
+        eventually(Duration::from_secs(3), || async {
+            b.counter("dropped_closed_in") > 0
+        })
+        .await
+        .is_some(),
+        "b did not count what it dropped: {}",
+        b.status()
+    );
+
+    let agent_b = net.lab.pid_of("agent-b.log");
+    let epoch = b.epoch();
+    net.declare(
+        &b,
+        json!([{"transport": "NETWORK_TRANSPORT_TCP", "port": 8080}]),
+    )
+    .await?;
+    anyhow::ensure!(
+        net.then.json()?["machine"]["networkPorts"]
+            == json!([{"transport": "NETWORK_TRANSPORT_TCP", "port": 8080}]),
+        "{}",
+        net.then.body()?
+    );
+    let opened = eventually(Duration::from_secs(10), || net.echoes(&a, &b, 8080)).await;
+    anyhow::ensure!(
+        opened.is_some(),
+        "the declared port never opened: {}",
+        b.status()
+    );
+    anyhow::ensure!(b.epoch() > epoch, "the change did not come as a new list");
+    anyhow::ensure!(
+        net.lab.pid_of("agent-b.log") == agent_b,
+        "the agent was restarted"
+    );
+    anyhow::ensure!(
+        eventually(Duration::from_secs(3), || async {
+            a.counter("admitted_replies") > 0
+        })
+        .await
+        .is_some(),
+        "a, which declares nothing, took b's replies as something else: {}",
+        a.status()
+    );
+    anyhow::ensure!(
+        !net.echoes(&a, &b, 8081).await,
+        "a port next to the declared one answered"
+    );
+    anyhow::ensure!(
+        net.pings(&a, &b.fqdn()).await,
+        "ping stopped working once ports were declared"
+    );
+
+    net.declare(&b, json!([])).await?;
+    let closed = eventually(Duration::from_secs(10), || async {
+        !net.echoes(&a, &b, 8080).await
+    })
+    .await;
+    anyhow::ensure!(closed.is_some(), "closing the port did not close it");
+    eprintln!("declared port open {opened:?} after the call; closed again {closed:?} after");
+    Ok(())
+}

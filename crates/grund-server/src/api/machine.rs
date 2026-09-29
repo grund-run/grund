@@ -7,22 +7,25 @@ use buffa::{EnumValue, MessageField};
 use buffa_types::google::protobuf::Timestamp;
 use chrono::{DateTime, Utc};
 use connectrpc::{ConnectError, RequestContext, Response, ServiceRequest, ServiceResult};
-use grund_domain::machine::{Authority, TokenKind};
+use grund_domain::machine::{
+    Authority, NetworkPort, PortsError, TokenKind, Transport, declared_ports,
+};
 use grund_proto::grund::{
     agent::v1 as agent,
     machine::v1::{
         CreateJoinTokenRequest, CreateJoinTokenResponse, CreateRegistrationTokenRequest,
         CreateRegistrationTokenResponse, CreateReregistrationTokenRequest,
-        CreateReregistrationTokenResponse, EndLeaseRequest, EndLeaseResponse, GetMachineRequest,
-        GetMachineResponse, GetOrganisationKeyRequest, GetOrganisationKeyResponse,
-        GetPoolMachineRequest, GetPoolMachineResponse, Lease, LeaseMachineRequest,
-        LeaseMachineResponse, ListMachinesRequest, ListMachinesResponse, ListPoolMachinesRequest,
+        CreateReregistrationTokenResponse, DeclareMachinePortsRequest, DeclareMachinePortsResponse,
+        EndLeaseRequest, EndLeaseResponse, GetMachineRequest, GetMachineResponse,
+        GetOrganisationKeyRequest, GetOrganisationKeyResponse, GetPoolMachineRequest,
+        GetPoolMachineResponse, Lease, LeaseMachineRequest, LeaseMachineResponse,
+        ListMachinesRequest, ListMachinesResponse, ListPoolMachinesRequest,
         ListPoolMachinesResponse, ListVmsRequest, ListVmsResponse, Machine, MachineService,
-        MachineState, ManagementPoolService, ProviderStep as ProviderStepProto,
-        ProvisionPoolMachineRequest, ProvisionPoolMachineResponse, RebuildPoolMachineRequest,
-        RebuildPoolMachineResponse, RevokeMachineRequest, RevokeMachineResponse,
-        RevokePoolMachineRequest, RevokePoolMachineResponse, RunVmRequest, RunVmResponse,
-        StopVmRequest, StopVmResponse, Vm,
+        MachineState, ManagementPoolService, NetworkPort as NetworkPortProto, NetworkTransport,
+        ProviderStep as ProviderStepProto, ProvisionPoolMachineRequest,
+        ProvisionPoolMachineResponse, RebuildPoolMachineRequest, RebuildPoolMachineResponse,
+        RevokeMachineRequest, RevokeMachineResponse, RevokePoolMachineRequest,
+        RevokePoolMachineResponse, RunVmRequest, RunVmResponse, StopVmRequest, StopVmResponse, Vm,
     },
 };
 use grund_store::{agents::VmRow, machines::MachineRow, organisations::Membership};
@@ -148,8 +151,47 @@ fn machine(row: &MachineRow, view: View, own_slug: Option<&str>) -> Machine {
             .as_ref()
             .map(|c| MessageField::from(capabilities(&c.0)))
             .unwrap_or_default(),
+        network_ports: row
+            .network_ports
+            .0
+            .iter()
+            .map(|p| NetworkPortProto {
+                transport: match p.transport {
+                    Transport::Tcp => NetworkTransport::NETWORK_TRANSPORT_TCP,
+                    Transport::Udp => NetworkTransport::NETWORK_TRANSPORT_UDP,
+                }
+                .into(),
+                port: u32::from(p.port),
+                ..Default::default()
+            })
+            .collect(),
         ..Default::default()
     }
+}
+
+fn declared(
+    ports: impl Iterator<Item = (EnumValue<NetworkTransport>, u32)>,
+) -> Result<Vec<NetworkPort>, ConnectError> {
+    let ports = ports
+        .map(|(transport, port)| {
+            let transport = match transport.as_known() {
+                Some(NetworkTransport::NETWORK_TRANSPORT_TCP) => Transport::Tcp,
+                Some(NetworkTransport::NETWORK_TRANSPORT_UDP) => Transport::Udp,
+                _ => {
+                    return Err(ConnectError::invalid_argument(
+                        "a port's transport is tcp or udp",
+                    ));
+                }
+            };
+            let port = u16::try_from(port)
+                .map_err(|_| ConnectError::invalid_argument("a port is 1 to 65535"))?;
+            Ok(NetworkPort { transport, port })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    declared_ports(ports).map_err(|error| match error {
+        PortsError::Zero => ConnectError::invalid_argument("a port is 1 to 65535"),
+        PortsError::TooMany => ConnectError::invalid_argument("declare at most 64 ports"),
+    })
 }
 
 fn provider_step(step: ProviderStep) -> (EnumValue<ProviderStepProto>, String) {
@@ -688,6 +730,42 @@ impl MachineService for MachineApi {
                 .map_err(internal)?,
         )?;
         Response::ok(RevokeMachineResponse {
+            machine: MessageField::from(machine(&row, View::Organisation, Some(&membership.slug))),
+            ..Default::default()
+        })
+    }
+
+    async fn declare_machine_ports(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, DeclareMachinePortsRequest>,
+    ) -> ServiceResult<DeclareMachinePortsResponse> {
+        let caller = caller(&ctx)?;
+        let membership = self
+            .member(&caller, request.organisation, Access::Manage)
+            .await?;
+        let ports = declared(request.ports.iter().map(|p| (p.transport, p.port)))?;
+        let row = self.pool_machine(&membership, request.machine_id).await?;
+        let outcome = self
+            .state
+            .machines()
+            .declare_ports(
+                caller.account_id,
+                row.machine_id,
+                membership.organisation_id,
+                ports,
+            )
+            .await
+            .map_err(internal)?;
+        let row = match outcome {
+            ChangeOutcome::NotAllowed => {
+                return Err(ConnectError::failed_precondition(
+                    "that machine is not in this organisation's pool",
+                ));
+            }
+            outcome => changed(outcome)?,
+        };
+        Response::ok(DeclareMachinePortsResponse {
             machine: MessageField::from(machine(&row, View::Organisation, Some(&membership.slug))),
             ..Default::default()
         })

@@ -617,6 +617,7 @@ mod tests {
                 endpoint_id: grund_net::key::endpoint_id(&[1; 32]).to_string(),
                 slot: 1,
                 name: Some("m1".into()),
+                ports: vec![],
             }],
         }
     }

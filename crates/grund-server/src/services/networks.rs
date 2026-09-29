@@ -28,7 +28,7 @@ use std::{
 
 use chrono::{DateTime, Duration, Utc};
 use grund_domain::machine::{KeyPurpose, prefix};
-use grund_net::membership::{Member, MembershipList, Relay};
+use grund_net::membership::{Member, MembershipList, Port, Relay, Transport};
 use grund_store::networks::{self, NetworkRow, SlotRow};
 use uuid::Uuid;
 
@@ -107,9 +107,9 @@ impl Networks {
             now,
         );
         let prefix: Ipv6Addr = network.prefix.parse()?;
-        let names: HashMap<Uuid, &str> = candidates
+        let names: HashMap<Uuid, (&str, Vec<Port>)> = candidates
             .iter()
-            .map(|c| (c.machine_id, c.name.as_str()))
+            .map(|c| (c.machine_id, (c.name.as_str(), ports(&c.network_ports))))
             .collect();
         let relays = self.relays();
         if plan.is_empty()
@@ -246,15 +246,32 @@ impl Networks {
     }
 }
 
-fn members(slots: &[SlotRow], names: &HashMap<Uuid, &str>) -> Vec<Member> {
+fn members(slots: &[SlotRow], names: &HashMap<Uuid, (&str, Vec<Port>)>) -> Vec<Member> {
     slots
         .iter()
         .filter(|s| s.freed_at.is_none())
-        .map(|s| Member {
-            machine_id: s.machine_id.to_string(),
-            endpoint_id: s.endpoint_id.clone(),
-            slot: s.slot as u16,
-            name: names.get(&s.machine_id).map(|n| n.to_string()),
+        .map(|s| {
+            let entry = names.get(&s.machine_id);
+            Member {
+                machine_id: s.machine_id.to_string(),
+                endpoint_id: s.endpoint_id.clone(),
+                slot: s.slot as u16,
+                name: entry.map(|(n, _)| n.to_string()),
+                ports: entry.map(|(_, p)| p.clone()).unwrap_or_default(),
+            }
+        })
+        .collect()
+}
+
+fn ports(declared: &[grund_domain::machine::NetworkPort]) -> Vec<Port> {
+    declared
+        .iter()
+        .map(|p| Port {
+            transport: match p.transport {
+                grund_domain::machine::Transport::Tcp => Transport::Tcp,
+                grund_domain::machine::Transport::Udp => Transport::Udp,
+            },
+            port: p.port,
         })
         .collect()
 }

@@ -83,6 +83,15 @@ service MachineService {
   // Own machines only; a leased machine is failed_precondition.
   rpc RevokeMachine(RevokeMachineRequest) returns (RevokeMachineResponse);
 
+  // Sets the ports the machine accepts from the other members of the
+  // organisation's private network, replacing those set before. Everything
+  // else is closed. For a machine in the organisation's pool, its own or
+  // leased to it; the same set again changes nothing. A lease that ends
+  // closes them all.
+  rpc DeclareMachinePorts(DeclareMachinePortsRequest) returns (DeclareMachinePortsResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+
   // The key the organisation's machines trust for its desired-state
   // documents. Made on first use.
   rpc GetOrganisationKey(GetOrganisationKeyRequest) returns (GetOrganisationKeyResponse) {
@@ -131,6 +140,23 @@ message Machine {
   google.protobuf.Timestamp last_seen_at = 14;
   // What its agent last reported it can do.
   grund.agent.v1.Capabilities capabilities = 15;
+  // What it accepts from its private network's other members, sorted.
+  // Nothing else gets in.
+  repeated NetworkPort network_ports = 16;
+}
+
+// The transport of a declared port.
+enum NetworkTransport {
+  NETWORK_TRANSPORT_UNSPECIFIED = 0;
+  NETWORK_TRANSPORT_TCP = 1;
+  NETWORK_TRANSPORT_UDP = 2;
+}
+
+// A port a machine accepts connections on from its network's other members.
+message NetworkPort {
+  NetworkTransport transport = 1;
+  // 1 to 65535.
+  uint32 port = 2;
 }
 
 // A VM an organisation runs on one of its machines.
@@ -313,6 +339,17 @@ message RevokeMachineRequest {
 }
 
 message RevokeMachineResponse {
+  Machine machine = 1;
+}
+
+message DeclareMachinePortsRequest {
+  string organisation = 1;
+  string machine_id = 2;
+  // All the ports it accepts, at most 64; empty closes it.
+  repeated NetworkPort ports = 3;
+}
+
+message DeclareMachinePortsResponse {
   Machine machine = 1;
 }
 

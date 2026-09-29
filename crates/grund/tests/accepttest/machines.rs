@@ -2200,3 +2200,105 @@ async fn without_a_relay_token_there_is_no_access_check() -> anyhow::Result<()> 
     then.status(404)?;
     Ok(())
 }
+
+#[tokio::test]
+async fn declared_ports_reach_the_signed_list_and_only_the_owning_organisation_declares_them()
+-> anyhow::Result<()> {
+    let Some((given, when, then)) = testcase_with_mail().await? else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let (key, enrolled) = a_member(&when, &then, &owner.username, "db-1").await?;
+    let machine_id = enrolled["machineId"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let declare = |organisation: &str, ports: Value| {
+        json!({"organisation": organisation, "machineId": machine_id, "ports": ports}).to_string()
+    };
+    let procedure = format!("{MACHINES}/DeclareMachinePorts");
+
+    when.calling(
+        &procedure,
+        &declare(
+            &owner.username,
+            json!([
+                {"transport": "NETWORK_TRANSPORT_TCP", "port": 5432},
+                {"transport": "NETWORK_TRANSPORT_TCP", "port": 22},
+                {"transport": "NETWORK_TRANSPORT_UDP", "port": 5432},
+                {"transport": "NETWORK_TRANSPORT_TCP", "port": 22},
+            ]),
+        ),
+    )
+    .await?;
+    then.status(200)?;
+    anyhow::ensure!(
+        json(&then)?["machine"]["networkPorts"]
+            == json!([
+                {"transport": "NETWORK_TRANSPORT_TCP", "port": 22},
+                {"transport": "NETWORK_TRANSPORT_TCP", "port": 5432},
+                {"transport": "NETWORK_TRANSPORT_UDP", "port": 5432},
+            ]),
+        "sorted, once each: {}",
+        then.body()?
+    );
+    signed_agent_call(
+        &when,
+        &machine_id,
+        &key,
+        "GetMembership",
+        r#"{"sinceEpoch": "0"}"#,
+    )
+    .await?;
+    then.status(200)?;
+    let list = membership(&then, &enrolled["network"]["key"])?;
+    let ports: Vec<(grund_net::membership::Transport, u16)> = list
+        .members
+        .iter()
+        .find(|m| m.machine_id == machine_id)
+        .map(|m| m.ports.iter().map(|p| (p.transport, p.port)).collect())
+        .unwrap_or_default();
+    use grund_net::membership::Transport::{Tcp, Udp};
+    anyhow::ensure!(
+        ports == vec![(Tcp, 22), (Tcp, 5432), (Udp, 5432)],
+        "the signed list carries the declared ports: {list:?}"
+    );
+
+    for bad in [
+        json!([{"transport": "NETWORK_TRANSPORT_TCP", "port": 0}]),
+        json!([{"transport": "NETWORK_TRANSPORT_TCP", "port": 70000}]),
+        json!([{"transport": "NETWORK_TRANSPORT_UNSPECIFIED", "port": 22}]),
+        json!(
+            (1..=65)
+                .map(|p| json!({"transport": "NETWORK_TRANSPORT_TCP", "port": p}))
+                .collect::<Vec<_>>()
+        ),
+    ] {
+        when.calling(&procedure, &declare(&owner.username, bad.clone()))
+            .await?;
+        then.status(400)?;
+    }
+
+    let (intruder_given, intruder_when, intruder_then) = given.testcase.another_browser();
+    let intruder = intruder_given.a_signed_in_account().await?;
+    intruder_when
+        .calling(&procedure, &declare(&intruder.username, json!([])))
+        .await?;
+    intruder_then.status(404)?;
+    intruder_when
+        .calling(&procedure, &declare(&owner.username, json!([])))
+        .await?;
+    intruder_then.status_in(&[403, 404])?;
+
+    when.calling(&procedure, &declare(&owner.username, json!([])))
+        .await?;
+    then.status(200)?;
+    anyhow::ensure!(
+        json(&then)?["machine"]["networkPorts"]
+            .as_array()
+            .is_none_or(|a| a.is_empty()),
+        "{}",
+        then.body()?
+    );
+    Ok(())
+}

@@ -195,6 +195,10 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
         Requirement::Session,
     ),
     (
+        "/grund.machine.v1.MachineService/DeclareMachinePorts",
+        Requirement::Session,
+    ),
+    (
         "/grund.machine.v1.MachineService/GetOrganisationKey",
         Requirement::Session,
     ),
@@ -710,6 +714,13 @@ mod tests {
             _: RequestContext,
             _: ServiceRequest<'_, machine::RevokeMachineRequest>,
         ) -> ServiceResult<machine::RevokeMachineResponse> {
+            unreachable!()
+        }
+        async fn declare_machine_ports(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, machine::DeclareMachinePortsRequest>,
+        ) -> ServiceResult<machine::DeclareMachinePortsResponse> {
             unreachable!()
         }
         async fn get_organisation_key(
