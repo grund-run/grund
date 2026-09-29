@@ -1256,3 +1256,99 @@ async fn a_member_reaches_only_the_ports_another_declares_and_a_change_applies_a
     eprintln!("declared port open {opened:?} after the call; closed again {closed:?} after");
     Ok(())
 }
+
+#[tokio::test]
+async fn a_revocation_reaches_a_member_that_cannot_reach_grund_through_the_members_it_talks_to()
+-> anyhow::Result<()> {
+    let Some(net) = a_lab().await? else {
+        return Ok(());
+    };
+    let a = net.join("a", "a").await?;
+    let b = net.join("b", "b").await?;
+    let c = net.join("c", "c").await?;
+    for (from, to) in [(&c, &a), (&c, &b), (&a, &b)] {
+        anyhow::ensure!(
+            net.reaches_by_name(from, to, Duration::from_secs(30))
+                .await
+                .is_some(),
+            "{} never reached {}",
+            from.node,
+            to.node
+        );
+    }
+    let cut = net.lab.work.join("cut-grund.nft");
+    std::fs::write(
+        &cut,
+        format!(
+            "table inet cut {{\n  chain out {{\n    type filter hook output priority 0; policy accept;\n    \
+             ip daddr {} tcp dport 443 drop\n  }}\n}}\n",
+            crate::accepttest::fixtures::netlab::LIGHTHOUSE
+        ),
+    )?;
+    let out = net
+        .lab
+        .run_async("c", &["nft", "-f", &cut.to_string_lossy()])
+        .await?;
+    anyhow::ensure!(out.status.success(), "{out:?}");
+    net.lab.spawn(
+        "c",
+        &["ping", "-6", "-i", "0.2", &a.address().to_string()],
+        &[],
+        "ping-c-a.log",
+    )?;
+    let failures = || {
+        net.log("agent-c.log")
+            .matches("GetMembership failed")
+            .count()
+    };
+    let before = failures();
+    anyhow::ensure!(
+        eventually(Duration::from_secs(30), || async { failures() > before })
+            .await
+            .is_some(),
+        "c still reaches grund"
+    );
+    let epoch = c.epoch();
+
+    let revoked_at = Instant::now();
+    net.when
+        .calling(
+            &format!("{MACHINES}/RevokeMachine"),
+            &json!({"organisation": net.owner, "machineId": b.id()}).to_string(),
+        )
+        .await?;
+    net.then.status(200)?;
+    let heard = eventually(Duration::from_secs(10), || async {
+        c.epoch() > epoch && c.peer(&b).is_null()
+    })
+    .await;
+    anyhow::ensure!(
+        heard.is_some(),
+        "c never heard of the revocation: {}\n{}",
+        c.status(),
+        net.log("agent-c.log")
+    );
+    anyhow::ensure!(
+        c.status()["lists_from_members"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 1
+            && net.log("agent-c.log").contains("handed on by a member"),
+        "c's new list did not come by gossip: {}",
+        c.status()
+    );
+    anyhow::ensure!(
+        heard.unwrap() <= Duration::from_secs(5),
+        "gossip took {heard:?}, past the 5 s bound"
+    );
+    anyhow::ensure!(
+        !net.pings(&c, &b.address().to_string()).await,
+        "c still reaches b"
+    );
+    anyhow::ensure!(net.pings(&c, &a.fqdn()).await, "c lost a");
+    eprintln!(
+        "c, cut off from grund, dropped b {heard:?} after the revocation ({:?} in all)",
+        revoked_at.elapsed()
+    );
+    Ok(())
+}

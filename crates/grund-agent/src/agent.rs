@@ -38,6 +38,13 @@ pub const KNOWN_FEATURES: &[&str] = &["machines"];
 /// The largest document the agent decodes (apps.md §15).
 pub const MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
 
+/// The deadline the agent asks the instance to give each call, in
+/// milliseconds: longer than GetMembership's 10 s long-poll, so a poll that
+/// waits its full time is not cut short by the instance's own 10 s default,
+/// and shorter than the agent's 15 s HTTP timeout, so the instance answers
+/// first.
+pub const CALL_DEADLINE_MS: u64 = 14_000;
+
 /// The file keeping what the agent applied last.
 pub const APPLIED_FILE: &str = "applied.json";
 
@@ -187,6 +194,7 @@ impl Link {
             .post(format!("{}{path}", self.origin))
             .header("Content-Type", "application/proto")
             .header("Connect-Protocol-Version", "1")
+            .header("Connect-Timeout-Ms", CALL_DEADLINE_MS.to_string())
             .header("x-grund-machine", &self.machine_id)
             .header("x-grund-signed-at", signed_at.to_string())
             .header("x-grund-signature", signature)

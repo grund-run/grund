@@ -22,6 +22,10 @@
 //! closed-by-default filter ([`crate::filter`]): a port this machine
 //! declares in the list, a reply to its own flow, or ICMPv6 IPv6 needs.
 //!
+//! Members also hand each other grund's newest signed list over their
+//! connections ([`crate::gossip`], [`Mesh::gossip`]); the mesh's owner
+//! checks each before using it.
+//!
 //! Not built yet: containers' addresses in the /64.
 
 use std::{
@@ -91,6 +95,7 @@ struct Inner {
     tun: tokio::sync::OnceCell<Tun>,
     peers: Mutex<HashMap<EndpointId, Peer>>,
     filter: crate::filter::Filter,
+    gossip: std::sync::OnceLock<crate::gossip::GossipLink>,
     counters: Counters,
 }
 
@@ -127,6 +132,7 @@ struct Counters {
     closed_silent: AtomicU64,
     dropped_closed_in: AtomicU64,
     admitted_replies: AtomicU64,
+    gossip_sent: AtomicU64,
 }
 
 /// What a mesh is doing, for status output and tests.
@@ -174,6 +180,7 @@ impl Mesh {
                 tun: tokio::sync::OnceCell::new(),
                 peers: Mutex::new(HashMap::new()),
                 filter: crate::filter::Filter::default(),
+                gossip: std::sync::OnceLock::new(),
                 counters: Counters::default(),
             }),
         }
@@ -210,6 +217,14 @@ impl Mesh {
     /// all.
     pub fn set_relays(&self, relays: Vec<RelayUrl>) {
         *self.inner.relays.write().expect("relays lock") = relays;
+    }
+
+    /// Makes the mesh gossip ([`crate::gossip`]): hand `link.outgoing` to
+    /// every member it connects to and to every connected member when it
+    /// changes, and pass what members send to `link.incoming`. Set it
+    /// before [`Mesh::run`]; a second call is ignored.
+    pub fn gossip(&self, link: crate::gossip::GossipLink) {
+        let _ = self.inner.gossip.set(link);
     }
 
     /// The relays the mesh dials members through now.
@@ -280,10 +295,12 @@ impl Mesh {
 
         let reader = tokio::spawn(self.clone().tun_to_peers());
         let watchdog = tokio::spawn(self.clone().close_silent_connections());
+        let pusher = tokio::spawn(self.clone().push_newer_lists());
         loop {
             if lists.changed().await.is_err() {
                 reader.abort();
                 watchdog.abort();
+                pusher.abort();
                 return Ok(());
             }
             let Some(list) = lists.borrow_and_update().clone() else {
@@ -347,6 +364,7 @@ impl Mesh {
             ("closed_silent", &c.closed_silent),
             ("dropped_closed_in", &c.dropped_closed_in),
             ("admitted_replies", &c.admitted_replies),
+            ("gossip_sent", &c.gossip_sent),
         ]
         .into_iter()
         .map(|(k, v)| (k, v.load(Relaxed)))
@@ -432,6 +450,35 @@ impl Mesh {
         *view = Some(View { list, own_slot });
         self.inner.counters.lists_applied.fetch_add(1, Relaxed);
         Ok(())
+    }
+
+    async fn push_newer_lists(self) {
+        let Some(link) = self.inner.gossip.get() else {
+            return;
+        };
+        let mut outgoing = link.outgoing.clone();
+        while outgoing.changed().await.is_ok() {
+            let Some(list) = outgoing.borrow_and_update().clone() else {
+                continue;
+            };
+            let connections: Vec<Connection> = self
+                .inner
+                .peers
+                .lock()
+                .expect("peers lock")
+                .values()
+                .flat_map(|p| p.connections.iter().cloned())
+                .filter(|c| c.close_reason().is_none())
+                .collect();
+            for conn in connections {
+                let (list, mesh) = (list.clone(), self.clone());
+                tokio::spawn(async move {
+                    if crate::gossip::send(&conn, &list).await.is_ok() {
+                        mesh.inner.counters.gossip_sent.fetch_add(1, Relaxed);
+                    }
+                });
+            }
+        }
     }
 
     async fn close_silent_connections(self) {
@@ -584,6 +631,19 @@ impl Mesh {
         let peer = peers.entry(id).or_default();
         peer.connections.retain(|c| c.close_reason().is_none());
         peer.connections.push(conn.clone());
+        drop(peers);
+        if let Some(link) = self.inner.gossip.get() {
+            let (conn, link, mesh) = (conn.clone(), link.clone(), self.clone());
+            tokio::spawn(async move {
+                let current = link.outgoing.borrow().clone();
+                if let Some(list) = current
+                    && crate::gossip::send(&conn, &list).await.is_ok()
+                {
+                    mesh.inner.counters.gossip_sent.fetch_add(1, Relaxed);
+                }
+                crate::gossip::receive(conn, link.incoming).await;
+            });
+        }
         true
     }
 

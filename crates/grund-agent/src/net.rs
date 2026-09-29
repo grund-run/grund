@@ -50,13 +50,14 @@ use ed25519_dalek::VerifyingKey;
 use grund_net::{
     NET_ALPN,
     endpoint::{self, Bind, NetConfig},
+    gossip::{GossipLink, GossipList},
     membership::{MembershipList, SignedList},
     mesh::{Mesh, MeshConfig},
 };
 use grund_proto::grund::agent::v1::{GetMembershipRequest, GetMembershipResponse};
 use iroh::RelayUrl;
 use rustls::pki_types::CertificateDer;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 
 use crate::{agent::Link, join::NetworkRecord};
 
@@ -227,14 +228,22 @@ pub(crate) async fn run(
     let (tx, rx) = watch::channel(None);
     let lists = tx.subscribe();
     let (relays_tx, relays_rx) = watch::channel(config.relays.clone());
+    let (outgoing_tx, outgoing_rx) = watch::channel(None);
+    let (incoming_tx, incoming_rx) = mpsc::channel(16);
+    mesh.gossip(GossipLink {
+        outgoing: outgoing_rx,
+        incoming: incoming_tx,
+    });
+    let held = Arc::new(Lists::new(network.clone(), tx, relays_tx, outgoing_tx));
     tracing::info!(network = %network.network_id, slot = network.slot, "private network: starting");
     tokio::select! {
         result = mesh.run(rx) => result,
-        result = follow(&link, &network, tx, relays_tx) => result,
+        result = follow(&link, &held) => result,
+        () = hear(&held, incoming_rx) => Ok(()),
         result = carry(&mesh, key, &config, relays_rx.clone(), &counters) => result,
         () = track_relays(&mesh, relays_rx) => Ok(()),
         () = resolve_or_warn(resolve(&mesh, lists, own_id, &counters)) => Ok(()),
-        () = report(&mesh, &counters, &data_dir) => Ok(()),
+        () = report(&mesh, &counters, &held, &data_dir) => Ok(()),
     }
 }
 
@@ -499,7 +508,7 @@ async fn revert_on_signal(bus: zbus::Connection, ifindex: i32) {
     std::process::exit(0);
 }
 
-async fn report(mesh: &Mesh, counters: &Counters, data_dir: &std::path::Path) {
+async fn report(mesh: &Mesh, counters: &Counters, lists: &Lists, data_dir: &std::path::Path) {
     let path = data_dir.join(STATUS_FILE);
     let temporary = data_dir.join(format!("{STATUS_FILE}.tmp"));
     loop {
@@ -511,6 +520,7 @@ async fn report(mesh: &Mesh, counters: &Counters, data_dir: &std::path::Path) {
             "rebinds": counters.rebinds.load(Relaxed),
             "network_changes": counters.network_changes.load(Relaxed),
             "relay_failovers": counters.relay_failovers.load(Relaxed),
+            "lists_from_members": lists.from_members(),
             "host_resolver": *counters.host_resolver.lock().expect("host resolver lock"),
         });
         if std::fs::write(&temporary, status.to_string()).is_ok() {
@@ -519,55 +529,151 @@ async fn report(mesh: &Mesh, counters: &Counters, data_dir: &std::path::Path) {
     }
 }
 
-async fn follow(
-    link: &Link,
-    network: &NetworkRecord,
-    tx: watch::Sender<Option<MembershipList>>,
+/// Where a list came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    /// The instance, over the control link.
+    Grund,
+    /// Another member, by gossip (grund-net `gossip`).
+    Member(iroh::EndpointId),
+}
+
+/// The lists in force, from grund or from members: the one place a list is
+/// checked (against the key pinned at join, the network, and a newer epoch)
+/// and then handed to the mesh, the resolver and the other members.
+pub struct Lists {
+    network: NetworkRecord,
+    epoch: std::sync::Mutex<u64>,
+    lists: watch::Sender<Option<MembershipList>>,
     relays: watch::Sender<Vec<RelayUrl>>,
-) -> anyhow::Result<()> {
-    let mut epoch = 0;
+    outgoing: watch::Sender<Option<Arc<GossipList>>>,
+    from_members: AtomicU64,
+}
+
+impl Lists {
+    /// Lists for `network`, starting from none.
+    pub fn new(
+        network: NetworkRecord,
+        lists: watch::Sender<Option<MembershipList>>,
+        relays: watch::Sender<Vec<RelayUrl>>,
+        outgoing: watch::Sender<Option<Arc<GossipList>>>,
+    ) -> Self {
+        Self {
+            network,
+            epoch: std::sync::Mutex::new(0),
+            lists,
+            relays,
+            outgoing,
+            from_members: AtomicU64::new(0),
+        }
+    }
+
+    /// The epoch in force, 0 before any list.
+    pub fn epoch(&self) -> u64 {
+        *self.epoch.lock().expect("epoch lock")
+    }
+
+    /// How many lists came from members rather than grund.
+    pub fn from_members(&self) -> u64 {
+        self.from_members.load(Relaxed)
+    }
+
+    /// Uses a signed list if it is grund's, for this network, and newer
+    /// than the one in force, whoever handed it over.
+    pub fn offer(
+        &self,
+        key_id: &str,
+        body: &[u8],
+        signature: &[u8],
+        source: Source,
+    ) -> Result<u64, ListRefusal> {
+        let mut epoch = self.epoch.lock().expect("epoch lock");
+        let list = accept_list(&self.network, key_id, body, signature, *epoch)?;
+        *epoch = list.epoch;
+        match source {
+            Source::Grund => tracing::info!(
+                epoch = list.epoch,
+                members = list.members.len(),
+                "private network: list applied"
+            ),
+            Source::Member(from) => {
+                self.from_members.fetch_add(1, Relaxed);
+                tracing::info!(
+                    epoch = list.epoch,
+                    members = list.members.len(),
+                    %from,
+                    "private network: list applied, handed on by a member"
+                );
+            }
+        }
+        if let Some(named) = relays_of(&list) {
+            self.relays.send_if_modified(|current| {
+                let changed = *current != named;
+                if changed {
+                    tracing::info!(relays = ?named, "private network: the list names new relays");
+                    *current = named;
+                }
+                changed
+            });
+        }
+        self.outgoing.send_replace(Some(Arc::new(GossipList {
+            key_id: key_id.to_string(),
+            list: SignedList {
+                body: body.to_vec(),
+                signature: signature.to_vec(),
+            },
+        })));
+        let epoch_now = list.epoch;
+        self.lists.send_replace(Some(list));
+        Ok(epoch_now)
+    }
+}
+
+/// The first wait after a failed membership call; it doubles, with
+/// jitter, up to [`RETRY_MAX`], and resets once a call succeeds.
+pub const RETRY_FIRST: Duration = Duration::from_millis(250);
+
+/// The longest wait between membership calls while they fail.
+pub const RETRY_MAX: Duration = Duration::from_secs(8);
+
+/// How long to wait after `failures` failed calls in a row: up to
+/// [`RETRY_FIRST`] doubled per failure, at most [`RETRY_MAX`], times
+/// `jitter` in `[0.5, 1.0]`.
+pub fn retry_after(failures: u32, jitter: f64) -> Duration {
+    let base = RETRY_FIRST.saturating_mul(1u32 << failures.saturating_sub(1).min(8));
+    base.min(RETRY_MAX).mul_f64(jitter.clamp(0.5, 1.0))
+}
+
+fn jitter() -> f64 {
+    let mut byte = [0u8; 1];
+    let _ = getrandom::fill(&mut byte);
+    0.5 + f64::from(byte[0]) / 510.0
+}
+
+async fn follow(link: &Link, lists: &Lists) -> anyhow::Result<()> {
+    let mut failures = 0u32;
     loop {
         let answer: anyhow::Result<GetMembershipResponse> = link
             .call(
                 "GetMembership",
                 &GetMembershipRequest {
-                    network_id: network.network_id.clone(),
-                    since_epoch: epoch,
+                    network_id: lists.network.network_id.clone(),
+                    since_epoch: lists.epoch(),
                     ..Default::default()
                 },
             )
             .await;
         match answer {
             Ok(answer) => {
+                failures = 0;
                 if let Some(signed) = answer.list.as_option() {
-                    match accept_list(
-                        network,
+                    match lists.offer(
                         &signed.key_id,
                         &signed.body,
                         &signed.signature,
-                        epoch,
+                        Source::Grund,
                     ) {
-                        Ok(list) => {
-                            tracing::info!(
-                                epoch = list.epoch,
-                                members = list.members.len(),
-                                "private network: list applied"
-                            );
-                            epoch = list.epoch;
-                            if let Some(named) = relays_of(&list) {
-                                relays.send_if_modified(|current| {
-                                    let changed = *current != named;
-                                    if changed {
-                                        tracing::info!(relays = ?named, "private network: the list names new relays");
-                                        *current = named;
-                                    }
-                                    changed
-                                });
-                            }
-                            if tx.send(Some(list)).is_err() {
-                                return Ok(());
-                            }
-                        }
+                        Ok(_) | Err(ListRefusal::Older(..)) => {}
                         Err(refusal) => {
                             tracing::warn!(%refusal, "private network: list refused; keeping the last good one");
                             tokio::time::sleep(Duration::from_secs(5)).await;
@@ -576,8 +682,25 @@ async fn follow(
                 }
             }
             Err(error) => {
+                failures += 1;
                 tracing::warn!(error = %format!("{error:#}"), "private network: GetMembership failed; keeping the last list");
-                tokio::time::sleep(Duration::from_secs(5)).await;
+                tokio::time::sleep(retry_after(failures, jitter())).await;
+            }
+        }
+    }
+}
+
+async fn hear(lists: &Lists, mut incoming: mpsc::Receiver<(iroh::EndpointId, GossipList)>) {
+    while let Some((from, gossip)) = incoming.recv().await {
+        match lists.offer(
+            &gossip.key_id,
+            &gossip.list.body,
+            &gossip.list.signature,
+            Source::Member(from),
+        ) {
+            Ok(_) | Err(ListRefusal::Older(..)) => {}
+            Err(refusal) => {
+                tracing::warn!(%from, %refusal, "private network: refused a list a member handed on")
             }
         }
     }
@@ -651,6 +774,58 @@ mod tests {
             &ips(&["192.168.1.20", "2a01:4f8::20"])
         ));
         assert!(needs_rebind(&bound, &[]));
+    }
+
+    #[test]
+    fn a_failing_membership_call_is_retried_soon_then_less_often_never_past_eight_seconds() {
+        assert_eq!(retry_after(1, 1.0), Duration::from_millis(250));
+        assert_eq!(retry_after(2, 1.0), Duration::from_millis(500));
+        assert_eq!(retry_after(6, 1.0), Duration::from_secs(8));
+        assert_eq!(retry_after(40, 1.0), Duration::from_secs(8));
+        assert_eq!(retry_after(1, 0.5), Duration::from_millis(125));
+        assert_eq!(
+            retry_after(1, 0.1),
+            Duration::from_millis(125),
+            "jitter never below half"
+        );
+    }
+
+    #[test]
+    fn a_member_hands_on_only_what_grund_signed_and_newer_than_what_is_held() {
+        let key = SigningKey::from_bytes(&[5; 32]);
+        let (lists_tx, lists_rx) = watch::channel(None);
+        let (relays_tx, _) = watch::channel(vec![]);
+        let (outgoing_tx, outgoing_rx) = watch::channel(None);
+        let held = Lists::new(network(&key), lists_tx, relays_tx, outgoing_tx);
+        let peer = grund_net::key::endpoint_id(&[9; 32]);
+        let two = SignedList::sign(&list(2, "net-1"), &key);
+        assert_eq!(
+            held.offer("k1", &two.body, &two.signature, Source::Member(peer)),
+            Ok(2)
+        );
+        assert_eq!(lists_rx.borrow().as_ref().map(|l| l.epoch), Some(2));
+        assert_eq!(
+            outgoing_rx.borrow().as_ref().map(|g| g.list.body.clone()),
+            Some(two.body.clone()),
+            "what was taken is handed on as grund signed it"
+        );
+        assert_eq!(held.from_members(), 1);
+        assert_eq!(
+            held.offer("k1", &two.body, &two.signature, Source::Member(peer)),
+            Err(ListRefusal::Older(2, 2)),
+            "a replay changes nothing"
+        );
+        let forged = SignedList::sign(&list(3, "net-1"), &SigningKey::from_bytes(&[6; 32]));
+        assert!(matches!(
+            held.offer("k1", &forged.body, &forged.signature, Source::Member(peer)),
+            Err(ListRefusal::Invalid(_))
+        ));
+        assert_eq!(held.epoch(), 2);
+        let three = SignedList::sign(&list(3, "net-1"), &key);
+        assert_eq!(
+            held.offer("k1", &three.body, &three.signature, Source::Grund),
+            Ok(3)
+        );
     }
 
     #[test]

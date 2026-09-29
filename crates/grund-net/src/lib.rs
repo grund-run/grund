@@ -16,6 +16,7 @@
 //!   from the membership list.
 //! - [`filter`]: the inbound filter, closed except the ports a member
 //!   declares and replies to its own flows.
+//! - [`gossip`]: members hand each other grund's newest signed list.
 //! - [`mesh`]: the private network itself: IPv6 packets from the `grund0`
 //!   TUN device to members, one QUIC datagram each, or two when a packet does
 //!   not fit the path, with the inbound filter that refuses non-members and
@@ -28,6 +29,7 @@ pub mod dns;
 pub mod endpoint;
 pub mod filter;
 pub mod frame;
+pub mod gossip;
 pub mod key;
 pub mod membership;
 pub mod mesh;
