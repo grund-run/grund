@@ -224,7 +224,13 @@ async fn owner(pool: &sqlx::PgPool, config: &ServeConfig, report: &mut Report) {
             "no account yet: the instance has no owner, and sign-up is closed until it has",
             "docker compose exec grund /grund setup-link, then open the link it prints",
         )),
-        Ok(count) => report.push(Check::ok("owner", format!("{count} accounts"))),
+        Ok(count) => report.push(Check::ok(
+            "owner",
+            match count {
+                1 => "1 account".to_string(),
+                n => format!("{n} accounts"),
+            },
+        )),
         Err(error) => report.push(Check::skip("owner", format!("not readable yet ({error})"))),
     }
 }

@@ -28,11 +28,15 @@ async fn doctor_passes_a_running_instance_and_names_what_is_left_to_do() -> anyh
         "instance-keys",
         "mail",
         "nats",
-        "disk",
     ] {
         has(&ran, "ok", check)?;
     }
     has(&ran, "skip", "certificate")?;
+    anyhow::ensure!(
+        ran.line("ok", "disk").is_some() || ran.line("warn", "disk").is_some(),
+        "the disk check depends on this host's free space, and must be ok or warn:\n{}",
+        ran.stdout
+    );
     has(&ran, "warn", "public-url")?;
     anyhow::ensure!(has(&ran, "warn", "owner")?.contains("no account yet"));
     anyhow::ensure!(

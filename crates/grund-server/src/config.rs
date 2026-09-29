@@ -416,7 +416,9 @@ impl MachineDefaultsArgs {
         anyhow::ensure!(
             !(self.serve_installer && self.agent_install_url.is_some()),
             "set GRUND_AGENT_INSTALL_URL or GRUND_SERVE_INSTALLER=true, not both: the Machines \
-             page offers one installer"
+             page offers one installer. compose.yaml turns GRUND_SERVE_INSTALLER on (since \
+             2026-09-28): drop GRUND_AGENT_INSTALL_URL to install the instance's own build, or \
+             set GRUND_SERVE_INSTALLER=false to keep that installer"
         );
         url("GRUND_AGENT_INSTALL_URL", &self.agent_install_url, true)?;
         url("GRUND_VM_KERNEL_URL", &self.vm_kernel_url, false)?;

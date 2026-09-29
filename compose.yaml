@@ -113,7 +113,7 @@ services:
     environment:
       # Unset, grund uses https://<GRUND_DOMAIN>, or http://localhost:8080
       # without a domain.
-      GRUND_PUBLIC_URL: ${GRUND_PUBLIC_URL:-${GRUND_DOMAIN:+https://${GRUND_DOMAIN}}}
+      GRUND_PUBLIC_URL: ${GRUND_PUBLIC_URL:-${GRUND_DOMAIN:+https://${GRUND_DOMAIN:-}}}
       # HTTPS, only with GRUND_DOMAIN. The certificate is ordered from
       # GRUND_ACME_DIRECTORY (Let's Encrypt unless .env names another; an
       # empty value there, with your own certificate mounted, turns ACME
