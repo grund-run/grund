@@ -104,6 +104,7 @@ pub struct SlotRow {
     pub machine_id: Uuid,
     pub endpoint_id: String,
     pub freed_at: Option<DateTime<Utc>>,
+    pub home_relay_url: Option<String>,
 }
 
 /// Every slot the network has ever given out, one row per slot.
@@ -112,12 +113,32 @@ pub async fn slots(
     network_id: Uuid,
 ) -> Result<Vec<SlotRow>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT slot, machine_id, endpoint_id, freed_at FROM grund_network_slots \
+        "SELECT slot, machine_id, endpoint_id, freed_at, home_relay_url FROM grund_network_slots \
          WHERE network_id = $1 ORDER BY slot",
     )
     .bind(network_id)
     .fetch_all(executor)
     .await
+}
+
+/// Records the relay `machine_id` is homed on, for the slot it holds now.
+/// `true` when that changed the row.
+pub async fn set_home_relay(
+    executor: impl PgExecutor<'_>,
+    machine_id: Uuid,
+    home_relay_url: Option<&str>,
+) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query(
+        "UPDATE grund_network_slots SET home_relay_url = $2 \
+         WHERE machine_id = $1 AND freed_at IS NULL \
+           AND home_relay_url IS DISTINCT FROM $2",
+    )
+    .bind(machine_id)
+    .bind(home_relay_url)
+    .execute(executor)
+    .await?
+    .rows_affected()
+        > 0)
 }
 
 /// Gives `slot` to a machine, taking over the row of whoever held it last.
@@ -133,7 +154,8 @@ pub async fn assign_slot(
         "INSERT INTO grund_network_slots (network_id, slot, machine_id, endpoint_id, assigned_at) \
          VALUES ($1, $2, $3, $4, $5) \
          ON CONFLICT (network_id, slot) DO UPDATE SET machine_id = EXCLUDED.machine_id, \
-           endpoint_id = EXCLUDED.endpoint_id, assigned_at = EXCLUDED.assigned_at, freed_at = NULL",
+           endpoint_id = EXCLUDED.endpoint_id, assigned_at = EXCLUDED.assigned_at, freed_at = NULL, \
+           home_relay_url = NULL",
     )
     .bind(network_id)
     .bind(slot)

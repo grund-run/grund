@@ -176,7 +176,12 @@ impl AgentService for AgentApi {
         let outcome = self
             .state
             .networks()
-            .membership(&caller, network_id, request.since_epoch)
+            .membership(
+                &caller,
+                network_id,
+                request.since_epoch,
+                request.home_relay_url,
+            )
             .await
             .map_err(internal)?;
         match outcome {

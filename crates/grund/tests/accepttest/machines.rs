@@ -2302,3 +2302,50 @@ async fn declared_ports_reach_the_signed_list_and_only_the_owning_organisation_d
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn a_members_reported_home_relay_goes_into_the_list_only_when_it_is_one_of_grunds()
+-> anyhow::Result<()> {
+    let relay = "https://relay-1.example.com";
+    let Some((given, when, then)) = testcase_configured(&[("GRUND_RELAYS", relay)]).await? else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let (key, enrolled) = a_member(&when, &then, &owner.username, "hinted").await?;
+    let machine_id = enrolled["machineId"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let hint_after = |reported: &str| {
+        let (when, then, key, machine_id, network_key) = (
+            &when,
+            &then,
+            &key,
+            machine_id.clone(),
+            enrolled["network"]["key"].clone(),
+        );
+        let body = json!({"sinceEpoch": "0", "homeRelayUrl": reported}).to_string();
+        async move {
+            signed_agent_call(when, &machine_id, key, "GetMembership", &body).await?;
+            then.status(200)?;
+            let list = membership(then, &network_key)?;
+            Ok::<_, anyhow::Error>(
+                list.members
+                    .iter()
+                    .find(|m| m.machine_id == machine_id)
+                    .and_then(|m| m.relay_url.clone()),
+            )
+        }
+    };
+    anyhow::ensure!(hint_after("").await?.is_none());
+    anyhow::ensure!(
+        hint_after(&format!("{relay}/")).await? == Some(relay.to_string()),
+        "a reported home relay that is grund's goes into the list"
+    );
+    anyhow::ensure!(
+        hint_after("https://evil.example.com/").await? == Some(relay.to_string()),
+        "a relay grund does not run is ignored"
+    );
+    anyhow::ensure!(hint_after("").await?.is_none(), "reporting none clears it");
+    Ok(())
+}

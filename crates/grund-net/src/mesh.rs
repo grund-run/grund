@@ -22,6 +22,10 @@
 //! closed-by-default filter ([`crate::filter`]): a port this machine
 //! declares in the list, a reply to its own flow, or ICMPv6 IPv6 needs.
 //!
+//! A member is dialled through the relay the list says it is homed on
+//! ([`dial_through`]), or through every relay when there is no hint or the
+//! last dial through it failed.
+//!
 //! Members also hand each other grund's newest signed list over their
 //! connections ([`crate::gossip`], [`Mesh::gossip`]); the mesh's owner
 //! checks each before using it.
@@ -58,6 +62,12 @@ use crate::{
 /// How long a dial to a member may take before the next packet to it tries
 /// again. iroh's connect has no deadline of its own when no path answers.
 pub const DIAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How long a dial through a member's hinted home relay alone may take
+/// before the next dial names every relay. Short: the hint may be stale (the
+/// member moved to another relay and the list has not caught up), and then
+/// nothing answers.
+pub const HINTED_DIAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// How long a connection may receive nothing at all, not even the
 /// acknowledgements of its own keep-alives (sent every 500 ms, [`crate::endpoint::PATH_KEEPALIVE`]),
@@ -111,6 +121,7 @@ struct Peer {
     dialing: bool,
     framer: Framer,
     heard: HashMap<usize, (u64, Instant)>,
+    hint_failed: bool,
 }
 
 #[derive(Debug, Default)]
@@ -163,6 +174,8 @@ pub struct PeerStatus {
     /// The peer's direct addresses this machine knows, as the peer offered
     /// them or as they were seen: its candidates for hole punching.
     pub direct_addrs: Vec<std::net::SocketAddr>,
+    /// The relay the list says the peer is homed on, which dials use.
+    pub relay_hint: Option<String>,
 }
 
 impl Mesh {
@@ -387,6 +400,10 @@ impl Mesh {
                         .map(describe_path)
                         .unwrap_or_else(|| "none".into()),
                     direct_addrs: Vec::new(),
+                    relay_hint: view
+                        .as_ref()
+                        .and_then(|v| v.list.member_by_id(id))
+                        .and_then(|m| m.relay_url.clone()),
                 })
                 .collect(),
             counters,
@@ -582,15 +599,22 @@ impl Mesh {
 
     async fn dial(self, target: EndpointId) {
         let mut addr = EndpointAddr::new(target);
-        for url in self.inner.relays.read().expect("relays lock").iter() {
-            addr = addr.with_relay_url(url.clone());
+        let through = self.dial_relays(target);
+        let timeout =
+            if through.len() == 1 && self.inner.relays.read().expect("relays lock").len() > 1 {
+                HINTED_DIAL_TIMEOUT
+            } else {
+                DIAL_TIMEOUT
+            };
+        for url in through {
+            addr = addr.with_relay_url(url);
         }
         let result = match self.endpoint() {
             None => Err("no endpoint yet".to_string()),
             Some(endpoint) => {
-                match tokio::time::timeout(DIAL_TIMEOUT, endpoint.connect(addr, NET_ALPN)).await {
+                match tokio::time::timeout(timeout, endpoint.connect(addr, NET_ALPN)).await {
                     Ok(r) => r.map_err(|e| e.to_string()),
-                    Err(_) => Err(format!("no connection within {DIAL_TIMEOUT:?}")),
+                    Err(_) => Err(format!("no connection within {timeout:?}")),
                 }
             }
         };
@@ -598,6 +622,7 @@ impl Mesh {
             let mut peers = self.inner.peers.lock().expect("peers lock");
             if let Some(peer) = peers.get_mut(&target) {
                 peer.dialing = false;
+                peer.hint_failed = result.is_err();
             }
         }
         match result {
@@ -608,6 +633,27 @@ impl Mesh {
             }
             Err(e) => tracing::debug!(peer = %target, error = %e, "mesh: dial failed"),
         }
+    }
+
+    fn dial_relays(&self, target: EndpointId) -> Vec<RelayUrl> {
+        let relays = self.inner.relays.read().expect("relays lock").clone();
+        let hint = self
+            .inner
+            .view
+            .read()
+            .expect("view lock")
+            .as_ref()
+            .and_then(|v| v.list.member_by_id(&target))
+            .and_then(|m| m.relay_url.clone())
+            .and_then(|url| RelayUrl::from_str(&url).ok());
+        let failed = self
+            .inner
+            .peers
+            .lock()
+            .expect("peers lock")
+            .get(&target)
+            .is_some_and(|p| p.hint_failed);
+        dial_through(&relays, hint, failed)
     }
 
     fn admit(&self, conn: &Connection) -> bool {
@@ -737,6 +783,20 @@ impl ProtocolHandler for Mesh {
     }
 }
 
+/// The relays a dial to a member names: the one the list says it is homed
+/// on, when that is one of ours and the last dial through it did not fail;
+/// otherwise all of ours, since any may be its home.
+pub fn dial_through(
+    relays: &[RelayUrl],
+    hint: Option<RelayUrl>,
+    hint_failed: bool,
+) -> Vec<RelayUrl> {
+    match hint {
+        Some(hint) if !hint_failed && relays.contains(&hint) => vec![hint],
+        _ => relays.to_vec(),
+    }
+}
+
 fn close_all(peer: Peer) {
     for conn in peer.connections {
         conn.close(1u32.into(), b"removed from the network");
@@ -766,6 +826,22 @@ fn ipv6_addrs(packet: &[u8]) -> Option<(Ipv6Addr, Ipv6Addr)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_member_is_dialled_through_its_home_relay_alone_until_that_fails() {
+        let a: RelayUrl = "https://relay-a.example.com".parse().unwrap();
+        let b: RelayUrl = "https://relay-b.example.com".parse().unwrap();
+        let other: RelayUrl = "https://elsewhere.example.com".parse().unwrap();
+        let ours = vec![a.clone(), b.clone()];
+        assert_eq!(dial_through(&ours, Some(b.clone()), false), vec![b.clone()]);
+        assert_eq!(dial_through(&ours, Some(b.clone()), true), ours);
+        assert_eq!(dial_through(&ours, None, false), ours);
+        assert_eq!(
+            dial_through(&ours, Some(other), false),
+            ours,
+            "a hint that is none of ours is ignored"
+        );
+    }
 
     #[test]
     fn only_ipv6_packets_have_addresses() {

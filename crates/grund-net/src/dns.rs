@@ -326,6 +326,7 @@ mod tests {
                     slot: 1,
                     name: Some("web-1".into()),
                     ports: vec![],
+                    relay_url: None,
                 },
                 Member {
                     machine_id: "m_b".into(),
@@ -333,6 +334,7 @@ mod tests {
                     slot: 2,
                     name: Some("db".into()),
                     ports: vec![],
+                    relay_url: None,
                 },
             ],
         }

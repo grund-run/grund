@@ -214,16 +214,26 @@ impl Networks {
     }
 
     /// The newest list of the network the caller is a member of, once its
-    /// epoch is newer than `since_epoch`, waiting up to [`LONG_POLL`].
+    /// epoch is newer than `since_epoch`, waiting up to [`LONG_POLL`]. First
+    /// it records `home_relay_url` as the caller's home relay, when it is one
+    /// of grund's relays (anything else is ignored), or clears it when empty:
+    /// the list names it, so the members dial the caller through it.
     pub async fn membership(
         &self,
         caller: &MachineCaller,
         network_id: Option<Uuid>,
         since_epoch: u64,
+        home_relay_url: &str,
     ) -> anyhow::Result<MembershipOutcome> {
         let Some(organisation_id) = caller.organisation_id else {
             return Ok(MembershipOutcome::NotFound);
         };
+        let hint = home_relay_url.trim_end_matches('/');
+        if hint.is_empty() {
+            networks::set_home_relay(&self.state.pool, caller.machine_id, None).await?;
+        } else if self.relays().iter().any(|r| r.url == hint) {
+            networks::set_home_relay(&self.state.pool, caller.machine_id, Some(hint)).await?;
+        }
         let deadline = tokio::time::Instant::now() + LONG_POLL;
         loop {
             let network = self.reconcile(organisation_id).await?;
@@ -258,6 +268,7 @@ fn members(slots: &[SlotRow], names: &HashMap<Uuid, (&str, Vec<Port>)>) -> Vec<M
                 slot: s.slot as u16,
                 name: entry.map(|(n, _)| n.to_string()),
                 ports: entry.map(|(_, p)| p.clone()).unwrap_or_default(),
+                relay_url: s.home_relay_url.clone(),
             }
         })
         .collect()
@@ -402,6 +413,7 @@ mod tests {
             machine_id: machine,
             endpoint_id: key.into(),
             freed_at: freed,
+            home_relay_url: None,
         }
     }
 

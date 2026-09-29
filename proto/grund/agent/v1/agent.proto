@@ -49,6 +49,10 @@ message GetMembershipRequest {
   // The network; empty for the network of the machine's pool.
   string network_id = 1;
   uint64 since_epoch = 2;
+  // The relay this machine is homed on now, one of those its list names;
+  // empty when it has none. grund puts it in the list, so members dial the
+  // machine through that one relay rather than all of them.
+  string home_relay_url = 3;
 }
 
 message GetMembershipResponse {

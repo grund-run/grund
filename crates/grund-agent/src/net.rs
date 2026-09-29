@@ -238,7 +238,7 @@ pub(crate) async fn run(
     tracing::info!(network = %network.network_id, slot = network.slot, "private network: starting");
     tokio::select! {
         result = mesh.run(rx) => result,
-        result = follow(&link, &held) => result,
+        result = follow(&link, &held, &mesh) => result,
         () = hear(&held, incoming_rx) => Ok(()),
         result = carry(&mesh, key, &config, relays_rx.clone(), &counters) => result,
         () = track_relays(&mesh, relays_rx) => Ok(()),
@@ -650,19 +650,46 @@ fn jitter() -> f64 {
     0.5 + f64::from(byte[0]) / 510.0
 }
 
-async fn follow(link: &Link, lists: &Lists) -> anyhow::Result<()> {
+fn home_relay(mesh: &Mesh) -> String {
+    use iroh::Watcher;
+    mesh.endpoint()
+        .and_then(|e| {
+            e.home_relay_status()
+                .get()
+                .into_iter()
+                .find(|s| s.is_connected())
+                .map(|s| s.url().to_string())
+        })
+        .unwrap_or_default()
+}
+
+async fn follow(link: &Link, lists: &Lists, mesh: &Mesh) -> anyhow::Result<()> {
     let mut failures = 0u32;
     loop {
-        let answer: anyhow::Result<GetMembershipResponse> = link
-            .call(
-                "GetMembership",
-                &GetMembershipRequest {
-                    network_id: lists.network.network_id.clone(),
-                    since_epoch: lists.epoch(),
-                    ..Default::default()
-                },
-            )
-            .await;
+        let reported = home_relay(mesh);
+        let request = GetMembershipRequest {
+            network_id: lists.network.network_id.clone(),
+            since_epoch: lists.epoch(),
+            home_relay_url: reported.clone(),
+            ..Default::default()
+        };
+        let call = link.call::<_, GetMembershipResponse>("GetMembership", &request);
+        tokio::pin!(call);
+        let answer = loop {
+            tokio::select! {
+                answer = &mut call => break Some(answer),
+                () = tokio::time::sleep(Duration::from_secs(1)) => {
+                    let now = home_relay(mesh);
+                    if !now.is_empty() && now != reported {
+                        tracing::info!(home = %now, "private network: homed on another relay; telling grund now");
+                        break None;
+                    }
+                }
+            }
+        };
+        let Some(answer) = answer else {
+            continue;
+        };
         match answer {
             Ok(answer) => {
                 failures = 0;
@@ -741,6 +768,7 @@ mod tests {
                 slot: 1,
                 name: Some("m1".into()),
                 ports: vec![],
+                relay_url: None,
             }],
         }
     }

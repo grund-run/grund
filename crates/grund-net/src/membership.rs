@@ -76,6 +76,11 @@ pub struct Member {
     /// in ([`crate::filter`]). Empty, or absent in older lists, is closed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ports: Vec<Port>,
+    /// The relay the member is homed on, one of [`MembershipList::relays`],
+    /// as its agent last reported it: peers dial it through this one relay
+    /// rather than all of them. Absent when it reported none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_url: Option<String>,
 }
 
 /// A transport of a declared port.
@@ -230,6 +235,13 @@ impl MembershipList {
                 return Err(MembershipError::BadRelay(relay.url.clone()));
             }
         }
+        for m in &self.members {
+            if let Some(url) = &m.relay_url
+                && !self.relays.iter().any(|r| &r.url == url)
+            {
+                return Err(MembershipError::BadRelay(url.clone()));
+            }
+        }
         Ok(())
     }
 
@@ -320,6 +332,7 @@ mod tests {
                     slot: 1,
                     name: Some("a".into()),
                     ports: vec![],
+                    relay_url: None,
                 },
                 Member {
                     machine_id: "m_b".into(),
@@ -327,6 +340,7 @@ mod tests {
                     slot: 2,
                     name: Some("b".into()),
                     ports: vec![],
+                    relay_url: None,
                 },
             ],
         }
@@ -346,6 +360,7 @@ mod tests {
                 slot: 1,
                 name: None,
                 ports: vec![],
+                relay_url: None,
             }],
         };
         assert_eq!(
@@ -392,6 +407,24 @@ mod tests {
             }];
             assert_eq!(l.validate().is_ok(), ok, "{url}");
         }
+    }
+
+    #[test]
+    fn a_members_home_relay_is_one_of_the_lists_relays() {
+        let mut l = list();
+        l.relays = vec![Relay {
+            url: "https://relay.example.com".into(),
+            region: None,
+        }];
+        l.members[0].relay_url = Some("https://relay.example.com".into());
+        assert_eq!(l.validate(), Ok(()));
+        l.members[0].relay_url = Some("https://elsewhere.example.com".into());
+        assert_eq!(
+            l.validate(),
+            Err(MembershipError::BadRelay(
+                "https://elsewhere.example.com".into()
+            ))
+        );
     }
 
     #[test]

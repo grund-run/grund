@@ -923,6 +923,25 @@ async fn grund_relay_on_its_own_host_carries_the_mesh_and_a_second_is_picked_up_
         "a picked up the relay by rebinding: {}",
         a.status()
     );
+    let hinted = eventually(Duration::from_secs(20), || async {
+        let home = b
+            .relays()
+            .into_iter()
+            .find(|r| r["home"] == true && r["connected"] == true)
+            .and_then(|r| {
+                r["url"]
+                    .as_str()
+                    .map(|u| u.trim_end_matches('/').to_string())
+            });
+        home.is_some() && a.peer(&b)["relay_hint"].as_str() == home.as_deref()
+    })
+    .await;
+    anyhow::ensure!(
+        hinted.is_some(),
+        "a does not know b's home relay: a {} / b {}",
+        a.status(),
+        b.status()
+    );
 
     net.lab.stop("relay-rl1.log");
     net.lab.cut_direct_udp().await?;
