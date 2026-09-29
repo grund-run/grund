@@ -40,11 +40,14 @@ a sign-off ([CONTRIBUTING.md](CONTRIBUTING.md)).
 git clone https://git.kjuulh.io/grund/grund.git && cd grund
 docker compose up -d     # builds this checkout; then http://localhost:8080
 GRUND_DOMAIN=grund.example.com docker compose up -d     # or https, on 443
+docker compose exec grund /grund setup-link             # the owner's one-time link
 ```
 
-That runs grund with PostgreSQL, NATS (wake-ups for background work) and
-Mailpit, which catches every mail at http://localhost:8025 so sign-up works
-without a mail server. Secrets are generated on first start into the
+That runs grund with PostgreSQL and NATS (wake-ups for background work).
+The first account, the instance's owner, comes from `grund setup-link`: it
+prints a link that works once, for an hour, and only while there is no
+account, so the first sign-in needs no mail server and nobody else can
+claim a fresh instance. Sign-up stays closed until then. Secrets are generated on first start into the
 `grund-data` volume and kept. grund runs non-root in a read-only container,
 and runs its migrations on every start. The first build takes a few
 minutes. To run a published image instead, set `GRUND_IMAGE` and
@@ -76,8 +79,12 @@ What compose deliberately does not do:
 - **Backups.** Nothing backs up the `grund-postgres` and `grund-data`
   volumes. `docker compose down -v` deletes them and every account with
   them. Back up both, and try a restore once.
-- **Real mail.** Mailpit delivers nothing. Set `GRUND_SMTP_URL` and
-  `GRUND_MAIL_FROM` for real users.
+- **Mail.** None is sent until `GRUND_SMTP_URL` is set: password reset
+  and invitations wait in the outbox, and readiness says so. Set it and
+  `GRUND_MAIL_FROM` for real users. To try grund without a mail server,
+  `COMPOSE_PROFILES=mail` and `GRUND_SMTP_URL=smtp://mailpit:1025` add
+  Mailpit, which catches every mail at http://localhost:8025 and delivers
+  none.
 - **Updates.** `git pull` and `docker compose up -d` update grund.
   Migrations are forward-only. Machines that joined keep the grund they
   installed until you run the command on them again.
@@ -85,7 +92,8 @@ What compose deliberately does not do:
 ## The binary
 
 One binary, `grund`, with subcommands: `serve` (the control plane),
-`migrate`, `init` (generate the instance's secrets) and `probe` (a health
+`migrate`, `init` (generate the instance's secrets), `setup-link` (the
+owner's one-time link, run with `serve`'s settings) and `probe` (a health
 check for the scratch image). `grund serve --help` lists every setting with
 its environment variable.
 
@@ -100,10 +108,10 @@ confirmed (see [.env.example](.env.example)). Without them nothing is queued.
   with the build `revision` and each check's state.
 - Everything grund manages belongs to an organisation, and so does billing.
   A self-hosted instance has one (`GRUND_ORGANISATIONS=single`, the default):
-  the first account becomes its admin, and everyone after joins by
-  invitation. `multi` gives every sign-up its own organisation and lets
+  the first account, made with the setup link, owns it, and everyone after
+  joins by invitation. `multi` gives every sign-up its own organisation and lets
   anyone create more, as grund's hosted service does.
-- Pages: `/signup`, `/verify`, `/login`, `/reset`, `/` (which opens your
+- Pages: `/signup`, `/signup/owner` (the setup link), `/verify`, `/login`, `/reset`, `/` (which opens your
   organisation), `/{org}`, `/{org}/members`, `/{org}/settings`, `/orgs/new`,
   `/invite`, `/settings/sessions`, and `/style-guide`, which renders every
   component with example data.

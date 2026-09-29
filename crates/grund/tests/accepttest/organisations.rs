@@ -359,8 +359,8 @@ async fn a_single_organisation_instance_is_invite_only_after_its_admin() -> anyh
         return Ok(());
     };
     when.visiting("/signup").await?;
-    then.status(200)?.body_contains("becomes its admin")?;
-    let admin = given.a_signed_in_account().await?;
+    then.status(403)?.body_contains("no owner yet")?;
+    let admin = given.the_owner().await?;
     when.visiting_home().await?;
     then.status(200)?
         .body_contains(&format!("owner of {}", admin.username))?

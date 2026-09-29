@@ -86,7 +86,9 @@ impl Keys {
         public(row)
     }
 
-    async fn mismatched(&self, executor: impl PgExecutor<'_>) -> anyhow::Result<Vec<Uuid>> {
+    /// The ids of stored keys this secret does not derive: non-empty when the
+    /// secret key changed since they were made.
+    pub async fn mismatched(&self, executor: impl PgExecutor<'_>) -> anyhow::Result<Vec<Uuid>> {
         Ok(machines::current_keys(executor)
             .await?
             .into_iter()

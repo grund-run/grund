@@ -3,6 +3,8 @@
 //! - `serve`: the control plane (dashboard, API, background work);
 //! - `migrate`: apply database migrations and exit;
 //! - `init`: generate a fresh instance's secrets, keeping any that exist;
+//! - `setup-link`: print the one-time link that creates a fresh instance's
+//!   owner, with no mail (run where `serve` runs, with its settings);
 //! - `probe`: exit 0 when an instance's readiness answers 200, for container
 //!   health checks (the image has no shell or curl);
 //! - `join`: register this machine with an instance, with a one-time setup
@@ -56,6 +58,11 @@ enum Command {
         about = "Generate the instance secret key and database password, keeping any that exist"
     )]
     Init(grund_server::secrets::InitArgs),
+    #[command(
+        name = "setup-link",
+        about = "Print a one-time link that creates this instance's owner account. Run it where grund serve runs, with the same settings, before any account exists"
+    )]
+    SetupLink(Box<grund_server::config::ServeConfig>),
     #[command(about = "Exit 0 when the instance at --address answers 200 on --path, 1 otherwise")]
     Probe(probe::ProbeArgs),
     #[command(about = "Register this machine with a grund instance, using a one-time setup code")]
@@ -156,6 +163,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Migrate(args) => grund_server::migrate(args).await,
         Command::Init(args) => grund_server::secrets::init(&args),
+        Command::SetupLink(config) => grund_server::setup_link::run(*config).await,
         Command::Probe(args) => probe::run(&args),
         Command::Join(args) => grund_agent::join::run(&args).await,
         Command::Relay(command) => grund_server::relay_command::run(command).await,

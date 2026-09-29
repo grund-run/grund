@@ -35,6 +35,7 @@ pub mod sagas;
 pub mod secrets;
 pub mod server;
 pub mod services;
+pub mod setup_link;
 pub mod state;
 pub mod templates;
 pub mod web;

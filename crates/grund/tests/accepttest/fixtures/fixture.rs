@@ -314,6 +314,60 @@ impl Fixture {
         Ok(replica)
     }
 
+    pub async fn running(&self, args: &[&str]) -> anyhow::Result<Ran> {
+        anyhow::ensure!(
+            self.lab.is_none() && self.log_path.is_some(),
+            "commands run beside a spawned local instance"
+        );
+        let mut command = Command::new(env!("CARGO_BIN_EXE_grund"));
+        command.args(args).env_clear();
+        for (name, value) in &self.settings {
+            command.env(name, value);
+        }
+        let output = tokio::time::timeout(
+            Duration::from_secs(30),
+            tokio::task::spawn_blocking(move || command.output()),
+        )
+        .await
+        .with_context(|| format!("grund {args:?} did not finish within 30 s"))???;
+        Ok(Ran {
+            success: output.status.success(),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        })
+    }
+
+    pub async fn setup_link(&self) -> anyhow::Result<String> {
+        let ran = self.running(&["setup-link"]).await?;
+        anyhow::ensure!(ran.success, "grund setup-link failed: {}", ran.stderr);
+        ran.setup_link_path()
+            .with_context(|| format!("grund setup-link printed no link:\n{}", ran.stdout))
+    }
+
+    pub async fn sql(&self, statement: &str) -> anyhow::Result<u64> {
+        let url = self
+            .database_url()
+            .context("only a spawned instance has a database")?;
+        let mut connection = <sqlx::PgConnection as sqlx::Connection>::connect(&url).await?;
+        Ok(
+            sqlx::Executor::execute(&mut connection, sqlx::AssertSqlSafe(statement.to_string()))
+                .await?
+                .rows_affected(),
+        )
+    }
+
+    pub async fn count(&self, query: &str) -> anyhow::Result<i64> {
+        let url = self
+            .database_url()
+            .context("only a spawned instance has a database")?;
+        let mut connection = <sqlx::PgConnection as sqlx::Connection>::connect(&url).await?;
+        Ok(
+            sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(query.to_string()))
+                .fetch_one(&mut connection)
+                .await?,
+        )
+    }
+
     pub fn log(&self) -> String {
         self.log_path
             .as_ref()
@@ -357,6 +411,21 @@ impl Fixture {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+    }
+}
+
+pub struct Ran {
+    pub success: bool,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+impl Ran {
+    pub fn setup_link_path(&self) -> Option<String> {
+        self.stdout
+            .split_whitespace()
+            .find(|word| word.contains("/signup/owner?token=grund_setup_"))
+            .and_then(|url| url.find("/signup/owner").map(|at| url[at..].to_string()))
     }
 }
 

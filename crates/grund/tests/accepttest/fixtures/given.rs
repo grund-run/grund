@@ -65,6 +65,42 @@ impl Given {
         Ok(account)
     }
 
+    pub async fn the_owner(&self) -> anyhow::Result<Account> {
+        let username = self.a_fresh_name("owner");
+        let account = Account {
+            email: format!("{username}@accept.test"),
+            username,
+            password: format!("pw {} correct horse", random_hex(6)),
+        };
+        let link = self.testcase.fixture.setup_link().await?;
+        let when = When {
+            testcase: self.testcase.clone(),
+        };
+        when.visiting(&link).await?;
+        when.submitting_on_current_page(
+            "/signup/owner",
+            &[
+                ("token", &self.last_token()?),
+                ("username", &account.username),
+                ("email", &account.email),
+                ("password", &account.password),
+            ],
+        )
+        .await?;
+        let location = self
+            .testcase
+            .data()
+            .last
+            .as_ref()
+            .and_then(|r| r.header("location").map(str::to_string));
+        anyhow::ensure!(
+            location.as_deref() == Some(format!("/{}", account.username).as_str()),
+            "the setup link did not sign the owner in: {location:?}"
+        );
+        self.testcase.data().account = Some(account.clone());
+        Ok(account)
+    }
+
     pub fn last_token(&self) -> anyhow::Result<String> {
         let html = self
             .testcase

@@ -108,6 +108,8 @@ async fn state(pool: PgPool, issuer: &str) -> State {
         "true",
         "--public-url",
         "http://127.0.0.1:1",
+        "--organisations",
+        "multi",
     ])
     .unwrap()
     .serve;
@@ -310,7 +312,7 @@ async fn a_licensed_instance_offers_the_provider_and_a_new_identity_becomes_an_a
     assert_eq!(
         (landing.status, landing.location.as_str()),
         (StatusCode::SEE_OTHER, format!("/{username}").as_str()),
-        "the first account on a single-organisation instance owns its organisation"
+        "a new identity owns the organisation made for it"
     );
     let home = browser.send("GET", &landing.location, None).await;
     assert!(

@@ -27,6 +27,7 @@ use crate::{
         outbox::wake,
         passwords::{Passwords, PasswordsState},
     },
+    setup_link,
     state::State,
 };
 
@@ -72,7 +73,24 @@ pub enum SignupOutcome {
     },
     Invalid(FieldErrors),
     Closed,
+    /// A `single` instance with no owner yet: its first account comes from
+    /// a setup link, not this form.
+    NoOwner,
     RateLimited,
+}
+
+/// How creating the owner through a setup link ended.
+#[derive(Debug)]
+pub enum OwnerSignupOutcome {
+    /// The owner exists, confirmed, and owns `organisation` (its slug); sign
+    /// it in there.
+    SignedIn {
+        account_id: Uuid,
+        organisation: String,
+    },
+    Invalid(FieldErrors),
+    /// Unknown, used or expired, or the instance already has an account.
+    Expired,
 }
 
 /// How signing up through an invitation ended.
@@ -150,8 +168,10 @@ impl Accounts {
             return Ok(SignupOutcome::Closed);
         }
         let home = organisations::plan_home(&self.state).await?;
-        if home == Home::Closed {
-            return Ok(SignupOutcome::Closed);
+        match home {
+            Home::Closed => return Ok(SignupOutcome::Closed),
+            Home::Unclaimed => return Ok(SignupOutcome::NoOwner),
+            Home::Personal(_) | Home::NewInstance(_) => {}
         }
         if !self.limits.admit_mail_address(&meta.address).await? {
             return Ok(SignupOutcome::RateLimited);
@@ -195,7 +215,6 @@ impl Accounts {
 
         match self.create(&username, &email, &phc, home, meta).await {
             Ok(()) => Ok(sent),
-            Err(error) if organisations::is_instance_taken(&error) => Ok(SignupOutcome::Closed),
             Err(error) => match error.unique_violation().as_deref() {
                 Some("grund_accounts_username_idx" | "grund_organisations_slug_idx") => {
                     Ok(SignupOutcome::Invalid(FieldErrors {
@@ -210,6 +229,109 @@ impl Accounts {
                 _ => Err(error.into()),
             },
         }
+    }
+
+    /// Whether a setup link is still good (for the page it opens).
+    pub async fn setup_link_is_live(&self, token: &str) -> anyhow::Result<bool> {
+        if !setup_link::well_formed(token) {
+            return Ok(false);
+        }
+        Ok(grund_store::setup_links::is_live(
+            &self.state.pool,
+            &setup_link::digest(&self.state.secret, token),
+        )
+        .await?)
+    }
+
+    /// Creates the owner of a `single` instance through its setup link
+    /// (grund-docs design/auth.md §5): the account, confirmed on the owner's
+    /// word, and the instance's organisation, in the transaction that uses
+    /// the link. A form that does not validate writes nothing, and the link
+    /// keeps working until it expires.
+    pub async fn sign_up_owner(
+        &self,
+        token: &str,
+        form: SignupForm,
+        meta: &RequestMeta,
+    ) -> anyhow::Result<OwnerSignupOutcome> {
+        if self.state.config.organisations != crate::config::OrganisationMode::Single
+            || !self.setup_link_is_live(token).await?
+        {
+            return Ok(OwnerSignupOutcome::Expired);
+        }
+        let mut errors = FieldErrors::default();
+        let username = Username::parse(&form.username)
+            .map_err(|e| errors.username = Some(sentence(e)))
+            .ok();
+        let email = EmailAddress::parse(&form.email)
+            .map_err(|e| errors.email = Some(sentence(e)))
+            .ok();
+        if let Err(error) =
+            names::check_new_password(&form.password, username.as_ref(), email.as_ref())
+        {
+            errors.password = Some(sentence(error));
+        }
+        let (Some(username), Some(email)) = (username, email) else {
+            return Ok(OwnerSignupOutcome::Invalid(errors));
+        };
+        if !errors.is_empty() {
+            return Ok(OwnerSignupOutcome::Invalid(errors));
+        }
+        let phc = self.passwords.hash(&form.password).await?;
+        let digest = setup_link::digest(&self.state.secret, token);
+        let account_id = Uuid::now_v7();
+        let home = Home::NewInstance(Uuid::now_v7());
+        let now = Utc::now();
+        let created: Result<bool, WorkError> = async {
+            let mut work = Work::begin(&self.state.events, meta.request_id, "setup-link").await?;
+            if !grund_store::setup_links::redeem(work.sql(), &digest, account_id).await? {
+                return Ok(false);
+            }
+            work.account(
+                account_id,
+                AccountCommand::Register {
+                    username: username.clone(),
+                    organisation_id: home.organisation_id().unwrap_or_default(),
+                    method: RegistrationMethod::SetupLink,
+                    at: now,
+                },
+            )
+            .await?;
+            work.account(
+                account_id,
+                AccountCommand::VerifyEmail {
+                    email_digest: crypto::email_digest(email.normalized()),
+                    at: now,
+                },
+            )
+            .await?;
+            organisations::create_home(&self.state, &mut work, home, account_id, &username, now)
+                .await?;
+            accounts::insert_email(work.sql(), account_id, email.as_str(), email.normalized())
+                .await?;
+            accounts::set_password(work.sql(), account_id, &phc).await?;
+            insights::queue_account(&self.state, work.sql(), account_id, insights::PASSWORD)
+                .await?;
+            work.commit().await?;
+            Ok(true)
+        }
+        .await;
+        match created {
+            Ok(true) => {}
+            Ok(false) => return Ok(OwnerSignupOutcome::Expired),
+            Err(error) if organisations::is_instance_taken(&error) => {
+                return Ok(OwnerSignupOutcome::Expired);
+            }
+            Err(error) => return Err(error.into()),
+        }
+        tracing::info!(%account_id, "the instance's owner was created with its setup link");
+        if self.state.config.insights.enabled() {
+            wake(&self.state).await;
+        }
+        Ok(OwnerSignupOutcome::SignedIn {
+            account_id,
+            organisation: username.as_str().to_string(),
+        })
     }
 
     /// Whether an account has this normalised address.

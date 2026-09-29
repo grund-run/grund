@@ -36,11 +36,15 @@ pub enum Home {
     /// A new organisation named after the account (`multi`).
     Personal(Uuid),
     /// The instance's organisation, created now with the account as its
-    /// owner (`single`, first account).
+    /// owner (`single`, first account, through the owner's setup link).
     NewInstance(Uuid),
     /// Sign-up without an invitation is closed (`single`, after the first
     /// account).
     Closed,
+    /// Sign-up is closed because the instance has no owner yet: its first
+    /// account comes only from a setup link minted on its machine (`single`;
+    /// grund-docs design/auth.md §5).
+    Unclaimed,
 }
 
 impl Home {
@@ -48,18 +52,25 @@ impl Home {
     pub fn organisation_id(self) -> Option<Uuid> {
         match self {
             Home::Personal(id) | Home::NewInstance(id) => Some(id),
-            Home::Closed => None,
+            Home::Closed | Home::Unclaimed => None,
         }
+    }
+
+    /// Whether sign-up without an invitation creates nothing.
+    pub fn is_closed(self) -> bool {
+        matches!(self, Home::Closed | Home::Unclaimed)
     }
 }
 
-/// Decides where an account that signs up without an invitation lives.
+/// Decides where an account that signs up without an invitation lives. In
+/// `single` mode that is nowhere: the first account comes from the setup
+/// link, and later ones from invitations.
 pub async fn plan_home(state: &State) -> Result<Home, sqlx::Error> {
     Ok(match state.config.organisations {
         OrganisationMode::Multi => Home::Personal(Uuid::now_v7()),
         OrganisationMode::Single => match organisations::instance(&state.pool).await? {
             Some(_) => Home::Closed,
-            None => Home::NewInstance(Uuid::now_v7()),
+            None => Home::Unclaimed,
         },
     })
 }
@@ -79,7 +90,7 @@ pub async fn create_home(
     let (organisation_id, kind) = match home {
         Home::Personal(id) => (id, OrganisationKind::Personal),
         Home::NewInstance(id) => (id, OrganisationKind::Instance),
-        Home::Closed => return Ok(()),
+        Home::Closed | Home::Unclaimed => return Ok(()),
     };
     work.organisation(
         organisation_id,

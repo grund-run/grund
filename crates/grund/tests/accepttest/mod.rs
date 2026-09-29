@@ -14,5 +14,6 @@ mod organisations;
 mod pages;
 mod reset;
 mod sessions;
+mod setup;
 mod signup;
 mod social;

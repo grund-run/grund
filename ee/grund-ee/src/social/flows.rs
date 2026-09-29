@@ -597,7 +597,7 @@ impl Social {
             Err(error) => return Ok(CompleteOutcome::Invalid(format!("{error}."))),
         };
         let home = organisations::plan_home(&self.state).await?;
-        if home == Home::Closed {
+        if home.is_closed() {
             return Ok(CompleteOutcome::Invalid(INVITE_ONLY.into()));
         }
         if grund_store::organisations::slug_taken(&self.state.pool, username.as_str()).await? {

@@ -6,6 +6,12 @@
 # and grund serves https://grund.example.com itself, with a certificate it
 # orders from Let's Encrypt (TLS-ALPN-01 on 443: no port 80, no proxy).
 #
+# The first account, the instance's owner, needs no mail: once grund is up,
+#
+#   docker compose exec grund /grund setup-link
+#
+# prints a one-time link that creates it.
+#
 # This is how a self-hoster runs grund today, not only a development setup.
 # What it gives you, and what it deliberately does not (backups), is in
 # the README, "Self-hosting". Every setting is in .env.example; copy it to .env to
@@ -71,10 +77,14 @@ services:
       retries: 30
     restart: unless-stopped
 
-  # Catches every mail grund sends, so sign-up works with no mail server.
-  # Read them at http://localhost:8025. To deliver real mail instead, set
-  # GRUND_SMTP_URL in .env (see .env.example).
+  # Catches every mail grund sends and delivers none, to try password reset
+  # and invitations with no mail server. Off unless asked for, because the
+  # first account needs no mail (setup-link, above) and a mail catcher is not
+  # mail: in .env, COMPOSE_PROFILES=mail and GRUND_SMTP_URL=smtp://mailpit:1025,
+  # then read it at http://localhost:8025. For real mail, set GRUND_SMTP_URL
+  # to your provider instead (.env.example).
   mailpit:
+    profiles: [mail]
     image: axllent/mailpit:v1.31
     ports:
       - "127.0.0.1:${GRUND_MAILPIT_PORT:-8025}:8025"
@@ -94,8 +104,6 @@ services:
       postgres:
         condition: service_healthy
       nats:
-        condition: service_healthy
-      mailpit:
         condition: service_healthy
     # Every GRUND_* setting in .env reaches grund; the ones below are how this
     # file wires grund to its neighbours, and win over .env.
@@ -117,7 +125,8 @@ services:
       GRUND_DATABASE_PASSWORD_FILE: /var/lib/grund/postgres-password
       GRUND_SECRET_KEY_FILE: /var/lib/grund/secret.key
       GRUND_NATS_URL: nats://nats:4222
-      GRUND_SMTP_URL: ${GRUND_SMTP_URL:-smtp://mailpit:1025}
+      # Unset: mail waits in the outbox, and readiness reports it.
+      GRUND_SMTP_URL: ${GRUND_SMTP_URL:-}
       GRUND_MAIL_FROM: ${GRUND_MAIL_FROM:-grund <grund@localhost>}
       GRUND_LISTEN: 0.0.0.0:8080
       # The Machines page offers `curl -fsSL <GRUND_PUBLIC_URL>/install | sudo

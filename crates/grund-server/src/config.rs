@@ -136,7 +136,8 @@ pub struct ServeConfig {
 
     /// How the instance hands out organisations. `single` (the default, for
     /// self-hosting): one organisation, created with the first account, which
-    /// owns it; everyone after that joins by invitation. `multi` (grund's
+    /// owns it and is made with `grund setup-link`; everyone after that joins
+    /// by invitation. `multi` (grund's
     /// hosted instance): every sign-up gets an organisation named after it,
     /// and anyone signed in may create more.
     #[arg(
@@ -157,9 +158,10 @@ pub struct ServeConfig {
     #[arg(long, env = "GRUND_OPERATOR_ORGANISATION")]
     pub operator_organisation: Option<String>,
 
-    /// Whether sign-up without an invitation is open at all. Off, only
-    /// invitations create accounts (and, in `single` mode, the first
-    /// account cannot be created: leave it on until the admin exists).
+    /// Whether sign-up without an invitation is open at all, in `multi`
+    /// mode. Off, only invitations create accounts. A `single` instance's
+    /// sign-up form is closed either way: its first account comes from
+    /// `grund setup-link`, and later ones from invitations.
     #[arg(long, env = "GRUND_SIGNUP_ENABLED", default_value_t = true, action = clap::ArgAction::Set)]
     pub signup_enabled: bool,
 

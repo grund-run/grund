@@ -21,6 +21,7 @@ pub const TEMPLATES: &[(&str, &str)] = embedded![
     "components/ui.html.jinja",
     "pages/login.html.jinja",
     "pages/signup.html.jinja",
+    "pages/signup-owner.html.jinja",
     "pages/message.html.jinja",
     "pages/verify.html.jinja",
     "pages/reset.html.jinja",

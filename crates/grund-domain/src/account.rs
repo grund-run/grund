@@ -16,7 +16,12 @@ pub const ACCOUNT_CATEGORY: &str = "grund-account";
 #[serde(rename_all = "snake_case")]
 pub enum RegistrationMethod {
     Password,
-    Social { provider: String },
+    Social {
+        provider: String,
+    },
+    /// The owner of a `single` instance, through the setup link minted on its
+    /// machine (grund-docs design/auth.md §5). It has a password too.
+    SetupLink,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

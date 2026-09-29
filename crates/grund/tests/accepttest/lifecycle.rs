@@ -129,7 +129,7 @@ async fn the_instance_organisation_cannot_be_deleted() -> anyhow::Result<()> {
     else {
         return Ok(());
     };
-    let admin = given.a_signed_in_account().await?;
+    let admin = given.the_owner().await?;
     let org = admin.username.clone();
     when.submitting(
         &format!("/{org}/settings"),

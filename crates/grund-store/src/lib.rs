@@ -14,6 +14,7 @@ pub mod organisations;
 pub mod outbox;
 pub mod projections;
 pub mod sessions;
+pub mod setup_links;
 pub mod social;
 pub mod throttle;
 pub mod tokens;

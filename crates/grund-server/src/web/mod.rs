@@ -78,6 +78,7 @@ pub fn router(state: State) -> Router {
         .route("/logout", post(pages::logout))
         .route("/signup", get(pages::signup_form).post(pages::signup))
         .route("/signup/sent", get(pages::signup_sent))
+        .route(crate::setup_link::PATH, get(pages::owner_form).post(pages::owner_signup))
         .route("/verify", get(pages::verify_form).post(pages::verify))
         .route("/reset", get(pages::reset_form).post(pages::reset))
         .route("/reset/sent", get(pages::reset_sent))

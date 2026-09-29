@@ -14,11 +14,10 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::{
-    config::OrganisationMode,
     services::{
         accounts::{
-            AccountsState, FieldErrors, LoginOutcome, ResetOutcome, ResetRequestOutcome,
-            SignupForm, SignupOutcome,
+            AccountsState, FieldErrors, LoginOutcome, OwnerSignupOutcome, ResetOutcome,
+            ResetRequestOutcome, SignupForm, SignupOutcome,
         },
         organisations::{Home, OrganisationsState},
         sessions::{Session, SessionsState},
@@ -410,8 +409,10 @@ pub async fn signup_form(AxumState(state): AxumState<State>, browser: Browser) -
     if !state.config.signup_enabled {
         return signup_closed(&state, &browser);
     }
-    if crate::services::organisations::plan_home(&state).await? == Home::Closed {
-        return signup_closed(&state, &browser);
+    match crate::services::organisations::plan_home(&state).await? {
+        Home::Closed => return signup_closed(&state, &browser),
+        Home::Unclaimed => return no_owner(&state, &browser),
+        Home::Personal(_) | Home::NewInstance(_) => {}
     }
     signup_page(
         &state,
@@ -434,6 +435,17 @@ fn signup_closed(state: &State, browser: &Browser) -> PageResult {
     )
 }
 
+fn no_owner(state: &State, browser: &Browser) -> PageResult {
+    message(
+        state,
+        browser,
+        StatusCode::FORBIDDEN,
+        "This grund has no owner yet",
+        "Its first account is created with a one-time link made on the machine grund runs on. There, run: docker compose exec grund /grund setup-link",
+        Some(("/login", "Sign in")),
+    )
+}
+
 fn signup_page(
     state: &State,
     browser: &Browser,
@@ -448,7 +460,6 @@ fn signup_page(
         status,
         "pages/signup.html.jinja",
         context! {
-            single => state.config.organisations == OrganisationMode::Single,
             csrf => browser.csrf_token(),
             username => form.username,
             email => form.email,
@@ -498,6 +509,7 @@ pub async fn signup(
             "",
         ),
         SignupOutcome::Closed => signup_closed(&state, &browser),
+        SignupOutcome::NoOwner => no_owner(&state, &browser),
         SignupOutcome::RateLimited => signup_page(
             &state,
             &browser,
@@ -506,6 +518,109 @@ pub async fn signup(
             &FieldErrors::default(),
             "Too many requests from your network. Try again later.",
         ),
+    }
+}
+
+/// `/signup/owner?token=`: the owner's setup link (grund-docs design/auth.md
+/// §5). Opening it uses nothing.
+pub async fn owner_form(
+    AxumState(state): AxumState<State>,
+    browser: Browser,
+    Query(query): Query<TokenQuery>,
+) -> PageResult {
+    if !state.accounts().setup_link_is_live(&query.token).await? {
+        return owner_link_expired(&state, &browser);
+    }
+    owner_page(
+        &state,
+        &browser,
+        StatusCode::OK,
+        &query.token,
+        &SignupForm::default(),
+        &FieldErrors::default(),
+    )
+}
+
+fn owner_page(
+    state: &State,
+    browser: &Browser,
+    status: StatusCode,
+    token: &str,
+    form: &SignupForm,
+    errors: &FieldErrors,
+) -> PageResult {
+    let response = render(
+        state,
+        browser,
+        status,
+        "pages/signup-owner.html.jinja",
+        context! {
+            csrf => browser.csrf_token(),
+            token,
+            username => form.username,
+            email => form.email,
+            errors => Value::from_serialize(errors),
+        },
+    )?;
+    Ok(with_referrer_same_origin(response))
+}
+
+fn owner_link_expired(state: &State, browser: &Browser) -> PageResult {
+    message(
+        state,
+        browser,
+        StatusCode::OK,
+        "This setup link has expired",
+        "A setup link works once, for an hour, and only while this grund has no account. If it has none yet, make a new link on its machine: docker compose exec grund /grund setup-link",
+        Some(("/login", "Sign in")),
+    )
+}
+
+#[derive(Deserialize)]
+pub struct OwnerFields {
+    #[serde(default)]
+    csrf: String,
+    #[serde(default)]
+    token: String,
+    #[serde(default)]
+    username: String,
+    #[serde(default)]
+    email: String,
+    #[serde(default)]
+    password: String,
+}
+
+pub async fn owner_signup(
+    AxumState(state): AxumState<State>,
+    browser: Browser,
+    Form(fields): Form<OwnerFields>,
+) -> PageResult {
+    if !browser.form_is_genuine(&fields.csrf) {
+        return forged(&state, &browser);
+    }
+    let form = SignupForm {
+        username: fields.username,
+        email: fields.email,
+        password: fields.password,
+    };
+    match state
+        .accounts()
+        .sign_up_owner(&fields.token, form.clone(), &browser.meta())
+        .await?
+    {
+        OwnerSignupOutcome::SignedIn {
+            account_id,
+            organisation,
+        } => start_session(&state, &browser, account_id, &format!("/{organisation}")).await,
+        OwnerSignupOutcome::Invalid(errors) => owner_page(
+            &state,
+            &browser,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            &fields.token,
+            &form,
+            &errors,
+        ),
+        OwnerSignupOutcome::Expired => owner_link_expired(&state, &browser),
     }
 }
 
