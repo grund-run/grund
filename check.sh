@@ -33,11 +33,13 @@ echo "static binary ($rust_image, as CI builds it)"
 docker run --rm -v "$PWD":/src -w /src \
   -v grund-cargo:/usr/local/cargo/registry \
   -e CARGO_TARGET_DIR=/src/target/musl -e OWNER="$(id -u):$(id -g)" \
-  "$rust_image" sh -c 'apk add --no-cache -q musl-dev binutils protobuf-dev \
+  "$rust_image" sh -c 'apk add --no-cache -q musl-dev binutils protobuf-dev ca-certificates \
     && cargo build --locked --release -p grund; status=$?; chown -R "$OWNER" target/musl; [ $status -eq 0 ] \
-    && ! readelf -d target/musl/release/grund | grep -q NEEDED'
-mkdir -p .image
+    && ! readelf -d target/musl/release/grund | grep -q NEEDED \
+    && cp /etc/ssl/certs/ca-certificates.crt target/musl/ca-certificates.crt && chown "$OWNER" target/musl/ca-certificates.crt'
+mkdir -p .image/var/lib/grund
 cp target/musl/release/grund .image/grund
+cp target/musl/ca-certificates.crt .image/ca-certificates.crt
 echo "  ok   statically linked ($(du -h .image/grund | cut -f1))"
 
 echo "image"

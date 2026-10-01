@@ -225,7 +225,9 @@ steps:
         from_secret: sccache_memcached_endpoint
       CARGO_INCREMENTAL: "0"
     commands:
-      - apk add --no-cache musl-dev binutils protobuf-dev sccache
+      # ca-certificates: the CA bundle the image ships (Dockerfile.prebuilt),
+      # brought up to date here so the image build fetches nothing.
+      - apk add --no-cache musl-dev binutils protobuf-dev sccache ca-certificates
       - hp="$${SCCACHE_MEMCACHED_ENDPOINT#tcp://}"; nc -z -w 3 "$${hp%:*}" "$${hp##*:}" || { echo "the compile cache is unreachable, so this step compiles without it"; unset RUSTC_WRAPPER; }
       - cargo build --locked --release -p grund -p grund-guest
       - if [ -n "$${RUSTC_WRAPPER:-}" ]; then sccache --show-stats; fi
@@ -236,7 +238,8 @@ steps:
       - tr -c 0-9a-f "\n" < target/release/grund | grep -q "$${CI_COMMIT_SHA}" || { echo "grund does not carry revision $${CI_COMMIT_SHA}"; exit 1; }
       # Stage the binary first and run the staged file, so the process the
       # accepttests assert against is byte for byte the one that gets packaged.
-      - mkdir -p .image .dist && cp target/release/grund .image/grund && cp target/release/grund-guest .dist/grund-guest
+      - mkdir -p .image/var/lib/grund .dist && cp target/release/grund .image/grund && cp target/release/grund-guest .dist/grund-guest
+      - cp /etc/ssl/certs/ca-certificates.crt .image/ca-certificates.crt
 
   contract:
     # Assert against the real binary, not a mock of it: the accepttest binary
