@@ -40,6 +40,12 @@ kjuulh: "kubernetes-app": {
 				replicas:  1
 				env_vars: {
 					GRUND_PUBLIC_URL: "https://dev.app.grund.sh"
+					// dev's grund orders the relay's certificate from Let's Encrypt
+					// (design/traffic.md §5.7): the relay makes its key and CSR and
+					// answers TLS-ALPN-01 itself. With no GRUND_DOMAIN, this orders
+					// for relays only; setting it agrees to Let's Encrypt's
+					// subscriber agreement.
+					GRUND_ACME_DIRECTORY: "https://acme-v02.api.letsencrypt.org/directory"
 					GRUND_MAIL_FROM:  "grund dev <grund@dev.app.grund.sh>"
 					// Confirmed accounts are reported to the insights service in
 					// the same namespace, in-cluster, plain http.
