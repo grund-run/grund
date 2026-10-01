@@ -21,6 +21,7 @@ grund-proto = { path = "crates/grund-proto" }
 grund-server = { path = "crates/grund-server" }
 grund-store = { path = "crates/grund-store" }
 grund-tls = { path = "crates/grund-tls" }
+grund-containers = { path = "crates/grund-containers" }
 
 anyhow = "1"
 async-nats = "0.50"

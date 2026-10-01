@@ -1,0 +1,14 @@
+These .proto files are containerd's API, copied unchanged from
+https://github.com/containerd/containerd at tag v2.4.1 (directory api/),
+fetched on 2026-10-01 from
+https://raw.githubusercontent.com/containerd/containerd/v2.4.1/api/<path>.
+
+Copyright The containerd Authors. Licensed under the Apache License,
+Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0); each file keeps
+its own license header where upstream has one.
+
+Only the services and types grund's runtime uses are here: containers,
+content, images, snapshots, tasks, transfer and version, with the types
+they import (descriptor, metrics, mount, platform, task, transfer's
+registry and imagestore, runc's options). To update, fetch the same paths
+at the new tag and rebuild.

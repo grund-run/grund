@@ -1,0 +1,38 @@
+[package]
+name = "grund-containers"
+description = "grund's own containerd on a machine grund manages: what grund agent runs an organisation's app replicas with"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+license = "AGPL-3.0-only"
+
+
+
+[dependencies]
+anyhow.workspace = true
+buffa = { version = "=0.9.2", features = ["json"] }
+buffa-types = { version = "=0.9.2", features = ["json"] }
+connectrpc = { version = "=0.9.1", features = ["client"] }
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+grund-agent.workspace = true
+grund-tls.workspace = true
+hex.workspace = true
+http = "1"
+libc = "0.2"
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tar = { version = "0.4", default-features = false }
+tokio = { workspace = true, features = ["fs", "io-util", "net", "process", "time"] }
+tracing.workspace = true
+uuid.workspace = true
+
+[build-dependencies]
+connectrpc-build = "=0.9.0"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

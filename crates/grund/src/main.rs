@@ -140,7 +140,7 @@ struct AgentCommand {
     #[command(flatten)]
     agent: grund_agent::agent::AgentArgs,
 
-    #[arg(long, env = "GRUND_APP_RUNTIME", value_parser = ["none", "simulated"], default_value = "none", help = "What runs apps' containers: none, or simulated (nothing runs; for tests and demos)")]
+    #[arg(long, env = "GRUND_APP_RUNTIME", value_parser = ["containerd", "none", "simulated"], default_value = "containerd", help = "What runs apps' containers: containerd (grund's own, fetched and pinned the first time a replica runs; needs root and cgroup v2), none, or simulated (nothing runs; for tests and demos)")]
     app_runtime: String,
 
     #[arg(long, env = "GRUND_VM_RUNTIME", value_parser = ["none", "simulated", "firecracker"], default_value = "none", help = "What runs VMs: none, firecracker (microVMs, needs /dev/kvm), or simulated (each VM is `grund join` run with its metadata; for tests and demos)")]
@@ -221,6 +221,14 @@ async fn agent<R: grund_agent::vm::VmRuntime>(
                 &command.agent,
                 vms,
                 grund_agent::simulated::SimulatedContainers::new(dir),
+            )
+            .await
+        }
+        "containerd" => {
+            grund_agent::agent::run(
+                &command.agent,
+                vms,
+                grund_containers::Containerd::new(grund_containers::Config::default()),
             )
             .await
         }
