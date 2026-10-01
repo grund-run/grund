@@ -136,17 +136,19 @@ async fn a_stack() -> anyhow::Result<Option<Stack>> {
 
 impl Stack {
     fn edges(&self, args: &[&str]) -> anyhow::Result<std::process::Output> {
-        Ok(std::process::Command::new(env!("CARGO_BIN_EXE_grund"))
-            .arg("edges")
-            .args(args)
-            .env_clear()
-            .env("DATABASE_URL", database_url(&self.when))
-            .output()?)
+        Ok(
+            std::process::Command::new(crate::accepttest::fixtures::grund_binary())
+                .arg("edges")
+                .args(args)
+                .env_clear()
+                .env("DATABASE_URL", database_url(&self.when))
+                .output()?,
+        )
     }
 
     fn start_edge(&mut self) -> anyhow::Result<()> {
         std::fs::create_dir_all(&self.edge_dir)?;
-        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_grund"));
+        let mut command = std::process::Command::new(crate::accepttest::fixtures::grund_binary());
         if !self.edge_dir.join("edge.key").exists() {
             let output = self.edges(&["token", &self.edge_host])?;
             anyhow::ensure!(
@@ -208,7 +210,7 @@ impl Stack {
         let joined = {
             let dir = dir.clone();
             tokio::task::spawn_blocking(move || {
-                std::process::Command::new(env!("CARGO_BIN_EXE_grund"))
+                std::process::Command::new(crate::accepttest::fixtures::grund_binary())
                     .arg("join")
                     .arg("--data-dir")
                     .arg(&dir)
@@ -225,7 +227,7 @@ impl Stack {
             String::from_utf8_lossy(&joined.stderr)
         );
         let log = std::fs::File::create(dir.join("agent.log"))?;
-        let child = std::process::Command::new(env!("CARGO_BIN_EXE_grund"))
+        let child = std::process::Command::new(crate::accepttest::fixtures::grund_binary())
             .args([
                 "agent",
                 "--app-runtime",
@@ -850,7 +852,7 @@ async fn the_edge_and_the_gate_keep_apps_apart_and_refuse_what_is_not_theirs() -
         "{raw}"
     );
 
-    let suspended = std::process::Command::new(env!("CARGO_BIN_EXE_grund"))
+    let suspended = std::process::Command::new(crate::accepttest::fixtures::grund_binary())
         .args([
             "apps",
             "suspend",

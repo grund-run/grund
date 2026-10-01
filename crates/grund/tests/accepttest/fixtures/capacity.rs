@@ -131,7 +131,7 @@ async fn serve(mut stream: TcpStream, shared: Arc<Mutex<Shared>>) -> anyhow::Res
             .unwrap_or_default()
             .to_string();
         tokio::task::spawn_blocking(move || {
-            std::process::Command::new(env!("CARGO_BIN_EXE_grund"))
+            std::process::Command::new(super::grund_binary())
                 .args(["join", "--url", &url, &token])
                 .arg("--data-dir")
                 .arg(data_dir)

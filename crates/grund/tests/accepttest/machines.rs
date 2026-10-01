@@ -636,7 +636,7 @@ async fn grund_join(
     args: &[&str],
     env: &[(&str, &str)],
 ) -> std::process::Output {
-    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_grund"));
+    let mut command = std::process::Command::new(crate::accepttest::fixtures::grund_binary());
     command
         .arg("join")
         .arg("--data-dir")
@@ -1096,7 +1096,7 @@ async fn a_machine_that_registers_before_the_provider_answers_still_gets_its_pro
 }
 
 async fn grund_agent_once(dir: &std::path::Path) -> std::process::Output {
-    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_grund"));
+    let mut command = std::process::Command::new(crate::accepttest::fixtures::grund_binary());
     command
         .args(["agent", "--once", "--vm-runtime", "simulated", "--data-dir"])
         .arg(dir)
@@ -1897,7 +1897,7 @@ async fn an_instance_serving_its_installer_hands_out_its_script_and_its_own_bina
     );
 
     let name = format!("grund-{}-{}", std::env::consts::OS, std::env::consts::ARCH);
-    let executable = std::path::Path::new(env!("CARGO_BIN_EXE_grund"));
+    let executable = std::path::Path::new(crate::accepttest::fixtures::grund_binary());
     let expected = {
         let path = executable.to_path_buf();
         tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
@@ -2016,7 +2016,7 @@ async fn a_relay_on_its_own_admits_only_what_grund_answers_and_cuts_a_revoked_ma
         std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("grund-relay-{port}.log")),
     )?;
     let _relay = Running(
-        std::process::Command::new(env!("CARGO_BIN_EXE_grund"))
+        std::process::Command::new(crate::accepttest::fixtures::grund_binary())
             .arg("relay")
             .args(["--listen", &format!("127.0.0.1:{port}")])
             .args(["--quic-listen", &format!("127.0.0.1:{}", free_port()?)])

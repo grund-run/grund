@@ -212,12 +212,7 @@ impl Fixture {
             .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect();
-        lab.spawn(
-            "lh",
-            &[env!("CARGO_BIN_EXE_grund"), "serve"],
-            &env,
-            "grund.log",
-        )?;
+        lab.spawn("lh", &[grund_binary(), "serve"], &env, "grund.log")?;
         let mut origin = Origin::parse(PUBLIC_URL)?;
         origin.connect = Some(("127.0.0.1".into(), port));
         origin.roots = Some(std::sync::Arc::new(lab.roots()?));
@@ -274,12 +269,7 @@ impl Fixture {
             .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect();
-        lab.spawn(
-            "lh",
-            &[env!("CARGO_BIN_EXE_grund"), "serve"],
-            &env,
-            "grund.log",
-        )?;
+        lab.spawn("lh", &[grund_binary(), "serve"], &env, "grund.log")?;
         self.wait_until_live(Some(&lab.work.join("grund.log")))
             .await
     }
@@ -323,7 +313,7 @@ impl Fixture {
             self.lab.is_none() && self.log_path.is_some(),
             "commands run beside a spawned local instance"
         );
-        let mut command = Command::new(env!("CARGO_BIN_EXE_grund"));
+        let mut command = Command::new(grund_binary());
         command.args(args).env_clear();
         for (name, value) in &self.settings {
             if !extra.iter().any(|(key, _)| key == name) {
@@ -451,7 +441,7 @@ impl Ran {
 }
 
 fn serve(settings: &[(String, String)], log: File) -> anyhow::Result<Child> {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_grund"));
+    let mut command = Command::new(grund_binary());
     command
         .arg("serve")
         .env_clear()
@@ -464,7 +454,7 @@ fn serve(settings: &[(String, String)], log: File) -> anyhow::Result<Child> {
 }
 
 pub async fn refused_at_start(extra: &[(&str, &str)]) -> anyhow::Result<String> {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_grund"));
+    let mut command = Command::new(grund_binary());
     command
         .arg("serve")
         .env_clear()
@@ -491,12 +481,40 @@ pub async fn refused_at_start(extra: &[(&str, &str)]) -> anyhow::Result<String> 
     ))
 }
 
+pub fn grund_binary() -> &'static str {
+    static BINARY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    BINARY.get_or_init(|| {
+        std::env::var("GRUND_ACCEPT_GRUND_BIN")
+            .ok()
+            .filter(|path| !path.is_empty())
+            .unwrap_or_else(|| env!("CARGO_BIN_EXE_grund").to_string())
+    })
+}
+
+fn port_block() -> u32 {
+    static BLOCK: std::sync::OnceLock<(u32, std::net::TcpListener)> = std::sync::OnceLock::new();
+    BLOCK
+        .get_or_init(|| {
+            let first = std::process::id() % 24;
+            (0..24)
+                .map(|step| (first + step) % 24)
+                .find_map(|block| {
+                    let base = u16::try_from(20_000 + block * 500).expect("below 32000");
+                    std::net::TcpListener::bind(("127.0.0.1", base))
+                        .ok()
+                        .map(|claim| (block, claim))
+                })
+                .expect("every port block is claimed by another test binary")
+        })
+        .0
+}
+
 pub fn free_port() -> u16 {
-    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let base = 20_000 + (std::process::id() % 24) * 500;
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+    let base = 20_000 + port_block() * 500;
     loop {
         let offset = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        assert!(offset < 500, "this test binary ran out of its 500 ports");
+        assert!(offset < 500, "this test binary ran out of its 499 ports");
         let port = u16::try_from(base + offset).expect("below 32000");
         let free = ["127.0.0.1:", "0.0.0.0:"].iter().all(|host| {
             std::net::TcpListener::bind(format!("{host}{port}")).is_ok()

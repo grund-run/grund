@@ -90,12 +90,14 @@ fn database_url(when: &When) -> String {
 }
 
 fn grund_relays(when: &When, args: &[&str]) -> anyhow::Result<std::process::Output> {
-    Ok(std::process::Command::new(env!("CARGO_BIN_EXE_grund"))
-        .arg("relays")
-        .args(args)
-        .env_clear()
-        .env("DATABASE_URL", database_url(when))
-        .output()?)
+    Ok(
+        std::process::Command::new(crate::accepttest::fixtures::grund_binary())
+            .arg("relays")
+            .args(args)
+            .env_clear()
+            .env("DATABASE_URL", database_url(when))
+            .output()?,
+    )
 }
 
 fn a_token_for(when: &When, host: &str) -> anyhow::Result<String> {
@@ -125,7 +127,7 @@ fn a_relay_process(
         .create(true)
         .append(true)
         .open(log_path(dir))?;
-    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_grund"));
+    let mut command = std::process::Command::new(crate::accepttest::fixtures::grund_binary());
     command
         .arg("relay")
         .args(["--listen", &format!("127.0.0.1:{port}")])

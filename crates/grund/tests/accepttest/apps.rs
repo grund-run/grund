@@ -73,7 +73,7 @@ async fn a_machine(
     let joined = {
         let dir = dir.clone();
         tokio::task::spawn_blocking(move || {
-            std::process::Command::new(env!("CARGO_BIN_EXE_grund"))
+            std::process::Command::new(crate::accepttest::fixtures::grund_binary())
                 .arg("join")
                 .arg("--data-dir")
                 .arg(&dir)
@@ -90,7 +90,7 @@ async fn a_machine(
         String::from_utf8_lossy(&joined.stderr)
     );
     let log = std::fs::File::create(dir.join("agent.log"))?;
-    let child = std::process::Command::new(env!("CARGO_BIN_EXE_grund"))
+    let child = std::process::Command::new(crate::accepttest::fixtures::grund_binary())
         .args([
             "agent",
             "--app-runtime",
