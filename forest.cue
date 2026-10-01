@@ -22,7 +22,7 @@ _destinationTypes: {
 
 dependencies: {
 	"forest/deployment": version:        "0.3.0"
-	"kjuulh/kubernetes-app": version:    "0.1.13"
+	"kjuulh/kubernetes-app": version:    "0.1.15"
 	"kjuulh/woodpecker-forest": version: "0.1.10"
 }
 
@@ -173,9 +173,21 @@ kjuulh: "kubernetes-app": {
 			port:                  "http"
 			initial_delay_seconds: 3
 			period_seconds:        10
-			timeout_seconds:       3
-			failure_threshold:     6
+			// Readiness alone, every 2 s: a new pod listens 0.23 s after it
+			// starts but waited for the next 10 s probe, 13 s to Ready, and
+			// every rollout waited with it. Readiness reads cached health
+			// results, so probing it often costs nothing. With
+			// failure_threshold 6 a replica leaves rotation after 12 s of
+			// failures instead of 60 s; one missed 5 s health check does not.
+			readiness_period_seconds: 2
+			timeout_seconds:          3
+			failure_threshold:        6
 		}
+		// The old pod keeps listening 5 s after the kubelet decides to stop
+		// it, while Traefik and the endpoints drop it: without this, two
+		// requests failed at every rollout. Inside the 30 s grace with
+		// GRUND_SHUTDOWN_GRACE's 10 s.
+		pre_stop_sleep_seconds: 5
 	}
 }
 
