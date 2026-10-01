@@ -239,6 +239,19 @@ async fn an_app_runs_rolls_out_rolls_back_on_its_own_and_restarts_a_killed_copy(
     )
     .await?;
     anyhow::ensure!(running["replicas"][0]["machineName"] == "box", "{running}");
+    when.calling(
+        &format!("{MACHINES}/ListMachines"),
+        &json!({"organisation": org}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    let capabilities = &then.json()?["machines"][0]["capabilities"];
+    anyhow::ensure!(
+        capabilities["apps"] == true
+            && capabilities["arch"] == std::env::consts::ARCH
+            && capabilities["memoryMib"] == "4096",
+        "the machine's apps capability is shown as it reported it: {capabilities}"
+    );
     let containers = agent.containers();
     anyhow::ensure!(containers.len() == 2, "{containers:?}");
     anyhow::ensure!(

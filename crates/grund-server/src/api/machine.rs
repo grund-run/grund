@@ -215,6 +215,16 @@ fn capabilities(value: &serde_json::Value) -> agent::Capabilities {
         egress: value["egress"].as_bool().unwrap_or(false),
         free_vcpus: value["free_vcpus"].as_u64().unwrap_or(0) as u32,
         free_memory_mib: value["free_memory_mib"].as_u64().unwrap_or(0) as u32,
+        apps: value["apps"].as_bool().unwrap_or(false),
+        arch: value["arch"].as_str().unwrap_or_default().to_string(),
+        memory_mib: value["memory_mib"].as_u64().unwrap_or(0),
+        cpu_millis: value["cpu_millis"].as_u64().unwrap_or(0) as u32,
+        apps_unavailable_reason: value["apps_unavailable_reason"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+        max_replica_memory_mib: value["max_replica_memory_mib"].as_u64().unwrap_or(0),
+        max_replica_cpu_millis: value["max_replica_cpu_millis"].as_u64().unwrap_or(0) as u32,
         ..Default::default()
     }
 }
