@@ -13,20 +13,31 @@ use super::*;
 
 #[derive(Default)]
 struct Backends {
-    addrs: Mutex<HashMap<String, SocketAddr>>,
+    addrs: Mutex<HashMap<IpAddr, SocketAddr>>,
     stops: Mutex<HashMap<String, CancellationToken>>,
+}
+
+fn address_of(id: &str) -> IpAddr {
+    let mut segments = [0xfd00u16, 0, 0, 1, 0, 0, 0, 0];
+    for (i, b) in id.bytes().enumerate() {
+        segments[4 + i % 4] = segments[4 + i % 4]
+            .wrapping_mul(31)
+            .wrapping_add(u16::from(b));
+    }
+    IpAddr::V6(std::net::Ipv6Addr::from(segments))
 }
 
 impl Dial for Backends {
     fn connect(
         &self,
-        replica_id: String,
-        _port: u16,
+        address: IpAddr,
+        port: u16,
     ) -> Pin<Box<dyn Future<Output = std::io::Result<TcpStream>> + Send + '_>> {
-        let addr = self.addrs.lock().unwrap().get(&replica_id).copied();
+        let mapped = self.addrs.lock().unwrap().get(&address).copied();
         Box::pin(async move {
-            match addr {
+            match mapped {
                 Some(addr) => TcpStream::connect(addr).await,
+                None if address.is_loopback() => TcpStream::connect((address, port)).await,
                 None => Err(std::io::Error::from(std::io::ErrorKind::ConnectionRefused)),
             }
         })
@@ -38,7 +49,7 @@ impl Backends {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let stop = CancellationToken::new();
-        self.addrs.lock().unwrap().insert(id.into(), addr);
+        self.addrs.lock().unwrap().insert(address_of(id), addr);
         self.stops.lock().unwrap().insert(id.into(), stop.clone());
         let id = id.to_string();
         tokio::spawn(async move {
@@ -122,6 +133,7 @@ fn ready(document: &DesiredState, ready: &[&str]) -> Vec<ReplicaEndpoint> {
     let mut endpoints = endpoints_from(Some(document), &[]);
     for e in &mut endpoints {
         e.ready = ready.contains(&e.replica_id.as_str());
+        e.address = Some(address_of(&e.replica_id));
     }
     endpoints
 }
@@ -258,7 +270,7 @@ async fn a_killed_copy_costs_no_request_and_is_ejected_at_once() {
         get(&mut sender, "photos-kasper.grund.test", "/", &[]).await;
     }
     backends.kill("a1");
-    backends.addrs.lock().unwrap().remove("a1");
+    backends.addrs.lock().unwrap().remove(&address_of("a1"));
     for _ in 0..50 {
         let (status, _, body) = get(&mut sender, "photos-kasper.grund.test", "/", &[]).await;
         assert_eq!((status, body.lines().next()), (StatusCode::OK, Some("a2")));
@@ -424,7 +436,7 @@ async fn a_body_up_to_the_retry_buffer_is_retried_and_a_websocket_upgrade_passes
         .addrs
         .lock()
         .unwrap()
-        .insert("ws".into(), echo.local_addr().unwrap());
+        .insert(address_of("ws"), echo.local_addr().unwrap());
     tokio::spawn(async move {
         let (mut stream, _) = echo.accept().await.unwrap();
         let mut head = vec![0u8; 4096];

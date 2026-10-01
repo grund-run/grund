@@ -42,11 +42,9 @@ pub async fn run(netns: Option<PathBuf>, probe: Probe, timeout: Duration) -> Res
 }
 
 /// Opens a TCP connection to `127.0.0.1:port` inside the network namespace
-/// at `netns`, for the gate (grund-docs design/traffic.md §7.4): a thread
-/// enters the namespace, connects, and ends, and the socket stays in the
-/// namespace it was made in. This is how the gate reaches a container whose
-/// namespace has loopback only; with an address of its own, the runtime
-/// connects to that from the host instead.
+/// at `netns`: a thread enters the namespace, connects, and ends, and the
+/// socket stays in the namespace it was made in. The agent's forward for an
+/// IPv4-only replica relays through it ([`crate::forward`]).
 pub async fn connect(
     netns: PathBuf,
     port: u16,

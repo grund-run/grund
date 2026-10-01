@@ -66,7 +66,6 @@ use hyper_util::{
 use tokio::{net::TcpStream, sync::watch};
 use tokio_util::sync::WaitForCancellationFutureOwned;
 
-use crate::runtime::ContainerRuntime;
 use routes::{AppRoute, Candidate, Copies, CopyState, Table, Target, Upstream};
 pub use routes::{EndpointPort, RemoteCopy, ReplicaEndpoint, endpoints_from};
 
@@ -115,29 +114,30 @@ impl Default for Limits {
     }
 }
 
-/// How the gate reaches a local copy: the container runtime's `connect`.
+/// How the gate reaches a copy, here or on another machine: a TCP
+/// connection to its own address (grund-docs design/apps.md §12.2), which the
+/// private network carries to it. [`Direct`] in the agent; tests stand in
+/// their own servers.
 pub trait Dial: Send + Sync + 'static {
     fn connect(
         &self,
-        replica_id: String,
+        address: IpAddr,
         port: u16,
     ) -> Pin<Box<dyn Future<Output = std::io::Result<TcpStream>> + Send + '_>>;
 }
 
-/// [`Dial`] through a [`ContainerRuntime`].
-pub struct RuntimeDial<C>(pub Arc<C>);
+/// [`Dial`] by connecting to the copy's address from this machine.
+pub struct Direct;
 
-impl<C: ContainerRuntime + 'static> Dial for RuntimeDial<C> {
+impl Dial for Direct {
     fn connect(
         &self,
-        replica_id: String,
+        address: IpAddr,
         port: u16,
     ) -> Pin<Box<dyn Future<Output = std::io::Result<TcpStream>> + Send + '_>> {
-        Box::pin(async move { self.0.connect(&replica_id, port).await })
+        Box::pin(async move { TcpStream::connect((address, port)).await })
     }
 }
-
-const LOCAL_SUFFIX: &str = ".replica.grund";
 
 #[derive(Clone)]
 struct Connector {
@@ -161,16 +161,12 @@ impl tower_service::Service<Uri> for Connector {
             let host = uri.host().unwrap_or_default().to_string();
             let port = uri.port_u16().unwrap_or(80);
             let connecting = async {
-                if let Some(replica_id) = host.strip_suffix(LOCAL_SUFFIX) {
-                    dial.connect(replica_id.to_string(), port).await
-                } else {
-                    let ip: IpAddr = host
-                        .trim_start_matches('[')
-                        .trim_end_matches(']')
-                        .parse()
-                        .map_err(|_| std::io::Error::other("not a copy's address"))?;
-                    TcpStream::connect((ip, port)).await
-                }
+                let ip: IpAddr = host
+                    .trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .parse()
+                    .map_err(|_| std::io::Error::other("not a copy's address"))?;
+                dial.connect(ip, port).await
             };
             let stream = tokio::time::timeout(timeout, connecting)
                 .await
@@ -184,16 +180,12 @@ impl tower_service::Service<Uri> for Connector {
 }
 
 fn authority(target: &Target) -> String {
-    match target {
-        Target::Local { replica_id, port } => format!("{replica_id}{LOCAL_SUFFIX}:{port}"),
-        Target::Remote {
-            address: IpAddr::V6(ip),
-            port,
-        } => format!("[{ip}]:{port}"),
-        Target::Remote {
-            address: IpAddr::V4(ip),
-            port,
-        } => format!("{ip}:{port}"),
+    let (address, port) = match target {
+        Target::Local { address, port, .. } | Target::Remote { address, port } => (address, port),
+    };
+    match address {
+        IpAddr::V6(ip) => format!("[{ip}]:{port}"),
+        IpAddr::V4(ip) => format!("{ip}:{port}"),
     }
 }
 

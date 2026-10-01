@@ -146,8 +146,15 @@ impl CopyState {
 /// Where one pick sends a request.
 #[derive(Debug, Clone)]
 pub enum Target {
-    Local { replica_id: String, port: u16 },
-    Remote { address: IpAddr, port: u16 },
+    Local {
+        replica_id: String,
+        address: IpAddr,
+        port: u16,
+    },
+    Remote {
+        address: IpAddr,
+        port: u16,
+    },
 }
 
 /// One copy the gate may pick for an app.
@@ -355,6 +362,9 @@ pub fn build(
             entry.published = Some((port, upstream));
         }
         let view = local.iter().find(|e| e.replica_id == replica.replica_id);
+        let Some(address) = view.and_then(|v| v.address) else {
+            continue;
+        };
         let copy = copies.get(&replica.replica_id);
         let ready = view.is_some_and(|v| v.ready);
         if !ready {
@@ -364,6 +374,7 @@ pub fn build(
             copy,
             target: Target::Local {
                 replica_id: replica.replica_id.clone(),
+                address,
                 port,
             },
             upstream,

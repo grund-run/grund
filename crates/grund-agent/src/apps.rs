@@ -100,8 +100,10 @@ pub const REPLICA_TUN: &str = "grund0";
 pub struct ReplicaEndpoint {
     pub replica_id: String,
     pub app: String,
-    /// Its address on the private network.
-    pub address: Ipv6Addr,
+    /// Its address on the private network; where the machine is on none,
+    /// the runtime's own address for it (the simulated runtime's loopback
+    /// address).
+    pub address: IpAddr,
     /// The ports its release declares.
     pub ports: Vec<EndpointPort>,
     /// The agent's check passes (apps.md §8.1).
@@ -862,34 +864,37 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                 self.detach(&id);
             }
         }
-        let endpoints: Vec<ReplicaEndpoint> = wanted
-            .iter()
-            .filter_map(|replica| {
-                let address = *self.attached.get(&replica.replica_id)?;
-                Some(ReplicaEndpoint {
-                    replica_id: replica.replica_id.clone(),
-                    app: replica.app.clone(),
-                    address,
-                    ports: replica
-                        .ports
-                        .iter()
-                        .filter_map(|p| {
-                            Some(EndpointPort {
-                                name: p.name.clone(),
-                                port: u16::try_from(p.port).ok()?,
-                                protocol: p.protocol.clone(),
-                            })
+        let mut endpoints: Vec<ReplicaEndpoint> = Vec::new();
+        for replica in &wanted {
+            let address = match self.attached.get(&replica.replica_id) {
+                Some(address) => Some(IpAddr::V6(*address)),
+                None => self.runtime.address(&replica.replica_id).await,
+            };
+            let Some(address) = address else {
+                continue;
+            };
+            endpoints.push(ReplicaEndpoint {
+                replica_id: replica.replica_id.clone(),
+                app: replica.app.clone(),
+                address,
+                ports: replica
+                    .ports
+                    .iter()
+                    .filter_map(|p| {
+                        Some(EndpointPort {
+                            name: p.name.clone(),
+                            port: u16::try_from(p.port).ok()?,
+                            protocol: p.protocol.clone(),
                         })
-                        .collect(),
-                    ready: self
-                        .tracked
-                        .get(&replica.replica_id)
-                        .is_some_and(|t| t.readiness.ready),
-                    draining: replica.state.as_known()
-                        == Some(ReplicaState::REPLICA_STATE_DRAINING),
-                })
-            })
-            .collect();
+                    })
+                    .collect(),
+                ready: self
+                    .tracked
+                    .get(&replica.replica_id)
+                    .is_some_and(|t| t.readiness.ready),
+                draining: replica.state.as_known() == Some(ReplicaState::REPLICA_STATE_DRAINING),
+            });
+        }
         self.shared.endpoints.0.send_if_modified(|current| {
             let changed = *current != endpoints;
             if changed {

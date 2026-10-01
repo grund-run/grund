@@ -902,18 +902,6 @@ impl ContainerRuntime for Containerd {
         }
         probe::run(Some(path), probe.clone(), timeout).await
     }
-
-    async fn connect(&self, id: &str, port: u16) -> std::io::Result<tokio::net::TcpStream> {
-        valid_id(id).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
-        let path = netns::path(&self.config.netns_dir(), id);
-        if !netns::is_namespace(&path) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::NotConnected,
-                "the container has no network namespace",
-            ));
-        }
-        probe::connect(path, port, Duration::from_secs(2)).await
-    }
 }
 
 #[cfg(test)]

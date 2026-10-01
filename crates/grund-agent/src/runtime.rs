@@ -190,26 +190,6 @@ pub trait ContainerRuntime: Send + Sync {
         let _ = id;
         async { None }
     }
-
-    /// Opens a TCP connection to `port` of the running container: how the
-    /// gate reaches a local copy (grund-docs design/traffic.md §7.4). By
-    /// default, a connection to [`ContainerRuntime::address`] from this
-    /// machine's own network namespace.
-    fn connect(
-        &self,
-        id: &str,
-        port: u16,
-    ) -> impl Future<Output = std::io::Result<tokio::net::TcpStream>> + Send {
-        async move {
-            match self.address(id).await {
-                Some(ip) => tokio::net::TcpStream::connect((ip, port)).await,
-                None => Err(std::io::Error::new(
-                    std::io::ErrorKind::NotConnected,
-                    "the container has no address",
-                )),
-            }
-        }
-    }
 }
 
 /// The runtime of a machine that runs no containers.

@@ -266,7 +266,7 @@ pub async fn run<R: VmRuntime, C: ContainerRuntime + 'static>(
     *shared.desired.lock().expect("shared lock") = current(&*applied.lock().await);
     let containers = std::sync::Arc::new(containers);
     let gate = crate::gate::Gate::new(
-        std::sync::Arc::new(crate::gate::RuntimeDial(containers.clone())),
+        std::sync::Arc::new(crate::gate::Direct),
         crate::gate::Limits::default(),
     );
     tracing::info!(machine = %record.machine_id, name = %record.name, "agent running");
@@ -431,8 +431,27 @@ async fn keep_gate(
         let mut remote = remote_copies(lists.borrow().as_ref(), &own_machine_id);
         remote.extend(from_file.iter().cloned());
         let document = shared.desired.lock().expect("shared lock").clone();
-        let reports = shared.reports.lock().expect("shared lock").clone();
-        let local = crate::gate::endpoints_from(document.as_ref(), &reports);
+        let local: Vec<crate::gate::ReplicaEndpoint> = shared
+            .endpoints()
+            .borrow()
+            .iter()
+            .map(|e| crate::gate::ReplicaEndpoint {
+                replica_id: e.replica_id.clone(),
+                app: e.app.clone(),
+                address: Some(e.address),
+                ports: e
+                    .ports
+                    .iter()
+                    .map(|p| crate::gate::EndpointPort {
+                        name: p.name.clone(),
+                        port: p.port,
+                        protocol: p.protocol.clone(),
+                    })
+                    .collect(),
+                ready: e.ready,
+                draining: e.draining,
+            })
+            .collect();
         gate.update(document.as_ref(), &local, &remote);
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
