@@ -61,6 +61,19 @@ pub fn connected(last_seen_at: Option<DateTime<Utc>>, now: DateTime<Utc>) -> boo
     last_seen_at.is_some_and(|seen| now - seen <= CONNECTED_WITHIN)
 }
 
+/// One replica as an agent reports it.
+#[derive(Debug, Clone)]
+pub struct ReplicaReport {
+    pub replica_id: Uuid,
+    /// One of grund_replica_status's states.
+    pub state: &'static str,
+    pub ready: bool,
+    pub ready_for_ms: u64,
+    pub restarts: u32,
+    pub last_exit_code: i32,
+    pub reason: String,
+}
+
 /// A VM to place, as the caller asked for it.
 #[derive(Debug, Clone)]
 pub struct VmRequest {
@@ -231,15 +244,44 @@ impl Agents {
         )
     }
 
-    /// Records what the machine reports running.
+    /// Records what the machine reports running: its VMs, and its replicas
+    /// when it reports them. A change the app reconciler decides on wakes it.
     pub async fn report(
         &self,
         caller: &MachineCaller,
         applied_generation: u64,
         observed: &[(Uuid, &'static str, Option<String>)],
         refusals: &[String],
+        replicas: Option<&[ReplicaReport]>,
     ) -> anyhow::Result<()> {
         let now = Utc::now();
+        if let Some(replicas) = replicas {
+            let reports: Vec<grund_store::apps::Report<'_>> = replicas
+                .iter()
+                .take(400)
+                .map(|r| grund_store::apps::Report {
+                    replica_id: r.replica_id,
+                    state: r.state,
+                    ready: r.ready,
+                    ready_since: r.ready.then(|| {
+                        now - Duration::milliseconds(
+                            i64::try_from(r.ready_for_ms)
+                                .unwrap_or(i64::MAX / 2)
+                                .min(86_400_000 * 365),
+                        )
+                    }),
+                    restarts: i32::try_from(r.restarts).unwrap_or(i32::MAX),
+                    last_exit_code: r.last_exit_code,
+                    reason: &r.reason,
+                })
+                .collect();
+            let mut connection = self.state.pool.acquire().await?;
+            if grund_store::apps::record_reports(&mut connection, caller.machine_id, &reports, now)
+                .await?
+            {
+                self.state.wakes.apps_changed();
+            }
+        }
         let refusals: Vec<String> = refusals
             .iter()
             .take(20)
@@ -267,45 +309,74 @@ impl Agents {
         Ok(())
     }
 
-    /// Signs the next document for `host_machine_id`, from its VMs, with its
-    /// organisation's key. Nothing for a machine in no organisation's pool.
+    /// Signs the next document for `host_machine_id` and wakes its long
+    /// poll. Nothing for a machine in no organisation's pool.
     pub async fn publish(&self, host_machine_id: Uuid) -> anyhow::Result<()> {
         let mut tx = self.state.pool.begin().await?;
-        let Some(host) = machines::machine(&mut *tx, host_machine_id).await? else {
+        self.publish_in(&mut tx, host_machine_id).await?;
+        tx.commit().await?;
+        self.state.wakes.documents_changed();
+        Ok(())
+    }
+
+    /// Signs the next document for `host_machine_id`, from its VMs and its
+    /// replicas, with its organisation's key, inside the caller's
+    /// transaction: the document commits with the decision that changed it
+    /// (apps.md §6.1). The caller wakes the long polls after its commit.
+    pub async fn publish_in(
+        &self,
+        connection: &mut sqlx::PgConnection,
+        host_machine_id: Uuid,
+    ) -> anyhow::Result<()> {
+        let Some(host) = machines::machine(&mut *connection, host_machine_id).await? else {
             return Ok(());
         };
         let Some(organisation_id) = host.pool_organisation_id else {
             return Ok(());
         };
-        let generation = agents::lock_generation(&mut tx, host_machine_id).await? + 1;
-        let vms = agents::hosted_vms(&mut *tx, host_machine_id).await?;
+        let generation = agents::lock_generation(&mut *connection, host_machine_id).await? + 1;
+        let vms = agents::hosted_vms(&mut *connection, host_machine_id).await?;
+        let placed = grund_store::apps::machine_replicas(&mut *connection, host_machine_id).await?;
         let key = self
             .state
             .keys()
-            .ensure(&mut tx, KeyPurpose::Organisation, Some(organisation_id))
+            .ensure(
+                &mut *connection,
+                KeyPurpose::Organisation,
+                Some(organisation_id),
+            )
             .await?;
         let now = Utc::now();
         let machines: Vec<agent::Vm> = vms.iter().map(vm_message).collect();
+        let replicas: Vec<agent::Replica> = placed.iter().map(replica_message).collect();
+        let mut required_features = Vec::new();
+        if !machines.is_empty() {
+            required_features.push("machines".to_string());
+        }
+        if !replicas.is_empty() {
+            required_features.push("replicas".to_string());
+        }
         let payload = agent::DesiredState {
             machine_id: host_machine_id.to_string(),
             organisation_id: organisation_id.to_string(),
             generation: generation as u64,
             issued_at_unix: now.timestamp(),
-            required_features: if machines.is_empty() {
-                Vec::new()
-            } else {
-                vec!["machines".to_string()]
-            },
+            required_features,
             machines,
+            replicas,
             ..Default::default()
         }
         .encode_to_vec();
+        anyhow::ensure!(
+            payload.len() <= 1024 * 1024,
+            "the document for machine {host_machine_id} would be larger than 1 MiB"
+        );
         let signature = self
             .state
             .keys()
             .sign(key.key_id, prefix::DESIRED_STATE, &payload);
         agents::store_document(
-            &mut *tx,
+            &mut *connection,
             host_machine_id,
             generation,
             key.key_id,
@@ -314,8 +385,6 @@ impl Agents {
             now,
         )
         .await?;
-        tx.commit().await?;
-        self.state.wakes.documents_changed();
         Ok(())
     }
 
@@ -468,6 +537,102 @@ fn invalid(request: &VmRequest) -> Option<String> {
         );
     }
     None
+}
+
+/// A replica's entry in its machine's document (apps.md §6.2): plain
+/// settings, and secrets by name and version only.
+pub fn replica_message(placed: &grund_store::apps::PlacedRow) -> agent::Replica {
+    use grund_domain::app::spec::{CheckKind, Protocol};
+    let spec = &placed.spec.0;
+    agent::Replica {
+        replica_id: placed.replica_id.to_string(),
+        app: placed.app_name.clone(),
+        app_id: placed.app_id.to_string(),
+        release: placed.release as u32,
+        slot: placed.slot as u32,
+        placement: placed.placement as u64,
+        image: buffa::MessageField::from(agent::Image {
+            reference: spec.image.clone(),
+            digest: placed.image_digest.clone(),
+            ..Default::default()
+        }),
+        command: spec.command.clone(),
+        env: spec
+            .env
+            .iter()
+            .map(|e| agent::EnvVar {
+                name: e.name.clone(),
+                value: e.value.clone(),
+                ..Default::default()
+            })
+            .collect(),
+        ports: spec
+            .ports
+            .iter()
+            .map(|p| agent::Port {
+                name: p.name.clone(),
+                port: u32::from(p.port),
+                protocol: match p.protocol {
+                    Protocol::Http => "http",
+                    Protocol::H2c => "h2c",
+                    Protocol::Tcp => "tcp",
+                }
+                .to_string(),
+                public: p.public,
+                ..Default::default()
+            })
+            .collect(),
+        memory_mib: spec.memory_mib,
+        cpu_millis: spec.cpu_millis,
+        state: match placed.state.as_str() {
+            "draining" => agent::ReplicaState::REPLICA_STATE_DRAINING,
+            _ => agent::ReplicaState::REPLICA_STATE_RUNNING,
+        }
+        .into(),
+        secrets: placed
+            .secret_versions
+            .0
+            .iter()
+            .map(|s| agent::SecretRef {
+                name: s.name.clone(),
+                version: s.version,
+                ..Default::default()
+            })
+            .collect(),
+        secret_env: spec
+            .secrets
+            .iter()
+            .map(|s| agent::SecretEnv {
+                env: s.env.clone(),
+                secret: s.secret.clone(),
+                ..Default::default()
+            })
+            .collect(),
+        check: spec
+            .check
+            .as_ref()
+            .map(|c| {
+                buffa::MessageField::from(agent::ReplicaCheck {
+                    kind: Some(match &c.kind {
+                        CheckKind::Http { path } => {
+                            agent::replica_check::Kind::HttpPath(path.clone())
+                        }
+                        CheckKind::Tcp => agent::replica_check::Kind::Tcp(true),
+                    }),
+                    port: u32::from(c.port),
+                    interval_ms: c.interval_ms,
+                    timeout_ms: c.timeout_ms,
+                    ..Default::default()
+                })
+            })
+            .unwrap_or_default(),
+        stop: buffa::MessageField::from(agent::ReplicaStop {
+            signal: spec.stop.signal.clone(),
+            grace_seconds: spec.stop.grace_seconds,
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
 }
 
 fn vm_message(vm: &VmRow) -> agent::Vm {

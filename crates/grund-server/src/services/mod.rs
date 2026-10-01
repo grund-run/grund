@@ -5,6 +5,7 @@
 
 pub mod accounts;
 pub mod agents;
+pub mod apps;
 pub mod billing;
 pub mod capacity;
 pub mod entitlements;

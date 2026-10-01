@@ -18,6 +18,7 @@
 
 pub mod account;
 pub mod agent;
+pub mod app;
 pub mod certificates;
 pub mod enrollment;
 pub mod machine;
@@ -40,6 +41,7 @@ use connectrpc::{
 use grund_proto::grund::{
     account::v1::ACCOUNT_SERVICE_SERVICE_NAME,
     agent::v1::{AGENT_SERVICE_SERVICE_NAME, MACHINE_ENROLLMENT_SERVICE_SERVICE_NAME},
+    app::v1::APP_SERVICE_SERVICE_NAME,
     certificates::v1::CERTIFICATE_SERVICE_SERVICE_NAME,
     machine::v1::{MACHINE_SERVICE_SERVICE_NAME, MANAGEMENT_POOL_SERVICE_SERVICE_NAME},
     organisation::v1::ORGANISATION_SERVICE_SERVICE_NAME,
@@ -270,6 +272,22 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
         "/grund.machine.v1.MachineService/ListVms",
         Requirement::Session,
     ),
+    ("/grund.app.v1.AppService/CreateApp", Requirement::Session),
+    ("/grund.app.v1.AppService/GetApp", Requirement::Session),
+    ("/grund.app.v1.AppService/ListApps", Requirement::Session),
+    ("/grund.app.v1.AppService/Deploy", Requirement::Session),
+    (
+        "/grund.app.v1.AppService/ListReleases",
+        Requirement::Session,
+    ),
+    ("/grund.app.v1.AppService/Rollback", Requirement::Session),
+    ("/grund.app.v1.AppService/Scale", Requirement::Session),
+    (
+        "/grund.app.v1.AppService/ConfigureApp",
+        Requirement::Session,
+    ),
+    ("/grund.app.v1.AppService/SetSecret", Requirement::Session),
+    ("/grund.app.v1.AppService/DeleteApp", Requirement::Session),
 ];
 
 /// The API routes, to merge into the page router.
@@ -303,6 +321,10 @@ pub fn router(state: State) -> axum::Router {
         .route_service(
             &format!("/{MACHINE_SERVICE_SERVICE_NAME}/{{method}}"),
             service.clone(),
+        )
+        .route_service(
+            &format!("/{APP_SERVICE_SERVICE_NAME}/{{method}}"),
+            app_service(state.clone()),
         )
         .layer(middleware::from_fn_with_state(state.clone(), authenticate))
         .merge(
@@ -340,6 +362,29 @@ pub fn router(state: State) -> axum::Router {
                 )),
         )
         .merge(relay_access::router(state))
+}
+
+/// The largest app request: a deploy with its env and a grund.toml.
+pub const MAX_APP_REQUEST_BYTES: usize = 128 * 1024;
+
+/// The app service, on a Connect service of its own: a deploy carries more
+/// than any other session call (a spec's env is up to 32 KiB, a grund.toml
+/// up to 64 KiB). A deploy resolves the image at its registry, so it gets
+/// up to 30 s.
+pub fn app_service(state: State) -> ConnectRpcService {
+    ConnectRpcService::new(connectrpc::Router::new().add_service(Arc::new(app::AppApi::new(state))))
+        .with_limits(
+            Limits::default()
+                .with_max_request_body_size(MAX_APP_REQUEST_BYTES)
+                .with_max_message_size(MAX_APP_REQUEST_BYTES),
+        )
+        .with_deadline_policy(
+            DeadlinePolicy::new()
+                .with_min(Duration::from_millis(5))
+                .with_max(Duration::from_secs(30))
+                .with_default_timeout(Duration::from_secs(30)),
+        )
+        .with_interceptor(Authorize)
 }
 
 /// The largest control-link request: a status report of every VM a machine
@@ -675,8 +720,8 @@ mod tests {
     };
 
     use grund_proto::grund::{
-        agent::v1 as agent, certificates::v1 as certificates_proto, machine::v1 as machine,
-        organisation::v1 as org,
+        agent::v1 as agent, app::v1 as app_proto, certificates::v1 as certificates_proto,
+        machine::v1 as machine, organisation::v1 as org,
     };
 
     use super::*;
@@ -984,6 +1029,82 @@ mod tests {
         }
     }
 
+    struct UnusedApps;
+
+    #[allow(refining_impl_trait)]
+    impl app_proto::AppService for UnusedApps {
+        async fn create_app(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, app_proto::CreateAppRequest>,
+        ) -> ServiceResult<app_proto::CreateAppResponse> {
+            unreachable!()
+        }
+        async fn get_app(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, app_proto::GetAppRequest>,
+        ) -> ServiceResult<app_proto::GetAppResponse> {
+            unreachable!()
+        }
+        async fn list_apps(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, app_proto::ListAppsRequest>,
+        ) -> ServiceResult<app_proto::ListAppsResponse> {
+            unreachable!()
+        }
+        async fn deploy(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, app_proto::DeployRequest>,
+        ) -> ServiceResult<app_proto::DeployResponse> {
+            unreachable!()
+        }
+        async fn list_releases(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, app_proto::ListReleasesRequest>,
+        ) -> ServiceResult<app_proto::ListReleasesResponse> {
+            unreachable!()
+        }
+        async fn rollback(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, app_proto::RollbackRequest>,
+        ) -> ServiceResult<app_proto::RollbackResponse> {
+            unreachable!()
+        }
+        async fn scale(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, app_proto::ScaleRequest>,
+        ) -> ServiceResult<app_proto::ScaleResponse> {
+            unreachable!()
+        }
+        async fn configure_app(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, app_proto::ConfigureAppRequest>,
+        ) -> ServiceResult<app_proto::ConfigureAppResponse> {
+            unreachable!()
+        }
+        async fn set_secret(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, app_proto::SetSecretRequest>,
+        ) -> ServiceResult<app_proto::SetSecretResponse> {
+            unreachable!()
+        }
+        async fn delete_app(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, app_proto::DeleteAppRequest>,
+        ) -> ServiceResult<app_proto::DeleteAppResponse> {
+            unreachable!()
+        }
+    }
+
     struct UnusedEnrollment;
 
     #[allow(refining_impl_trait)]
@@ -1124,7 +1245,8 @@ mod tests {
             .add_service(Arc::new(UnusedEnrollment))
             .add_service(Arc::new(UnusedRelayEnrollment))
             .add_service(Arc::new(UnusedCertificates))
-            .add_service(Arc::new(UnusedAgent));
+            .add_service(Arc::new(UnusedAgent))
+            .add_service(Arc::new(UnusedApps));
         let served: BTreeSet<String> = router
             .methods()
             .map(|m| format!("/{}", m.trim_start_matches('/')))

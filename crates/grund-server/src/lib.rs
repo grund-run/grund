@@ -30,6 +30,7 @@ pub mod health;
 pub mod keys;
 pub mod license;
 pub mod projections;
+pub mod registry;
 pub mod relay;
 pub mod relay_certificate;
 pub mod relay_command;
@@ -147,6 +148,7 @@ pub async fn serve(
         .add(relay::RelayServer::new(state.clone()))
         .add(health::Checks::new(&state))
         .add(projections::Projections::new(&state))
+        .add(services::apps::AppReconciler::new(state.clone()))
         .add(services::maintenance::Sweeper::new(state.clone()))
         .add(certificates::CertificateWork::new(&state))
         .add(sagas::DeletionWorker::new(&state))

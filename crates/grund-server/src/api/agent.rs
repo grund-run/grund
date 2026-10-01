@@ -10,14 +10,16 @@ use grund_proto::grund::agent::v1::{
     AgentService, GetDesiredStateRequest, GetDesiredStateResponse, GetMachineJoinTokenRequest,
     GetMachineJoinTokenResponse, GetMembershipRequest, GetMembershipResponse,
     GetReplicaSecretsRequest, GetReplicaSecretsResponse, HeartbeatRequest, HeartbeatResponse,
-    ReportStatusRequest, ReportStatusResponse, SignedDesiredState, SignedMembershipList,
-    VmObservedState, WatchDesiredStateRequest, WatchDesiredStateResponse,
+    ReplicaObservedState, ReportStatusRequest, ReportStatusResponse, SecretValue,
+    SignedDesiredState, SignedMembershipList, VmObservedState, WatchDesiredStateRequest,
+    WatchDesiredStateResponse,
 };
 use uuid::Uuid;
 
 use crate::{
     services::{
-        agents::{AgentsState, HEARTBEAT_INTERVAL_SECONDS, MachineCaller},
+        agents::{AgentsState, HEARTBEAT_INTERVAL_SECONDS, MachineCaller, ReplicaReport},
+        apps::AppsState,
         networks::{MembershipOutcome, NetworksState},
     },
     state::State,
@@ -73,6 +75,13 @@ impl AgentService for AgentApi {
                     "egress": c.egress,
                     "free_vcpus": c.free_vcpus,
                     "free_memory_mib": c.free_memory_mib,
+                    "apps": c.apps,
+                    "arch": c.arch.chars().take(16).collect::<String>(),
+                    "memory_mib": c.memory_mib,
+                    "cpu_millis": c.cpu_millis,
+                    "apps_unavailable_reason": c.apps_unavailable_reason.chars().take(200).collect::<String>(),
+                    "max_replica_memory_mib": c.max_replica_memory_mib,
+                    "max_replica_cpu_millis": c.max_replica_cpu_millis,
                 })
             });
         let generation = self
@@ -133,10 +142,30 @@ impl AgentService for AgentApi {
     async fn get_replica_secrets(
         &self,
         ctx: RequestContext,
-        _request: ServiceRequest<'_, GetReplicaSecretsRequest>,
+        request: ServiceRequest<'_, GetReplicaSecretsRequest>,
     ) -> ServiceResult<GetReplicaSecretsResponse> {
-        machine(&ctx)?;
-        Err(ConnectError::not_found("no such replica on this machine"))
+        let caller = machine(&ctx)?;
+        let not_found = || ConnectError::not_found("no such replica on this machine");
+        let replica_id = Uuid::parse_str(request.replica_id).map_err(|_| not_found())?;
+        let secrets = self
+            .state
+            .apps()
+            .replica_secrets(&caller, replica_id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(not_found)?;
+        Response::ok(GetReplicaSecretsResponse {
+            secrets: secrets
+                .into_iter()
+                .map(|s| SecretValue {
+                    name: s.name,
+                    version: s.version,
+                    value: s.value,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        })
     }
 
     async fn get_machine_join_token(
@@ -188,9 +217,39 @@ impl AgentService for AgentApi {
             })
             .collect();
         let refusals: Vec<String> = request.refusals.iter().map(|r| r.to_string()).collect();
+        let replicas: Vec<ReplicaReport> = request
+            .replicas
+            .iter()
+            .filter_map(|r| {
+                Some(ReplicaReport {
+                    replica_id: Uuid::parse_str(r.replica_id).ok()?,
+                    state: match r.state.as_known()? {
+                        ReplicaObservedState::REPLICA_OBSERVED_STATE_PULLING => "pulling",
+                        ReplicaObservedState::REPLICA_OBSERVED_STATE_STARTING => "starting",
+                        ReplicaObservedState::REPLICA_OBSERVED_STATE_RUNNING => "running",
+                        ReplicaObservedState::REPLICA_OBSERVED_STATE_EXITED => "exited",
+                        ReplicaObservedState::REPLICA_OBSERVED_STATE_FAILED => "failed",
+                        ReplicaObservedState::REPLICA_OBSERVED_STATE_REFUSED => "refused",
+                        ReplicaObservedState::REPLICA_OBSERVED_STATE_STOPPING => "stopping",
+                        ReplicaObservedState::REPLICA_OBSERVED_STATE_UNSPECIFIED => return None,
+                    },
+                    ready: r.ready,
+                    ready_for_ms: r.ready_for_ms,
+                    restarts: r.restarts,
+                    last_exit_code: r.last_exit_code,
+                    reason: r.reason.chars().take(500).collect(),
+                })
+            })
+            .collect();
         self.state
             .agents()
-            .report(&caller, request.applied_generation, &observed, &refusals)
+            .report(
+                &caller,
+                request.applied_generation,
+                &observed,
+                &refusals,
+                request.reports_replicas.then_some(replicas.as_slice()),
+            )
             .await
             .map_err(internal)?;
         Response::ok(ReportStatusResponse::default())

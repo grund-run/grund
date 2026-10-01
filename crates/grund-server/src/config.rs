@@ -119,6 +119,12 @@ pub struct ServeConfig {
     #[arg(long, env = "GRUND_WORK_POLL_INTERVAL", value_parser = secs, default_value = "5")]
     pub work_poll_interval: Duration,
 
+    /// Image registries (host[:port], comma-separated) grund may speak to
+    /// over plain HTTP when it resolves an app's image. For tests against a
+    /// local registry; every other registry is HTTPS only.
+    #[arg(long, env = "GRUND_INSECURE_REGISTRIES", value_delimiter = ',')]
+    pub insecure_registries: Vec<String>,
+
     /// SMTP server for mail, e.g. smtp://mailpit:1025 (plain, local only),
     /// smtp://user:pass@host:587?tls=required (STARTTLS) or
     /// smtps://user:pass@host:465. Unset: mail waits in the outbox and

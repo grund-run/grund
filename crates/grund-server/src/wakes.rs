@@ -16,12 +16,14 @@ pub const POLL: Duration = Duration::from_secs(1);
 #[derive(Clone)]
 pub struct Wakes {
     documents: Arc<watch::Sender<u64>>,
+    apps: Arc<tokio::sync::Notify>,
 }
 
 impl Default for Wakes {
     fn default() -> Self {
         Self {
             documents: Arc::new(watch::channel(0).0),
+            apps: Arc::new(tokio::sync::Notify::new()),
         }
     }
 }
@@ -30,6 +32,18 @@ impl Wakes {
     /// Some machine's document changed: wake every waiter.
     pub fn documents_changed(&self) {
         self.documents.send_modify(|n| *n = n.wrapping_add(1));
+    }
+
+    /// Something an app's reconciler decides on changed (a release, a
+    /// setting, a report): wake it. Wakes sent while it is busy collapse
+    /// into one.
+    pub fn apps_changed(&self) {
+        self.apps.notify_one();
+    }
+
+    /// What the app reconciler waits on.
+    pub fn apps(&self) -> Arc<tokio::sync::Notify> {
+        self.apps.clone()
     }
 
     /// A receiver to wait on with [`Wakes::wait`], taken before reading the
