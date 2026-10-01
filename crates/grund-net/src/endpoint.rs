@@ -106,6 +106,9 @@ impl Default for NetConfig {
 }
 
 /// Builds and binds an endpoint with grund's policy, for the given ALPNs.
+/// Its TLS, to peers and to relays, uses `grund_tls::provider()`, so it
+/// prefers X25519MLKEM768 and still sends an X25519 share for a peer or
+/// relay without it.
 /// Waits up to 5 s for the home relay when there is one, so the endpoint can
 /// be dialed through it as soon as this returns.
 pub async fn bind(
@@ -120,6 +123,7 @@ pub async fn bind(
         .datagram_send_buffer_size(4 << 20)
         .build();
     let mut builder = Endpoint::builder(presets::Minimal)
+        .crypto_provider(grund_tls::provider())
         .secret_key(key)
         .alpns(alpns)
         .transport_config(transport)
@@ -338,6 +342,95 @@ mod tests {
         }
         for good in ["192.168.1.20", "100.64.0.9", "2a01:4f8::1"] {
             assert!(is_offerable(&good.parse().unwrap()), "{good}");
+        }
+    }
+
+    fn loopback() -> NetConfig {
+        NetConfig {
+            bind: Bind::Addrs(vec!["127.0.0.1:0".parse().unwrap()]),
+            ..NetConfig::default()
+        }
+    }
+
+    const ALPN: &[u8] = b"grund-test/hybrid";
+
+    async fn ring_only_endpoint(seed: u8) -> Endpoint {
+        Endpoint::builder(presets::Minimal)
+            .secret_key(SecretKey::from_bytes(&[seed; 32]))
+            .alpns(vec![ALPN.to_vec()])
+            .clear_ip_transports()
+            .bind_addr("127.0.0.1:0".parse::<SocketAddr>().unwrap())
+            .unwrap()
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap()
+    }
+
+    async fn connects(from: &Endpoint, to: &Endpoint) {
+        let accepting = to.clone();
+        let accepted = tokio::spawn(async move {
+            let incoming = accepting.accept().await.unwrap();
+            let conn = incoming.await.unwrap();
+            conn.closed().await;
+        });
+        let conn = tokio::time::timeout(Duration::from_secs(10), from.connect(to.addr(), ALPN))
+            .await
+            .expect("no connection within 10 s")
+            .unwrap();
+        assert_eq!(conn.remote_id(), to.id());
+        conn.close(0u32.into(), b"done");
+        let _ = tokio::time::timeout(Duration::from_secs(5), accepted).await;
+    }
+
+    #[tokio::test]
+    async fn the_endpoint_prefers_the_hybrid_post_quantum_group() {
+        let endpoint = bind(
+            SecretKey::from_bytes(&[1; 32]),
+            &loopback(),
+            vec![ALPN.to_vec()],
+        )
+        .await
+        .unwrap();
+        let groups: Vec<_> = endpoint
+            .tls_config()
+            .crypto_provider()
+            .kx_groups
+            .iter()
+            .map(|group| group.name())
+            .collect();
+        assert_eq!(
+            groups[..2],
+            [
+                rustls::NamedGroup::X25519MLKEM768,
+                rustls::NamedGroup::X25519
+            ]
+        );
+        endpoint.close().await;
+    }
+
+    #[tokio::test]
+    async fn grund_endpoints_connect_to_each_other_and_to_a_ring_only_endpoint_both_ways() {
+        let a = bind(
+            SecretKey::from_bytes(&[2; 32]),
+            &loopback(),
+            vec![ALPN.to_vec()],
+        )
+        .await
+        .unwrap();
+        let b = bind(
+            SecretKey::from_bytes(&[3; 32]),
+            &loopback(),
+            vec![ALPN.to_vec()],
+        )
+        .await
+        .unwrap();
+        let old = ring_only_endpoint(4).await;
+        connects(&a, &b).await;
+        connects(&a, &old).await;
+        connects(&old, &b).await;
+        for endpoint in [a, b, old] {
+            endpoint.close().await;
         }
     }
 }
