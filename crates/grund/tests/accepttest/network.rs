@@ -467,11 +467,13 @@ async fn traffic_moves_to_the_relay_when_direct_udp_is_cut_and_back_when_it_retu
     Ok(())
 }
 
-const IROH_PATH_CHECK_PLUS_ITS_RETRY: Duration = Duration::from_secs(60 + 5);
+const DIRECT_AGAIN_WITHIN: Duration = Duration::from_secs(10);
 const PAST_IROH_SCHEDULED_RETRY: Duration = Duration::from_secs(15);
+const NEVER_PUNCHES_FOR: Duration = Duration::from_secs(100);
+const PROBES_IN_100_S: u64 = 5;
 
 #[tokio::test]
-async fn a_direct_path_cut_for_longer_than_the_retry_returns_within_the_path_check()
+async fn a_direct_path_cut_past_iroh_retry_comes_back_within_seconds_through_a_probe()
 -> anyhow::Result<()> {
     let Some(net) = a_lab().await? else {
         return Ok(());
@@ -505,14 +507,81 @@ async fn a_direct_path_cut_for_longer_than_the_retry_returns_within_the_path_che
     );
 
     net.lab.restore_direct_udp().await?;
-    let back = eventually(IROH_PATH_CHECK_PLUS_ITS_RETRY, direct).await;
+    let back = eventually(DIRECT_AGAIN_WITHIN, direct).await;
     anyhow::ensure!(
         back.is_some(),
-        "not direct again within {IROH_PATH_CHECK_PLUS_ITS_RETRY:?}: {}",
+        "not direct again within {DIRECT_AGAIN_WITHIN:?}: {}",
         a.status()
     );
     eprintln!(
-        "over the relay after {relayed:?}; cut {PAST_IROH_SCHEDULED_RETRY:?} more; direct again after {back:?}"
+        "over the relay after {relayed:?}; cut {PAST_IROH_SCHEDULED_RETRY:?} more; direct again after {back:?}; probes a {} b {}",
+        a.counter("probes_sent"),
+        b.counter("probes_sent")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_peer_that_never_punches_costs_a_few_probes_on_a_backoff() -> anyhow::Result<()> {
+    let Some(net) = a_lab().await? else {
+        return Ok(());
+    };
+    let a = net.join("a", "a").await?;
+    let b = net.join("b", "b").await?;
+    anyhow::ensure!(
+        net.reaches_by_name(&a, &b, Duration::from_secs(30))
+            .await
+            .is_some()
+    );
+    net.lab.cut_direct_udp().await?;
+    anyhow::ensure!(
+        eventually(Duration::from_secs(20), || async {
+            net.pings(&a, &b.address().to_string()).await && a.path_to(&b).starts_with("relay")
+        })
+        .await
+        .is_some(),
+        "never over the relay: {}",
+        a.status()
+    );
+    let (sent_a, sent_b) = (a.counter("probes_sent"), b.counter("probes_sent"));
+    let (bytes_a, bytes_b) = (a.counter("probe_bytes"), b.counter("probe_bytes"));
+    let start = Instant::now();
+    while start.elapsed() < NEVER_PUNCHES_FOR {
+        anyhow::ensure!(
+            net.pings(&a, &b.address().to_string()).await,
+            "traffic stopped over the relay: {}",
+            a.status()
+        );
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+    let probes = [
+        a.counter("probes_sent") - sent_a,
+        b.counter("probes_sent") - sent_b,
+    ];
+    let bytes = [
+        a.counter("probe_bytes") - bytes_a,
+        b.counter("probe_bytes") - bytes_b,
+    ];
+    eprintln!(
+        "relayed {NEVER_PUNCHES_FOR:?}: probes a {} b {}, answered a {} b {}, failed a {} b {}, bytes a {} b {}; path {}",
+        probes[0],
+        probes[1],
+        a.counter("probes_answered"),
+        b.counter("probes_answered"),
+        a.counter("probes_failed"),
+        b.counter("probes_failed"),
+        bytes[0],
+        bytes[1],
+        a.path_to(&b)
+    );
+    anyhow::ensure!(
+        probes.iter().all(|&p| (1..=PROBES_IN_100_S).contains(&p)),
+        "probes {probes:?} in {NEVER_PUNCHES_FOR:?}, expected 1 to {PROBES_IN_100_S} a side"
+    );
+    anyhow::ensure!(
+        a.path_to(&b).starts_with("relay"),
+        "the path left the relay with UDP cut: {}",
+        a.status()
     );
     Ok(())
 }

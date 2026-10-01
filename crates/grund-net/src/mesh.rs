@@ -30,6 +30,14 @@
 //! connections ([`crate::gossip`], [`Mesh::gossip`]); the mesh's owner
 //! checks each before using it.
 //!
+//! A peer reached only through the relay for [`RELAYED_BEFORE_PROBE`], while
+//! iroh knows direct addresses for it, is probed: a short connection on
+//! [`crate::PROBE_ALPN`] ([`Prober`]), on the backoff [`probe_backoff`]. iroh
+//! 1.2 punches when a connection opens, once more 5 s after a punch, and
+//! otherwise only every 60 s, so without the probe a direct path that comes
+//! back after a longer outage waits up to a minute. A direct path resets the
+//! backoff.
+//!
 //! Not built yet: containers' addresses in the /64.
 
 use std::{
@@ -77,6 +85,28 @@ pub const HINTED_DIAL_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 /// so the two would not meet again; closed, the next dial tries every relay.
 pub const SILENT_LIMIT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// How long a peer must be reached only through the relay before the mesh
+/// probes it. Longer than a path switch takes, so a probe does not race
+/// iroh's own punch after a new connection.
+pub const RELAYED_BEFORE_PROBE: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// How long a probe connection stays open, so that a punch iroh starts on it
+/// can open the path on the peer's other connections before it closes.
+pub const PROBE_HOLD: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The wait after the `n`th probe of a peer that is still relayed: 5, 10, 20
+/// and 40 s, then every 60 s, iroh's own path check. A peer that can never
+/// punch costs four probes in its first 75 s and one a minute after that.
+pub fn probe_backoff(n: u32) -> std::time::Duration {
+    std::time::Duration::from_secs(match n {
+        0 => 5,
+        1 => 10,
+        2 => 20,
+        3 => 40,
+        _ => 60,
+    })
+}
+
 /// How a mesh is set up.
 #[derive(Debug, Clone)]
 pub struct MeshConfig {
@@ -122,6 +152,10 @@ struct Peer {
     framer: Framer,
     heard: HashMap<usize, (u64, Instant)>,
     hint_failed: bool,
+    relayed_since: Option<Instant>,
+    next_probe: Option<Instant>,
+    probes: u32,
+    probing: bool,
 }
 
 #[derive(Debug, Default)]
@@ -144,6 +178,10 @@ struct Counters {
     dropped_closed_in: AtomicU64,
     admitted_replies: AtomicU64,
     gossip_sent: AtomicU64,
+    probes_sent: AtomicU64,
+    probes_failed: AtomicU64,
+    probes_answered: AtomicU64,
+    probe_bytes: AtomicU64,
 }
 
 /// What a mesh is doing, for status output and tests.
@@ -309,11 +347,13 @@ impl Mesh {
         let reader = tokio::spawn(self.clone().tun_to_peers());
         let watchdog = tokio::spawn(self.clone().close_silent_connections());
         let pusher = tokio::spawn(self.clone().push_newer_lists());
+        let prober = tokio::spawn(self.clone().probe_relayed_peers());
         loop {
             if lists.changed().await.is_err() {
                 reader.abort();
                 watchdog.abort();
                 pusher.abort();
+                prober.abort();
                 return Ok(());
             }
             let Some(list) = lists.borrow_and_update().clone() else {
@@ -378,6 +418,10 @@ impl Mesh {
             ("dropped_closed_in", &c.dropped_closed_in),
             ("admitted_replies", &c.admitted_replies),
             ("gossip_sent", &c.gossip_sent),
+            ("probes_sent", &c.probes_sent),
+            ("probes_failed", &c.probes_failed),
+            ("probes_answered", &c.probes_answered),
+            ("probe_bytes", &c.probe_bytes),
         ]
         .into_iter()
         .map(|(k, v)| (k, v.load(Relaxed)))
@@ -527,6 +571,110 @@ impl Mesh {
         }
     }
 
+    async fn probe_relayed_peers(self) {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+        loop {
+            tick.tick().await;
+            let now = Instant::now();
+            let due: Vec<EndpointId> = {
+                let mut peers = self.inner.peers.lock().expect("peers lock");
+                peers
+                    .iter_mut()
+                    .filter_map(|(id, peer)| {
+                        peer.connections.retain(|c| c.close_reason().is_none());
+                        match peer.connections.last().and_then(selected_is_relay) {
+                            Some(true) => {
+                                let since = *peer.relayed_since.get_or_insert(now);
+                                let due = !peer.probing
+                                    && now.duration_since(since) >= RELAYED_BEFORE_PROBE
+                                    && peer.next_probe.is_none_or(|t| now >= t);
+                                due.then_some(*id)
+                            }
+                            Some(false) | None => {
+                                peer.relayed_since = None;
+                                peer.next_probe = None;
+                                peer.probes = 0;
+                                None
+                            }
+                        }
+                    })
+                    .collect()
+            };
+            let Some(endpoint) = self.endpoint() else {
+                continue;
+            };
+            for id in due {
+                let has_direct_candidates = endpoint.remote_info(id).await.is_some_and(|info| {
+                    info.addrs()
+                        .any(|a| matches!(a.addr(), TransportAddr::Ip(_)))
+                });
+                if !has_direct_candidates {
+                    continue;
+                }
+                {
+                    let mut peers = self.inner.peers.lock().expect("peers lock");
+                    let Some(peer) = peers.get_mut(&id) else {
+                        continue;
+                    };
+                    peer.probing = true;
+                    peer.next_probe = Some(now + probe_backoff(peer.probes));
+                    peer.probes += 1;
+                }
+                tokio::spawn(self.clone().probe(endpoint.clone(), id));
+            }
+        }
+    }
+
+    async fn probe(self, endpoint: Endpoint, target: EndpointId) {
+        let c = &self.inner.counters;
+        let mut addr = EndpointAddr::new(target);
+        for url in self.dial_relays(target) {
+            addr = addr.with_relay_url(url);
+        }
+        c.probes_sent.fetch_add(1, Relaxed);
+        match tokio::time::timeout(DIAL_TIMEOUT, endpoint.connect(addr, crate::PROBE_ALPN)).await {
+            Ok(Ok(conn)) => {
+                let _ = tokio::time::timeout(PROBE_HOLD, conn.closed()).await;
+                let stats = conn.stats();
+                c.probe_bytes
+                    .fetch_add(stats.udp_tx.bytes + stats.udp_rx.bytes, Relaxed);
+                conn.close(0u32.into(), b"probe");
+            }
+            Ok(Err(e)) => {
+                c.probes_failed.fetch_add(1, Relaxed);
+                tracing::debug!(peer = %target, error = %e, "mesh: probe failed");
+            }
+            Err(_) => {
+                c.probes_failed.fetch_add(1, Relaxed);
+                tracing::debug!(peer = %target, "mesh: probe timed out");
+            }
+        }
+        if let Some(peer) = self
+            .inner
+            .peers
+            .lock()
+            .expect("peers lock")
+            .get_mut(&target)
+        {
+            peer.probing = false;
+        }
+    }
+
+    /// The handler for [`crate::PROBE_ALPN`]: register it with the same iroh
+    /// `Router` as the mesh.
+    pub fn prober(&self) -> Prober {
+        Prober { mesh: self.clone() }
+    }
+
+    fn is_member(&self, id: &EndpointId) -> bool {
+        self.inner
+            .view
+            .read()
+            .expect("view lock")
+            .as_ref()
+            .is_some_and(|v| v.own_slot != 0 && v.list.member_by_id(id).is_some())
+    }
+
     async fn tun_to_peers(self) {
         let tun = self.inner.tun.get().expect("tun is set before this runs");
         let c = &self.inner.counters;
@@ -658,14 +806,7 @@ impl Mesh {
 
     fn admit(&self, conn: &Connection) -> bool {
         let id = conn.remote_id();
-        let is_member = self
-            .inner
-            .view
-            .read()
-            .expect("view lock")
-            .as_ref()
-            .is_some_and(|v| v.own_slot != 0 && v.list.member_by_id(&id).is_some());
-        if !is_member {
+        if !self.is_member(&id) {
             self.inner
                 .counters
                 .refused_non_members
@@ -783,6 +924,31 @@ impl ProtocolHandler for Mesh {
     }
 }
 
+/// Answers a member's probe ([`crate::PROBE_ALPN`]): holds the connection
+/// until the member closes it, and refuses anyone else. A probe carries
+/// nothing; it exists so that iroh punches again.
+#[derive(Debug, Clone)]
+pub struct Prober {
+    mesh: Mesh,
+}
+
+impl ProtocolHandler for Prober {
+    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        let c = &self.mesh.inner.counters;
+        if !self.mesh.is_member(&connection.remote_id()) {
+            c.refused_non_members.fetch_add(1, Relaxed);
+            connection.close(1u32.into(), b"not a member");
+            return Err(AcceptError::from_err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "not a member of this network",
+            )));
+        }
+        c.probes_answered.fetch_add(1, Relaxed);
+        let _ = tokio::time::timeout(PROBE_HOLD * 2, connection.closed()).await;
+        Ok(())
+    }
+}
+
 /// The relays a dial to a member names: the one the list says it is homed
 /// on, when that is one of ours and the last dial through it did not fail;
 /// otherwise all of ours, since any may be its home.
@@ -801,6 +967,13 @@ fn close_all(peer: Peer) {
     for conn in peer.connections {
         conn.close(1u32.into(), b"removed from the network");
     }
+}
+
+fn selected_is_relay(conn: &Connection) -> Option<bool> {
+    conn.paths()
+        .iter()
+        .find(|p| p.is_selected())
+        .map(|p| matches!(p.remote_addr(), TransportAddr::Relay(_)))
 }
 
 fn describe_path(conn: &Connection) -> String {
@@ -841,6 +1014,12 @@ mod tests {
             ours,
             "a hint that is none of ours is ignored"
         );
+    }
+
+    #[test]
+    fn a_relayed_peer_is_probed_after_5_10_20_and_40_s_then_every_minute() {
+        let waits: Vec<u64> = (0..7).map(|n| probe_backoff(n).as_secs()).collect();
+        assert_eq!(waits, [5, 10, 20, 40, 60, 60, 60]);
     }
 
     #[test]

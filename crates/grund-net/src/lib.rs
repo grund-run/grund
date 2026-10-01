@@ -38,3 +38,8 @@ pub mod tun;
 
 /// The ALPN of the private network's connections between members.
 pub const NET_ALPN: &[u8] = b"grund/net/1";
+
+/// The ALPN of the short connections a member opens to a peer it reaches
+/// only through the relay, so that iroh tries to punch a direct path again
+/// ([`mesh::Prober`]). They carry nothing and close after a few seconds.
+pub const PROBE_ALPN: &[u8] = b"grund/net-probe/1";

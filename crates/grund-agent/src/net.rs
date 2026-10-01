@@ -350,8 +350,12 @@ async fn carry(
                     relays: bound_relays.clone(),
                     ..config.clone()
                 };
-                let endpoint = match endpoint::bind(key.clone(), &config, vec![NET_ALPN.to_vec()])
-                    .await
+                let endpoint = match endpoint::bind(
+                    key.clone(),
+                    &config,
+                    vec![NET_ALPN.to_vec(), grund_net::PROBE_ALPN.to_vec()],
+                )
+                .await
                 {
                     Ok(endpoint) => endpoint,
                     Err(error) => {
@@ -365,6 +369,7 @@ async fn carry(
                 sync_relays(&endpoint, &bound_relays, &wanted).await;
                 let router = iroh::protocol::Router::builder(endpoint)
                     .accept(NET_ALPN, mesh.clone())
+                    .accept(grund_net::PROBE_ALPN, mesh.prober())
                     .spawn();
                 if let Some((old, old_router)) = bound.replace((addrs.clone(), router)) {
                     tracing::info!(from = ?old, to = ?addrs, "private network: the uplink's address changed; rebound");

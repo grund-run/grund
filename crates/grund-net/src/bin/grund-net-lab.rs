@@ -252,6 +252,7 @@ async fn node(
     mesh.attach(endpoint.clone())?;
     let _router = IrohRouter::builder(endpoint)
         .accept(NET_ALPN, mesh.clone())
+        .accept(grund_net::PROBE_ALPN, mesh.prober())
         .spawn();
 
     let (tx, rx) = watch::channel(read_list(&list_path, &network_key).ok());
@@ -309,7 +310,7 @@ async fn inject(
     let endpoint = endpoint::bind(
         key::secret_key(&seed(&key_hex)?),
         &config,
-        vec![NET_ALPN.to_vec()],
+        vec![NET_ALPN.to_vec(), grund_net::PROBE_ALPN.to_vec()],
     )
     .await?;
     let target = EndpointId::from_str(&to)?;
