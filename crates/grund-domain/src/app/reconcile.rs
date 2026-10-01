@@ -391,18 +391,18 @@ fn failure_reason(pass: &Pass<'_>, replica: &Replica, release: &Release) -> Opti
     {
         return None;
     }
-    let minutes = deadline.num_seconds() as f64 / 60.0;
+    let span = span_words(deadline);
     let last = observation
         .map(|o| o.reason.clone())
         .filter(|r| !r.is_empty());
     Some(match (observation.map(|o| o.state), &release.spec.check) {
         (Some(Observed::Pulling | Observed::Failed), _) | (None, _) => format!(
-            "v{} didn't start on {machine} within {minutes:.0} min{}.",
+            "v{} didn't start on {machine} within {span}{}.",
             release.number,
             last.map_or(String::new(), |r| format!(": {r}"))
         ),
         (_, Some(check)) => format!(
-            "v{} didn't become ready: its check on {} failed for {minutes:.0} min{}.",
+            "v{} didn't become ready: its check on {} failed for {span}{}.",
             release.number,
             match &check.kind {
                 super::spec::CheckKind::Http { path } => format!("{path} (port {})", check.port),
@@ -411,11 +411,22 @@ fn failure_reason(pass: &Pass<'_>, replica: &Replica, release: &Release) -> Opti
             last.map_or(String::new(), |r| format!(" (last answer: {r})"))
         ),
         (_, None) => format!(
-            "v{} didn't keep running within {minutes:.0} min{}.",
+            "v{} didn't keep running within {span}{}.",
             release.number,
             last.map_or(String::new(), |r| format!(": {r}"))
         ),
     })
+}
+
+/// A span in the customer's words: seconds below two minutes, else whole
+/// minutes (a 90 s deadline is "90 s", never "2 min").
+pub fn span_words(span: Duration) -> String {
+    let seconds = span.num_seconds();
+    if seconds < 120 || seconds % 60 != 0 {
+        format!("{seconds} s")
+    } else {
+        format!("{} min", seconds / 60)
+    }
 }
 
 fn fail_rollout(pass: &mut Pass<'_>, reason: String) {
@@ -564,9 +575,9 @@ fn converge(pass: &mut Pass<'_>, lost_slots: &BTreeSet<u32>, new_id: &mut dyn Fn
             fail_rollout(
                 pass,
                 format!(
-                    "v{} couldn't be placed for {:.0} min: {}",
+                    "v{} couldn't be placed for {}: {}",
                     rollout.to,
-                    deadline.num_seconds() as f64 / 60.0,
+                    span_words(deadline),
                     waiting.message
                 ),
             );
@@ -972,6 +983,14 @@ mod tests {
     }
 
     #[test]
+    fn a_span_is_said_in_seconds_below_two_minutes_and_whole_minutes_above() {
+        assert_eq!(span_words(Duration::seconds(90)), "90 s");
+        assert_eq!(span_words(Duration::seconds(60)), "60 s");
+        assert_eq!(span_words(Duration::seconds(300)), "5 min");
+        assert_eq!(span_words(Duration::seconds(150)), "150 s");
+    }
+
+    #[test]
     fn a_first_release_places_every_copy_spread_and_goes_live() {
         let mut world = World::new(2, vec![machine(1, 4096), machine(2, 4096)]);
         world.deploy(512, Behaviour::Healthy);
@@ -1079,6 +1098,7 @@ mod tests {
         assert!(failed.1);
         assert!(failed.0.contains("/healthz"), "{}", failed.0);
         assert!(failed.0.contains("status 502"), "{}", failed.0);
+        assert!(failed.0.contains("failed for 5 min"), "{}", failed.0);
         assert_eq!(world.app.current_release, Some(1));
         assert!(world.app.rollout.is_none());
         let now: BTreeSet<Uuid> = world.app.replicas.iter().map(|r| r.replica_id).collect();
