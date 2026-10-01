@@ -32,7 +32,7 @@ impl Drop for FakeRegistry {
 
 impl FakeRegistry {
     pub async fn start() -> anyhow::Result<Self> {
-        let listener = TcpListener::bind(("127.0.0.1", super::free_port())).await?;
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
         let host = listener.local_addr()?.to_string();
         let shared = Arc::new(Mutex::new(Shared::default()));
         let handle = shared.clone();

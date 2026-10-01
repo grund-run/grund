@@ -38,7 +38,7 @@ impl Drop for FakeInsights {
 
 impl FakeInsights {
     pub async fn start(answers: &[u16]) -> anyhow::Result<Self> {
-        let listener = TcpListener::bind(("127.0.0.1", super::free_port())).await?;
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
         let url = format!("http://{}", listener.local_addr()?);
         let recorded = Arc::new(Mutex::new(Recorded {
             reports: Vec::new(),
