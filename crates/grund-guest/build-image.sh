@@ -8,10 +8,15 @@
 #   GRUND_BINARY=… GRUND_GUEST_BINARY=… crates/grund-guest/build-image.sh <out.ext4>
 #
 # With both binaries given (CI's release step built them), nothing is
-# compiled. The image is small (GRUND_GUEST_SIZE_MIB, default 48): the VM's
-# disk is this image grown to its size, and grund-guest grows / to fill it
-# at boot. mkfs's default reserve (256 GDT blocks, 64-bit descriptors) lets
-# it grow online to 2 TiB; a larger disk keeps a 2 TiB filesystem.
+# compiled. The image is as small as its contents allow: what the two
+# binaries need plus GRUND_GUEST_HEADROOM_MIB (default 16) for the
+# filesystem's own metadata and the guest's first writes, or exactly
+# GRUND_GUEST_SIZE_MIB when that is set. Every MiB of it is downloaded by
+# each machine that runs a VM. The VM's disk is this image grown to its size,
+# and grund-guest grows / to fill it at boot. The reserve for that (256 GDT
+# blocks, 64-bit descriptors) is asked for explicitly, growth to 2 TiB, so
+# it does not shrink with the image: mkfs's default reserve falls below 256
+# blocks under 33 MiB. A larger disk keeps a 2 TiB filesystem.
 #
 # Built without root: `mkfs.ext4 -d` fills the filesystem from a staging
 # directory, then debugfs sets every inode to uid/gid 0 and one timestamp,
@@ -21,7 +26,7 @@
 set -euo pipefail
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
 image="${1:?usage: build-image.sh <out.ext4>}"
-size_mib="${GRUND_GUEST_SIZE_MIB:-48}"
+headroom_mib="${GRUND_GUEST_HEADROOM_MIB:-16}"
 uuid=4b8f2a61-9c3e-4d7a-b5e0-2f6c8d1a3e97
 target=x86_64-unknown-linux-musl
 epoch="${SOURCE_DATE_EPOCH:-$(git -C "$repo" log -1 --format=%ct 2>/dev/null || echo 0)}"
@@ -55,10 +60,13 @@ chmod 0644 "$stage/etc/os-release"
 chmod 1777 "$stage/tmp"
 find "$stage" -exec touch -h -d "@$epoch" {} +
 
+content_kib="$(du -sk "$stage" | cut -f1)"
+size_mib="${GRUND_GUEST_SIZE_MIB:-$(( (content_kib + 1023) / 1024 + headroom_mib ))}"
+
 rm -f "$image.part"
 truncate -s "${size_mib}M" "$image.part"
 E2FSPROGS_FAKE_TIME="$epoch" mkfs.ext4 -q -F -L grund-root -U "$uuid" \
-  -E "hash_seed=$uuid,root_owner=0:0" -d "$stage" "$image.part" >/dev/null
+  -E "hash_seed=$uuid,root_owner=0:0,resize=2147483648" -d "$stage" "$image.part" >/dev/null
 {
   (cd "$stage" && find . -mindepth 1 | sed 's|^\.||'; echo /lost+found; echo /) | sort -u | while read -r path; do
     for field in uid gid; do echo "set_inode_field $path $field 0"; done
@@ -73,4 +81,4 @@ if grep -v '^debugfs' "$stage.err" | grep -q .; then
 fi
 e2fsck -fn "$image.part" >/dev/null 2>&1 || fail "the image does not pass e2fsck"
 mv "$image.part" "$image"
-echo "$image sha256 $(sha256sum "$image" | cut -d' ' -f1)"
+echo "$image ${size_mib} MiB, sha256 $(sha256sum "$image" | cut -d' ' -f1)"
