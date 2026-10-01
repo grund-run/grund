@@ -36,6 +36,39 @@ pub async fn run(netns: Option<PathBuf>, probe: Probe, timeout: Duration) -> Res
     }
 }
 
+/// Opens a TCP connection to `127.0.0.1:port` inside the network namespace
+/// at `netns`, for the gate (grund-docs design/traffic.md §7.4): a thread
+/// enters the namespace, connects, and ends, and the socket stays in the
+/// namespace it was made in. This is how the gate reaches a container whose
+/// namespace has loopback only; with an address of its own, the runtime
+/// connects to that from the host instead.
+pub async fn connect(
+    netns: PathBuf,
+    port: u16,
+    timeout: Duration,
+) -> std::io::Result<tokio::net::TcpStream> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("grund-connect".into())
+        .spawn(move || {
+            let result = crate::netns::enter(&netns).and_then(|()| {
+                let stream = TcpStream::connect_timeout(
+                    &SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+                    timeout,
+                )?;
+                stream.set_nodelay(true)?;
+                stream.set_nonblocking(true)?;
+                Ok(stream)
+            });
+            let _ = tx.send(result);
+        })?;
+    let stream = tokio::time::timeout(timeout + Duration::from_secs(1), rx)
+        .await
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "no connection in time"))?
+        .map_err(|_| std::io::Error::other("the connecting thread ended without an answer"))??;
+    tokio::net::TcpStream::from_std(stream)
+}
+
 /// The check itself, in the calling thread's namespace.
 pub fn check(probe: &Probe, timeout: Duration) -> Result<(), String> {
     let deadline = Instant::now() + timeout;

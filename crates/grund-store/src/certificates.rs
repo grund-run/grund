@@ -680,6 +680,34 @@ pub async fn remote_status(
     .await
 }
 
+/// Every remote certificate of `owner` whose subject starts with `prefix`,
+/// with its subject, in subject order.
+pub async fn remote_statuses(
+    executor: impl PgExecutor<'_>,
+    owner: &str,
+    prefix: &str,
+) -> Result<Vec<(String, RemoteStatus)>, sqlx::Error> {
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        subject: String,
+        #[sqlx(flatten)]
+        status: RemoteStatus,
+    }
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT subject, names, chain_pem, version, not_before, not_after, renew_at, last_error, \
+                (csr_spent AND (chain_pem IS NULL OR renew_at <= clock_timestamp())) AS wants_csr, \
+                (chain_pem IS NOT NULL AND renew_at > clock_timestamp()) AS issued \
+           FROM grund_certificates \
+          WHERE owner = $1 AND starts_with(subject, $2) AND terminator = 'remote' \
+          ORDER BY subject",
+    )
+    .bind(owner)
+    .bind(prefix)
+    .fetch_all(executor)
+    .await?;
+    Ok(rows.into_iter().map(|r| (r.subject, r.status)).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

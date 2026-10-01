@@ -14,7 +14,11 @@
 //!   code (the machine agent, `grund-agent`);
 //! - `agent`: keep it connected, and run the VMs its desired state asks for;
 //! - `relay`: a relay for an instance's machines, on a host of its own;
-//! - `relays`: mint enrollment tokens for relays, revoke and list them.
+//! - `relays`: mint enrollment tokens for relays, revoke and list them;
+//! - `edge`: the entry edge, which terminates TLS for app addresses and
+//!   hands each connection to a machine's gate;
+//! - `edges`: mint enrollment tokens for edges, revoke and list them;
+//! - `apps`: suspend an app's address, or lift its suspension.
 //!
 //! The agent is part of this binary, so there is one artifact to build, sign
 //! and ship.
@@ -85,6 +89,16 @@ enum Command {
         about = "Mint a one-time enrollment token for a grund relay, revoke a relay, or list them"
     )]
     Relays(grund_server::relays_command::RelaysCommand),
+    #[command(
+        about = "Run an entry edge: terminate TLS for app addresses and hand each connection to a machine that runs the app"
+    )]
+    Edge(grund_server::edge::EdgeCommand),
+    #[command(
+        about = "Mint a one-time enrollment token for a grund edge, revoke an edge, or list them"
+    )]
+    Edges(grund_server::relays_command::EdgesCommand),
+    #[command(about = "Suspend an app's address, or lift its suspension")]
+    Apps(grund_server::apps_command::AppsCommand),
 }
 
 #[derive(clap::Args)]
@@ -260,6 +274,9 @@ async fn main() -> anyhow::Result<()> {
         Command::Join(args) => grund_agent::join::run(&args).await,
         Command::Relay(command) => grund_server::relay_command::run(command).await,
         Command::Relays(command) => grund_server::relays_command::run(command).await,
+        Command::Edge(command) => grund_server::edge::run(command).await,
+        Command::Edges(command) => grund_server::relays_command::run_edges(command).await,
+        Command::Apps(command) => grund_server::apps_command::run(command).await,
         Command::Agent(command) => match command.vm_runtime.as_str() {
             "simulated" => {
                 let dir = command.agent.data_dir.join("simulated-vms");

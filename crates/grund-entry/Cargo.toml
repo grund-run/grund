@@ -1,0 +1,18 @@
+[package]
+name = "grund-entry"
+description = "grund/entry/1, the stream an edge opens to a machine's gate for one client connection: its header, the gate's answer, and the limits both ends hold"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+license = "AGPL-3.0-only"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["io-util", "macros", "rt"] }

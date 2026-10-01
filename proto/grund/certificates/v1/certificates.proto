@@ -13,10 +13,12 @@ import "google/protobuf/timestamp.proto";
 // gate and the entry edge come later, on the same service.
 //
 // The caller is the terminator, authenticated by its own key's signature
-// before the body is read: an enrolled relay (grund.relay.v1), or a
-// registered machine (grund.agent.v1's control-link headers). Who it is
-// decides everything: which names it may ask for (a relay: exactly the host
-// of its URL in GRUND_RELAYS; a machine: none yet, until the gate exists),
+// before the body is read: an enrolled relay (grund.relay.v1), an enrolled
+// edge (grund.edge.v1), or a registered machine (grund.agent.v1's
+// control-link headers). Who it is decides everything: which names it may
+// ask for (a relay: exactly the host of its URL in GRUND_RELAYS; an edge:
+// one certificate per name, for its own host and for every address its
+// route table carries; a machine: none yet, until direct names exist),
 // and which certificate it sees. Nothing in a request selects another
 // terminator's certificate. A name the caller may not have, and a
 // certificate it has not asked for, are not_found, the same as absence.
@@ -116,6 +118,8 @@ message CsrWanted {
 // A new chain is ready: fetch it with GetCertificate.
 message Issued {
   int64 version = 1;
+  // The names of the certificate it is for.
+  repeated string names = 2;
 }
 
 message AnswerChallengeRequest {
@@ -124,7 +128,11 @@ message AnswerChallengeRequest {
 
 message AnswerChallengeResponse {}
 
-message GetCertificateRequest {}
+message GetCertificateRequest {
+  // Which of the caller's certificates: empty for a relay's one; an edge
+  // names the one name it asked for.
+  repeated string names = 1;
+}
 
 message GetCertificateResponse {
   Certificate certificate = 1;

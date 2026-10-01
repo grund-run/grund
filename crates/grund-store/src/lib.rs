@@ -10,6 +10,7 @@ pub mod agents;
 pub mod apps;
 pub mod certificates;
 pub mod doctor;
+pub mod entry;
 pub mod machines;
 pub mod networks;
 pub mod organisations;

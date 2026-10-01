@@ -10,7 +10,7 @@
 //! on `/run/grund/containerd.sock`), never another runtime's on the same
 //! machine.
 
-use std::{collections::BTreeMap, future::Future, time::Duration};
+use std::{collections::BTreeMap, future::Future, net::IpAddr, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
@@ -163,6 +163,34 @@ pub trait ContainerRuntime: Send + Sync {
         probe: &Probe,
         timeout: Duration,
     ) -> impl Future<Output = Result<(), String>> + Send;
+
+    /// Where the running container is reached from this machine and, over
+    /// the private network, from the others: its own address, with no port
+    /// mapping (grund-docs design/apps.md §12.2). `None` while it has none.
+    fn address(&self, id: &str) -> impl Future<Output = Option<IpAddr>> + Send {
+        let _ = id;
+        async { None }
+    }
+
+    /// Opens a TCP connection to `port` of the running container: how the
+    /// gate reaches a local copy (grund-docs design/traffic.md §7.4). By
+    /// default, a connection to [`ContainerRuntime::address`] from this
+    /// machine's own network namespace.
+    fn connect(
+        &self,
+        id: &str,
+        port: u16,
+    ) -> impl Future<Output = std::io::Result<tokio::net::TcpStream>> + Send {
+        async move {
+            match self.address(id).await {
+                Some(ip) => tokio::net::TcpStream::connect((ip, port)).await,
+                None => Err(std::io::Error::new(
+                    std::io::ErrorKind::NotConnected,
+                    "the container has no address",
+                )),
+            }
+        }
+    }
 }
 
 /// The runtime of a machine that runs no containers.

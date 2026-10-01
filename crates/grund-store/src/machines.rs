@@ -59,8 +59,9 @@ pub async fn current_keys_among(
 }
 
 /// Which of `public_keys` (lowercase hex) a relay of this instance may
-/// admit: the current key of a registered machine, or the instance's own
-/// key while it is not retired.
+/// admit: the current key of a registered machine, the instance's own key
+/// while it is not retired, or the key of an active `grund edge`, which
+/// reaches machines behind NAT through the relay (traffic.md §6.4).
 pub async fn relay_keys_among(
     executor: impl PgExecutor<'_>,
     public_keys: &[String],
@@ -70,7 +71,10 @@ pub async fn relay_keys_among(
          UNION \
          SELECT encode(public_key, 'hex') FROM grund_keys \
          WHERE purpose = 'instance' AND retired_at IS NULL \
-           AND encode(public_key, 'hex') = ANY($1)",
+           AND encode(public_key, 'hex') = ANY($1) \
+         UNION \
+         SELECT encode(public_key, 'hex') FROM grund_relays \
+         WHERE role = 'edge' AND state = 'active' AND encode(public_key, 'hex') = ANY($1)",
     )
     .bind(public_keys)
     .fetch_all(executor)

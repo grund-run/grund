@@ -239,6 +239,9 @@ pub struct ServeConfig {
     pub relay: RelayArgs,
 
     #[command(flatten)]
+    pub entry: EntryArgs,
+
+    #[command(flatten)]
     pub tls: TlsArgs,
 
     #[command(flatten)]
@@ -257,6 +260,44 @@ pub struct ServeConfig {
     /// the kubelet's terminationGracePeriodSeconds (30 s by default).
     #[arg(long, env = "GRUND_SHUTDOWN_GRACE", value_parser = secs, default_value = "10")]
     pub shutdown_grace: Duration,
+}
+
+/// The traffic path's settings on the instance (grund-docs
+/// design/traffic.md §6, §7.3).
+#[derive(Clone, Debug, Default, Args)]
+pub struct EntryArgs {
+    /// The domain app addresses live under: an app gets
+    /// `<app>-<organisation>.<domain>` (grund.run on grund's hosted
+    /// instance), which its machines' gates answer for and the edges route.
+    /// Unset: apps have no address, and nothing reaches them from outside.
+    #[arg(long, env = "GRUND_APP_DOMAIN", value_parser = dns_name)]
+    pub app_domain: Option<String>,
+
+    /// The hosts `grund edge`s may enroll for (comma-separated DNS names,
+    /// one per edge node). An edge whose host leaves this list is shut out
+    /// at its next call, and machines stop accepting its entry streams with
+    /// their next document.
+    #[arg(long, env = "GRUND_EDGES", value_delimiter = ',', value_parser = dns_name)]
+    pub edges: Vec<String>,
+}
+
+/// A bare DNS name, lowercase, without a trailing dot.
+pub fn dns_name(input: &str) -> Result<String, String> {
+    let name = input.trim().trim_end_matches('.').to_ascii_lowercase();
+    let label_ok = |label: &str| {
+        (1..=63).contains(&label.len())
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+    };
+    if name.len() > 253 || !name.contains('.') || !name.split('.').all(label_ok) {
+        return Err(format!(
+            "{input:?} is not a DNS name like grund.run, with no scheme, port or wildcard"
+        ));
+    }
+    Ok(name)
 }
 
 /// Social sign-in providers. A commercial feature: configuring one does

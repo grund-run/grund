@@ -196,6 +196,11 @@ message DesiredState {
   // Keys the agent pins beside the current one, for a rotation (apps.md
   // §6.3). Not issued yet.
   repeated NextKey next_keys = 10;
+  // The keys that may open grund/entry/1 streams to this machine's gate,
+  // as iroh prints an endpoint id: the instance's enrolled edges
+  // (grund-docs design/traffic.md §7.1). Empty: no entry stream is
+  // accepted.
+  repeated string entry_keys = 11;
 }
 
 message NextKey {
@@ -219,7 +224,10 @@ message Replica {
   ReplicaState state = 12;
   // Names and versions only; values are fetched over the control link.
   repeated SecretRef secrets = 13;
-  // For a public port: its grund.run name and verified custom domains.
+  // For a public port: its grund.run name and verified custom domains. The
+  // first is the app's address on the instance's app domain, which is HTTPS
+  // only; the gate answers 421 to any host not listed (grund-docs
+  // design/traffic.md §7.3).
   repeated string hostnames = 14;
   // Unset: ready once its process has run for min_ready.
   ReplicaCheck check = 15;
@@ -358,6 +366,9 @@ message ReplicaObserved {
   int32 last_exit_code = 6;
   // For failed and refused, or the last failed check: why, for the user.
   string reason = 7;
+  // A draining replica with no request or connection in flight through the
+  // gate, so the instance may stop it before its drain ends (apps.md §12.3).
+  bool idle = 8;
 }
 
 enum ReplicaObservedState {

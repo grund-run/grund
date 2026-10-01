@@ -2,8 +2,9 @@
 //! relay inside `grund serve`, and `grund relay` on its own host.
 //!
 //! **One access policy.** A relay admits a key only if it is the current key
-//! of a machine registered with the instance and not revoked, or the
-//! instance's own key (grund-store `relay_keys_among`). The relay in `grund
+//! of a machine registered with the instance and not revoked, the
+//! instance's own key, or an active edge's key (grund-store
+//! `relay_keys_among`). The relay in `grund
 //! serve` asks the database ([`Database`]); a `grund relay` elsewhere asks
 //! its instance over HTTPS ([`Callout`], answered by `api/relay_access.rs`
 //! from the same query). Either way [`RelayAccess`] asks when a connection

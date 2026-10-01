@@ -12,6 +12,12 @@
 //! under the header `x-grund-relay` instead of `x-grund-machine`: one scheme
 //! to learn, and a relay id is never a machine id (they are different
 //! tables), so neither can pass as the other.
+//!
+//! `grund edge`s (traffic.md §6) enroll and sign exactly the same way, as
+//! [`Role::Edge`]: their tokens start `grund_edge_`, their proofs
+//! `grund-edge-enroll-v1`, their hosts come from GRUND_EDGES and their calls
+//! carry `x-grund-edge`. A token, an enrollment and a signature of one role
+//! never pass as the other's.
 
 use chrono::{DateTime, Utc};
 use ed25519_dalek::{Signature, VerifyingKey};
@@ -20,8 +26,53 @@ use uuid::Uuid;
 
 use crate::{config::PublicOrigin, crypto, services::agents::request_message, state::State};
 
-/// The prefix of an enrollment token.
+/// The prefix of a relay's enrollment token.
 pub const TOKEN_PREFIX: &str = "grund_relay_";
+
+/// The prefix of an edge's enrollment token.
+pub const EDGE_TOKEN_PREFIX: &str = "grund_edge_";
+
+/// The purpose prefix of an edge's enrollment proof.
+pub const EDGE_ENROLL_PREFIX: &str = "grund-edge-enroll-v1\n";
+
+/// Which kind of terminator enrolled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    Relay,
+    Edge,
+}
+
+impl Role {
+    /// The role as the store keeps it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Role::Relay => "relay",
+            Role::Edge => "edge",
+        }
+    }
+
+    pub fn token_prefix(self) -> &'static str {
+        match self {
+            Role::Relay => TOKEN_PREFIX,
+            Role::Edge => EDGE_TOKEN_PREFIX,
+        }
+    }
+
+    fn enroll_prefix(self) -> &'static str {
+        match self {
+            Role::Relay => ENROLL_PREFIX,
+            Role::Edge => EDGE_ENROLL_PREFIX,
+        }
+    }
+
+    /// The setting whose hosts this role may enroll for.
+    pub fn setting(self) -> &'static str {
+        match self {
+            Role::Relay => "GRUND_RELAYS",
+            Role::Edge => "GRUND_EDGES",
+        }
+    }
+}
 
 /// How long a minted token can be used.
 pub const TOKEN_TTL: std::time::Duration = std::time::Duration::from_secs(3600);
@@ -60,19 +111,42 @@ pub enum EnrollOutcome {
 /// The bytes a relay signs to enroll with a token whose SHA-256 is
 /// `token_sha256_hex`.
 pub fn enrollment_message(origin: &str, signed_at: i64, token_sha256_hex: &str) -> Vec<u8> {
-    format!("{ENROLL_PREFIX}{origin}\n{signed_at}\n{token_sha256_hex}").into_bytes()
+    role_enrollment_message(Role::Relay, origin, signed_at, token_sha256_hex)
+}
+
+/// The bytes a terminator of `role` signs to enroll.
+pub fn role_enrollment_message(
+    role: Role,
+    origin: &str,
+    signed_at: i64,
+    token_sha256_hex: &str,
+) -> Vec<u8> {
+    format!(
+        "{}{origin}\n{signed_at}\n{token_sha256_hex}",
+        role.enroll_prefix()
+    )
+    .into_bytes()
 }
 
 /// The hosts of GRUND_RELAYS: the only hosts a relay may enroll for.
 pub fn listed_hosts(state: &State) -> Vec<String> {
-    state
-        .config
-        .relay
-        .relays
-        .iter()
-        .filter_map(|relay| PublicOrigin::parse(relay.url.trim_end_matches('/')))
-        .map(|origin| origin.host)
-        .collect()
+    role_hosts(state, Role::Relay)
+}
+
+/// The hosts a terminator of `role` may enroll for: GRUND_RELAYS' or
+/// GRUND_EDGES'.
+pub fn role_hosts(state: &State, role: Role) -> Vec<String> {
+    match role {
+        Role::Relay => state
+            .config
+            .relay
+            .relays
+            .iter()
+            .filter_map(|relay| PublicOrigin::parse(relay.url.trim_end_matches('/')))
+            .map(|origin| origin.host)
+            .collect(),
+        Role::Edge => state.config.entry.edges.clone(),
+    }
 }
 
 /// Normalises a host an operator typed, refusing what cannot be a relay
@@ -95,10 +169,20 @@ pub fn parse_host(host: &str) -> anyhow::Result<String> {
 /// Mints a one-time token that enrolls one relay for `host` within
 /// [`TOKEN_TTL`]. Only its digest is stored; the token is returned once.
 pub async fn mint_token(pool: &sqlx::PgPool, host: &str) -> anyhow::Result<String> {
+    mint_role_token(pool, Role::Relay, host).await
+}
+
+/// Mints a one-time token that enrolls one terminator of `role` for `host`.
+pub async fn mint_role_token(
+    pool: &sqlx::PgPool,
+    role: Role,
+    host: &str,
+) -> anyhow::Result<String> {
     let host = parse_host(host)?;
-    let token = format!("{TOKEN_PREFIX}{}", crypto::random_token());
+    let token = format!("{}{}", role.token_prefix(), crypto::random_token());
     relays::insert_token(
         pool,
+        role.as_str(),
         &crypto::digest(&token),
         &host,
         TOKEN_TTL.as_secs_f64(),
@@ -128,6 +212,15 @@ impl Relays {
     /// Enrolls a relay under its key for the token's host, revoking the relay
     /// that host had. A token whose host is not in GRUND_RELAYS is invalid.
     pub async fn enroll(&self, request: EnrollRequest) -> anyhow::Result<EnrollOutcome> {
+        self.enroll_as(Role::Relay, request).await
+    }
+
+    /// Enrolls a terminator of `role`; see [`Relays::enroll`].
+    pub async fn enroll_as(
+        &self,
+        role: Role,
+        request: EnrollRequest,
+    ) -> anyhow::Result<EnrollOutcome> {
         use crate::services::LimitsState;
         if !self
             .state
@@ -137,7 +230,7 @@ impl Relays {
         {
             return Ok(EnrollOutcome::RateLimited);
         }
-        if !request.token.starts_with(TOKEN_PREFIX) || request.token.len() > 128 {
+        if !request.token.starts_with(role.token_prefix()) || request.token.len() > 128 {
             return Ok(EnrollOutcome::TokenInvalid);
         }
         let now = Utc::now();
@@ -150,7 +243,8 @@ impl Relays {
             .filter(|_| fresh(request.signed_at_unix, now))
             .is_some_and(|signature| {
                 key.verify_strict(
-                    &enrollment_message(
+                    &role_enrollment_message(
+                        role,
                         &self.state.config.public_origin().serialized,
                         request.signed_at_unix,
                         &hex::encode(digest),
@@ -163,10 +257,10 @@ impl Relays {
             return Ok(EnrollOutcome::ProofInvalid);
         }
         let mut tx = self.state.pool.begin().await?;
-        let Some(token) = relays::token_for_update(&mut tx, &digest).await? else {
+        let Some(token) = relays::token_for_update(&mut tx, role.as_str(), &digest).await? else {
             return Ok(EnrollOutcome::TokenInvalid);
         };
-        if token.expires_at <= now || !listed_hosts(&self.state).contains(&token.host) {
+        if token.expires_at <= now || !role_hosts(&self.state, role).contains(&token.host) {
             return Ok(EnrollOutcome::TokenInvalid);
         }
         if let Some(relay_id) = token.relay_id {
@@ -185,9 +279,17 @@ impl Relays {
             return Ok(EnrollOutcome::KeyReused);
         }
         let relay_id = Uuid::now_v7();
-        relays::enroll(&mut tx, &digest, relay_id, &token.host, &request.public_key).await?;
+        relays::enroll(
+            &mut tx,
+            role.as_str(),
+            &digest,
+            relay_id,
+            &token.host,
+            &request.public_key,
+        )
+        .await?;
         tx.commit().await?;
-        tracing::info!(%relay_id, host = %token.host, "relay enrolled");
+        tracing::info!(%relay_id, host = %token.host, role = role.as_str(), "terminator enrolled");
         Ok(EnrollOutcome::Enrolled(RelayCaller {
             relay_id,
             host: token.host,
@@ -199,6 +301,21 @@ impl Relays {
     /// left GRUND_RELAYS alike.
     pub async fn authenticate(
         &self,
+        relay: &str,
+        signed_at: &str,
+        signature: &str,
+        path: &str,
+        body: &[u8],
+    ) -> anyhow::Result<Option<RelayCaller>> {
+        self.authenticate_as(Role::Relay, relay, signed_at, signature, path, body)
+            .await
+    }
+
+    /// The terminator of `role` that signed this request; see
+    /// [`Relays::authenticate`].
+    pub async fn authenticate_as(
+        &self,
+        role: Role,
         relay: &str,
         signed_at: &str,
         signature: &str,
@@ -224,6 +341,7 @@ impl Relays {
             host,
             public_key,
             state,
+            role: stored_role,
             ..
         }) = relays::relay(&self.state.pool, relay_id).await?
         else {
@@ -233,7 +351,8 @@ impl Relays {
             return Ok(None);
         };
         if state != "active"
-            || !listed_hosts(&self.state).contains(&host)
+            || stored_role != role.as_str()
+            || !role_hosts(&self.state, role).contains(&host)
             || key
                 .verify_strict(
                     &request_message(path, signed_at, body),

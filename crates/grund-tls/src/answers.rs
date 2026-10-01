@@ -58,7 +58,7 @@ impl Answers {
             .collect()
     }
 
-    fn get(&self, name: &str) -> Option<Arc<CertifiedKey>> {
+    pub(crate) fn get(&self, name: &str) -> Option<Arc<CertifiedKey>> {
         self.by_name
             .read()
             .expect("answers lock")

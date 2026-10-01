@@ -10,6 +10,7 @@
 pub mod agent;
 pub mod apps;
 pub mod doctor;
+pub mod gate;
 pub mod join;
 pub mod net;
 pub mod policy;

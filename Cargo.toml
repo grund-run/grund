@@ -16,6 +16,7 @@ grund-agent = { path = "crates/grund-agent" }
 grund-vm = { path = "crates/grund-vm" }
 grund-net = { path = "crates/grund-net" }
 grund-domain = { path = "crates/grund-domain" }
+grund-entry = { path = "crates/grund-entry" }
 grund-ee = { path = "ee/grund-ee" }
 grund-proto = { path = "crates/grund-proto" }
 grund-server = { path = "crates/grund-server" }

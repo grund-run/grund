@@ -44,7 +44,10 @@ use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::services::{agents::request_message, relays::enrollment_message};
+use crate::services::{
+    agents::request_message,
+    relays::{Role, role_enrollment_message},
+};
 
 /// The relay's enrollment: its id, host and instance.
 pub const ENROLLMENT_FILE: &str = "relay.json";
@@ -142,13 +145,21 @@ fn read_optional(path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
 }
 
 /// The relay's identity with its instance: the key it enrolled and what the
-/// instance bound it to.
+/// instance bound it to. An edge's is the same, with [`Role::Edge`].
 #[derive(Clone)]
 pub struct RelayKey {
     pub relay_id: Uuid,
     pub host: String,
     pub instance: String,
+    pub role: Role,
     key: SigningKey,
+}
+
+fn files(role: Role) -> (&'static str, &'static str) {
+    match role {
+        Role::Relay => (ENROLLMENT_FILE, KEY_FILE),
+        Role::Edge => ("edge.json", "edge.key"),
+    }
 }
 
 impl std::fmt::Debug for RelayKey {
@@ -164,15 +175,21 @@ impl std::fmt::Debug for RelayKey {
 impl RelayKey {
     /// The enrollment kept in `dir`, if the relay enrolled before.
     pub fn load(dir: &Path) -> anyhow::Result<Option<Self>> {
-        let Some(record) = read_optional(&dir.join(ENROLLMENT_FILE))? else {
+        Self::load_as(dir, Role::Relay)
+    }
+
+    /// The enrollment of a terminator of `role` kept in `dir`.
+    pub fn load_as(dir: &Path, role: Role) -> anyhow::Result<Option<Self>> {
+        let (record_file, key_file) = files(role);
+        let Some(record) = read_optional(&dir.join(record_file))? else {
             return Ok(None);
         };
         let record: serde_json::Value =
-            serde_json::from_slice(&record).context("the relay's enrollment record")?;
-        let seed = std::fs::read(dir.join(KEY_FILE))
-            .with_context(|| format!("read {}", dir.join(KEY_FILE).display()))?;
+            serde_json::from_slice(&record).context("the enrollment record")?;
+        let seed = std::fs::read(dir.join(key_file))
+            .with_context(|| format!("read {}", dir.join(key_file).display()))?;
         let seed = <[u8; 32]>::try_from(seed.as_slice())
-            .map_err(|_| anyhow::anyhow!("{} is not a 32-byte key", KEY_FILE))?;
+            .map_err(|_| anyhow::anyhow!("{key_file} is not a 32-byte key"))?;
         Ok(Some(Self {
             relay_id: record["relay_id"]
                 .as_str()
@@ -186,8 +203,14 @@ impl RelayKey {
                 .as_str()
                 .context("the enrollment record's instance")?
                 .to_string(),
+            role,
             key: SigningKey::from_bytes(&seed),
         }))
+    }
+
+    /// The key's 32-byte seed: an edge's iroh key is the same key.
+    pub fn seed(&self) -> [u8; 32] {
+        self.key.to_bytes()
     }
 
     /// Enrolls a new key with `instance`, using the one-time `token`, and
@@ -198,44 +221,83 @@ impl RelayKey {
         token: &str,
         http: &reqwest::Client,
     ) -> anyhow::Result<Self> {
+        Self::enroll_as(dir, instance, token, http, Role::Relay).await
+    }
+
+    /// Enrolls a new key of `role`; see [`RelayKey::enroll`].
+    pub async fn enroll_as(
+        dir: &Path,
+        instance: &str,
+        token: &str,
+        http: &reqwest::Client,
+        role: Role,
+    ) -> anyhow::Result<Self> {
         let mut seed = [0u8; 32];
         getrandom::fill(&mut seed).expect("the operating system provides randomness");
         let key = SigningKey::from_bytes(&seed);
         let signed_at = chrono::Utc::now().timestamp();
-        let proof = enrollment_message(
+        let proof = role_enrollment_message(
+            role,
             instance,
             signed_at,
             &hex::encode(Sha256::digest(token.as_bytes())),
         );
-        let request = EnrollRelayRequest {
-            token: token.to_string(),
-            relay_public_key: key.verifying_key().to_bytes().to_vec(),
-            signed_at_unix: signed_at,
-            signature: key.sign(&proof).to_bytes().to_vec(),
-            ..Default::default()
+        let public_key = key.verifying_key().to_bytes().to_vec();
+        let signature = key.sign(&proof).to_bytes().to_vec();
+        let (id, host) = match role {
+            Role::Relay => {
+                let response: EnrollRelayResponse = unary(
+                    http,
+                    instance,
+                    "/grund.relay.v1.RelayEnrollmentService/EnrollRelay",
+                    &[],
+                    EnrollRelayRequest {
+                        token: token.to_string(),
+                        relay_public_key: public_key,
+                        signed_at_unix: signed_at,
+                        signature,
+                        ..Default::default()
+                    }
+                    .encode_to_vec(),
+                )
+                .await?;
+                (response.relay_id, response.host)
+            }
+            Role::Edge => {
+                let response: grund_proto::grund::edge::v1::EnrollEdgeResponse = unary(
+                    http,
+                    instance,
+                    "/grund.edge.v1.EdgeEnrollmentService/EnrollEdge",
+                    &[],
+                    grund_proto::grund::edge::v1::EnrollEdgeRequest {
+                        token: token.to_string(),
+                        edge_public_key: public_key,
+                        signed_at_unix: signed_at,
+                        signature,
+                        ..Default::default()
+                    }
+                    .encode_to_vec(),
+                )
+                .await?;
+                (response.edge_id, response.host)
+            }
         };
-        let response: EnrollRelayResponse = unary(
-            http,
-            instance,
-            "/grund.relay.v1.RelayEnrollmentService/EnrollRelay",
-            &[],
-            request.encode_to_vec(),
-        )
-        .await?;
-        let relay_id = Uuid::parse_str(&response.relay_id).context("the relay id")?;
-        write_private(&dir.join(KEY_FILE), &seed)?;
+        let relay_id = Uuid::parse_str(&id).context("the enrolled id")?;
+        let (record_file, key_file) = files(role);
+        write_private(&dir.join(key_file), &seed)?;
         write_private(
-            &dir.join(ENROLLMENT_FILE),
+            &dir.join(record_file),
             &serde_json::to_vec_pretty(&serde_json::json!({
                 "relay_id": relay_id.to_string(),
-                "host": response.host,
+                "host": host,
                 "instance": instance,
             }))?,
         )?;
         Ok(Self {
             relay_id,
-            host: response.host,
+            host,
             instance: instance.to_string(),
+            role,
             key,
         })
     }
@@ -246,14 +308,20 @@ impl RelayKey {
         let signed_at = chrono::Utc::now().timestamp();
         let signature = self.key.sign(&request_message(path, signed_at, body));
         vec![
-            ("x-grund-relay", self.relay_id.to_string()),
+            (
+                match self.role {
+                    Role::Relay => "x-grund-relay",
+                    Role::Edge => "x-grund-edge",
+                },
+                self.relay_id.to_string(),
+            ),
             ("x-grund-signed-at", signed_at.to_string()),
             ("x-grund-signature", STANDARD.encode(signature.to_bytes())),
         ]
     }
 }
 
-async fn unary<Resp: Message>(
+pub(crate) async fn unary<Resp: Message>(
     http: &reqwest::Client,
     instance: &str,
     path: &str,
@@ -361,6 +429,44 @@ impl Instance {
     /// The relay's key and what it serves.
     pub fn key(&self) -> &RelayKey {
         &self.key
+    }
+
+    /// The certificate for exactly `names` (an edge's one name), as the
+    /// instance has it; none before it was asked for.
+    pub async fn get_for(&self, names: &[String]) -> anyhow::Result<Option<proto::Certificate>> {
+        match self
+            .call::<_, GetCertificateResponse>(
+                "GetCertificate",
+                &GetCertificateRequest {
+                    names: names.to_vec(),
+                    ..Default::default()
+                },
+            )
+            .await
+        {
+            Ok(response) => Ok(response.certificate.into_option()),
+            Err(error) if refused_with(&error, "not_found") => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Asks for a certificate for exactly `names` with `csr`.
+    pub async fn request_for(
+        &self,
+        names: &[String],
+        csr: &[u8],
+    ) -> anyhow::Result<proto::Certificate> {
+        let response: RequestCertificateResponse = self
+            .call(
+                "RequestCertificate",
+                &RequestCertificateRequest {
+                    names: names.to_vec(),
+                    csr: csr.to_vec(),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        Ok(response.certificate.into_option().unwrap_or_default())
     }
 
     async fn call<Req: Message, Resp: Message>(
@@ -545,6 +651,14 @@ impl Store {
 
     fn path(&self, name: &str) -> PathBuf {
         self.dir.join(name)
+    }
+
+    /// The chain kept here, if there is one.
+    pub fn chain(&self) -> Option<String> {
+        read_optional(&self.path("chain.pem"))
+            .ok()
+            .flatten()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
     }
 
     /// Serves the certificate kept here, if there is one.

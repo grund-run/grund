@@ -20,11 +20,13 @@
 
 pub mod acme;
 pub mod api;
+pub mod apps_command;
 pub mod certificates;
 pub mod config;
 pub mod crypto;
 pub mod db;
 pub mod doctor;
+pub mod edge;
 pub mod extension;
 pub mod health;
 pub mod keys;
@@ -149,6 +151,7 @@ pub async fn serve(
         .add(health::Checks::new(&state))
         .add(projections::Projections::new(&state))
         .add(services::apps::AppReconciler::new(state.clone()))
+        .add(services::entry::EntryKeys::new(state.clone()))
         .add(services::maintenance::Sweeper::new(state.clone()))
         .add(certificates::CertificateWork::new(&state))
         .add(sagas::DeletionWorker::new(&state))

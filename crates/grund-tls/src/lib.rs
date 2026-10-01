@@ -17,6 +17,9 @@
 //! - [`server_config`] builds a rustls configuration around a resolver.
 //! - [`TlsListener`] accepts TLS connections for axum and answers ACME
 //!   TLS-ALPN-01 (RFC 8737) from whatever [`Challenges`] it is given.
+//! - [`Names`] serves a certificate per name, picked by the ClientHello,
+//!   for the edge, which serves every app's address
+//!   ([`names_server_config`]).
 //! - [`Answers`] holds TLS-ALPN-01 answers in memory, for a terminator on
 //!   another host that is handed them by its instance, and
 //!   [`answering_server_config`] serves them beside its certificate from
@@ -31,11 +34,13 @@ pub mod answers;
 pub mod keys;
 pub mod kx;
 pub mod listener;
+pub mod names;
 pub mod resolver;
 
 pub use answers::{Answers, answering_server_config};
 pub use keys::KeyAndCsr;
 pub use listener::{Challenges, NoChallenges, TlsListener};
+pub use names::{Names, names_server_config};
 pub use resolver::{Files, Resolver, Served};
 
 use std::sync::Arc;

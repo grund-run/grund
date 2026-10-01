@@ -79,6 +79,9 @@ pub struct Observation {
     pub restarts: u32,
     pub last_exit_code: i32,
     pub reason: String,
+    /// Draining, with nothing in flight through its machine's gate: its
+    /// drain may end now (apps.md §12.3).
+    pub idle: bool,
 }
 
 /// A slot that cannot be placed now.
@@ -348,10 +351,11 @@ fn finish_drains(pass: &mut Pass<'_>) {
             r.draining_since
                 .is_none_or(|since| pass.now - since >= drain)
                 || pass.observation(r.replica_id).is_some_and(|o| {
-                    matches!(
-                        o.state,
-                        Observed::Exited | Observed::Failed | Observed::Refused
-                    )
+                    o.idle
+                        || matches!(
+                            o.state,
+                            Observed::Exited | Observed::Failed | Observed::Refused
+                        )
                 })
         })
         .map(|r| r.replica_id)
@@ -718,6 +722,7 @@ mod tests {
         ids: u128,
         log: Vec<AppEvent>,
         waiting: Vec<Waiting>,
+        gate_idle: bool,
     }
 
     fn start() -> DateTime<Utc> {
@@ -795,6 +800,7 @@ mod tests {
                 ids: 1000,
                 log: Vec::new(),
                 waiting: Vec::new(),
+                gate_idle: false,
             }
         }
 
@@ -905,10 +911,12 @@ mod tests {
                         restarts: 0,
                         last_exit_code: 0,
                         reason: String::new(),
+                        idle: false,
                     },
                     now,
                 ));
                 let (o, since) = entry;
+                o.idle = self.gate_idle && replica.state == ReplicaState::Draining;
                 let age = now - *since;
                 match behaviour {
                     Behaviour::Healthy if age >= Duration::seconds(2) => {
@@ -1390,6 +1398,32 @@ mod tests {
         });
         let gap = removed_at.unwrap() - drained_at.unwrap();
         assert_eq!(gap, Duration::seconds(30));
+    }
+
+    #[test]
+    fn a_draining_copy_the_gate_reports_idle_is_removed_before_its_drain_ends() {
+        let mut world = World::new(1, vec![machine(1, 4096)]);
+        world.gate_idle = true;
+        world.deploy(512, Behaviour::Healthy);
+        world.settled();
+        world.deploy(512, Behaviour::Healthy);
+        let mut drained_at = None;
+        let mut removed_at = None;
+        world.run(120, |w| {
+            for event in &w.log {
+                match event {
+                    AppEvent::ReplicaDraining { draining_at, .. } if drained_at.is_none() => {
+                        drained_at = Some(*draining_at)
+                    }
+                    AppEvent::ReplicaRemoved { removed_at: at, .. } if removed_at.is_none() => {
+                        removed_at = Some(*at)
+                    }
+                    _ => {}
+                }
+            }
+        });
+        let gap = removed_at.unwrap() - drained_at.unwrap();
+        assert!(gap <= Duration::seconds(2), "{gap}");
     }
 
     #[test]

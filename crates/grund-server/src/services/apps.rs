@@ -186,6 +186,7 @@ fn observed(row: &apps::StatusRow) -> Option<Observation> {
         restarts: row.restarts.max(0) as u32,
         last_exit_code: row.last_exit_code,
         reason: row.reason.clone(),
+        idle: row.idle,
     })
 }
 

@@ -1,0 +1,135 @@
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+package grund.edge.v1;
+
+// The entry edge (grund-docs design/traffic.md §6): `grund edge` accepts
+// public TLS connections for app addresses, terminates TLS, picks a
+// machine that runs the app and hands the connection to that machine's
+// gate over one grund/entry/1 stream. It learns which machines serve which
+// address from its instance, here.
+//
+// An edge enrolls once, like a relay (grund.relay.v1): it makes an Ed25519
+// key of its own and presents it with a one-time grund_edge_ token the
+// operator minted for one edge host (`grund edges token <host>`). The host
+// must be in the instance's GRUND_EDGES. The same key is the edge's iroh
+// key: machines accept entry streams only from enrolled edges' keys, which
+// their signed documents carry (grund.agent.v1 DesiredState.entry_keys).
+// From then on the edge signs every call with that key, as a machine signs
+// its control link: the headers x-grund-edge (the edge id),
+// x-grund-signed-at (Unix seconds, within 300 s of the instance) and
+// x-grund-signature (base64 of Ed25519 over "grund-agent-request-v1\n" ||
+// path || "\n" || signed_at || "\n" || lowercase hex SHA-256 of the body).
+// A missing, stale or wrong signature, an unknown edge, a revoked one and
+// one whose host left GRUND_EDGES are all unauthenticated, alike.
+
+// Errors as grund.relay.v1's EnrollRelay: token_invalid, proof_invalid,
+// key_reused, rate_limited.
+service EdgeEnrollmentService {
+  // Enrolls the calling edge under its key, for the token's host. An edge
+  // enrolled for that host before is revoked by this: one host, one edge.
+  rpc EnrollEdge(EnrollEdgeRequest) returns (EnrollEdgeResponse);
+}
+
+service EdgeService {
+  // The route table once its version differs from since_version: at once
+  // if it already does, otherwise when it changes, or after at most 10 s
+  // with the table left unset. The edge keeps the last table on disk and
+  // serves from it while its instance does not answer (fail-static,
+  // traffic.md §6.7).
+  rpc WatchRoutes(WatchRoutesRequest) returns (WatchRoutesResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // Entry bytes the edge carried since its last report, per address and
+  // path (traffic.md §6.4: the relay allowance applies to relayed bytes).
+  // Counted by the instance at most once per report_id.
+  rpc ReportUsage(ReportUsageRequest) returns (ReportUsageResponse);
+}
+
+message EnrollEdgeRequest {
+  // grund_edge_…
+  string token = 1;
+  // Ed25519, 32 bytes, generated on the edge's host and kept there.
+  bytes edge_public_key = 2;
+  // Seconds since the epoch; accepted within 300 seconds of the instance.
+  int64 signed_at_unix = 3;
+  // Ed25519 by the edge key over
+  // "grund-edge-enroll-v1\n" || origin || "\n" || signed_at_unix (decimal)
+  // || "\n" || lowercase hex SHA-256 of the token.
+  bytes signature = 4;
+}
+
+message EnrollEdgeResponse {
+  // UUIDv7.
+  string edge_id = 1;
+  // The host this edge serves, from the token: its own name, which it adds
+  // to nothing but its own certificate.
+  string host = 2;
+  // The relays the edge reaches machines through, as the instance's
+  // networks name them.
+  repeated string relay_urls = 3;
+}
+
+message WatchRoutesRequest {
+  // The version the edge holds; empty for none.
+  string since_version = 1;
+}
+
+message WatchRoutesResponse {
+  // Unset when nothing changed while the call waited.
+  RouteTable table = 1;
+}
+
+message RouteTable {
+  // Opaque: changes whenever anything below does.
+  string version = 1;
+  int64 issued_at_unix = 2;
+  repeated Route routes = 3;
+  // The relays every machine below is homed on one of.
+  repeated string relay_urls = 4;
+}
+
+// One address and where it goes.
+message Route {
+  // The address, lowercase: <app>-<organisation>.<app domain>.
+  string name = 1;
+  string app_id = 2;
+  // Answered with a fixed 451 page and no stream opened (app-domains.md
+  // §5); its machines are left out.
+  bool suspended = 3;
+  // The machines with a running copy of the app.
+  repeated RouteMachine machines = 4;
+}
+
+message RouteMachine {
+  string machine_id = 1;
+  // The machine's key, as iroh prints an endpoint id.
+  string endpoint_id = 2;
+  // The relay it is homed on; empty when it reported none.
+  string relay_url = 3;
+}
+
+message ReportUsageRequest {
+  // A UUID the edge makes per report; a repeat is counted once.
+  string report_id = 1;
+  repeated Usage usage = 2;
+}
+
+message Usage {
+  string name = 1;
+  // direct or relay: whether the edge reached the machine on a direct
+  // path or through a relay.
+  string path = 2;
+  uint64 bytes_in = 3;
+  uint64 bytes_out = 4;
+  uint64 connections = 5;
+}
+
+message ReportUsageResponse {}
+
+// Attached as a detail to EnrollEdge errors.
+message ErrorReason {
+  string reason = 1;
+}

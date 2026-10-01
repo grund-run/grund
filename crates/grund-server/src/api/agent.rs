@@ -238,6 +238,7 @@ impl AgentService for AgentApi {
                     restarts: r.restarts,
                     last_exit_code: r.last_exit_code,
                     reason: r.reason.chars().take(500).collect(),
+                    idle: r.idle,
                 })
             })
             .collect();

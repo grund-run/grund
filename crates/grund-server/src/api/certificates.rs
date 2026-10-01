@@ -102,47 +102,49 @@ struct Watch {
     state: State,
     caller: Terminator,
     sent: HashSet<String>,
-    wanted_sent: bool,
-    version: Option<i64>,
+    wanted_sent: HashSet<String>,
+    versions: std::collections::HashMap<String, i64>,
     queue: std::collections::VecDeque<WatchChallengesResponse>,
     ends: tokio::time::Instant,
     first: bool,
 }
 
 impl Watch {
-    fn news(&mut self, pending: Pending) {
-        for challenge in pending.challenges {
-            if challenge.kind != "tls-alpn-01" || !self.sent.insert(challenge.token.clone()) {
-                continue;
-            }
-            self.queue.push_back(event(proto::Challenge {
-                r#type: EnumValue::from(ChallengeType::CHALLENGE_TYPE_TLS_ALPN_01),
-                name: challenge.name,
-                token: challenge.token,
-                key_authorization: challenge.key_authorization,
-                ..Default::default()
-            }));
-        }
-        if pending.wants_csr && !self.wanted_sent {
-            self.wanted_sent = true;
-            self.queue.push_back(event(proto::CsrWanted {
-                names: pending.names,
-                ..Default::default()
-            }));
-        }
-        if !pending.wants_csr {
-            self.wanted_sent = false;
-        }
-        match self.version {
-            Some(known) if pending.version > known => {
-                self.queue.push_back(event(proto::Issued {
-                    version: pending.version,
+    fn news(&mut self, pending: Vec<Pending>) {
+        for pending in pending {
+            for challenge in pending.challenges {
+                if challenge.kind != "tls-alpn-01" || !self.sent.insert(challenge.token.clone()) {
+                    continue;
+                }
+                self.queue.push_back(event(proto::Challenge {
+                    r#type: EnumValue::from(ChallengeType::CHALLENGE_TYPE_TLS_ALPN_01),
+                    name: challenge.name,
+                    token: challenge.token,
+                    key_authorization: challenge.key_authorization,
                     ..Default::default()
                 }));
             }
-            _ => {}
+            if pending.wants_csr && self.wanted_sent.insert(pending.subject.clone()) {
+                self.queue.push_back(event(proto::CsrWanted {
+                    names: pending.names.clone(),
+                    ..Default::default()
+                }));
+            }
+            if !pending.wants_csr {
+                self.wanted_sent.remove(&pending.subject);
+            }
+            match self.versions.get(&pending.subject) {
+                Some(known) if pending.version > *known => {
+                    self.queue.push_back(event(proto::Issued {
+                        version: pending.version,
+                        names: pending.names.clone(),
+                        ..Default::default()
+                    }));
+                }
+                _ => {}
+            }
+            self.versions.insert(pending.subject, pending.version);
         }
-        self.version = Some(pending.version);
     }
 
     async fn next(mut self) -> Option<(Result<WatchChallengesResponse, ConnectError>, Self)> {
@@ -158,8 +160,8 @@ impl Watch {
             }
             self.first = false;
             match self.state.terminators().pending(&self.caller).await {
-                Ok(Some(pending)) => self.news(pending),
-                Ok(None) => return None,
+                Ok(pending) if !pending.is_empty() => self.news(pending),
+                Ok(_) => return None,
                 Err(error) => {
                     tracing::warn!(
                         error = format!("{error:#}"),
@@ -223,10 +225,10 @@ impl CertificateService for CertificatesApi {
         if self
             .state
             .terminators()
-            .status(&caller)
+            .pending(&caller)
             .await
             .map_err(unavailable)?
-            .is_none()
+            .is_empty()
         {
             return Err(not_found());
         }
@@ -234,8 +236,8 @@ impl CertificateService for CertificatesApi {
             state: self.state.clone(),
             caller,
             sent: HashSet::new(),
-            wanted_sent: false,
-            version: None,
+            wanted_sent: HashSet::new(),
+            versions: Default::default(),
             queue: Default::default(),
             ends: tokio::time::Instant::now() + WATCH_SPAN,
             first: true,
@@ -271,13 +273,17 @@ impl CertificateService for CertificatesApi {
     async fn get_certificate(
         &self,
         ctx: RequestContext,
-        _: ServiceRequest<'_, GetCertificateRequest>,
+        request: ServiceRequest<'_, GetCertificateRequest>,
     ) -> ServiceResult<GetCertificateResponse> {
         let caller = terminator(&ctx)?;
+        if request.names.len() > MAX_NAMES {
+            return Err(not_found());
+        }
+        let names: Vec<String> = request.names.iter().map(|n| n.to_string()).collect();
         match self
             .state
             .terminators()
-            .status(&caller)
+            .status(&caller, &names)
             .await
             .map_err(unavailable)?
         {

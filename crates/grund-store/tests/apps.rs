@@ -233,6 +233,7 @@ async fn a_report_counts_only_from_the_machine_a_replica_is_placed_on(pool: PgPo
         restarts: 0,
         last_exit_code: 0,
         reason: "",
+        idle: false,
     };
     let mut connection = pool.acquire().await.unwrap();
     let t0 = Utc::now();

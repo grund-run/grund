@@ -86,6 +86,12 @@ pub struct AgentArgs {
     /// design/apps.md §6.4). Missing: the defaults.
     #[arg(long, env = "GRUND_AGENT_POLICY", default_value = crate::policy::POLICY_FILE)]
     pub policy: PathBuf,
+
+    /// Tests only: a JSON file of ready copies on other machines, read
+    /// every second, standing in for the signed list's members' apps until
+    /// the private network carries them.
+    #[arg(long, hide = true)]
+    pub gate_remote_copies: Option<PathBuf>,
 }
 
 /// What the agent applied last, kept across restarts.
@@ -259,15 +265,34 @@ pub async fn run<R: VmRuntime, C: ContainerRuntime + 'static>(
     let shared = std::sync::Arc::new(Shared::default());
     *shared.desired.lock().expect("shared lock") = current(&*applied.lock().await);
     let containers = std::sync::Arc::new(containers);
+    let gate = crate::gate::Gate::new(
+        std::sync::Arc::new(crate::gate::RuntimeDial(containers.clone())),
+        crate::gate::Limits::default(),
+    );
     tracing::info!(machine = %record.machine_id, name = %record.name, "agent running");
     let lists = tokio::sync::watch::Sender::new(None);
+    let private_network = record.network.is_some() && unsafe { libc::geteuid() } == 0;
+    if !private_network && !args.once {
+        let relays = record
+            .network
+            .as_ref()
+            .map(|n| n.relay_urls.clone())
+            .unwrap_or_default();
+        tokio::spawn(entry_only(gate.clone(), link.key.to_bytes(), relays));
+    }
     if let Some(network) = record.network.clone().filter(|_| !args.once) {
         let (link, seed, data_dir) = (link.clone(), link.key.to_bytes(), args.data_dir.clone());
         let lists = lists.clone();
+        let entry_gate = gate.clone();
         tokio::spawn(async move {
             let options = crate::net::NetOptions {
                 lists: Some(lists),
-                ..Default::default()
+                extra: Some(crate::net::ExtraProtocol {
+                    alpn: grund_entry::ENTRY_ALPN.to_vec(),
+                    handler: std::sync::Arc::new(move || {
+                        Box::new(crate::gate::entry::EntryProtocol(entry_gate.clone()))
+                    }),
+                }),
             };
             if let Err(error) = crate::net::run(link, network, seed, data_dir, options).await {
                 tracing::error!(error = %format!("{error:#}"), "private network stopped");
@@ -301,7 +326,14 @@ pub async fn run<R: VmRuntime, C: ContainerRuntime + 'static>(
             data_dir: args.data_dir.clone(),
         };
         tokio::spawn(watcher.run());
-        tokio::spawn(stop_at_shutdown(containers.clone()));
+        tokio::spawn(keep_gate(
+            gate.clone(),
+            shared.clone(),
+            lists.subscribe(),
+            record.machine_id.clone(),
+            args.gate_remote_copies.clone(),
+        ));
+        tokio::spawn(stop_at_shutdown(containers.clone(), gate.clone()));
     }
     let context = Round {
         link: &link,
@@ -313,6 +345,7 @@ pub async fn run<R: VmRuntime, C: ContainerRuntime + 'static>(
         data_dir: &args.data_dir,
         applied: &applied,
         shared: &shared,
+        gate: &gate,
     };
     loop {
         let interval = match round(&context).await {
@@ -337,12 +370,165 @@ pub async fn run<R: VmRuntime, C: ContainerRuntime + 'static>(
     }
 }
 
-async fn stop_at_shutdown<C: ContainerRuntime + 'static>(containers: std::sync::Arc<C>) {
+async fn keep_gate(
+    gate: crate::gate::Gate,
+    shared: std::sync::Arc<Shared>,
+    lists: tokio::sync::watch::Receiver<Option<grund_net::membership::MembershipList>>,
+    own_machine_id: String,
+    remote_file: Option<PathBuf>,
+) {
+    let mut from_file = Vec::new();
+    let mut last_read = std::time::Instant::now() - Duration::from_secs(60);
+    let mut last_logged = std::time::Instant::now();
+    let mut logged = [0u64; 7];
+    loop {
+        if last_logged.elapsed() >= Duration::from_secs(10) {
+            last_logged = std::time::Instant::now();
+            let stats = gate.stats();
+            let now = [
+                &stats.streams,
+                &stats.refused,
+                &stats.requests,
+                &stats.retried,
+                &stats.misdirected,
+                &stats.remote,
+                &stats.failed,
+            ]
+            .map(|c| c.load(std::sync::atomic::Ordering::Relaxed));
+            if now != logged {
+                logged = now;
+                tracing::info!(
+                    streams = now[0],
+                    refused = now[1],
+                    requests = now[2],
+                    retried = now[3],
+                    misdirected = now[4],
+                    remote = now[5],
+                    failed = now[6],
+                    "gate: totals"
+                );
+            }
+        }
+        if let Some(path) = &remote_file
+            && last_read.elapsed() >= Duration::from_secs(1)
+        {
+            last_read = std::time::Instant::now();
+            from_file = read_remote_copies(path);
+        }
+        let mut remote = remote_copies(lists.borrow().as_ref(), &own_machine_id);
+        remote.extend(from_file.iter().cloned());
+        let document = shared.desired.lock().expect("shared lock").clone();
+        let reports = shared.reports.lock().expect("shared lock").clone();
+        let local = crate::gate::endpoints_from(document.as_ref(), &reports);
+        gate.update(document.as_ref(), &local, &remote);
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+async fn entry_only(gate: crate::gate::Gate, seed: [u8; 32], relays: Vec<String>) {
+    let relays: Vec<iroh::RelayUrl> = relays.iter().filter_map(|u| u.parse().ok()).collect();
+    let config = grund_net::endpoint::NetConfig {
+        relays,
+        relay_roots: crate::net::relay_roots().unwrap_or_default(),
+        ..Default::default()
+    };
+    let mut retry = Duration::from_secs(1);
+    loop {
+        match grund_net::endpoint::bind(
+            grund_net::key::secret_key(&seed),
+            &config,
+            vec![grund_entry::ENTRY_ALPN.to_vec()],
+        )
+        .await
+        {
+            Ok(endpoint) => {
+                tracing::info!(bound = ?endpoint.bound_sockets(), "gate: taking entry streams on the machine key, beside no private network");
+                let _router = iroh::protocol::Router::builder(endpoint)
+                    .accept(
+                        grund_entry::ENTRY_ALPN,
+                        crate::gate::entry::EntryProtocol(gate.clone()),
+                    )
+                    .spawn();
+                std::future::pending::<()>().await;
+            }
+            Err(error) => {
+                tracing::warn!(error = %format!("{error:#}"), "gate: could not bind the entry endpoint; trying again");
+                tokio::time::sleep(retry).await;
+                retry = (retry * 2).min(Duration::from_secs(60));
+            }
+        }
+    }
+}
+
+fn remote_copies(
+    list: Option<&grund_net::membership::MembershipList>,
+    own_machine_id: &str,
+) -> Vec<crate::gate::RemoteCopy> {
+    let Some(list) = list else {
+        return Vec::new();
+    };
+    list.members
+        .iter()
+        .filter(|member| member.machine_id != own_machine_id)
+        .flat_map(|member| {
+            member.apps.iter().map(|app| crate::gate::RemoteCopy {
+                replica_id: app.replica_id.clone(),
+                app: app.app.clone(),
+                machine_id: member.machine_id.clone(),
+                address: std::net::IpAddr::V6(app.address),
+                ports: app
+                    .ports
+                    .iter()
+                    .filter(|p| p.transport == grund_net::membership::Transport::Tcp)
+                    .map(|p| p.port)
+                    .collect(),
+                ready: app.ready,
+            })
+        })
+        .collect()
+}
+
+fn read_remote_copies(path: &Path) -> Vec<crate::gate::RemoteCopy> {
+    #[derive(Deserialize)]
+    struct Listed {
+        replica_id: String,
+        app: String,
+        machine_id: String,
+        address: std::net::IpAddr,
+        ports: Vec<u16>,
+    }
+    let listed: Vec<Listed> = std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default();
+    listed
+        .into_iter()
+        .map(|l| crate::gate::RemoteCopy {
+            replica_id: l.replica_id,
+            app: l.app,
+            machine_id: l.machine_id,
+            address: l.address,
+            ports: l.ports,
+            ready: true,
+        })
+        .collect()
+}
+
+async fn stop_at_shutdown<C: ContainerRuntime + 'static>(
+    containers: std::sync::Arc<C>,
+    gate: crate::gate::Gate,
+) {
     use tokio::signal::unix::{SignalKind, signal};
     let Ok(mut term) = signal(SignalKind::terminate()) else {
         return;
     };
     term.recv().await;
+    let draining = std::time::Instant::now();
+    gate.drain().await;
+    tracing::info!(
+        elapsed_ms = draining.elapsed().as_millis() as u64,
+        "the gate drained"
+    );
     let stopping = tokio::process::Command::new("systemctl")
         .arg("is-system-running")
         .output()
@@ -487,6 +673,7 @@ struct Round<'a, R, C> {
     data_dir: &'a Path,
     applied: &'a tokio::sync::Mutex<Applied>,
     shared: &'a Shared,
+    gate: &'a crate::gate::Gate,
 }
 
 async fn round<R: VmRuntime, C: ContainerRuntime>(
@@ -502,6 +689,7 @@ async fn round<R: VmRuntime, C: ContainerRuntime>(
         data_dir,
         applied,
         shared,
+        gate,
     } = context;
     let capabilities = runtime.capabilities().await;
     let apps = containers.capabilities().await;
@@ -560,7 +748,11 @@ async fn round<R: VmRuntime, C: ContainerRuntime>(
     let desired = current(&*applied.lock().await);
     let observed = converge(link, record, *runtime, desired.as_ref()).await?;
     refusals.extend(shared.refusals.lock().expect("shared lock").iter().cloned());
-    let replicas = shared.reports.lock().expect("shared lock").clone();
+    let mut replicas = shared.reports.lock().expect("shared lock").clone();
+    let idle = gate.idle(desired.as_ref());
+    for replica in &mut replicas {
+        replica.idle = idle.contains(&replica.replica_id);
+    }
     let _: ReportStatusResponse = link
         .call(
             "ReportStatus",

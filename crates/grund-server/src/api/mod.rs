@@ -20,6 +20,7 @@ pub mod account;
 pub mod agent;
 pub mod app;
 pub mod certificates;
+pub mod edge;
 pub mod enrollment;
 pub mod machine;
 pub mod organisation;
@@ -43,6 +44,7 @@ use grund_proto::grund::{
     agent::v1::{AGENT_SERVICE_SERVICE_NAME, MACHINE_ENROLLMENT_SERVICE_SERVICE_NAME},
     app::v1::APP_SERVICE_SERVICE_NAME,
     certificates::v1::CERTIFICATE_SERVICE_SERVICE_NAME,
+    edge::v1::{EDGE_ENROLLMENT_SERVICE_SERVICE_NAME, EDGE_SERVICE_SERVICE_NAME},
     machine::v1::{MACHINE_SERVICE_SERVICE_NAME, MANAGEMENT_POOL_SERVICE_SERVICE_NAME},
     organisation::v1::ORGANISATION_SERVICE_SERVICE_NAME,
     relay::v1::RELAY_ENROLLMENT_SERVICE_SERVICE_NAME,
@@ -83,10 +85,13 @@ pub enum Requirement {
     /// A registered machine, proven by its key's signature over the request
     /// ([`authenticate_machine`]): the control link.
     Machine,
-    /// A TLS terminator on another host, an enrolled relay or a registered
-    /// machine, proven by its own key's signature
+    /// A TLS terminator on another host, an enrolled relay or edge, or a
+    /// registered machine, proven by its own key's signature
     /// ([`authenticate_terminator`]): the certificate service.
     Terminator,
+    /// An enrolled `grund edge`, proven by its key's signature
+    /// ([`authenticate_edge`]): its route table and usage.
+    Edge,
 }
 
 /// Every procedure and what it requires. A procedure missing here is denied,
@@ -245,6 +250,12 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
         Requirement::Token,
     ),
     (
+        "/grund.edge.v1.EdgeEnrollmentService/EnrollEdge",
+        Requirement::Token,
+    ),
+    ("/grund.edge.v1.EdgeService/WatchRoutes", Requirement::Edge),
+    ("/grund.edge.v1.EdgeService/ReportUsage", Requirement::Edge),
+    (
         "/grund.certificates.v1.CertificateService/RequestCertificate",
         Requirement::Terminator,
     ),
@@ -337,6 +348,10 @@ pub fn router(state: State) -> axum::Router {
                     &format!("/{RELAY_ENROLLMENT_SERVICE_SERVICE_NAME}/{{method}}"),
                     service.clone(),
                 )
+                .route_service(
+                    &format!("/{EDGE_ENROLLMENT_SERVICE_SERVICE_NAME}/{{method}}"),
+                    service.clone(),
+                )
                 .layer(middleware::from_fn_with_state(state.clone(), stamp_address)),
         )
         .merge(
@@ -348,6 +363,17 @@ pub fn router(state: State) -> axum::Router {
                 .layer(middleware::from_fn_with_state(
                     state.clone(),
                     authenticate_terminator,
+                )),
+        )
+        .merge(
+            axum::Router::new()
+                .route_service(
+                    &format!("/{EDGE_SERVICE_SERVICE_NAME}/{{method}}"),
+                    edge_service(state.clone()),
+                )
+                .layer(middleware::from_fn_with_state(
+                    state.clone(),
+                    authenticate_edge,
                 )),
         )
         .merge(
@@ -417,6 +443,86 @@ pub fn certificate_service(state: State) -> ConnectRpcService {
     .with_interceptor(Authorize)
 }
 
+/// The largest edge request: a usage report of up to 1000 addresses.
+pub const MAX_EDGE_REQUEST_BYTES: usize = 256 * 1024;
+
+/// The edge service, on a Connect service of its own: WatchRoutes waits up
+/// to 10 s, so it gets up to 30 s.
+pub fn edge_service(state: State) -> ConnectRpcService {
+    ConnectRpcService::new(
+        connectrpc::Router::new().add_service(Arc::new(edge::EdgeApi::new(state))),
+    )
+    .with_limits(
+        Limits::default()
+            .with_max_request_body_size(MAX_EDGE_REQUEST_BYTES)
+            .with_max_message_size(MAX_EDGE_REQUEST_BYTES),
+    )
+    .with_deadline_policy(
+        DeadlinePolicy::new()
+            .with_min(Duration::from_millis(5))
+            .with_max(Duration::from_secs(30))
+            .with_default_timeout(Duration::from_secs(30)),
+    )
+    .with_interceptor(Authorize)
+}
+
+/// Authenticates an edge-service request by the edge's key
+/// (`x-grund-edge`), before any handler runs. A bad or missing signature,
+/// an unknown or revoked edge and one whose host left GRUND_EDGES are
+/// refused alike.
+pub async fn authenticate_edge(
+    AxumState(state): AxumState<State>,
+    request: Request,
+    next: Next,
+) -> Response {
+    use crate::services::relays::{RelaysState, Role};
+    let (mut parts, body) = request.into_parts();
+    let header = |name: &str| {
+        parts
+            .headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let (edge, signed_at, signature) = (
+        header("x-grund-edge"),
+        header("x-grund-signed-at"),
+        header("x-grund-signature"),
+    );
+    let Ok(bytes) = axum::body::to_bytes(body, MAX_EDGE_REQUEST_BYTES).await else {
+        return refuse(ConnectError::resource_exhausted("the request is too large"));
+    };
+    let path = parts.uri.path().to_string();
+    match state
+        .relays()
+        .authenticate_as(Role::Edge, &edge, &signed_at, &signature, &path, &bytes)
+        .await
+    {
+        Ok(Some(caller)) => {
+            parts.extensions.insert(edge::EdgeCaller(caller));
+        }
+        Ok(None) => {
+            return refuse(ConnectError::unauthenticated(
+                "sign the request with the edge's key",
+            ));
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, "edge authentication failed");
+            return refuse(ConnectError::unavailable(
+                "grund is temporarily unavailable",
+            ));
+        }
+    }
+    let mut response = next
+        .run(Request::from_parts(parts, axum::body::Body::from(bytes)))
+        .await;
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
 /// Authenticates a certificate-service request by the terminator's own key
 /// before any handler runs: an enrolled relay (`x-grund-relay`), or a
 /// registered machine (`x-grund-machine`), each signing the control link's
@@ -437,8 +543,9 @@ pub async fn authenticate_terminator(
             .unwrap_or_default()
             .to_string()
     };
-    let (relay, machine, signed_at, signature) = (
+    let (relay, edge, machine, signed_at, signature) = (
         header("x-grund-relay"),
+        header("x-grund-edge"),
         header("x-grund-machine"),
         header("x-grund-signed-at"),
         header("x-grund-signature"),
@@ -453,6 +560,19 @@ pub async fn authenticate_terminator(
             .authenticate(&relay, &signed_at, &signature, &path, &bytes)
             .await
             .map(|caller| caller.map(Terminator::Relay))
+    } else if !edge.is_empty() {
+        state
+            .relays()
+            .authenticate_as(
+                crate::services::relays::Role::Edge,
+                &edge,
+                &signed_at,
+                &signature,
+                &path,
+                &bytes,
+            )
+            .await
+            .map(|caller| caller.map(Terminator::Edge))
     } else {
         state
             .agents()
@@ -574,6 +694,7 @@ pub fn connect_router(state: State) -> connectrpc::Router {
         .add_service(Arc::new(relay_enrollment::RelayEnrollmentApi::new(
             state.clone(),
         )))
+        .add_service(Arc::new(edge::EdgeEnrollmentApi::new(state.clone())))
         .add_service(Arc::new(agent::AgentApi::new(state)))
 }
 
@@ -672,6 +793,10 @@ pub fn authorized(ctx: &connectrpc::RequestContext) -> Result<(), ConnectError> 
         }
         Some(Requirement::Terminator) => Err(ConnectError::unauthenticated(
             "sign the request with the relay's or the machine's key",
+        )),
+        Some(Requirement::Edge) if extensions.get::<edge::EdgeCaller>().is_some() => Ok(()),
+        Some(Requirement::Edge) => Err(ConnectError::unauthenticated(
+            "sign the request with the edge's key",
         )),
         None => Err(ConnectError::permission_denied(
             "this procedure is not open to callers",
@@ -1131,6 +1256,38 @@ mod tests {
         }
     }
 
+    struct UnusedEdges;
+    struct UnusedEdgeEnrollment;
+
+    #[allow(refining_impl_trait)]
+    impl grund_proto::grund::edge::v1::EdgeEnrollmentService for UnusedEdgeEnrollment {
+        async fn enroll_edge(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, grund_proto::grund::edge::v1::EnrollEdgeRequest>,
+        ) -> ServiceResult<grund_proto::grund::edge::v1::EnrollEdgeResponse> {
+            unreachable!()
+        }
+    }
+
+    #[allow(refining_impl_trait)]
+    impl grund_proto::grund::edge::v1::EdgeService for UnusedEdges {
+        async fn watch_routes(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, grund_proto::grund::edge::v1::WatchRoutesRequest>,
+        ) -> ServiceResult<grund_proto::grund::edge::v1::WatchRoutesResponse> {
+            unreachable!()
+        }
+        async fn report_usage(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, grund_proto::grund::edge::v1::ReportUsageRequest>,
+        ) -> ServiceResult<grund_proto::grund::edge::v1::ReportUsageResponse> {
+            unreachable!()
+        }
+    }
+
     struct UnusedCertificates;
 
     #[allow(refining_impl_trait)]
@@ -1181,6 +1338,12 @@ mod tests {
                         machine_id: Uuid::now_v7(),
                         organisation_id: None,
                     });
+                }
+                "edge" => {
+                    extensions.insert(edge::EdgeCaller(crate::services::relays::RelayCaller {
+                        relay_id: Uuid::now_v7(),
+                        host: "edge-1.example.com".into(),
+                    }));
                 }
                 _ => {
                     extensions.insert(crate::services::terminators::Terminator::Relay(
@@ -1236,6 +1399,22 @@ mod tests {
     }
 
     #[test]
+    fn the_edge_service_admits_only_an_edge() {
+        for procedure in ["WatchRoutes", "ReportUsage"] {
+            let path = format!("/grund.edge.v1.EdgeService/{procedure}");
+            for callers in [&[][..], &["session"], &["machine"], &["relay"]] {
+                let error = authorized(&context(&path, callers)).unwrap_err();
+                assert_eq!(
+                    error.code,
+                    connectrpc::ErrorCode::Unauthenticated,
+                    "{path} {callers:?}"
+                );
+            }
+            authorized(&context(&path, &["edge"])).unwrap();
+        }
+    }
+
+    #[test]
     fn every_procedure_has_an_authorization_entry() {
         let router = connectrpc::Router::new()
             .add_service(Arc::new(Unused))
@@ -1244,6 +1423,8 @@ mod tests {
             .add_service(Arc::new(UnusedMachines))
             .add_service(Arc::new(UnusedEnrollment))
             .add_service(Arc::new(UnusedRelayEnrollment))
+            .add_service(Arc::new(UnusedEdges))
+            .add_service(Arc::new(UnusedEdgeEnrollment))
             .add_service(Arc::new(UnusedCertificates))
             .add_service(Arc::new(UnusedAgent))
             .add_service(Arc::new(UnusedApps));

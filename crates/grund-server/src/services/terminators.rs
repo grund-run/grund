@@ -24,38 +24,76 @@ use crate::{
 pub const MAX_CSR_BYTES: usize = 4096;
 
 /// A TLS terminator on another host, as its own key's signature proved: a
-/// `grund relay` enrolled with this instance, or a registered machine (whose
-/// gate will terminate TLS; not built).
+/// `grund relay` or a `grund edge` enrolled with this instance, or a
+/// registered machine (whose gate will terminate TLS for direct names; not
+/// built).
 #[derive(Debug, Clone)]
 pub enum Terminator {
     Relay(RelayCaller),
+    Edge(RelayCaller),
     Machine(MachineCaller),
 }
 
+fn short(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(&Sha256::digest(text.as_bytes())[..8])
+}
+
 impl Terminator {
-    /// Who the certificate belongs to: the instance, for its relays.
+    /// Who the certificate belongs to: the instance, for its relays and
+    /// edges.
     pub fn owner(&self) -> String {
         match self {
-            Terminator::Relay(_) => "instance".into(),
+            Terminator::Relay(_) | Terminator::Edge(_) => "instance".into(),
             Terminator::Machine(machine) => machine
                 .organisation_id
                 .map_or_else(|| "instance".into(), |id| format!("organisation:{id}")),
         }
     }
 
-    /// The subject its certificate is kept under, when it may have one. A
-    /// machine may not yet: the gate is not built.
+    /// The subject a relay's one certificate is kept under.
     pub fn subject(&self) -> Option<String> {
         match self {
             Terminator::Relay(relay) => Some(format!("relay:{}", relay.host)),
+            Terminator::Edge(_) | Terminator::Machine(_) => None,
+        }
+    }
+
+    /// The subject of the certificate for exactly `names`, when the caller
+    /// keeps one there: a relay's for its host (and `names` empty means
+    /// that one); an edge's for one name, under a digest of its host and the
+    /// name, so every subject fits the store's 128 characters.
+    pub fn subject_for(&self, names: &[String]) -> Option<String> {
+        match self {
+            Terminator::Relay(relay) => (names.is_empty() || names == [relay.host.clone()])
+                .then(|| format!("relay:{}", relay.host)),
+            Terminator::Edge(edge) => match names {
+                [name] => Some(format!(
+                    "{}{}",
+                    self.subject_prefix()?,
+                    short(&format!("{}:{name}", edge.host))
+                )),
+                _ => None,
+            },
             Terminator::Machine(_) => None,
         }
     }
 
-    /// The names it may ask a certificate for: a relay, exactly its host.
+    /// What every subject of the caller starts with.
+    pub fn subject_prefix(&self) -> Option<String> {
+        match self {
+            Terminator::Relay(relay) => Some(format!("relay:{}", relay.host)),
+            Terminator::Edge(edge) => Some(format!("edge:{}:", short(&edge.host))),
+            Terminator::Machine(_) => None,
+        }
+    }
+
+    /// The names a relay may ask a certificate for: exactly its host. An
+    /// edge may also ask for every address in the route table, one at a
+    /// time ([`Terminators::request`]).
     pub fn names(&self) -> Vec<String> {
         match self {
-            Terminator::Relay(relay) => vec![relay.host.clone()],
+            Terminator::Relay(relay) | Terminator::Edge(relay) => vec![relay.host.clone()],
             Terminator::Machine(_) => Vec::new(),
         }
     }
@@ -72,9 +110,10 @@ pub enum RequestOutcome {
     AcmeOff,
 }
 
-/// What a watch sends next.
+/// What a watch sends next, for one of the caller's certificates.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Pending {
+    pub subject: String,
     pub challenges: Vec<PendingChallenge>,
     pub wants_csr: bool,
     pub version: i64,
@@ -123,6 +162,26 @@ pub struct Terminators {
 }
 
 impl Terminators {
+    async fn may_have(
+        &self,
+        caller: &Terminator,
+        names: &BTreeSet<String>,
+    ) -> anyhow::Result<bool> {
+        use crate::services::entry::EntryState;
+        match caller {
+            Terminator::Edge(edge) => match names.iter().next() {
+                Some(name) if names.len() == 1 => {
+                    Ok(*name == edge.host || self.state.entry().routes_name(name).await?)
+                }
+                _ => Ok(false),
+            },
+            _ => {
+                let allowed: BTreeSet<String> = caller.names().into_iter().collect();
+                Ok(!names.is_empty() && *names == allowed)
+            }
+        }
+    }
+
     /// Records `csr` for `names` as the caller's certificate request.
     pub async fn request(
         &self,
@@ -130,15 +189,14 @@ impl Terminators {
         names: &[String],
         csr: &[u8],
     ) -> anyhow::Result<RequestOutcome> {
-        let Some(subject) = caller.subject() else {
+        let requested: BTreeSet<String> = names.iter().map(|n| n.to_ascii_lowercase()).collect();
+        let names: Vec<String> = requested.iter().cloned().collect();
+        let Some(subject) = caller.subject_for(&names) else {
             return Ok(RequestOutcome::NotFound);
         };
-        let requested: BTreeSet<String> = names.iter().map(|n| n.to_ascii_lowercase()).collect();
-        let allowed: BTreeSet<String> = caller.names().into_iter().collect();
-        if requested.is_empty() || requested != allowed {
+        if !self.may_have(caller, &requested).await? {
             return Ok(RequestOutcome::NotFound);
         }
-        let names: Vec<String> = requested.into_iter().collect();
         if let Err(message) = check_csr(csr, &names) {
             return Ok(RequestOutcome::Invalid(message));
         }
@@ -168,40 +226,58 @@ impl Terminators {
         }
     }
 
-    /// The caller's certificate, if it asked for one.
-    pub async fn status(&self, caller: &Terminator) -> anyhow::Result<Option<store::RemoteStatus>> {
-        let Some(subject) = caller.subject() else {
+    /// The caller's certificate for `names` (a relay: empty for its one),
+    /// if it asked for one.
+    pub async fn status(
+        &self,
+        caller: &Terminator,
+        names: &[String],
+    ) -> anyhow::Result<Option<store::RemoteStatus>> {
+        let names: Vec<String> = names.iter().map(|n| n.to_ascii_lowercase()).collect();
+        let Some(subject) = caller.subject_for(&names) else {
             return Ok(None);
         };
         Ok(store::remote_status(&self.state.pool, &caller.owner(), &subject).await?)
     }
 
-    /// What is pending for the caller now, or none when it has no
-    /// certificate.
-    pub async fn pending(&self, caller: &Terminator) -> anyhow::Result<Option<Pending>> {
-        let Some(status) = self.status(caller).await? else {
-            return Ok(None);
+    /// What is pending now for each of the caller's certificates; empty
+    /// when it has none.
+    pub async fn pending(&self, caller: &Terminator) -> anyhow::Result<Vec<Pending>> {
+        let Some(prefix) = caller.subject_prefix() else {
+            return Ok(Vec::new());
         };
-        let subject = caller.subject().unwrap_or_default();
-        let challenges = store::challenges_of(&self.state.pool, &subject).await?;
-        Ok(Some(Pending {
-            challenges,
-            wants_csr: status.wants_csr,
-            version: status.version,
-            names: status.names,
-        }))
+        let statuses = match caller {
+            Terminator::Relay(_) => {
+                store::remote_status(&self.state.pool, &caller.owner(), &prefix)
+                    .await?
+                    .map(|status| vec![(prefix.clone(), status)])
+                    .unwrap_or_default()
+            }
+            _ => store::remote_statuses(&self.state.pool, &caller.owner(), &prefix).await?,
+        };
+        let mut out = Vec::with_capacity(statuses.len());
+        for (subject, status) in statuses {
+            let challenges = store::challenges_of(&self.state.pool, &subject).await?;
+            out.push(Pending {
+                subject,
+                challenges,
+                wants_csr: status.wants_csr,
+                version: status.version,
+                names: status.names,
+            });
+        }
+        Ok(out)
     }
 
     /// Records that the caller answers its challenge with `token`. False
     /// when it has no such challenge.
     pub async fn answering(&self, caller: &Terminator, token: &str) -> anyhow::Result<bool> {
-        let Some(subject) = caller.subject() else {
-            return Ok(false);
-        };
-        if self.status(caller).await?.is_none() {
-            return Ok(false);
+        for pending in self.pending(caller).await? {
+            if pending.challenges.iter().any(|c| c.token == token) {
+                return Ok(store::mark_answering(&self.state.pool, &pending.subject, token).await?);
+            }
         }
-        Ok(store::mark_answering(&self.state.pool, &subject, token).await?)
+        Ok(false)
     }
 }
 
@@ -271,5 +347,49 @@ mod tests {
             organisation_id: None,
         });
         assert!(machine.names().is_empty() && machine.subject().is_none());
+        assert!(machine.subject_for(&names(&["a.example.com"])).is_none());
+    }
+
+    #[test]
+    fn an_edge_keeps_one_certificate_per_name_under_its_own_prefix() {
+        let edge = Terminator::Edge(RelayCaller {
+            relay_id: uuid::Uuid::now_v7(),
+            host: "edge-1.grund.run".into(),
+        });
+        let prefix = edge.subject_prefix().unwrap();
+        let photos = edge
+            .subject_for(&names(&["photos-kasper.grund.run"]))
+            .unwrap();
+        let blog = edge.subject_for(&names(&["blog-bob.grund.run"])).unwrap();
+        assert!(photos.starts_with(&prefix) && blog.starts_with(&prefix) && photos != blog);
+        assert!(photos.len() <= 128);
+        assert!(
+            edge.subject_for(&names(&["a.grund.run", "b.grund.run"]))
+                .is_none()
+        );
+        assert!(edge.subject_for(&[]).is_none());
+        let other = Terminator::Edge(RelayCaller {
+            relay_id: uuid::Uuid::now_v7(),
+            host: "edge-2.grund.run".into(),
+        });
+        assert!(
+            !other
+                .subject_for(&names(&["photos-kasper.grund.run"]))
+                .unwrap()
+                .starts_with(&prefix)
+        );
+        let relay = Terminator::Relay(RelayCaller {
+            relay_id: uuid::Uuid::now_v7(),
+            host: "relay.example.com".into(),
+        });
+        assert_eq!(
+            relay.subject_for(&[]).as_deref(),
+            Some("relay:relay.example.com")
+        );
+        assert!(
+            relay
+                .subject_for(&names(&["photos-kasper.grund.run"]))
+                .is_none()
+        );
     }
 }

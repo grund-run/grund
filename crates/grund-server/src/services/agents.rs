@@ -21,6 +21,7 @@ use uuid::Uuid;
 
 use crate::{
     keys::KeysState,
+    services::entry::EntryState,
     services::machines::{MachinesState, MintOutcome, Minted},
     state::State,
 };
@@ -72,6 +73,7 @@ pub struct ReplicaReport {
     pub restarts: u32,
     pub last_exit_code: i32,
     pub reason: String,
+    pub idle: bool,
 }
 
 /// A VM to place, as the caller asked for it.
@@ -273,6 +275,7 @@ impl Agents {
                     restarts: i32::try_from(r.restarts).unwrap_or(i32::MAX),
                     last_exit_code: r.last_exit_code,
                     reason: &r.reason,
+                    idle: r.idle,
                 })
                 .collect();
             let mut connection = self.state.pool.acquire().await?;
@@ -348,7 +351,28 @@ impl Agents {
             .await?;
         let now = Utc::now();
         let machines: Vec<agent::Vm> = vms.iter().map(vm_message).collect();
-        let replicas: Vec<agent::Replica> = placed.iter().map(replica_message).collect();
+        let entry = self.state.entry();
+        let slug = grund_store::entry::organisation_slug(&mut *connection, organisation_id)
+            .await?
+            .unwrap_or_default();
+        let mut addresses: std::collections::HashMap<Uuid, Option<String>> = Default::default();
+        let mut replicas: Vec<agent::Replica> = Vec::with_capacity(placed.len());
+        for row in &placed {
+            let mut replica = replica_message(row);
+            if crate::services::entry::publishes(&row.spec.0) {
+                if let std::collections::hash_map::Entry::Vacant(slot) = addresses.entry(row.app_id)
+                {
+                    slot.insert(
+                        entry
+                            .address(&mut *connection, row.app_id, &row.app_name, &slug)
+                            .await?,
+                    );
+                }
+                replica.hostnames = addresses[&row.app_id].iter().cloned().collect();
+            }
+            replicas.push(replica);
+        }
+        let entry_keys = entry.entry_keys(&mut *connection).await?;
         let mut required_features = Vec::new();
         if !machines.is_empty() {
             required_features.push("machines".to_string());
@@ -364,6 +388,7 @@ impl Agents {
             required_features,
             machines,
             replicas,
+            entry_keys,
             ..Default::default()
         }
         .encode_to_vec();

@@ -14,14 +14,27 @@
 //! `GRUND_SIMULATE=crash` exits with code 1 a second after every start,
 //! `GRUND_SIMULATE=unready` runs but fails its check (status 503). An image
 //! whose reference contains `missing` cannot be pulled.
+//!
+//! While a container runs, it serves HTTP/1.1 like traefik/whoami, on its
+//! own loopback address ([`address_of`], in 127.0.0.0/8) and the port in its
+//! `PORT` variable (8080 without one), so the gate's traffic path runs end
+//! to end: every answer names the replica and echoes the request line and
+//! headers it received. `?wait=<ms>` holds the answer that long, so a test
+//! can keep requests in flight. A kill drops its listener and every open
+//! connection at once, as SIGKILL would.
 
 use std::{
+    collections::HashMap,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     path::PathBuf,
+    sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use tokio_util::sync::CancellationToken;
 
 use crate::runtime::{
     AppsCapabilities, ContainerRuntime, ContainerSpec, ContainerStatus, ImageRef, Probe, TaskState,
@@ -31,6 +44,93 @@ use crate::runtime::{
 #[derive(Debug, Clone)]
 pub struct SimulatedContainers {
     dir: PathBuf,
+    servers: Arc<Mutex<HashMap<String, Server>>>,
+}
+
+#[derive(Debug)]
+struct Server {
+    started_at_ms: i64,
+    stop: CancellationToken,
+}
+
+/// The loopback address a simulated container serves on: 127.a.b.c from
+/// the SHA-256 of its id, never 127.0.0.1, so two containers on one host
+/// can both listen on one port, as two network namespaces could.
+pub fn address_of(id: &str) -> Ipv4Addr {
+    let digest = Sha256::digest(id.as_bytes());
+    Ipv4Addr::new(127, digest[0].max(1), digest[1], digest[2].clamp(1, 254))
+}
+
+fn port_of(spec: &ContainerSpec) -> u16 {
+    spec.env
+        .iter()
+        .rev()
+        .find(|(name, _)| name == "PORT")
+        .and_then(|(_, value)| value.parse().ok())
+        .unwrap_or(8080)
+}
+
+async fn whoami(
+    id: String,
+    request: hyper::Request<hyper::body::Incoming>,
+    peer: SocketAddr,
+) -> Result<hyper::Response<http_body_util::Full<bytes::Bytes>>, std::convert::Infallible> {
+    let wait = request
+        .uri()
+        .query()
+        .unwrap_or_default()
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("wait="))
+        .and_then(|ms| ms.parse::<u64>().ok())
+        .unwrap_or(0)
+        .min(60_000);
+    if wait > 0 {
+        tokio::time::sleep(Duration::from_millis(wait)).await;
+    }
+    let mut body = format!(
+        "Hostname: {id}\nRemoteAddr: {peer}\n{} {} {:?}\n",
+        request.method(),
+        request.uri(),
+        request.version()
+    );
+    for (name, value) in request.headers() {
+        body.push_str(&format!(
+            "{}: {}\n",
+            name,
+            String::from_utf8_lossy(value.as_bytes())
+        ));
+    }
+    let mut response = hyper::Response::new(http_body_util::Full::new(bytes::Bytes::from(body)));
+    response.headers_mut().insert(
+        "x-replica",
+        hyper::header::HeaderValue::from_str(&id)
+            .unwrap_or(hyper::header::HeaderValue::from_static("unknown")),
+    );
+    Ok(response)
+}
+
+async fn serve(id: String, listener: tokio::net::TcpListener, stop: CancellationToken) {
+    loop {
+        let accepted = tokio::select! {
+            () = stop.cancelled() => return,
+            accepted = listener.accept() => accepted,
+        };
+        let Ok((stream, peer)) = accepted else {
+            continue;
+        };
+        let (id, stop) = (id.clone(), stop.clone());
+        tokio::spawn(async move {
+            let service =
+                hyper::service::service_fn(move |request| whoami(id.clone(), request, peer));
+            let connection = hyper::server::conn::http1::Builder::new()
+                .serve_connection(hyper_util::rt::TokioIo::new(stream), service)
+                .with_upgrades();
+            tokio::select! {
+                () = stop.cancelled() => {}
+                _ = connection => {}
+            }
+        });
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,7 +149,58 @@ fn now_ms() -> i64 {
 
 impl SimulatedContainers {
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir }
+        Self {
+            dir,
+            servers: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    fn stop_server(&self, id: &str) {
+        if let Some(server) = self.servers.lock().expect("servers lock").remove(id) {
+            server.stop.cancel();
+        }
+    }
+
+    fn keep_servers(&self, records: &[Record]) {
+        let mut servers = self.servers.lock().expect("servers lock");
+        servers.retain(|id, server| {
+            let running = records.iter().any(|r| {
+                r.spec.id == *id
+                    && matches!(r.state, TaskState::Running { .. })
+                    && r.started_at_ms == server.started_at_ms
+            });
+            if !running {
+                server.stop.cancel();
+            }
+            running
+        });
+        for record in records {
+            if !matches!(record.state, TaskState::Running { .. })
+                || servers.contains_key(&record.spec.id)
+            {
+                continue;
+            }
+            let address = SocketAddr::from((address_of(&record.spec.id), port_of(&record.spec)));
+            let listener = match std::net::TcpListener::bind(address)
+                .and_then(|l| l.set_nonblocking(true).map(|()| l))
+                .and_then(tokio::net::TcpListener::from_std)
+            {
+                Ok(listener) => listener,
+                Err(error) => {
+                    tracing::warn!(replica = %record.spec.id, %address, %error, "simulated: cannot listen");
+                    continue;
+                }
+            };
+            let stop = CancellationToken::new();
+            tokio::spawn(serve(record.spec.id.clone(), listener, stop.clone()));
+            servers.insert(
+                record.spec.id.clone(),
+                Server {
+                    started_at_ms: record.started_at_ms,
+                    stop,
+                },
+            );
+        }
     }
 
     fn path(&self, id: &str) -> PathBuf {
@@ -171,6 +322,7 @@ impl ContainerRuntime for SimulatedContainers {
     }
 
     async fn remove(&self, id: &str, _signal: &str, _grace: Duration) -> anyhow::Result<()> {
+        self.stop_server(id);
         match std::fs::remove_file(self.path(id)) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -183,6 +335,7 @@ impl ContainerRuntime for SimulatedContainers {
             return Ok(Vec::new());
         };
         let mut statuses = Vec::new();
+        let mut records = Vec::new();
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
             let Some(id) = name.strip_suffix(".json") else {
@@ -192,6 +345,7 @@ impl ContainerRuntime for SimulatedContainers {
                 continue;
             };
             let record = self.advance(record)?;
+            records.push(record.clone());
             statuses.push(ContainerStatus {
                 id: record.spec.id.clone(),
                 spec_hash: record.spec.spec_hash.clone(),
@@ -201,6 +355,7 @@ impl ContainerRuntime for SimulatedContainers {
             });
         }
         statuses.sort_by(|a, b| a.id.cmp(&b.id));
+        self.keep_servers(&records);
         Ok(statuses)
     }
 
@@ -215,5 +370,10 @@ impl ContainerRuntime for SimulatedContainers {
             Some("unready") => Err("status 503".into()),
             _ => Ok(()),
         }
+    }
+
+    async fn address(&self, id: &str) -> Option<IpAddr> {
+        let record = self.read(id)?;
+        matches!(record.state, TaskState::Running { .. }).then(|| IpAddr::V4(address_of(id)))
     }
 }

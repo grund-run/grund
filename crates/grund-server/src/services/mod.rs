@@ -9,6 +9,7 @@ pub mod apps;
 pub mod billing;
 pub mod capacity;
 pub mod entitlements;
+pub mod entry;
 pub mod insights;
 pub mod limits;
 pub mod machines;

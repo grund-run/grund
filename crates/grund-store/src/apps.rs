@@ -710,6 +710,7 @@ pub struct StatusRow {
     pub restarts: i32,
     pub last_exit_code: i32,
     pub reason: String,
+    pub idle: bool,
 }
 
 /// The reports for the app's replicas, from the machine each is placed on.
@@ -719,7 +720,7 @@ pub async fn app_statuses(
 ) -> Result<Vec<StatusRow>, sqlx::Error> {
     sqlx::query_as(
         "SELECT s.replica_id, s.state, s.ready, s.ready_since, s.ever_ready, s.restarts, \
-           s.last_exit_code, s.reason \
+           s.last_exit_code, s.reason, s.idle \
          FROM grund_replica_status s JOIN grund_replicas r \
            ON r.replica_id = s.replica_id AND r.machine_id = s.machine_id \
          WHERE r.app_id = $1",
@@ -741,6 +742,8 @@ pub struct Report<'a> {
     pub restarts: i32,
     pub last_exit_code: i32,
     pub reason: &'a str,
+    /// Draining with nothing in flight through the gate.
+    pub idle: bool,
 }
 
 /// Records what a machine reports about its replicas, only for replicas
@@ -756,16 +759,16 @@ pub async fn record_reports(
 ) -> Result<bool, sqlx::Error> {
     let mut changed = false;
     for report in reports {
-        let before: Option<(String, bool, i32)> = sqlx::query_as(
-            "SELECT state, ready, restarts FROM grund_replica_status WHERE replica_id = $1",
+        let before: Option<(String, bool, i32, bool)> = sqlx::query_as(
+            "SELECT state, ready, restarts, idle FROM grund_replica_status WHERE replica_id = $1",
         )
         .bind(report.replica_id)
         .fetch_optional(&mut *connection)
         .await?;
         let written = sqlx::query(
             "INSERT INTO grund_replica_status (replica_id, machine_id, state, ready, ready_since, \
-               ever_ready, restarts, last_exit_code, reason, observed_at) \
-             SELECT $1, $2, $3, $4, $5, $4, $6, $7, $8, $9 \
+               ever_ready, restarts, last_exit_code, reason, observed_at, idle) \
+             SELECT $1, $2, $3, $4, $5, $4, $6, $7, $8, $9, $10 \
              FROM grund_replicas r WHERE r.replica_id = $1 AND r.machine_id = $2 \
              ON CONFLICT (replica_id) DO UPDATE SET \
                state = EXCLUDED.state, ready = EXCLUDED.ready, \
@@ -774,7 +777,7 @@ pub async fn record_reports(
                                   WHEN EXCLUDED.ready THEN EXCLUDED.ready_since ELSE NULL END, \
                ever_ready = grund_replica_status.ever_ready OR EXCLUDED.ready, \
                restarts = EXCLUDED.restarts, last_exit_code = EXCLUDED.last_exit_code, \
-               reason = EXCLUDED.reason, observed_at = EXCLUDED.observed_at \
+               reason = EXCLUDED.reason, observed_at = EXCLUDED.observed_at, idle = EXCLUDED.idle \
              WHERE grund_replica_status.machine_id = EXCLUDED.machine_id",
         )
         .bind(report.replica_id)
@@ -786,10 +789,16 @@ pub async fn record_reports(
         .bind(report.last_exit_code)
         .bind(report.reason.chars().take(500).collect::<String>())
         .bind(at)
+        .bind(report.idle)
         .execute(&mut *connection)
         .await?
         .rows_affected();
-        let now = (report.state.to_string(), report.ready, report.restarts);
+        let now = (
+            report.state.to_string(),
+            report.ready,
+            report.restarts,
+            report.idle,
+        );
         if written > 0 && before.as_ref() != Some(&now) {
             changed = true;
         }

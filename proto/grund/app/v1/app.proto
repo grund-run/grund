@@ -97,8 +97,10 @@ message Port {
   // 1 to 65535.
   uint32 port = 2;
   Protocol protocol = 3;
-  // Reachable from outside through the entry. Not served yet: the traffic
-  // path is not built.
+  // Reachable from outside through the entry: an http or h2c port answers
+  // on the app's address (<app>-<organisation>.<GRUND_APP_DOMAIN>) through
+  // the instance's edges. The first public http or h2c port is the one the
+  // address routes to.
   bool public = 4;
 }
 
