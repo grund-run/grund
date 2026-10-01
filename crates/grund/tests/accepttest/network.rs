@@ -467,6 +467,56 @@ async fn traffic_moves_to_the_relay_when_direct_udp_is_cut_and_back_when_it_retu
     Ok(())
 }
 
+const IROH_PATH_CHECK_PLUS_ITS_RETRY: Duration = Duration::from_secs(60 + 5);
+const PAST_IROH_SCHEDULED_RETRY: Duration = Duration::from_secs(15);
+
+#[tokio::test]
+async fn a_direct_path_cut_for_longer_than_the_retry_returns_within_the_path_check()
+-> anyhow::Result<()> {
+    let Some(net) = a_lab().await? else {
+        return Ok(());
+    };
+    let a = net.join("a", "a").await?;
+    let b = net.join("b", "b").await?;
+    anyhow::ensure!(
+        net.reaches_by_name(&a, &b, Duration::from_secs(30))
+            .await
+            .is_some()
+    );
+    let direct = || async {
+        net.pings(&a, &b.address().to_string()).await && a.path_to(&b).starts_with("direct")
+    };
+    anyhow::ensure!(
+        eventually(Duration::from_secs(30), direct).await.is_some(),
+        "{}",
+        a.status()
+    );
+
+    net.lab.cut_direct_udp().await?;
+    let relayed = eventually(Duration::from_secs(20), || async {
+        net.pings(&a, &b.address().to_string()).await && a.path_to(&b).starts_with("relay")
+    })
+    .await;
+    anyhow::ensure!(relayed.is_some(), "never over the relay: {}", a.status());
+    tokio::time::sleep(PAST_IROH_SCHEDULED_RETRY).await;
+    anyhow::ensure!(
+        net.pings(&a, &b.fqdn()).await,
+        "traffic does not flow over the relay"
+    );
+
+    net.lab.restore_direct_udp().await?;
+    let back = eventually(IROH_PATH_CHECK_PLUS_ITS_RETRY, direct).await;
+    anyhow::ensure!(
+        back.is_some(),
+        "not direct again within {IROH_PATH_CHECK_PLUS_ITS_RETRY:?}: {}",
+        a.status()
+    );
+    eprintln!(
+        "over the relay after {relayed:?}; cut {PAST_IROH_SCHEDULED_RETRY:?} more; direct again after {back:?}"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_revoked_machine_is_dropped_by_its_peers_within_seconds() -> anyhow::Result<()> {
     let Some(net) = a_lab().await? else {
