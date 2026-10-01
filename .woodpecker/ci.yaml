@@ -63,7 +63,13 @@ services:
       POSTGRES_DB: grund
       POSTGRES_USER: grund
       POSTGRES_PASSWORD: grund
-      POSTGRES_INITDB_ARGS: "-c max_connections=400"
+      # No fsync: this database lives for one workflow, and every accepttest
+      # creates a database of its own and runs every migration in it at
+      # once. With fsync the commits queued on the disk (main pipeline 122:
+      # 4 s to get a connection, 1-5 s per migration statement, three
+      # servers never ready). Nothing here tests PostgreSQL's own crash
+      # durability; restart tests restart grund, not the database.
+      POSTGRES_INITDB_ARGS: "-c max_connections=400 -c fsync=off -c synchronous_commit=off -c full_page_writes=off"
   nats:
     image: nats:2.15-alpine
   mailpit:
@@ -76,6 +82,8 @@ services:
       POSTGRES_DB: grund
       POSTGRES_USER: grund
       POSTGRES_PASSWORD: grund
+      # As `postgres`, and for the same reason.
+      POSTGRES_INITDB_ARGS: "-c fsync=off -c synchronous_commit=off -c full_page_writes=off"
   contract-nats:
     image: nats:2.15-alpine
   contract-mailpit:
