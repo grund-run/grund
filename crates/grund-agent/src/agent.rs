@@ -271,19 +271,24 @@ pub async fn run<R: VmRuntime, C: ContainerRuntime + 'static>(
     );
     tracing::info!(machine = %record.machine_id, name = %record.name, "agent running");
     let lists = tokio::sync::watch::Sender::new(None);
-    let private_network = record.network.is_some() && unsafe { libc::geteuid() } == 0;
-    if !private_network && !args.once {
-        let relays = record
-            .network
-            .as_ref()
-            .map(|n| n.relay_urls.clone())
-            .unwrap_or_default();
-        tokio::spawn(entry_only(gate.clone(), link.key.to_bytes(), relays));
+    let entry_relays = record
+        .network
+        .as_ref()
+        .map(|n| n.relay_urls.clone())
+        .unwrap_or_default();
+    if record.network.is_none() && !args.once {
+        tokio::spawn(entry_only(
+            gate.clone(),
+            link.key.to_bytes(),
+            entry_relays.clone(),
+        ));
     }
     if let Some(network) = record.network.clone().filter(|_| !args.once) {
         let (link, seed, data_dir) = (link.clone(), link.key.to_bytes(), args.data_dir.clone());
         let lists = lists.clone();
         let entry_gate = gate.clone();
+        let fallback_gate = gate.clone();
+        let fallback_seed = link.key.to_bytes();
         tokio::spawn(async move {
             let options = crate::net::NetOptions {
                 lists: Some(lists),
@@ -297,6 +302,7 @@ pub async fn run<R: VmRuntime, C: ContainerRuntime + 'static>(
             if let Err(error) = crate::net::run(link, network, seed, data_dir, options).await {
                 tracing::error!(error = %format!("{error:#}"), "private network stopped");
             }
+            entry_only(fallback_gate, fallback_seed, entry_relays).await;
         });
     }
     let mut apps = Apps::new(
