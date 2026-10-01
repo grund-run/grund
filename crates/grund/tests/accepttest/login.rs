@@ -52,13 +52,15 @@ async fn an_unknown_account_and_a_wrong_password_get_the_same_answer_in_the_same
 
     let (_, timer, _) = given.testcase.another_browser();
     let nobody = given.a_fresh_name("nobody");
-    let (unknown_time, wrong_time) = timer
-        .timing_sign_ins_alternately(
+    let (unknown_times, wrong_times) = timer
+        .timing_sign_ins_in_random_order(
             (&nobody, "wrong password one"),
             (&account.email, "wrong password two"),
             9,
+            INVALID,
         )
         .await?;
+    let (unknown_time, wrong_time) = (unknown_times[0], wrong_times[0]);
     let (fast, slow) = if unknown_time < wrong_time {
         (unknown_time, wrong_time)
     } else {
@@ -66,7 +68,8 @@ async fn an_unknown_account_and_a_wrong_password_get_the_same_answer_in_the_same
     };
     anyhow::ensure!(
         slow.as_secs_f64() < fast.as_secs_f64() * 1.5 + 0.01,
-        "median sign-in times differ: unknown {unknown_time:?}, wrong password {wrong_time:?}"
+        "fastest sign-in times differ: unknown {unknown_time:?}, wrong password {wrong_time:?} \
+         (every sample, sorted: unknown {unknown_times:?}, wrong password {wrong_times:?})"
     );
     Ok(())
 }

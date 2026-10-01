@@ -278,24 +278,42 @@ impl When {
         mail::link(&mailpit, to, subject, path, count, mail::Pick::Oldest).await
     }
 
-    pub async fn timing_sign_ins_alternately(
+    pub async fn timing_sign_ins_in_random_order(
         &self,
         first: (&str, &str),
         second: (&str, &str),
         rounds: usize,
-    ) -> anyhow::Result<(Duration, Duration)> {
+        answer: &str,
+    ) -> anyhow::Result<(Vec<Duration>, Vec<Duration>)> {
         let mut firsts = Vec::with_capacity(rounds);
         let mut seconds = Vec::with_capacity(rounds);
         for _ in 0..rounds {
-            firsts.push(self.time_one_sign_in(first.0, first.1).await?);
-            seconds.push(self.time_one_sign_in(second.0, second.1).await?);
+            let mut coin = [0u8; 3];
+            getrandom::fill(&mut coin)?;
+            let pause = |byte: u8| Duration::from_millis(u64::from(byte) % 41);
+            if coin[0] & 1 == 0 {
+                tokio::time::sleep(pause(coin[1])).await;
+                firsts.push(self.time_one_sign_in(first.0, first.1, answer).await?);
+                tokio::time::sleep(pause(coin[2])).await;
+                seconds.push(self.time_one_sign_in(second.0, second.1, answer).await?);
+            } else {
+                tokio::time::sleep(pause(coin[1])).await;
+                seconds.push(self.time_one_sign_in(second.0, second.1, answer).await?);
+                tokio::time::sleep(pause(coin[2])).await;
+                firsts.push(self.time_one_sign_in(first.0, first.1, answer).await?);
+            }
         }
         firsts.sort();
         seconds.sort();
-        Ok((firsts[rounds / 2], seconds[rounds / 2]))
+        Ok((firsts, seconds))
     }
 
-    async fn time_one_sign_in(&self, login: &str, password: &str) -> anyhow::Result<Duration> {
+    async fn time_one_sign_in(
+        &self,
+        login: &str,
+        password: &str,
+        answer: &str,
+    ) -> anyhow::Result<Duration> {
         let form = self.send("GET", "/login", &[], None).await?;
         let csrf = csrf_of(&form.text()).context("no csrf")?;
         let origin = self.testcase.fixture.origin.serialized();
@@ -317,6 +335,10 @@ impl When {
             response.status == 200,
             "a timed sign-in answered {}",
             response.status
+        );
+        anyhow::ensure!(
+            response.text().contains(answer),
+            "a timed sign-in did not answer {answer:?}"
         );
         Ok(elapsed)
     }

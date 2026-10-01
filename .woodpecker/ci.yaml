@@ -157,6 +157,12 @@ steps:
       # The certificate accepttests spawn Pebble (fetched below, pinned by
       # version and SHA-256) and fail rather than skip when it is missing.
       GRUND_ACCEPT_REQUIRE_PEBBLE: "1"
+      # Guards account enumeration by timing, so it runs alone after the
+      # rest: beside 128 other tests a sign-in took anything from 16 ms to
+      # 2.5 s, and the comparison measured the machine, not grund (grund-docs
+      # docs/ci-performance.md). It is skipped once and run once, never
+      # dropped.
+      TIMING_TEST: accepttest::login::an_unknown_account_and_a_wrong_password_get_the_same_answer_in_the_same_time
     commands:
       # openssl (3.5 or later): the independent implementation grund-tls's
       # X25519MLKEM768 interop tests handshake against; they fail rather
@@ -175,13 +181,15 @@ steps:
       # Fail with the cause, not with thirty accepttests timing out.
       - for i in $(seq 1 60); do nc -z postgres 5432 && nc -z nats 4222 && nc -z mailpit 1025 && break; sleep 1; done
       - nc -z postgres 5432 || { echo "postgres never accepted connections"; exit 1; }
-      - cargo test --workspace --locked
+      - cargo test --workspace --locked -- --skip "$${TIMING_TEST}"
+      - cargo test --workspace --locked -- --exact "$${TIMING_TEST}"
       # The ee accepttests: the workspace's tests with grund/ee, filtered to
       # the accepttests. Not `cargo test -p grund --features ee --test tests`:
       # -p resolves features differently and rebuilt 104 crates (pipeline 32);
       # this rebuilds only what the feature changes, and the filter reruns
       # only the accepttests, not the unit and store tests.
-      - cargo test --workspace --features grund/ee --locked -- 'accepttest::'
+      - cargo test --workspace --features grund/ee --locked -- 'accepttest::' --skip "$${TIMING_TEST}"
+      - cargo test --workspace --features grund/ee --locked -- --exact "$${TIMING_TEST}"
       - if [ -n "$${RUSTC_WRAPPER:-}" ]; then sccache --show-stats; fi
 
   release:
@@ -231,6 +239,9 @@ steps:
     depends_on: [test, release]
     environment:
       GRUND_ACCEPT_MAILPIT_URL: http://contract-mailpit:8025
+      GRUND_ACCEPT_URL: http://127.0.0.1:8080
+      # Alone after the rest, as in `test`.
+      TIMING_TEST: accepttest::login::an_unknown_account_and_a_wrong_password_get_the_same_answer_in_the_same_time
     commands:
       - apk add --no-cache openssl
       - for i in $(seq 1 60); do nc -z contract-postgres 5432 && nc -z contract-nats 4222 && nc -z contract-mailpit 1025 && break; sleep 1; done
@@ -249,7 +260,7 @@ steps:
       # service does (multi), because the tests sign up many accounts. The
       # spawned-binary run in `test` covers the limits and single mode.
       # cargo runs a test binary from its package directory; so does this.
-      - cd crates/grund && GRUND_ACCEPT_URL=http://127.0.0.1:8080 ../../.accept/tests || { echo "--- server log"; cat ../../server.log; exit 1; }
+      - cd crates/grund && { ../../.accept/tests --skip "$${TIMING_TEST}" && ../../.accept/tests --exact "$${TIMING_TEST}"; } || { echo "--- server log"; cat ../../server.log; exit 1; }
 
   guest-image:
     # The microVM root filesystem, from the release step's binaries: the grund

@@ -58,8 +58,12 @@ docker run -d --name "$name" --read-only --cap-drop ALL --network "$network" \
   -e GRUND_ENROLL_ATTEMPTS_PER_ADDRESS=0 \
   -e GRUND_ORGANISATIONS=multi \
   "$img" >/dev/null
-if ! GRUND_ACCEPT_URL="http://127.0.0.1:$port" GRUND_ACCEPT_MAILPIT_URL=http://127.0.0.1:58410 \
-  cargo test --locked -p grund --test tests; then
+# The timing test alone after the rest, as CI runs it (.woodpecker/ci.yaml).
+timing_test=accepttest::login::an_unknown_account_and_a_wrong_password_get_the_same_answer_in_the_same_time
+if ! { GRUND_ACCEPT_URL="http://127.0.0.1:$port" GRUND_ACCEPT_MAILPIT_URL=http://127.0.0.1:58410 \
+    cargo test --locked -p grund --test tests -- --skip "$timing_test" \
+  && GRUND_ACCEPT_URL="http://127.0.0.1:$port" GRUND_ACCEPT_MAILPIT_URL=http://127.0.0.1:58410 \
+    cargo test --locked -p grund --test tests -- --exact "$timing_test"; }; then
   docker logs "$name"
   exit 1
 fi
