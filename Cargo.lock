@@ -1810,6 +1810,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "grund-password"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "argon2",
+ "password-hash",
+]
+
+[[package]]
 name = "grund-proto"
 version = "0.1.0"
 dependencies = [
@@ -1842,6 +1851,7 @@ dependencies = [
  "grund-domain",
  "grund-entry",
  "grund-net",
+ "grund-password",
  "grund-proto",
  "grund-store",
  "grund-tls",

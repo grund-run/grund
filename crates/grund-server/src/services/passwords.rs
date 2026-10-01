@@ -4,70 +4,20 @@
 
 use std::sync::Arc;
 
-use argon2::{
-    Algorithm, Argon2, Params, PasswordHash, PasswordHasher, PasswordVerifier, Version,
-    password_hash::{SaltString, rand_core::OsRng},
-};
 use tokio::sync::Semaphore;
 
 use crate::state::State;
 
-/// Memory cost in KiB (19 MiB).
-pub const MEMORY_KIB: u32 = 19_456;
-/// Iterations.
-pub const ITERATIONS: u32 = 2;
-/// Lanes.
-pub const PARALLELISM: u32 = 1;
+pub use grund_password::{ITERATIONS, MEMORY_KIB, PARALLELISM, Verified};
+
 /// Hashes allowed at once; the rest wait for a slot.
 pub const CONCURRENT_HASHES: usize = 4;
-
-/// The outcome of checking a password.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Verified {
-    pub matches: bool,
-    /// The stored hash uses other parameters and should be replaced.
-    pub needs_rehash: bool,
-}
 
 /// Hashes and verifies passwords on the blocking pool, four at a time.
 #[derive(Clone)]
 pub struct Passwords {
     permits: Arc<Semaphore>,
     dummy: Arc<String>,
-}
-
-fn argon() -> Argon2<'static> {
-    let params = Params::new(MEMORY_KIB, ITERATIONS, PARALLELISM, Some(32))
-        .expect("valid Argon2 parameters");
-    Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
-}
-
-fn hash_blocking(password: &str) -> anyhow::Result<String> {
-    let salt = SaltString::generate(&mut OsRng);
-    Ok(argon()
-        .hash_password(password.as_bytes(), &salt)
-        .map_err(|error| anyhow::anyhow!("hash password: {error}"))?
-        .to_string())
-}
-
-fn verify_blocking(password: &str, phc: &str) -> Verified {
-    let Ok(parsed) = PasswordHash::new(phc) else {
-        return Verified {
-            matches: false,
-            needs_rehash: false,
-        };
-    };
-    let matches = argon()
-        .verify_password(password.as_bytes(), &parsed)
-        .is_ok();
-    let current = parsed.algorithm.as_str() == "argon2id"
-        && Params::try_from(&parsed).is_ok_and(|p| {
-            p.m_cost() == MEMORY_KIB && p.t_cost() == ITERATIONS && p.p_cost() == PARALLELISM
-        });
-    Verified {
-        matches,
-        needs_rehash: matches && !current,
-    }
 }
 
 impl Passwords {
@@ -77,7 +27,7 @@ impl Passwords {
         getrandom::fill(&mut dummy_password).expect("randomness");
         Ok(Self {
             permits: Arc::new(Semaphore::new(CONCURRENT_HASHES)),
-            dummy: Arc::new(hash_blocking(&hex::encode(dummy_password))?),
+            dummy: Arc::new(grund_password::hash(&hex::encode(dummy_password))?),
         })
     }
 
@@ -85,7 +35,7 @@ impl Passwords {
     pub async fn hash(&self, password: &str) -> anyhow::Result<String> {
         let _permit = self.permits.acquire().await?;
         let password = password.to_string();
-        tokio::task::spawn_blocking(move || hash_blocking(&password)).await?
+        tokio::task::spawn_blocking(move || grund_password::hash(&password)).await?
     }
 
     /// Verifies `password` against `phc`, or against the dummy hash when there
@@ -98,7 +48,7 @@ impl Passwords {
             None => (self.dummy.as_str().to_string(), false),
         };
         let verified =
-            tokio::task::spawn_blocking(move || verify_blocking(&password, &phc)).await?;
+            tokio::task::spawn_blocking(move || grund_password::verify(&password, &phc)).await?;
         Ok(Verified {
             matches: verified.matches && real,
             needs_rehash: verified.needs_rehash && real,
@@ -119,6 +69,11 @@ impl PasswordsState for State {
 
 #[cfg(test)]
 mod tests {
+    use argon2::{
+        Algorithm, Argon2, Params, PasswordHasher, Version,
+        password_hash::{SaltString, rand_core::OsRng},
+    };
+
     use super::*;
 
     #[tokio::test]

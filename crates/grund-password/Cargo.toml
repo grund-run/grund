@@ -1,0 +1,15 @@
+[package]
+name = "grund-password"
+description = "grund's password hashing: Argon2id with grund's parameters, hash and verify. Its own crate so the release build can compile it at opt-level 3 while the rest is built for size"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+license = "AGPL-3.0-only"
+
+[dependencies]
+anyhow.workspace = true
+argon2 = "0.5"
+# OsRng, for the salt.
+password-hash = { version = "0.5", features = ["getrandom"] }
