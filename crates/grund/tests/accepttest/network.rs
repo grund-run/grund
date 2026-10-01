@@ -522,6 +522,52 @@ async fn a_direct_path_cut_past_iroh_retry_comes_back_within_seconds_through_a_p
 }
 
 #[tokio::test]
+async fn peers_that_first_meet_over_the_relay_go_direct_within_seconds_once_udp_works()
+-> anyhow::Result<()> {
+    let Some(net) = a_lab().await? else {
+        return Ok(());
+    };
+    let a = net.join("a", "a").await?;
+    let b = net.join("b", "b").await?;
+    net.lab.cut_direct_udp().await?;
+    anyhow::ensure!(
+        net.reaches_by_name(&a, &b, Duration::from_secs(30))
+            .await
+            .is_some(),
+        "a does not reach b over the relay: {}",
+        a.status()
+    );
+    anyhow::ensure!(
+        a.path_to(&b).starts_with("relay"),
+        "a reached b directly with UDP cut: {}",
+        a.status()
+    );
+    tokio::time::sleep(PAST_IROH_SCHEDULED_RETRY).await;
+    anyhow::ensure!(
+        a.path_to(&b).starts_with("relay") && net.pings(&a, &b.fqdn()).await,
+        "not over the relay before the restore: {}",
+        a.status()
+    );
+
+    net.lab.restore_direct_udp().await?;
+    let direct = || async {
+        net.pings(&a, &b.address().to_string()).await && a.path_to(&b).starts_with("direct")
+    };
+    let back = eventually(DIRECT_AGAIN_WITHIN, direct).await;
+    anyhow::ensure!(
+        back.is_some(),
+        "never direct within {DIRECT_AGAIN_WITHIN:?} of UDP working: {}",
+        a.status()
+    );
+    eprintln!(
+        "met over the relay; UDP restored after {PAST_IROH_SCHEDULED_RETRY:?} more; direct after {back:?}; probes a {} b {}",
+        a.counter("probes_sent"),
+        b.counter("probes_sent")
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_peer_that_never_punches_costs_a_few_probes_on_a_backoff() -> anyhow::Result<()> {
     let Some(net) = a_lab().await? else {
         return Ok(());

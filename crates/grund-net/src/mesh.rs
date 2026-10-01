@@ -30,13 +30,16 @@
 //! connections ([`crate::gossip`], [`Mesh::gossip`]); the mesh's owner
 //! checks each before using it.
 //!
-//! A peer reached only through the relay for [`RELAYED_BEFORE_PROBE`], while
-//! iroh knows direct addresses for it, is probed: a short connection on
-//! [`crate::PROBE_ALPN`] ([`Prober`]), on the backoff [`probe_backoff`]. iroh
-//! 1.2 punches when a connection opens, once more 5 s after a punch, and
-//! otherwise only every 60 s, so without the probe a direct path that comes
-//! back after a longer outage waits up to a minute. A direct path resets the
-//! backoff.
+//! A peer reached only through the relay for [`RELAYED_BEFORE_PROBE`] is
+//! probed: a short connection on [`crate::PROBE_ALPN`] ([`Prober`]), on the
+//! backoff [`probe_backoff`]. iroh 1.2 punches when a connection opens, once
+//! more 5 s after a punch, and otherwise only every 60 s, so without the
+//! probe a direct path that comes back after a longer outage, or that was
+//! never there when the peers first met, waits up to a minute. A direct path
+//! resets the backoff. Every relayed peer is probed, whether or not iroh
+//! has told us direct addresses for it: iroh learns a peer's candidates
+//! inside the connection and does not expose them, and its `remote_info`
+//! lists only addresses of paths that once worked.
 //!
 //! Not built yet: containers' addresses in the /64.
 
@@ -604,13 +607,6 @@ impl Mesh {
                 continue;
             };
             for id in due {
-                let has_direct_candidates = endpoint.remote_info(id).await.is_some_and(|info| {
-                    info.addrs()
-                        .any(|a| matches!(a.addr(), TransportAddr::Ip(_)))
-                });
-                if !has_direct_candidates {
-                    continue;
-                }
                 {
                     let mut peers = self.inner.peers.lock().expect("peers lock");
                     let Some(peer) = peers.get_mut(&id) else {
