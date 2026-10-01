@@ -40,6 +40,12 @@ kjuulh: "kubernetes-app": {
 				replicas:  1
 				env_vars: {
 					GRUND_PUBLIC_URL: "https://dev.app.grund.sh"
+					// The relays dev's machines use: grund relay on the homelab's
+					// public gateway (grund-docs design/network.md §10). Machines get
+					// the list, signed, with their membership, so adding a relay here
+					// reaches them at the next epoch, with no re-join. A relay can
+					// enroll only for a host listed here.
+					GRUND_RELAYS: "home-1=https://relay.dev.app.grund.sh"
 					// dev's grund orders the relay's certificate from Let's Encrypt
 					// (design/traffic.md §5.7): the relay makes its key and CSR and
 					// answers TLS-ALPN-01 itself. With no GRUND_DOMAIN, this orders
