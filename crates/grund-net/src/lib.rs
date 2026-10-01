@@ -26,6 +26,7 @@
 //! mesh takes a stream of verified lists, today from the HTTPS control link.
 
 pub mod dns;
+pub mod egress;
 pub mod endpoint;
 pub mod filter;
 pub mod frame;

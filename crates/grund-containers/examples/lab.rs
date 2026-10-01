@@ -44,6 +44,7 @@ fn spec(id: &str, command: &[String]) -> ContainerSpec {
         stop_grace: Duration::from_secs(2),
         labels: BTreeMap::from([("grund.app".into(), "lab".into())]),
         spec_hash: format!("hash-{id}"),
+        resolv_conf: None,
     }
 }
 

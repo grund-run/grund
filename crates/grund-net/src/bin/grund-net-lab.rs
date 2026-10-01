@@ -18,6 +18,10 @@
 //!   certificate. The accepttests use it to join a lab of network namespaces
 //!   to this host's PostgreSQL and mail (a Unix socket crosses the
 //!   namespaces, a route does not), and to put TLS in front of grund.
+//! - `tput-serve` and `tput`: an iperf-style measure of a TCP path: bulk
+//!   throughput for some seconds, and the round trip of one byte, printed as
+//!   JSON. The accepttests use it to state what the private network and a
+//!   replica's userspace egress cost.
 
 use std::{net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
 
@@ -108,6 +112,18 @@ enum Command {
         #[arg(long, default_value_t = 5)]
         count: u32,
     },
+    TputServe {
+        #[arg(long)]
+        listen: SocketAddr,
+    },
+    Tput {
+        #[arg(long)]
+        to: SocketAddr,
+        #[arg(long, default_value_t = 5)]
+        seconds: u64,
+        #[arg(long, default_value_t = 1000)]
+        round_trips: u32,
+    },
 }
 
 #[tokio::main]
@@ -171,7 +187,89 @@ async fn main() -> anyhow::Result<()> {
             dst,
             count,
         } => inject(key, relay, relay_root, to, src, dst, count).await,
+        Command::TputServe { listen } => tput_serve(listen).await,
+        Command::Tput {
+            to,
+            seconds,
+            round_trips,
+        } => tput(to, seconds, round_trips).await,
     }
+}
+
+async fn tput_serve(listen: SocketAddr) -> anyhow::Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind(listen).await?;
+    loop {
+        let (mut stream, _) = listener.accept().await?;
+        let _ = stream.set_nodelay(true);
+        tokio::spawn(async move {
+            let mut mode = [0u8; 1];
+            if stream.read_exact(&mut mode).await.is_err() {
+                return;
+            }
+            let mut buf = vec![0u8; 1 << 16];
+            if mode[0] == b'B' {
+                let mut total = 0u64;
+                while let Ok(n) = stream.read(&mut buf).await {
+                    if n == 0 {
+                        break;
+                    }
+                    total += n as u64;
+                }
+                let _ = stream.write_all(&total.to_be_bytes()).await;
+            } else {
+                let mut byte = [0u8; 1];
+                while stream.read_exact(&mut byte).await.is_ok() {
+                    if stream.write_all(&byte).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+    }
+}
+
+async fn tput(to: SocketAddr, seconds: u64, round_trips: u32) -> anyhow::Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut bulk = tokio::net::TcpStream::connect(to).await?;
+    bulk.write_all(b"B").await?;
+    let chunk = vec![0x5au8; 1 << 16];
+    let started = std::time::Instant::now();
+    let until = started + Duration::from_secs(seconds);
+    while std::time::Instant::now() < until {
+        bulk.write_all(&chunk).await?;
+    }
+    bulk.shutdown().await?;
+    let mut total = [0u8; 8];
+    bulk.read_exact(&mut total).await?;
+    let elapsed = started.elapsed().as_secs_f64();
+    let bytes = u64::from_be_bytes(total);
+
+    let mut ping = tokio::net::TcpStream::connect(to).await?;
+    ping.set_nodelay(true)?;
+    ping.write_all(b"P").await?;
+    let mut rtts = Vec::with_capacity(round_trips as usize);
+    let mut byte = [0u8; 1];
+    for _ in 0..round_trips {
+        let at = std::time::Instant::now();
+        ping.write_all(b"x").await?;
+        ping.read_exact(&mut byte).await?;
+        rtts.push(at.elapsed().as_secs_f64() * 1000.0);
+    }
+    rtts.sort_by(|a, b| a.total_cmp(b));
+    let at = |q: f64| rtts[((rtts.len() as f64 - 1.0) * q).round() as usize];
+    println!(
+        "{}",
+        serde_json::json!({
+            "to": to.to_string(),
+            "bytes": bytes,
+            "seconds": elapsed,
+            "mbit_per_second": bytes as f64 * 8.0 / elapsed / 1e6,
+            "rtt_ms_p50": at(0.5),
+            "rtt_ms_p99": at(0.99),
+        })
+    );
+    Ok(())
 }
 
 async fn lighthouse(

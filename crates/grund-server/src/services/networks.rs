@@ -20,6 +20,13 @@
 //! the stored list is compared with the one that would be signed now: a
 //! renamed machine or a relay added to the configuration is a change, and
 //! reaches every member at the next epoch.
+//!
+//! The same goes for each member's app replicas ([`Member::apps`]): every
+//! running replica the organisation's apps have on it, at its
+//! [`replica_address`], with the TCP ports its release declares (apps.md
+//! §3.1: every port is reachable by the organisation's other apps) and
+//! whether its machine last reported it ready. A placement, a drain or a
+//! change in readiness is a new epoch.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -28,7 +35,9 @@ use std::{
 
 use chrono::{DateTime, Duration, Utc};
 use grund_domain::machine::{KeyPurpose, prefix};
-use grund_net::membership::{Member, MembershipList, Port, Relay, Transport};
+use grund_net::membership::{
+    AppReplica, Member, MembershipList, Port, Relay, Transport, replica_address,
+};
 use grund_store::networks::{self, NetworkRow, SlotRow};
 use uuid::Uuid;
 
@@ -112,12 +121,14 @@ impl Networks {
             .map(|c| (c.machine_id, (c.name.as_str(), ports(&c.network_ports))))
             .collect();
         let relays = self.relays();
+        let endpoints =
+            grund_store::apps::organisation_endpoints(&mut *tx, organisation_id).await?;
+        let replicas = |slots: &[SlotRow]| app_replicas(prefix, slots, &endpoints);
         if plan.is_empty()
             && network.epoch > 0
-            && network
-                .body
-                .as_deref()
-                .is_some_and(|body| same_contents(body, &members(&slots, &names), &relays))
+            && network.body.as_deref().is_some_and(|body| {
+                same_contents(body, &members(&slots, &names, &replicas(&slots)), &relays)
+            })
         {
             tx.commit().await?;
             return view(network, key, prefix, &slots);
@@ -147,7 +158,7 @@ impl Networks {
             epoch: epoch as u64,
             prefix,
             issued_at: now.timestamp(),
-            members: members(&slots, &names),
+            members: members(&slots, &names, &replicas(&slots)),
             relays,
         };
         list.validate()?;
@@ -256,7 +267,11 @@ impl Networks {
     }
 }
 
-fn members(slots: &[SlotRow], names: &HashMap<Uuid, (&str, Vec<Port>)>) -> Vec<Member> {
+fn members(
+    slots: &[SlotRow],
+    names: &HashMap<Uuid, (&str, Vec<Port>)>,
+    apps: &HashMap<Uuid, Vec<AppReplica>>,
+) -> Vec<Member> {
     slots
         .iter()
         .filter(|s| s.freed_at.is_none())
@@ -269,10 +284,48 @@ fn members(slots: &[SlotRow], names: &HashMap<Uuid, (&str, Vec<Port>)>) -> Vec<M
                 name: entry.map(|(n, _)| n.to_string()),
                 ports: entry.map(|(_, p)| p.clone()).unwrap_or_default(),
                 relay_url: s.home_relay_url.clone(),
-                apps: Vec::new(),
+                apps: apps.get(&s.machine_id).cloned().unwrap_or_default(),
             }
         })
         .collect()
+}
+
+fn app_replicas(
+    prefix: Ipv6Addr,
+    slots: &[SlotRow],
+    endpoints: &[grund_store::apps::EndpointRow],
+) -> HashMap<Uuid, Vec<AppReplica>> {
+    let slot_of: HashMap<Uuid, u16> = slots
+        .iter()
+        .filter(|s| s.freed_at.is_none())
+        .map(|s| (s.machine_id, s.slot as u16))
+        .collect();
+    let mut out: HashMap<Uuid, Vec<AppReplica>> = HashMap::new();
+    for e in endpoints {
+        let Some(slot) = slot_of.get(&e.machine_id) else {
+            continue;
+        };
+        let id = e.replica_id.to_string();
+        let mut ports: Vec<Port> = e
+            .spec
+            .ports
+            .iter()
+            .map(|p| Port {
+                transport: Transport::Tcp,
+                port: p.port,
+            })
+            .collect();
+        ports.sort();
+        ports.dedup();
+        out.entry(e.machine_id).or_default().push(AppReplica {
+            app: e.app_name.clone(),
+            address: replica_address(prefix, *slot, &id),
+            replica_id: id,
+            ports,
+            ready: e.ready,
+        });
+    }
+    out
 }
 
 fn ports(declared: &[grund_domain::machine::NetworkPort]) -> Vec<Port> {

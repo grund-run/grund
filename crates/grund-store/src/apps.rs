@@ -865,6 +865,39 @@ pub async fn machine_replicas(
     .await
 }
 
+/// A running replica of an organisation's app, as its network's list names
+/// it: where it is, what its app accepts, and whether its machine last said
+/// it is ready.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct EndpointRow {
+    pub replica_id: Uuid,
+    pub machine_id: Uuid,
+    pub app_name: String,
+    pub spec: Json<grund_domain::app::AppSpec>,
+    pub ready: bool,
+}
+
+/// The running (not draining) replicas of `organisation_id`'s live apps, in
+/// a stable order, for its private network's list.
+pub async fn organisation_endpoints(
+    executor: impl PgExecutor<'_>,
+    organisation_id: Uuid,
+) -> Result<Vec<EndpointRow>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT r.replica_id, r.machine_id, a.name AS app_name, rel.spec, \
+           COALESCE(s.ready, false) AS ready \
+         FROM grund_replicas r \
+         JOIN grund_apps a ON a.app_id = r.app_id AND a.deleted_at IS NULL \
+         JOIN grund_releases rel ON rel.app_id = r.app_id AND rel.number = r.release \
+         LEFT JOIN grund_replica_status s ON s.replica_id = r.replica_id AND s.machine_id = r.machine_id \
+         WHERE r.organisation_id = $1 AND r.state = 'running' \
+         ORDER BY r.machine_id, r.replica_id",
+    )
+    .bind(organisation_id)
+    .fetch_all(executor)
+    .await
+}
+
 /// The machines the replicas of `app_id` are on, to rebuild their
 /// documents.
 pub async fn app_machines(

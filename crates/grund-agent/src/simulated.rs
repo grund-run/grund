@@ -22,12 +22,26 @@
 //! headers it received. `?wait=<ms>` holds the answer that long, so a test
 //! can keep requests in flight. A kill drops its listener and every open
 //! connection at once, as SIGKILL would.
+//!
+//! Where the agent runs as root, each container also gets a real network
+//! namespace (`<dir>/netns/<id>`), so the private network's devices,
+//! routes, filter and egress are exercised for real: while it runs, it
+//! serves HTTP inside that namespace on `[::]` at each port in
+//! `GRUND_SIMULATE_LISTEN` (comma-separated), answering `200` with
+//! `simulated <id>` (or `503` when unready), and its check runs inside the
+//! namespace as grund's containerd runtime's does.
+//! `GRUND_SIMULATE_LISTEN_ON=ipv4` serves on `0.0.0.0` only, as an app that
+//! binds IPv4 does.
 
 use std::{
     collections::HashMap,
+    io::{Read, Write},
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -254,7 +268,101 @@ impl SimulatedContainers {
     }
 }
 
+fn listeners() -> &'static Mutex<HashMap<PathBuf, Arc<AtomicBool>>> {
+    static LISTENERS: OnceLock<Mutex<HashMap<PathBuf, Arc<AtomicBool>>>> = OnceLock::new();
+    LISTENERS.get_or_init(Default::default)
+}
+
+impl SimulatedContainers {
+    fn netns(&self, id: &str) -> PathBuf {
+        grund_net::netns::path(&self.dir.join("netns"), id)
+    }
+
+    fn ports(spec: &ContainerSpec) -> Vec<u16> {
+        spec.env
+            .iter()
+            .rev()
+            .find(|(name, _)| name == "GRUND_SIMULATE_LISTEN")
+            .map(|(_, v)| v.split(',').filter_map(|p| p.trim().parse().ok()).collect())
+            .unwrap_or_default()
+    }
+
+    fn listen(&self, record: &Record) {
+        let netns = self.netns(&record.spec.id);
+        if !grund_net::netns::is_namespace(&netns) {
+            return;
+        }
+        let ports = Self::ports(&record.spec);
+        if ports.is_empty() {
+            return;
+        }
+        let mut all = listeners().lock().expect("listeners lock");
+        if all.contains_key(&netns) {
+            return;
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        all.insert(netns.clone(), stop.clone());
+        let unready = Self::behaviour(&record.spec) == Some("unready");
+        let ipv4_only = record
+            .spec
+            .env
+            .iter()
+            .any(|(n, v)| n == "GRUND_SIMULATE_LISTEN_ON" && v == "ipv4");
+        let body = format!("simulated {}", record.spec.id);
+        for port in ports {
+            let (netns, stop, body) = (netns.clone(), stop.clone(), body.clone());
+            std::thread::spawn(move || {
+                if grund_net::netns::enter(&netns).is_err() {
+                    return;
+                }
+                let host = if ipv4_only { "0.0.0.0" } else { "::" };
+                let Ok(listener) = std::net::TcpListener::bind((host, port)) else {
+                    return;
+                };
+                let _ = listener.set_nonblocking(true);
+                while !stop.load(Ordering::Relaxed) {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            let _ = stream.set_nonblocking(false);
+                            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                            let mut request = [0u8; 2048];
+                            let _ = stream.read(&mut request);
+                            let status = if unready {
+                                "503 Service Unavailable"
+                            } else {
+                                "200 OK"
+                            };
+                            let _ = write!(
+                                stream,
+                                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                                body.len()
+                            );
+                        }
+                        Err(_) => std::thread::sleep(Duration::from_millis(20)),
+                    }
+                }
+            });
+        }
+    }
+
+    fn unlisten(&self, id: &str) {
+        if let Some(stop) = listeners()
+            .lock()
+            .expect("listeners lock")
+            .remove(&self.netns(id))
+        {
+            stop.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
 impl ContainerRuntime for SimulatedContainers {
+    async fn network_namespace(&self, id: &str) -> anyhow::Result<Option<PathBuf>> {
+        if unsafe { libc::geteuid() } != 0 {
+            return Ok(None);
+        }
+        Ok(Some(grund_net::netns::ensure(&self.dir.join("netns"), id)?))
+    }
     async fn capabilities(&self) -> AppsCapabilities {
         AppsCapabilities {
             apps: true,
@@ -301,13 +409,16 @@ impl ContainerRuntime for SimulatedContainers {
             "image {} is not pulled",
             spec.image.digest
         );
-        self.write(&Record {
+        let record = Record {
             spec: spec.clone(),
             state: TaskState::Running {
                 pid: std::process::id(),
             },
             started_at_ms: now_ms(),
-        })
+        };
+        self.write(&record)?;
+        self.listen(&record);
+        Ok(())
     }
 
     async fn restart(&self, id: &str) -> anyhow::Result<()> {
@@ -323,6 +434,8 @@ impl ContainerRuntime for SimulatedContainers {
 
     async fn remove(&self, id: &str, _signal: &str, _grace: Duration) -> anyhow::Result<()> {
         self.stop_server(id);
+        self.unlisten(id);
+        grund_net::netns::remove(&self.dir.join("netns"), id)?;
         match std::fs::remove_file(self.path(id)) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -345,6 +458,11 @@ impl ContainerRuntime for SimulatedContainers {
                 continue;
             };
             let record = self.advance(record)?;
+            if matches!(record.state, TaskState::Running { .. }) {
+                self.listen(&record);
+            } else {
+                self.unlisten(id);
+            }
             records.push(record.clone());
             statuses.push(ContainerStatus {
                 id: record.spec.id.clone(),
@@ -359,12 +477,16 @@ impl ContainerRuntime for SimulatedContainers {
         Ok(statuses)
     }
 
-    async fn probe(&self, id: &str, _probe: &Probe, _timeout: Duration) -> Result<(), String> {
+    async fn probe(&self, id: &str, probe: &Probe, timeout: Duration) -> Result<(), String> {
         let record = self
             .read(id)
             .ok_or_else(|| "no such container".to_string())?;
         if !matches!(record.state, TaskState::Running { .. }) {
             return Err("its process is not running".into());
+        }
+        let netns = self.netns(id);
+        if grund_net::netns::is_namespace(&netns) && !Self::ports(&record.spec).is_empty() {
+            return crate::probe::run(Some(netns), probe.clone(), timeout).await;
         }
         match Self::behaviour(&record.spec) {
             Some("unready") => Err("status 503".into()),

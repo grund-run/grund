@@ -283,15 +283,17 @@ pub async fn run<R: VmRuntime, C: ContainerRuntime + 'static>(
             entry_relays.clone(),
         ));
     }
+    let mesh = std::sync::Arc::new(std::sync::OnceLock::new());
     if let Some(network) = record.network.clone().filter(|_| !args.once) {
         let (link, seed, data_dir) = (link.clone(), link.key.to_bytes(), args.data_dir.clone());
-        let lists = lists.clone();
+        let (lists, mesh) = (lists.clone(), mesh.clone());
         let entry_gate = gate.clone();
         let fallback_gate = gate.clone();
         let fallback_seed = link.key.to_bytes();
         tokio::spawn(async move {
             let options = crate::net::NetOptions {
                 lists: Some(lists),
+                mesh: Some(mesh),
                 extra: Some(crate::net::ExtraProtocol {
                     alpn: grund_entry::ENTRY_ALPN.to_vec(),
                     handler: std::sync::Arc::new(move || {
@@ -312,7 +314,12 @@ pub async fn run<R: VmRuntime, C: ContainerRuntime + 'static>(
         policy.clone(),
         args.data_dir.clone(),
         &link.key.to_bytes(),
-    );
+    )
+    .with_network(crate::apps::NetworkAccess {
+        lists: lists.subscribe(),
+        mesh: mesh.clone(),
+        own: grund_net::key::endpoint_id(&link.key.to_bytes()).to_string(),
+    });
     if !args.once {
         tokio::spawn(apps.run());
         apps = Apps::new(

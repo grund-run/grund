@@ -41,7 +41,24 @@
 //! inside the connection and does not expose them, and its `remote_info`
 //! lists only addresses of paths that once worked.
 //!
-//! Not built yet: containers' addresses in the /64.
+//! App replicas on this machine ([`Mesh::attach_replica`]) each have a TUN
+//! of their own inside their container's network namespace, and an address
+//! in the machine's /64 (network.md §6.1). The mesh moves their packets as it
+//! moves the machine's, and nothing is routed by the host:
+//! - to a member's /64 over the network, as the machine's own packets go;
+//! - to another replica on this machine, or to the machine itself, by
+//!   writing it to that device;
+//! - to anywhere else (the internet, IPv4) through the replica's
+//!   [`crate::egress`].
+//!
+//! What reaches a replica passes its own filter with the ports its app
+//! declares in the list ([`crate::membership::AppReplica::ports`]), whether
+//! it comes from a member, from another replica here, or is a reply to the
+//! replica's own flow. The machine itself (its agent and anything else on
+//! the host, through `grund0`) reaches its replicas on any port. What a
+//! replica sends to the machine passes the machine's filter, with the stub
+//! resolver's port 53 open to it. A replica speaks only from its own
+//! address.
 
 use std::{
     collections::HashMap,
@@ -130,6 +147,7 @@ pub struct Mesh {
 #[derive(Debug)]
 struct Inner {
     own: EndpointId,
+    replicas: RwLock<HashMap<Ipv6Addr, Arc<LocalReplica>>>,
     endpoint: RwLock<Option<Endpoint>>,
     relays: RwLock<Vec<RelayUrl>>,
     up: watch::Sender<Option<Ipv6Addr>>,
@@ -140,6 +158,30 @@ struct Inner {
     filter: crate::filter::Filter,
     gossip: std::sync::OnceLock<crate::gossip::GossipLink>,
     counters: Counters,
+}
+
+#[derive(Debug)]
+struct LocalReplica {
+    address: Ipv6Addr,
+    tun: Arc<Tun>,
+    filter: crate::filter::Filter,
+    egress: Box<dyn crate::egress::Egress>,
+    reader: std::sync::OnceLock<tokio::task::AbortHandle>,
+}
+
+impl Drop for LocalReplica {
+    fn drop(&mut self) {
+        if let Some(reader) = self.reader.get() {
+            reader.abort();
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Origin {
+    Host,
+    Replica,
+    Member,
 }
 
 #[derive(Debug, Clone)]
@@ -181,6 +223,11 @@ struct Counters {
     dropped_closed_in: AtomicU64,
     admitted_replies: AtomicU64,
     gossip_sent: AtomicU64,
+    replica_out: AtomicU64,
+    replica_in: AtomicU64,
+    replica_egress: AtomicU64,
+    dropped_replica_spoofed: AtomicU64,
+    dropped_replica_closed: AtomicU64,
     probes_sent: AtomicU64,
     probes_failed: AtomicU64,
     probes_answered: AtomicU64,
@@ -226,6 +273,7 @@ impl Mesh {
         Self {
             inner: Arc::new(Inner {
                 own,
+                replicas: RwLock::new(HashMap::new()),
                 endpoint: RwLock::new(None),
                 relays: RwLock::new(config.relays.clone()),
                 up: watch::Sender::new(None),
@@ -368,6 +416,211 @@ impl Mesh {
         }
     }
 
+    /// Carries the packets of the replica at `address`, whose own device
+    /// is `tun` ([`Tun::create_in`]), in place of any earlier device for
+    /// it. `egress` takes what it sends outside the private network.
+    pub fn attach_replica(
+        &self,
+        address: Ipv6Addr,
+        tun: Tun,
+        egress: impl FnOnce(Arc<Tun>) -> Box<dyn crate::egress::Egress>,
+    ) {
+        let tun = Arc::new(tun);
+        let replica = Arc::new(LocalReplica {
+            address,
+            egress: egress(tun.clone()),
+            tun,
+            filter: crate::filter::Filter::default(),
+            reader: std::sync::OnceLock::new(),
+        });
+        let reader = tokio::spawn(self.clone().carry_replica(replica.clone()));
+        let _ = replica.reader.set(reader.abort_handle());
+        self.inner
+            .replicas
+            .write()
+            .expect("replicas lock")
+            .insert(address, replica);
+        tracing::info!(%address, "mesh: replica attached");
+    }
+
+    /// Stops carrying the replica at `address`. Its device goes with its
+    /// container's namespace.
+    pub fn detach_replica(&self, address: Ipv6Addr) {
+        if self
+            .inner
+            .replicas
+            .write()
+            .expect("replicas lock")
+            .remove(&address)
+            .is_some()
+        {
+            tracing::info!(%address, "mesh: replica detached");
+        }
+    }
+
+    /// The addresses of the replicas the mesh carries.
+    pub fn replicas(&self) -> Vec<Ipv6Addr> {
+        let mut out: Vec<Ipv6Addr> = self
+            .inner
+            .replicas
+            .read()
+            .expect("replicas lock")
+            .keys()
+            .copied()
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// What each replica's egress has carried.
+    pub fn egress_counters(&self) -> Vec<(Ipv6Addr, crate::egress::EgressCounters)> {
+        let mut out: Vec<_> = self
+            .inner
+            .replicas
+            .read()
+            .expect("replicas lock")
+            .values()
+            .map(|r| (r.address, r.egress.counters()))
+            .collect();
+        out.sort_by_key(|(a, _)| *a);
+        out
+    }
+
+    fn replica(&self, address: Ipv6Addr) -> Option<Arc<LocalReplica>> {
+        self.inner
+            .replicas
+            .read()
+            .expect("replicas lock")
+            .get(&address)
+            .cloned()
+    }
+
+    async fn carry_replica(self, replica: Arc<LocalReplica>) {
+        let c = &self.inner.counters;
+        let mut buf = vec![0u8; 65536];
+        loop {
+            let n = match replica.tun.read(&mut buf).await {
+                Ok(n) => n,
+                Err(e) => {
+                    tracing::warn!(address = %replica.address, error = %e, "mesh: reading a replica's device failed");
+                    return;
+                }
+            };
+            let packet = &buf[..n];
+            let Some(&first) = packet.first() else {
+                continue;
+            };
+            if first >> 4 == 4 {
+                c.replica_egress.fetch_add(1, Relaxed);
+                replica.egress.send(packet);
+                continue;
+            }
+            let Some((src, dst)) = ipv6_addrs(packet) else {
+                continue;
+            };
+            if src != replica.address {
+                c.dropped_replica_spoofed.fetch_add(1, Relaxed);
+                continue;
+            }
+            let (in_network, own_slot, target) = {
+                let view = self.inner.view.read().expect("view lock");
+                match view.as_ref() {
+                    Some(v) => {
+                        let in_network = v.list.prefix.octets()[..6] == dst.octets()[..6];
+                        let target = v
+                            .list
+                            .member_for(dst)
+                            .filter(|m| m.slot != v.own_slot)
+                            .and_then(|m| EndpointId::from_str(&m.endpoint_id).ok());
+                        (in_network, Some(v.own_slot), target)
+                    }
+                    None => (false, None, None),
+                }
+            };
+            if !in_network {
+                c.replica_egress.fetch_add(1, Relaxed);
+                replica.egress.send(packet);
+                continue;
+            }
+            c.replica_out.fetch_add(1, Relaxed);
+            if let Some(target) = target {
+                replica.filter.note_outbound(packet, Instant::now());
+                self.send(target, packet);
+            } else if own_slot.is_some() {
+                replica.filter.note_outbound(packet, Instant::now());
+                self.deliver_local(packet, dst, Origin::Replica).await;
+            } else {
+                c.dropped_no_member.fetch_add(1, Relaxed);
+            }
+        }
+    }
+
+    async fn deliver_local(&self, packet: &[u8], dst: Ipv6Addr, from: Origin) {
+        let c = &self.inner.counters;
+        let now = Instant::now();
+        if let Some(replica) = self.replica(dst) {
+            if from != Origin::Host {
+                let ports = {
+                    let view = self.inner.view.read().expect("view lock");
+                    view.as_ref()
+                        .and_then(|v| v.list.replica_at(dst).map(|(_, r)| r.ports.clone()))
+                        .unwrap_or_default()
+                };
+                match replica.filter.inbound(packet, &ports, now) {
+                    crate::filter::Inbound::Closed => {
+                        c.dropped_replica_closed.fetch_add(1, Relaxed);
+                        return;
+                    }
+                    crate::filter::Inbound::Reply => {
+                        c.admitted_replies.fetch_add(1, Relaxed);
+                    }
+                    _ => {}
+                }
+            }
+            c.replica_in.fetch_add(1, Relaxed);
+            let _ = replica.tun.write(packet).await;
+            return;
+        }
+        let Some(tun) = self.inner.tun.get() else {
+            return;
+        };
+        let (mut open, resolver) = {
+            let view = self.inner.view.read().expect("view lock");
+            let open: Vec<crate::membership::Port> = view
+                .as_ref()
+                .and_then(|v| v.list.members.iter().find(|m| m.slot == v.own_slot))
+                .map(|m| m.ports.clone())
+                .unwrap_or_default();
+            let resolver = view
+                .as_ref()
+                .map(|v| crate::dns::resolver_address(&v.list, v.own_slot));
+            (open, resolver)
+        };
+        if from == Origin::Replica && Some(dst) == resolver {
+            for transport in [
+                crate::membership::Transport::Udp,
+                crate::membership::Transport::Tcp,
+            ] {
+                open.push(crate::membership::Port {
+                    transport,
+                    port: 53,
+                });
+            }
+        }
+        match self.inner.filter.inbound(packet, &open, now) {
+            crate::filter::Inbound::Closed => {
+                c.dropped_closed_in.fetch_add(1, Relaxed);
+                return;
+            }
+            crate::filter::Inbound::Reply => {
+                c.admitted_replies.fetch_add(1, Relaxed);
+            }
+            _ => {}
+        }
+        c.received.fetch_add(1, Relaxed);
+        let _ = tun.write(packet).await;
+    }
+
     /// What the mesh is doing now.
     pub async fn status(&self) -> MeshStatus {
         let mut status = self.snapshot();
@@ -421,6 +674,11 @@ impl Mesh {
             ("dropped_closed_in", &c.dropped_closed_in),
             ("admitted_replies", &c.admitted_replies),
             ("gossip_sent", &c.gossip_sent),
+            ("replica_out", &c.replica_out),
+            ("replica_in", &c.replica_in),
+            ("replica_egress", &c.replica_egress),
+            ("dropped_replica_spoofed", &c.dropped_replica_spoofed),
+            ("dropped_replica_closed", &c.dropped_replica_closed),
             ("probes_sent", &c.probes_sent),
             ("probes_failed", &c.probes_failed),
             ("probes_answered", &c.probes_answered),
@@ -700,13 +958,24 @@ impl Mesh {
                     continue;
                 }
                 match view.list.member_for(dst) {
-                    Some(m) if m.slot != view.own_slot => EndpointId::from_str(&m.endpoint_id).ok(),
-                    _ => None,
+                    Some(m) if m.slot != view.own_slot => {
+                        EndpointId::from_str(&m.endpoint_id).ok().map(Some)
+                    }
+                    Some(_) => Some(None),
+                    None => None,
                 }
             };
-            let Some(target) = target else {
-                c.dropped_no_member.fetch_add(1, Relaxed);
-                continue;
+            let target = match target {
+                Some(Some(target)) => target,
+                Some(None) => {
+                    self.inner.filter.note_outbound(packet, Instant::now());
+                    self.deliver_local(packet, dst, Origin::Host).await;
+                    continue;
+                }
+                None => {
+                    c.dropped_no_member.fetch_add(1, Relaxed);
+                    continue;
+                }
             };
             self.inner.filter.note_outbound(packet, Instant::now());
             self.send(target, packet);
@@ -872,6 +1141,11 @@ impl Mesh {
             };
             match verdict {
                 Verdict::Deliver => {
+                    let dst = ipv6_addrs(&packet).map(|(_, d)| d);
+                    if let Some(dst) = dst.filter(|d| self.replica(*d).is_some()) {
+                        self.deliver_local(&packet, dst, Origin::Member).await;
+                        continue;
+                    }
                     match self.inner.filter.inbound(&packet, &open, Instant::now()) {
                         crate::filter::Inbound::Closed => {
                             c.dropped_closed_in.fetch_add(1, Relaxed);

@@ -18,10 +18,23 @@
 //!   carries, each stop on its own, never holding up a start (§7.3).
 //! - **Refused** by the machine's policy: not run, and reported with why.
 //!
-//! Readiness is checked from the machine, inside the container's network
-//! namespace: ready after one pass of its check, not ready after three
-//! failures in a row, and at once on an exit. A replica with no check is
-//! ready while its process runs; the instance applies `min_ready` itself.
+//! Readiness is checked from the machine: ready after one pass of its
+//! check, not ready after three failures in a row, and at once on an exit. A
+//! replica with no check is ready while its process runs; the instance
+//! applies `min_ready` itself.
+//!
+//! **Its network** (network.md §6.1, §6.2): on a machine on a private
+//! network, each replica gets its own device inside its container's network
+//! namespace before the container starts ([`ContainerRuntime::network_namespace`],
+//! grund-net `Tun::create_in`), with its address
+//! (`grund_net::membership::replica_address`), and the mesh carries its
+//! packets, through its filter and to the internet through its egress. Its
+//! `/etc/resolv.conf` names the machine's stub resolver. Its check then runs
+//! against that address from the machine, the path its peers take, so ready
+//! means reachable. A replica that answers only on IPv4 inside its namespace
+//! is not ready, and says so. Where the network is not up, a replica runs
+//! with loopback only and is checked inside its namespace. What it reaches
+//! and what reaches it is published for the gate ([`Shared::endpoints`]).
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -30,9 +43,16 @@ use std::{
     time::{Duration, Instant},
 };
 
+use std::net::{IpAddr, Ipv6Addr};
+
+use grund_net::{
+    membership::{MembershipList, replica_address},
+    mesh::Mesh,
+    tun::Tun,
+};
 use grund_proto::grund::agent::v1::{
     DesiredState, GetReplicaSecretsRequest, GetReplicaSecretsResponse, Replica, ReplicaObserved,
-    ReplicaObservedState, replica_check,
+    ReplicaObservedState, ReplicaState, replica_check,
 };
 use sha2::{Digest, Sha256};
 use tokio::{sync::Notify, task::JoinHandle};
@@ -69,9 +89,69 @@ pub fn backoff(exits: u32) -> Duration {
     Duration::from_secs(seconds).min(BACKOFF_CAP)
 }
 
+/// The name of a replica's device inside its namespace.
+pub const REPLICA_TUN: &str = "grund0";
+
+/// One of this machine's replicas, as the gate reaches it (grund-docs
+/// design/traffic.md): an ordinary TCP connect from the machine to
+/// `[address]:port`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplicaEndpoint {
+    pub replica_id: String,
+    pub app: String,
+    /// Its address on the private network.
+    pub address: Ipv6Addr,
+    /// The ports its release declares.
+    pub ports: Vec<EndpointPort>,
+    /// The agent's check passes (apps.md §8.1).
+    pub ready: bool,
+    /// Its document marks it draining: no new requests.
+    pub draining: bool,
+}
+
+/// One declared port of a [`ReplicaEndpoint`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EndpointPort {
+    pub name: String,
+    pub port: u16,
+    /// `http`, `h2c` or `tcp`.
+    pub protocol: String,
+}
+
+/// The replicas that have an address, as of the apps loop's last pass.
+#[derive(Debug)]
+pub struct Endpoints(tokio::sync::watch::Sender<Vec<ReplicaEndpoint>>);
+
+impl Default for Endpoints {
+    fn default() -> Self {
+        Self(tokio::sync::watch::Sender::new(Vec::new()))
+    }
+}
+
+/// What the apps loop needs of the private network to give its replicas
+/// addresses: the list in force, the mesh once it runs, and this machine's
+/// key.
+#[derive(Clone)]
+pub struct NetworkAccess {
+    pub lists: tokio::sync::watch::Receiver<Option<MembershipList>>,
+    pub mesh: Arc<std::sync::OnceLock<Mesh>>,
+    /// This machine's endpoint id, to find its own entry in the list.
+    pub own: String,
+}
+
+#[derive(Clone)]
+struct Net {
+    mesh: Mesh,
+    prefix: Ipv6Addr,
+    slot: u16,
+    resolver: Ipv6Addr,
+}
+
 /// What the apps loop and the agent's main loop share.
 #[derive(Default)]
 pub struct Shared {
+    /// The replicas with an address, for the gate.
+    pub endpoints: Endpoints,
     /// The document applied last.
     pub desired: Mutex<Option<DesiredState>>,
     /// The replicas as last observed, for the next status report.
@@ -104,6 +184,27 @@ struct Tracked {
     last_exit_code: i32,
     failed: Option<(String, Instant)>,
     readiness: Readiness,
+}
+
+impl Shared {
+    /// The replicas with an address, as of the last pass, and every change.
+    pub fn endpoints(&self) -> tokio::sync::watch::Receiver<Vec<ReplicaEndpoint>> {
+        self.endpoints.0.subscribe()
+    }
+}
+
+fn container_hash(replica: &Replica, net: Option<&Net>) -> String {
+    let base = spec_hash(replica);
+    match net {
+        None => base,
+        Some(net) => {
+            let mut h = Sha256::new();
+            h.update(base.as_bytes());
+            h.update(b"\nnetwork-v1 ");
+            h.update(net.resolver.to_string().as_bytes());
+            hex::encode(h.finalize())
+        }
+    }
 }
 
 /// The hash of everything that makes a container this container, secret
@@ -163,7 +264,11 @@ pub fn probe_of(replica: &Replica) -> Option<(Probe, Duration, Duration)> {
     Some((probe, interval, timeout))
 }
 
-fn spec(replica: &Replica, secret_values: &[secrets::Cached]) -> Result<ContainerSpec, String> {
+fn spec(
+    replica: &Replica,
+    secret_values: &[secrets::Cached],
+    net: Option<&Net>,
+) -> Result<ContainerSpec, String> {
     let image = replica.image.as_option().ok_or("no image")?;
     let reference = grund_domain::app::spec::ImageReference::parse(&image.reference)
         .map_err(|e| e.to_string())?;
@@ -208,7 +313,8 @@ fn spec(replica: &Replica, secret_values: &[secrets::Cached]) -> Result<Containe
                 .unwrap_or(30),
         )),
         labels,
-        spec_hash: spec_hash(replica),
+        spec_hash: container_hash(replica, net),
+        resolv_conf: net.map(|n| format!("nameserver {}\n", n.resolver)),
     })
 }
 
@@ -226,6 +332,8 @@ pub struct Apps<C> {
     stops: HashMap<String, JoinHandle<()>>,
     secrets: secrets::Values,
     last_reports: Vec<ReplicaObserved>,
+    network: Option<NetworkAccess>,
+    attached: HashMap<String, Ipv6Addr>,
 }
 
 impl<C: ContainerRuntime + 'static> Apps<C> {
@@ -252,6 +360,62 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
             stops: HashMap::new(),
             secrets,
             last_reports: Vec::new(),
+            network: None,
+            attached: HashMap::new(),
+        }
+    }
+
+    /// Gives replicas addresses on the private network once it is up.
+    pub fn with_network(mut self, access: NetworkAccess) -> Self {
+        self.network = Some(access);
+        self
+    }
+
+    fn net(&self) -> Option<Net> {
+        let access = self.network.as_ref()?;
+        let mesh = access.mesh.get()?.clone();
+        let list = access.lists.borrow();
+        let list = list.as_ref()?;
+        let own = list.members.iter().find(|m| m.endpoint_id == access.own)?;
+        Some(Net {
+            mesh,
+            prefix: list.prefix,
+            slot: own.slot,
+            resolver: grund_net::dns::resolver_address(list, own.slot),
+        })
+    }
+
+    async fn attach(&mut self, id: &str, net: &Net) -> Result<Option<Ipv6Addr>, String> {
+        if let Some(address) = self.attached.get(id) {
+            return Ok(Some(*address));
+        }
+        let Some(netns) = self
+            .runtime
+            .network_namespace(id)
+            .await
+            .map_err(|e| format!("could not make its network namespace: {e:#}"))?
+        else {
+            return Ok(None);
+        };
+        let address = replica_address(net.prefix, net.slot, id);
+        let tun =
+            tokio::task::spawn_blocking(move || Tun::create_in(&netns, REPLICA_TUN, address, 48))
+                .await
+                .map_err(|e| format!("could not give it a network: {e}"))?
+                .map_err(|e| format!("could not give it a network: {e:#}"))?;
+        net.mesh.attach_replica(address, tun, |tun| {
+            Box::new(grund_net::egress::Userspace::start(tun))
+        });
+        tracing::info!(replica = %id, %address, "gave a replica its address");
+        self.attached.insert(id.to_string(), address);
+        Ok(Some(address))
+    }
+
+    fn detach(&mut self, id: &str) {
+        if let Some(address) = self.attached.remove(id)
+            && let Some(net) = self.net()
+        {
+            net.mesh.detach_replica(address);
         }
     }
 
@@ -320,6 +484,7 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
         if self.stops.get(&status.id).is_some_and(|h| !h.is_finished()) {
             return;
         }
+        self.detach(&status.id.clone());
         let runtime = self.runtime.clone();
         let (id, signal, grace) = (
             status.id.clone(),
@@ -375,6 +540,7 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
             return Ok(());
         }
         let containers = self.runtime.list().await?;
+        let net = self.net();
         let wanted_ids: HashSet<&str> = wanted.iter().map(|r| r.replica_id.as_str()).collect();
         for container in &containers {
             if !wanted_ids.contains(container.id.as_str()) {
@@ -430,7 +596,7 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                 );
                 continue;
             }
-            let hash = spec_hash(replica);
+            let hash = container_hash(replica, net.as_ref());
             if let Some(container) = existing
                 && container.spec_hash != hash
             {
@@ -445,9 +611,15 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                 );
                 continue;
             }
+            if existing.is_some()
+                && let Some(net) = &net
+                && let Err(reason) = self.attach(&id, net).await
+            {
+                tracing::warn!(replica = %id, %reason, "could not give a running replica its address again");
+            }
             match existing.map(|c| &c.state) {
                 None => {
-                    let state = self.start(replica, now).await;
+                    let state = self.start(replica, now, net.as_ref()).await;
                     reports.insert(id.clone(), state);
                 }
                 Some(TaskState::Created) => {
@@ -491,7 +663,8 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                                 .is_none_or(|at| now.duration_since(at) >= interval);
                             if due {
                                 tracked.readiness.last_probe = Some(now);
-                                probes.push((id.clone(), probe, timeout));
+                                let address = self.attached.get(&id).copied();
+                                probes.push((id.clone(), probe, timeout, address));
                             }
                         }
                     }
@@ -538,10 +711,27 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
         let results = futures_join(
             probes
                 .into_iter()
-                .map(|(id, probe, timeout)| {
+                .map(|(id, probe, timeout, address)| {
                     let runtime = self.runtime.clone();
                     async move {
-                        let result = runtime.probe(&id, &probe, timeout).await;
+                        let result = match address {
+                            None => runtime.probe(&id, &probe, timeout).await,
+                            Some(address) => {
+                                let result =
+                                    crate::probe::run_at(IpAddr::V6(address), probe.clone(), timeout)
+                                        .await;
+                                match result {
+                                    Err(reason)
+                                        if runtime.probe(&id, &probe, timeout).await.is_ok() =>
+                                    {
+                                        Err(format!(
+                                            "it answers only on IPv4 inside its container ({reason} on its address {address}); grund's private network is IPv6: make it listen on [::]"
+                                        ))
+                                    }
+                                    other => other,
+                                }
+                            }
+                        };
                         (id, result)
                     }
                 })
@@ -601,11 +791,57 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                 }
             }
         }
+        let known: Vec<String> = self.attached.keys().cloned().collect();
+        for id in known {
+            if !wanted_ids.contains(id.as_str()) && !containers.iter().any(|c| c.id == id) {
+                self.detach(&id);
+            }
+        }
+        let endpoints: Vec<ReplicaEndpoint> = wanted
+            .iter()
+            .filter_map(|replica| {
+                let address = *self.attached.get(&replica.replica_id)?;
+                Some(ReplicaEndpoint {
+                    replica_id: replica.replica_id.clone(),
+                    app: replica.app.clone(),
+                    address,
+                    ports: replica
+                        .ports
+                        .iter()
+                        .filter_map(|p| {
+                            Some(EndpointPort {
+                                name: p.name.clone(),
+                                port: u16::try_from(p.port).ok()?,
+                                protocol: p.protocol.clone(),
+                            })
+                        })
+                        .collect(),
+                    ready: self
+                        .tracked
+                        .get(&replica.replica_id)
+                        .is_some_and(|t| t.readiness.ready),
+                    draining: replica.state.as_known()
+                        == Some(ReplicaState::REPLICA_STATE_DRAINING),
+                })
+            })
+            .collect();
+        self.shared.endpoints.0.send_if_modified(|current| {
+            let changed = *current != endpoints;
+            if changed {
+                *current = endpoints;
+            }
+            changed
+        });
         self.publish(reports.into_values().collect(), refusals);
         Ok(())
     }
 
-    async fn start(&mut self, replica: &Replica, now: Instant) -> ReplicaObserved {
+    async fn start(
+        &mut self,
+        replica: &Replica,
+        now: Instant,
+        net: Option<&Net>,
+    ) -> ReplicaObserved {
         let id = replica.replica_id.clone();
         let Some(image) = replica.image.as_option() else {
             return report(
@@ -634,7 +870,7 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                 );
             }
         };
-        let spec = match spec(replica, &values) {
+        let spec = match spec(replica, &values, net) {
             Ok(spec) => spec,
             Err(reason) => {
                 return report(
@@ -692,6 +928,21 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                     ReplicaObservedState::REPLICA_OBSERVED_STATE_PULLING,
                     "",
                 );
+            }
+        }
+        let mut spec = spec;
+        if let Some(net) = net {
+            match self.attach(&id, net).await {
+                Ok(Some(_)) => {}
+                Ok(None) => spec.resolv_conf = None,
+                Err(reason) => {
+                    self.tracked.entry(id).or_default().failed = Some((reason.clone(), now));
+                    return report(
+                        replica,
+                        ReplicaObservedState::REPLICA_OBSERVED_STATE_FAILED,
+                        &reason,
+                    );
+                }
             }
         }
         match self.runtime.create(&spec).await {

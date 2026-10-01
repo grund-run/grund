@@ -10,7 +10,7 @@
 //! on `/run/grund/containerd.sock`), never another runtime's on the same
 //! machine.
 
-use std::{collections::BTreeMap, future::Future, net::IpAddr, time::Duration};
+use std::{collections::BTreeMap, future::Future, net::IpAddr, path::PathBuf, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
@@ -60,6 +60,11 @@ pub struct ContainerSpec {
     /// The agent's hash of everything above but `env`'s secret values; a
     /// container whose hash differs is a different container.
     pub spec_hash: String,
+    /// The container's `/etc/resolv.conf`, when the agent gave it a
+    /// network: the machine's stub resolver (network.md §6.2). Read-only to
+    /// the container. `None`: the image's own file, if any.
+    #[serde(default)]
+    pub resolv_conf: Option<String>,
 }
 
 /// Where a container's process is.
@@ -132,8 +137,22 @@ pub trait ContainerRuntime: Send + Sync {
     /// this machine's architecture. Present already: nothing.
     fn pull(&self, image: &ImageRef) -> impl Future<Output = anyhow::Result<()>> + Send;
 
+    /// Makes container `id`'s own network namespace if it has none, and
+    /// returns where it is bound, so the agent can give it its device on the
+    /// private network before the container is created; the container is
+    /// then created in that namespace. `None`: this runtime has no namespace
+    /// to give, and its containers get no network. Idempotent.
+    fn network_namespace(
+        &self,
+        id: &str,
+    ) -> impl Future<Output = anyhow::Result<Option<PathBuf>>> + Send {
+        let _ = id;
+        async { Ok(None) }
+    }
+
     /// Creates the container (and its own network namespace with loopback
-    /// up and nothing else) and starts its process. A container of that id
+    /// up, if [`ContainerRuntime::network_namespace`] made none) and starts
+    /// its process. A container of that id
     /// already existing is an error: the agent removes it first.
     fn create(&self, spec: &ContainerSpec) -> impl Future<Output = anyhow::Result<()>> + Send;
 

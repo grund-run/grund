@@ -218,6 +218,9 @@ pub struct NetOptions {
     /// Where the list in force is published once verified: the gate and the
     /// apps loop read members, and their replicas, from it.
     pub lists: Option<watch::Sender<Option<MembershipList>>>,
+    /// Where the mesh is handed out once it exists: the apps loop attaches
+    /// replicas to it.
+    pub mesh: Option<Arc<std::sync::OnceLock<Mesh>>>,
 }
 
 pub(crate) async fn run(
@@ -248,6 +251,9 @@ pub(crate) async fn run(
             relays: relays.clone(),
         },
     );
+    if let Some(handle) = &options.mesh {
+        let _ = handle.set(mesh.clone());
+    }
     let config = NetConfig {
         relays,
         relay_roots: relay_roots()?,
@@ -557,6 +563,9 @@ async fn report(mesh: &Mesh, counters: &Counters, lists: &Lists, data_dir: &std:
             "network_changes": counters.network_changes.load(Relaxed),
             "relay_failovers": counters.relay_failovers.load(Relaxed),
             "lists_from_members": lists.from_members(),
+            "replicas": mesh.egress_counters().into_iter().map(|(address, egress)| {
+                serde_json::json!({ "address": address, "egress": egress })
+            }).collect::<Vec<_>>(),
             "host_resolver": *counters.host_resolver.lock().expect("host resolver lock"),
         });
         if std::fs::write(&temporary, status.to_string()).is_ok() {

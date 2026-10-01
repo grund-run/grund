@@ -14,6 +14,7 @@ pub mod gate;
 pub mod join;
 pub mod net;
 pub mod policy;
+pub mod probe;
 pub mod resolved;
 pub mod runtime;
 pub mod secrets;

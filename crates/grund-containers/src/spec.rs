@@ -3,12 +3,13 @@
 //! container (its capability set, masked and read-only paths, mounts),
 //! `noNewPrivileges`, a cgroup of its own under `/grund` with the replica's
 //! memory, CPU and pids limits, and its own namespaces, the network one
-//! being the runtime's per-container namespace (loopback only). Never
-//! privileged, no host namespace, no device and no host path.
+//! being the runtime's per-container namespace (with the agent's device on
+//! the private network in it, when it gave one). Never privileged, no host
+//! namespace, no device and no host path; the one file from the host is the
+//! agent's `/etc/resolv.conf`, read-only, added beside this spec.
 //!
 //! What it leaves out, for now: a seccomp profile, user namespaces,
-//! AppArmor/SELinux labels, `/etc/hosts` and `/etc/resolv.conf` (the
-//! container has no network to resolve on).
+//! AppArmor/SELinux labels and `/etc/hosts`.
 
 use std::path::Path;
 
@@ -349,6 +350,7 @@ mod tests {
             stop_grace: Duration::from_secs(10),
             labels: BTreeMap::new(),
             spec_hash: "h".into(),
+            resolv_conf: None,
         }
     }
 

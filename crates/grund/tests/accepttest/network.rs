@@ -8,12 +8,13 @@ use std::{
 use serde_json::{Value, json};
 
 use crate::accepttest::fixtures::{
-    Given, Then, When,
+    FakeRegistry, Given, Then, When,
     netlab::{Lab, PUBLIC_URL, RELAY_URL},
     random_hex, testcase_in_lab,
 };
 
 const MACHINES: &str = "/grund.machine.v1.MachineService";
+const APPS: &str = "/grund.app.v1.AppService";
 
 struct Net {
     lab: Arc<Lab>,
@@ -248,26 +249,7 @@ impl Net {
                 .is_some_and(|r| !r.is_empty()),
             "the machine is told grund's relays: {record}"
         );
-        self.lab.spawn(
-            node,
-            &[
-                env!("CARGO_BIN_EXE_grund"),
-                "agent",
-                "--vm-runtime",
-                "simulated",
-                "--data-dir",
-                &dir.to_string_lossy(),
-            ],
-            &[
-                &[
-                    ("SSL_CERT_FILE", ca.as_str()),
-                    ("RUST_LOG", "grund_agent=debug,grund_net=debug,info"),
-                ][..],
-                env,
-            ]
-            .concat(),
-            &format!("agent-{node}.log"),
-        )?;
+        self.spawn_agent(node, &dir, &ca, env)?;
         let machine = Machine {
             node,
             name: name.to_string(),
@@ -288,6 +270,48 @@ impl Net {
         self.lab
             .use_resolver(node, &machine.resolver().to_string())?;
         Ok(machine)
+    }
+
+    fn spawn_agent(
+        &self,
+        node: &'static str,
+        dir: &std::path::Path,
+        ca: &str,
+        env: &[(&str, &str)],
+    ) -> anyhow::Result<()> {
+        self.lab.spawn(
+            node,
+            &[
+                env!("CARGO_BIN_EXE_grund"),
+                "agent",
+                "--vm-runtime",
+                "simulated",
+                "--app-runtime",
+                "simulated",
+                "--data-dir",
+                &dir.to_string_lossy(),
+            ],
+            &[
+                &[
+                    ("SSL_CERT_FILE", ca),
+                    ("RUST_LOG", "grund_agent=debug,grund_net=debug,info"),
+                ][..],
+                env,
+            ]
+            .concat(),
+            &format!("agent-{node}.log"),
+        )?;
+        Ok(())
+    }
+
+    fn restart_agent(&self, machine: &Machine) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.lab.stop(&format!("agent-{}.log", machine.node)),
+            "{}'s agent was not running",
+            machine.node
+        );
+        let ca = self.lab.ca.to_string_lossy().into_owned();
+        self.spawn_agent(machine.node, &machine.dir, &ca, &[])
     }
 
     fn log(&self, name: &str) -> String {
@@ -1534,5 +1558,653 @@ async fn a_revocation_reaches_a_member_that_cannot_reach_grund_through_the_membe
         "c, cut off from grund, dropped b {heard:?} after the revocation ({:?} in all)",
         revoked_at.elapsed()
     );
+    Ok(())
+}
+
+async fn a_lab_with_registry() -> anyhow::Result<Option<(Net, FakeRegistry)>> {
+    let registry = FakeRegistry::start().await?;
+    let Some(lab) = Lab::start().await? else {
+        return Ok(None);
+    };
+    lab.bridge_into("lh", &registry.host, &registry.host, "registry")?;
+    let host = registry.host.clone();
+    let Some(net) = a_lab_with(lab, &[("GRUND_INSECURE_REGISTRIES", &host)]).await? else {
+        return Ok(None);
+    };
+    Ok(Some((net, registry)))
+}
+
+impl Net {
+    async fn apps(&self, procedure: &str, body: Value) -> anyhow::Result<Value> {
+        self.when
+            .calling(&format!("{APPS}/{procedure}"), &body.to_string())
+            .await?;
+        let answer = self.then.json()?;
+        self.then
+            .status(200)
+            .map_err(|e| anyhow::anyhow!("{procedure}: {e}: {answer}"))?;
+        Ok(answer)
+    }
+
+    async fn an_app(
+        &self,
+        registry: &FakeRegistry,
+        name: &str,
+        machines: &[&str],
+        copies: u32,
+        declared: &[u16],
+        listen: &[u16],
+    ) -> anyhow::Result<Value> {
+        self.an_app_with(registry, name, machines, copies, declared, listen, &[])
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn deploy(
+        &self,
+        registry: &FakeRegistry,
+        name: &str,
+        machines: &[&str],
+        copies: u32,
+        declared: &[u16],
+        listen: &[u16],
+        env: &[(&str, &str)],
+    ) -> anyhow::Result<()> {
+        registry.publish(&format!("acme/{name}"), "1");
+        self.apps(
+            "CreateApp",
+            json!({"organisation": self.owner, "name": name, "settings": {
+                "copies": copies,
+                "machines": machines,
+                "rollout": {"minReadySeconds": 1, "readyDeadlineSeconds": 30, "drainSeconds": 1},
+                "rescheduleAfterSeconds": 60,
+            }}),
+        )
+        .await?;
+        let listen: Vec<String> = listen.iter().map(u16::to_string).collect();
+        let mut env_list =
+            vec![json!({"name": "GRUND_SIMULATE_LISTEN", "value": listen.join(",")})];
+        env_list.extend(env.iter().map(|(n, v)| json!({"name": n, "value": v})));
+        let env = env_list;
+        let ports: Vec<Value> = declared
+            .iter()
+            .enumerate()
+            .map(|(i, p)| json!({"name": format!("p{i}"), "port": p}))
+            .collect();
+        self.apps(
+            "Deploy",
+            json!({"organisation": self.owner, "name": name, "spec": {
+                "image": registry.image(&format!("acme/{name}"), "1"),
+                "ports": ports,
+                "resources": {"memoryMib": "64", "cpuMillis": 100},
+                "env": env,
+                "check": {"httpPath": "/", "intervalMs": 1000, "timeoutMs": 800},
+                "stop": {"graceSeconds": 1},
+            }}),
+        )
+        .await?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn an_app_with(
+        &self,
+        registry: &FakeRegistry,
+        name: &str,
+        machines: &[&str],
+        copies: u32,
+        declared: &[u16],
+        listen: &[u16],
+        env: &[(&str, &str)],
+    ) -> anyhow::Result<Value> {
+        self.deploy(registry, name, machines, copies, declared, listen, env)
+            .await?;
+        let started = Instant::now();
+        loop {
+            let last = self
+                .apps("GetApp", json!({"organisation": self.owner, "name": name}))
+                .await?["app"]
+                .clone();
+            let ready = last["replicas"].as_array().is_some_and(|r| {
+                r.iter().filter(|r| r["observed"]["ready"] == true).count() == copies as usize
+            });
+            if ready {
+                return Ok(last);
+            }
+            anyhow::ensure!(
+                started.elapsed() < Duration::from_secs(60),
+                "{name} never had {copies} ready copies: {last:#}"
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+
+    async fn fetch(&self, from: &Machine, url: &str) -> Option<String> {
+        let out = self
+            .lab
+            .run_async(from.node, &["curl", "-sS", "-g", "-m", "5", url])
+            .await
+            .ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    async fn in_replica(
+        &self,
+        on: &Machine,
+        id: &str,
+        args: &[&str],
+    ) -> anyhow::Result<std::process::Output> {
+        let netns = on.dir.join("simulated-containers/netns").join(id);
+        let enter = format!("--net={}", netns.display());
+        let mut all = vec!["nsenter", enter.as_str()];
+        all.extend_from_slice(args);
+        self.lab.run_async(on.node, &all).await
+    }
+}
+
+fn replica_ids(app: &Value) -> Vec<(String, String)> {
+    app["replicas"]
+        .as_array()
+        .map(|r| {
+            r.iter()
+                .map(|r| {
+                    (
+                        r["replicaId"].as_str().unwrap_or_default().to_string(),
+                        r["machineName"].as_str().unwrap_or_default().to_string(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn an_app_on_one_machine_is_reached_by_name_from_a_member_behind_another_nat_on_its_declared_port_only()
+-> anyhow::Result<()> {
+    let Some((net, registry)) = a_lab_with_registry().await? else {
+        return Ok(());
+    };
+    let a = net.join("a", "a").await?;
+    let b = net.join("b", "b").await?;
+    let app = net
+        .an_app(&registry, "shop", &["b"], 1, &[8080], &[8080, 9090])
+        .await?;
+    let (replica, machine) = replica_ids(&app)[0].clone();
+    anyhow::ensure!(machine == "b", "{app:#}");
+    let address = grund_net::membership::replica_address(b.address(), b.slot(), &replica);
+
+    let by_name = eventually(Duration::from_secs(20), || async {
+        net.fetch(&a, "http://shop.grund.internal:8080/")
+            .await
+            .is_some_and(|body| body == format!("simulated {replica}"))
+    })
+    .await;
+    anyhow::ensure!(
+        by_name.is_some(),
+        "a never reached shop by name: {}\n{}",
+        a.status(),
+        b.status()
+    );
+    let by_address = net.fetch(&a, &format!("http://[{address}]:8080/")).await;
+    anyhow::ensure!(
+        by_address.as_deref() == Some(format!("simulated {replica}").as_str()),
+        "by address: {by_address:?}"
+    );
+    let undeclared = net.fetch(&a, &format!("http://[{address}]:9090/")).await;
+    anyhow::ensure!(
+        undeclared.is_none(),
+        "an undeclared port answered: {undeclared:?}"
+    );
+    let inside = net
+        .in_replica(
+            &b,
+            &replica,
+            &["curl", "-sS", "-m", "5", "http://[::1]:9090/"],
+        )
+        .await?;
+    anyhow::ensure!(
+        inside.status.success(),
+        "9090 does listen inside: {inside:?}"
+    );
+    anyhow::ensure!(
+        b.counter("dropped_replica_closed") > 0,
+        "the undeclared port's drops are counted: {}",
+        b.status()
+    );
+
+    let egress = net
+        .in_replica(
+            &b,
+            &replica,
+            &[
+                "curl",
+                "-sS",
+                "-k",
+                "-m",
+                "10",
+                "-o",
+                "/dev/null",
+                "-w",
+                "%{http_code}",
+                &format!("{PUBLIC_URL}/health/live"),
+            ],
+        )
+        .await?;
+    anyhow::ensure!(
+        egress.status.success() && String::from_utf8_lossy(&egress.stdout) == "200",
+        "the replica reaches grund over IPv4 through its egress: {egress:?}\n{}",
+        b.status()
+    );
+    net.lab.spawn(
+        "lh",
+        &[
+            "python3",
+            "-c",
+            "import socket\ns=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)\ns.bind(('198.51.100.1',5300))\nwhile True:\n d,a=s.recvfrom(2048)\n s.sendto(b'echo '+d,a)",
+        ],
+        &[],
+        "udp-echo.log",
+    )?;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let udp = net
+        .in_replica(
+            &b,
+            &replica,
+            &[
+                "python3",
+                "-c",
+                "import socket\ns=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)\ns.settimeout(5)\ns.sendto(b'hi',('198.51.100.1',5300))\nprint(s.recvfrom(2048)[0].decode(),end='')",
+            ],
+        )
+        .await?;
+    anyhow::ensure!(
+        String::from_utf8_lossy(&udp.stdout) == "echo hi",
+        "a UDP round trip from the replica to the internet: {udp:?}\n{}",
+        b.status()
+    );
+    eprintln!(
+        "by name after {by_name:?}; {address} answers on 8080 only; egress to {PUBLIC_URL} 200, UDP echoed"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn replicas_reach_each_other_across_machines_and_by_name_another_account_reaches_none_and_teardown_is_clean()
+-> anyhow::Result<()> {
+    let Some((net, registry)) = a_lab_with_registry().await? else {
+        return Ok(());
+    };
+    let a = net.join("a", "a").await?;
+    let b = net.join("b", "b").await?;
+    let app = net
+        .an_app(&registry, "shop", &["a", "b"], 2, &[8080], &[8080, 9090])
+        .await?;
+    let ids = replica_ids(&app);
+    let on = |machine: &str| {
+        ids.iter()
+            .find(|(_, m)| m == machine)
+            .map(|(id, _)| id.clone())
+            .unwrap_or_default()
+    };
+    let (on_a, on_b) = (on("a"), on("b"));
+    anyhow::ensure!(
+        !on_a.is_empty() && !on_b.is_empty(),
+        "one copy on each: {ids:?}"
+    );
+    let address_b = grund_net::membership::replica_address(b.address(), b.slot(), &on_b);
+    let address_a = grund_net::membership::replica_address(a.address(), a.slot(), &on_a);
+
+    let across = eventually(Duration::from_secs(20), || async {
+        net.in_replica(
+            &a,
+            &on_a,
+            &[
+                "curl",
+                "-sS",
+                "-g",
+                "-m",
+                "5",
+                &format!("http://[{address_b}]:8080/"),
+            ],
+        )
+        .await
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout) == format!("simulated {on_b}"))
+    })
+    .await;
+    anyhow::ensure!(
+        across.is_some(),
+        "the copy on a never reached the copy on b: {}\n{}",
+        a.status(),
+        b.status()
+    );
+    let undeclared = net
+        .in_replica(
+            &a,
+            &on_a,
+            &[
+                "curl",
+                "-sS",
+                "-g",
+                "-m",
+                "3",
+                &format!("http://[{address_b}]:9090/"),
+            ],
+        )
+        .await?;
+    anyhow::ensure!(
+        !undeclared.status.success(),
+        "a copy reached another's undeclared port: {undeclared:?}"
+    );
+
+    let stub = a.resolver().to_string();
+    let dig = net
+        .in_replica(
+            &a,
+            &on_a,
+            &[
+                "dig",
+                "+short",
+                "+time=2",
+                "+tries=2",
+                "AAAA",
+                "shop.grund.internal",
+                &format!("@{stub}"),
+            ],
+        )
+        .await?;
+    let answers = String::from_utf8_lossy(&dig.stdout).into_owned();
+    anyhow::ensure!(
+        answers.contains(&address_a.to_string()) && answers.contains(&address_b.to_string()),
+        "inside a copy, shop.grund.internal names both ready copies: {answers:?} {dig:?}"
+    );
+    let public = net
+        .in_replica(
+            &a,
+            &on_a,
+            &[
+                "dig",
+                "+short",
+                "+time=2",
+                "+tries=2",
+                "A",
+                "b.machines.grund.internal",
+                &format!("@{stub}"),
+            ],
+        )
+        .await?;
+    anyhow::ensure!(
+        public.status.success(),
+        "the stub answers a copy: {public:?}"
+    );
+
+    let (other_given, other_when, other_then) = net.when.testcase.another_browser();
+    let intruder = other_given.a_signed_in_account().await?.username;
+    let token = net
+        .join_token(&other_when, &other_then, &intruder, "c")
+        .await?;
+    let c = net.join_with("c", "c", &token).await?;
+    let foreign = net.fetch(&c, &format!("http://[{address_b}]:8080/")).await;
+    anyhow::ensure!(
+        foreign.is_none(),
+        "another account's machine reached a copy: {foreign:?}"
+    );
+    let out = net
+        .lab
+        .run_async("c", &["getent", "ahostsv6", "shop.grund.internal"])
+        .await?;
+    anyhow::ensure!(
+        !out.status.success(),
+        "shop resolves in another account: {out:?}"
+    );
+
+    net.apps(
+        "DeleteApp",
+        json!({"organisation": net.owner, "name": "shop"}),
+    )
+    .await?;
+    let gone = eventually(Duration::from_secs(30), || async {
+        [&a, &b].iter().all(|m| {
+            m.status()["replicas"]
+                .as_array()
+                .is_some_and(|r| r.is_empty())
+                && std::fs::read_dir(m.dir.join("simulated-containers/netns"))
+                    .map(|d| d.count() == 0)
+                    .unwrap_or(true)
+        })
+    })
+    .await;
+    anyhow::ensure!(
+        gone.is_some(),
+        "the copies left something behind: {}\n{}",
+        a.status(),
+        b.status()
+    );
+    let named = eventually(Duration::from_secs(10), || async {
+        !net.lab
+            .succeeds("a", &["getent", "ahostsv6", "shop.grund.internal"])
+            .await
+    })
+    .await;
+    anyhow::ensure!(
+        named.is_some(),
+        "shop still resolves after its app is deleted"
+    );
+    let after = net.fetch(&a, &format!("http://[{address_b}]:8080/")).await;
+    anyhow::ensure!(after.is_none(), "a deleted copy still answers: {after:?}");
+    eprintln!(
+        "copy to copy after {across:?}; teardown clean after {gone:?}, name gone after {named:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_replica_keeps_its_address_across_an_agent_restart_and_one_listening_on_ipv4_only_is_not_ready()
+-> anyhow::Result<()> {
+    let Some((net, registry)) = a_lab_with_registry().await? else {
+        return Ok(());
+    };
+    let a = net.join("a", "a").await?;
+    let b = net.join("b", "b").await?;
+    let app = net
+        .an_app(&registry, "shop", &["b"], 1, &[8080], &[8080])
+        .await?;
+    let (replica, _) = replica_ids(&app)[0].clone();
+    let address = grund_net::membership::replica_address(b.address(), b.slot(), &replica);
+    let body = format!("simulated {replica}");
+    let reached = || async {
+        net.fetch(&a, &format!("http://[{address}]:8080/"))
+            .await
+            .as_deref()
+            == Some(body.as_str())
+    };
+    anyhow::ensure!(
+        eventually(Duration::from_secs(20), reached).await.is_some(),
+        "never reached: {}",
+        b.status()
+    );
+
+    net.restart_agent(&b)?;
+    let back = eventually(Duration::from_secs(30), reached).await;
+    anyhow::ensure!(
+        back.is_some(),
+        "not reachable after b's agent restarted: {}",
+        b.status()
+    );
+    let restarts = net
+        .apps("GetApp", json!({"organisation": net.owner, "name": "shop"}))
+        .await?["app"]["replicas"][0]["replicaId"]
+        .clone();
+    anyhow::ensure!(
+        restarts == json!(replica),
+        "the same replica, not a new one: {restarts}"
+    );
+
+    net.deploy(
+        &registry,
+        "legacy",
+        &["b"],
+        1,
+        &[8080],
+        &[8080],
+        &[("GRUND_SIMULATE_LISTEN_ON", "ipv4")],
+    )
+    .await?;
+    let started = Instant::now();
+    let reason = loop {
+        let answer = net
+            .apps(
+                "GetApp",
+                json!({"organisation": net.owner, "name": "legacy"}),
+            )
+            .await?;
+        let observed = &answer["app"]["replicas"][0]["observed"];
+        let reason = observed["reason"].as_str().unwrap_or_default().to_string();
+        if observed["ready"] != true && reason.contains("IPv4") {
+            break reason;
+        }
+        anyhow::ensure!(
+            started.elapsed() < Duration::from_secs(30),
+            "an IPv4-only copy is not ready and says why: {answer:#}"
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    };
+    eprintln!("reachable again {back:?} after b's agent restarted; IPv4-only: {reason}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn what_a_replicas_traffic_costs_through_the_mesh_and_the_userspace_egress_is_measured()
+-> anyhow::Result<()> {
+    let Some((net, registry)) = a_lab_with_registry().await? else {
+        return Ok(());
+    };
+    let a = net.join("a", "a").await?;
+    let b = net.join("b", "b").await?;
+    let app = net
+        .an_app(&registry, "bench", &["a", "b"], 2, &[8080, 5201], &[8080])
+        .await?;
+    let ids = replica_ids(&app);
+    let on = |machine: &str| {
+        ids.iter()
+            .find(|(_, m)| m == machine)
+            .map(|(id, _)| id.clone())
+            .unwrap_or_default()
+    };
+    let (on_a, on_b) = (on("a"), on("b"));
+    let address_b = grund_net::membership::replica_address(b.address(), b.slot(), &on_b);
+    let direct = eventually(Duration::from_secs(30), || async {
+        net.pings(&a, &b.address().to_string()).await && a.path_to(&b).starts_with("direct")
+    })
+    .await;
+    anyhow::ensure!(direct.is_some(), "a to b never went direct: {}", a.status());
+
+    net.declare(
+        &b,
+        json!([{"transport": "NETWORK_TRANSPORT_TCP", "port": 5201}]),
+    )
+    .await?;
+    let lab_bin = crate::accepttest::fixtures::netlab::lab_binary()
+        .to_string_lossy()
+        .into_owned();
+    let netns_b = format!(
+        "--net={}",
+        b.dir
+            .join("simulated-containers/netns")
+            .join(&on_b)
+            .display()
+    );
+    let netns_a = format!(
+        "--net={}",
+        a.dir
+            .join("simulated-containers/netns")
+            .join(&on_a)
+            .display()
+    );
+    net.lab.spawn(
+        "b",
+        &[
+            &lab_bin,
+            "tput-serve",
+            "--listen",
+            &format!("[{}]:5201", b.address()),
+        ],
+        &[],
+        "tput-b-machine.log",
+    )?;
+    net.lab.spawn(
+        "b",
+        &[
+            "nsenter",
+            &netns_b,
+            &lab_bin,
+            "tput-serve",
+            "--listen",
+            "[::]:5201",
+        ],
+        &[],
+        "tput-b-replica.log",
+    )?;
+    net.lab.spawn(
+        "lh",
+        &[&lab_bin, "tput-serve", "--listen", "198.51.100.1:5202"],
+        &[],
+        "tput-lh.log",
+    )?;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let measure = |ns: &'static str, prefix: Vec<String>, to: String| {
+        let lab = net.lab.clone();
+        let lab_bin = lab_bin.clone();
+        async move {
+            let mut args: Vec<String> = prefix;
+            args.extend([
+                lab_bin,
+                "tput".into(),
+                "--to".into(),
+                to,
+                "--seconds".into(),
+                "5".into(),
+                "--round-trips".into(),
+                "500".into(),
+            ]);
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            let out = lab.run_async(ns, &args).await?;
+            anyhow::ensure!(out.status.success(), "tput: {out:?}");
+            Ok::<Value, anyhow::Error>(serde_json::from_slice(&out.stdout)?)
+        }
+    };
+    let enter_a = vec!["nsenter".to_string(), netns_a.clone()];
+    let enter_b = vec!["nsenter".to_string(), netns_b.clone()];
+    let machines = measure("a", vec![], format!("[{}]:5201", b.address())).await;
+    eprintln!("machines: {machines:?}");
+    let machines = machines?;
+    let replicas = measure("a", enter_a, format!("[{address_b}]:5201")).await;
+    eprintln!("replicas: {replicas:?}");
+    let replicas = replicas?;
+    let egress = measure("b", enter_b, "198.51.100.1:5202".into()).await;
+    eprintln!("egress: {egress:?}");
+    let egress = egress?;
+    let kernel = measure("b", vec![], "198.51.100.1:5202".into()).await;
+    eprintln!("kernel: {kernel:?}");
+    let kernel = kernel?;
+    for (what, result) in [
+        ("machine to machine over the mesh", &machines),
+        ("replica to replica over the mesh", &replicas),
+        ("replica egress (userspace) to IPv4", &egress),
+        ("machine to the same IPv4 server (kernel)", &kernel),
+    ] {
+        eprintln!(
+            "{what}: {:.0} Mbit/s, rtt p50 {:.3} ms p99 {:.3} ms",
+            result["mbit_per_second"].as_f64().unwrap_or_default(),
+            result["rtt_ms_p50"].as_f64().unwrap_or_default(),
+            result["rtt_ms_p99"].as_f64().unwrap_or_default()
+        );
+        anyhow::ensure!(
+            result["mbit_per_second"].as_f64().unwrap_or_default() > 10.0,
+            "{what} carried under 10 Mbit/s: {result}"
+        );
+    }
     Ok(())
 }

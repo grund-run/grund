@@ -15,6 +15,7 @@ base64.workspace = true
 bytes = "1"
 clap.workspace = true
 ed25519-dalek = "2"
+futures = "0.3"
 grund-tls.workspace = true
 hex.workspace = true
 hyper = { version = "1", features = ["http1", "server"] }
@@ -22,6 +23,7 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 iroh = "=1.2.0"
 iroh-relay = { version = "=1.2.0", features = ["server"] }
 libc = "0.2"
+netstack-smoltcp = "=0.2.4"
 netwatch = "=0.19.3"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde.workspace = true

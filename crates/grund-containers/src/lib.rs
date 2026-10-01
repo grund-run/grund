@@ -12,6 +12,7 @@
 //!   <run dir>/containerd/              containerd's state
 //!   <run dir>/containerd.toml          its config, written before every start
 //!   <run dir>/netns/<id>               each container's network namespace
+//!   <run dir>/resolv/<id>              its /etc/resolv.conf, bound read-only
 //! ```
 //!
 //! containerd is grund's own ([`daemon`]): its own sockets, root and state,
@@ -24,7 +25,9 @@
 //!
 //! A container ([`spec`]) is unprivileged: Docker's default capabilities,
 //! `noNewPrivileges`, its own pid, ipc, uts, mount and cgroup namespaces,
-//! a network namespace of its own with loopback only ([`netns`]), its
+//! a network namespace of its own ([`netns`]), loopback only unless the
+//! agent gives it a device on the private network first
+//! ([`ContainerRuntime::network_namespace`]), its
 //! memory, CPU and pids limits in `/sys/fs/cgroup/grund/<id>`, and nothing
 //! from the host. Containers outlive the agent and containerd: each runs
 //! under its own shim.
@@ -40,8 +43,8 @@ pub mod capabilities;
 pub mod client;
 pub mod daemon;
 pub mod image;
+pub use grund_agent::probe;
 pub use grund_net::netns;
-pub mod probe;
 pub mod rootfs;
 pub mod spec;
 
@@ -200,6 +203,10 @@ impl Config {
     /// Containers' network namespaces.
     pub fn netns_dir(&self) -> PathBuf {
         self.run_dir.join("netns")
+    }
+    /// Container `id`'s `/etc/resolv.conf`, when the agent gave it one.
+    pub fn resolv_conf(&self, id: &str) -> PathBuf {
+        self.run_dir.join("resolv").join(id)
     }
     /// Scratch mount points for reading a root filesystem.
     pub fn scratch_dir(&self) -> PathBuf {
@@ -735,7 +742,21 @@ impl ContainerRuntime for Containerd {
             .resolve_user(&spec.id, config.config.user.as_deref().unwrap_or_default())
             .await?;
         let netns = self.ensure_netns(&spec.id)?;
-        let oci = spec::oci_spec(spec, &config, &user, &netns)?;
+        let mut oci = spec::oci_spec(spec, &config, &user, &netns)?;
+        if let Some(contents) = &spec.resolv_conf {
+            let path = self.config.resolv_conf(&spec.id);
+            std::fs::create_dir_all(path.parent().expect("a parent"))?;
+            std::fs::write(&path, contents).with_context(|| format!("write {}", path.display()))?;
+            oci["mounts"]
+                .as_array_mut()
+                .expect("mounts is a list")
+                .push(serde_json::json!({
+                    "destination": "/etc/resolv.conf",
+                    "type": "bind",
+                    "source": path.display().to_string(),
+                    "options": ["rbind", "ro", "nosuid", "nodev", "noexec"],
+                }));
+        }
         let options = RuncOptions {
             binary_name: self
                 .config
@@ -811,8 +832,18 @@ impl ContainerRuntime for Containerd {
             Err(e) if not_found(&e) => {}
             Err(e) => return Err(failed("remove the container's snapshot", e)),
         }
+        match std::fs::remove_file(self.config.resolv_conf(id)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                return Err(e).context("remove the container's resolv.conf");
+            }
+            _ => {}
+        }
         netns::remove(&self.config.netns_dir(), id)
             .with_context(|| format!("remove container {id}'s network namespace"))
+    }
+
+    async fn network_namespace(&self, id: &str) -> anyhow::Result<Option<PathBuf>> {
+        self.ensure_netns(id).map(Some)
     }
 
     async fn list(&self) -> anyhow::Result<Vec<ContainerStatus>> {
@@ -925,6 +956,7 @@ mod tests {
                 (REPLICA_LABEL.into(), "spoofed".into()),
             ]),
             spec_hash: "abc".into(),
+            resolv_conf: None,
         };
         let labels = container_labels(&spec);
         assert_eq!(labels[REPLICA_LABEL], "web-1");

@@ -1,17 +1,22 @@
-//! Readiness checks from inside a container's network namespace: a TCP
-//! connect to `127.0.0.1:<port>`, or an HTTP/1.1 `GET` whose status must be
-//! 2xx or 3xx. Each check runs on a thread of its own, which enters the
-//! namespace and ends, so no other thread's namespace changes. A failure
-//! says why in a few words, for the user.
+//! Readiness checks (grund-docs design/apps.md §8.1): a TCP connect, or an
+//! HTTP/1.1 `GET` whose status must be 2xx or 3xx. A failure says why in a
+//! few words, for the user.
+//!
+//! A replica with an address on the private network is checked there, from
+//! the machine ([`run_at`]): the check takes the path its peers take, so
+//! ready means reachable. A replica without one (a machine on no network) is
+//! checked on `127.0.0.1` inside its own network namespace ([`run`]), from a
+//! thread of its own that enters the namespace and ends, so no other
+//! thread's namespace changes.
 
 use std::{
     io::{Read, Write},
-    net::{Ipv4Addr, SocketAddr, TcpStream},
+    net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream},
     path::PathBuf,
     time::{Duration, Instant},
 };
 
-use grund_agent::runtime::Probe;
+use crate::runtime::Probe;
 
 /// Runs `probe` within `timeout`, from the network namespace at `netns`
 /// (this thread's own when `None`).
@@ -21,7 +26,7 @@ pub async fn run(netns: Option<PathBuf>, probe: Probe, timeout: Duration) -> Res
         .name("grund-probe".into())
         .spawn(move || {
             let result = match &netns {
-                Some(path) => crate::netns::enter(path)
+                Some(path) => grund_net::netns::enter(path)
                     .map_err(|e| format!("cannot enter the container's network namespace: {e}")),
                 None => Ok(()),
             }
@@ -51,7 +56,7 @@ pub async fn connect(
     std::thread::Builder::new()
         .name("grund-connect".into())
         .spawn(move || {
-            let result = crate::netns::enter(&netns).and_then(|()| {
+            let result = grund_net::netns::enter(&netns).and_then(|()| {
                 let stream = TcpStream::connect_timeout(
                     &SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
                     timeout,
@@ -69,13 +74,28 @@ pub async fn connect(
     tokio::net::TcpStream::from_std(stream)
 }
 
-/// The check itself, in the calling thread's namespace.
+/// Runs `probe` against `ip` within `timeout`, from this machine.
+pub async fn run_at(ip: IpAddr, probe: Probe, timeout: Duration) -> Result<(), String> {
+    let checked = tokio::task::spawn_blocking(move || check_at(ip, &probe, timeout));
+    match tokio::time::timeout(timeout + Duration::from_secs(1), checked).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => Err("the probe ended without an answer".into()),
+        Err(_) => Err(format!("no answer within {} ms", timeout.as_millis())),
+    }
+}
+
+/// The check itself on `127.0.0.1`, in the calling thread's namespace.
 pub fn check(probe: &Probe, timeout: Duration) -> Result<(), String> {
+    check_at(IpAddr::V4(Ipv4Addr::LOCALHOST), probe, timeout)
+}
+
+/// The check itself, against `ip`.
+pub fn check_at(ip: IpAddr, probe: &Probe, timeout: Duration) -> Result<(), String> {
     let deadline = Instant::now() + timeout;
     let port = match probe {
         Probe::Http { port, .. } | Probe::Tcp { port } => *port,
     };
-    let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    let address = SocketAddr::from((ip, port));
     let mut stream = TcpStream::connect_timeout(&address, timeout).map_err(|e| match e.kind() {
         std::io::ErrorKind::ConnectionRefused => format!("connection refused on port {port}"),
         std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => {

@@ -550,6 +550,40 @@ impl Lab {
         wait_for_path(&self.work.join("smtp.sock"))
     }
 
+    pub fn bridge_into(
+        &self,
+        ns: &str,
+        listen: &str,
+        host: &str,
+        name: &str,
+    ) -> anyhow::Result<()> {
+        let socket = self.socket(&format!("{name}.sock"));
+        self.spawn_here(
+            &[
+                "forward",
+                "--listen",
+                &format!("unix:{socket}"),
+                "--to",
+                &format!("tcp:{host}"),
+            ],
+            &format!("bridge-{name}.log"),
+        )?;
+        wait_for_path(&self.work.join(format!("{name}.sock")))?;
+        self.spawn(
+            ns,
+            &[
+                &self.lab_bin.to_string_lossy(),
+                "forward",
+                "--listen",
+                &format!("tcp:{listen}"),
+                "--to",
+                &format!("unix:{socket}"),
+            ],
+            &[],
+            &format!("front-{name}.log"),
+        )
+    }
+
     pub fn front_door(&self, grund_listen: &str) -> anyhow::Result<u16> {
         let (cert, key) = (self.cert.to_string_lossy(), self.key.to_string_lossy());
         self.spawn(
