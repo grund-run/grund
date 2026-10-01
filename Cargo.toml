@@ -51,8 +51,16 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 uuid = { version = "1", features = ["serde", "v4", "v5", "v7"] }
 
+# Smallest binary (Kasper, 2026-10-01): fat LTO at opt-level "z" made grund
+# 18.4 MB instead of 32.1 with thin LTO at 3, and its release build ~30 %
+# shorter, measured. The price is CPU where grund spends it on purpose: a
+# password hash costs ~40 % more (sign-in 11.1 -> 15.3 ms fastest in CI).
+# A per-package opt-level for argon2, blake2 or grund-server does not win it
+# back: the hot code is compiled where it is called, and fat LTO optimises
+# the whole program at one level. grund-docs docs/ci-performance.md.
 [profile.release]
-lto = "thin"
+lto = "fat"
+opt-level = "z"
 codegen-units = 1
 panic = "abort"
 strip = true
