@@ -38,7 +38,7 @@ pub async fn wait_for(
             .into_iter()
             .filter(|m| m["Subject"].as_str().is_some_and(|s| s.contains(subject)))
             .collect();
-        found.sort_by(|a, b| b["Created"].as_str().cmp(&a["Created"].as_str()));
+        found.sort_by_key(|message| std::cmp::Reverse(created(message)));
         if matches!(pick, Pick::Oldest) {
             found.reverse();
         }
@@ -56,6 +56,19 @@ pub async fn wait_for(
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
+}
+
+fn created(message: &serde_json::Value) -> String {
+    let created = message["Created"].as_str().unwrap_or_default();
+    let (seconds, rest) = created.split_at(created.find(['.', 'Z', '+']).unwrap_or(created.len()));
+    let (fraction, zone) = match rest.strip_prefix('.') {
+        Some(rest) => rest.split_at(
+            rest.find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(rest.len()),
+        ),
+        None => ("", rest),
+    };
+    format!("{seconds}.{fraction:0<9}{zone}")
 }
 
 pub async fn link(
