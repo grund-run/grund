@@ -374,6 +374,7 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
     fn net(&self) -> Option<Net> {
         let access = self.network.as_ref()?;
         let mesh = access.mesh.get()?.clone();
+        mesh.ifindex()?;
         let list = access.lists.borrow();
         let list = list.as_ref()?;
         let own = list.members.iter().find(|m| m.endpoint_id == access.own)?;

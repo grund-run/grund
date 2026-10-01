@@ -361,7 +361,11 @@ impl ContainerRuntime for SimulatedContainers {
         if unsafe { libc::geteuid() } != 0 {
             return Ok(None);
         }
-        Ok(Some(grund_net::netns::ensure(&self.dir.join("netns"), id)?))
+        match grund_net::netns::ensure(&self.dir.join("netns"), id) {
+            Ok(path) => Ok(Some(path)),
+            Err(error) if error.raw_os_error() == Some(libc::EPERM) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
     }
     async fn capabilities(&self) -> AppsCapabilities {
         AppsCapabilities {
