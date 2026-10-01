@@ -12,6 +12,7 @@ license = "AGPL-3.0-only"
 anyhow.workspace = true
 grund-agent.workspace = true
 grund-domain.workspace = true
+grund-tls.workspace = true
 hex.workspace = true
 libc = "0.2"
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }

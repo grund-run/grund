@@ -158,7 +158,10 @@ steps:
       # version and SHA-256) and fail rather than skip when it is missing.
       GRUND_ACCEPT_REQUIRE_PEBBLE: "1"
     commands:
-      - apk add --no-cache musl-dev protobuf-dev sccache
+      # openssl (3.5 or later): the independent implementation grund-tls's
+      # X25519MLKEM768 interop tests handshake against; they fail rather
+      # than skip without it.
+      - apk add --no-cache musl-dev protobuf-dev sccache openssl
       - crates/grund/tests/pebble/fetch.sh
       - hp="$${SCCACHE_MEMCACHED_ENDPOINT#tcp://}"; nc -z -w 3 "$${hp%:*}" "$${hp##*:}" || { echo "the compile cache is unreachable, so this step compiles without it"; unset RUSTC_WRAPPER; }
       # Build every test binary first, and keep the path of the accepttest

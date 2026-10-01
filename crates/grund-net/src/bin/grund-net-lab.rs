@@ -116,9 +116,7 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
         .init();
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .ok();
+    grund_tls::install_default();
     match Cli::parse().command {
         Command::Keygen => {
             let mut seed = [0u8; 32];

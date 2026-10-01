@@ -102,7 +102,7 @@ pub const CALLOUT_TIMEOUT: Duration = Duration::from_secs(3);
 impl Callout {
     /// A callout to the instance at `instance` (its origin) with `token`.
     pub fn new(instance: &str, token: &str) -> anyhow::Result<Self> {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        grund_tls::install_default();
         let http = reqwest::Client::builder()
             .timeout(CALLOUT_TIMEOUT)
             .connect_timeout(Duration::from_secs(2))

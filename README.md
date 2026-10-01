@@ -73,6 +73,10 @@ has and retries with backoff; `/health/ready` reports a `certificate` check
 works instead: set `GRUND_TLS_CERT_FILE` and `GRUND_TLS_KEY_FILE`
 (re-read when they change). Plain http stays on 127.0.0.1:8080. Every
 setting is in `grund serve --help` and [.env.example](.env.example).
+grund's TLS, here, on its relays and in its HTTPS and SMTP clients, offers TLS
+1.3 and 1.2. Its key exchange prefers the hybrid post-quantum
+X25519MLKEM768 and falls back to X25519, with no C crypto library beyond
+ring (`crates/grund-tls`).
 
 **A relay on another host.** Machines behind different NATs need a relay
 with a public address: `grund relay` on a host of its own, listed in the

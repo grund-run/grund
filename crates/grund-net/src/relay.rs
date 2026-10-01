@@ -193,7 +193,7 @@ pub fn tls_from_pem(cert_pem: &[u8], key_pem: &[u8]) -> anyhow::Result<rustls::S
         .collect::<Result<Vec<_>, _>>()
         .context("parse the certificate PEM")?;
     let key = PrivateKeyDer::from_pem_slice(key_pem).context("parse the key PEM")?;
-    rustls::ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+    rustls::ServerConfig::builder_with_provider(grund_tls::provider())
         .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
         .context("TLS versions")?
         .with_no_client_auth()

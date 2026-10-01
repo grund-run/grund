@@ -210,6 +210,7 @@ fn firecracker(command: &AgentCommand) -> anyhow::Result<grund_vm::Firecracker> 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     grund_server::health::set_revision(env!("GRUND_BUILD_REVISION"));
+    grund_tls::install_default();
     let cli = Cli::parse();
     let to_stderr = matches!(cli.command, Command::Doctor(_) | Command::SetupLink(_));
     init_tracing(&cli, to_stderr);

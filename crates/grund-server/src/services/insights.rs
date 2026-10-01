@@ -83,7 +83,7 @@ pub struct Reporter {
 
 impl Reporter {
     pub fn new(config: &InsightsArgs) -> anyhow::Result<Self> {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        grund_tls::install_default();
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .connect_timeout(Duration::from_secs(5))

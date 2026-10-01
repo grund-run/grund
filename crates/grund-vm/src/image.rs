@@ -37,7 +37,7 @@ pub struct Images {
 impl Images {
     pub fn new(dir: PathBuf) -> std::io::Result<Self> {
         std::fs::create_dir_all(&dir)?;
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        grund_tls::install_default();
         let http = reqwest::Client::builder()
             .build()
             .map_err(std::io::Error::other)?;

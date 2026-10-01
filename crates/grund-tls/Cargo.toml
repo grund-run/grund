@@ -1,6 +1,6 @@
 [package]
 name = "grund-tls"
-description = "Where grund's TLS terminates: certificate resolvers, keys and CSRs made in place, and a TLS listener that answers ACME TLS-ALPN-01"
+description = "Where grund's TLS terminates: certificate resolvers, keys and CSRs made in place, a TLS listener that answers ACME TLS-ALPN-01, and the crypto provider (ring with hybrid X25519MLKEM768 first) every grund TLS server and client uses"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,6 +11,7 @@ license = "AGPL-3.0-only"
 [dependencies]
 anyhow.workspace = true
 axum.workspace = true
+ml-kem = { version = "0.3.2", default-features = false, features = ["getrandom", "zeroize"] }
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 sha2.workspace = true
@@ -18,3 +19,6 @@ tokio = { workspace = true, features = ["net"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 tracing.workspace = true
 x509-parser = "0.18"
+
+[dev-dependencies]
+ring = "0.17"

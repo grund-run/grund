@@ -87,7 +87,7 @@ pub fn refused_with(error: &anyhow::Error, code: &str) -> bool {
 /// An HTTP client for the instance: the system's roots, or the Mozilla
 /// roots built in when the host has none (the relay's image is `scratch`).
 pub fn http_client(timeout: Option<Duration>) -> anyhow::Result<reqwest::Client> {
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    grund_tls::install_default();
     let mut builder = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
         .user_agent(concat!("grund-relay/", env!("CARGO_PKG_VERSION")));
@@ -105,11 +105,7 @@ pub fn http_client(timeout: Option<Duration>) -> anyhow::Result<reqwest::Client>
     if !system_roots {
         let roots =
             rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        builder = builder.use_preconfigured_tls(
-            rustls::ClientConfig::builder()
-                .with_root_certificates(roots)
-                .with_no_client_auth(),
-        );
+        builder = builder.use_preconfigured_tls(grund_tls::client_config(roots)?);
     }
     builder
         .build()

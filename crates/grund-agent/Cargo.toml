@@ -19,6 +19,7 @@ getrandom.workspace = true
 grund-domain.workspace = true
 grund-net.workspace = true
 grund-proto.workspace = true
+grund-tls.workspace = true
 hex.workspace = true
 iroh = "=1.2.0"
 libc = "0.2"

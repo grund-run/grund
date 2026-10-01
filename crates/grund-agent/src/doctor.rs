@@ -43,7 +43,7 @@ pub struct MachineArgs {
 /// Runs the checks, with the VM runtime's after the host's. `own_revision`
 /// is the commit this binary was built from, to compare with the instance's.
 pub async fn run(args: &MachineArgs, vm_checks: Vec<Check>, own_revision: &str) -> Report {
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    grund_tls::install_default();
     let mut report = Report::new("machine");
     report.push(arch());
     report.push(kernel());

@@ -54,7 +54,7 @@ impl SocialLogin {
 
 /// The HTTP client for calls to sign-in providers.
 pub fn http_client() -> anyhow::Result<reqwest::Client> {
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    grund_tls::install_default();
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .connect_timeout(std::time::Duration::from_secs(5))

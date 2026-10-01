@@ -54,7 +54,7 @@ impl Capacity {
         let (Some(url), Some(token)) = (&config.capacity_url, &config.capacity_token) else {
             return Ok(Capacity::None);
         };
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        grund_tls::install_default();
         let http = reqwest::Client::builder()
             .timeout(CALL_TIMEOUT)
             .connect_timeout(Duration::from_secs(2))

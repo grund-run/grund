@@ -219,7 +219,7 @@ impl Link {
 
 /// Runs `grund agent` with `runtime` for VMs.
 pub async fn run<R: VmRuntime>(args: &AgentArgs, runtime: R) -> anyhow::Result<()> {
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    grund_tls::install_default();
     let record = join::read_record(&args.data_dir)?
         .context("this machine is not registered; run grund join first")?;
     let key = join::machine_key(&args.data_dir)?;
