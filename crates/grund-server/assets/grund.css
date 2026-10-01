@@ -625,6 +625,32 @@ a.nav-item:hover {
   color: var(--ok);
 }
 
+.setup {
+  display: grid;
+  gap: 0.875rem;
+  margin-bottom: 2.5rem;
+}
+
+.setup > .mono {
+  margin: 0;
+  padding: 1rem 1.125rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.setup-alt {
+  color: var(--text-2);
+}
+
+.setup-alt code {
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+
 .empty {
   padding: 2.5rem;
   border: 1px dashed var(--border-strong);
