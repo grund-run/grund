@@ -260,10 +260,16 @@ pub async fn run<R: VmRuntime, C: ContainerRuntime + 'static>(
     *shared.desired.lock().expect("shared lock") = current(&*applied.lock().await);
     let containers = std::sync::Arc::new(containers);
     tracing::info!(machine = %record.machine_id, name = %record.name, "agent running");
+    let lists = tokio::sync::watch::Sender::new(None);
     if let Some(network) = record.network.clone().filter(|_| !args.once) {
         let (link, seed, data_dir) = (link.clone(), link.key.to_bytes(), args.data_dir.clone());
+        let lists = lists.clone();
         tokio::spawn(async move {
-            if let Err(error) = crate::net::run(link, network, seed, data_dir).await {
+            let options = crate::net::NetOptions {
+                lists: Some(lists),
+                ..Default::default()
+            };
+            if let Err(error) = crate::net::run(link, network, seed, data_dir, options).await {
                 tracing::error!(error = %format!("{error:#}"), "private network stopped");
             }
         });

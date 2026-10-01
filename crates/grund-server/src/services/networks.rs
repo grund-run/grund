@@ -269,6 +269,7 @@ fn members(slots: &[SlotRow], names: &HashMap<Uuid, (&str, Vec<Port>)>) -> Vec<M
                 name: entry.map(|(n, _)| n.to_string()),
                 ports: entry.map(|(_, p)| p.clone()).unwrap_or_default(),
                 relay_url: s.home_relay_url.clone(),
+                apps: Vec::new(),
             }
         })
         .collect()

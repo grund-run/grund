@@ -1,10 +1,16 @@
 //! The stub resolver for `grund.internal` (network.md §6.2, §6.6).
 //!
 //! It answers from the membership list the machine holds, and from nothing
-//! else: `<name>.machines.grund.internal` has an AAAA record, the member's
-//! `prefix:slot::1`, for exactly the members of the current list. Every
-//! other name under `grund.internal` does not exist. Names outside it are
-//! forwarded to the resolvers the machine had ([`upstreams`]).
+//! else:
+//! - `<name>.machines.grund.internal` has an AAAA record, the member's
+//!   `prefix:slot::1`, for exactly the members of the current list;
+//! - `<app>.grund.internal` has the AAAA records of the app's ready replicas
+//!   on every member (network.md §6.2), at most [`MAX_APP_ANSWERS`]; an app
+//!   with none ready has no data, so a client fails at once rather than
+//!   waiting on an address that does not answer.
+//!
+//! Every other name under `grund.internal` does not exist. Names outside it
+//! are forwarded to the resolvers the machine had ([`upstreams`]).
 //!
 //! When grund is unreachable the list stays the last one verified
 //! (fail-static, network.md §5.3), so the names keep answering. Before any
@@ -32,6 +38,10 @@ use tokio::{
 };
 
 use crate::membership::MembershipList;
+
+/// The most addresses one app name answers with, so a reply stays within
+/// 512 bytes.
+pub const MAX_APP_ANSWERS: usize = 16;
 
 /// The zone the resolver answers for itself.
 pub const ZONE: &str = "grund.internal";
@@ -121,6 +131,28 @@ pub fn answer(query: &[u8], list: Option<&MembershipList>) -> Outcome {
     }
     if name == ZONE || name == MACHINES {
         return Outcome::Reply(reply(query, Some(&question), Rcode::NoError, &[]));
+    }
+    if let Some(app) = name
+        .strip_suffix(&format!(".{ZONE}"))
+        .filter(|label| !label.contains('.'))
+    {
+        let known = list
+            .members
+            .iter()
+            .flat_map(|m| m.apps.iter())
+            .any(|r| r.app.eq_ignore_ascii_case(app));
+        if !known {
+            return Outcome::Reply(reply(query, Some(&question), Rcode::NxDomain, &[]));
+        }
+        let answers = match question.qtype {
+            TYPE_AAAA | TYPE_ANY => {
+                let mut ready = list.ready_addresses(app);
+                ready.truncate(MAX_APP_ANSWERS);
+                ready
+            }
+            _ => vec![],
+        };
+        return Outcome::Reply(reply(query, Some(&question), Rcode::NoError, &answers));
     }
     let member = name
         .strip_suffix(&format!(".{MACHINES}"))
@@ -327,6 +359,7 @@ mod tests {
                     name: Some("web-1".into()),
                     ports: vec![],
                     relay_url: None,
+                    apps: Vec::new(),
                 },
                 Member {
                     machine_id: "m_b".into(),
@@ -335,6 +368,7 @@ mod tests {
                     name: Some("db".into()),
                     ports: vec![],
                     relay_url: None,
+                    apps: Vec::new(),
                 },
             ],
         }
@@ -385,6 +419,45 @@ mod tests {
             aaaa(&r),
             vec!["fd12:3456:789a:2::1".parse::<Ipv6Addr>().unwrap()]
         );
+    }
+
+    fn with_apps() -> MembershipList {
+        use crate::membership::{AppReplica, replica_address};
+        let mut l = list();
+        let prefix = l.prefix;
+        let replica = |slot: u16, id: &str, ready: bool| AppReplica {
+            app: "shop".into(),
+            replica_id: id.into(),
+            address: replica_address(prefix, slot, id),
+            ports: vec![],
+            ready,
+        };
+        l.members[0].apps = vec![replica(1, "r-1", true), replica(1, "r-2", false)];
+        l.members[1].apps = vec![replica(2, "r-3", true)];
+        l.members[1].apps.push(AppReplica {
+            app: "worker".into(),
+            ..replica(2, "r-4", false)
+        });
+        l
+    }
+
+    #[test]
+    fn an_app_resolves_to_its_ready_replicas_on_every_member_and_nothing_else() {
+        let l = with_apps();
+        let r = reply_to("Shop.grund.internal", TYPE_AAAA, Some(&l));
+        assert_eq!(rcode(&r), 0);
+        let mut want = vec![
+            crate::membership::replica_address(l.prefix, 1, "r-1"),
+            crate::membership::replica_address(l.prefix, 2, "r-3"),
+        ];
+        want.sort();
+        assert_eq!(aaaa(&r), want);
+        let none_ready = reply_to("worker.grund.internal", TYPE_AAAA, Some(&l));
+        assert_eq!((rcode(&none_ready), aaaa(&none_ready)), (0, vec![]));
+        let unknown = reply_to("cart.grund.internal", TYPE_AAAA, Some(&l));
+        assert_eq!(rcode(&unknown), 3);
+        let a = reply_to("shop.grund.internal", TYPE_A, Some(&l));
+        assert_eq!((rcode(&a), aaaa(&a)), (0, vec![]));
     }
 
     #[test]

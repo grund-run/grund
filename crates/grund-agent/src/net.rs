@@ -192,11 +192,40 @@ impl Default for Counters {
     }
 }
 
+/// A protocol the machine's endpoint accepts beside the private network's
+/// own, such as the gate's entry streams (grund-docs design/traffic.md). The
+/// endpoint is bound again whenever the uplink moves, so this makes a new
+/// handler for each binding.
+#[derive(Clone)]
+pub struct ExtraProtocol {
+    pub alpn: Vec<u8>,
+    pub handler: Arc<dyn Fn() -> Box<dyn iroh::protocol::DynProtocolHandler> + Send + Sync>,
+}
+
+impl std::fmt::Debug for ExtraProtocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExtraProtocol")
+            .field("alpn", &String::from_utf8_lossy(&self.alpn))
+            .finish_non_exhaustive()
+    }
+}
+
+/// What the rest of the agent hands the private network, and takes from it.
+#[derive(Debug, Default)]
+pub struct NetOptions {
+    /// Another protocol to accept on the machine's endpoint.
+    pub extra: Option<ExtraProtocol>,
+    /// Where the list in force is published once verified: the gate and the
+    /// apps loop read members, and their replicas, from it.
+    pub lists: Option<watch::Sender<Option<MembershipList>>>,
+}
+
 pub(crate) async fn run(
     link: Link,
     network: NetworkRecord,
     seed: [u8; 32],
     data_dir: std::path::PathBuf,
+    options: NetOptions,
 ) -> anyhow::Result<()> {
     if unsafe { libc::geteuid() } != 0 {
         tracing::warn!(
@@ -225,8 +254,10 @@ pub(crate) async fn run(
         ..NetConfig::default()
     };
     let counters = Arc::new(Counters::default());
-    let (tx, rx) = watch::channel(None);
+    let tx = options.lists.unwrap_or_else(|| watch::channel(None).0);
+    let rx = tx.subscribe();
     let lists = tx.subscribe();
+    let extra = options.extra;
     let (relays_tx, relays_rx) = watch::channel(config.relays.clone());
     let (outgoing_tx, outgoing_rx) = watch::channel(None);
     let (incoming_tx, incoming_rx) = mpsc::channel(16);
@@ -240,7 +271,7 @@ pub(crate) async fn run(
         result = mesh.run(rx) => result,
         result = follow(&link, &held, &mesh) => result,
         () = hear(&held, incoming_rx) => Ok(()),
-        result = carry(&mesh, key, &config, relays_rx.clone(), &counters) => result,
+        result = carry(&mesh, key, &config, relays_rx.clone(), &counters, extra.as_ref()) => result,
         () = track_relays(&mesh, relays_rx) => Ok(()),
         () = resolve_or_warn(resolve(&mesh, lists, own_id, &counters)) => Ok(()),
         () = report(&mesh, &counters, &held, &data_dir) => Ok(()),
@@ -288,6 +319,7 @@ async fn carry(
     config: &NetConfig,
     relays: watch::Receiver<Vec<RelayUrl>>,
     counters: &Counters,
+    extra: Option<&ExtraProtocol>,
 ) -> anyhow::Result<()> {
     let mut bound: Option<(Vec<SocketAddr>, iroh::protocol::Router)> = None;
     let mut last = endpoint::Uplinks::default();
@@ -350,13 +382,9 @@ async fn carry(
                     relays: bound_relays.clone(),
                     ..config.clone()
                 };
-                let endpoint = match endpoint::bind(
-                    key.clone(),
-                    &config,
-                    vec![NET_ALPN.to_vec(), grund_net::PROBE_ALPN.to_vec()],
-                )
-                .await
-                {
+                let mut alpns = vec![NET_ALPN.to_vec(), grund_net::PROBE_ALPN.to_vec()];
+                alpns.extend(extra.map(|e| e.alpn.clone()));
+                let endpoint = match endpoint::bind(key.clone(), &config, alpns).await {
                     Ok(endpoint) => endpoint,
                     Err(error) => {
                         tracing::warn!(error = %format!("{error:#}"), "private network: binding the uplink failed; trying again");
@@ -367,10 +395,13 @@ async fn carry(
                 mesh.attach(endpoint.clone())?;
                 let wanted = relays.borrow().clone();
                 sync_relays(&endpoint, &bound_relays, &wanted).await;
-                let router = iroh::protocol::Router::builder(endpoint)
+                let mut router = iroh::protocol::Router::builder(endpoint)
                     .accept(NET_ALPN, mesh.clone())
-                    .accept(grund_net::PROBE_ALPN, mesh.prober())
-                    .spawn();
+                    .accept(grund_net::PROBE_ALPN, mesh.prober());
+                if let Some(extra) = extra {
+                    router = router.accept(extra.alpn.clone(), (extra.handler)());
+                }
+                let router = router.spawn();
                 if let Some((old, old_router)) = bound.replace((addrs.clone(), router)) {
                     tracing::info!(from = ?old, to = ?addrs, "private network: the uplink's address changed; rebound");
                     counters.rebinds.fetch_add(1, Relaxed);
@@ -774,6 +805,7 @@ mod tests {
                 name: Some("m1".into()),
                 ports: vec![],
                 relay_url: None,
+                apps: Vec::new(),
             }],
         }
     }

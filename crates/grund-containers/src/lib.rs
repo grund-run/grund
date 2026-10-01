@@ -40,7 +40,7 @@ pub mod capabilities;
 pub mod client;
 pub mod daemon;
 pub mod image;
-pub mod netns;
+pub use grund_net::netns;
 pub mod probe;
 pub mod rootfs;
 pub mod spec;

@@ -33,6 +33,7 @@ pub mod gossip;
 pub mod key;
 pub mod membership;
 pub mod mesh;
+pub mod netns;
 pub mod relay;
 pub mod tun;
 

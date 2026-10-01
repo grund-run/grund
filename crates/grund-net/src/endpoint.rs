@@ -34,6 +34,14 @@ use rustls::pki_types::CertificateDer;
 
 /// The per-path idle timeout grund uses (iroh's default and maximum: 15 s).
 pub const PATH_IDLE: Duration = Duration::from_secs(2);
+/// How many bidirectional streams a peer may have open at once: the gate's
+/// entry streams, one per proxied connection (grund-docs traffic.md §6.4,
+/// §13). The mesh itself uses datagrams.
+pub const MAX_BIDI_STREAMS: u32 = 1024;
+
+/// How much a stream may have in flight unread, per stream (traffic.md §13).
+pub const STREAM_RECEIVE_WINDOW: u32 = 256 * 1024;
+
 /// The per-path keep-alive grund uses (iroh's default and maximum: 5 s).
 pub const PATH_KEEPALIVE: Duration = Duration::from_millis(500);
 
@@ -121,6 +129,8 @@ pub async fn bind(
         .default_path_keep_alive_interval(config.path_keepalive)
         .datagram_receive_buffer_size(Some(4 << 20))
         .datagram_send_buffer_size(4 << 20)
+        .max_concurrent_bidi_streams(iroh::endpoint::VarInt::from_u32(MAX_BIDI_STREAMS))
+        .stream_receive_window(iroh::endpoint::VarInt::from_u32(STREAM_RECEIVE_WINDOW))
         .build();
     let mut builder = Endpoint::builder(presets::Minimal)
         .crypto_provider(grund_tls::provider())

@@ -13,6 +13,11 @@
 //! network's prefix is a /48 from `fd00::/8`, each member owns
 //! `prefix:slot::/64`, and the machine itself is `prefix:slot::1`. Slot 0 is
 //! never a member's (network.md §6.1: reserved for app addresses).
+//!
+//! Each member also lists the app replicas grund placed on it
+//! ([`Member::apps`]): each has its own address in the member's /64
+//! ([`replica_address`]) and the ports its app declares, which are all a
+//! peer may reach on it ([`crate::filter`]).
 
 use std::{collections::HashSet, net::Ipv6Addr, str::FromStr};
 
@@ -20,6 +25,7 @@ use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use iroh::EndpointId;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// What every membership signature covers before the body: grund's domain
 /// separation for this kind of message (grund-server `keys.rs`,
@@ -81,6 +87,57 @@ pub struct Member {
     /// rather than all of them. Absent when it reported none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relay_url: Option<String>,
+    /// The app replicas grund placed on the machine that are running (not
+    /// draining). Lists signed before apps had networks have none, and encode
+    /// as they did.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub apps: Vec<AppReplica>,
+}
+
+/// One replica of an app, as the list names it on its member.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppReplica {
+    /// The app's name, a DNS label: `<app>.grund.internal` answers with the
+    /// addresses of its ready replicas ([`crate::dns`]).
+    pub app: String,
+    /// grund's id of the replica, as it prints it (lowercase, hyphenated).
+    pub replica_id: String,
+    /// The replica's own address: [`replica_address`] of its member's slot.
+    pub address: Ipv6Addr,
+    /// What other members and replicas may reach on it; nothing else gets
+    /// in.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ports: Vec<Port>,
+    /// Whether its machine last reported it ready.
+    #[serde(default)]
+    pub ready: bool,
+}
+
+/// The most ports one replica may accept, as apps.md §15 allows an app.
+pub const MAX_APP_PORTS: usize = 16;
+
+/// What a replica address's interface identifier is hashed under.
+pub const REPLICA_ADDRESS_PREFIX: &[u8] = b"grund-replica-address-v1\n";
+
+/// The address of replica `replica_id` on the member at `slot` of the
+/// network `prefix`: `prefix:slot:` and the first 64 bits of SHA-256 of
+/// [`REPLICA_ADDRESS_PREFIX`] and the id (apps.md §12.2). It depends only on
+/// the replica, so the instance knows it without asking and a restart keeps
+/// it. An identifier at or below `0xffff` would land beside the machine's
+/// `::1` and the stub's `::53`, so it is moved above them.
+pub fn replica_address(prefix: Ipv6Addr, slot: u16, replica_id: &str) -> Ipv6Addr {
+    let digest = Sha256::new()
+        .chain_update(REPLICA_ADDRESS_PREFIX)
+        .chain_update(replica_id.as_bytes())
+        .finalize();
+    let mut iid = u64::from_be_bytes(digest[..8].try_into().expect("8 bytes"));
+    if iid <= 0xffff {
+        iid |= 0x8000_0000_0000_0000;
+    }
+    let mut o = prefix.octets();
+    o[6..8].copy_from_slice(&slot.to_be_bytes());
+    o[8..].copy_from_slice(&iid.to_be_bytes());
+    Ipv6Addr::from(o)
 }
 
 /// A transport of a declared port.
@@ -150,6 +207,10 @@ pub enum MembershipError {
     /// A relay's URL is not an https URL (http only on loopback).
     #[error("the relay URL {0} is not an https URL")]
     BadRelay(String),
+    /// An app replica's address is outside its member's /64, is the
+    /// member's own or another replica's, or its app or ports are invalid.
+    #[error("member {0} lists an app replica with a bad address, name or ports")]
+    BadApp(String),
 }
 
 impl SignedList {
@@ -230,6 +291,23 @@ impl MembershipList {
                 }
             }
         }
+        let mut addresses = HashSet::new();
+        for m in &self.members {
+            for r in &m.apps {
+                let o = r.address.octets();
+                let in_own = o[..6] == p[..6] && u16::from_be_bytes([o[6], o[7]]) == m.slot;
+                let iid = u64::from_be_bytes(o[8..].try_into().expect("8 bytes"));
+                if !in_own
+                    || iid <= 0xffff
+                    || !addresses.insert(r.address)
+                    || !is_label(&r.app)
+                    || r.ports.len() > MAX_APP_PORTS
+                    || r.ports.iter().any(|p| p.port == 0)
+                {
+                    return Err(MembershipError::BadApp(m.machine_id.clone()));
+                }
+            }
+        }
         for relay in &self.relays {
             if !is_relay_url(&relay.url) {
                 return Err(MembershipError::BadRelay(relay.url.clone()));
@@ -270,6 +348,30 @@ impl MembershipList {
                 .as_deref()
                 .is_some_and(|n| n.eq_ignore_ascii_case(name))
         })
+    }
+
+    /// The app replica whose address is `addr`, and its member.
+    pub fn replica_at(&self, addr: Ipv6Addr) -> Option<(&Member, &AppReplica)> {
+        let member = self.member_for(addr)?;
+        member
+            .apps
+            .iter()
+            .find(|r| r.address == addr)
+            .map(|r| (member, r))
+    }
+
+    /// The addresses of `app`'s ready replicas on every member, compared as
+    /// DNS does, ignoring ASCII case.
+    pub fn ready_addresses(&self, app: &str) -> Vec<Ipv6Addr> {
+        let mut out: Vec<Ipv6Addr> = self
+            .members
+            .iter()
+            .flat_map(|m| m.apps.iter())
+            .filter(|r| r.ready && r.app.eq_ignore_ascii_case(app))
+            .map(|r| r.address)
+            .collect();
+        out.sort();
+        out
     }
 
     /// The member with this key, if any.
@@ -333,6 +435,7 @@ mod tests {
                     name: Some("a".into()),
                     ports: vec![],
                     relay_url: None,
+                    apps: Vec::new(),
                 },
                 Member {
                     machine_id: "m_b".into(),
@@ -341,9 +444,69 @@ mod tests {
                     name: Some("b".into()),
                     ports: vec![],
                     relay_url: None,
+                    apps: Vec::new(),
                 },
             ],
         }
+    }
+
+    #[test]
+    fn a_replica_address_is_stable_in_its_members_slash_64_and_never_a_reserved_host() {
+        let prefix: Ipv6Addr = "fd12:3456:789a::".parse().unwrap();
+        let a = replica_address(prefix, 7, "0199b2c4-0000-7000-8000-000000000001");
+        assert_eq!(
+            a,
+            replica_address(prefix, 7, "0199b2c4-0000-7000-8000-000000000001")
+        );
+        assert_ne!(
+            a,
+            replica_address(prefix, 7, "0199b2c4-0000-7000-8000-000000000002")
+        );
+        assert_eq!(&a.segments()[..4], &[0xfd12, 0x3456, 0x789a, 7]);
+        for n in 0..2000 {
+            let iid = u64::from_be_bytes(
+                replica_address(prefix, 1, &n.to_string()).octets()[8..]
+                    .try_into()
+                    .unwrap(),
+            );
+            assert!(iid > 0xffff);
+        }
+    }
+
+    #[test]
+    fn a_replica_outside_its_members_slash_64_or_on_a_reserved_host_is_refused() {
+        let mut l = list();
+        let good = AppReplica {
+            app: "shop".into(),
+            replica_id: "r-1".into(),
+            address: replica_address(l.prefix, l.members[0].slot, "r-1"),
+            ports: vec![Port {
+                transport: Transport::Tcp,
+                port: 80,
+            }],
+            ready: true,
+        };
+        l.members[0].apps = vec![good.clone()];
+        assert_eq!(l.validate(), Ok(()));
+        let in_others = replica_address(l.prefix, l.members[1].slot, "r-1");
+        let host = l.address(l.members[0].slot);
+        for address in [in_others, host] {
+            l.members[0].apps = vec![AppReplica {
+                address,
+                ..good.clone()
+            }];
+            assert!(
+                matches!(l.validate(), Err(MembershipError::BadApp(_))),
+                "{address}"
+            );
+        }
+        l.members[0].apps = vec![good.clone(), good.clone()];
+        assert!(matches!(l.validate(), Err(MembershipError::BadApp(_))));
+        l.members[0].apps = vec![AppReplica {
+            app: "Shop".into(),
+            ..good
+        }];
+        assert!(matches!(l.validate(), Err(MembershipError::BadApp(_))));
     }
 
     #[test]
@@ -361,6 +524,7 @@ mod tests {
                 name: None,
                 ports: vec![],
                 relay_url: None,
+                apps: Vec::new(),
             }],
         };
         assert_eq!(
