@@ -106,6 +106,12 @@ steps:
     commands:
       # protobuf-dev: protoc and the well-known types, for the API codegen.
       - apk add --no-cache musl-dev protobuf-dev sccache
+      # The agent's own cache first, where it has one (agent 5: memcached in
+      # the CI daemon's network namespace, so at every step's gateway, port
+      # 11311). The shared one carries ~10 MB/s for all steps together, which
+      # made a warm build no faster than a cold one (grund-docs
+      # docs/ci-performance.md). Elsewhere, the shared one from the secret.
+      - gw="$$(ip route | awk '/^default/ {print $$3; exit}')"; if printf 'version\r\n' | nc -w 1 "$$gw" 11311 2>/dev/null | grep -q '^VERSION'; then export SCCACHE_MEMCACHED_ENDPOINT="tcp://$$gw:11311"; echo "using this agent's own compile cache"; else echo "using the shared compile cache"; fi
       - hp="$${SCCACHE_MEMCACHED_ENDPOINT#tcp://}"; nc -z -w 3 "$${hp%:*}" "$${hp##*:}" || { echo "the compile cache is unreachable, so this step compiles without it"; unset RUSTC_WRAPPER; }
       - rustup component add rustfmt clippy
       - cargo fmt --all --check
@@ -177,6 +183,12 @@ steps:
       # than skip without it.
       - apk add --no-cache musl-dev protobuf-dev sccache openssl
       - crates/grund/tests/pebble/fetch.sh
+      # The agent's own cache first, where it has one (agent 5: memcached in
+      # the CI daemon's network namespace, so at every step's gateway, port
+      # 11311). The shared one carries ~10 MB/s for all steps together, which
+      # made a warm build no faster than a cold one (grund-docs
+      # docs/ci-performance.md). Elsewhere, the shared one from the secret.
+      - gw="$$(ip route | awk '/^default/ {print $$3; exit}')"; if printf 'version\r\n' | nc -w 1 "$$gw" 11311 2>/dev/null | grep -q '^VERSION'; then export SCCACHE_MEMCACHED_ENDPOINT="tcp://$$gw:11311"; echo "using this agent's own compile cache"; else echo "using the shared compile cache"; fi
       - hp="$${SCCACHE_MEMCACHED_ENDPOINT#tcp://}"; nc -z -w 3 "$${hp%:*}" "$${hp##*:}" || { echo "the compile cache is unreachable, so this step compiles without it"; unset RUSTC_WRAPPER; }
       # Build every test binary first, and keep the path of the accepttest
       # binary: `contract` runs that same file against the release binary.
@@ -228,6 +240,12 @@ steps:
       # ca-certificates: the CA bundle the image ships (Dockerfile.prebuilt),
       # brought up to date here so the image build fetches nothing.
       - apk add --no-cache musl-dev binutils protobuf-dev sccache ca-certificates
+      # The agent's own cache first, where it has one (agent 5: memcached in
+      # the CI daemon's network namespace, so at every step's gateway, port
+      # 11311). The shared one carries ~10 MB/s for all steps together, which
+      # made a warm build no faster than a cold one (grund-docs
+      # docs/ci-performance.md). Elsewhere, the shared one from the secret.
+      - gw="$$(ip route | awk '/^default/ {print $$3; exit}')"; if printf 'version\r\n' | nc -w 1 "$$gw" 11311 2>/dev/null | grep -q '^VERSION'; then export SCCACHE_MEMCACHED_ENDPOINT="tcp://$$gw:11311"; echo "using this agent's own compile cache"; else echo "using the shared compile cache"; fi
       - hp="$${SCCACHE_MEMCACHED_ENDPOINT#tcp://}"; nc -z -w 3 "$${hp%:*}" "$${hp##*:}" || { echo "the compile cache is unreachable, so this step compiles without it"; unset RUSTC_WRAPPER; }
       - cargo build --locked --release -p grund -p grund-guest
       - if [ -n "$${RUSTC_WRAPPER:-}" ]; then sccache --show-stats; fi
