@@ -1134,7 +1134,7 @@ pub(super) async fn signed_agent_call(
     Ok(())
 }
 
-fn device_key(dir: &std::path::Path) -> anyhow::Result<SigningKey> {
+pub(super) fn device_key(dir: &std::path::Path) -> anyhow::Result<SigningKey> {
     let seed: [u8; 32] = hex::decode(std::fs::read_to_string(dir.join("machine.key"))?.trim())?
         .try_into()
         .map_err(|_| anyhow::anyhow!("a machine key is 32 bytes"))?;

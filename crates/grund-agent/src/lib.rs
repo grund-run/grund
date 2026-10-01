@@ -8,8 +8,13 @@
 //! VMs that state asks for, through a [`vm::VmRuntime`].
 
 pub mod agent;
+pub mod apps;
 pub mod doctor;
 pub mod join;
 pub mod net;
+pub mod policy;
 pub mod resolved;
+pub mod runtime;
+pub mod secrets;
+pub mod simulated;
 pub mod vm;

@@ -140,6 +140,9 @@ struct AgentCommand {
     #[command(flatten)]
     agent: grund_agent::agent::AgentArgs,
 
+    #[arg(long, env = "GRUND_APP_RUNTIME", value_parser = ["none", "simulated"], default_value = "none", help = "What runs apps' containers: none, or simulated (nothing runs; for tests and demos)")]
+    app_runtime: String,
+
     #[arg(long, env = "GRUND_VM_RUNTIME", value_parser = ["none", "simulated", "firecracker"], default_value = "none", help = "What runs VMs: none, firecracker (microVMs, needs /dev/kvm), or simulated (each VM is `grund join` run with its metadata; for tests and demos)")]
     vm_runtime: String,
 
@@ -207,6 +210,24 @@ fn firecracker(command: &AgentCommand) -> anyhow::Result<grund_vm::Firecracker> 
     })
 }
 
+async fn agent<R: grund_agent::vm::VmRuntime>(
+    command: &AgentCommand,
+    vms: R,
+) -> anyhow::Result<()> {
+    match command.app_runtime.as_str() {
+        "simulated" => {
+            let dir = command.agent.data_dir.join("simulated-containers");
+            grund_agent::agent::run(
+                &command.agent,
+                vms,
+                grund_agent::simulated::SimulatedContainers::new(dir),
+            )
+            .await
+        }
+        _ => grund_agent::agent::run(&command.agent, vms, grund_agent::runtime::NoContainers).await,
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     grund_server::health::set_revision(env!("GRUND_BUILD_REVISION"));
@@ -234,11 +255,10 @@ async fn main() -> anyhow::Result<()> {
         Command::Agent(command) => match command.vm_runtime.as_str() {
             "simulated" => {
                 let dir = command.agent.data_dir.join("simulated-vms");
-                grund_agent::agent::run(&command.agent, grund_agent::vm::SimulatedVms::new(dir))
-                    .await
+                agent(&command, grund_agent::vm::SimulatedVms::new(dir)).await
             }
-            "firecracker" => grund_agent::agent::run(&command.agent, firecracker(&command)?).await,
-            _ => grund_agent::agent::run(&command.agent, grund_agent::vm::NoVms).await,
+            "firecracker" => agent(&command, firecracker(&command)?).await,
+            _ => agent(&command, grund_agent::vm::NoVms).await,
         },
     }
 }

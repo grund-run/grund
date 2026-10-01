@@ -9,6 +9,17 @@
 //! for this machine and organisation, is newer than the last one applied, and
 //! asks for no feature this agent does not know; otherwise the agent keeps
 //! the last good one and reports why.
+//!
+//! A document arrives two ways: a long poll of WatchDesiredState, so it
+//! applies within moments of its commit, and, as a fallback for an instance
+//! without that call, the heartbeat's generation followed by
+//! GetDesiredState. Either way it is verified the same way and handed to
+//! the apps loop ([`crate::apps`]).
+//!
+//! At SIGTERM the agent tells a system shutdown from its own restart: only
+//! when the system is stopping does it stop every replica first, in
+//! parallel, each with its own grace (apps.md §7.3 rule 3); a restart or an
+//! update leaves them running.
 
 use std::{
     path::{Path, PathBuf},
@@ -22,18 +33,22 @@ use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use grund_proto::grund::agent::v1::{
     Capabilities, DesiredState, GetDesiredStateRequest, GetDesiredStateResponse,
     GetMachineJoinTokenRequest, GetMachineJoinTokenResponse, HeartbeatRequest, HeartbeatResponse,
-    ReportStatusRequest, ReportStatusResponse, VmDesiredState, VmObserved, VmObservedState,
+    ReportStatusRequest, ReportStatusResponse, SignedDesiredState, VmDesiredState, VmObserved,
+    VmObservedState, WatchDesiredStateRequest, WatchDesiredStateResponse,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
+    apps::{Apps, Shared},
     join::{self, Record},
+    policy::Policy,
+    runtime::ContainerRuntime,
     vm::{self, Artifact, VmImage, VmRuntime, VmSpec, VmState, VmStatus},
 };
 
 /// Features this agent knows how to apply.
-pub const KNOWN_FEATURES: &[&str] = &["machines"];
+pub const KNOWN_FEATURES: &[&str] = &["machines", "replicas"];
 
 /// The largest document the agent decodes (apps.md §15).
 pub const MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
@@ -66,6 +81,11 @@ pub struct AgentArgs {
     /// Seconds between rounds, instead of what the instance asks for.
     #[arg(long, hide = true)]
     pub interval: Option<u64>,
+
+    /// The machine owner's policy for what this machine runs (grund-docs
+    /// design/apps.md §6.4). Missing: the defaults.
+    #[arg(long, env = "GRUND_AGENT_POLICY", default_value = crate::policy::POLICY_FILE)]
+    pub policy: PathBuf,
 }
 
 /// What the agent applied last, kept across restarts.
@@ -217,20 +237,28 @@ impl Link {
     }
 }
 
-/// Runs `grund agent` with `runtime` for VMs.
-pub async fn run<R: VmRuntime>(args: &AgentArgs, runtime: R) -> anyhow::Result<()> {
+/// Runs `grund agent` with `runtime` for VMs and `containers` for apps.
+pub async fn run<R: VmRuntime, C: ContainerRuntime + 'static>(
+    args: &AgentArgs,
+    runtime: R,
+    containers: C,
+) -> anyhow::Result<()> {
     grund_tls::install_default();
     let record = join::read_record(&args.data_dir)?
         .context("this machine is not registered; run grund join first")?;
     let key = join::machine_key(&args.data_dir)?;
     let trust = trust_key(&record);
+    let policy = Policy::load(&args.policy)?;
     let link = Link {
         http: join::http_client()?,
         origin: record.instance_url.clone(),
         machine_id: record.machine_id.clone(),
         key,
     };
-    let mut applied = read_applied(&args.data_dir)?;
+    let applied = std::sync::Arc::new(tokio::sync::Mutex::new(read_applied(&args.data_dir)?));
+    let shared = std::sync::Arc::new(Shared::default());
+    *shared.desired.lock().expect("shared lock") = current(&*applied.lock().await);
+    let containers = std::sync::Arc::new(containers);
     tracing::info!(machine = %record.machine_id, name = %record.name, "agent running");
     if let Some(network) = record.network.clone().filter(|_| !args.once) {
         let (link, seed, data_dir) = (link.clone(), link.key.to_bytes(), args.data_dir.clone());
@@ -240,17 +268,48 @@ pub async fn run<R: VmRuntime>(args: &AgentArgs, runtime: R) -> anyhow::Result<(
             }
         });
     }
+    let mut apps = Apps::new(
+        containers.clone(),
+        Some(link.clone()),
+        shared.clone(),
+        policy.clone(),
+        args.data_dir.clone(),
+        &link.key.to_bytes(),
+    );
+    if !args.once {
+        tokio::spawn(apps.run());
+        apps = Apps::new(
+            containers.clone(),
+            None,
+            std::sync::Arc::new(Shared::default()),
+            policy.clone(),
+            args.data_dir.clone(),
+            &link.key.to_bytes(),
+        );
+        let watcher = Watcher {
+            link: link.clone(),
+            record: record.clone(),
+            trust,
+            applied: applied.clone(),
+            shared: shared.clone(),
+            data_dir: args.data_dir.clone(),
+        };
+        tokio::spawn(watcher.run());
+        tokio::spawn(stop_at_shutdown(containers.clone()));
+    }
+    let context = Round {
+        link: &link,
+        record: &record,
+        trust: trust.as_ref(),
+        runtime: &runtime,
+        containers: containers.as_ref(),
+        policy: &policy,
+        data_dir: &args.data_dir,
+        applied: &applied,
+        shared: &shared,
+    };
     loop {
-        let interval = match round(
-            &link,
-            &record,
-            trust.as_ref(),
-            &runtime,
-            &args.data_dir,
-            &mut applied,
-        )
-        .await
-        {
+        let interval = match round(&context).await {
             Ok(seconds) => args.interval.unwrap_or(seconds.max(1) as u64),
             Err(error) => {
                 tracing::warn!(error = %format!("{error:#}"), "round failed; trying again");
@@ -258,21 +317,193 @@ pub async fn run<R: VmRuntime>(args: &AgentArgs, runtime: R) -> anyhow::Result<(
             }
         };
         if args.once {
+            if let Err(error) = apps.pass().await {
+                tracing::warn!(error = %format!("{error:#}"), "apps pass failed");
+            }
             return Ok(());
         }
-        tokio::time::sleep(Duration::from_secs(interval)).await;
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(interval)) => {}
+            _ = shared.changed.notified() => {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        }
     }
 }
 
-async fn round<R: VmRuntime>(
-    link: &Link,
+async fn stop_at_shutdown<C: ContainerRuntime + 'static>(containers: std::sync::Arc<C>) {
+    use tokio::signal::unix::{SignalKind, signal};
+    let Ok(mut term) = signal(SignalKind::terminate()) else {
+        return;
+    };
+    term.recv().await;
+    let stopping = tokio::process::Command::new("systemctl")
+        .arg("is-system-running")
+        .output()
+        .await
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "stopping")
+        .unwrap_or(false);
+    if stopping {
+        let started = std::time::Instant::now();
+        match crate::apps::stop_all(containers).await {
+            Ok(count) => tracing::info!(
+                count,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "the system is stopping; stopped every replica"
+            ),
+            Err(error) => {
+                tracing::warn!(error = %format!("{error:#}"), "could not stop replicas at shutdown")
+            }
+        }
+    } else {
+        tracing::info!("the agent is stopping; replicas keep running");
+    }
+    std::process::exit(0);
+}
+
+fn consider(
     record: &Record,
     trust: Option<&VerifyingKey>,
-    runtime: &R,
     data_dir: &Path,
     applied: &mut Applied,
+    shared: &Shared,
+    document: &SignedDesiredState,
+) -> anyhow::Result<Option<String>> {
+    match trust.ok_or(Refusal::NoTrustKey).and_then(|trust| {
+        verify(
+            record,
+            trust,
+            &document.key_id,
+            &document.payload,
+            &document.signature,
+            applied,
+        )
+    }) {
+        Ok(state) => {
+            *applied = Applied {
+                generation: state.generation,
+                payload: hex::encode(&document.payload),
+            };
+            write_applied(data_dir, applied)?;
+            tracing::info!(
+                generation = state.generation,
+                replicas = state.replicas.len(),
+                "applied a new desired state"
+            );
+            *shared.desired.lock().expect("shared lock") = Some(state);
+            shared.document.notify_one();
+            Ok(None)
+        }
+        Err(Refusal::Same) => Ok(None),
+        Err(Refusal::Equivocation) => {
+            tracing::error!(
+                generation = applied.generation,
+                "the instance signed two different documents for one generation; keeping the one applied"
+            );
+            Ok(Some(Refusal::Equivocation.to_string()))
+        }
+        Err(refusal) => {
+            tracing::warn!(%refusal, "refused a desired state; keeping the last good one");
+            Ok(Some(refusal.to_string()))
+        }
+    }
+}
+
+struct Watcher {
+    link: Link,
+    record: Record,
+    trust: Option<VerifyingKey>,
+    applied: std::sync::Arc<tokio::sync::Mutex<Applied>>,
+    shared: std::sync::Arc<Shared>,
+    data_dir: PathBuf,
+}
+
+impl Watcher {
+    async fn run(self) {
+        loop {
+            let since = self.applied.lock().await.generation;
+            let answer: anyhow::Result<WatchDesiredStateResponse> = self
+                .link
+                .call(
+                    "WatchDesiredState",
+                    &WatchDesiredStateRequest {
+                        since_generation: since,
+                        ..Default::default()
+                    },
+                )
+                .await;
+            match answer {
+                Ok(answer) => {
+                    if let Some(document) = answer.document.as_option() {
+                        let mut applied = self.applied.lock().await;
+                        match consider(
+                            &self.record,
+                            self.trust.as_ref(),
+                            &self.data_dir,
+                            &mut applied,
+                            &self.shared,
+                            document,
+                        ) {
+                            Ok(Some(refusal)) => {
+                                self.shared
+                                    .document_refusals
+                                    .lock()
+                                    .expect("shared lock")
+                                    .push(refusal);
+                                self.shared.changed.notify_one();
+                                drop(applied);
+                                tokio::time::sleep(Duration::from_secs(5)).await;
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                tracing::warn!(error = %format!("{error:#}"), "could not keep a document");
+                            }
+                        }
+                    }
+                }
+                Err(error) => {
+                    let unimplemented = format!("{error:#}").contains("unimplemented");
+                    tokio::time::sleep(Duration::from_secs(if unimplemented { 60 } else { 2 }))
+                        .await;
+                }
+            }
+        }
+    }
+}
+
+struct Round<'a, R, C> {
+    link: &'a Link,
+    record: &'a Record,
+    trust: Option<&'a VerifyingKey>,
+    runtime: &'a R,
+    containers: &'a C,
+    policy: &'a Policy,
+    data_dir: &'a Path,
+    applied: &'a tokio::sync::Mutex<Applied>,
+    shared: &'a Shared,
+}
+
+async fn round<R: VmRuntime, C: ContainerRuntime>(
+    context: &Round<'_, R, C>,
 ) -> anyhow::Result<i32> {
+    let Round {
+        link,
+        record,
+        trust,
+        runtime,
+        containers,
+        policy,
+        data_dir,
+        applied,
+        shared,
+    } = context;
     let capabilities = runtime.capabilities().await;
+    let apps = containers.capabilities().await;
+    let apps_reason = if !policy.apps {
+        "this machine's owner turned apps off".to_string()
+    } else {
+        apps.reason.clone()
+    };
     let beat: HeartbeatResponse = link
         .call(
             "Heartbeat",
@@ -284,66 +515,55 @@ async fn round<R: VmRuntime>(
                     egress: capabilities.egress,
                     free_vcpus: capabilities.free_vcpus,
                     free_memory_mib: capabilities.free_memory_mib,
+                    apps: apps.apps && policy.apps,
+                    arch: apps.arch.clone(),
+                    memory_mib: apps.memory_mib,
+                    cpu_millis: apps.cpu_millis,
+                    apps_unavailable_reason: apps_reason,
+                    max_replica_memory_mib: policy.max_replica_memory_mib,
+                    max_replica_cpu_millis: policy.max_replica_cpu_millis,
                     ..Default::default()
                 }),
                 ..Default::default()
             },
         )
         .await?;
-    let mut refusals = Vec::new();
-    if beat.generation > applied.generation {
+    let mut refusals: Vec<String> =
+        std::mem::take(&mut *shared.document_refusals.lock().expect("shared lock"));
+    let generation = applied.lock().await.generation;
+    if beat.generation > generation {
         let answer: GetDesiredStateResponse = link
             .call(
                 "GetDesiredState",
                 &GetDesiredStateRequest {
-                    since_generation: applied.generation,
+                    since_generation: generation,
                     ..Default::default()
                 },
             )
             .await?;
         if let Some(document) = answer.document.as_option() {
-            match trust.ok_or(Refusal::NoTrustKey).and_then(|trust| {
-                verify(
-                    record,
-                    trust,
-                    &document.key_id,
-                    &document.payload,
-                    &document.signature,
-                    applied,
-                )
-            }) {
-                Ok(state) => {
-                    *applied = Applied {
-                        generation: state.generation,
-                        payload: hex::encode(&document.payload),
-                    };
-                    write_applied(data_dir, applied)?;
-                    tracing::info!(generation = state.generation, "applied a new desired state");
-                }
-                Err(Refusal::Same) => {}
-                Err(Refusal::Equivocation) => {
-                    tracing::error!(
-                        generation = applied.generation,
-                        "the instance signed two different documents for one generation; keeping the one applied"
-                    );
-                    refusals.push(Refusal::Equivocation.to_string());
-                }
-                Err(refusal) => {
-                    tracing::warn!(%refusal, "refused a desired state; keeping the last good one");
-                    refusals.push(refusal.to_string());
-                }
+            let mut applied = applied.lock().await;
+            if let Some(refusal) =
+                consider(record, *trust, data_dir, &mut applied, shared, document)?
+            {
+                refusals.push(refusal);
             }
         }
     }
-    let desired = current(applied);
-    let observed = converge(link, record, runtime, desired.as_ref()).await?;
+    let applied_generation = applied.lock().await.generation;
+    let desired = current(&*applied.lock().await);
+    let observed = converge(link, record, *runtime, desired.as_ref()).await?;
+    refusals.extend(shared.refusals.lock().expect("shared lock").iter().cloned());
+    let replicas = shared.reports.lock().expect("shared lock").clone();
     let _: ReportStatusResponse = link
         .call(
             "ReportStatus",
             &ReportStatusRequest {
-                applied_generation: applied.generation,
+                applied_generation,
                 machines: observed.iter().map(observed_message).collect(),
                 refusals,
+                replicas,
+                reports_replicas: true,
                 ..Default::default()
             },
         )

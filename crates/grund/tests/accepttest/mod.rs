@@ -2,6 +2,7 @@
 mod fixtures;
 
 mod api;
+mod apps;
 mod certificates;
 mod csrf;
 mod doctor;
