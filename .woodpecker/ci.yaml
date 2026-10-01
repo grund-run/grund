@@ -205,19 +205,35 @@ steps:
       - cargo test --workspace --locked --no-run --message-format=json-render-diagnostics > .accept/build.json
       - grep '"reason":"compiler-artifact"' .accept/build.json | grep '/crates/grund#' | grep '"name":"tests"' | sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' > .accept/path
       - test "$$(wc -l < .accept/path)" -eq 1 || { echo "expected one grund accepttest binary, found:"; cat .accept/path; exit 1; }
-      - cp "$$(cat .accept/path)" .accept/tests
+      - cp "$$(cat .accept/path)" .accept/tests && cp target/debug/grund .accept/grund
+      # The ee build of the same accepttests, built now so both suites can run
+      # side by side: their run is bounded by their slowest tests, not by
+      # CPU (53-63 CPU seconds over 98 s, pipeline 106), so running them one
+      # after the other cost 65 s for nothing. The ee build overwrites
+      # target/debug/grund, which both suites would spawn, so each runs its
+      # own copy (GRUND_ACCEPT_GRUND_BIN), and each test binary claims a port
+      # block of its own. Not `cargo test -p grund --features ee`: -p
+      # resolves features differently and rebuilt 104 crates (pipeline 32);
+      # this rebuilds only what the feature changes.
+      - cargo test --workspace --features grund/ee --locked --no-run --message-format=json-render-diagnostics > .accept/build-ee.json
+      - grep '"reason":"compiler-artifact"' .accept/build-ee.json | grep '/crates/grund#' | grep '"name":"tests"' | sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' > .accept/path-ee
+      - test "$$(wc -l < .accept/path-ee)" -eq 1 || { echo "expected one grund ee accepttest binary, found:"; cat .accept/path-ee; exit 1; }
+      - cp "$$(cat .accept/path-ee)" .accept/tests-ee && cp target/debug/grund .accept/grund-ee
       # Fail with the cause, not with thirty accepttests timing out.
       - for i in $(seq 1 60); do nc -z postgres 5432 && nc -z nats 4222 && nc -z mailpit 1025 && break; sleep 1; done
       - nc -z postgres 5432 || { echo "postgres never accepted connections"; exit 1; }
-      - cargo test --workspace --locked -- --skip "$${TIMING_TEST}"
-      - cargo test --workspace --locked -- --exact "$${TIMING_TEST}"
-      # The ee accepttests: the workspace's tests with grund/ee, filtered to
-      # the accepttests. Not `cargo test -p grund --features ee --test tests`:
-      # -p resolves features differently and rebuilt 104 crates (pipeline 32);
-      # this rebuilds only what the feature changes, and the filter reruns
-      # only the accepttests, not the unit and store tests.
-      - cargo test --workspace --features grund/ee --locked -- 'accepttest::' --skip "$${TIMING_TEST}"
-      - cargo test --workspace --features grund/ee --locked -- --exact "$${TIMING_TEST}"
+      # The ee accepttests in the background, the workspace's tests in the
+      # foreground; then both are reported, and the step fails if either
+      # failed. cargo runs a test binary from its package directory; so does
+      # the ee run.
+      - |
+        (cd crates/grund && ee=0 && { GRUND_ACCEPT_GRUND_BIN="$$PWD/../../.accept/grund-ee" ../../.accept/tests-ee 'accepttest::' --skip "$${TIMING_TEST}" > ../../.accept/ee.log 2>&1 || ee=$$?; } && echo "$$ee" > ../../.accept/ee.status) &
+        core=0; GRUND_ACCEPT_GRUND_BIN="$$PWD/.accept/grund" cargo test --workspace --locked -- --skip "$${TIMING_TEST}" || core=$$?
+        wait
+        echo "--- the ee accepttests"; cat .accept/ee.log
+        [ "$$core" -eq 0 ] && [ "$$(cat .accept/ee.status)" -eq 0 ] || { echo "workspace tests exited $$core, the ee accepttests $$(cat .accept/ee.status)"; exit 1; }
+      - GRUND_ACCEPT_GRUND_BIN="$$PWD/.accept/grund" cargo test --workspace --locked -- --exact "$${TIMING_TEST}"
+      - cd crates/grund && GRUND_ACCEPT_GRUND_BIN="$$PWD/../../.accept/grund-ee" ../../.accept/tests-ee --exact "$${TIMING_TEST}"
       - if [ -n "$${RUSTC_WRAPPER:-}" ]; then sccache --show-stats; fi
 
   release:
