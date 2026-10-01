@@ -53,42 +53,17 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 uuid = { version = "1", features = ["serde", "v4", "v5", "v7"] }
 
-# Smallest binary (Kasper, 2026-10-01): fat LTO at opt-level "z" made grund
-# 20.8 MB instead of 36.8 with thin LTO at 3, measured (grund-docs
-# docs/ci-performance.md).
+# Thin LTO at opt-level 3 (Kasper, 2026-10-02). Fat LTO at opt-level "z"
+# made grund 43 % smaller (36.8 -> 20.8 MB), but on dev a sign-in's server
+# work went from ~16-17 ms to ~31-32 ms, and compiling password hashing at
+# 3 in its own crate (grund-password) did not win it back on dev (~32 ms),
+# although an isolated Argon2 benchmark said it should. grund-docs
+# docs/ci-performance.md.
 [profile.release]
-lto = "fat"
-opt-level = "z"
+lto = "thin"
 codegen-units = 1
 panic = "abort"
 strip = true
-
-# ...except password hashing, which is where grund spends CPU on purpose. At
-# "z" every hash cost ~50 % more (dev: a sign-in's server work 16 -> 31 ms).
-# Its speed is decided by the crate that calls Argon2, where the generic and
-# inline code is instantiated, together with these: so the calls live in
-# grund-password, and the caller alone or the hashing crates alone at 3 win
-# nothing back (measured both ways). Per-crate levels survive fat LTO.
-[profile.release.package.grund-password]
-opt-level = 3
-
-[profile.release.package.argon2]
-opt-level = 3
-
-[profile.release.package.blake2]
-opt-level = 3
-
-[profile.release.package.password-hash]
-opt-level = 3
-
-[profile.release.package.digest]
-opt-level = 3
-
-[profile.release.package.zeroize]
-opt-level = 3
-
-[profile.release.package.base64ct]
-opt-level = 3
 
 # Password hashing is the slow step of every sign-in; unoptimised it costs
 # seconds, which makes debug builds and their tests crawl.

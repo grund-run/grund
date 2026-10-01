@@ -2,8 +2,7 @@
 //!
 //! Blocking and CPU-bound; callers run it off the async runtime. This crate
 //! is where the Argon2 code is instantiated, so `[profile.release.package]`
-//! can compile it, with argon2 and the crates it inlines, at opt-level 3
-//! while the rest of the release build optimises for size.
+//! can set its optimisation apart from the rest of the release build.
 
 use argon2::{
     Algorithm, Argon2, Params, PasswordHash, PasswordHasher, PasswordVerifier, Version,

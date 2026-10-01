@@ -1,6 +1,6 @@
 [package]
 name = "grund-password"
-description = "grund's password hashing: Argon2id with grund's parameters, hash and verify. Its own crate so the release build can compile it at opt-level 3 while the rest is built for size"
+description = "grund's password hashing: Argon2id with grund's parameters, hash and verify. Its own crate, where the Argon2 code is instantiated, so its compile settings can be set apart from the rest"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
