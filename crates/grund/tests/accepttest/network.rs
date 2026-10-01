@@ -2000,7 +2000,7 @@ async fn replicas_reach_each_other_across_machines_and_by_name_another_account_r
 }
 
 #[tokio::test]
-async fn a_replica_keeps_its_address_across_an_agent_restart_and_one_listening_on_ipv4_only_is_not_ready()
+async fn a_replica_keeps_its_address_across_an_agent_restart_and_one_listening_on_ipv4_only_is_reached_through_a_forward()
 -> anyhow::Result<()> {
     let Some((net, registry)) = a_lab_with_registry().await? else {
         return Ok(());
@@ -2041,36 +2041,52 @@ async fn a_replica_keeps_its_address_across_an_agent_restart_and_one_listening_o
         "the same replica, not a new one: {restarts}"
     );
 
-    net.deploy(
-        &registry,
-        "legacy",
-        &["b"],
-        1,
-        &[8080],
-        &[8080],
-        &[("GRUND_SIMULATE_LISTEN_ON", "ipv4")],
-    )
-    .await?;
-    let started = Instant::now();
-    let reason = loop {
-        let answer = net
-            .apps(
-                "GetApp",
-                json!({"organisation": net.owner, "name": "legacy"}),
-            )
-            .await?;
-        let observed = &answer["app"]["replicas"][0]["observed"];
-        let reason = observed["reason"].as_str().unwrap_or_default().to_string();
-        if observed["ready"] != true && reason.contains("IPv4") {
-            break reason;
-        }
-        anyhow::ensure!(
-            started.elapsed() < Duration::from_secs(30),
-            "an IPv4-only copy is not ready and says why: {answer:#}"
-        );
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    };
-    eprintln!("reachable again {back:?} after b's agent restarted; IPv4-only: {reason}");
+    let legacy = net
+        .an_app_with(
+            &registry,
+            "legacy",
+            &["b"],
+            1,
+            &[8080],
+            &[8080],
+            &[("GRUND_SIMULATE_LISTEN_ON", "ipv4")],
+        )
+        .await?;
+    let (legacy_id, _) = replica_ids(&legacy)[0].clone();
+    let legacy_address = grund_net::membership::replica_address(b.address(), b.slot(), &legacy_id);
+    let inside = net
+        .in_replica(
+            &b,
+            &legacy_id,
+            &["curl", "-sS", "-g", "-m", "3", "http://[::1]:8080/"],
+        )
+        .await?;
+    anyhow::ensure!(
+        !inside.status.success(),
+        "the app listens on IPv4 only: {inside:?}"
+    );
+    let want = format!("simulated {legacy_id}");
+    let by_name = eventually(Duration::from_secs(20), || async {
+        net.fetch(&a, "http://legacy.grund.internal:8080/")
+            .await
+            .is_some_and(|body| body == want)
+    })
+    .await;
+    anyhow::ensure!(
+        by_name.is_some(),
+        "an IPv4-only copy is not reached by name: {}",
+        b.status()
+    );
+    let by_address = net
+        .fetch(&a, &format!("http://[{legacy_address}]:8080/"))
+        .await;
+    anyhow::ensure!(
+        by_address.as_deref() == Some(want.as_str()),
+        "by address: {by_address:?}"
+    );
+    eprintln!(
+        "reachable again {back:?} after b's agent restarted; an IPv4-only copy was ready and reached by name and address through its forward"
+    );
     Ok(())
 }
 

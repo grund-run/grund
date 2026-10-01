@@ -32,7 +32,8 @@
 //! `/etc/resolv.conf` names the machine's stub resolver. Its check then runs
 //! against that address from the machine, the path its peers take, so ready
 //! means reachable. A replica that answers only on IPv4 inside its namespace
-//! is not ready, and says so. Where the network is not up, a replica runs
+//! gets its ports forwarded from its address ([`crate::forward`]) and is
+//! then checked again. Where the network is not up, a replica runs
 //! with loopback only and is checked inside its namespace. What it reaches
 //! and what reaches it is published for the gate ([`Shared::endpoints`]).
 
@@ -334,6 +335,8 @@ pub struct Apps<C> {
     last_reports: Vec<ReplicaObserved>,
     network: Option<NetworkAccess>,
     attached: HashMap<String, Ipv6Addr>,
+    netns_of: HashMap<String, PathBuf>,
+    forwards: HashMap<String, Vec<crate::forward::Forward>>,
 }
 
 impl<C: ContainerRuntime + 'static> Apps<C> {
@@ -362,6 +365,8 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
             last_reports: Vec::new(),
             network: None,
             attached: HashMap::new(),
+            netns_of: HashMap::new(),
+            forwards: HashMap::new(),
         }
     }
 
@@ -399,6 +404,7 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
             return Ok(None);
         };
         let address = replica_address(net.prefix, net.slot, id);
+        self.netns_of.insert(id.to_string(), netns.clone());
         let tun =
             tokio::task::spawn_blocking(move || Tun::create_in(&netns, REPLICA_TUN, address, 48))
                 .await
@@ -412,7 +418,51 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
         Ok(Some(address))
     }
 
+    async fn forward_ipv4(&mut self, replica: &Replica) {
+        let id = replica.replica_id.clone();
+        let (Some(&address), Some(netns)) =
+            (self.attached.get(&id), self.netns_of.get(&id).cloned())
+        else {
+            return;
+        };
+        let mut ports: Vec<u16> = replica
+            .ports
+            .iter()
+            .filter_map(|p| u16::try_from(p.port).ok())
+            .collect();
+        if let Some((Probe::Http { port, .. } | Probe::Tcp { port }, _, _)) = probe_of(replica) {
+            ports.push(port);
+        }
+        ports.sort();
+        ports.dedup();
+        let have: Vec<u16> = self
+            .forwards
+            .get(&id)
+            .map(|f| f.iter().map(|f| f.port).collect())
+            .unwrap_or_default();
+        for port in ports.into_iter().filter(|p| !have.contains(p)) {
+            let answers = crate::probe::connect(netns.clone(), port, Duration::from_secs(1))
+                .await
+                .is_ok();
+            if !answers {
+                continue;
+            }
+            match crate::forward::start(netns.clone(), address, port).await {
+                Ok(forward) => {
+                    tracing::info!(replica = %id, %address, port, "the replica listens on IPv4 only; forwarding its address to 127.0.0.1 inside its namespace");
+                    self.forwards.entry(id.clone()).or_default().push(forward);
+                }
+                Err(crate::forward::NotForwarded::Taken) => {}
+                Err(crate::forward::NotForwarded::Failed(error)) => {
+                    tracing::warn!(replica = %id, port, %error, "could not forward an IPv4-only replica's port");
+                }
+            }
+        }
+    }
+
     fn detach(&mut self, id: &str) {
+        self.forwards.remove(id);
+        self.netns_of.remove(id);
         if let Some(address) = self.attached.remove(id)
             && let Some(net) = self.net()
         {
@@ -715,31 +765,40 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                 .map(|(id, probe, timeout, address)| {
                     let runtime = self.runtime.clone();
                     async move {
+                        let mut ipv4_only = false;
                         let result = match address {
                             None => runtime.probe(&id, &probe, timeout).await,
                             Some(address) => {
-                                let result =
-                                    crate::probe::run_at(IpAddr::V6(address), probe.clone(), timeout)
-                                        .await;
+                                let result = crate::probe::run_at(
+                                    IpAddr::V6(address),
+                                    probe.clone(),
+                                    timeout,
+                                )
+                                .await;
                                 match result {
                                     Err(reason)
                                         if runtime.probe(&id, &probe, timeout).await.is_ok() =>
                                     {
+                                        ipv4_only = true;
                                         Err(format!(
-                                            "it answers only on IPv4 inside its container ({reason} on its address {address}); grund's private network is IPv6: make it listen on [::]"
+                                            "it answers only on IPv4 inside its container ({reason} on its address {address}); forwarding its address to it"
                                         ))
                                     }
                                     other => other,
                                 }
                             }
                         };
-                        (id, result)
+                        (id, result, ipv4_only)
                     }
                 })
                 .collect(),
         )
         .await;
-        for (id, result) in results {
+        let mut forward = Vec::new();
+        for (id, result, ipv4_only) in results {
+            if ipv4_only {
+                forward.push(id.clone());
+            }
             let tracked = self.tracked.entry(id).or_default();
             let readiness = &mut tracked.readiness;
             match result {
@@ -790,6 +849,11 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                 {
                     observed.reason = tracked.readiness.reason.clone();
                 }
+            }
+        }
+        for id in forward {
+            if let Some(replica) = wanted.iter().find(|r| r.replica_id == id) {
+                self.forward_ipv4(replica).await;
             }
         }
         let known: Vec<String> = self.attached.keys().cloned().collect();
