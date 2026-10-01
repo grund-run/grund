@@ -11,6 +11,7 @@
 
 use grund_domain::{
     account::{Account, AccountCommand, AccountError, AccountEvent},
+    app::{App, AppCommand, AppError, AppEvent},
     machine::{Machine, MachineCommand, MachineError, MachineEvent},
     organisation::{Organisation, OrganisationCommand, OrganisationError, OrganisationEvent},
 };
@@ -29,6 +30,8 @@ pub enum WorkError {
     Organisation(#[from] OrganisationError),
     #[error(transparent)]
     Machine(#[from] MachineError),
+    #[error(transparent)]
+    App(#[from] AppError),
     #[error("event store: {0}")]
     Events(#[from] EventStoreError),
     #[error("database: {0}")]
@@ -52,6 +55,7 @@ enum Touched {
     Account(Uuid, Account, i64, i64),
     Organisation(Uuid, Organisation, i64, i64),
     Machine(Uuid, Machine, i64, i64),
+    App(Uuid, App, i64, i64),
 }
 
 /// A transaction spanning the event log, the read models and plain tables.
@@ -175,6 +179,52 @@ impl<'a> Work<'a> {
         Ok(events)
     }
 
+    /// As [`Work::account`], for an app.
+    pub async fn app(
+        &mut self,
+        app_id: Uuid,
+        command: AppCommand,
+    ) -> Result<Vec<AppEvent>, WorkError> {
+        let (events, ()) = self
+            .app_decide(app_id, |app| {
+                mire::Command::handle(command, app).map(|events| (events, ()))
+            })
+            .await?;
+        Ok(events)
+    }
+
+    /// Loads the app under its stream lock, lets `decide` choose the events
+    /// from its current state (a pure decision, such as the reconciler's),
+    /// then records, saves and projects them. `decide` also returns whatever
+    /// else it found, for the caller.
+    pub async fn app_decide<T>(
+        &mut self,
+        app_id: Uuid,
+        decide: impl FnOnce(&App) -> Result<(Vec<AppEvent>, T), AppError>,
+    ) -> Result<(Vec<AppEvent>, T), WorkError> {
+        let mut root = self.load::<App>(app_id).await?;
+        let base = root.version;
+        let (events, found) = decide(&root.state)?;
+        if events.is_empty() {
+            return Ok((events, found));
+        }
+        root.set_metadata(self.metadata.clone());
+        root.record_many(events.clone());
+        self.scope.save(&mut root).await?;
+        for (offset, event) in events.iter().enumerate() {
+            crate::apps::apply_app(app_id, base + 1 + offset as i64, event, self.scope.tx())
+                .await?;
+        }
+        self.touched
+            .push(Touched::App(app_id, root.state, base, root.version));
+        Ok((events, found))
+    }
+
+    /// The app's state, under its stream lock, without recording anything.
+    pub async fn load_app(&mut self, app_id: Uuid) -> Result<App, WorkError> {
+        Ok(self.load::<App>(app_id).await?.state)
+    }
+
     async fn load<A: Snapshot>(&mut self, id: Uuid) -> Result<AggregateRoot<A>, WorkError> {
         let id = id.to_string();
         let stream_id = format!("{}-{id}", A::stream_category());
@@ -213,6 +263,9 @@ impl<'a> Work<'a> {
                 }
                 Touched::Machine(id, state, before, after) => {
                     snapshot::<Machine>(store, id, state, before, after)
+                }
+                Touched::App(id, state, before, after) => {
+                    snapshot::<App>(store, id, state, before, after)
                 }
             }
         }

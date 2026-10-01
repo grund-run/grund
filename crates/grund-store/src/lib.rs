@@ -7,6 +7,7 @@
 
 pub mod accounts;
 pub mod agents;
+pub mod apps;
 pub mod certificates;
 pub mod doctor;
 pub mod machines;

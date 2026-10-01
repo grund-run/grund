@@ -20,6 +20,7 @@ use uuid::Uuid;
 pub const ACCOUNT_SUBSCRIPTION: &str = "grund-account-read-model-v1";
 pub const ORGANISATION_SUBSCRIPTION: &str = "grund-organisation-read-model-v1";
 pub const MACHINE_SUBSCRIPTION: &str = "grund-machine-read-model-v1";
+pub const APP_SUBSCRIPTION: &str = "grund-app-read-model-v1";
 
 /// Applies one account event at `version` to `grund_accounts`.
 pub async fn apply_account(
@@ -445,6 +446,23 @@ impl TransactionalEventHandler for MachineProjection {
     ) -> anyhow::Result<()> {
         let id = stream_uuid(event.stream_id(), grund_domain::machine::MACHINE_CATEGORY)?;
         apply_machine(id, event.stream_version(), &event.event, connection).await?;
+        Ok(())
+    }
+}
+
+/// The app read model, for a `mire::ProjectionRunner`.
+pub struct AppProjection;
+
+impl TransactionalEventHandler for AppProjection {
+    type Aggregate = grund_domain::app::App;
+
+    async fn handle(
+        &self,
+        event: HandledEvent<grund_domain::app::AppEvent>,
+        connection: &mut PgConnection,
+    ) -> anyhow::Result<()> {
+        let id = stream_uuid(event.stream_id(), grund_domain::app::APP_CATEGORY)?;
+        crate::apps::apply_app(id, event.stream_version(), &event.event, connection).await?;
         Ok(())
     }
 }
