@@ -26,6 +26,22 @@ service AgentService {
     option idempotency_level = NO_SIDE_EFFECTS;
   }
 
+  // The machine's desired state once its generation is newer than
+  // since_generation: at once if it already is, otherwise as soon as a
+  // decision touching the machine commits, or after at most 10 s with the
+  // document left unset (apps.md §6.1).
+  rpc WatchDesiredState(WatchDesiredStateRequest) returns (WatchDesiredStateResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // The secret values one replica needs, for a replica placed on the
+  // calling machine and still in its document; anything else is not_found,
+  // whether the replica exists or not. Values never travel in a document
+  // (apps.md §6.5).
+  rpc GetReplicaSecrets(GetReplicaSecretsRequest) returns (GetReplicaSecretsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
   // The one-time grund_join_ token a VM this machine was told to run boots
   // with. Only for a running VM placed on the calling machine that has not
   // registered yet; anything else is not_found. A token is a secret, so it
@@ -86,6 +102,21 @@ message Capabilities {
   bool egress = 3;
   uint32 free_vcpus = 4;
   uint32 free_memory_mib = 5;
+  // The machine runs containers (apps.md §5.2's apps capability): it is
+  // root, has cgroup v2 and overlayfs, and grund's container runtime can
+  // run here.
+  bool apps = 6;
+  // x86_64 or aarch64.
+  string arch = 7;
+  // The machine's memory and CPU, before grund's reserve for itself.
+  uint64 memory_mib = 8;
+  uint32 cpu_millis = 9;
+  // Why apps is false, for the user.
+  string apps_unavailable_reason = 10;
+  // The owner's limits on what one replica may ask for (apps.md §6.4); 0:
+  // no limit beyond the machine.
+  uint64 max_replica_memory_mib = 11;
+  uint32 max_replica_cpu_millis = 12;
 }
 
 message HeartbeatResponse {
@@ -101,6 +132,31 @@ message GetDesiredStateRequest {
 message GetDesiredStateResponse {
   // Unset when the instance has nothing newer than since_generation.
   SignedDesiredState document = 1;
+}
+
+message WatchDesiredStateRequest {
+  uint64 since_generation = 1;
+}
+
+message WatchDesiredStateResponse {
+  // Unset when nothing newer than since_generation committed while the call
+  // waited.
+  SignedDesiredState document = 1;
+}
+
+message GetReplicaSecretsRequest {
+  string replica_id = 1;
+}
+
+message GetReplicaSecretsResponse {
+  // Exactly the names and versions the replica's entry lists.
+  repeated SecretValue secrets = 1;
+}
+
+message SecretValue {
+  string name = 1;
+  uint32 version = 2;
+  bytes value = 3;
 }
 
 // signature = Ed25519(organisation key, "grund-desired-state-v1\n" ||
@@ -126,11 +182,26 @@ message DesiredState {
   // document otherwise, rather than silently ignore a part. "machines" when
   // machines is not empty.
   repeated string required_features = 5;
-  // Containers (apps.md §6.2). No instance issues replicas yet.
+  // Containers (apps.md §6.2). "replicas" is in required_features when this
+  // is not empty.
   repeated Replica replicas = 6;
   // VMs to run on this machine, each of which registers into the same
   // organisation (design/machines.md §7b).
   repeated Vm machines = 7;
+  // Images to fetch ahead of a rollout, so a new replica does not wait on a
+  // download (apps.md §8.2).
+  repeated Image prefetch = 8;
+  reserved 9;
+  reserved "registries";
+  // Keys the agent pins beside the current one, for a rotation (apps.md
+  // §6.3). Not issued yet.
+  repeated NextKey next_keys = 10;
+}
+
+message NextKey {
+  string key_id = 1;
+  // 32 bytes.
+  bytes public_key = 2;
 }
 
 message Replica {
@@ -150,6 +221,44 @@ message Replica {
   repeated SecretRef secrets = 13;
   // For a public port: its grund.run name and verified custom domains.
   repeated string hostnames = 14;
+  // Unset: ready once its process has run for min_ready.
+  ReplicaCheck check = 15;
+  ReplicaStop stop = 16;
+  reserved 17;
+  reserved "mounts";
+  // Reserved for customer-signed releases (apps.md §6.6); empty in v1.
+  bytes release_signature = 18;
+  // Secrets handed to the app as environment variables: the variable, and
+  // which of secrets it takes.
+  repeated SecretEnv secret_env = 19;
+  // The organisation's id for the app, so the agent can label and group
+  // its replicas.
+  string app_id = 20;
+}
+
+message SecretEnv {
+  string env = 1;
+  string secret = 2;
+}
+
+// Probed from the replica's machine, inside its network namespace: ready
+// after one pass, not ready after three failures in a row or at once on an
+// exit.
+message ReplicaCheck {
+  oneof kind {
+    // GET; any 2xx or 3xx passes.
+    string http_path = 1;
+    bool tcp = 2;
+  }
+  uint32 port = 3;
+  uint32 interval_ms = 4;
+  uint32 timeout_ms = 5;
+}
+
+message ReplicaStop {
+  // SIGTERM, SIGINT, SIGQUIT, SIGUSR1, SIGUSR2 or SIGHUP.
+  string signal = 1;
+  uint32 grace_seconds = 2;
 }
 
 message Image {
@@ -228,6 +337,38 @@ message ReportStatusRequest {
   repeated VmObserved machines = 2;
   // Why the agent refused a document or a part of one, for the dashboard.
   repeated string refusals = 3;
+  // Every replica of the applied document, and any other container the
+  // agent still runs (one leaving, stopped within its grace).
+  repeated ReplicaObserved replicas = 4;
+  // Whether this agent reports replicas at all; an older one leaves
+  // replicas empty and this false.
+  bool reports_replicas = 5;
+}
+
+message ReplicaObserved {
+  string replica_id = 1;
+  ReplicaObservedState state = 2;
+  // Its check passes (or it has no check and has run for min_ready).
+  bool ready = 3;
+  // How long it has been ready without a break, as the agent measured it,
+  // so no clock is compared across machines.
+  uint64 ready_for_ms = 4;
+  // Restarts after an exit since it was created.
+  uint32 restarts = 5;
+  int32 last_exit_code = 6;
+  // For failed and refused, or the last failed check: why, for the user.
+  string reason = 7;
+}
+
+enum ReplicaObservedState {
+  REPLICA_OBSERVED_STATE_UNSPECIFIED = 0;
+  REPLICA_OBSERVED_STATE_PULLING = 1;
+  REPLICA_OBSERVED_STATE_STARTING = 2;
+  REPLICA_OBSERVED_STATE_RUNNING = 3;
+  REPLICA_OBSERVED_STATE_EXITED = 4;
+  REPLICA_OBSERVED_STATE_FAILED = 5;
+  REPLICA_OBSERVED_STATE_REFUSED = 6;
+  REPLICA_OBSERVED_STATE_STOPPING = 7;
 }
 
 message VmObserved {

@@ -219,6 +219,14 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
         Requirement::Machine,
     ),
     (
+        "/grund.agent.v1.AgentService/WatchDesiredState",
+        Requirement::Machine,
+    ),
+    (
+        "/grund.agent.v1.AgentService/GetReplicaSecrets",
+        Requirement::Machine,
+    ),
+    (
         "/grund.agent.v1.AgentService/GetMachineJoinToken",
         Requirement::Machine,
     ),
@@ -937,6 +945,20 @@ mod tests {
             _: RequestContext,
             _: ServiceRequest<'_, agent::GetDesiredStateRequest>,
         ) -> ServiceResult<agent::GetDesiredStateResponse> {
+            unreachable!()
+        }
+        async fn watch_desired_state(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, agent::WatchDesiredStateRequest>,
+        ) -> ServiceResult<agent::WatchDesiredStateResponse> {
+            unreachable!()
+        }
+        async fn get_replica_secrets(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, agent::GetReplicaSecretsRequest>,
+        ) -> ServiceResult<agent::GetReplicaSecretsResponse> {
             unreachable!()
         }
         async fn get_machine_join_token(

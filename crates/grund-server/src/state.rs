@@ -39,4 +39,6 @@ pub struct State {
     /// binary includes them.
     pub extensions: Extensions,
     pub started: Instant,
+    /// Wakes the control link's long polls when a document changes.
+    pub wakes: crate::wakes::Wakes,
 }

@@ -1,0 +1,447 @@
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+package grund.app.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// An organisation's apps (grund-docs design/apps.md): what each one runs,
+// its releases, and where its copies run. Members get and list; owners and
+// admins create, deploy, roll back, scale, configure, set secrets and
+// delete. An organisation the caller is not a member of, and an app that is
+// not the organisation's, are not_found alike.
+//
+// A deploy makes a release: an immutable, numbered snapshot of what every
+// copy runs, with the image resolved from its tag to a digest once, by
+// grund. grund then rolls the release out: a new copy beside each old one,
+// ready, then the old one drains. A release whose copies do not become ready
+// rolls back on its own.
+//
+// Errors carry a stable reason in an ErrorReason detail: spec_invalid (the
+// message says which field), name_taken, app_limit, image_unresolved (the
+// registry did not answer for the image, or has no such tag),
+// image_unsupported (no variant for any architecture grund runs),
+// release_not_found, and halted.
+service AppService {
+  // Owners and admins. A new app with no release yet; nothing runs until
+  // the first Deploy.
+  rpc CreateApp(CreateAppRequest) returns (CreateAppResponse);
+
+  rpc GetApp(GetAppRequest) returns (GetAppResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // By name.
+  rpc ListApps(ListAppsRequest) returns (ListAppsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // Owners and admins. Makes the next release from spec, or from a
+  // grund.toml naming exactly this app, and rolls it out. A release while
+  // another rolls out supersedes it.
+  rpc Deploy(DeployRequest) returns (DeployResponse);
+
+  // Newest first, at most 100.
+  rpc ListReleases(ListReleasesRequest) returns (ListReleasesResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // Owners and admins. A new release copying an earlier one's contents
+  // (with the secrets' current values), rolled out like any other.
+  rpc Rollback(RollbackRequest) returns (RollbackResponse);
+
+  // Owners and admins. How many copies to run. Not a new release.
+  rpc Scale(ScaleRequest) returns (ScaleResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+
+  // Owners and admins. Replaces the app's settings (rollout, placement,
+  // reschedule_after, automatic rollback). Not a new release.
+  rpc ConfigureApp(ConfigureAppRequest) returns (ConfigureAppResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+
+  // Owners and admins. Stores a new version of a secret of the app. Its
+  // value is never shown again, and never travels in a release or a
+  // machine's document. A release names secrets; the next deploy (or a
+  // rollback) uses the newest version.
+  rpc SetSecret(SetSecretRequest) returns (SetSecretResponse);
+
+  // Owners and admins. Its copies stop and its name is free again. Its
+  // releases stay in the history.
+  rpc DeleteApp(DeleteAppRequest) returns (DeleteAppResponse);
+}
+
+// Everything one release runs (apps.md §3.1, §3.4).
+message AppSpec {
+  // An OCI image reference: name[:tag] or name@sha256:<64 hex>.
+  string image = 1;
+  // Replaces the image's entrypoint and arguments when not empty.
+  repeated string command = 2;
+  // At most 8.
+  repeated Port ports = 3;
+  Resources resources = 4;
+  // Plain settings, shown in the dashboard. At most 128, 32 KiB together.
+  repeated EnvVar env = 5;
+  // Secrets of the app handed to it as environment variables. At most 50.
+  repeated SecretEnv secrets = 6;
+  // Unset: a copy is ready once its process has run for min_ready.
+  Check check = 7;
+  Stop stop = 8;
+}
+
+message Port {
+  // [a-z][a-z0-9-]{0,14}, unique in the app.
+  string name = 1;
+  // 1 to 65535.
+  uint32 port = 2;
+  Protocol protocol = 3;
+  // Reachable from outside through the entry. Not served yet: the traffic
+  // path is not built.
+  bool public = 4;
+}
+
+enum Protocol {
+  // HTTP/1.1.
+  PROTOCOL_UNSPECIFIED = 0;
+  PROTOCOL_HTTP = 1;
+  // HTTP/2 without TLS.
+  PROTOCOL_H2C = 2;
+  PROTOCOL_TCP = 3;
+}
+
+message Resources {
+  // 0 means 512; 16 to 262144.
+  uint64 memory_mib = 1;
+  // Thousandths of a CPU. 0 means 1000; 10 to 64000.
+  uint32 cpu_millis = 2;
+}
+
+message EnvVar {
+  // [A-Za-z_][A-Za-z0-9_]*, at most 128 bytes.
+  string name = 1;
+  string value = 2;
+}
+
+message SecretEnv {
+  // The environment variable the app sees.
+  string env = 1;
+  // The app's secret, as SetSecret named it.
+  string secret = 2;
+}
+
+// A check grund makes on each copy, from its machine. A copy is ready after
+// one pass and not ready after three failures in a row, or at once when its
+// process exits.
+message Check {
+  oneof kind {
+    // GET this path; any 2xx or 3xx passes.
+    string http_path = 1;
+    // A TCP connect passes.
+    bool tcp = 2;
+  }
+  // The port to check: one of the app's ports. 0: its first port.
+  uint32 port = 3;
+  // 0 means 2000; 500 to 60000.
+  uint32 interval_ms = 4;
+  // 0 means 1000; 100 to 30000, below interval_ms.
+  uint32 timeout_ms = 5;
+}
+
+message Stop {
+  // SIGTERM (the default), SIGINT, SIGQUIT, SIGUSR1, SIGUSR2 or SIGHUP.
+  string signal = 1;
+  // From the signal to SIGKILL. 0 means 30; at most 300.
+  uint32 grace_seconds = 2;
+}
+
+// What is not per release (apps.md §3.4, §8.2, §9.2).
+message AppSettings {
+  // 0 means 1; at most 20.
+  uint32 copies = 1;
+  Rollout rollout = 2;
+  // The organisation's machines (by name) its copies may run on; empty: any.
+  repeated string machines = 3;
+  // How long a machine must be unreachable before its copies start
+  // elsewhere. 0 means 120; 30 to 3600.
+  uint32 reschedule_after_seconds = 4;
+  // Roll back on its own when a release fails. Unset means true.
+  optional bool auto_rollback = 5;
+}
+
+message Rollout {
+  // Extra copies allowed during a rollout. Unset means 1; at most copies.
+  optional uint32 max_surge = 1;
+  // Copies allowed below copies during a rollout. Unset means 0; below
+  // copies.
+  optional uint32 max_unavailable = 2;
+  // How long a new copy must stay ready before it counts. Unset means 10;
+  // at most 600.
+  optional uint32 min_ready_seconds = 3;
+  // A new copy not ready by then fails the release. 0 means 300; 10 to
+  // 1800.
+  uint32 ready_deadline_seconds = 4;
+  // How long a copy leaving traffic may finish its requests. Unset means
+  // 30; at most 300.
+  optional uint32 drain_seconds = 5;
+}
+
+message App {
+  string app_id = 1;
+  string name = 2;
+  // The settings in force, with every default filled in.
+  AppSettings settings = 3;
+  // 0 until a release has gone live.
+  uint32 current_release = 4;
+  // Set while a release rolls out, and after one failed until the next.
+  RolloutStatus rollout = 5;
+  // Every copy grund placed, by slot, and what its machine reports.
+  repeated Replica replicas = 6;
+  // Copies that cannot be placed now, and why.
+  repeated Waiting waiting = 7;
+  // The secrets' names, never values, with their newest versions.
+  repeated SecretInfo secrets = 8;
+  google.protobuf.Timestamp created_at = 9;
+  // True after a release failed with auto_rollback off: grund changes
+  // nothing until the next Deploy or Rollback.
+  bool halted = 10;
+}
+
+message RolloutStatus {
+  string rollout_id = 1;
+  // 0 for the first release.
+  uint32 from_release = 2;
+  uint32 to_release = 3;
+  RolloutState state = 4;
+  // For failed: why, in words for the customer.
+  string reason = 5;
+  google.protobuf.Timestamp started_at = 6;
+  google.protobuf.Timestamp ended_at = 7;
+}
+
+enum RolloutState {
+  ROLLOUT_STATE_UNSPECIFIED = 0;
+  ROLLOUT_STATE_IN_PROGRESS = 1;
+  ROLLOUT_STATE_SUCCEEDED = 2;
+  // Rolled back on its own, or halted with auto_rollback off.
+  ROLLOUT_STATE_FAILED = 3;
+  ROLLOUT_STATE_SUPERSEDED = 4;
+}
+
+message Replica {
+  string replica_id = 1;
+  uint32 slot = 2;
+  uint32 release = 3;
+  string machine_id = 4;
+  string machine_name = 5;
+  ReplicaState state = 6;
+  // What its machine last reported.
+  ReplicaObservation observed = 7;
+  google.protobuf.Timestamp placed_at = 8;
+}
+
+enum ReplicaState {
+  REPLICA_STATE_UNSPECIFIED = 0;
+  // Should run, and gets traffic once ready.
+  REPLICA_STATE_RUNNING = 1;
+  // Leaving: no new requests, stopped after the app's drain.
+  REPLICA_STATE_DRAINING = 2;
+}
+
+message ReplicaObservation {
+  // Unspecified: its machine has not reported it yet.
+  ObservedState state = 1;
+  bool ready = 2;
+  google.protobuf.Timestamp ready_since = 3;
+  uint32 restarts = 4;
+  int32 last_exit_code = 5;
+  // For failed and refused, and the last check failure: why.
+  string reason = 6;
+  google.protobuf.Timestamp observed_at = 7;
+  // Whether its machine reported within the last 30 seconds.
+  bool machine_connected = 8;
+}
+
+enum ObservedState {
+  OBSERVED_STATE_UNSPECIFIED = 0;
+  // Fetching its image.
+  OBSERVED_STATE_PULLING = 1;
+  OBSERVED_STATE_STARTING = 2;
+  OBSERVED_STATE_RUNNING = 3;
+  // Its process ended; it is restarted after its back-off.
+  OBSERVED_STATE_EXITED = 4;
+  // It could not be started (an image that cannot be fetched, a runtime
+  // error).
+  OBSERVED_STATE_FAILED = 5;
+  // Its machine's own policy refused it.
+  OBSERVED_STATE_REFUSED = 6;
+}
+
+message Waiting {
+  uint32 slot = 1;
+  // no_machine, no_capability, no_architecture, insufficient_resources,
+  // refused_by_machine.
+  string reason = 2;
+  // In words, for the customer.
+  string message = 3;
+}
+
+message SecretInfo {
+  string name = 1;
+  uint32 version = 2;
+  google.protobuf.Timestamp updated_at = 3;
+}
+
+message Release {
+  uint32 number = 1;
+  AppSpec spec = 2;
+  // The image as it runs: sha256:<64 hex>.
+  string image_digest = 3;
+  // The architectures the image has a variant for (x86_64, aarch64).
+  repeated string platforms = 4;
+  // The secret versions this release was made with.
+  repeated SecretInfo secret_versions = 5;
+  ReleaseSource source = 6;
+  // For a rollback: the release it copies.
+  uint32 rollback_of = 7;
+  // The account that made it, by name.
+  string created_by = 8;
+  google.protobuf.Timestamp created_at = 9;
+  ReleaseOutcome outcome = 10;
+  // For failed: why.
+  string reason = 11;
+  // When it went live, or ended.
+  google.protobuf.Timestamp ended_at = 12;
+}
+
+enum ReleaseSource {
+  RELEASE_SOURCE_UNSPECIFIED = 0;
+  RELEASE_SOURCE_DASHBOARD = 1;
+  RELEASE_SOURCE_API = 2;
+  RELEASE_SOURCE_FILE = 3;
+  RELEASE_SOURCE_ROLLBACK = 4;
+}
+
+enum ReleaseOutcome {
+  RELEASE_OUTCOME_UNSPECIFIED = 0;
+  RELEASE_OUTCOME_ROLLING_OUT = 1;
+  RELEASE_OUTCOME_LIVE = 2;
+  // It was live, and a later release replaced it.
+  RELEASE_OUTCOME_REPLACED = 3;
+  RELEASE_OUTCOME_FAILED = 4;
+  RELEASE_OUTCOME_SUPERSEDED = 5;
+}
+
+message CreateAppRequest {
+  // The organisation's slug.
+  string organisation = 1;
+  // [a-z0-9-]{1,32}, not starting or ending with '-'. Immutable.
+  string name = 2;
+  AppSettings settings = 3;
+}
+
+message CreateAppResponse {
+  App app = 1;
+}
+
+message GetAppRequest {
+  string organisation = 1;
+  string name = 2;
+}
+
+message GetAppResponse {
+  App app = 1;
+}
+
+message ListAppsRequest {
+  string organisation = 1;
+}
+
+message ListAppsResponse {
+  repeated App apps = 1;
+}
+
+message DeployRequest {
+  string organisation = 1;
+  string name = 2;
+  oneof source {
+    AppSpec spec = 3;
+    // A grund.toml with one [apps.<name>] table, for this app. Its copies
+    // and placement are applied as ConfigureApp would.
+    string grund_toml = 4;
+  }
+  // Where the deploy came from, for the release list: a commit, a CI run.
+  // At most 200 bytes. Shown, never trusted.
+  string note = 5;
+}
+
+message DeployResponse {
+  Release release = 1;
+}
+
+message ListReleasesRequest {
+  string organisation = 1;
+  string name = 2;
+}
+
+message ListReleasesResponse {
+  repeated Release releases = 1;
+}
+
+message RollbackRequest {
+  string organisation = 1;
+  string name = 2;
+  // The release whose contents to run again.
+  uint32 release = 3;
+}
+
+message RollbackResponse {
+  Release release = 1;
+}
+
+message ScaleRequest {
+  string organisation = 1;
+  string name = 2;
+  // 1 to 20.
+  uint32 copies = 3;
+}
+
+message ScaleResponse {
+  App app = 1;
+}
+
+message ConfigureAppRequest {
+  string organisation = 1;
+  string name = 2;
+  AppSettings settings = 3;
+}
+
+message ConfigureAppResponse {
+  App app = 1;
+}
+
+message SetSecretRequest {
+  string organisation = 1;
+  string name = 2;
+  // [a-z0-9][a-z0-9-]{0,62}.
+  string secret = 3;
+  // At most 64 KiB.
+  bytes value = 4;
+}
+
+message SetSecretResponse {
+  SecretInfo secret = 1;
+}
+
+message DeleteAppRequest {
+  string organisation = 1;
+  string name = 2;
+}
+
+message DeleteAppResponse {}
+
+// Attached to errors as a detail: the stable reason a client can act on.
+message ErrorReason {
+  string reason = 1;
+}

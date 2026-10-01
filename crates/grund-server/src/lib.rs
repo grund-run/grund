@@ -41,6 +41,7 @@ pub mod services;
 pub mod setup_link;
 pub mod state;
 pub mod templates;
+pub mod wakes;
 pub mod web;
 
 use anyhow::Context;
@@ -122,6 +123,7 @@ pub async fn serve(
         deletions,
         extensions: std::sync::Arc::new(extensions),
         started: health::started(),
+        wakes: wakes::Wakes::default(),
     };
 
     if state.config.social.social_login && state.extensions.is_empty() {

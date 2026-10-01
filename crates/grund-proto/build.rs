@@ -3,6 +3,7 @@ fn main() {
         .files(&[
             "../../proto/grund/account/v1/account.proto",
             "../../proto/grund/agent/v1/agent.proto",
+            "../../proto/grund/app/v1/app.proto",
             "../../proto/grund/agent/v1/enrollment.proto",
             "../../proto/grund/certificates/v1/certificates.proto",
             "../../proto/grund/machine/v1/machine.proto",

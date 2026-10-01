@@ -152,6 +152,7 @@ async fn state(pool: PgPool, issuer: &str) -> State {
             grund_ee::social::http_client().unwrap(),
         ))))]),
         started: Instant::now(),
+        wakes: grund_server::wakes::Wakes::default(),
     }
 }
 

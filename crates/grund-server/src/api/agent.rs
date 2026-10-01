@@ -8,9 +8,10 @@ use buffa_types::google::protobuf::Timestamp;
 use connectrpc::{ConnectError, RequestContext, Response, ServiceRequest, ServiceResult};
 use grund_proto::grund::agent::v1::{
     AgentService, GetDesiredStateRequest, GetDesiredStateResponse, GetMachineJoinTokenRequest,
-    GetMachineJoinTokenResponse, GetMembershipRequest, GetMembershipResponse, HeartbeatRequest,
-    HeartbeatResponse, ReportStatusRequest, ReportStatusResponse, SignedDesiredState,
-    SignedMembershipList, VmObservedState,
+    GetMachineJoinTokenResponse, GetMembershipRequest, GetMembershipResponse,
+    GetReplicaSecretsRequest, GetReplicaSecretsResponse, HeartbeatRequest, HeartbeatResponse,
+    ReportStatusRequest, ReportStatusResponse, SignedDesiredState, SignedMembershipList,
+    VmObservedState, WatchDesiredStateRequest, WatchDesiredStateResponse,
 };
 use uuid::Uuid;
 
@@ -43,6 +44,15 @@ fn machine(ctx: &RequestContext) -> Result<MachineCaller, ConnectError> {
 fn internal(error: impl std::fmt::Display) -> ConnectError {
     tracing::error!(error = %error, "agent API call failed");
     ConnectError::unavailable("grund could not finish that; try again")
+}
+
+fn signed(document: grund_store::agents::DocumentRow) -> SignedDesiredState {
+    SignedDesiredState {
+        key_id: document.key_id.to_string(),
+        payload: document.payload,
+        signature: document.signature,
+        ..Default::default()
+    }
 }
 
 #[allow(refining_impl_trait)]
@@ -92,17 +102,41 @@ impl AgentService for AgentApi {
             .map_err(internal)?;
         Response::ok(GetDesiredStateResponse {
             document: document
-                .map(|d| {
-                    MessageField::from(SignedDesiredState {
-                        key_id: d.key_id.to_string(),
-                        payload: d.payload,
-                        signature: d.signature,
-                        ..Default::default()
-                    })
-                })
+                .map(signed)
+                .map(MessageField::from)
                 .unwrap_or_default(),
             ..Default::default()
         })
+    }
+
+    async fn watch_desired_state(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, WatchDesiredStateRequest>,
+    ) -> ServiceResult<WatchDesiredStateResponse> {
+        let caller = machine(&ctx)?;
+        let document = self
+            .state
+            .agents()
+            .watch_desired_state(&caller, request.since_generation)
+            .await
+            .map_err(internal)?;
+        Response::ok(WatchDesiredStateResponse {
+            document: document
+                .map(signed)
+                .map(MessageField::from)
+                .unwrap_or_default(),
+            ..Default::default()
+        })
+    }
+
+    async fn get_replica_secrets(
+        &self,
+        ctx: RequestContext,
+        _request: ServiceRequest<'_, GetReplicaSecretsRequest>,
+    ) -> ServiceResult<GetReplicaSecretsResponse> {
+        machine(&ctx)?;
+        Err(ConnectError::not_found("no such replica on this machine"))
     }
 
     async fn get_machine_join_token(

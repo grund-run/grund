@@ -32,6 +32,10 @@ pub const CONNECTED_WITHIN: Duration = Duration::seconds(30);
 /// How often an agent is asked to send a heartbeat.
 pub const HEARTBEAT_INTERVAL_SECONDS: i32 = 5;
 
+/// The longest WatchDesiredState waits for a newer document: below the
+/// agent's call deadline, so the instance answers first.
+pub const LONG_POLL: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// The purpose prefix of an agent request's signature.
 pub const REQUEST_PREFIX: &str = "grund-agent-request-v1\n";
 
@@ -177,6 +181,27 @@ impl Agents {
             .filter(|document| document.generation as u64 > since))
     }
 
+    /// The machine's document once it is newer than `since`: at once if it
+    /// is, otherwise when a change to it commits, or `None` after
+    /// [`LONG_POLL`].
+    pub async fn watch_desired_state(
+        &self,
+        caller: &MachineCaller,
+        since: u64,
+    ) -> anyhow::Result<Option<DocumentRow>> {
+        let deadline = tokio::time::Instant::now() + LONG_POLL;
+        let mut wakes = self.state.wakes.subscribe();
+        loop {
+            if let Some(document) = self.desired_state(caller, since).await? {
+                return Ok(Some(document));
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Ok(None);
+            }
+            crate::wakes::Wakes::wait(&mut wakes).await;
+        }
+    }
+
     /// The join token for a VM the calling machine hosts and should run, that
     /// has not registered yet.
     pub async fn join_token(
@@ -290,6 +315,7 @@ impl Agents {
         )
         .await?;
         tx.commit().await?;
+        self.state.wakes.documents_changed();
         Ok(())
     }
 
