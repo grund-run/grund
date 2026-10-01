@@ -1196,18 +1196,23 @@ mod tests {
             ..Default::default()
         });
         set(&shared, vec![unpinned]);
-        apps.pass().await.unwrap();
-        tokio::time::sleep(Duration::from_millis(30)).await;
-        apps.pass().await.unwrap();
-        let ids: Vec<String> = apps
-            .runtime
-            .list()
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|c| c.id)
-            .collect();
-        assert!(ids.is_empty(), "{ids:?}");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let ids = loop {
+            apps.pass().await.unwrap();
+            let ids: Vec<String> = apps
+                .runtime
+                .list()
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|c| c.id)
+                .collect();
+            if ids.is_empty() || Instant::now() >= deadline {
+                break ids;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        assert!(ids.is_empty(), "r1 was not stopped within 5 s: {ids:?}");
         assert_eq!(
             state_of(&shared, "r2").0,
             Some(ReplicaObservedState::REPLICA_OBSERVED_STATE_REFUSED)

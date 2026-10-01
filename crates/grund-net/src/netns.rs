@@ -147,6 +147,9 @@ pub fn ensure(dir: &Path, id: &str) -> io::Result<PathBuf> {
 /// Unmounts and removes container `id`'s namespace. A missing one is fine.
 pub fn remove(dir: &Path, id: &str) -> io::Result<()> {
     let target = path(dir, id);
+    if !target.exists() {
+        return Ok(());
+    }
     let c = cstring(&target)?;
     let unmounted = unsafe { libc::umount2(c.as_ptr(), libc::MNT_DETACH) };
     if unmounted < 0 {
