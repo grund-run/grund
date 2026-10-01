@@ -50,12 +50,20 @@ labels:
 
 services:
   # For `test`: the store's #[sqlx::test]s and the spawned-binary accepttests.
+  # Every accepttest spawns a grund with a pool of its own, one test per
+  # thread the agent gives the step, so 100 connections, the default, ran out
+  # on a 24-thread agent ("sorry, too many clients already", pipeline 97).
+  # 400, as compose.dev.yaml gives the same tests locally. Set through
+  # initdb, not `commands:`: a service with commands runs under a shell that
+  # never passes the stop signal on, so it was killed after a 20 s grace and
+  # held the workflow open that long (PR pipeline 102).
   postgres:
     image: postgres:18-alpine
     environment:
       POSTGRES_DB: grund
       POSTGRES_USER: grund
       POSTGRES_PASSWORD: grund
+      POSTGRES_INITDB_ARGS: "-c max_connections=400"
   nats:
     image: nats:2.15-alpine
   mailpit:
