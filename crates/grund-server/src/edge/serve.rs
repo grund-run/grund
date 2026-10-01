@@ -153,6 +153,8 @@ pub struct Edge {
     pub host: String,
     pub admission: Admission,
     pub meter: Meter,
+    /// Sources that put a PROXY header before the ClientHello.
+    pub proxy_from: Vec<super::proxy::Source>,
 }
 
 async fn page<I>(io: I, status: StatusCode, words: &'static str)
@@ -186,7 +188,19 @@ where
 }
 
 /// Serves one TCP connection on 443.
-pub async fn connection(edge: Arc<Edge>, tcp: TcpStream, peer: SocketAddr) {
+pub async fn connection(edge: Arc<Edge>, mut tcp: TcpStream, peer: SocketAddr) {
+    let peer = if edge.proxy_from.iter().any(|s| s.contains(peer.ip())) {
+        match tokio::time::timeout(HANDSHAKE_TIMEOUT, super::proxy::read(&mut tcp, peer)).await {
+            Ok(Ok(client)) => client,
+            Ok(Err(error)) => {
+                tracing::debug!(%peer, %error, "edge: refused a connection without a good PROXY header");
+                return;
+            }
+            Err(_) => return,
+        }
+    } else {
+        peer
+    };
     let Some(_admitted) = edge.admission.admit(peer.ip(), Instant::now()) else {
         return;
     };

@@ -18,6 +18,7 @@
 
 pub mod certificates;
 pub mod machines;
+pub mod proxy;
 pub mod routes;
 pub mod serve;
 
@@ -78,6 +79,14 @@ pub struct EdgeCommand {
     /// 50, at most 200).
     #[arg(long, env = "GRUND_EDGE_HANDSHAKES_PER_ADDRESS", default_value_t = 50)]
     pub handshakes_per_address: u32,
+
+    /// The sources (addresses or networks, comma-separated) whose
+    /// connections start with a PROXY protocol header (v1 or v2) naming the
+    /// client: an L4 proxy passing TLS through by SNI. From these the header
+    /// is required; from anywhere else it is never read. Unset: the
+    /// connection's own peer is the client.
+    #[arg(long, env = "GRUND_EDGE_PROXY_PROTOCOL_FROM", value_delimiter = ',')]
+    pub proxy_protocol_from: Vec<proxy::Source>,
 
     /// Seconds to finish open connections on SIGTERM.
     #[arg(long, env = "GRUND_SHUTDOWN_GRACE", default_value_t = 10)]
@@ -264,6 +273,7 @@ pub async fn run(command: EdgeCommand) -> anyhow::Result<()> {
             handshakes_per_second: f64::from(command.handshakes_per_address),
         }),
         meter: serve::Meter::default(),
+        proxy_from: command.proxy_protocol_from.clone(),
     });
     let certificates = certificates::EdgeCertificates::new(
         crate::relay_certificate::Instance::new(key.clone())?,
