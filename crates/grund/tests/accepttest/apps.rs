@@ -727,3 +727,77 @@ async fn a_grund_toml_deploys_and_an_unknown_tag_is_refused_with_its_reason() ->
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn an_app_made_on_the_dashboard_shows_its_copies_ready_and_its_versions() -> anyhow::Result<()>
+{
+    let registry = FakeRegistry::start().await?;
+    let Some((given, when, then)) =
+        testcase_configured(&[("GRUND_INSECURE_REGISTRIES", &registry.host)]).await?
+    else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let org = owner.username.clone();
+    let _agent = a_machine(&when, &then, &org, "desk").await?;
+    let digest = registry.publish("acme/hello", "1");
+    let page = format!("/{org}/apps");
+    when.visiting(&page).await?;
+    then.status(200)?.body_contains("No apps yet.")?;
+    when.submitting(
+        &page,
+        &format!("{page}/new"),
+        &[
+            ("name", "hello"),
+            ("image", &registry.image("acme/hello", "1")),
+            ("port", "80"),
+            ("check", "/"),
+            ("copies", "1"),
+        ],
+    )
+    .await?;
+    then.status(303)?
+        .redirects_to(&format!("/{org}/apps/hello?done=created"))?;
+    let app_page = format!("/{org}/apps/hello");
+    let started = Instant::now();
+    loop {
+        when.visiting(&app_page).await?;
+        then.status(200)?;
+        let body = then.body()?;
+        if body.contains("v1 is live on 1 copy") && body.contains(">Ready<") {
+            anyhow::ensure!(body.contains("Copy 1 of 1 · v1"), "{body}");
+            anyhow::ensure!(body.contains("on desk"), "{body}");
+            anyhow::ensure!(body.contains(&digest[..19]), "the version shows its digest");
+            anyhow::ensure!(body.contains("from the dashboard"), "{body}");
+            anyhow::ensure!(
+                body.contains("[apps.hello]"),
+                "the page offers the app as a file"
+            );
+            break;
+        }
+        anyhow::ensure!(
+            started.elapsed() < Duration::from_secs(30),
+            "not live: {body}"
+        );
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    when.submitting(
+        &app_page,
+        &format!("{app_page}/secrets"),
+        &[("secret", "token"), ("value", "s3cr3t-value")],
+    )
+    .await?;
+    then.status(303)?;
+    when.visiting(&app_page).await?;
+    then.status(200)?.body_contains("version 1")?;
+    anyhow::ensure!(
+        !then.body()?.contains("s3cr3t-value"),
+        "a secret is never shown"
+    );
+
+    let (outsider, outsider_when, outsider_then) = given.testcase.another_browser();
+    outsider.a_signed_in_account().await?;
+    outsider_when.visiting(&app_page).await?;
+    outsider_then.status(404)?;
+    Ok(())
+}

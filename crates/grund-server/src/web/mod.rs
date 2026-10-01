@@ -9,6 +9,7 @@
 //!           └► pages (server-rendered minijinja)
 //! ```
 
+pub mod apps;
 pub mod assets;
 pub mod browser;
 pub mod install;
@@ -97,6 +98,14 @@ pub fn router(state: State) -> Router {
         .route("/{org}/settings/members/{account}/role", post(orgs::change_role))
         .route("/{org}/settings/members/{account}/remove", post(orgs::remove_member))
         .route("/{org}/settings/invitations/{invitation}/revoke", post(orgs::revoke_invitation))
+        .route("/{org}/apps", get(apps::apps_page))
+        .route("/{org}/apps/new", post(apps::create))
+        .route("/{org}/apps/{app}", get(apps::app_page))
+        .route("/{org}/apps/{app}/deploy", post(apps::deploy))
+        .route("/{org}/apps/{app}/scale", post(apps::scale))
+        .route("/{org}/apps/{app}/secrets", post(apps::set_secret))
+        .route("/{org}/apps/{app}/releases/{number}/rollback", post(apps::rollback))
+        .route("/{org}/apps/{app}/delete", post(apps::delete))
         .route("/{org}/machines", get(machines::machines_page))
         .route("/{org}/machines/add", post(machines::add))
         .route("/{org}/machines/vms", post(machines::run_vm))
