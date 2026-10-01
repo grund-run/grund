@@ -52,6 +52,12 @@ kjuulh: "kubernetes-app": {
 					// for relays only; setting it agrees to Let's Encrypt's
 					// subscriber agreement.
 					GRUND_ACME_DIRECTORY: "https://acme-v02.api.letsencrypt.org/directory"
+					// Apps are reached at <app>-<organisation>.dev.grund.run through
+					// grund edge on the public gateway (design/traffic.md §6), which
+					// enrolls for its host here and gets a certificate per address
+					// from the ordering above.
+					GRUND_APP_DOMAIN: "dev.grund.run"
+					GRUND_EDGES:      "edge-1.dev.grund.run"
 					GRUND_MAIL_FROM:  "grund dev <grund@dev.app.grund.sh>"
 					// Confirmed accounts are reported to the insights service in
 					// the same namespace, in-cluster, plain http.
