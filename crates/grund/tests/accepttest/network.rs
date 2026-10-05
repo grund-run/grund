@@ -2224,3 +2224,337 @@ async fn what_a_replicas_traffic_costs_through_the_mesh_and_the_userspace_egress
     }
     Ok(())
 }
+
+impl Net {
+    async fn cut(&self, node: &str, table: &str, rules: &str) -> anyhow::Result<()> {
+        let file = self.lab.work.join(format!("{table}-{node}.nft"));
+        std::fs::write(
+            &file,
+            format!(
+                "table inet {table} {{\n  chain out {{\n    type filter hook output priority 0; policy accept;\n    {rules}\n  }}\n}}\n"
+            ),
+        )?;
+        let out = self
+            .lab
+            .run_async(node, &["nft", "-f", &file.to_string_lossy()])
+            .await?;
+        anyhow::ensure!(out.status.success(), "{out:?}");
+        Ok(())
+    }
+
+    async fn heal(&self, node: &str, table: &str) -> anyhow::Result<()> {
+        let out = self
+            .lab
+            .run_async(node, &["nft", "delete", "table", "inet", table])
+            .await?;
+        anyhow::ensure!(out.status.success(), "{out:?}");
+        Ok(())
+    }
+
+    async fn loses_grund(&self, machine: &Machine) -> anyhow::Result<()> {
+        let log = format!("agent-{}.log", machine.node);
+        let failures = || self.log(&log).matches("GetMembership failed").count();
+        let before = failures();
+        anyhow::ensure!(
+            eventually(Duration::from_secs(30), || async { failures() > before })
+                .await
+                .is_some(),
+            "{} still reaches grund",
+            machine.node
+        );
+        Ok(())
+    }
+
+    async fn keeps_pinging(&self, from: &Machine, to: &Machine, for_: Duration) -> (u32, u32) {
+        let (mut ok, mut lost) = (0, 0);
+        let end = Instant::now() + for_;
+        while Instant::now() < end {
+            if self.pings(from, &to.address().to_string()).await {
+                ok += 1;
+            } else {
+                lost += 1;
+            }
+        }
+        (ok, lost)
+    }
+}
+
+async fn a_lab_with_one_relay_elsewhere() -> anyhow::Result<Option<(Net, String)>> {
+    use crate::accepttest::fixtures::netlab::RELAY_1;
+    let Some(lab) = Lab::start().await? else {
+        return Ok(None);
+    };
+    lab.spawn_relay("rl1", RELAY_1, RELAY_TOKEN)?;
+    let relay = format!("https://{RELAY_1}");
+    let settings = relays_elsewhere(&format!("lab-1={relay}"));
+    let Some(net) = a_lab_with(lab, &as_env(&settings)).await? else {
+        return Ok(None);
+    };
+    Ok(Some((net, relay)))
+}
+
+async fn direct(net: &Net, a: &Machine, b: &Machine) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        net.reaches_by_name(a, b, Duration::from_secs(30))
+            .await
+            .is_some(),
+        "{} never reached {}: {}",
+        a.node,
+        b.node,
+        a.status()
+    );
+    anyhow::ensure!(
+        eventually(Duration::from_secs(30), || async {
+            net.pings(a, &b.address().to_string()).await && a.path_to(b).starts_with("direct")
+        })
+        .await
+        .is_some(),
+        "{} never went direct to {}: {}",
+        a.node,
+        b.node,
+        a.status()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn with_its_only_relay_stopped_a_direct_pair_keeps_talking_and_a_relayed_pair_waits_for_it()
+-> anyhow::Result<()> {
+    use crate::accepttest::fixtures::netlab::RELAY_1;
+    let Some((net, relay)) = a_lab_with_one_relay_elsewhere().await? else {
+        return Ok(());
+    };
+    let a = net.join("a", "a").await?;
+    let b = net.join("b", "b").await?;
+    direct(&net, &a, &b).await?;
+
+    anyhow::ensure!(net.lab.stop("relay-rl1.log"), "the relay was not running");
+    let (ok, lost) = net.keeps_pinging(&a, &b, Duration::from_secs(15)).await;
+    anyhow::ensure!(
+        lost == 0 && ok > 0 && a.path_to(&b).starts_with("direct"),
+        "the direct pair lost {lost} of {} pings with the relay down: {}",
+        ok + lost,
+        a.status()
+    );
+
+    net.lab.cut_direct_udp().await?;
+    let dark = eventually(Duration::from_secs(60), || async {
+        !net.pings(&a, &b.address().to_string()).await
+    })
+    .await;
+    anyhow::ensure!(
+        dark.is_some(),
+        "a reached b with no relay and no direct UDP: {}",
+        a.status()
+    );
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    anyhow::ensure!(
+        !net.pings(&a, &b.address().to_string()).await,
+        "a reached b with no relay and no direct UDP: {}",
+        a.status()
+    );
+
+    net.lab.spawn_relay("rl1", RELAY_1, RELAY_TOKEN)?;
+    let back = eventually(Duration::from_secs(90), || async {
+        net.pings(&a, &b.address().to_string()).await
+            && a.path_to(&b).starts_with(&format!("relay {relay}"))
+    })
+    .await;
+    anyhow::ensure!(
+        back.is_some(),
+        "a never reached b over the restarted relay: {}\nb: {}\n{}",
+        a.status(),
+        b.status(),
+        net.log("agent-a.log")
+    );
+    anyhow::ensure!(net.pings(&b, &a.fqdn()).await, "b does not reach a by name");
+
+    net.lab.restore_direct_udp().await?;
+    let direct_again = eventually(Duration::from_secs(90), || async {
+        net.pings(&a, &b.address().to_string()).await && a.path_to(&b).starts_with("direct")
+    })
+    .await;
+    anyhow::ensure!(direct_again.is_some(), "never direct again: {}", a.status());
+    eprintln!(
+        "relay down: the direct pair kept {ok} of {ok} pings; relayed, dark {dark:?} after the cut; \
+         over the restarted relay {back:?} after it started; direct again {direct_again:?} after UDP returned"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_member_that_reaches_its_relay_but_not_grund_keeps_talking_over_the_relay()
+-> anyhow::Result<()> {
+    use crate::accepttest::fixtures::netlab::LIGHTHOUSE;
+    let Some((net, relay)) = a_lab_with_one_relay_elsewhere().await? else {
+        return Ok(());
+    };
+    let a = net.join("a", "a").await?;
+    let b = net.join("b", "b").await?;
+    direct(&net, &a, &b).await?;
+    net.lab.cut_direct_udp().await?;
+    anyhow::ensure!(
+        eventually(Duration::from_secs(60), || async {
+            net.pings(&a, &b.address().to_string()).await
+                && a.path_to(&b).starts_with(&format!("relay {relay}"))
+        })
+        .await
+        .is_some(),
+        "a never moved to the relay: {}",
+        a.status()
+    );
+    let epoch = b.epoch();
+
+    net.cut("b", "nogrund", &format!("ip daddr {LIGHTHOUSE} drop"))
+        .await?;
+    net.loses_grund(&b).await?;
+    let (ok, lost) = net.keeps_pinging(&b, &a, Duration::from_secs(20)).await;
+    anyhow::ensure!(
+        lost == 0 && ok > 0,
+        "b, without grund, lost {lost} of {} pings to a over the relay: {}",
+        ok + lost,
+        b.status()
+    );
+    anyhow::ensure!(
+        net.pings(&a, &b.fqdn()).await && b.epoch() == epoch,
+        "a lost b by name, or b's list changed without grund: {}",
+        b.status()
+    );
+
+    net.heal("b", "nogrund").await?;
+    let log = || {
+        net.log("agent-b.log")
+            .matches("GetMembership failed")
+            .count()
+    };
+    let settled = log();
+    tokio::time::sleep(Duration::from_secs(20)).await;
+    anyhow::ensure!(
+        log() <= settled + 1,
+        "b kept failing to reach grund after the cut healed:\n{}",
+        net.log("agent-b.log")
+    );
+    eprintln!("b, cut off from grund but not its relay, kept {ok} of {ok} pings to a");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_member_that_reaches_grund_but_not_its_relay_keeps_its_direct_peer_and_meets_others_once_it_is_back()
+-> anyhow::Result<()> {
+    use crate::accepttest::fixtures::netlab::RELAY_1;
+    let Some((net, _relay)) = a_lab_with_one_relay_elsewhere().await? else {
+        return Ok(());
+    };
+    let a = net.join("a", "a").await?;
+    let b = net.join("b", "b").await?;
+    direct(&net, &a, &b).await?;
+
+    net.cut("b", "norelay", &format!("ip daddr {RELAY_1} drop"))
+        .await?;
+    let (ok, lost) = net.keeps_pinging(&b, &a, Duration::from_secs(20)).await;
+    anyhow::ensure!(
+        lost == 0 && ok > 0 && b.path_to(&a).starts_with("direct"),
+        "b, without its relay, lost {lost} of {} pings to its direct peer: {}",
+        ok + lost,
+        b.status()
+    );
+
+    let c = net.join("c", "c").await?;
+    let met_while_cut = net.reaches_by_name(&c, &b, Duration::from_secs(30)).await;
+    net.heal("b", "norelay").await?;
+    let met = net.reaches_by_name(&c, &b, Duration::from_secs(90)).await;
+    anyhow::ensure!(
+        met.is_some(),
+        "c never reached b after b's relay came back: c {}\nb {}",
+        c.status(),
+        b.status()
+    );
+    eprintln!(
+        "b, cut off from its relay, kept {ok} of {ok} pings to its direct peer; a new member reached it \
+         {met_while_cut:?} while cut, and {met:?} after the cut healed"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_revocation_made_while_a_member_is_cut_off_reaches_it_by_gossip_when_it_reconnects()
+-> anyhow::Result<()> {
+    use crate::accepttest::fixtures::netlab::LIGHTHOUSE;
+    let Some((net, _relay)) = a_lab_with_one_relay_elsewhere().await? else {
+        return Ok(());
+    };
+    let a = net.join("a", "a").await?;
+    let b = net.join("b", "b").await?;
+    let c = net.join("c", "c").await?;
+    for (from, to) in [(&c, &a), (&c, &b), (&a, &b)] {
+        anyhow::ensure!(
+            net.reaches_by_name(from, to, Duration::from_secs(30))
+                .await
+                .is_some(),
+            "{} never reached {}",
+            from.node,
+            to.node
+        );
+    }
+
+    net.cut("c", "island", "ip daddr 198.51.100.0/24 drop")
+        .await?;
+    net.loses_grund(&c).await?;
+    let epoch = c.epoch();
+    net.when
+        .calling(
+            &format!("{MACHINES}/RevokeMachine"),
+            &json!({"organisation": net.owner, "machineId": b.id()}).to_string(),
+        )
+        .await?;
+    net.then.status(200)?;
+    anyhow::ensure!(
+        eventually(Duration::from_secs(10), || async { a.peer(&b).is_null() })
+            .await
+            .is_some(),
+        "a never dropped b: {}",
+        a.status()
+    );
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    anyhow::ensure!(
+        c.epoch() == epoch,
+        "c, cut off from everything, heard of the revocation: {}",
+        c.status()
+    );
+
+    net.heal("c", "island").await?;
+    net.cut("c", "nogrund", &format!("ip daddr {LIGHTHOUSE} drop"))
+        .await?;
+    let reconnected = Instant::now();
+    net.lab.spawn(
+        "c",
+        &["ping", "-6", "-i", "0.5", &a.address().to_string()],
+        &[],
+        "ping-c-a.log",
+    )?;
+    let heard = eventually(Duration::from_secs(60), || async {
+        c.epoch() > epoch && c.peer(&b).is_null()
+    })
+    .await;
+    anyhow::ensure!(
+        heard.is_some(),
+        "c never heard of the revocation after it reconnected: {}\n{}",
+        c.status(),
+        net.log("agent-c.log")
+    );
+    anyhow::ensure!(
+        net.log("agent-c.log").contains("handed on by a member"),
+        "c's new list did not come by gossip: {}",
+        c.status()
+    );
+    anyhow::ensure!(
+        !net.pings(&c, &b.address().to_string()).await,
+        "c still reaches b"
+    );
+    anyhow::ensure!(net.pings(&c, &a.fqdn()).await, "c lost a");
+    eprintln!(
+        "c, cut off during the revocation, dropped b {heard:?} after it reached its peers again ({:?} in all)",
+        reconnected.elapsed()
+    );
+    Ok(())
+}
