@@ -194,11 +194,15 @@ pub fn image_icon(image: &str) -> &'static str {
     ];
     let reference = image.split('@').next().unwrap_or_default().trim();
     let mut parts: Vec<&str> = reference.split('/').collect();
-    let hosted = parts.len() > 1
-        && (parts[0].contains('.') || parts[0].contains(':') || parts[0] == "localhost");
-    if hosted {
-        parts.remove(0);
-    }
+    let registry = (parts.len() > 1
+        && (parts[0].contains('.') || parts[0].contains(':') || parts[0] == "localhost"))
+        .then(|| parts.remove(0));
+    let hosted = registry.is_some_and(|host| {
+        !matches!(
+            host,
+            "docker.io" | "index.docker.io" | "registry-1.docker.io"
+        )
+    });
     let name = parts
         .last()
         .and_then(|last| last.split(':').next())
@@ -1137,6 +1141,8 @@ mod tests {
     fn other_images_get_docker_on_docker_hub_and_a_neutral_icon_elsewhere() {
         assert_eq!(image_icon("traefik/whoami:v1.11.0"), "docker");
         assert_eq!(image_icon("myapp/worker:latest"), "docker");
+        assert_eq!(image_icon("docker.io/traefik/whoami:v1.11.0"), "docker");
+        assert_eq!(image_icon("index.docker.io/library/busybox"), "docker");
         assert_eq!(image_icon("nodered/node-red"), "docker");
         assert_eq!(image_icon("ghcr.io/ours/api:v1.4.0"), "image");
         assert_eq!(image_icon("localhost:5000/shop"), "image");
