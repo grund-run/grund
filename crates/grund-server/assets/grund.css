@@ -41,6 +41,7 @@
   --control: #19221e;
   --border: #1d2722;
   --border-strong: #29342e;
+  --border-control: #606d66;
   --active: #213027;
 
   --text: #eef3ef;
@@ -387,7 +388,7 @@ a.nav-item:hover,
   height: 2.875rem;
   padding: 0 var(--space-4) 0 2.625rem;
   background: var(--surface);
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border-control);
   border-radius: var(--radius-sm);
   color: var(--text);
   font: inherit;
@@ -530,7 +531,7 @@ a.nav-item:hover,
 
 .btn-secondary {
   background: var(--surface);
-  border-color: var(--border-strong);
+  border-color: var(--border-control);
   color: var(--text);
 }
 
@@ -831,7 +832,7 @@ a.nav-item:hover,
   min-height: 3rem;
   padding: var(--space-3) var(--space-4);
   background: var(--bg-raised);
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border-control);
   border-radius: var(--radius-sm);
   color: var(--text);
   font: inherit;
@@ -944,7 +945,7 @@ a.nav-item:hover,
   gap: var(--space-3);
   min-height: 3.875rem;
   padding: var(--space-2) 0.875rem;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border-control);
   border-radius: var(--radius-sm);
   background: var(--surface);
   cursor: pointer;
@@ -1014,7 +1015,7 @@ a.nav-item:hover,
   min-height: 2.5rem;
   padding: var(--space-2) var(--space-9) var(--space-2) 0.875rem;
   background: var(--bg-raised);
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border-control);
   border-radius: var(--radius-sm);
   color: var(--text);
   font: inherit;
@@ -1107,7 +1108,7 @@ a.nav-item:hover,
   min-height: 2.625rem;
   padding-right: var(--space-10);
   background: var(--bg);
-  border-color: var(--border);
+  border-color: var(--border-control);
   font-size: var(--text-md);
 }
 
@@ -1152,7 +1153,7 @@ a.nav-item:hover,
 
 .icon-btn-boxed {
   background: var(--control);
-  border-color: var(--border-strong);
+  border-color: var(--border-control);
   color: var(--text);
 }
 
@@ -1162,7 +1163,7 @@ a.nav-item:hover,
 
 .view-toggle {
   display: flex;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-control);
   border-radius: var(--radius-sm);
 }
 
@@ -1524,6 +1525,7 @@ code.address-text {
 .sg-active { background: var(--active); }
 .sg-border { background: var(--border); }
 .sg-border-strong { background: var(--border-strong); }
+.sg-border-control { background: var(--border-control); }
 .sg-text { background: var(--text); }
 .sg-text-2 { background: var(--text-2); }
 .sg-muted { background: var(--muted); }
@@ -1607,6 +1609,7 @@ code.address-text {
 .sg-radius-sm { border-radius: var(--radius-sm); }
 .sg-radius { border-radius: var(--radius); }
 .sg-radius-lg { border-radius: var(--radius-lg); }
+.sg-edge-control { border-color: var(--border-control); border-radius: var(--radius-sm); }
 .sg-edge-strong { border-color: var(--border-strong); border-radius: var(--radius-sm); }
 .sg-edge { border-color: var(--border); border-radius: var(--radius-sm); }
 

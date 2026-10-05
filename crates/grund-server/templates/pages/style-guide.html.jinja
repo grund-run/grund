@@ -16,7 +16,7 @@
   {% call cat.specimen("Colour", "var(--surface)", "Custom properties on :root. A rule never writes a raw hex; add a token instead.") %}
     {{ cat.swatches(swatches) }}
   {% endcall %}
-  {% call cat.specimen("Borders", "var(--border-strong)", "Quiet edges for what holds content; stronger ones for what you operate.") %}
+  {% call cat.specimen("Borders", "var(--border-control)", "Quiet edges for what holds content; edges of 3:1 or more for what you operate.") %}
     {{ cat.borders() }}
   {% endcall %}
   {% call cat.specimen("Type", "font-size: var(--text-md)", "Inter for everything; JetBrains Mono (code, .mono) for what a person might copy.") %}

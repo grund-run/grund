@@ -67,7 +67,8 @@
 {#- borders(): the border strengths, each on a box. -#}
 {% macro borders() -%}
 <ul class="sg-scale sg-scale-row">
-  <li><span class="sg-box sg-edge-strong"></span><code>--border-strong</code><span class="sg-label">input, select and secondary button edges, menus, tags, dashed empty states</span></li>
+  <li><span class="sg-box sg-edge-control"></span><code>--border-control</code><span class="sg-label">the edge of what you operate: inputs, selects, the search, secondary buttons, the kebab, the switcher, the view toggle. 3:1 or more against what is around it (WCAG 1.4.11)</span></li>
+  <li><span class="sg-box sg-edge-strong"></span><code>--border-strong</code><span class="sg-label">menus, tags, dashed empty states</span></li>
   <li><span class="sg-box sg-edge"></span><code>--border</code><span class="sg-label">dividers between rows, boxes of rows</span></li>
 </ul>
 {%- endmacro %}
