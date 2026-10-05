@@ -6,6 +6,7 @@
     changes something posts with the CSRF field, and the handler checks it.
     ------------------------------------------------------------------ -#}
 {% import "components/ui.html.jinja" as ui %}
+{% import "components/lists.html.jinja" as lists %}
 
 {#- form(action, csrf, layout="stack", method="post", autocomplete="")
     The {% call %} body is the fields and the button.
@@ -93,14 +94,81 @@
 </div>
 {%- endmacro %}
 
-{#- textarea_field(name, label, value="", rows=4, hint="", error="")
-    A labelled box for several lines. -#}
-{% macro textarea_field(name, label, value="", rows=4, hint="", error="") -%}
+{#- textarea_field(name, label, value="", rows=4, hint="", error="",
+                   mono=false)
+    A labelled box for several lines. mono: in the mono face, unchecked
+    for spelling, for lines a machine reads (NAME=value). -#}
+{% macro textarea_field(name, label, value="", rows=4, hint="", error="", mono=false) -%}
 <div class="field">
   <label for="{{ name }}">{{ label }}</label>
-  <textarea id="{{ name }}" name="{{ name }}" rows="{{ rows }}"{{ describe(name, error, hint) }}>{{ value }}</textarea>
+  <textarea{% if mono %} class="mono" spellcheck="false" autocomplete="off"{% endif %} id="{{ name }}" name="{{ name }}" rows="{{ rows }}"{{ describe(name, error, hint) }}>{{ value }}</textarea>
   {{- message(name, error, hint) }}
 </div>
+{%- endmacro %}
+
+{#- grid(): fields in two columns, one below 900 px; the {% call %} body
+    is fields, or another grid() to split a column in two. -#}
+{% macro grid() -%}
+<div class="form-grid">{{ caller() }}</div>
+{%- endmacro %}
+
+{#- choice_field(name, label, options, selected="", error="", hint="",
+                 large=false, fill="")
+    A labelled choice of one, as cards: radio buttons, so it works without
+    the script.
+    options: dicts of value, title, text, and icon (a sprite icon) or
+             image (an image icon key, with its sprite on the page);
+             disabled and tag ("Needs storage") for one not offered yet;
+             state pins "hover" or "focus" (the style guide only)
+    large:   wider cards, for a choice that is the form's subject
+    fill:    the id of a field that takes the chosen value while it is
+             empty or still holds the last one (the script) -#}
+{% macro choice_field(name, label, options, selected="", error="", hint="", large=false, fill="") -%}
+<fieldset class="field"{% if error %} aria-describedby="{{ name }}-error"{% elif hint %} aria-describedby="{{ name }}-hint"{% endif %}>
+  <legend class="field-legend">{{ label }}</legend>
+  <div class="choices{% if large %} choices-wide{% endif %}">
+    {% for option in options %}{% set disabled = option.disabled | default(false) %}<label class="choice{% if disabled %} is-disabled{% endif %}{% if option.state | default("") %} is-{{ option.state }}{% endif %}">
+      <input class="choice-input" type="radio" name="{{ name }}" value="{{ option.value }}"{% if option.value == selected %} checked{% endif %}{% if disabled %} disabled{% endif %}{% if fill %} data-fill="{{ fill }}"{% endif %}>
+      {% if option.image | default("") %}{{ lists.image_icon(option.image) }}{% elif option.icon | default("") %}{{ ui.icon(option.icon, "choice-icon") }}{% endif %}
+      <span class="choice-text"><span class="choice-title">{{ option.title }}{% if option.tag | default("") %} {{ ui.tag(option.tag) }}{% endif %}</span>{% if option.text | default("") %}<span class="choice-sub">{{ option.text }}</span>{% endif %}</span>
+    </label>
+    {% endfor %}
+  </div>
+  {{- message(name, error, hint) }}
+</fieldset>
+{%- endmacro %}
+
+{#- stepper_field(name, label, value, min=1, max=99, hint="", error="")
+    A labelled whole number with − and + beside it. The buttons show only
+    with the script; without it the number is typed. -#}
+{% macro stepper_field(name, label, value, min=1, max=99, hint="", error="") -%}
+<div class="field">
+  <label for="{{ name }}">{{ label }}</label>
+  <div class="stepper">
+    <button class="stepper-btn" type="button" data-step="-1" data-for="{{ name }}" aria-label="One fewer" hidden>{{ ui.icon("minus", "icon-sm") }}</button>
+    <input id="{{ name }}" name="{{ name }}" type="number" inputmode="numeric" min="{{ min }}" max="{{ max }}" value="{{ value }}"{{ describe(name, error, hint) }}>
+    <button class="stepper-btn" type="button" data-step="1" data-for="{{ name }}" aria-label="One more" hidden>{{ ui.icon("plus", "icon-sm") }}</button>
+  </div>
+  {{- message(name, error, hint) }}
+</div>
+{%- endmacro %}
+
+{#- disclosure(title, text="", open=false)
+    A part of a form folded away under a title and one line saying what
+    is in it, as a details element, so it opens without the script. The
+    {% call %} body is its fields. open: unfolded (when one of them has an
+    error). -#}
+{% macro disclosure(title, text="", open=false) -%}
+<details class="disclosure"{% if open %} open{% endif %}>
+  <summary class="disclosure-head">{{ ui.icon("down", "icon-sm disclosure-icon") }}<span><span class="disclosure-title">{{ title }}</span>{% if text %}<span class="disclosure-text">{{ text }}</span>{% endif %}</span></summary>
+  <div class="disclosure-body">{{ caller() }}</div>
+</details>
+{%- endmacro %}
+
+{#- actions(): a form's buttons at its end, right-aligned, the primary
+    last; the {% call %} body is the buttons. -#}
+{% macro actions() -%}
+<div class="form-actions">{{ caller() }}</div>
 {%- endmacro %}
 
 {#- select_form(action, csrf, name, id, label, options, selected, button)

@@ -1,6 +1,7 @@
 // grund's only script: small enhancements over pages that work without it.
 // Copy buttons, a sort select that applies itself, the app filter as you
-// type, and menus that close on Escape or a click elsewhere.
+// type, menus that close on Escape or a click elsewhere, the − and + of a
+// number, and a choice that fills in a name.
 (function () {
   "use strict";
   document.documentElement.classList.add("has-js");
@@ -55,6 +56,33 @@
         if (none) none.hidden = shown !== 0;
       });
     }
+
+    document.querySelectorAll("button[data-step]").forEach(function (button) {
+      var input = document.getElementById(button.dataset["for"]);
+      if (!input) return;
+      button.hidden = false;
+      button.addEventListener("click", function () {
+        var min = Number(input.min || 1);
+        var max = Number(input.max || 99);
+        var value = parseInt(input.value, 10);
+        if (isNaN(value)) value = min;
+        input.value = String(Math.min(max, Math.max(min, value + Number(button.dataset.step))));
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    });
+
+    document.querySelectorAll("input[data-fill]").forEach(function (choice) {
+      var target = document.getElementById(choice.dataset.fill);
+      if (!target) return;
+      if (choice.checked && target.value === choice.value) target.dataset.filled = choice.value;
+      choice.addEventListener("change", function () {
+        if (!choice.checked) return;
+        if (target.value === "" || target.value === target.dataset.filled) {
+          target.value = choice.value;
+          target.dataset.filled = choice.value;
+        }
+      });
+    });
 
     var menus = Array.prototype.slice.call(document.querySelectorAll("details.menu"));
     document.addEventListener("click", function (event) {

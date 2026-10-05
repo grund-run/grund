@@ -61,11 +61,13 @@
     icon_size: "sm" (18 px) or "" (22 px, for brand logos)
     disabled:  a <button> that cannot be pressed (never a link)
     extra:     more classes, such as js-hide (or is-hover and is-focus,
-               which pin a state on the style guide) -#}
-{% macro button(label, href="", icon_name="", kind="primary", size="", type="submit", collapse=false, block=false, icon_size="sm", disabled=false, extra="") -%}
+               which pin a state on the style guide)
+    icon_end:  the icon after the label ("Browse templates →") -#}
+{% macro button(label, href="", icon_name="", kind="primary", size="", type="submit", collapse=false, block=false, icon_size="sm", disabled=false, extra="", icon_end=false) -%}
 {% set class = "btn btn-" ~ kind ~ (" btn-" ~ size if size else "") ~ (" btn-block" if block else "") ~ (" " ~ extra if extra else "") %}
 {% if href %}<a class="{{ class }}" href="{{ href }}">{% else %}<button class="{{ class }}" type="{{ type }}"{% if disabled %} disabled{% endif %}>{% endif -%}
-{% if icon_name %}{{ icon(icon_name, "icon-" ~ icon_size if icon_size else "") }}{% endif %}<span{% if collapse %} class="btn-label"{% endif %}>{{ label }}</span>
+{% if icon_name and not icon_end %}{{ icon(icon_name, "icon-" ~ icon_size if icon_size else "") }}{% endif %}<span{% if collapse %} class="btn-label"{% endif %}>{{ label }}</span>
+{%- if icon_name and icon_end %}{{ icon(icon_name, "icon-" ~ icon_size if icon_size else "") }}{% endif %}
 {%- if href %}</a>{% else %}</button>{% endif %}
 {%- endmacro %}
 
@@ -105,7 +107,7 @@
     Called with {% call %}, the body goes at the right (list tools, or the
     page's primary button). -#}
 {% macro page_head(title, lede="", status="", tag="", back=none) -%}
-{% if back %}<a class="back" href="{{ back.0 }}">{{ icon("chevron", "icon-sm back-icon") }}{{ back.1 }}</a>{% endif %}
+{% if back %}<a class="back" href="{{ back.0 }}">{{ icon("arrow", "icon-sm back-icon") }}{{ back.1 }}</a>{% endif %}
 <div class="page-head">
   <div>
     <h1 class="page-title">{{ title }}{% if tag %} <span class="tag">{{ tag }}</span>{% endif %}</h1>
@@ -144,6 +146,34 @@
 </section>
 {%- endmacro %}
 
+{#- panel(id, title, lede="")
+    A titled box holding one part of a page's work, such as a form; the
+    {% call %} body is its content. id: the heading's id, which labels
+    it. -#}
+{% macro panel(id, title, lede="") -%}
+<section class="panel" aria-labelledby="{{ id }}">
+  <div><h2 class="panel-title" id="{{ id }}">{{ title }}</h2>{% if lede %}<p class="panel-lede">{{ lede }}</p>{% endif %}</div>
+  {{ caller() }}
+</section>
+{%- endmacro %}
+
+{#- choice_links(label, choices, active)
+    A choice between ways of doing a page's work, as large cards that are
+    links (so it works without the script), the chosen one marked like a
+    selected radio. label: the group's accessible name.
+    choices: dicts of key, href, icon, title, text and sub (a quieter
+             third line); active: the chosen key -#}
+{% macro choice_links(label, choices, active) -%}
+<nav class="choices choices-lg" aria-label="{{ label }}">
+  {% for choice in choices %}<a class="choice{% if choice.key == active %} is-chosen{% endif %}" href="{{ choice.href }}"{% if choice.key == active %} aria-current="true"{% endif %}>
+    <span class="icon-tile" aria-hidden="true">{{ icon(choice.icon) }}</span>
+    <span class="choice-text"><span class="choice-title">{{ choice.title }}</span><span class="choice-line">{{ choice.text }}</span>{% if choice.sub | default("") %}<span class="choice-sub">{{ choice.sub }}</span>{% endif %}</span>
+    <span class="choice-dot" aria-hidden="true"></span>
+  </a>
+  {% endfor %}
+</nav>
+{%- endmacro %}
+
 {#- tabs(label, tabs, active)
     Splits one sidebar section into pages, as links.
     label: the nav's accessible name
@@ -165,15 +195,19 @@
     Something happening now or needing attention.
     icon_name, tone: a large toned icon; spinner: a turning ring instead
     more:   (href, label) for one onward link
+    action: (href, label) for one onward button instead ("Browse
+            templates →")
+    boxed:  the icon in an accent tile, for an offer rather than a state
     danger: on the danger surface, for failures -#}
-{% macro callout(title, text, icon_name="", tone="", spinner=false, more=none, danger=false) -%}
+{% macro callout(title, text, icon_name="", tone="", spinner=false, more=none, danger=false, boxed=false, action=none) -%}
 <div class="callout{% if danger %} callout-danger{% endif %}">
-  {% if spinner %}<span class="spinner" aria-hidden="true"></span>{% elif icon_name %}{{ icon(icon_name, "icon-lg tone-" ~ tone) }}{% endif %}
+  {% if spinner %}<span class="spinner" aria-hidden="true"></span>{% elif icon_name and boxed %}<span class="icon-tile" aria-hidden="true">{{ icon(icon_name) }}</span>{% elif icon_name %}{{ icon(icon_name, "icon-lg tone-" ~ tone) }}{% endif %}
   <div class="callout-body">
     <p class="callout-title">{{ title }}</p>
     <p class="callout-text">{{ text }}</p>
   </div>
   {% if more %}{{ link_more(more.0, more.1) }}{% endif %}
+  {% if action %}{{ button(action.1, href=action.0, icon_name="arrow", kind="secondary", icon_end=true) }}{% endif %}
 </div>
 {%- endmacro %}
 

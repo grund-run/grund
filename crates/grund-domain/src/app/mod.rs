@@ -9,6 +9,7 @@
 pub mod placement;
 pub mod reconcile;
 pub mod spec;
+pub mod templates;
 pub mod toml;
 
 use chrono::{DateTime, Utc};

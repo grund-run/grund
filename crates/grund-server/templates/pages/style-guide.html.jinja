@@ -10,7 +10,7 @@
 {{ ui.button("Primary action", href="#sg-buttons", icon_name="plus") }}
 {% endcall %}
 {% call ui.hint() %}The macros live in <code>templates/components/</code>: <code>ui</code> (basics and page parts), <code>forms</code>, <code>lists</code>, <code>shell</code> and <code>images</code>, each parameter documented above its macro. A page under <code>pages/</code> calls them and writes no class of its own; the build fails otherwise.{% endcall %}
-{{ cat.contents([("sg-tokens", "Tokens"), ("sg-icons", "Icons"), ("sg-buttons", "Buttons and links"), ("sg-heads", "Page and section heads"), ("sg-status", "Status and tags"), ("sg-messages", "Callouts and messages"), ("sg-empty", "Empty states and notes"), ("sg-code", "Code"), ("sg-forms", "Forms"), ("sg-rows", "Rows"), ("sg-items", "Apps, menus and list tools"), ("sg-shell", "Shell")]) }}
+{{ cat.contents([("sg-tokens", "Tokens"), ("sg-icons", "Icons"), ("sg-buttons", "Buttons and links"), ("sg-heads", "Page and section heads"), ("sg-status", "Status and tags"), ("sg-messages", "Callouts and messages"), ("sg-empty", "Empty states and notes"), ("sg-code", "Code"), ("sg-forms", "Forms"), ("sg-choices", "Panels, choices and steppers"), ("sg-rows", "Rows"), ("sg-items", "Apps, menus and list tools"), ("sg-shell", "Shell")]) }}
 
 {% call ui.section("sg-tokens", "Tokens") %}
   {% call cat.specimen("Colour", "var(--surface)", "Custom properties on :root. A rule never writes a raw hex; add a token instead.") %}
@@ -20,7 +20,7 @@
     {{ cat.borders() }}
   {% endcall %}
   {% call cat.specimen("Type", "font-size: var(--text-md)", "Inter for everything; JetBrains Mono (code, .mono) for what a person might copy.") %}
-    {{ cat.type_scale([("title", "2–2.5 rem", "page titles"), ("4xl", "2 rem", "signed-out titles"), ("3xl", "1.875 rem", "section titles"), ("2xl", "1.1875 rem", "row names, status lines"), ("xl", "1.125 rem", "card titles"), ("lg", "1.0625 rem", "buttons, stats"), ("base", "1 rem", "body"), ("md", "0.9375 rem", "small UI text, subs"), ("sm", "0.875 rem", "hints"), ("xs", "0.8125 rem", "roles, captions"), ("2xs", "0.75 rem", "tags")]) }}
+    {{ cat.type_scale([("title", "2–2.5 rem", "page titles"), ("4xl", "2 rem", "signed-out titles"), ("3xl", "1.875 rem", "section titles"), ("subtitle", "1.5 rem", "panel titles"), ("2xl", "1.1875 rem", "row names, status lines"), ("xl", "1.125 rem", "card titles"), ("lg", "1.0625 rem", "buttons, stats"), ("base", "1 rem", "body"), ("md", "0.9375 rem", "small UI text, subs"), ("sm", "0.875 rem", "hints"), ("xs", "0.8125 rem", "roles, captions"), ("2xs", "0.75 rem", "tags")]) }}
   {% endcall %}
   {% call cat.specimen("Spacing", "gap: var(--space-4)", "--space-N is N quarter-rems, for the gaps and margins between things. A literal length is a component's own geometry.") %}
     {{ cat.space_scale([(1, "0.25 rem"), (2, "0.5 rem"), (3, "0.75 rem"), (4, "1 rem"), (5, "1.25 rem"), (6, "1.5 rem"), (7, "1.75 rem"), (8, "2 rem"), (9, "2.25 rem"), (10, "2.5 rem"), (12, "3 rem"), (14, "3.5 rem"), (16, "4 rem")]) }}
@@ -101,10 +101,10 @@
   {% endcall %}
   {% call cat.specimen("Variants", '{{ ui.page_head("Machines", status="The machines nord-studio runs things on.") }}
 {{ ui.page_head("Templates", "Ready-made apps.", tag="Coming soon") }}
-{{ ui.page_head(app.name, back=(url, "Apps")) }}', "status is the larger, quieter line; tag marks something unbuilt; back puts a link above the title on detail pages.") %}
+{{ ui.page_head(app.name, back=(url, "Back to apps")) }}', "status is the larger, quieter line; tag marks something unbuilt; back puts a link above the title on detail pages.") %}
     {{ ui.page_head("Machines", status="The machines nord-studio runs things on: your own, and any grund machines you rent.") }}
     {{ ui.page_head("Templates", "Ready-made apps you can deploy in one step.", tag="Coming soon") }}
-    {{ ui.page_head("storefront", back=("#sg-heads", "Apps")) }}
+    {{ ui.page_head("storefront", back=("#sg-heads", "Back to apps")) }}
   {% endcall %}
   {% call cat.specimen("Section", '{% call ui.section("versions", "Versions", count=3, more=(url, "View all")) %}
   …
@@ -135,6 +135,9 @@
     {{ ui.callout("Storefront is updating", "Checking the new release. The current version is serving traffic.", spinner=true, more=("#sg-messages", "View rollout")) }}
     {{ ui.callout("Deleting nord-studio", "Waiting for billing to agree. This page refreshes itself.", icon_name="clock", tone="orange") }}
     {{ ui.callout("The release failed", "v4 could not start: its ready check never answered.", icon_name="alert", tone="orange", danger=true) }}
+  {% endcall %}
+  {% call cat.specimen("Offer", '{{ ui.callout(title, text, icon_name="grid", boxed=true, action=(url, "Browse templates")) }}', "An onward step that is not a state: the icon in a tile, one secondary button with its arrow after the label (button(…, icon_end=true)).") %}
+    {{ ui.callout("Looking for a faster start?", "Switch to premade templates for apps like NATS, whoami and nginx.", icon_name="grid", boxed=true, action=("#sg-messages", "Browse templates")) }}
   {% endcall %}
   {% call cat.specimen("Banners", '{{ forms.form_ok(notice) }}
 {{ forms.form_error(error) }}', "One banner for a whole form or page, above it: what happened and what to do next. Nothing renders when the message is empty.") %}
@@ -223,6 +226,41 @@
   {% endcall %}
   {% call cat.specimen("Select in a row", '{{ forms.select_form(url, csrf, "role", "role-" ~ member.id, "Role of " ~ member.username, roles, member.role, "Change") }}', "One choice posted from a row, such as a member's role.") %}
     {{ forms.select_form("#sg-forms", csrf, "role", "sg-member-role", "Role of linus", [("member", "Member"), ("admin", "Admin"), ("owner", "Owner")], "admin", "Change") }}
+  {% endcall %}
+{% endcall %}
+
+{% call ui.section("sg-choices", "Panels, choices and steppers") %}
+  {% call cat.specimen("Choice links", '{{ ui.choice_links("Deployment mode", modes, mode) }}', "A choice between ways of doing a page's work, as large cards that are links, so it works without the script; the chosen one is marked like a selected radio. Each mode is a dict of key, href, icon, title, text and sub.") %}
+    {{ ui.choice_links("Deployment mode", [{"key": "premade", "href": "#sg-choices", "icon": "grid", "title": "Premade", "text": "Quickly deploy popular apps", "sub": "NATS, whoami and nginx"}, {"key": "custom", "href": "#sg-choices", "icon": "box", "title": "Custom", "text": "Deploy any container image", "sub": "Paste an image and deploy with sensible defaults"}], "custom") }}
+  {% endcall %}
+  {% call cat.specimen("Panel and grid", '{% call ui.panel("custom", "Custom deployment", lede) %}
+  {% call forms.grid() %}{{ forms.field(…) }}{{ forms.field(…) }}{% endcall %}
+{% endcall %}
+{% call forms.actions() %}{{ ui.button("Cancel", href=url, kind="secondary") }}{{ ui.button("Deploy app") }}{% endcall %}', "A titled box for one part of a page's work. grid() puts fields in two columns (one below 900 px), and a grid inside a grid splits a column. actions() ends a form, the primary last.") %}
+    {% call ui.panel("sg-panel", "Custom deployment", "Paste any container image and deploy with sensible defaults.") %}
+      {% call forms.grid() %}
+        {{ forms.field("sg-app-name", "Name", value="storefront", hint="A unique name for your app.", required=false) }}
+        {% call forms.grid() %}
+          {{ forms.field("sg-port", "Port", type="number", hint="Will be auto-detected for many images.", required=false) }}
+          {{ forms.stepper_field("sg-copies", "Copies", 2, max=20, hint="Number of app instances.") }}
+        {% endcall %}
+      {% endcall %}
+    {% endcall %}
+    {% call forms.actions() %}{{ ui.button("Cancel", href="#sg-choices", kind="secondary") }}{{ ui.button("Deploy app", type="button") }}{% endcall %}
+  {% endcall %}
+  {% call cat.specimen("Choice field", '{{ forms.choice_field("exposure", "Exposure", exposures, "private", hint=hint) }}', "A choice of one as cards over radio buttons. Each option is a dict of value, title, text and icon or image; disabled and tag mark one not offered yet; state pins hover or focus (the style guide only); error replaces the hint. large widens the cards; fill names a field the script fills with the chosen value.") %}
+    {{ forms.choice_field("sg-exposure", "Exposure", [{"value": "private", "title": "Private", "text": "Only accessible within grund", "icon": "lock"}, {"value": "public", "title": "Public HTTP", "text": "Via a example.run address", "icon": "globe"}], "private", hint="Public: https://<name>-nord-studio.example.run") }}
+    {{ forms.choice_field("sg-template", "App (large, with a disabled one and an error)", [{"value": "nats", "title": "NATS", "text": "A messaging server for your apps.", "image": "nats"}, {"value": "postgres", "title": "PostgreSQL", "text": "A relational database.", "image": "postgres", "disabled": true, "tag": "Needs storage"}], "", error="Choose one of the apps.", large=true) }}
+    {{ forms.choice_field("sg-states", "States (hover, focus)", [{"value": "a", "title": "Hover", "text": "state: hover", "icon": "lock", "state": "hover"}, {"value": "b", "title": "Focus", "text": "state: focus", "icon": "globe", "state": "focus"}], "") }}
+  {% endcall %}
+  {% call cat.specimen("Stepper", '{{ forms.stepper_field("copies", "Copies", new.copies, max=20, hint="Number of app instances.") }}', "A whole number with − and +. The buttons show only with the script; without it the number is typed, with the browser's own arrows.") %}
+    {% call cat.column() %}{{ forms.stepper_field("sg-copies-2", "Copies", 1, max=20, error="Copies is a whole number from 1 to 20.") }}{% endcall %}
+  {% endcall %}
+  {% call cat.specimen("Disclosure", '{% call forms.disclosure("Advanced options", text, open=advanced) %}…{% endcall %}', "Part of a form folded away under a title and a line saying what is in it: a details element, so it opens without the script. Open it when one of its fields has an error.") %}
+    {% call forms.disclosure("Advanced options", "Environment variables, secrets, ready check, resources and more.") %}<p>Folded away.</p>{% endcall %}
+    {% call forms.disclosure("Advanced options (open)", "Its fields show.", open=true) %}
+      {{ forms.textarea_field("sg-env-2", "Environment variables", value="LOG_LEVEL=info", hint="NAME=value, one per line.", mono=true) }}
+    {% endcall %}
   {% endcall %}
 {% endcall %}
 

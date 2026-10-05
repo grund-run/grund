@@ -10,6 +10,11 @@
 //! supported yet: a private image is refused with that reason. A registry is
 //! spoken to over HTTPS only, except the hosts `GRUND_INSECURE_REGISTRIES`
 //! names (for tests).
+//!
+//! [`Registry::inspect`] also reads the image's configuration for the ports
+//! it declares (`EXPOSE`), so the dashboard can fill in a port nobody typed:
+//! from the single manifest's config, or from the config of the index's
+//! `x86_64` variant (else its first one grund runs).
 
 use std::time::Duration;
 
@@ -37,6 +42,14 @@ pub struct Resolved {
     /// The Linux architectures it has a variant for, in grund's names
     /// (`x86_64`, `aarch64`), sorted.
     pub platforms: Vec<String>,
+}
+
+/// What [`Registry::inspect`] found: the resolution, and the TCP ports the
+/// image's configuration declares, ascending.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Inspection {
+    pub resolved: Resolved,
+    pub exposed_ports: Vec<u16>,
 }
 
 /// Why a reference did not resolve, in words for the person deploying.
@@ -76,6 +89,8 @@ struct Index {
 #[derive(Deserialize)]
 struct IndexEntry {
     #[serde(default)]
+    digest: String,
+    #[serde(default)]
     platform: Option<Platform>,
 }
 
@@ -98,6 +113,40 @@ struct Config {
     architecture: String,
     #[serde(default)]
     os: String,
+    #[serde(default)]
+    config: Option<RunConfig>,
+}
+
+#[derive(Deserialize)]
+struct RunConfig {
+    #[serde(rename = "ExposedPorts", default)]
+    exposed_ports: Option<std::collections::BTreeMap<String, serde_json::Value>>,
+}
+
+/// The TCP ports of an image config's `ExposedPorts` keys (`80/tcp`, `53/udp`,
+/// `8080`), ascending.
+pub fn exposed_tcp_ports<'a>(keys: impl IntoIterator<Item = &'a str>) -> Vec<u16> {
+    let mut ports: Vec<u16> = keys
+        .into_iter()
+        .filter_map(|key| match key.split_once('/') {
+            Some((port, protocol)) if protocol.eq_ignore_ascii_case("tcp") => port.parse().ok(),
+            Some(_) => None,
+            None => key.parse().ok(),
+        })
+        .filter(|port| *port > 0)
+        .collect();
+    ports.sort_unstable();
+    ports.dedup();
+    ports
+}
+
+fn ports_of(config: &Config) -> Vec<u16> {
+    config
+        .config
+        .as_ref()
+        .and_then(|c| c.exposed_ports.as_ref())
+        .map(|ports| exposed_tcp_ports(ports.keys().map(String::as_str)))
+        .unwrap_or_default()
 }
 
 #[derive(Deserialize)]
@@ -266,6 +315,42 @@ impl Registry {
 
     /// The digest and platforms `reference` names now.
     pub async fn resolve(&self, reference: &ImageReference) -> Result<Resolved, ResolveError> {
+        Ok(self.look(reference, false).await?.resolved)
+    }
+
+    /// As [`Registry::resolve`], with the ports the image declares. For an
+    /// index that is two more calls: the chosen variant's manifest and its
+    /// config.
+    pub async fn inspect(&self, reference: &ImageReference) -> Result<Inspection, ResolveError> {
+        self.look(reference, true).await
+    }
+
+    async fn config(
+        &self,
+        registry: &str,
+        base: &str,
+        repository: &str,
+        digest: &str,
+        token: &mut Option<String>,
+    ) -> Result<Config, ResolveError> {
+        let url = format!("{base}/v2/{repository}/blobs/{digest}");
+        let (_, body) = self.get(registry, &url, token, repository).await?;
+        if format!("sha256:{}", hex::encode(Sha256::digest(&body))) != digest {
+            return Err(ResolveError::DigestMismatch(registry.to_string()));
+        }
+        serde_json::from_slice(&body).map_err(|e| {
+            ResolveError::Unavailable(
+                registry.to_string(),
+                format!("a config that does not parse: {e}"),
+            )
+        })
+    }
+
+    async fn look(
+        &self,
+        reference: &ImageReference,
+        with_ports: bool,
+    ) -> Result<Inspection, ResolveError> {
         let registry = reference.registry.as_str();
         let base = self.base(registry);
         let what = reference
@@ -299,6 +384,7 @@ impl Registry {
         })?;
         let mut offered = Vec::new();
         let mut platforms = Vec::new();
+        let mut exposed_ports = Vec::new();
         if let Some(entries) = &index.manifests {
             for platform in entries.iter().filter_map(|e| e.platform.as_ref()) {
                 if platform.architecture == "unknown" {
@@ -309,20 +395,17 @@ impl Registry {
                     platforms.push(arch.to_string());
                 }
             }
-        } else if let Some(config) = &index.config {
-            let url = format!("{base}/v2/{}/blobs/{}", reference.repository, config.digest);
-            let (_, body) = self
-                .get(registry, &url, &mut token, &reference.repository)
-                .await?;
-            if format!("sha256:{}", hex::encode(Sha256::digest(&body))) != config.digest {
-                return Err(ResolveError::DigestMismatch(registry.to_string()));
-            }
-            let config: Config = serde_json::from_slice(&body).map_err(|e| {
-                ResolveError::Unavailable(
-                    registry.to_string(),
-                    format!("a config that does not parse: {e}"),
+        } else if let Some(descriptor) = &index.config {
+            let config = self
+                .config(
+                    registry,
+                    &base,
+                    &reference.repository,
+                    &descriptor.digest,
+                    &mut token,
                 )
-            })?;
+                .await?;
+            exposed_ports = ports_of(&config);
             offered.push(format!("{}/{}", config.os, config.architecture));
             if let Some(arch) = arch(&config.os, &config.architecture) {
                 platforms.push(arch.to_string());
@@ -342,9 +425,60 @@ impl Registry {
                 offered.join(", ")
             }));
         }
-        Ok(Resolved {
-            digest: computed,
-            platforms,
+        if with_ports && let Some(entries) = &index.manifests {
+            let runs = |e: &&IndexEntry| {
+                e.platform
+                    .as_ref()
+                    .and_then(|p| arch(&p.os, &p.architecture))
+                    .is_some()
+                    && is_digest(&e.digest)
+            };
+            let chosen = entries
+                .iter()
+                .filter(runs)
+                .find(|e| {
+                    e.platform
+                        .as_ref()
+                        .is_some_and(|p| p.architecture == "amd64")
+                })
+                .or_else(|| entries.iter().find(runs));
+            if let Some(entry) = chosen {
+                let url = format!(
+                    "{base}/v2/{}/manifests/{}",
+                    reference.repository, entry.digest
+                );
+                let (_, body) = self
+                    .get(registry, &url, &mut token, &reference.repository)
+                    .await?;
+                if format!("sha256:{}", hex::encode(Sha256::digest(&body))) != entry.digest {
+                    return Err(ResolveError::DigestMismatch(registry.to_string()));
+                }
+                let manifest: Index = serde_json::from_slice(&body).map_err(|e| {
+                    ResolveError::Unavailable(
+                        registry.to_string(),
+                        format!("a manifest that does not parse: {e}"),
+                    )
+                })?;
+                if let Some(descriptor) = &manifest.config {
+                    let config = self
+                        .config(
+                            registry,
+                            &base,
+                            &reference.repository,
+                            &descriptor.digest,
+                            &mut token,
+                        )
+                        .await?;
+                    exposed_ports = ports_of(&config);
+                }
+            }
+        }
+        Ok(Inspection {
+            resolved: Resolved {
+                digest: computed,
+                platforms,
+            },
+            exposed_ports,
         })
     }
 }
@@ -383,6 +517,19 @@ mod tests {
             ]
         );
         assert!(bearer_challenge("Basic realm=\"x\"").is_none());
+    }
+
+    #[test]
+    fn only_tcp_ports_an_image_exposes_are_offered_in_order() {
+        assert_eq!(
+            exposed_tcp_ports(["8222/tcp", "4222/tcp", "6222/tcp"]),
+            vec![4222, 6222, 8222]
+        );
+        assert_eq!(
+            exposed_tcp_ports(["53/udp", "8080", "80/TCP", "x/tcp", "0/tcp"]),
+            vec![80, 8080]
+        );
+        assert!(exposed_tcp_ports([]).is_empty());
     }
 
     #[test]

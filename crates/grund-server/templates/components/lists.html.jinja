@@ -90,6 +90,23 @@
 </li>
 {%- endmacro %}
 
+{#- template_row(template, href="")
+    One premade app in a list or grid: its image icon, its title over
+    what it is, and a Deploy button, or a tag when it is not offered yet.
+    template: web::apps::template_context (key, title, summary, icon,
+              soon); href: where Deploy leads (none: no button) -#}
+{% macro template_row(template, href="") -%}
+<li class="item" data-name="{{ template.key }}">
+  {{ image_icon(template.icon) }}
+  <div class="item-text">
+    <p class="item-name">{{ template.title }}</p>
+    <p class="item-sub item-sub-wrap">{{ template.summary }}</p>
+  </div>
+  <div class="item-meta">{% if template.soon %}{{ ui.tag(template.soon) }}{% elif href %}{{ ui.button("Deploy", href=href, kind="secondary", size="sm") }}{% endif %}</div>
+  <span></span>
+</li>
+{%- endmacro %}
+
 {#- menu(label, icon_name="more", open=false)
     A kebab (or other icon) button opening a list, as a <details>, so it
     opens without script; the script closes it on Escape or a click

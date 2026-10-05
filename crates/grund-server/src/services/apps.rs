@@ -16,8 +16,8 @@ use grund_domain::app::{
     placement::MachineView,
     reconcile::{Observation, Observed, reconcile},
     spec::{
-        ImageReference, MAX_APPS_PER_ORGANISATION, MAX_SECRET_BYTES, SettingsInput, SpecError,
-        secret_name_ok,
+        ImageReference, MAX_APPS_PER_ORGANISATION, MAX_SECRET_BYTES, PortSpec, SecretEnv,
+        SettingsInput, SpecError, secret_name_ok,
     },
     toml::parse_app,
 };
@@ -31,7 +31,7 @@ use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::{
-    registry::{Registry, ResolveError},
+    registry::{Inspection, Registry, ResolveError},
     services::{
         agents::{AgentsState, MachineCaller},
         entry::{EntryState, publishes},
@@ -108,6 +108,32 @@ pub enum DeployInput {
     Spec(AppSpec),
     /// A grund.toml naming the app.
     File(String),
+}
+
+/// A new app as the dashboard's Deploy page asks for it, made by
+/// [`Apps::launch`].
+#[derive(Debug, Clone)]
+pub struct Launch {
+    pub name: String,
+    pub settings: SettingsInput,
+    pub spec: AppSpec,
+    /// When `spec` has no port: the port to give it, numbered from the
+    /// lowest TCP port the image declares. An image that declares none is
+    /// refused on field `port`.
+    pub detect_port: Option<PortSpec>,
+    /// Secrets stored before the first release, `(variable, value)`. Each is
+    /// named after its variable (`API_KEY` is the secret `api-key`) and
+    /// handed to the app as that variable.
+    pub secrets: Vec<(String, String)>,
+}
+
+/// The secret a variable's value is stored as: `API_KEY` is `api-key`.
+pub fn secret_name_for(variable: &str) -> String {
+    variable
+        .to_ascii_lowercase()
+        .replace('_', "-")
+        .trim_matches('-')
+        .to_string()
 }
 
 /// An app as the API and dashboard show it.
@@ -341,6 +367,136 @@ impl Apps {
             .await?
             .context("the app just created")?;
         self.view(row).await
+    }
+
+    /// What `image` names now, and the ports it declares.
+    pub async fn inspect(&self, image: &str) -> Result<Inspection, AppsError> {
+        let reference = ImageReference::parse(image)?;
+        self.registry()?
+            .inspect(&reference)
+            .await
+            .map_err(|e| match e {
+                ResolveError::Unsupported(_) => AppsError::ImageUnsupported(e.to_string()),
+                other => AppsError::ImageUnresolved(other.to_string()),
+            })
+    }
+
+    /// Makes an app and rolls out its first release. Everything the API's
+    /// CreateApp and Deploy would refuse is refused first, the image
+    /// resolved included, so a refusal leaves nothing behind.
+    pub async fn launch(
+        &self,
+        actor: Uuid,
+        organisation_id: Uuid,
+        launch: Launch,
+    ) -> Result<(AppName, ReleaseRow), AppsError> {
+        let name = AppName::parse(&launch.name)?;
+        let settings = AppSettings::validate(launch.settings)?;
+        let mut spec = launch.spec;
+        for (i, (variable, value)) in launch.secrets.iter().enumerate() {
+            let secret = secret_name_for(variable);
+            if !secret_name_ok(&secret) {
+                return Err(AppsError::Spec(SpecError {
+                    field: format!("secrets[{i}].env"),
+                    problem: "a secret's variable is letters, digits and '_'".into(),
+                }));
+            }
+            if value.len() > MAX_SECRET_BYTES {
+                return Err(AppsError::Spec(SpecError {
+                    field: format!("secrets[{i}].value"),
+                    problem: "a secret is at most 64 KiB".into(),
+                }));
+            }
+            if spec.secrets.iter().any(|s| s.secret == secret) {
+                return Err(AppsError::Spec(SpecError {
+                    field: format!("secrets[{i}].env"),
+                    problem: "each variable once".into(),
+                }));
+            }
+            spec.secrets.push(SecretEnv {
+                env: variable.clone(),
+                secret,
+            });
+        }
+        let detect = launch.detect_port.filter(|_| spec.ports.is_empty());
+        let mut probe = spec.clone();
+        if let Some(port) = &detect {
+            probe.ports.push(PortSpec {
+                port: 1,
+                ..port.clone()
+            });
+        }
+        probe.validate()?;
+        if apps::count_live_apps(&self.state.pool, organisation_id).await?
+            >= MAX_APPS_PER_ORGANISATION
+        {
+            return Err(AppsError::AppLimit);
+        }
+        if apps::app_by_name(&self.state.pool, organisation_id, name.as_str())
+            .await?
+            .is_some()
+        {
+            return Err(AppsError::NameTaken);
+        }
+        let inspection = self.inspect(&spec.image).await?;
+        if let Some(port) = detect {
+            let Some(number) = inspection.exposed_ports.first() else {
+                return Err(AppsError::Spec(SpecError {
+                    field: "port".into(),
+                    problem: "the image declares no port; enter the one it listens on".into(),
+                }));
+            };
+            spec.ports.push(PortSpec {
+                port: *number,
+                ..port
+            });
+        }
+        let spec = spec.validate()?;
+        let app_id = Uuid::now_v7();
+        let mut work = Work::begin(&self.state.events, Uuid::now_v7(), &actor.to_string()).await?;
+        work.app(
+            app_id,
+            AppCommand::Create {
+                actor,
+                organisation_id,
+                name: name.clone(),
+                settings,
+                at: Utc::now(),
+            },
+        )
+        .await?;
+        work.commit().await?;
+        for (variable, value) in &launch.secrets {
+            self.set_secret(
+                actor,
+                organisation_id,
+                name.as_str(),
+                &secret_name_for(variable),
+                value.as_bytes(),
+            )
+            .await?;
+        }
+        let secret_versions = self.secret_versions(app_id, &spec).await?;
+        let release = self
+            .record_release(
+                actor,
+                app_id,
+                AppCommand::Release {
+                    actor,
+                    spec,
+                    image_digest: inspection.resolved.digest,
+                    platforms: inspection.resolved.platforms,
+                    secret_versions,
+                    source: ReleaseSource::Dashboard,
+                    rollback_of: None,
+                    note: String::new(),
+                    rollout_id: Uuid::now_v7(),
+                    at: Utc::now(),
+                },
+                None,
+            )
+            .await?;
+        Ok((name, release))
     }
 
     async fn secret_versions(
@@ -798,6 +954,13 @@ impl notmad::Component for AppReconciler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_secret_is_named_after_its_variable() {
+        assert_eq!(secret_name_for("API_KEY"), "api-key");
+        assert_eq!(secret_name_for("_TOKEN_"), "token");
+        assert_eq!(secret_name_for("Db_Password2"), "db-password2");
+    }
 
     #[test]
     fn a_sealed_secret_opens_only_for_its_app_name_and_version() {

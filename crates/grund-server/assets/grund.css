@@ -81,6 +81,7 @@
   --text-lg: 1.0625rem;
   --text-xl: 1.125rem;
   --text-2xl: 1.1875rem;
+  --text-subtitle: 1.5rem;
   --text-3xl: 1.875rem;
   --text-4xl: 2rem;
   --text-title: clamp(2rem, 3.4vw, 2.5rem);
@@ -426,9 +427,8 @@ a.nav-item:hover,
 .back {
   display: inline-flex;
   align-items: center;
-  gap: 0.375rem;
+  gap: var(--space-2);
   margin-bottom: var(--space-4);
-  color: var(--text-2);
   font-size: var(--text-md);
 }
 
@@ -1420,6 +1420,311 @@ code.address-text {
   font-size: var(--text-xl);
 }
 
+/* ------------------------------------------------------------ panels, choices, steppers */
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  padding: var(--space-8);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.panel-title {
+  font-size: var(--text-subtitle);
+  letter-spacing: -0.02em;
+}
+
+.panel-lede {
+  margin-top: var(--space-1);
+  color: var(--text-2);
+  font-size: var(--text-lg);
+}
+
+.icon-tile {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 3.25rem;
+  height: 3.25rem;
+  border-radius: var(--radius-sm);
+  background: var(--active);
+  color: var(--text);
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: var(--space-6) var(--space-8);
+}
+
+.form-grid .form-grid {
+  gap: var(--space-6);
+}
+
+fieldset.field {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.field-legend {
+  margin-bottom: var(--space-2);
+  padding: 0;
+  font-weight: 500;
+}
+
+.choices {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  gap: var(--space-3);
+}
+
+.choices-wide {
+  grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
+}
+
+.choices-lg {
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  gap: var(--space-4);
+  margin-bottom: var(--space-6);
+}
+
+.choice {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  min-height: 4rem;
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.choices-lg .choice {
+  align-items: flex-start;
+  gap: var(--space-5);
+  padding: var(--space-6);
+  background: var(--surface);
+  border-radius: var(--radius);
+}
+
+.choice:hover,
+.choice.is-hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.choice.is-chosen,
+.choice:has(.choice-input:checked) {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.choice:has(.choice-input:focus-visible),
+.choice.is-focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.choice.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.choice.is-disabled:hover {
+  background: var(--bg-raised);
+}
+
+.choice-input {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.choice-icon {
+  color: var(--text-2);
+}
+
+.choice:has(.choice-input:checked) .choice-icon {
+  color: var(--accent);
+}
+
+.choice-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.choice-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: 500;
+}
+
+.choices-lg .choice-title {
+  font-size: var(--text-xl);
+  font-weight: 600;
+}
+
+.choice-line {
+  color: var(--text-2);
+}
+
+.choice-sub {
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+.choices-lg .choice-sub,
+.choices-wide .choice-sub {
+  font-size: var(--text-sm);
+}
+
+.choices-lg .choice-sub {
+  margin-top: var(--space-1);
+}
+
+.choice-dot {
+  flex: none;
+  width: 1.5rem;
+  height: 1.5rem;
+  border: 2px solid var(--border-control);
+  border-radius: 50%;
+}
+
+.choice.is-chosen .choice-dot {
+  border-color: var(--accent);
+  background: radial-gradient(circle, var(--accent) 0 0.3rem, transparent 0.35rem);
+}
+
+.stepper {
+  display: flex;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-sm);
+}
+
+.stepper:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgb(184 218 179 / 0.18);
+}
+
+.field .stepper input,
+.field .stepper input:focus {
+  flex: 1;
+  min-width: 0;
+  border-color: transparent;
+  box-shadow: none;
+  background: none;
+  text-align: center;
+}
+
+.has-js .stepper input {
+  appearance: textfield;
+}
+
+.has-js .stepper input::-webkit-inner-spin-button,
+.has-js .stepper input::-webkit-outer-spin-button {
+  appearance: none;
+  margin: 0;
+}
+
+.stepper-btn {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 3rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.stepper-btn:first-child {
+  border-right: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+}
+
+.stepper-btn:last-child {
+  border-left: 1px solid var(--border-strong);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+.stepper-btn:hover {
+  background: var(--surface-hover);
+}
+
+.disclosure {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+}
+
+.disclosure-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  padding: var(--space-4) var(--space-6);
+  border-radius: var(--radius);
+  cursor: pointer;
+  list-style: none;
+}
+
+.disclosure-head::-webkit-details-marker {
+  display: none;
+}
+
+.disclosure-head:hover {
+  background: var(--surface-hover);
+}
+
+.disclosure[open] .disclosure-icon {
+  transform: rotate(180deg);
+}
+
+.disclosure-title {
+  display: block;
+  font-weight: 500;
+}
+
+.disclosure-text {
+  display: block;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+}
+
+.disclosure-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  padding: var(--space-6);
+  border-top: 1px solid var(--border);
+}
+
+.form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-4);
+}
+
+.item-sub-wrap {
+  white-space: normal;
+}
+
 /* ------------------------------------------------------------ style guide
  * The catalogue's own layout (components/catalogue.html.jinja). No
  * product page uses these. */
@@ -1653,8 +1958,18 @@ code.address-text {
 /* ------------------------------------------------------------ small screens */
 
 @media (max-width: 900px) {
-  .form-row {
+  .form-row,
+  .form-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .panel {
+    padding: var(--space-5);
+  }
+
+  .choices-lg .choice {
+    padding: var(--space-4);
+    gap: var(--space-4);
   }
 
   .form-row > .btn {

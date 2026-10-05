@@ -50,17 +50,48 @@ impl FakeRegistry {
     }
 
     pub fn publish(&self, repository: &str, tag: &str) -> String {
+        self.publish_exposing(repository, tag, &[])
+    }
+
+    pub fn publish_exposing(&self, repository: &str, tag: &str, ports: &[&str]) -> String {
         let salt = super::random_hex(8);
+        let exposed: serde_json::Map<String, serde_json::Value> = ports
+            .iter()
+            .map(|p| (p.to_string(), serde_json::json!({})))
+            .collect();
+        let mut blobs = Vec::new();
+        let mut variant = |architecture: &str| {
+            let config = serde_json::json!({
+                "architecture": architecture, "os": "linux",
+                "config": {"ExposedPorts": exposed, "Labels": {"salt": salt}},
+            })
+            .to_string()
+            .into_bytes();
+            let config_digest = format!("sha256:{}", hex::encode(Sha256::digest(&config)));
+            let manifest = serde_json::json!({
+                "schemaVersion": 2,
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "config": {"mediaType": "application/vnd.oci.image.config.v1+json",
+                           "digest": config_digest, "size": config.len()},
+                "layers": [],
+            })
+            .to_string()
+            .into_bytes();
+            let digest = format!("sha256:{}", hex::encode(Sha256::digest(&manifest)));
+            blobs.push((config_digest, config));
+            blobs.push((digest.clone(), manifest));
+            digest
+        };
+        let amd64 = variant("amd64");
+        let arm64 = variant("arm64");
         let index = serde_json::json!({
             "schemaVersion": 2,
             "mediaType": "application/vnd.oci.image.index.v1+json",
             "manifests": [
                 {"mediaType": "application/vnd.oci.image.manifest.v1+json",
-                 "digest": format!("sha256:{}", hex::encode(Sha256::digest(format!("amd64-{salt}")))),
-                 "size": 1, "platform": {"architecture": "amd64", "os": "linux"}},
+                 "digest": amd64, "size": 1, "platform": {"architecture": "amd64", "os": "linux"}},
                 {"mediaType": "application/vnd.oci.image.manifest.v1+json",
-                 "digest": format!("sha256:{}", hex::encode(Sha256::digest(format!("arm64-{salt}")))),
-                 "size": 1, "platform": {"architecture": "arm64", "os": "linux"}},
+                 "digest": arm64, "size": 1, "platform": {"architecture": "arm64", "os": "linux"}},
                 {"mediaType": "application/vnd.oci.image.manifest.v1+json",
                  "digest": format!("sha256:{}", hex::encode(Sha256::digest(format!("att-{salt}")))),
                  "size": 1, "platform": {"architecture": "unknown", "os": "unknown"}}
@@ -76,6 +107,11 @@ impl FakeRegistry {
         shared
             .by_digest
             .insert((repository.to_string(), digest.clone()), index);
+        for (blob_digest, blob) in blobs {
+            shared
+                .by_digest
+                .insert((repository.to_string(), blob_digest), blob);
+        }
         digest
     }
 
@@ -132,6 +168,20 @@ async fn serve(
                     )],
                     b"{}".to_vec(),
                 )
+            } else if let Some((repository, digest)) = rest.split_once("/blobs/") {
+                let shared = shared.lock().unwrap();
+                match shared
+                    .by_digest
+                    .get(&(repository.to_string(), digest.to_string()))
+                    .cloned()
+                {
+                    Some(blob) => (
+                        200,
+                        vec![("content-type".into(), "application/octet-stream".into())],
+                        blob,
+                    ),
+                    None => (404, Vec::new(), b"{}".to_vec()),
+                }
             } else if let Some((repository, reference)) = rest.split_once("/manifests/") {
                 let mut shared = shared.lock().unwrap();
                 shared.manifest_calls += 1;

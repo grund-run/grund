@@ -853,12 +853,15 @@ async fn an_app_made_on_the_dashboard_shows_its_copies_ready_and_its_versions() 
         .body_contains(&format!("href=\"&#x2f;{org}&#x2f;deploy\""))?;
     when.submitting(
         &format!("/{org}/deploy"),
-        &format!("{page}/new"),
+        &format!("/{org}/deploy"),
         &[
+            ("mode", "custom"),
             ("name", "hello"),
             ("image", &registry.image("acme/hello", "1")),
+            ("exposure", "private"),
             ("port", "80"),
-            ("check", "/"),
+            ("check", "http"),
+            ("check_path", "/"),
             ("copies", "1"),
         ],
     )
@@ -997,5 +1000,224 @@ async fn the_apps_list_shows_each_image_with_its_icon_and_where_to_reach_it_and_
         .body_contains("id=\"versions\"")?
         .body_contains("id=\"danger\"")?
         .body_lacks(" style=")?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_deploy_page_finds_the_port_an_image_declares_and_its_copy_gets_ready()
+-> anyhow::Result<()> {
+    let registry = FakeRegistry::start().await?;
+    let Some((given, when, then)) =
+        testcase_configured(&[("GRUND_INSECURE_REGISTRIES", &registry.host)]).await?
+    else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let org = owner.username.clone();
+    let _agent = a_machine(&when, &then, &org, "desk").await?;
+    registry.publish_exposing("acme/api", "2", &["9090/tcp", "8080/tcp", "53/udp"]);
+    let deploy = format!("/{org}/deploy");
+    when.visiting(&deploy).await?;
+    then.status(200)?
+        .carries_the_security_headers()?
+        .body_contains("Custom deployment")?
+        .body_contains("Advanced options")?
+        .body_contains("Storage</strong> is not available yet")?;
+    when.submitting(
+        &deploy,
+        &deploy,
+        &[
+            ("mode", "custom"),
+            ("name", "api"),
+            ("image", &registry.image("acme/api", "2")),
+            ("exposure", "private"),
+            ("port", ""),
+            ("copies", "1"),
+            ("env", "GREETING=hej\n"),
+            ("secrets", "API_TOKEN=s3cr3t-value"),
+            ("check", "http"),
+            ("check_path", "/"),
+            ("memory", "128"),
+            ("cpu", "100"),
+            ("stop_signal", "SIGTERM"),
+            ("stop_grace", "1"),
+        ],
+    )
+    .await?;
+    then.status(303)?
+        .redirects_to(&format!("/{org}/apps/api?done=created"))?;
+    let app_page = format!("/{org}/apps/api");
+    let started = Instant::now();
+    loop {
+        when.visiting(&app_page).await?;
+        then.status(200)?;
+        let body = then.body()?;
+        if body.contains("v1 is live on 1 copy") && body.contains(">Ready<") {
+            anyhow::ensure!(
+                body.contains("port = 8080"),
+                "the lowest TCP port it declares: {body}"
+            );
+            anyhow::ensure!(body.contains("GREETING = &quot;hej&quot;"), "{body}");
+            anyhow::ensure!(body.contains("API_TOKEN = &quot;api-token&quot;"), "{body}");
+            anyhow::ensure!(!body.contains("s3cr3t-value"), "a secret is never shown");
+            break;
+        }
+        anyhow::ensure!(
+            started.elapsed() < Duration::from_secs(30),
+            "not live: {body}"
+        );
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    let (outsider, outsider_when, outsider_then) = given.testcase.another_browser();
+    outsider.a_signed_in_account().await?;
+    outsider_when.visiting(&deploy).await?;
+    outsider_then.status(404)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_deploy_page_refuses_what_the_api_would_and_makes_nothing() -> anyhow::Result<()> {
+    let registry = FakeRegistry::start().await?;
+    let Some((given, when, then)) = testcase_configured(&[
+        ("GRUND_INSECURE_REGISTRIES", &registry.host),
+        ("GRUND_APP_DOMAIN", "apps.accept.test"),
+    ])
+    .await?
+    else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let org = owner.username.clone();
+    registry.publish_exposing("acme/web", "1", &["80/tcp"]);
+    registry.publish("acme/bare", "1");
+    let deploy = format!("/{org}/deploy");
+    let web = registry.image("acme/web", "1");
+    let bare = registry.image("acme/bare", "1");
+    let unknown = registry.image("acme/web", "nope");
+    let custom = |name: &'static str, image: String, secrets: &'static str| {
+        vec![
+            ("mode", "custom".to_string()),
+            ("name", name.to_string()),
+            ("image", image),
+            ("exposure", "public".to_string()),
+            ("copies", "1".to_string()),
+            ("secrets", secrets.to_string()),
+        ]
+    };
+    for (fields, expected) in [
+        (
+            custom("Bad Name", web.clone(), "TOKEN=topsecret"),
+            "Use only letters a–z, digits and single hyphens between them.",
+        ),
+        (
+            custom("bare", bare.clone(), ""),
+            "The image declares no port; enter the one it listens on.",
+        ),
+        (
+            custom("lost", unknown.clone(), ""),
+            "has no such image or tag.",
+        ),
+        (
+            vec![
+                ("mode", "custom".to_string()),
+                ("name", "big".to_string()),
+                ("image", web.clone()),
+                ("copies", "21".to_string()),
+            ],
+            "Use 1 to 20.",
+        ),
+        (
+            vec![
+                ("mode", "custom".to_string()),
+                ("name", "envs".to_string()),
+                ("image", web.clone()),
+                ("env", "OK=1\nnot a setting".to_string()),
+            ],
+            "Line 2: write NAME=value",
+        ),
+        (
+            vec![
+                ("mode", "premade".to_string()),
+                ("template", "postgres".to_string()),
+            ],
+            "Choose one of the apps.",
+        ),
+        (
+            vec![
+                ("mode", "premade".to_string()),
+                ("template", "nats".to_string()),
+                ("exposure", "public".to_string()),
+            ],
+            "NATS has no HTTP port to publish. Choose Private.",
+        ),
+    ] {
+        let fields: Vec<(&str, &str)> = fields.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        when.submitting(&deploy, &deploy, &fields).await?;
+        then.status(422)?
+            .carries_the_security_headers()?
+            .body_contains("Nothing was deployed.")?
+            .body_contains(expected)?
+            .body_lacks("topsecret")?;
+    }
+    then.body_lacks("Enter them again")?;
+    when.submitting(
+        &deploy,
+        &deploy,
+        &[
+            ("mode", "custom"),
+            ("name", "Bad Name"),
+            ("image", &web),
+            ("secrets", "TOKEN=topsecret"),
+        ],
+    )
+    .await?;
+    then.status(422)?
+        .body_contains("Enter them again")?
+        .body_contains("value=\"Bad Name\"")?
+        .body_lacks("topsecret")?;
+
+    when.submitting(
+        &deploy,
+        &deploy,
+        &[
+            ("mode", "custom"),
+            ("name", "taken"),
+            ("image", &web),
+            ("exposure", "public"),
+        ],
+    )
+    .await?;
+    then.status(303)?
+        .redirects_to(&format!("/{org}/apps/taken?done=created"))?;
+    when.submitting(
+        &deploy,
+        &deploy,
+        &[("mode", "custom"), ("name", "taken"), ("image", &web)],
+    )
+    .await?;
+    then.status(422)?
+        .body_contains("An app of that name already exists here.")?;
+
+    let listed = call(&when, &then, "ListApps", json!({"organisation": org})).await?;
+    let names: Vec<&str> = listed["apps"]
+        .as_array()
+        .map(|apps| apps.iter().filter_map(|a| a["name"].as_str()).collect())
+        .unwrap_or_default();
+    anyhow::ensure!(
+        names == ["taken"],
+        "only the app that was accepted: {names:?}"
+    );
+    when.visiting(&format!("/{org}/apps")).await?;
+    then.status(200)?
+        .body_contains(&format!("https:&#x2f;&#x2f;taken-{org}.apps.accept.test"))?;
+
+    when.visiting(&format!("/{org}/templates")).await?;
+    then.status(200)?
+        .body_contains("Needs storage")?
+        .body_contains(&format!("href=\"&#x2f;{org}&#x2f;deploy?template=nats\""))?;
+    when.visiting(&format!("{deploy}?template=whoami")).await?;
+    then.status(200)?
+        .body_contains("value=\"whoami\" checked")?
+        .body_contains("Premade app")?;
     Ok(())
 }

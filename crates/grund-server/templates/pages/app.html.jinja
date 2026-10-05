@@ -4,7 +4,7 @@
 {% block title %}{{ app.name }} · Apps · {{ org.slug }} · grund{% endblock %}
 {% block head %}{% if app.busy %}<meta http-equiv="refresh" content="3">{% endif %}{% endblock %}
 {% block content %}
-{{ ui.page_head(app.name, back=("/" ~ org.slug ~ "/apps", "Apps")) }}
+{{ ui.page_head(app.name, back=("/" ~ org.slug ~ "/apps", "Back to apps")) }}
 {{ ui.status_line(app.line, app.tone, id="app-status") }}
 {{ forms.form_ok(notice) }}
 {{ forms.form_error(error) }}

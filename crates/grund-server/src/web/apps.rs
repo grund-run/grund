@@ -2,8 +2,8 @@
 //! grid), `/{org}/deploy` for a new app, and each app's page with its
 //! copies, its rollout, its releases and the forms that deploy, scale, roll
 //! back and set secrets (grund-docs design/apps.md §8.5, §5.4, §9). Also
-//! `/{org}/domains`, the apps' addresses, and `/{org}/templates`, which says
-//! templates are not built yet. Every member sees the pages; owners and
+//! `/{org}/domains`, the apps' addresses, and `/{org}/templates`, the
+//! premade apps Deploy app also offers (`grund_domain::app::templates`). Every member sees the pages; owners and
 //! admins change. The handlers call the same service as
 //! `grund.app.v1.AppService`, so the pages and the API refuse the same
 //! things.
@@ -19,8 +19,10 @@ use grund_domain::{
     app::{
         ReleaseSource,
         spec::{
-            AppSpec, CheckKind, CheckSpec, EnvVar, PortSpec, Protocol, SettingsInput, StopSpec,
+            AppSpec, CheckKind, CheckSpec, EnvVar, MAX_COPIES, PortSpec, Protocol, STOP_SIGNALS,
+            SettingsInput, StopSpec,
         },
+        templates,
         toml::render as render_toml,
     },
     organisation::Role,
@@ -34,7 +36,7 @@ use serde::Deserialize;
 
 use crate::{
     services::{
-        apps::{AppListing, AppView, AppsError, AppsState, DeployInput},
+        apps::{AppListing, AppView, AppsError, AppsState, DeployInput, Launch},
         sessions::Session,
     },
     state::State,
@@ -421,24 +423,170 @@ pub async fn apps_page(
     )
 }
 
-/// `/{org}/deploy`: the form that makes an app and deploys its first
-/// version.
+/// Which mode `/{org}/deploy` shows, and the template it starts on.
+#[derive(Deserialize, Default)]
+pub struct DeployQuery {
+    #[serde(default)]
+    mode: String,
+    #[serde(default)]
+    template: String,
+}
+
+/// `/{org}/deploy`: Deploy app, as a custom image or a premade app. The
+/// mode is a query parameter, so the switch works without the script.
 pub async fn deploy_page(
     AxumState(state): AxumState<State>,
     browser: Browser,
     uri: Uri,
     Path(slug): Path<String>,
+    Query(query): Query<DeployQuery>,
 ) -> PageResult {
     let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
+    let template = templates::find(&query.template).filter(|t| !t.needs_storage);
+    let premade = query.mode == "premade" || template.is_some();
+    let form = NewForm {
+        mode: if premade { "premade" } else { "custom" }.into(),
+        template: template.map(|t| t.key.to_string()).unwrap_or_default(),
+        name: template.map(|t| t.key.to_string()).unwrap_or_default(),
+        ..NewForm::default()
+    };
     new_view(
         &state,
         &browser,
         &session,
         &membership,
-        "",
-        NewForm::default(),
+        form,
+        Refusal::default(),
     )
     .await
+}
+
+#[derive(Default)]
+struct Refusal {
+    banner: String,
+    fields: std::collections::BTreeMap<&'static str, String>,
+}
+
+impl Refusal {
+    fn field(field: &'static str, message: impl Into<String>) -> Self {
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert(field, message.into());
+        Self {
+            banner: "Nothing was deployed. Check the field marked below.".into(),
+            fields,
+        }
+    }
+
+    fn banner(message: impl Into<String>) -> Self {
+        Self {
+            banner: message.into(),
+            fields: Default::default(),
+        }
+    }
+}
+
+const FORM_FIELDS: &[&str] = &[
+    "template", "name", "image", "exposure", "port", "copies", "env", "secrets", "check", "memory",
+    "cpu", "command", "stop",
+];
+
+const ADVANCED_FIELDS: &[&str] = &[
+    "env", "secrets", "check", "memory", "cpu", "command", "stop",
+];
+
+fn form_field(spec_field: &str) -> Option<&'static str> {
+    let head = spec_field.split(['.', '[']).next().unwrap_or_default();
+    Some(match head {
+        "name" => "name",
+        "image" => "image",
+        "copies" | "rollout" | "reschedule_after_seconds" => "copies",
+        "ports" | "port" => "port",
+        "env" => "env",
+        "secrets" | "secret" | "value" => "secrets",
+        "check" => "check",
+        "resources" if spec_field.ends_with("memory_mib") => "memory",
+        "resources" => "cpu",
+        "command" => "command",
+        "stop" => "stop",
+        _ => return None,
+    })
+}
+
+fn line_of(spec_field: &str) -> Option<usize> {
+    let index = spec_field.split_once('[')?.1.split_once(']')?.0;
+    index.parse::<usize>().ok().map(|i| i + 1)
+}
+
+fn refusal(error: &AppsError) -> Refusal {
+    match error {
+        AppsError::Spec(spec) => {
+            let problem = capitalise(&spec.problem);
+            let message = match (form_field(&spec.field), line_of(&spec.field)) {
+                (Some("env" | "secrets" | "command"), Some(line)) => {
+                    format!("Line {line}: {}.", spec.problem)
+                }
+                _ => format!("{problem}."),
+            };
+            match form_field(&spec.field) {
+                Some(field) => Refusal::field(field, message),
+                None => Refusal::banner(format!("{}: {}.", spec.field, spec.problem)),
+            }
+        }
+        AppsError::NameTaken => Refusal::field(
+            "name",
+            "An app of that name already exists here. Choose another.",
+        ),
+        AppsError::ImageUnresolved(message) | AppsError::ImageUnsupported(message) => {
+            Refusal::field("image", format!("{message}."))
+        }
+        other => Refusal::banner(sentence(other)),
+    }
+}
+
+fn exposures(app_domain: Option<&str>) -> Vec<Value> {
+    let public = match app_domain {
+        Some(domain) => context! {
+            value => "public", title => "Public HTTP", icon => "globe",
+            text => format!("Via a {domain} address"),
+        },
+        None => context! {
+            value => "public", title => "Public HTTP", icon => "globe", disabled => true,
+            tag => "Not set up", text => "This instance gives apps no address of their own",
+        },
+    };
+    vec![
+        context! { value => "private", title => "Private", icon => "lock", text => "Only accessible within grund" },
+        public,
+    ]
+}
+
+/// A premade app's image icon: its image's, or its key's while it has none.
+pub fn template_icon(template: &templates::Template) -> &'static str {
+    image_icon(if template.image.is_empty() {
+        template.key
+    } else {
+        template.image
+    })
+}
+
+fn template_icons() -> Vec<&'static str> {
+    let mut icons: Vec<&'static str> = templates::CATALOGUE.iter().map(template_icon).collect();
+    icons.sort_unstable();
+    icons.dedup();
+    icons
+}
+
+const NEEDS_STORAGE: &str = "Needs storage";
+
+/// A premade app as the Templates page shows it.
+pub fn template_context(template: &templates::Template) -> Value {
+    context! {
+        key => template.key,
+        title => template.title,
+        summary => template.summary,
+        icon => template_icon(template),
+        soon => template.needs_storage.then_some(NEEDS_STORAGE),
+    }
 }
 
 async fn new_view(
@@ -446,17 +594,64 @@ async fn new_view(
     browser: &Browser,
     session: &Session,
     membership: &Membership,
-    new_error: &str,
     new: NewForm,
+    refused: Refusal,
 ) -> PageResult {
+    let slug = &membership.slug;
     let viewer = viewer_context(state, session, Some(membership)).await?;
+    let choices: Vec<Value> = templates::CATALOGUE
+        .iter()
+        .map(|t| {
+            context! {
+                value => t.key, title => t.title, text => t.summary, image => template_icon(t),
+                disabled => t.needs_storage, tag => t.needs_storage.then_some(NEEDS_STORAGE),
+            }
+        })
+        .collect();
+    let premade = new.mode == "premade";
+    let mode_href = |mode: &str| format!("/{slug}/deploy?mode={mode}");
+    let advanced = refused
+        .fields
+        .keys()
+        .any(|field| ADVANCED_FIELDS.contains(field));
+    let secrets_dropped = !refused.banner.is_empty() && !new.secrets.trim().is_empty();
+    let errors: std::collections::BTreeMap<&str, &str> = FORM_FIELDS
+        .iter()
+        .map(|field| (*field, refused.fields.get(field).map_or("", String::as_str)))
+        .collect();
     render(
         state,
         browser,
-        StatusCode::OK,
+        if refused.banner.is_empty() {
+            StatusCode::OK
+        } else {
+            StatusCode::UNPROCESSABLE_ENTITY
+        },
         "pages/deploy.html.jinja",
         context! {
-            viewer, new_error, new => Value::from_serialize(&new),
+            viewer,
+            mode => if premade { "premade" } else { "custom" },
+            modes => vec![
+                context! {
+                    key => "premade", href => mode_href("premade"), icon => "grid", title => "Premade",
+                    text => "Quickly deploy popular apps", sub => "NATS, whoami and nginx; databases with storage",
+                },
+                context! {
+                    key => "custom", href => mode_href("custom"), icon => "box", title => "Custom",
+                    text => "Deploy any container image", sub => "Paste an image and deploy with sensible defaults",
+                },
+            ],
+            new => Value::from_serialize(&new),
+            new_error => refused.banner.clone(), errors,
+            advanced, secrets_dropped,
+            exposures => exposures(state.config.entry.app_domain.as_deref()),
+            public_hint => state.config.entry.app_domain.as_deref().map(|domain| format!("Public: https://<name>-{slug}.{domain}")).unwrap_or_default(),
+            templates => choices, image_keys => template_icons(),
+            signals => STOP_SIGNALS.iter().map(|s| (*s, *s)).collect::<Vec<_>>(),
+            checks => [("", "None"), ("http", "HTTP request"), ("tcp", "TCP connection")],
+            action => format!("/{slug}/deploy"),
+            other_mode => mode_href(if premade { "custom" } else { "premade" }),
+            templates_href => format!("/{slug}/templates"),
             csrf => browser.csrf_token(), section => "deploy",
         },
     )
@@ -493,7 +688,7 @@ pub async fn domains_page(
     )
 }
 
-/// `/{org}/templates`: not built yet, and the page says so.
+/// `/{org}/templates`: the premade apps, the same list Deploy app offers.
 pub async fn templates_page(
     AxumState(state): AxumState<State>,
     browser: Browser,
@@ -502,29 +697,212 @@ pub async fn templates_page(
 ) -> PageResult {
     let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
     let viewer = viewer_context(&state, &session, Some(&membership)).await?;
+    let shown: Vec<Value> = templates::CATALOGUE.iter().map(template_context).collect();
     render(
         &state,
         &browser,
         StatusCode::OK,
         "pages/templates.html.jinja",
-        context! { viewer, csrf => browser.csrf_token(), section => "templates" },
+        context! {
+            viewer, templates => shown, image_keys => template_icons(),
+            csrf => browser.csrf_token(), section => "templates",
+        },
     )
 }
 
+/// The Deploy app form, in either mode. `secrets` is never written back
+/// into the page.
 #[derive(Deserialize, Default, serde::Serialize)]
 pub struct NewForm {
     #[serde(default, skip_serializing)]
     csrf: String,
     #[serde(default)]
+    mode: String,
+    #[serde(default)]
+    template: String,
+    #[serde(default)]
     name: String,
     #[serde(default)]
     image: String,
     #[serde(default)]
+    exposure: String,
+    #[serde(default)]
     port: String,
+    #[serde(default)]
+    copies: String,
+    #[serde(default)]
+    env: String,
+    #[serde(default, skip_serializing)]
+    secrets: String,
     #[serde(default)]
     check: String,
     #[serde(default)]
-    copies: String,
+    check_path: String,
+    #[serde(default)]
+    memory: String,
+    #[serde(default)]
+    cpu: String,
+    #[serde(default)]
+    command: String,
+    #[serde(default)]
+    stop_signal: String,
+    #[serde(default)]
+    stop_grace: String,
+}
+
+fn number<T: std::str::FromStr>(
+    text: &str,
+    field: &'static str,
+    words: &str,
+) -> Result<Option<T>, Refusal> {
+    match text.trim() {
+        "" => Ok(None),
+        text => text
+            .parse()
+            .map(Some)
+            .map_err(|_| Refusal::field(field, words.to_string())),
+    }
+}
+
+fn pairs(text: &str) -> Result<Vec<(String, String)>, String> {
+    let mut pairs = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        match line.split_once('=') {
+            Some((name, value)) => pairs.push((name.trim().to_string(), value.to_string())),
+            None => {
+                return Err(format!(
+                    "Line {}: write NAME=value; this line has no '='.",
+                    i + 1
+                ));
+            }
+        }
+    }
+    Ok(pairs)
+}
+
+fn copies_of(form: &NewForm) -> Result<Option<u32>, Refusal> {
+    number(
+        &form.copies,
+        "copies",
+        &format!("Copies is a whole number from 1 to {MAX_COPIES}."),
+    )
+}
+
+fn custom_launch(form: &NewForm, public: bool) -> Result<Launch, Refusal> {
+    let copies = copies_of(form)?;
+    let port: Option<u16> = number(&form.port, "port", "A port is a number from 1 to 65535.")?;
+    let main = PortSpec {
+        name: "http".into(),
+        port: port.unwrap_or(0),
+        protocol: Protocol::Http,
+        public,
+    };
+    let env = pairs(&form.env)
+        .map_err(|message| Refusal::field("env", message))?
+        .into_iter()
+        .map(|(name, value)| EnvVar { name, value })
+        .collect();
+    let secrets = pairs(&form.secrets).map_err(|message| Refusal::field("secrets", message))?;
+    let check = match form.check.as_str() {
+        "http" => Some(CheckKind::Http {
+            path: match form.check_path.trim() {
+                "" => "/".to_string(),
+                path => path.to_string(),
+            },
+        }),
+        "tcp" => Some(CheckKind::Tcp),
+        _ => None,
+    };
+    let memory_mib = number(
+        &form.memory,
+        "memory",
+        "Memory is a whole number of MiB, from 16 to 262144.",
+    )?;
+    let cpu_millis = number(
+        &form.cpu,
+        "cpu",
+        "CPU is a whole number of thousandths of a CPU, from 10 to 64000.",
+    )?;
+    let grace_seconds = number(
+        &form.stop_grace,
+        "stop",
+        "The grace period is a whole number of seconds, at most 300.",
+    )?;
+    Ok(Launch {
+        name: form.name.clone(),
+        settings: SettingsInput {
+            copies,
+            ..Default::default()
+        },
+        spec: AppSpec {
+            image: form.image.trim().to_string(),
+            command: form
+                .command
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(str::to_string)
+                .collect(),
+            ports: if port.is_some() {
+                vec![main.clone()]
+            } else {
+                Vec::new()
+            },
+            memory_mib: memory_mib.unwrap_or(0),
+            cpu_millis: cpu_millis.unwrap_or(0),
+            env,
+            secrets: Vec::new(),
+            check: check.map(|kind| CheckSpec {
+                kind,
+                port: 0,
+                interval_ms: 0,
+                timeout_ms: 0,
+            }),
+            stop: StopSpec {
+                signal: form.stop_signal.trim().to_string(),
+                grace_seconds: grace_seconds.unwrap_or(0),
+            },
+        },
+        detect_port: port.is_none().then_some(main),
+        secrets,
+    })
+}
+
+fn premade_launch(form: &NewForm, public: bool) -> Result<Launch, Refusal> {
+    let template = templates::find(&form.template)
+        .filter(|t| !t.needs_storage)
+        .ok_or_else(|| Refusal::field("template", "Choose one of the apps."))?;
+    if public && template.publishable.is_none() {
+        return Err(Refusal::field(
+            "exposure",
+            format!(
+                "{} has no HTTP port to publish. Choose Private.",
+                template.title
+            ),
+        ));
+    }
+    let spec = template.spec(public).ok_or_else(|| {
+        Refusal::field(
+            "template",
+            "That app needs storage, which is not built yet.",
+        )
+    })?;
+    Ok(Launch {
+        name: match form.name.trim() {
+            "" => template.key.to_string(),
+            name => name.to_string(),
+        },
+        settings: SettingsInput {
+            copies: copies_of(form)?,
+            ..Default::default()
+        },
+        spec,
+        detect_port: None,
+        secrets: Vec::new(),
+    })
 }
 
 fn simple_spec(image: &str, port: &str, check: &str, env: Vec<EnvVar>) -> Result<AppSpec, String> {
@@ -583,7 +961,9 @@ fn sentence(error: &AppsError) -> String {
     }
 }
 
-/// `POST /{org}/apps/new`: makes the app and deploys its first version.
+/// `POST /{org}/deploy`: makes the app and rolls out its first version.
+/// Every refusal comes back as the form with a message under the field
+/// that caused it, and nothing made.
 pub async fn create(
     AxumState(state): AxumState<State>,
     browser: Browser,
@@ -598,58 +978,45 @@ pub async fn create(
     if !manages(&membership) {
         return Ok(redirect(&format!("/{slug}/apps?error=not-allowed")));
     }
-    let refuse = |message: String, form: NewForm| {
-        let (state, browser, session, membership) = (&state, &browser, &session, &membership);
-        async move { new_view(state, browser, session, membership, &message, form).await }
+    let public = form.exposure == "public";
+    let launch = if public && state.config.entry.app_domain.is_none() {
+        Err(Refusal::field(
+            "exposure",
+            "This instance gives apps no public address. Choose Private.",
+        ))
+    } else if form.mode == "premade" {
+        premade_launch(&form, public)
+    } else {
+        custom_launch(&form, public)
     };
-    let copies = match form.copies.trim() {
-        "" => None,
-        text => match text.parse::<u32>() {
-            Ok(n) => Some(n),
-            Err(_) => return refuse("Copies is a whole number.".into(), form).await,
-        },
+    let refused = match launch {
+        Ok(launch) => {
+            let wanted = launch.name.trim().to_ascii_lowercase();
+            let apps = state.apps();
+            match apps
+                .launch(session.account_id, membership.organisation_id, launch)
+                .await
+            {
+                Ok((name, _)) => {
+                    return Ok(redirect(&format!("/{slug}/apps/{name}?done=created")));
+                }
+                Err(AppsError::Internal(error)) => {
+                    tracing::error!(error = %format!("{error:#}"), "the deploy page could not make an app");
+                    let error = AppsError::Internal(error);
+                    if apps.get(membership.organisation_id, &wanted).await.is_ok() {
+                        return Ok(redirect(&format!(
+                            "/{slug}/apps/{wanted}?deploy_error={}",
+                            urlencode(&sentence(&error))
+                        )));
+                    }
+                    Refusal::banner(sentence(&error))
+                }
+                Err(error) => refusal(&error),
+            }
+        }
+        Err(refused) => refused,
     };
-    let spec = match simple_spec(&form.image, &form.port, &form.check, Vec::new()) {
-        Ok(spec) => spec,
-        Err(message) => return refuse(message, form).await,
-    };
-    let spec = match spec.validate() {
-        Ok(spec) => spec,
-        Err(error) => return refuse(sentence(&AppsError::Spec(error)), form).await,
-    };
-    let apps = state.apps();
-    if let Err(error) = apps
-        .create(
-            session.account_id,
-            membership.organisation_id,
-            &form.name,
-            SettingsInput {
-                copies,
-                ..Default::default()
-            },
-        )
-        .await
-    {
-        return refuse(sentence(&error), form).await;
-    }
-    let name = form.name.trim().to_ascii_lowercase();
-    match apps
-        .deploy(
-            session.account_id,
-            membership.organisation_id,
-            &name,
-            DeployInput::Spec(spec),
-            ReleaseSource::Dashboard,
-            "",
-        )
-        .await
-    {
-        Ok(_) => Ok(redirect(&format!("/{slug}/apps/{name}?done=created"))),
-        Err(error) => Ok(redirect(&format!(
-            "/{slug}/apps/{name}?deploy_error={}",
-            urlencode(&sentence(&error))
-        ))),
-    }
+    new_view(&state, &browser, &session, &membership, form, refused).await
 }
 
 fn urlencode(text: &str) -> String {
@@ -884,22 +1251,13 @@ pub async fn deploy(
             .await
         }
     };
-    let mut env = Vec::new();
-    for line in form.env.lines().map(str::trim).filter(|l| !l.is_empty()) {
-        match line.split_once('=') {
-            Some((key, value)) => env.push(EnvVar {
-                name: key.trim().to_string(),
-                value: value.to_string(),
-            }),
-            None => {
-                return refuse(
-                    format!("Each setting is NAME=value on its own line; \"{line}\" has no '='."),
-                    form,
-                )
-                .await;
-            }
-        }
-    }
+    let env = match pairs(&form.env) {
+        Ok(pairs) => pairs
+            .into_iter()
+            .map(|(name, value)| EnvVar { name, value })
+            .collect(),
+        Err(message) => return refuse(message, form).await,
+    };
     let mut spec = match simple_spec(&form.image, &form.port, &form.check, env) {
         Ok(spec) => spec,
         Err(message) => return refuse(message, form).await,

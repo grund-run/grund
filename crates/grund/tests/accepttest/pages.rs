@@ -53,6 +53,8 @@ async fn every_signed_in_page_renders_in_the_shell_with_nothing_the_csp_forbids(
         format!("/{org}/apps"),
         format!("/{org}/apps?view=grid&sort=deployed&q=x"),
         format!("/{org}/deploy"),
+        format!("/{org}/deploy?mode=premade"),
+        format!("/{org}/deploy?template=nginx"),
         format!("/{org}/domains"),
         format!("/{org}/templates"),
         format!("/{org}/machines"),
@@ -81,7 +83,7 @@ async fn every_signed_in_page_renders_in_the_shell_with_nothing_the_csp_forbids(
                 "{path} has the search"
             );
             anyhow::ensure!(
-                path.ends_with("/deploy")
+                path.contains("/deploy")
                     || body.contains("<span class=\"btn-label\">Deploy app</span>"),
                 "{path} has the deploy button"
             );
@@ -95,7 +97,7 @@ async fn every_signed_in_page_renders_in_the_shell_with_nothing_the_csp_forbids(
         });
     }
     when.visiting(&format!("/{org}/templates")).await?;
-    then.body_contains("Templates are in development")?
+    then.body_contains("Needs storage")?
         .body_contains("aria-current=\"page\">")?;
 
     let script = script.expect("signed-in pages load the script");

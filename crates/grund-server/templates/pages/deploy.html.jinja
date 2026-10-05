@@ -1,17 +1,57 @@
 {% extends "layout-app.html.jinja" %}
+{% import "components/images.html.jinja" as images %}
 {% set org = viewer.current %}
-{% block title %}Deploy an app · {{ org.slug }} · grund{% endblock %}
+{% block title %}Deploy app · {{ org.slug }} · grund{% endblock %}
 {% block content %}
-{{ ui.page_head("Deploy an app", "Give it a name and a container image. grund runs as many copies as you ask for on " ~ org.slug ~ "'s machines.", back=("/" ~ org.slug ~ "/apps", "Apps")) }}
+{{ images.sprite(image_keys) }}
+{{ ui.page_head("Deploy app", "Choose a deployment mode to get started.", back=("/" ~ org.slug ~ "/apps", "Back to apps")) }}
 {% if org.manages %}
-{% call forms.form("/" ~ org.slug ~ "/apps/new", csrf, layout="narrow") %}
-  {{ forms.form_error(new_error) }}
-  {{ forms.field("name", "Name", value=new.name, autocomplete="off", hint="Letters a–z, digits and single hyphens. It never changes.") }}
-  {{ forms.field("image", "Image", value=new.image, autocomplete="off", hint="A container image, such as traefik/whoami:v1.10. grund pins the version it finds now.") }}
-  {{ forms.field("port", "Port", type="number", value=new.port, autocomplete="off", required=false, hint="Optional. The port the app listens on.") }}
-  {{ forms.field("check", "Ready check", value=new.check, autocomplete="off", required=false, hint="Optional. A path grund asks for on that port, such as /healthz, before a copy counts as ready.") }}
-  {{ forms.field("copies", "Copies", type="number", value=new.copies or "1", autocomplete="off", required=false) }}
-  <div>{{ ui.button("Make it and deploy", icon_name="plus") }}</div>
+{{ ui.choice_links("Deployment mode", modes, mode) }}
+{% call forms.form(action, csrf, autocomplete="off") %}
+  {{ forms.hidden_field("mode", mode) }}
+  {% if mode == "premade" %}
+  {% call ui.panel("premade", "Premade app", "Pick an app. grund runs the version named here, pinned by its digest.") %}
+    {{ forms.form_error(new_error) }}
+    {{ forms.choice_field("template", "App", templates, new.template, error=errors.template, large=true, fill="name") }}
+    {% call forms.grid() %}
+      {{ forms.field("name", "Name", value=new.name, error=errors.name, hint="A unique name for your app. Only lowercase letters, numbers and -.") }}
+      {{ forms.stepper_field("copies", "Copies", new.copies or "1", max=20, error=errors.copies, hint="Number of app instances.") }}
+      {{ forms.choice_field("exposure", "Exposure", exposures, new.exposure or "private", error=errors.exposure, hint=public_hint) }}
+    {% endcall %}
+  {% endcall %}
+  {{ ui.callout("Need something else?", "Deploy any container image by its name, with the port, settings and secrets you choose.", icon_name="box", boxed=true, action=(other_mode, "Deploy a custom image")) }}
+  {% else %}
+  {% call ui.panel("custom", "Custom deployment", "Paste any container image and deploy with sensible defaults.") %}
+    {{ forms.form_error(new_error) }}
+    {% call forms.grid() %}
+      {{ forms.field("name", "Name", value=new.name, error=errors.name, hint="A unique name for your app. Only lowercase letters, numbers and -.") }}
+      {{ forms.field("image", "Image", value=new.image, error=errors.image, hint="Container image (e.g. nats:2.10 or ghcr.io/org/app:latest). grund pins the version it finds now.") }}
+      {{ forms.choice_field("exposure", "Exposure", exposures, new.exposure or "private", error=errors.exposure, hint=public_hint) }}
+      {% call forms.grid() %}
+        {{ forms.field("port", "Port", type="number", value=new.port, required=false, error=errors.port, hint="Will be auto-detected for many images.") }}
+        {{ forms.stepper_field("copies", "Copies", new.copies or "1", max=20, error=errors.copies, hint="Number of app instances.") }}
+      {% endcall %}
+    {% endcall %}
+    {% call forms.disclosure("Advanced options", "Environment variables, secrets, ready check, resources and more.", open=advanced) %}
+      {% call forms.grid() %}
+        {{ forms.textarea_field("env", "Environment variables", value=new.env, error=errors.env, hint="NAME=value, one per line. Shown on the app's page.", mono=true) }}
+        {{ forms.textarea_field("secrets", "Secrets", error=errors.secrets, hint=("Enter them again: a refused form never shows a secret. " if secrets_dropped else "") ~ "NAME=value, one per line. Stored sealed and never shown again; the app gets each as that variable.", mono=true) }}
+        {{ forms.select_field("check", "Ready check", checks, new.check, hint="What grund asks before a copy counts as ready, on the app's port.") }}
+        {{ forms.field("check_path", "Check path", value=new.check_path, required=false, error=errors.check, hint="For an HTTP check, such as /healthz. Empty: /.") }}
+        {{ forms.field("memory", "Memory (MiB)", type="number", value=new.memory, required=false, error=errors.memory, hint="Per copy. Empty: 512.") }}
+        {{ forms.field("cpu", "CPU (thousandths)", type="number", value=new.cpu, required=false, error=errors.cpu, hint="Per copy; 1000 is one CPU. Empty: 1000.") }}
+        {{ forms.textarea_field("command", "Command", value=new.command, error=errors.command, rows=3, hint="One argument per line. It replaces the image's entrypoint and command; empty runs the image's own.", mono=true) }}
+        {% call forms.grid() %}
+          {{ forms.select_field("stop_signal", "Stop signal", signals, new.stop_signal or "SIGTERM") }}
+          {{ forms.field("stop_grace", "Grace (seconds)", type="number", value=new.stop_grace, required=false, error=errors.stop, hint="Before it is killed. Empty: 30.") }}
+        {% endcall %}
+      {% endcall %}
+      {% call ui.hint() %}<strong>Storage</strong> is not available yet: it needs volumes, which grund does not have. An app keeps nothing on disk when a copy is replaced.{% endcall %}
+    {% endcall %}
+  {% endcall %}
+  {{ ui.callout("Looking for a faster start?", "Switch to premade templates for apps like NATS, whoami and nginx. PostgreSQL, Redis and MinIO come with storage.", icon_name="grid", boxed=true, action=(templates_href, "Browse templates")) }}
+  {% endif %}
+  {% call forms.actions() %}{{ ui.button("Cancel", href="/" ~ org.slug ~ "/apps", kind="secondary") }}{{ ui.button("Deploy app") }}{% endcall %}
 {% endcall %}
 {% else %}
 {{ ui.empty_state("Your role does not deploy apps", "Owners and admins of " ~ org.slug ~ " deploy them. Ask one to make you an admin.") }}
