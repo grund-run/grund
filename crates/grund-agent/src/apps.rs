@@ -11,14 +11,15 @@
 //! - **Missing**: pull its image by digest (in the background, so one slow
 //!   pull holds up nothing else), fetch its secrets, create, start.
 //! - **A different spec** under the same id: remove, then create again.
-//!   While the private network is configured but not up yet (an agent that
-//!   just started), a running container is kept: its spec includes the
-//!   network, which the plan cannot see yet, and recreating it would bounce
-//!   every copy at each agent restart.
+//!   While the private network is configured but not up yet, for the first
+//!   [`NETWORK_GRACE`] after the agent starts, a running container is kept:
+//!   its spec includes the network, which the plan cannot see yet, and
+//!   recreating it would bounce every copy at each agent restart.
 //! - **Created, with no process**: start one. A reboot leaves containerd the
 //!   container and nothing else; if its process cannot start (the files it
-//!   was created with are gone), the container is removed and created again
-//!   from the document.
+//!   was created with are gone, or the entrypoint is), the container is
+//!   removed and created again from the document, on the exits' back-off,
+//!   reported starting after the first failure and failed from the second.
 //! - **Exited**: restart at once, then after 10 s, 20 s, 40 s, … capped at
 //!   5 minutes, and forget the back-off after 10 minutes of running
 //!   ([`backoff`], the kubelet's schedule except for the first restart).
@@ -84,6 +85,12 @@ pub const BACKOFF_RESET: Duration = Duration::from_secs(600);
 
 /// The longest a restart waits.
 pub const BACKOFF_CAP: Duration = Duration::from_secs(300);
+
+/// How long after the agent starts a running container is kept while the
+/// private network is configured but not up yet. Past it, a spec that
+/// differs is recreated with or without the network, so a mesh that never
+/// comes up cannot hold a real change back forever.
+pub const NETWORK_GRACE: Duration = Duration::from_secs(60);
 
 /// How long a failed pull or create waits before it is tried again.
 pub const RETRY_FAILED: Duration = Duration::from_secs(10);
@@ -190,6 +197,9 @@ struct Readiness {
 struct Tracked {
     restarts: u32,
     exits_since_reset: u32,
+    start_failures: u32,
+    recreate_at: Option<Instant>,
+    start_failure: String,
     started: Option<Instant>,
     restart_at: Option<Instant>,
     last_exit_code: i32,
@@ -202,6 +212,15 @@ impl Shared {
     pub fn endpoints(&self) -> tokio::sync::watch::Receiver<Vec<ReplicaEndpoint>> {
         self.endpoints.0.subscribe()
     }
+}
+
+fn start_failed(replica: &Replica, tracked: &Tracked) -> ReplicaObserved {
+    let state = if tracked.start_failures >= 2 || tracked.failed.is_some() {
+        ReplicaObservedState::REPLICA_OBSERVED_STATE_FAILED
+    } else {
+        ReplicaObservedState::REPLICA_OBSERVED_STATE_STARTING
+    };
+    report(replica, state, &tracked.start_failure)
 }
 
 fn container_hash(replica: &Replica, net: Option<&Net>) -> String {
@@ -347,6 +366,7 @@ pub struct Apps<C> {
     attached: HashMap<String, Ipv6Addr>,
     netns_of: HashMap<String, PathBuf>,
     forwards: HashMap<String, Vec<crate::forward::Forward>>,
+    began: Instant,
 }
 
 impl<C: ContainerRuntime + 'static> Apps<C> {
@@ -377,6 +397,7 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
             attached: HashMap::new(),
             netns_of: HashMap::new(),
             forwards: HashMap::new(),
+            began: Instant::now(),
         }
     }
 
@@ -658,7 +679,9 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                 continue;
             }
             let hash = container_hash(replica, net.as_ref());
-            let network_coming = self.network.is_some() && net.is_none();
+            let network_coming = self.network.is_some()
+                && net.is_none()
+                && now.duration_since(self.began) < NETWORK_GRACE;
             if let Some(container) = existing
                 && container.spec_hash != hash
                 && !network_coming
@@ -682,11 +705,23 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
             }
             match existing.map(|c| &c.state) {
                 None => {
-                    let state = self.start(replica, now, net.as_ref()).await;
+                    let waiting = self
+                        .tracked
+                        .get(&id)
+                        .filter(|t| t.recreate_at.is_some_and(|at| now < at))
+                        .map(|t| start_failed(replica, t));
+                    let state = match waiting {
+                        Some(state) => state,
+                        None => self.start(replica, now, net.as_ref()).await,
+                    };
                     reports.insert(id.clone(), state);
                 }
                 Some(TaskState::Created) => {
                     let tracked = self.tracked.entry(id.clone()).or_default();
+                    if tracked.recreate_at.is_some_and(|at| now < at) {
+                        reports.insert(id.clone(), start_failed(replica, tracked));
+                        continue;
+                    }
                     tracked.started = Some(now);
                     let state = match self.runtime.restart(&id).await {
                         Ok(()) => report(
@@ -695,21 +730,24 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                             "",
                         ),
                         Err(error) => {
+                            let tracked = self.tracked.entry(id.clone()).or_default();
+                            tracked.start_failures += 1;
+                            let wait = backoff(tracked.start_failures);
+                            tracked.recreate_at = Some(now + wait);
+                            tracked.start_failure =
+                                format!("its process could not start: {error:#}");
                             tracing::warn!(
                                 replica = %id,
                                 error = %format!("{error:#}"),
-                                "could not start a replica's process in its container; creating the container again"
+                                failures = tracked.start_failures,
+                                wait_s = wait.as_secs(),
+                                "could not start a replica's process in its container; creating the container again after its back-off"
                             );
+                            let state = start_failed(replica, tracked);
                             if let Some(container) = existing {
                                 self.stop(container);
                             }
-                            report(
-                                replica,
-                                ReplicaObservedState::REPLICA_OBSERVED_STATE_STARTING,
-                                &format!(
-                                    "creating it again, its process could not start: {error:#}"
-                                ),
-                            )
+                            state
                         }
                     };
                     reports.insert(id.clone(), state);
@@ -720,6 +758,7 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                     tracked.restart_at = None;
                     if now.duration_since(started) >= BACKOFF_RESET {
                         tracked.exits_since_reset = 0;
+                        tracked.start_failures = 0;
                     }
                     match probe_of(replica) {
                         None => {
@@ -1318,6 +1357,78 @@ mod tests {
                 .unwrap()
                 .contains("hash-with-the-network"),
             "the container was not created again"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_replica_that_can_never_start_is_failed_and_recreated_only_on_its_back_off() {
+        let (mut apps, shared, dir) = harness("nostart");
+        set(
+            &shared,
+            vec![replica("r1", &[("GRUND_SIMULATE", "nostart")])],
+        );
+        let mut states = Vec::new();
+        for _ in 0..30 {
+            apps.pass().await.unwrap();
+            states.push(state_of(&shared, "r1").0);
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        let first_failed = states
+            .iter()
+            .position(|s| *s == Some(ReplicaObservedState::REPLICA_OBSERVED_STATE_FAILED))
+            .expect("r1 is reported failed");
+        assert!(
+            states[first_failed..]
+                .iter()
+                .all(|s| *s == Some(ReplicaObservedState::REPLICA_OBSERVED_STATE_FAILED)),
+            "r1 stays failed once it is: {states:?}"
+        );
+        let creates = std::fs::read_to_string(dir.join("runtime/creates"))
+            .unwrap_or_default()
+            .lines()
+            .count();
+        assert!(
+            creates <= 3,
+            "r1 is created again only on its back-off, not every pass: {creates} creates"
+        );
+        let reports = shared.reports.lock().unwrap().clone();
+        assert!(
+            reports[0].reason.contains("could not start"),
+            "{}",
+            reports[0].reason
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_changed_spec_is_recreated_once_the_wait_for_the_network_is_over() {
+        let (mut apps, shared, dir) = harness("netgrace");
+        set(&shared, vec![replica("r1", &[])]);
+        for _ in 0..3 {
+            apps.pass().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        let path = dir.join("runtime/containers/r1.json");
+        let record = std::fs::read_to_string(&path).unwrap();
+        let hash = container_hash(&replica("r1", &[]), None);
+        std::fs::write(&path, record.replace(&hash, "an-older-spec")).unwrap();
+        let (_list, lists) = tokio::sync::watch::channel(None);
+        let mut apps = apps.with_network(NetworkAccess {
+            lists,
+            mesh: Arc::new(std::sync::OnceLock::new()),
+            own: "own".into(),
+        });
+        apps.began = Instant::now() - NETWORK_GRACE - Duration::from_secs(1);
+        for _ in 0..10 {
+            apps.pass().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        assert!(
+            !std::fs::read_to_string(&path)
+                .unwrap_or_default()
+                .contains("an-older-spec"),
+            "past the grace, the changed spec was recreated without the network"
         );
         std::fs::remove_dir_all(dir).unwrap();
     }

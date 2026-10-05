@@ -16,7 +16,9 @@
 //!
 //! A container's environment steers it, as an image's behaviour would:
 //! `GRUND_SIMULATE=crash` exits with code 1 a second after every start,
-//! `GRUND_SIMULATE=unready` runs but fails its check (status 503). An image
+//! `GRUND_SIMULATE=unready` runs but fails its check (status 503),
+//! `GRUND_SIMULATE=nostart` is created but its process never starts, as
+//! with a missing entrypoint. Every create appends the id to `<dir>/creates`. An image
 //! whose reference contains `missing` cannot be pulled.
 //!
 //! While a container runs, it serves HTTP/1.1 like traefik/whoami, on its
@@ -428,6 +430,21 @@ impl ContainerRuntime for SimulatedContainers {
             "image {} is not pulled",
             spec.image.digest
         );
+        std::fs::create_dir_all(&self.dir)?;
+        let mut creates = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.dir.join("creates"))?;
+        std::io::Write::write_all(&mut creates, format!("{}\n", spec.id).as_bytes())?;
+        if Self::behaviour(spec) == Some("nostart") {
+            self.write(&Record {
+                spec: spec.clone(),
+                state: TaskState::Created,
+                started_at_ms: now_ms(),
+                task_lost: true,
+            })?;
+            anyhow::bail!("start the task: exec: \"/missing\": no such file or directory");
+        }
         let record = Record {
             spec: spec.clone(),
             state: TaskState::Running {
