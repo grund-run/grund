@@ -40,6 +40,13 @@ impl Agent {
             .collect()
     }
 
+    fn lose_task(&self, replica_id: &str) -> anyhow::Result<()> {
+        let dir = self.dir.join("simulated-containers/lost");
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(dir.join(replica_id), b"")?;
+        Ok(())
+    }
+
     fn kill_container(&self, replica_id: &str) -> anyhow::Result<()> {
         let dir = self.dir.join("simulated-containers/kill");
         std::fs::create_dir_all(&dir)?;
@@ -372,6 +379,91 @@ async fn an_app_runs_rolls_out_rolls_back_on_its_own_and_restarts_a_killed_copy(
         },
     )
     .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_copy_whose_task_is_gone_after_a_reboot_runs_again_under_its_own_id() -> anyhow::Result<()>
+{
+    let registry = FakeRegistry::start().await?;
+    let Some((given, when, then)) =
+        testcase_configured(&[("GRUND_INSECURE_REGISTRIES", &registry.host)]).await?
+    else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let org = owner.username.as_str();
+    let agent = a_machine(&when, &then, org, "box").await?;
+    registry.publish("acme/hello", "1");
+    call(
+        &when,
+        &then,
+        "CreateApp",
+        json!({"organisation": org, "name": "hello", "settings": quick(1)}),
+    )
+    .await?;
+    then.status(200)?;
+    call(
+        &when,
+        &then,
+        "Deploy",
+        json!({"organisation": org, "name": "hello", "spec": spec(&registry.image("acme/hello", "1"), json!([]))}),
+    )
+    .await?;
+    then.status(200)?;
+    let running = until(
+        &when,
+        &then,
+        org,
+        "hello",
+        Duration::from_secs(30),
+        "v1 live on 1 copy",
+        |a| live(a, 1) && ready_on(a, 1) == 1,
+    )
+    .await?;
+    let copy = running["replicas"][0]["replicaId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    agent.lose_task(&copy)?;
+    let consumed = std::time::Instant::now();
+    while agent
+        .dir
+        .join("simulated-containers/lost")
+        .join(&copy)
+        .exists()
+    {
+        anyhow::ensure!(
+            consumed.elapsed() < Duration::from_secs(10),
+            "the agent never looked at the copy"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let started_again = |agent: &Agent| {
+        agent
+            .containers()
+            .iter()
+            .any(|c| c["spec"]["id"] == copy.as_str() && c["task_lost"] == false)
+    };
+    until(
+        &when,
+        &then,
+        org,
+        "hello",
+        Duration::from_secs(30),
+        "the copy ran again after its task was lost",
+        |a| {
+            started_again(&agent)
+                && a["replicas"].as_array().is_some_and(|replicas| {
+                    replicas.len() == 1
+                        && replicas[0]["replicaId"] == copy.as_str()
+                        && replicas[0]["observed"]["ready"] == true
+                })
+        },
+    )
+    .await
+    .map_err(|error| error.context(format!("containers: {:?}", agent.containers())))?;
     Ok(())
 }
 

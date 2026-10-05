@@ -8,6 +8,10 @@
 //!   <dir>/containers/<id>.json   the spec and its state
 //!   <dir>/images/<digest>        a "pulled" image
 //!   <dir>/kill/<id>              made by a test: the process "dies" (exit 137)
+//!   <dir>/lost/<id>              made by a test: the task is gone, as after a
+//!                                reboot; the container is left with no process,
+//!                                and starting one in it fails until it is
+//!                                removed and created again
 //! ```
 //!
 //! A container's environment steers it, as an image's behaviour would:
@@ -152,6 +156,8 @@ struct Record {
     spec: ContainerSpec,
     state: TaskState,
     started_at_ms: i64,
+    #[serde(default)]
+    task_lost: bool,
 }
 
 fn now_ms() -> i64 {
@@ -245,6 +251,15 @@ impl SimulatedContainers {
     }
 
     fn advance(&self, mut record: Record) -> anyhow::Result<Record> {
+        let lost = self.dir.join("lost").join(&record.spec.id);
+        if lost.exists() {
+            let _ = std::fs::remove_file(&lost);
+            self.stop_server(&record.spec.id);
+            self.unlisten(&record.spec.id);
+            record.state = TaskState::Created;
+            record.task_lost = true;
+            self.write(&record)?;
+        }
         let kill = self.dir.join("kill").join(&record.spec.id);
         if let TaskState::Running { .. } = record.state {
             if kill.exists() {
@@ -419,6 +434,7 @@ impl ContainerRuntime for SimulatedContainers {
                 pid: std::process::id(),
             },
             started_at_ms: now_ms(),
+            task_lost: false,
         };
         self.write(&record)?;
         self.listen(&record);
@@ -429,6 +445,10 @@ impl ContainerRuntime for SimulatedContainers {
         let mut record = self
             .read(id)
             .with_context(|| format!("no container {id}"))?;
+        anyhow::ensure!(
+            !record.task_lost,
+            "create the task: the files its container was created with are gone"
+        );
         record.state = TaskState::Running {
             pid: std::process::id(),
         };

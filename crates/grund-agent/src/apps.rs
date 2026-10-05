@@ -11,6 +11,14 @@
 //! - **Missing**: pull its image by digest (in the background, so one slow
 //!   pull holds up nothing else), fetch its secrets, create, start.
 //! - **A different spec** under the same id: remove, then create again.
+//!   While the private network is configured but not up yet (an agent that
+//!   just started), a running container is kept: its spec includes the
+//!   network, which the plan cannot see yet, and recreating it would bounce
+//!   every copy at each agent restart.
+//! - **Created, with no process**: start one. A reboot leaves containerd the
+//!   container and nothing else; if its process cannot start (the files it
+//!   was created with are gone), the container is removed and created again
+//!   from the document.
 //! - **Exited**: restart at once, then after 10 s, 20 s, 40 s, … capped at
 //!   5 minutes, and forget the back-off after 10 minutes of running
 //!   ([`backoff`], the kubelet's schedule except for the first restart).
@@ -650,8 +658,10 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                 continue;
             }
             let hash = container_hash(replica, net.as_ref());
+            let network_coming = self.network.is_some() && net.is_none();
             if let Some(container) = existing
                 && container.spec_hash != hash
+                && !network_coming
             {
                 self.stop(container);
                 reports.insert(
@@ -684,11 +694,23 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                             ReplicaObservedState::REPLICA_OBSERVED_STATE_STARTING,
                             "",
                         ),
-                        Err(error) => report(
-                            replica,
-                            ReplicaObservedState::REPLICA_OBSERVED_STATE_FAILED,
-                            &format!("could not start it: {error:#}"),
-                        ),
+                        Err(error) => {
+                            tracing::warn!(
+                                replica = %id,
+                                error = %format!("{error:#}"),
+                                "could not start a replica's process in its container; creating the container again"
+                            );
+                            if let Some(container) = existing {
+                                self.stop(container);
+                            }
+                            report(
+                                replica,
+                                ReplicaObservedState::REPLICA_OBSERVED_STATE_STARTING,
+                                &format!(
+                                    "creating it again, its process could not start: {error:#}"
+                                ),
+                            )
+                        }
                     };
                     reports.insert(id.clone(), state);
                 }
@@ -1230,6 +1252,73 @@ mod tests {
         );
         assert!(!ready);
         assert_eq!(restarts, 1, "the second restart waits 10 s");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_replica_whose_task_is_gone_after_a_reboot_is_created_again_and_runs() {
+        let (mut apps, shared, dir) = harness("lost");
+        set(&shared, vec![replica("r1", &[])]);
+        for _ in 0..3 {
+            apps.pass().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        assert!(state_of(&shared, "r1").1, "r1 runs and is ready first");
+        std::fs::create_dir_all(dir.join("runtime/lost")).unwrap();
+        std::fs::write(dir.join("runtime/lost/r1"), b"").unwrap();
+        let mut back = false;
+        for _ in 0..20 {
+            apps.pass().await.unwrap();
+            let (state, ready, _) = state_of(&shared, "r1");
+            if state == Some(ReplicaObservedState::REPLICA_OBSERVED_STATE_RUNNING) && ready {
+                back = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        assert!(back, "r1 never ran again: {:?}", state_of(&shared, "r1"));
+        let record = std::fs::read_to_string(dir.join("runtime/containers/r1.json")).unwrap();
+        assert!(
+            record.contains("\"task_lost\":false"),
+            "r1 runs in a container created again: {record}"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_running_replica_is_kept_while_the_private_network_is_not_up_yet() {
+        let (mut apps, shared, dir) = harness("netwait");
+        set(&shared, vec![replica("r1", &[])]);
+        for _ in 0..3 {
+            apps.pass().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        let path = dir.join("runtime/containers/r1.json");
+        let record = std::fs::read_to_string(&path).unwrap();
+        let hash = container_hash(&replica("r1", &[]), None);
+        std::fs::write(&path, record.replace(&hash, "hash-with-the-network")).unwrap();
+        let (_list, lists) = tokio::sync::watch::channel(None);
+        let mut apps = apps.with_network(NetworkAccess {
+            lists,
+            mesh: Arc::new(std::sync::OnceLock::new()),
+            own: "own".into(),
+        });
+        for _ in 0..3 {
+            apps.pass().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        let (state, ready, restarts) = state_of(&shared, "r1");
+        assert_eq!(
+            state,
+            Some(ReplicaObservedState::REPLICA_OBSERVED_STATE_RUNNING)
+        );
+        assert!(ready && restarts == 0);
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("hash-with-the-network"),
+            "the container was not created again"
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 

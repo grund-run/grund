@@ -110,6 +110,11 @@ pub const IMAGE_STORE_TYPE_URL: &str = "containerd.types.transfer.ImageStore";
 /// The label that keeps a container's snapshot from containerd's garbage
 /// collector until the container is removed.
 pub const GC_ROOT_LABEL: &str = "containerd.io/gc.root";
+/// The label holding the `/etc/resolv.conf` the agent gave a container. The
+/// file it is bind-mounted from lives under the run directory, which a
+/// reboot empties, so starting the container's task again writes it back
+/// from here: without it runc cannot create the task.
+pub const RESOLV_CONF_LABEL: &str = "grund.resolv-conf";
 /// What the agent gets when a container has no stop labels.
 pub const DEFAULT_STOP_SIGNAL: &str = "SIGTERM";
 /// The grace a container without a grace label gets.
@@ -263,9 +268,13 @@ pub fn task_state(process: Option<&Process>) -> TaskState {
 }
 
 /// The labels a container is created with: the spec's, then the runtime's
-/// four.
+/// four, and its resolv.conf when it has one.
 pub fn container_labels(spec: &ContainerSpec) -> BTreeMap<String, String> {
     let mut labels = spec.labels.clone();
+    match &spec.resolv_conf {
+        Some(contents) => labels.insert(RESOLV_CONF_LABEL.into(), contents.clone()),
+        None => labels.remove(RESOLV_CONF_LABEL),
+    };
     labels.insert(REPLICA_LABEL.into(), spec.id.clone());
     labels.insert(SPEC_HASH_LABEL.into(), spec.spec_hash.clone());
     labels.insert(STOP_SIGNAL_LABEL.into(), spec.stop_signal.clone());
@@ -513,6 +522,9 @@ impl Containerd {
     async fn start_task(&self, container: &Container) -> anyhow::Result<()> {
         let id = container.id.as_str();
         self.ensure_netns(id)?;
+        if let Some(contents) = container.labels.get(RESOLV_CONF_LABEL) {
+            self.write_resolv_conf(id, contents)?;
+        }
         if !self.snapshot_exists(id).await? {
             let chain = self.image_chain_for(container).await?;
             self.ensure_snapshot(id, &chain).await?;
@@ -541,6 +553,13 @@ impl Containerd {
             .await
             .map_err(|e| failed("start the task", e))?;
         Ok(())
+    }
+
+    fn write_resolv_conf(&self, id: &str, contents: &str) -> anyhow::Result<PathBuf> {
+        let path = self.config.resolv_conf(id);
+        std::fs::create_dir_all(path.parent().expect("a parent"))?;
+        std::fs::write(&path, contents).with_context(|| format!("write {}", path.display()))?;
+        Ok(path)
     }
 
     async fn kill(&self, id: &str, signal: u32, all: bool) -> anyhow::Result<()> {
@@ -744,9 +763,7 @@ impl ContainerRuntime for Containerd {
         let netns = self.ensure_netns(&spec.id)?;
         let mut oci = spec::oci_spec(spec, &config, &user, &netns)?;
         if let Some(contents) = &spec.resolv_conf {
-            let path = self.config.resolv_conf(&spec.id);
-            std::fs::create_dir_all(path.parent().expect("a parent"))?;
-            std::fs::write(&path, contents).with_context(|| format!("write {}", path.display()))?;
+            let path = self.write_resolv_conf(&spec.id, contents)?;
             oci["mounts"]
                 .as_array_mut()
                 .expect("mounts is a list")
@@ -952,6 +969,15 @@ mod tests {
         assert_eq!(labels[STOP_SIGNAL_LABEL], "SIGQUIT");
         assert_eq!(labels[STOP_GRACE_LABEL], "2");
         assert_eq!(labels["grund.app"], "web");
+        assert!(!labels.contains_key(RESOLV_CONF_LABEL));
+        let networked = ContainerSpec {
+            resolv_conf: Some("nameserver fd00::53\n".into()),
+            ..spec.clone()
+        };
+        assert_eq!(
+            container_labels(&networked)[RESOLV_CONF_LABEL],
+            "nameserver fd00::53\n"
+        );
         let labels: HashMap<String, String> = labels.into_iter().collect();
         assert_eq!(
             stop_settings(&labels),
