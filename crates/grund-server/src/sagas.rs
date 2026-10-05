@@ -312,24 +312,30 @@ async fn conclude_deletion(state: &State, request: &ConcludeDeletion) -> anyhow:
 }
 
 /// The notmad component that drives deletion sagas: recovery, timeouts and
-/// the saga outbox.
+/// the saga outbox. A database outage stops the worker; it is built again
+/// and restarted (`restart::until_cancelled`) rather than taking the process
+/// down.
 pub struct DeletionWorker {
-    worker: std::sync::Mutex<Option<SagaWorker<OrganisationDeletion>>>,
+    state: State,
 }
 
 impl DeletionWorker {
     pub fn new(state: &State) -> Self {
+        Self {
+            state: state.clone(),
+        }
+    }
+
+    fn worker(&self) -> SagaWorker<OrganisationDeletion> {
+        let state = &self.state;
         let publisher = DeletionPublisher {
             state: state.clone(),
             deliver: Arc::new(runner(state.events.clone())),
         };
-        let worker = SagaWorker::new(runner(state.events.clone()).with_publisher(publisher))
+        SagaWorker::new(runner(state.events.clone()).with_publisher(publisher))
             .poll_interval(Duration::from_secs(1))
             .drain_interval(Duration::from_millis(250))
-            .outbox_retry_delay(RETRY_DELAY);
-        Self {
-            worker: std::sync::Mutex::new(Some(worker)),
-        }
+            .outbox_retry_delay(RETRY_DELAY)
     }
 }
 
@@ -339,13 +345,12 @@ impl Component for DeletionWorker {
     }
 
     async fn run(&self, cancellation: CancellationToken) -> Result<(), MadError> {
-        let worker = self.worker.lock().expect("saga worker lock").take();
-        let Some(worker) = worker else {
-            return Ok(());
-        };
-        worker
-            .run(cancellation)
-            .await
-            .map_err(|error| MadError::Inner(error.into()))
+        crate::restart::until_cancelled("sagas", cancellation.clone(), || {
+            let worker = self.worker();
+            let cancellation = cancellation.clone();
+            async move { worker.run(cancellation).await.map_err(anyhow::Error::from) }
+        })
+        .await
+        .map_err(MadError::Inner)
     }
 }

@@ -368,6 +368,34 @@ impl Fixture {
         )
     }
 
+    pub async fn database_away_for(&self, outage: Duration) -> anyhow::Result<()> {
+        let (admin, name) = self
+            .database
+            .as_ref()
+            .context("only a spawned instance has a database")?;
+        let mut connection = <sqlx::PgConnection as sqlx::Connection>::connect(admin).await?;
+        let mut run = async |statement: String| {
+            sqlx::Executor::execute(&mut connection, sqlx::AssertSqlSafe(statement)).await
+        };
+        run(format!(
+            "ALTER DATABASE \"{name}\" WITH ALLOW_CONNECTIONS false"
+        ))
+        .await?;
+        let terminate = format!(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{name}'"
+        );
+        let back = Instant::now() + outage;
+        while Instant::now() < back {
+            run(terminate.clone()).await?;
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        run(format!(
+            "ALTER DATABASE \"{name}\" WITH ALLOW_CONNECTIONS true"
+        ))
+        .await?;
+        Ok(())
+    }
+
     pub fn log(&self) -> String {
         self.log_path
             .as_ref()

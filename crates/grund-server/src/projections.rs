@@ -9,14 +9,23 @@ use tokio_util::sync::CancellationToken;
 
 use crate::state::State;
 
-/// The notmad component.
+/// The notmad component. A database outage stops the runner; it is built
+/// again and restarted (`restart::until_cancelled`) rather than taking the
+/// process down.
 pub struct Projections {
-    runner: std::sync::Mutex<Option<ProjectionRunner>>,
+    state: State,
 }
 
 impl Projections {
     pub fn new(state: &State) -> Self {
-        let runner = ProjectionRunner::builder(state.events.clone())
+        Self {
+            state: state.clone(),
+        }
+    }
+
+    fn runner(&self) -> ProjectionRunner {
+        let state = &self.state;
+        ProjectionRunner::builder(state.events.clone())
             .idle_backstop_interval(std::time::Duration::from_secs(10))
             .subscribe_transactional(
                 grund_store::projections::ACCOUNT_SUBSCRIPTION,
@@ -38,10 +47,7 @@ impl Projections {
                 crate::sagas::DELETION_TRIGGER_SUBSCRIPTION,
                 crate::sagas::DeletionTrigger::new(&state.deletions),
             )
-            .build();
-        Self {
-            runner: std::sync::Mutex::new(Some(runner)),
-        }
+            .build()
     }
 }
 
@@ -51,10 +57,10 @@ impl Component for Projections {
     }
 
     async fn run(&self, cancellation: CancellationToken) -> Result<(), MadError> {
-        let runner = self.runner.lock().expect("projection runner lock").take();
-        let Some(runner) = runner else {
-            return Ok(());
-        };
-        runner.run(cancellation).await.map_err(MadError::Inner)
+        crate::restart::until_cancelled("projections", cancellation.clone(), || {
+            self.runner().run(cancellation.clone())
+        })
+        .await
+        .map_err(MadError::Inner)
     }
 }

@@ -37,6 +37,7 @@ pub mod relay;
 pub mod relay_certificate;
 pub mod relay_command;
 pub mod relays_command;
+pub mod restart;
 pub mod sagas;
 pub mod secrets;
 pub mod server;
