@@ -1,134 +1,290 @@
 {% extends "layout-app.html.jinja" %}
 {% import "components/images.html.jinja" as images %}
+{% import "components/shell.html.jinja" as shell %}
+{% import "components/catalogue.html.jinja" as cat %}
+{% set org = viewer.current %}
 {% block title %}Style guide · grund{% endblock %}
 {% block content %}
 {{ images.sprite(icons) }}
-<div class="page-head">
-  <div>
-    <h1 class="page-title">Style guide</h1>
-    <p class="status-line">{{ ui.icon("ok", "tone-ok") }}Every component, as the product renders it. Names and figures are examples.</p>
-  </div>
-  <span class="btn btn-primary">{{ ui.icon("plus") }}Primary action</span>
-</div>
+{% call ui.page_head("Style guide", "Every component of grund's pages, its variants and states, and the call that makes it. Names and figures are examples.") %}
+{{ ui.button("Primary action", href="#sg-buttons", icon_name="plus") }}
+{% endcall %}
+{% call ui.hint() %}The macros live in <code>templates/components/</code>: <code>ui</code> (basics and page parts), <code>forms</code>, <code>lists</code>, <code>shell</code> and <code>images</code>, each parameter documented above its macro. A page under <code>pages/</code> calls them and writes no class of its own; the build fails otherwise.{% endcall %}
+{{ cat.contents([("sg-tokens", "Tokens"), ("sg-icons", "Icons"), ("sg-buttons", "Buttons and links"), ("sg-heads", "Page and section heads"), ("sg-status", "Status and tags"), ("sg-messages", "Callouts and messages"), ("sg-empty", "Empty states and notes"), ("sg-code", "Code"), ("sg-forms", "Forms"), ("sg-rows", "Rows"), ("sg-items", "Apps, menus and list tools"), ("sg-shell", "Shell")]) }}
 
-<section class="section" aria-labelledby="sg-colour">
-  <div class="section-head"><h2 class="section-title" id="sg-colour">Colour</h2></div>
-  <ul class="sg-swatches">
-    {% for swatch in swatches %}
-    <li class="sg-swatch"><div class="sg-chip sg-{{ swatch.0 }}"></div><code>--{{ swatch.0 }}</code><br><span class="hint">{{ swatch.1 }}</span></li>
-    {% endfor %}
-  </ul>
-</section>
-
-<section class="section" aria-labelledby="sg-buttons">
-  <div class="section-head"><h2 class="section-title" id="sg-buttons">Buttons and links</h2></div>
-  <div class="sg-row">
-    <span class="btn btn-primary">{{ ui.icon("plus") }}Deploy application</span>
-    <span class="btn btn-secondary">Secondary</span>
-    <span class="btn btn-danger btn-sm">Sign out</span>
-    <a class="link-more" href="#sg-buttons">View all{{ ui.icon("arrow", "icon-sm") }}</a>
-  </div>
-</section>
-
-<section class="section" aria-labelledby="sg-callout">
-  <div class="section-head"><h2 class="section-title" id="sg-callout">Callout</h2></div>
-  <div class="callout">
-    <span class="spinner" aria-hidden="true"></span>
-    <div class="callout-body">
-      <p class="callout-title">Storefront is updating</p>
-      <p class="callout-text">Checking the new release. Current version is serving traffic.</p>
-    </div>
-    <a class="link-more" href="#sg-callout">View rollout{{ ui.icon("arrow", "icon-sm") }}</a>
-  </div>
-</section>
-
-<section class="section" aria-labelledby="sg-rows">
-  <div class="section-head">
-    <h2 class="section-title" id="sg-rows">Applications<span class="count">3</span></h2>
-    <a class="link-more" href="#sg-rows">View all{{ ui.icon("arrow", "icon-sm") }}</a>
-  </div>
-  <ul class="rows">
-    <li class="row"><span class="row-icon">{{ ui.icon("box", "icon-lg tone-orange") }}</span><div><p class="row-name">Storefront</p><p class="row-sub">shop.nord.example</p></div>{{ ui.status("Serving") }}<span class="row-end">{{ ui.icon("chevron") }}</span></li>
-    <li class="row"><span class="row-icon">{{ ui.icon("bars", "icon-lg tone-blue") }}</span><div><p class="row-name">Plausible</p><p class="row-sub">stats.nord.example</p></div>{{ ui.status("Serving") }}<span class="row-end">{{ ui.icon("chevron") }}</span></li>
-    <li class="row"><span class="row-icon">{{ ui.icon("code", "icon-lg tone-violet") }}</span><div><p class="row-name">Customer API</p><p class="row-sub">api.nord.example</p></div>{{ ui.status("Serving") }}<span class="row-end">{{ ui.icon("chevron") }}</span></li>
-  </ul>
-  <p class="notice">{{ ui.icon("box", "tone-orange") }}An update is available for Plausible.<a class="link-more" href="#sg-rows">Review update{{ ui.icon("arrow", "icon-sm") }}</a></p>
-  <ul class="stats">
-    <li>{{ ui.icon("server", "icon-sm") }}3 servers online</li>
-    <li>{{ ui.icon("globe", "icon-sm") }}4 domains connected</li>
-  </ul>
-</section>
-
-<section class="section" aria-labelledby="sg-apps">
-  <div class="section-head"><h2 class="section-title" id="sg-apps">Lists of things</h2></div>
-  <p class="sg-caption">Macros in <code>components/ui.html.jinja</code>, each with its parameters documented there. <code>page_head</code> with a <code>{% raw %}{% call %}{% endraw %}</code> body for its tools, <code>list_tools</code> (sort as a GET form the script submits on change; the grid/list toggle as two links), <code>items</code> around <code>app_row</code>s, <code>add_card</code> under them. The top bar's search filters the list as you type. A new page is these plus <code>empty_state</code> and <code>button</code>, with no CSS of its own.</p>
-  {% call ui.page_head("Apps", "Run and manage your applications. Simple, powerful, yours.") %}
-  {{ ui.list_tools([("name", "Name"), ("deployed", "Last deployed"), ("created", "Newest")], "name", "#sg-apps", "#sg-apps", "list") }}
+{% call ui.section("sg-tokens", "Tokens") %}
+  {% call cat.specimen("Colour", "var(--surface)", "Custom properties on :root. A rule never writes a raw hex; add a token instead.") %}
+    {{ cat.swatches(swatches) }}
   {% endcall %}
-  {% call ui.items() %}{% for app in apps %}{{ ui.app_row(viewer.current, app) }}{% endfor %}{% endcall %}
-  <p class="sg-caption">Each row: the image's icon, the name over the image, then the address. A public app shows its HTTPS address, which opens in a new tab; any other app with a port shows <code>&lt;app&gt;.grund.internal:&lt;port&gt;</code> with <code>copy_button</code> (shown only when the script runs; the text selects with one click without it). <code>menu</code> and <code>menu_item</code> make the kebab: open, details, releases, and for owners and admins deploy, scale and delete, which lead to the app's page.</p>
-  {% call ui.items("grid") %}{% for app in apps[:3] %}{{ ui.app_row(viewer.current, app) }}{% endfor %}{% endcall %}
-  {{ ui.add_card("#sg-apps", "Deploy a new app", "Deploy any container image by its name, such as nginx:1.27.") }}
-  <p class="sg-caption">Image icons (<code>image_icon</code>, sprite in <code>components/images.html.jinja</code>): well-known images get their own, any other Docker Hub image the whale, and an image from another registry the neutral box.</p>
-  <ul class="sg-images">
-    {% for key in gallery %}<li>{{ ui.image_icon(key) }}<code>{{ key }}</code></li>{% endfor %}
-    <li>{{ ui.image_icon("docker") }}<code>docker</code></li>
-    <li>{{ ui.image_icon("image") }}<code>image</code></li>
-  </ul>
-  <div class="sg-row">
-    {{ ui.button("Primary", icon_name="plus") }}
-    {{ ui.button("Secondary", kind="secondary") }}
-    {{ ui.button("Danger", kind="danger", size="sm") }}
-    {{ ui.button("Collapses on phones", href="#sg-apps", icon_name="plus", collapse=true) }}
-  </div>
-</section>
+  {% call cat.specimen("Borders", "var(--border-strong)", "Quiet edges for what holds content; stronger ones for what you operate.") %}
+    {{ cat.borders() }}
+  {% endcall %}
+  {% call cat.specimen("Type", "font-size: var(--text-md)", "Inter for everything; JetBrains Mono (code, .mono) for what a person might copy.") %}
+    {{ cat.type_scale([("title", "2–2.5 rem", "page titles"), ("4xl", "2 rem", "signed-out titles"), ("3xl", "1.875 rem", "section titles"), ("2xl", "1.1875 rem", "row names, status lines"), ("xl", "1.125 rem", "card titles"), ("lg", "1.0625 rem", "buttons, stats"), ("base", "1 rem", "body"), ("md", "0.9375 rem", "small UI text, subs"), ("sm", "0.875 rem", "hints"), ("xs", "0.8125 rem", "roles, captions"), ("2xs", "0.75 rem", "tags")]) }}
+  {% endcall %}
+  {% call cat.specimen("Spacing", "gap: var(--space-4)", "--space-N is N quarter-rems, for the gaps and margins between things. A literal length is a component's own geometry.") %}
+    {{ cat.space_scale([(1, "0.25 rem"), (2, "0.5 rem"), (3, "0.75 rem"), (4, "1 rem"), (5, "1.25 rem"), (6, "1.5 rem"), (7, "1.75 rem"), (8, "2 rem"), (9, "2.25 rem"), (10, "2.5 rem"), (12, "3 rem"), (14, "3.5 rem"), (16, "4 rem")]) }}
+  {% endcall %}
+  {% call cat.specimen("Radius", "border-radius: var(--radius)") %}
+    {{ cat.radii() }}
+  {% endcall %}
+{% endcall %}
 
-<section class="section" aria-labelledby="sg-forms">
-  <div class="section-head"><h2 class="section-title" id="sg-forms">Forms</h2></div>
-  <div class="auth-card">
-    <div class="form">
-      {{ ui.form_ok("Your email is confirmed. Sign in to continue.") }}
-      {{ ui.form_error("That email, username or password is not right.") }}
-      {{ ui.field("sg-email", "Email", type="email", hint="We send a link to confirm it.", required=false) }}
-      {{ ui.field("sg-password", "Password", type="password", error="Use at least 12 characters.", required=false) }}
-      <span class="btn btn-primary btn-block">Sign in</span>
-    </div>
-  </div>
-  <p class="sg-caption">Tags: <span class="tag">Soon</span> <span class="tag tag-ok">Current</span></p>
-</section>
+{% call ui.section("sg-icons", "Icons") %}
+  {% call cat.specimen("Icon", '{{ ui.icon("server", "icon-lg tone-ok") }}', "24-unit stroke icons from the sprite in components/icons.html.jinja, in currentColor. icon-sm is 18 px, the default 22 px, icon-lg 36 px; tone-* colours them by what they stand for.") %}
+    {{ cat.icon_grid(sprite_icons) }}
+  {% endcall %}
+  {% call cat.specimen("Tones", '{{ ui.icon("server", "icon-lg tone-blue") }}') %}
+    {% call cat.demos() %}{% for tone in ["ok", "blue", "orange", "violet", "muted"] %}{% call cat.labelled("tone-" ~ tone) %}{{ ui.icon("server", "icon-lg tone-" ~ tone) }}{% endcall %}{% endfor %}{% endcall %}
+  {% endcall %}
+  {% call cat.specimen("Image icons", '{{ lists.image_icon(app.icon) }}', "Well-known images get their own, any other Docker Hub image the whale, an image from another registry the neutral box. The page writes the ones it shows with images.sprite(keys).") %}
+    {% call cat.demos() %}{% for key in gallery %}{% call cat.labelled(key) %}{{ lists.image_icon(key) }}{% endcall %}{% endfor %}{% call cat.labelled("docker") %}{{ lists.image_icon("docker") }}{% endcall %}{% call cat.labelled("image") %}{{ lists.image_icon("image") }}{% endcall %}{% endcall %}
+  {% endcall %}
+  {% call cat.specimen("Marks", '{{ ui.mark(org.slug) }}  {{ ui.mark(member.username, "lg") }}', "The letter for an organisation (in the switcher) or a person (in rows).") %}
+    {% call cat.demos() %}{{ ui.mark("nord-studio") }}{{ ui.mark("ada", "lg") }}{% endcall %}
+  {% endcall %}
+{% endcall %}
 
-<section class="section" aria-labelledby="sg-orgs">
-  <div class="section-head"><h2 class="section-title" id="sg-orgs">Organisations</h2></div>
-  {{ ui.org_tabs(viewer.current, "members") }}
-  <p class="sg-caption">Tabs split one sidebar section into pages (the organisation's General and Members), so the sidebar keeps one item per area. The switcher tops the sidebar: the current organisation and the viewer's role, and a menu of the others (a <code>&lt;details&gt;</code>, so it needs no script). Members are listed as rows; an owner or admin gets a role select and a remove button on each row they may change.</p>
-  <ul class="rows">
-    <li class="row">
-      <span class="row-icon"><span class="org-mark org-mark-lg" aria-hidden="true">a</span></span>
-      <div><p class="row-name">ada <span class="tag">You</span></p><p class="row-sub">ada@nord.studio · joined 2 Sep 2026</p></div>
-      {{ ui.status("Owner") }}
-      <span class="row-end"><span class="btn btn-ghost btn-sm">Leave</span></span>
-    </li>
-    <li class="row">
-      <span class="row-icon"><span class="org-mark org-mark-lg" aria-hidden="true">l</span></span>
-      <div><p class="row-name">linus</p><p class="row-sub">linus@nord.studio · joined 9 Sep 2026</p></div>
-      <div class="row-form">
-        <label class="visually-hidden" for="sg-role">Role of linus</label>
-        <select class="select" id="sg-role"><option>Member</option><option selected>Admin</option><option>Owner</option></select>
-        <span class="btn btn-secondary btn-sm">Change</span>
-      </div>
-      <span class="row-end"><span class="btn btn-danger btn-sm">Remove</span></span>
-    </li>
-    <li class="row">
-      <span class="row-icon">{{ ui.icon("mail", "icon-lg tone-violet") }}</span>
-      <div><p class="row-name">grace@nord.studio</p><p class="row-sub">invited by ada · expires 2 Oct 2026</p></div>
-      {{ ui.status("Member", "muted") }}
-      <span class="row-end"><span class="btn btn-danger btn-sm">Withdraw</span></span>
-    </li>
-  </ul>
-</section>
+{% call ui.section("sg-buttons", "Buttons and links") %}
+  {% call cat.specimen("Kinds", '{{ ui.button("Deploy app", icon_name="plus") }}
+{{ ui.button("Change copies", kind="secondary") }}
+{{ ui.button("Delete storefront", kind="danger") }}
+{{ ui.button("Leave", kind="ghost", size="sm") }}', "One primary per page. Destructive actions are danger and say what they do. A link with href, else a button element.") %}
+    {% call cat.demos() %}
+      {{ ui.button("Deploy app", icon_name="plus", type="button") }}
+      {{ ui.button("Change copies", kind="secondary", type="button") }}
+      {{ ui.button("Delete storefront", kind="danger", type="button") }}
+      {{ ui.button("Leave", kind="ghost", size="sm", type="button") }}
+    {% endcall %}
+  {% endcall %}
+  {% call cat.specimen("Sizes", '{{ ui.button("Run this again", kind="secondary", size="sm") }}
+{{ ui.button("Sign in", block=true) }}
+{{ ui.button("Deploy app", href=url, icon_name="plus", collapse=true) }}', "sm sits in rows; block fills a signed-out form; collapse shows only the icon below 520 px.") %}
+    {% call cat.demos() %}
+      {{ ui.button("Run this again", kind="secondary", size="sm", type="button") }}
+      {{ ui.button("Collapses on phones", href="#sg-buttons", icon_name="plus", collapse=true) }}
+    {% endcall %}
+    {% call cat.column() %}{{ ui.button("Sign in", block=true, type="button") }}{% endcall %}
+  {% endcall %}
+  {% call cat.specimen("States", '{{ ui.button("Deploy", disabled=true) }}', "Hover and focus are the browser's; the style guide pins them with is-hover and is-focus. Focus is the accent ring on everything a keyboard reaches.") %}
+    {% call cat.demos() %}
+      {% call cat.labelled("rest") %}{{ ui.button("Deploy", type="button") }}{% endcall %}
+      {% call cat.labelled("hover") %}{{ ui.button("Deploy", type="button", extra="is-hover") }}{% endcall %}
+      {% call cat.labelled("focus") %}{{ ui.button("Deploy", type="button", extra="is-focus") }}{% endcall %}
+      {% call cat.labelled("disabled") %}{{ ui.button("Deploy", type="button", disabled=true) }}{% endcall %}
+      {% call cat.labelled("secondary hover") %}{{ ui.button("Change", kind="secondary", type="button", extra="is-hover") }}{% endcall %}
+      {% call cat.labelled("secondary disabled") %}{{ ui.button("Change", kind="secondary", type="button", disabled=true) }}{% endcall %}
+    {% endcall %}
+  {% endcall %}
+  {% call cat.specimen("Post button", '{{ forms.post_button(url, csrf, "Remove", kind="danger", size="sm") }}', "A form that is only a button, with the CSRF field: remove, stop, sign out, run again.") %}
+    {{ forms.post_button("#sg-buttons", csrf, "Remove", kind="danger", size="sm") }}
+  {% endcall %}
+  {% call cat.specimen("Links", '{{ ui.link_more(url, "View all") }}
+{{ ui.external("https://" ~ app.address, "https://" ~ app.address) }}
+{{ ui.icon_link(url, "external", "Open it in a new tab", external=true) }}
+{{ ui.copy_button(text, label) }}', "Onward links are accent text and an arrow. An external link says it opens a new tab. Icon-only links and buttons always have an accessible name. The copy button shows only when the script runs.") %}
+    {% call cat.demos() %}
+      {% call cat.labelled("rest") %}{{ ui.link_more("#sg-buttons", "View all") }}{% endcall %}
+      {% call cat.labelled("hover") %}{{ ui.link_more("#sg-buttons", "View all", extra="is-hover") }}{% endcall %}
+      {{ ui.external("https://storefront-nord-studio.example.run", "https://storefront-nord-studio.example.run") }}
+      {{ ui.icon_link("https://storefront-nord-studio.example.run", "external", "Open storefront in a new tab", external=true) }}
+      {{ ui.copy_button("db.grund.internal:5432", "db.grund.internal:5432") }}
+    {% endcall %}
+  {% endcall %}
+{% endcall %}
 
-<section class="section" aria-labelledby="sg-empty">
-  <div class="section-head"><h2 class="section-title" id="sg-empty">Empty state</h2></div>
-  {{ ui.empty_state("No applications yet", "Deploy one and it shows up here.") }}
-</section>
+{% call ui.section("sg-heads", "Page and section heads") %}
+  {% call cat.specimen("Page head", '{% call ui.page_head("Apps", "Run and manage your applications.") %}
+  {{ ui.button("Deploy app", href=url, icon_name="plus") }}
+{% endcall %}', "Every page starts with it: the title and one line under it, and at the right the page's tools or its one primary button.") %}
+    {% call ui.page_head("Apps", "Run and manage your applications. Simple, powerful, yours.") %}{{ ui.button("Deploy app", href="#sg-heads", icon_name="plus") }}{% endcall %}
+  {% endcall %}
+  {% call cat.specimen("Variants", '{{ ui.page_head("Machines", status="The machines nord-studio runs things on.") }}
+{{ ui.page_head("Templates", "Ready-made apps.", tag="Coming soon") }}
+{{ ui.page_head(app.name, back=(url, "Apps")) }}', "status is the larger, quieter line; tag marks something unbuilt; back puts a link above the title on detail pages.") %}
+    {{ ui.page_head("Machines", status="The machines nord-studio runs things on: your own, and any grund machines you rent.") }}
+    {{ ui.page_head("Templates", "Ready-made apps you can deploy in one step.", tag="Coming soon") }}
+    {{ ui.page_head("storefront", back=("#sg-heads", "Apps")) }}
+  {% endcall %}
+  {% call cat.specimen("Section", '{% call ui.section("versions", "Versions", count=3, more=(url, "View all")) %}
+  …
+{% endcall %}', "A titled part of a page. count is muted after the title; tag marks it unbuilt; more is one onward link; first drops the gap under the page head.") %}
+    {% call ui.section("sg-demo-section", "Versions", count=3, more=("#sg-heads", "View all"), first=true) %}<p>The section's content.</p>{% endcall %}
+    {% call ui.section("sg-demo-soon", "Your own domains", tag="Coming soon") %}<p>Another section.</p>{% endcall %}
+  {% endcall %}
+  {% call cat.specimen("Tabs", '{{ ui.tabs("Organisation", [("general", url, "General"), ("members", url, "Members")], "members") }}', "Split one sidebar section into pages, so the sidebar keeps one item per area.") %}
+    {{ ui.tabs("Example", [("general", "#sg-heads", "General"), ("members", "#sg-heads", "Members"), ("billing", "#sg-heads", "Billing")], "members") }}
+  {% endcall %}
+{% endcall %}
+
+{% call ui.section("sg-status", "Status and tags") %}
+  {% call cat.specimen("Status", '{{ ui.status("Serving") }}
+{{ ui.status("Offline", "muted") }}
+{{ ui.status_line("All copies are ready.", tone, id="app-status") }}', "A toned check and a word for how a thing is. Colour means state: ok serving, blue in progress, orange attention, muted off.") %}
+    {% call cat.demos() %}{{ ui.status("Serving") }}{{ ui.status("Releasing", "blue") }}{{ ui.status("Failed", "orange") }}{{ ui.status("Running", "violet") }}{{ ui.status("Offline", "muted") }}{% endcall %}
+    {{ ui.status_line("All copies are ready.") }}
+  {% endcall %}
+  {% call cat.specimen("Tags", '{{ ui.tag("Coming soon") }}  {{ ui.tag("Current", "ok") }}', "Tiny, rounded and muted: Soon, You, Runs VMs.") %}
+    {% call cat.demos() %}{{ ui.tag("Coming soon") }}{{ ui.tag("You") }}{{ ui.tag("Current", "ok") }}{% endcall %}
+  {% endcall %}
+{% endcall %}
+
+{% call ui.section("sg-messages", "Callouts and messages") %}
+  {% call cat.specimen("Callout", '{{ ui.callout(title, text, spinner=true, more=(url, "View rollout")) }}
+{{ ui.callout(title, text, icon_name="clock", tone="orange") }}', "Something happening now or needing attention: an icon or spinner, a title naming the thing, one sentence, one onward link. danger for failures.") %}
+    {{ ui.callout("Storefront is updating", "Checking the new release. The current version is serving traffic.", spinner=true, more=("#sg-messages", "View rollout")) }}
+    {{ ui.callout("Deleting nord-studio", "Waiting for billing to agree. This page refreshes itself.", icon_name="clock", tone="orange") }}
+    {{ ui.callout("The release failed", "v4 could not start: its ready check never answered.", icon_name="alert", tone="orange", danger=true) }}
+  {% endcall %}
+  {% call cat.specimen("Banners", '{{ forms.form_ok(notice) }}
+{{ forms.form_error(error) }}', "One banner for a whole form or page, above it: what happened and what to do next. Nothing renders when the message is empty.") %}
+    {% call cat.column() %}{{ forms.form_ok("Your email is confirmed. Sign in to continue.") }}{{ forms.form_error("That email, username or password is not right.") }}{% endcall %}
+  {% endcall %}
+  {% call cat.specimen("Notice and stats", '{{ ui.notice(text, more=(url, "Review update")) }}
+{{ ui.stats([("server", "3 machines online"), ("globe", "4 domains")]) }}', "A one-line fact with an onward link; small print at the foot of a page.") %}
+    {{ ui.notice("An update is available for Plausible.", more=("#sg-messages", "Review update")) }}
+    {{ ui.stats([("server", "3 machines online"), ("globe", "4 domains connected")]) }}
+  {% endcall %}
+{% endcall %}
+
+{% call ui.section("sg-empty", "Empty states and notes") %}
+  {% call cat.specimen("Empty state", '{{ ui.empty_state("No apps yet", "Deploy one and it shows up here.") }}
+{{ ui.empty_state(text="No versions yet.") }}', "A dashed box: what is missing, and how it will appear. With {% call %}, the body holds a link or code.") %}
+    {{ ui.empty_state("No apps yet", "An owner or admin of nord-studio deploys them, and they show up here.") }}
+    {{ ui.empty_state(text="No versions yet.") }}
+  {% endcall %}
+  {% call cat.specimen("Add card", '{{ ui.add_card(url, "Deploy a new app", text) }}', "The dashed card under a list that makes one more.") %}
+    {{ ui.add_card("#sg-empty", "Deploy a new app", "Deploy any container image by its name, such as nginx:1.27.") }}
+  {% endcall %}
+  {% call cat.specimen("Note, hint, aside", '{{ ui.note("2 of 7 apps match “re”.") }}
+{{ ui.hint("All copies run on homelab-1.") }}
+{% call ui.aside() %}With grund installed, run <code>…</code>.{% endcall %}', "note: a quiet line about the list under it. hint: small print, a caveat or a reference. aside: the other way to do it.") %}
+    {{ ui.note("2 of 7 apps match “re”.") }}
+    {{ ui.hint("All copies run on homelab-1. If it goes down, so does storefront. Add a machine to spread them.") }}
+    {% call ui.aside() %}With grund already installed, register it with <code>grund machines register</code> and keep <code>grund agent</code> running.{% endcall %}
+  {% endcall %}
+{% endcall %}
+
+{% call ui.section("sg-code", "Code") %}
+  {% call cat.specimen("Inline code", "<code>grund.toml</code>", "In a sentence, a plain <code> sets a name, a path or a command in the mono face.") %}
+    <p>The latest version as <code>grund.toml</code>, for your repository.</p>
+  {% endcall %}
+  {% call cat.specimen("Command", '{{ ui.command(setup.install, id="setup-install") }}', "A command to run, in a box, wrapping anywhere.") %}
+    {{ ui.command("curl -fsSL https://grund.example/install | sh -s -- --code 7KQ2-9XWD") }}
+  {% endcall %}
+  {% call cat.specimen("Code block", '{{ ui.code_block(file, id="grund-toml") }}', "A file or a licence, preformatted, wrapping long lines.") %}
+    {{ ui.code_block("[apps.storefront]\nimage = \"nginx:1.27\"\n\n[[apps.storefront.ports]]\nname = \"http\"\nport = 80\npublic = true") }}
+  {% endcall %}
+{% endcall %}
+
+{% call ui.section("sg-forms", "Forms") %}
+  {% call cat.specimen("Stacked form", '{% call forms.form("/login", csrf) %}
+  {{ forms.form_error(error) }}
+  {{ forms.field("login", "Email or username", autocomplete="username") }}
+  {{ ui.button("Sign in", block=true) }}
+{% endcall %}', "layout stack (signed-out pages, at the card width) or narrow (signed-in, at most 32 rem). The label sits above; the hint under it until an error replaces it.") %}
+    {% call cat.column() %}
+      {{ forms.field("sg-email", "Email", type="email", hint="We send a link to confirm it.", required=false) }}
+      {{ forms.field("sg-password", "Password", type="password", error="Use at least 12 characters.", required=false) }}
+      {{ ui.button("Create account", block=true, type="button") }}
+      {{ forms.or_divider() }}
+      {{ forms.providers([{"id": "github", "name": "GitHub", "icon": "github"}]) }}
+      {% call ui.foot() %}<p>Already have an account? <a href="#sg-forms">Sign in</a></p>{% endcall %}
+    {% endcall %}
+  {% endcall %}
+  {% call cat.specimen("Field states", '{{ forms.field("name", "Name", hint=hint) }}
+{{ forms.field("name", "Name", error=error) }}
+{{ forms.field("email", "Email", value=email, disabled=true, required=false) }}', "error sets aria-invalid and points aria-describedby at the message; disabled shows a known value that is not sent.") %}
+    {% call cat.column() %}
+      {{ forms.field("sg-rest", "Name", hint="Letters a–z, digits and single hyphens.", required=false) }}
+      {{ forms.field("sg-focus", "Name (focus)", value="storefront", required=false, state="focus") }}
+      {{ forms.field("sg-error", "Name (error)", value="Store Front", error="Use letters a–z, digits and single hyphens.", required=false) }}
+      {{ forms.field("sg-disabled", "Email (disabled)", type="email", value="ada@nord.studio", required=false, disabled=true) }}
+    {% endcall %}
+  {% endcall %}
+  {% call cat.specimen("Select and text box", '{{ forms.select_field("role", "Role", [("member", "Member"), ("admin", "Admin")], role) }}
+{{ forms.textarea_field("env", "Settings", value=env, hint=hint) }}') %}
+    {% call cat.column() %}
+      {{ forms.select_field("sg-role", "Role", [("member", "Member"), ("admin", "Admin")], "admin") }}
+      {{ forms.select_field("sg-role-focus", "Role (focus)", [("member", "Member"), ("admin", "Admin")], "member", state="focus") }}
+      {{ forms.textarea_field("sg-env", "Settings", value="LOG_LEVEL=info", hint="NAME=value, one per line.") }}
+    {% endcall %}
+  {% endcall %}
+  {% call cat.specimen("Fields in a row", '{% call forms.form(url, csrf, layout="row") %}
+  {{ forms.field("email", "Email", type="email", hint=hint) }}
+  {{ forms.select_field("role", "Role", roles, role, id="invite-role") }}
+  {{ ui.button("Send invitation", icon_name="mail") }}
+{% endcall %}', "Short forms on signed-in pages: the fields side by side and the button after them; one column below 900 px.") %}
+    {% call forms.form("#sg-forms", csrf, layout="row") %}
+      {{ forms.field("sg-invite", "Email", type="email", hint="We mail them a link that works for 7 days.", required=false) }}
+      {{ forms.select_field("sg-invite-role", "Role", [("member", "Member"), ("admin", "Admin")], "member") }}
+      {{ ui.button("Send invitation", icon_name="mail", type="button") }}
+    {% endcall %}
+  {% endcall %}
+  {% call cat.specimen("Select in a row", '{{ forms.select_form(url, csrf, "role", "role-" ~ member.id, "Role of " ~ member.username, roles, member.role, "Change") }}', "One choice posted from a row, such as a member's role.") %}
+    {{ forms.select_form("#sg-forms", csrf, "role", "sg-member-role", "Role of linus", [("member", "Member"), ("admin", "Admin"), ("owner", "Owner")], "admin", "Change") }}
+  {% endcall %}
+{% endcall %}
+
+{% call ui.section("sg-rows", "Rows") %}
+  {% call cat.specimen("Rows", '{% call lists.rows() %}
+  {% call(slot) lists.row(machine.name, sub, icon_name="server", tags=["Runs VMs"], status="Connected") %}
+    {% if slot == "end" %}{{ forms.post_button(url, csrf, "Remove", kind="danger", size="sm") }}{% endif %}
+  {% endcall %}
+{% endcall %}', "Resources divided by lines, no box: an icon, the name over a mono sub-line, a status, an action. letter puts a person's mark in place of the icon; plain drops both for a name over a value.") %}
+    {% call lists.rows() %}
+      {% call(slot) lists.row("homelab-1", "Connected · homelab-1.lan", icon_name="server", tags=["Runs VMs"], status="Connected") %}{% if slot == "end" %}{{ forms.post_button("#sg-rows", csrf, "Remove", kind="danger", size="sm") }}{% endif %}{% endcall %}
+      {% call(slot) lists.row("v3 · nginx:1.27", "5 Oct 2026 · ada from the dashboard · sha256:2006", icon_name="grid", tone="orange", detail="v3 could not start: its ready check never answered.", status="Failed", status_tone="orange") %}{% if slot == "end" %}{{ forms.post_button("#sg-rows", csrf, "Run this again", size="sm") }}{% endif %}{% endcall %}
+      {% call(slot) lists.row("linus", "linus@nord.studio · joined 9 Sep 2026", letter="linus") %}{% if slot == "status" %}{{ forms.select_form("#sg-rows", csrf, "role", "sg-linus-role", "Role of linus", [("member", "Member"), ("admin", "Admin")], "admin", "Change") }}{% elif slot == "end" %}{{ forms.post_button("#sg-rows", csrf, "Remove", kind="danger", size="sm") }}{% endif %}{% endcall %}
+      {% call(slot) lists.row("ada", "ada@nord.studio · joined 2 Sep 2026", letter="ada", tags=["You"], status="Owner") %}{% if slot == "end" %}{{ forms.post_button("#sg-rows", csrf, "Leave", kind="ghost", size="sm") }}{% endif %}{% endcall %}
+      {{ lists.row("storefront", "https://storefront-nord-studio.example.run", icon_name="globe", href="#sg-rows") }}
+    {% endcall %}
+    {% call lists.rows() %}
+      {% call(slot) lists.row("Plan", "Free", plain=true) %}{% if slot == "end" %}{{ ui.hint("Nothing is charged.") }}{% endif %}{% endcall %}
+      {% call(slot) lists.row("Managed by", "ada", plain=true) %}{% if slot == "end" %}{{ ui.link_more("#sg-rows", "Manage billing") }}{% endif %}{% endcall %}
+    {% endcall %}
+  {% endcall %}
+{% endcall %}
+
+{% call ui.section("sg-items", "Apps, menus and list tools") %}
+  {% call cat.specimen("Apps as a list", '{% call ui.page_head("Apps", lede) %}
+  {{ lists.list_tools(sorts, list.sort, list_href, grid_href, list.view, {"q": list.q, "view": list.view}) }}
+{% endcall %}
+{% call lists.items(list.view) %}{% for app in apps %}{{ lists.app_row(org, app) }}{% endfor %}{% endcall %}', "items is one bordered box of rows; each app_row is its image icon, its name over its image, its address and its menu. A public app shows its https address; one with a port its internal name with a copy button; one with no port nothing.") %}
+    {{ lists.list_tools([("name", "Name"), ("deployed", "Last deployed"), ("created", "Newest")], "name", "#sg-items", "#sg-items", "list") }}
+    {% call lists.items() %}{% for app in apps %}{{ lists.app_row(org, app) }}{% endfor %}{% endcall %}
+  {% endcall %}
+  {% call cat.specimen("Apps as a grid", '{% call lists.items("grid") %}…{% endcall %}
+{{ ui.add_card(url, "Deploy a new app", text) }}', "The same rows as cards.") %}
+    {% call lists.items("grid") %}{% for app in apps[:3] %}{{ lists.app_row(org, app) }}{% endfor %}{% endcall %}
+  {% endcall %}
+  {% call cat.specimen("Menu", '{% call lists.menu("Actions for " ~ app.name) %}
+  {{ lists.menu_item(url, "grid", "Details") }}
+  {{ lists.menu_item(url, "trash", "Delete…", danger=true) }}
+{% endcall %}', "A details element, so it opens without script; the script closes it on Escape (focus back on the button) or a click elsewhere. Items link to where the action lives; a destructive one is danger and ends in … when it leads to a confirmation.") %}
+    {% call cat.demos() %}
+      {% call cat.labelled("closed") %}{% call lists.menu("Actions for storefront") %}{{ lists.menu_item("#sg-items", "grid", "Details") }}{% endcall %}{% endcall %}
+    {% endcall %}
+    {% call cat.column() %}
+      {% call lists.menu("Actions for api", open=true) %}
+        {{ lists.menu_item("#sg-items", "external", "Open", external=true) }}
+        {{ lists.menu_item("#sg-items", "grid", "Details", state="hover") }}
+        {{ lists.menu_item("#sg-items", "clock", "Releases") }}
+        {{ lists.menu_item("#sg-items", "trash", "Delete…", danger=true) }}
+      {% endcall %}
+    {% endcall %}
+  {% endcall %}
+{% endcall %}
+
+{% call ui.section("sg-shell", "Shell") %}
+  {% call cat.specimen("Nav items", '{{ shell.nav_item("/" ~ org.slug ~ "/apps", "grid", "Apps", section == "apps") }}', "The shell (components/shell.html.jinja) is put together by layout-app.html.jinja only: the sidebar with the organisation switcher, the nav and the account menu, and the top bar with the search and Deploy app. A page passes section in its context to mark its item.") %}
+    {% call cat.column() %}
+      {% call shell.nav() %}
+        {{ shell.nav_item("#sg-shell", "home", "Overview") }}
+        {{ shell.nav_item("#sg-shell", "grid", "Apps (current)", true) }}
+        {{ shell.nav_item("#sg-shell", "server", "Machines (hover)", state="hover") }}
+      {% endcall %}
+    {% endcall %}
+  {% endcall %}
+{% endcall %}
 {% endblock %}

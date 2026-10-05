@@ -2,6 +2,15 @@
     together; a page never calls them itself. Classes are grund.css's shell
     vocabulary (.sidebar, .nav, .nav-item, .org-switch, .topbar, .search). -#}
 {% import "components/ui.html.jinja" as ui %}
+{% import "components/forms.html.jinja" as forms %}
+{% import "components/lists.html.jinja" as lists %}
+
+{#- nav_item(href, icon_name, label, active=false, state="")
+    One sidebar link; active marks it as the current page. state:
+    "hover" pins the hover look (the style guide only). -#}
+{% macro nav_item(href, icon_name, label, active=false, state="") -%}
+<li><a class="nav-item{% if active %} is-active{% endif %}{% if state %} is-{{ state }}{% endif %}" href="{{ href }}"{% if active %} aria-current="page"{% endif %}>{{ ui.icon(icon_name) }}{{ label }}</a></li>
+{%- endmacro %}
 
 {#- sidebar(viewer, section, csrf)
     viewer:  viewer_context (username, email, initials, orgs, current,
@@ -15,24 +24,29 @@
   {% if org %}
   {{ org_switcher(org, viewer.orgs, viewer.can_create) }}
   <ul class="nav">
-    {{ ui.nav_item("/" ~ org.slug, "home", "Overview", section == "overview") }}
-    {{ ui.nav_item("/" ~ org.slug ~ "/apps", "grid", "Apps", section in ["apps", "deploy"]) }}
-    {{ ui.nav_item("/" ~ org.slug ~ "/machines", "server", "Machines", section == "machines") }}
-    {{ ui.nav_item("/" ~ org.slug ~ "/domains", "globe", "Domains", section == "domains") }}
-    {{ ui.nav_item("/" ~ org.slug ~ "/templates", "template", "Templates", section == "templates") }}
-    {{ ui.nav_item("/" ~ org.slug ~ "/settings", "users", "Organisation", section in ["org-settings", "members"]) }}
+    {{ nav_item("/" ~ org.slug, "home", "Overview", section == "overview") }}
+    {{ nav_item("/" ~ org.slug ~ "/apps", "grid", "Apps", section in ["apps", "deploy"]) }}
+    {{ nav_item("/" ~ org.slug ~ "/machines", "server", "Machines", section == "machines") }}
+    {{ nav_item("/" ~ org.slug ~ "/domains", "globe", "Domains", section == "domains") }}
+    {{ nav_item("/" ~ org.slug ~ "/templates", "template", "Templates", section == "templates") }}
+    {{ nav_item("/" ~ org.slug ~ "/settings", "users", "Organisation", section in ["org-settings", "members"]) }}
   </ul>
   {% else %}
   <ul class="nav">
-    {% if viewer.can_create %}{{ ui.nav_item("/orgs/new", "plus", "New organisation", section == "new-organisation") }}{% endif %}
+    {% if viewer.can_create %}{{ nav_item("/orgs/new", "plus", "New organisation", section == "new-organisation") }}{% endif %}
   </ul>
   {% endif %}
   <ul class="nav nav-foot">
-    {{ ui.nav_item("https://git.kjuulh.io/grund/grund", "book", "Docs & community") }}
-    {{ ui.nav_item("/settings/sessions", "user", "Account", section == "settings") }}
+    {{ nav_item("https://git.kjuulh.io/grund/grund", "book", "Docs & community") }}
+    {{ nav_item("/settings/sessions", "user", "Account", section == "settings") }}
   </ul>
   {{ account_menu(viewer, csrf) }}
 </nav>
+{%- endmacro %}
+
+{#- nav(): a list of nav_item()s outside the sidebar (the style guide). -#}
+{% macro nav() -%}
+<ul class="nav">{{ caller() }}</ul>
 {%- endmacro %}
 
 {#- org_switcher(org, orgs, can_create)
@@ -51,7 +65,7 @@
     {% for other in orgs %}
     <li><a class="menu-item{% if other.current %} is-current{% endif %}" href="/{{ other.slug }}"{% if other.current %} aria-current="true"{% endif %}>{{ ui.mark(other.slug) }}{{ other.slug }}</a></li>
     {% endfor %}
-    {% if can_create %}{{ ui.menu_item("/orgs/new", "plus", "New organisation") }}{% endif %}
+    {% if can_create %}{{ lists.menu_item("/orgs/new", "plus", "New organisation") }}{% endif %}
   </ul>
 </details>
 {%- endmacro %}
@@ -66,7 +80,7 @@
     <p class="menu-title">{{ viewer.username }}</p>
     {% if viewer.email %}<p class="menu-text">{{ viewer.email }}</p>{% endif %}
     <form method="post" action="/logout">
-      {{ ui.csrf_field(csrf) }}
+      {{ forms.csrf_field(csrf) }}
       <button class="menu-item" type="submit">{{ ui.icon("logout", "icon-sm") }}Sign out</button>
     </form>
   </div>

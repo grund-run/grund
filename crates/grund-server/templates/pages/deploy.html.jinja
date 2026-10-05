@@ -4,16 +4,15 @@
 {% block content %}
 {{ ui.page_head("Deploy an app", "Give it a name and a container image. grund runs as many copies as you ask for on " ~ org.slug ~ "'s machines.", back=("/" ~ org.slug ~ "/apps", "Apps")) }}
 {% if org.manages %}
-<form class="form form-narrow" method="post" action="/{{ org.slug }}/apps/new" novalidate>
-  {{ ui.csrf_field(csrf) }}
-  {{ ui.form_error(new_error) }}
-  {{ ui.field("name", "Name", value=new.name, autocomplete="off", hint="Letters a–z, digits and single hyphens. It never changes.") }}
-  {{ ui.field("image", "Image", value=new.image, autocomplete="off", hint="A container image, such as traefik/whoami:v1.10. grund pins the version it finds now.") }}
-  {{ ui.field("port", "Port", type="number", value=new.port, autocomplete="off", required=false, hint="Optional. The port the app listens on.") }}
-  {{ ui.field("check", "Ready check", value=new.check, autocomplete="off", required=false, hint="Optional. A path grund asks for on that port, such as /healthz, before a copy counts as ready.") }}
-  {{ ui.field("copies", "Copies", type="number", value=new.copies or "1", autocomplete="off", required=false) }}
+{% call forms.form("/" ~ org.slug ~ "/apps/new", csrf, layout="narrow") %}
+  {{ forms.form_error(new_error) }}
+  {{ forms.field("name", "Name", value=new.name, autocomplete="off", hint="Letters a–z, digits and single hyphens. It never changes.") }}
+  {{ forms.field("image", "Image", value=new.image, autocomplete="off", hint="A container image, such as traefik/whoami:v1.10. grund pins the version it finds now.") }}
+  {{ forms.field("port", "Port", type="number", value=new.port, autocomplete="off", required=false, hint="Optional. The port the app listens on.") }}
+  {{ forms.field("check", "Ready check", value=new.check, autocomplete="off", required=false, hint="Optional. A path grund asks for on that port, such as /healthz, before a copy counts as ready.") }}
+  {{ forms.field("copies", "Copies", type="number", value=new.copies or "1", autocomplete="off", required=false) }}
   <div>{{ ui.button("Make it and deploy", icon_name="plus") }}</div>
-</form>
+{% endcall %}
 {% else %}
 {{ ui.empty_state("Your role does not deploy apps", "Owners and admins of " ~ org.slug ~ " deploy them. Ask one to make you an admin.") }}
 {% endif %}

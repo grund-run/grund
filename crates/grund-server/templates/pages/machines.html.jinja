@@ -2,121 +2,77 @@
 {% set org = viewer.current %}
 {% block title %}Machines · {{ org.slug }} · grund{% endblock %}
 {% block content %}
-<div class="page-head">
-  <div>
-    <h1 class="page-title">Machines</h1>
-    <p class="status-line">The machines {{ org.slug }} runs things on: your own, and any grund machines you rent.</p>
-  </div>
-</div>
-{{ ui.form_ok(notice) }}
-{{ ui.form_error(error) }}
+{{ ui.page_head("Machines", status="The machines " ~ org.slug ~ " runs things on: your own, and any grund machines you rent.") }}
+{{ forms.form_ok(notice) }}
+{{ forms.form_error(error) }}
 
 {% if setup %}
-<section class="section setup" aria-labelledby="setup">
-  <div class="section-head">
-    <h2 class="section-title" id="setup">Set up your machine</h2>
-  </div>
+{% call ui.section("setup", "Set up your machine", stack=true) %}
   {% if setup.install %}
   <p>On the machine, run this within {{ setup.minutes }} minutes. It installs grund and its agent, and connects the machine here. The code works once, and this is the only time it is shown.</p>
-  <p class="mono" id="setup-install">{{ setup.install }}</p>
-  <p class="setup-alt">With grund already installed, register it with <code>{{ setup.command }}</code> and keep <code>grund agent</code> running.</p>
+  {{ ui.command(setup.install, id="setup-install") }}
+  {% call ui.aside() %}With grund already installed, register it with <code>{{ setup.command }}</code> and keep <code>grund agent</code> running.{% endcall %}
   {% else %}
   <p>On the machine, with the grund binary installed, run this within {{ setup.minutes }} minutes, then keep <code>grund agent</code> running. The code works once, and this is the only time it is shown.</p>
-  <p class="mono" id="setup-command">{{ setup.command }}</p>
+  {{ ui.command(setup.command, id="setup-command") }}
   {% endif %}
-</section>
+{% endcall %}
 {% endif %}
 
-<ul class="rows">
+{% call lists.rows() %}
   {% for machine in machines %}
-  <li class="row">
-    <span class="row-icon">{{ ui.icon("server", "icon-lg " ~ ("tone-ok" if machine.connected else "tone-muted")) }}</span>
-    <div>
-      <p class="row-name">{{ machine.name }}{% if machine.leased %} <span class="tag">grund machine</span>{% endif %}{% if machine.kvm %} <span class="tag">Runs VMs</span>{% endif %}</p>
-      <p class="row-sub">{% if machine.connected %}Connected{% elif machine.last_seen %}Last seen {{ machine.last_seen }}{% else %}Not connected yet{% endif %}{% if machine.hostname %} · {{ machine.hostname }}{% endif %}</p>
-    </div>
-    {% if machine.connected %}{{ ui.status("Connected") }}{% else %}{{ ui.status("Offline", "muted") }}{% endif %}
-    {% if org.manages and not machine.leased %}
-    <form class="row-end" method="post" action="/{{ org.slug }}/machines/{{ machine.id }}/remove">
-      {{ ui.csrf_field(csrf) }}
-      <button class="btn btn-danger btn-sm" type="submit">Remove</button>
-    </form>
-    {% else %}<span></span>{% endif %}
-  </li>
+  {% set tags = (["grund machine"] if machine.leased else []) + (["Runs VMs"] if machine.kvm else []) %}
+  {% set seen = "Connected" if machine.connected else ("Last seen " ~ machine.last_seen if machine.last_seen else "Not connected yet") %}
+  {% call(slot) lists.row(machine.name, seen ~ (" · " ~ machine.hostname if machine.hostname else ""), icon_name="server", tone="ok" if machine.connected else "muted", tags=tags, status="Connected" if machine.connected else "Offline", status_tone="ok" if machine.connected else "muted") %}
+    {%- if slot == "end" and org.manages and not machine.leased %}{{ forms.post_button("/" ~ org.slug ~ "/machines/" ~ machine.id ~ "/remove", csrf, "Remove", kind="danger", size="sm") }}{% endif -%}
+  {% endcall %}
   {% endfor %}
-</ul>
-{% if not machines %}<p class="empty">No machines yet.</p>{% endif %}
+{% endcall %}
+{% if not machines %}{{ ui.empty_state(text="No machines yet.") }}{% endif %}
 
 {% if org.manages %}
-<section class="section" aria-labelledby="add">
-  <div class="section-head">
-    <h2 class="section-title" id="add">Add a machine</h2>
-  </div>
-  <form class="invite-form" method="post" action="/{{ org.slug }}/machines/add" novalidate>
-    {{ ui.csrf_field(csrf) }}
-    {{ ui.form_error(add_error) }}
-    {{ ui.field("name", "Name", value=name, autocomplete="off", required=false, hint="Optional. Without one, the machine is named after its hostname.") }}
-    <button class="btn btn-primary" type="submit">{{ ui.icon("plus", "icon-sm") }}Get a setup code</button>
-  </form>
-</section>
+{% call ui.section("add", "Add a machine") %}
+  {% call forms.form("/" ~ org.slug ~ "/machines/add", csrf, layout="row") %}
+    {{ forms.form_error(add_error) }}
+    {{ forms.field("name", "Name", value=name, autocomplete="off", required=false, hint="Optional. Without one, the machine is named after its hostname.") }}
+    {{ ui.button("Get a setup code", icon_name="plus") }}
+  {% endcall %}
+{% endcall %}
 {% endif %}
 
-<section class="section" aria-labelledby="vms">
-  <div class="section-head">
-    <h2 class="section-title" id="vms">Virtual machines<span class="count">{{ vms | length }}</span></h2>
-  </div>
+{% call ui.section("vms", "Virtual machines", count=vms | length) %}
   {% if vms %}
-  <ul class="rows">
+  {% call lists.rows() %}
     {% for vm in vms %}
-    <li class="row">
-      <span class="row-icon">{{ ui.icon("grid", "icon-lg tone-violet") }}</span>
-      <div>
-        <p class="row-name">{{ vm.name }}</p>
-        <p class="row-sub">on {{ vm.host }} · {{ vm.vcpus }} vCPU, {{ vm.memory_mib }} MiB, {{ vm.disk_gib }} GiB{% if vm.reason %} · {{ vm.reason }}{% endif %}</p>
-      </div>
-      {{ ui.status(vm.observed, vm.tone) }}
-      {% if org.manages and vm.running %}
-      <form class="row-end" method="post" action="/{{ org.slug }}/machines/vms/{{ vm.id }}/stop">
-        {{ ui.csrf_field(csrf) }}
-        <button class="btn btn-secondary btn-sm" type="submit">Stop</button>
-      </form>
-      {% else %}<span></span>{% endif %}
-    </li>
+    {% call(slot) lists.row(vm.name, "on " ~ vm.host ~ " · " ~ vm.vcpus ~ " vCPU, " ~ vm.memory_mib ~ " MiB, " ~ vm.disk_gib ~ " GiB" ~ (" · " ~ vm.reason if vm.reason else ""), icon_name="grid", tone="violet", status=vm.observed, status_tone=vm.tone) %}
+      {%- if slot == "end" and org.manages and vm.running %}{{ forms.post_button("/" ~ org.slug ~ "/machines/vms/" ~ vm.id ~ "/stop", csrf, "Stop", size="sm") }}{% endif -%}
+    {% endcall %}
     {% endfor %}
-  </ul>
+  {% endcall %}
   {% else %}
-  <p class="empty">No virtual machines yet.</p>
+  {{ ui.empty_state(text="No virtual machines yet.") }}
   {% endif %}
-</section>
+{% endcall %}
 
 {% if org.manages %}
-<section class="section" aria-labelledby="run">
-  <div class="section-head">
-    <h2 class="section-title" id="run">Run a virtual machine</h2>
-  </div>
+{% call ui.section("run", "Run a virtual machine") %}
   {% if hosts %}
-  <form class="invite-form" method="post" action="/{{ org.slug }}/machines/vms" novalidate>
-    {{ ui.csrf_field(csrf) }}
-    {{ ui.form_error(run_error) }}
-    <div class="field">
-      <label for="host">On</label>
-      <select class="select" id="host" name="host">
-        {% for host in hosts %}<option value="{{ host.id }}">{{ host.name }}</option>{% endfor %}
-      </select>
-    </div>
-    {{ ui.field("vm_name", "Name", value=run.vm_name, autocomplete="off", hint="It joins this organisation as a machine with this name.") }}
-    {{ ui.field("vcpus", "vCPUs", type="number", value=run.vcpus or "1") }}
-    {{ ui.field("memory_mib", "Memory (MiB)", type="number", value=run.memory_mib or "1024") }}
-    {{ ui.field("disk_gib", "Disk (GiB)", type="number", value=run.disk_gib or "4") }}
-    {{ ui.field("kernel_url", "Kernel URL", value=run.kernel_url, autocomplete="off") }}
-    {{ ui.field("kernel_sha256", "Kernel SHA-256", value=run.kernel_sha256, autocomplete="off") }}
-    {{ ui.field("rootfs_url", "Root filesystem URL", value=run.rootfs_url, autocomplete="off") }}
-    {{ ui.field("rootfs_sha256", "Root filesystem SHA-256", value=run.rootfs_sha256, autocomplete="off") }}
-    <button class="btn btn-primary" type="submit">{{ ui.icon("plus", "icon-sm") }}Run it</button>
-  </form>
+  {% call forms.form("/" ~ org.slug ~ "/machines/vms", csrf, layout="row") %}
+    {{ forms.form_error(run_error) }}
+    {{ forms.select_field("host", "On", hosts) }}
+    {{ forms.field("vm_name", "Name", value=run.vm_name, autocomplete="off", hint="It joins this organisation as a machine with this name.") }}
+    {{ forms.field("vcpus", "vCPUs", type="number", value=run.vcpus or "1") }}
+    {{ forms.field("memory_mib", "Memory (MiB)", type="number", value=run.memory_mib or "1024") }}
+    {{ forms.field("disk_gib", "Disk (GiB)", type="number", value=run.disk_gib or "4") }}
+    {{ forms.field("kernel_url", "Kernel URL", value=run.kernel_url, autocomplete="off") }}
+    {{ forms.field("kernel_sha256", "Kernel SHA-256", value=run.kernel_sha256, autocomplete="off") }}
+    {{ forms.field("rootfs_url", "Root filesystem URL", value=run.rootfs_url, autocomplete="off") }}
+    {{ forms.field("rootfs_sha256", "Root filesystem SHA-256", value=run.rootfs_sha256, autocomplete="off") }}
+    {{ ui.button("Run it", icon_name="plus") }}
+  {% endcall %}
   {% else %}
-  <p class="empty">None of your machines can run virtual machines yet: it needs a connected machine with KVM whose guests can reach grund.</p>
+  {{ ui.empty_state(text="None of your machines can run virtual machines yet: it needs a connected machine with KVM whose guests can reach grund.") }}
   {% endif %}
-</section>
+{% endcall %}
 {% endif %}
 {% endblock %}

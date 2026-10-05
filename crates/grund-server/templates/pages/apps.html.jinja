@@ -5,13 +5,13 @@
 {% block content %}
 {{ images.sprite(icons) }}
 {% call ui.page_head("Apps", "Run and manage your applications. Simple, powerful, yours.") %}
-{{ ui.list_tools(sorts, list.sort, list_href, grid_href, list.view, {"q": list.q, "view": list.view}) }}
+{{ lists.list_tools(sorts, list.sort, list_href, grid_href, list.view, {"q": list.q, "view": list.view}) }}
 {% endcall %}
-{{ ui.form_ok(notice) }}
-{{ ui.form_error(error) }}
+{{ forms.form_ok(notice) }}
+{{ forms.form_error(error) }}
 {% if list.q %}{% call ui.note() %}{{ apps | length }} of {{ total }} app{% if total != 1 %}s{% endif %} match “{{ list.q }}”. <a href="{{ all_href }}">Show all</a>{% endcall %}{% endif %}
 {% if apps %}
-{% call ui.items(list.view) %}{% for app in apps %}{{ ui.app_row(org, app) }}{% endfor %}{% endcall %}
+{% call lists.items(list.view) %}{% for app in apps %}{{ lists.app_row(org, app) }}{% endfor %}{% endcall %}
 {{ ui.note("No app matches that.", hidden=true, filter_empty=true) }}
 {% elif list.q %}
 {{ ui.note("No app matches that.") }}

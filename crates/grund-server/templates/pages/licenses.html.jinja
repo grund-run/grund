@@ -1,10 +1,7 @@
 {% extends "layout-auth.html.jinja" %}
 {% block title %}Licenses · grund{% endblock %}
 {% block card %}
-<h1 class="auth-title">Licenses</h1>
-<p class="auth-lede">grund's pages use these fonts, under the SIL Open Font License 1.1.</p>
-<h2 class="section-title">Inter</h2>
-<pre class="hint">{{ inter }}</pre>
-<h2 class="section-title">JetBrains Mono</h2>
-<pre class="hint">{{ mono }}</pre>
+{{ ui.auth_head("Licenses", "grund's pages use these fonts, under the SIL Open Font License 1.1.") }}
+{% call ui.section("inter", "Inter") %}{{ ui.code_block(inter) }}{% endcall %}
+{% call ui.section("jetbrains-mono", "JetBrains Mono") %}{{ ui.code_block(mono) }}{% endcall %}
 {% endblock %}

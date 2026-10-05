@@ -1,14 +1,12 @@
 {% extends "layout-auth.html.jinja" %}
 {% block title %}Create the owner · grund{% endblock %}
 {% block card %}
-<h1 class="auth-title">Create the owner</h1>
-<p class="auth-lede">This grund has no account yet. The one you create here owns it: its organisation, everything deployed to it, and who else may join. Everyone after you joins by invitation.</p>
-<form class="form" method="post" action="/signup/owner" novalidate>
-  {{ ui.csrf_field(csrf) }}
-  <input type="hidden" name="token" value="{{ token }}">
-  {{ ui.field("username", "Username", value=username, autocomplete="username", error=errors.username, hint="3 to 32 letters, digits and single hyphens. It is public, and names the organisation.", autofocus=true) }}
-  {{ ui.field("email", "Email", type="email", value=email, autocomplete="email", error=errors.email, hint="Where password resets go. No mail is sent to confirm it.") }}
-  {{ ui.field("password", "Password", type="password", autocomplete="new-password", error=errors.password, hint="At least 12 characters.") }}
-  <button class="btn btn-primary btn-block" type="submit">Create the owner</button>
-</form>
+{{ ui.auth_head("Create the owner", "This grund has no account yet. The one you create here owns it: its organisation, everything deployed to it, and who else may join. Everyone after you joins by invitation.") }}
+{% call forms.form("/signup/owner", csrf) %}
+  {{ forms.hidden_field("token", token) }}
+  {{ forms.field("username", "Username", value=username, autocomplete="username", error=errors.username, hint="3 to 32 letters, digits and single hyphens. It is public, and names the organisation.", autofocus=true) }}
+  {{ forms.field("email", "Email", type="email", value=email, autocomplete="email", error=errors.email, hint="Where password resets go. No mail is sent to confirm it.") }}
+  {{ forms.field("password", "Password", type="password", autocomplete="new-password", error=errors.password, hint="At least 12 characters.") }}
+  {{ ui.button("Create the owner", block=true) }}
+{% endcall %}
 {% endblock %}

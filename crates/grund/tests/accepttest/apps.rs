@@ -952,7 +952,7 @@ async fn the_apps_list_shows_each_image_with_its_icon_and_where_to_reach_it_and_
     let page = format!("/{org}/apps");
     when.visiting(&page).await?;
     then.status(200)?
-        .body_contains(&format!("https://shop-{org}.apps.accept.test"))?
+        .body_contains(&format!("https:&#x2f;&#x2f;shop-{org}.apps.accept.test"))?
         .body_contains("db.grund.internal:80")?
         .body_contains("data-copy=\"db.grund.internal:80\"")?
         .body_contains("postgres:16</p>")?
@@ -981,13 +981,13 @@ async fn the_apps_list_shows_each_image_with_its_icon_and_where_to_reach_it_and_
 
     when.visiting(&format!("/{org}/domains")).await?;
     then.status(200)?
-        .body_contains(&format!("https://shop-{org}.apps.accept.test"))?
+        .body_contains(&format!("https:&#x2f;&#x2f;shop-{org}.apps.accept.test"))?
         .body_lacks(">db<")?
         .body_contains("Custom domains are in development")?;
 
     when.visiting(&format!("/{org}")).await?;
     then.status(200)?
-        .body_contains(&format!("https://shop-{org}.apps.accept.test"))?
+        .body_contains(&format!("https:&#x2f;&#x2f;shop-{org}.apps.accept.test"))?
         .body_contains("db.grund.internal:80")?;
 
     when.visiting(&format!("/{org}/apps/shop")).await?;

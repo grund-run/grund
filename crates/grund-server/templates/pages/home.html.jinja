@@ -5,35 +5,19 @@
 {% block content %}
 {{ images.sprite(icons) }}
 {{ ui.page_head("Overview", "Signed in as " ~ viewer.username ~ ", " ~ org.role ~ " of " ~ org.slug ~ ".") }}
-<section aria-labelledby="apps">
-  <div class="section-head">
-    <h2 class="section-title" id="apps">Apps<span class="count">{{ app_count }}</span></h2>
-    {% if app_count %}<a class="link-more" href="/{{ org.slug }}/apps">View all {{ ui.icon("arrow", "icon-sm") }}</a>{% endif %}
-  </div>
+{% call ui.section("apps", "Apps", count=app_count, more=("/" ~ org.slug ~ "/apps", "View all") if app_count else none, first=true) %}
   {% if apps %}
-  {% call ui.items() %}{% for app in apps %}{{ ui.app_row(org, app) }}{% endfor %}{% endcall %}
+  {% call lists.items() %}{% for app in apps %}{{ lists.app_row(org, app) }}{% endfor %}{% endcall %}
   {% elif org.manages %}
   {{ ui.add_card("/" ~ org.slug ~ "/deploy", "Deploy your first app", "Deploy any container image by its name, such as nginx:1.27.") }}
   {% else %}
   {{ ui.empty_state("No apps yet", "An owner or admin of " ~ org.slug ~ " deploys them, and they show up here.") }}
   {% endif %}
-</section>
-<section class="section" aria-labelledby="org">
-  <div class="section-head">
-    <h2 class="section-title" id="org">Organisation</h2>
-    <a class="link-more" href="/{{ org.slug }}/settings/members">Members {{ ui.icon("arrow", "icon-sm") }}</a>
-  </div>
-  <ul class="rows">
-    <li class="row">
-      <span class="row-icon">{{ ui.icon("users", "icon-lg tone-blue") }}</span>
-      <div><p class="row-name">{{ members }} member{% if members != 1 %}s{% endif %}</p><p class="row-sub">/{{ org.slug }}/settings/members</p></div>
-      {{ ui.status(org.role | capitalize) }}
-      <span></span>
-    </li>
-  </ul>
-</section>
-<ul class="stats">
-  <li>{{ ui.icon("mail", "icon-sm") }}{{ viewer.email }}</li>
-  <li>{{ ui.icon("clock", "icon-sm") }}Member since {{ viewer.registered_on }}</li>
-</ul>
+{% endcall %}
+{% call ui.section("org", "Organisation", more=("/" ~ org.slug ~ "/settings/members", "Members")) %}
+  {% call lists.rows() %}
+    {{ lists.row(members ~ " member" ~ ("" if members == 1 else "s"), "/" ~ org.slug ~ "/settings/members", icon_name="users", tone="blue", status=org.role | capitalize) }}
+  {% endcall %}
+{% endcall %}
+{{ ui.stats([("mail", viewer.email), ("clock", "Member since " ~ viewer.registered_on)]) }}
 {% endblock %}

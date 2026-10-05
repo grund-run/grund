@@ -1,100 +1,201 @@
+{#- ------------------------------------------------------------------
+    The catalogue's basics and page parts: icons, the brand, tags,
+    statuses, buttons and links, page and section heads, callouts, empty
+    states, notes and code. Forms are in forms.html.jinja, lists of things
+    in lists.html.jinja, the signed-in shell in shell.html.jinja.
+
+    The rule: a page under pages/ writes no class attribute and no raw
+    <button>, <input>, <select>, <textarea>, <form>, <svg> or <details>.
+    It calls these macros, and plain <p>, <a>, <code> and <strong> carry
+    its words. templates.rs's tests fail the build otherwise. Every macro
+    is rendered, with the call to copy, on /style-guide.
+    ------------------------------------------------------------------ -#}
+
+{#- icon(name, class="")
+    One icon from the sprite (icons.html.jinja), drawn in currentColor.
+    class: icon-sm (18 px) or icon-lg (36 px), and a tone-* colour. -#}
 {% macro icon(name, class="") -%}
 <svg class="icon {{ class }}" aria-hidden="true"><use href="#i-{{ name }}"/></svg>
 {%- endmacro %}
 
+{#- brand(href="/"): the wolf mark and "grund", linking home. -#}
 {% macro brand(href="/") -%}
 <a class="brand" href="{{ href }}"><img class="brand-mark" src="/static/mark.svg" alt="" width="40" height="40">grund</a>
 {%- endmacro %}
 
-{% macro csrf_field(token) -%}
-<input type="hidden" name="csrf" value="{{ token }}">
+{#- skip_link(): the first thing a keyboard reaches, to #main. -#}
+{% macro skip_link() -%}
+<a class="skip" href="#main">Skip to content</a>
 {%- endmacro %}
 
-{% macro field(name, label, type="text", value="", autocomplete="", error="", hint="", required=true, autofocus=false) -%}
-<div class="field">
-  <label for="{{ name }}">{{ label }}</label>
-  <input id="{{ name }}" name="{{ name }}" type="{{ type }}"{% if value %} value="{{ value }}"{% endif %}{% if autocomplete %} autocomplete="{{ autocomplete }}"{% endif %}{% if required %} required{% endif %}{% if autofocus %} autofocus{% endif %}{% if error %} aria-invalid="true" aria-describedby="{{ name }}-error"{% elif hint %} aria-describedby="{{ name }}-hint"{% endif %}>
-  {%- if error %}
-  <p class="field-error" id="{{ name }}-error">{{ error }}</p>
-  {%- elif hint %}
-  <p class="hint" id="{{ name }}-hint">{{ hint }}</p>
-  {%- endif %}
-</div>
+{#- mark(name, size="")
+    The letter standing for an organisation or a person.
+    size: "" (28 px, rounded square) or "lg" (40 px, round, for rows) -#}
+{% macro mark(name, size="") -%}
+<span class="org-mark{% if size %} org-mark-{{ size }}{% endif %}" aria-hidden="true">{{ name[:1] }}</span>
 {%- endmacro %}
 
-{% macro form_error(message) -%}
-{% if message %}<div class="form-error" role="alert"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-alert"/></svg><span>{{ message }}</span></div>{% endif %}
+{#- tag(text, tone="")
+    A tiny rounded label: "Coming soon", "You", "Runs VMs".
+    tone: "" (muted) or "ok" -#}
+{% macro tag(text, tone="") -%}
+<span class="tag{% if tone %} tag-{{ tone }}{% endif %}">{{ text }}</span>
 {%- endmacro %}
 
-{% macro form_ok(message) -%}
-{% if message %}<div class="form-ok" role="status"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-ok"/></svg><span>{{ message }}</span></div>{% endif %}
-{%- endmacro %}
-
+{#- status(text, tone="ok")
+    A toned check and a word: how a thing is ("Serving", "Offline").
+    tone: ok, blue, orange, violet or muted -#}
 {% macro status(text, tone="ok") -%}
-<span class="row-status"><svg class="icon tone-{{ tone }}" aria-hidden="true"><use href="#i-ok"/></svg>{{ text }}</span>
-{%- endmacro %}
-
-{% macro org_tabs(org, active) -%}
-<nav class="tabs" aria-label="Organisation">
-  <a class="tab{% if active == 'general' %} is-active{% endif %}" href="/{{ org.slug }}/settings"{% if active == 'general' %} aria-current="page"{% endif %}>General</a>
-  <a class="tab{% if active == 'members' %} is-active{% endif %}" href="/{{ org.slug }}/settings/members"{% if active == 'members' %} aria-current="page"{% endif %}>Members</a>
-</nav>
-{%- endmacro %}
-
-{#- ------------------------------------------------------------------
-    The shell's and the app list's building blocks. Each documents its
-    parameters; classes are grund.css's, built on its tokens. A new page
-    is page_head plus these, with no page-specific CSS.
-    ------------------------------------------------------------------ -#}
-
-{#- mark(name): the round-cornered letter standing for an organisation. -#}
-{% macro mark(name) -%}
-<span class="org-mark" aria-hidden="true">{{ name[:1] }}</span>
-{%- endmacro %}
-
-{#- nav_item(href, icon_name, label, active=false)
-    One sidebar link; active marks it as the current page. -#}
-{% macro nav_item(href, icon_name, label, active=false) -%}
-<li><a class="nav-item{% if active %} is-active{% endif %}" href="{{ href }}"{% if active %} aria-current="page"{% endif %}>{{ icon(icon_name) }}{{ label }}</a></li>
+<span class="row-status">{{ icon("ok", "tone-" ~ tone) }}{{ text }}</span>
 {%- endmacro %}
 
 {#- button(label, href="", icon_name="", kind="primary", size="",
-           type="submit", collapse=false, extra="")
+           type="submit", collapse=false, block=false, icon_size="sm",
+           disabled=false, extra="")
     A link when href is set, else a <button type=type>.
-    kind:     primary (one per page), secondary, danger or ghost
-    size:     "" or "sm"
-    collapse: below 520 px only the icon shows (the label stays for
-              screen readers)
-    extra:    more classes, such as js-hide -#}
-{% macro button(label, href="", icon_name="", kind="primary", size="", type="submit", collapse=false, extra="") -%}
-{% set class = "btn btn-" ~ kind ~ (" btn-" ~ size if size else "") ~ (" " ~ extra if extra else "") %}
-{% if href %}<a class="{{ class }}" href="{{ href }}">{% else %}<button class="{{ class }}" type="{{ type }}">{% endif -%}
-{% if icon_name %}{{ icon(icon_name, "icon-sm") }}{% endif %}<span{% if collapse %} class="btn-label"{% endif %}>{{ label }}</span>
+    kind:      primary (one per page), secondary, danger or ghost
+    size:      "" or "sm"
+    collapse:  below 520 px only the icon shows (the label stays for
+               screen readers)
+    block:     the full width of its column (signed-out forms)
+    icon_size: "sm" (18 px) or "" (22 px, for brand logos)
+    disabled:  a <button> that cannot be pressed (never a link)
+    extra:     more classes, such as js-hide (or is-hover and is-focus,
+               which pin a state on the style guide) -#}
+{% macro button(label, href="", icon_name="", kind="primary", size="", type="submit", collapse=false, block=false, icon_size="sm", disabled=false, extra="") -%}
+{% set class = "btn btn-" ~ kind ~ (" btn-" ~ size if size else "") ~ (" btn-block" if block else "") ~ (" " ~ extra if extra else "") %}
+{% if href %}<a class="{{ class }}" href="{{ href }}">{% else %}<button class="{{ class }}" type="{{ type }}"{% if disabled %} disabled{% endif %}>{% endif -%}
+{% if icon_name %}{{ icon(icon_name, "icon-" ~ icon_size if icon_size else "") }}{% endif %}<span{% if collapse %} class="btn-label"{% endif %}>{{ label }}</span>
 {%- if href %}</a>{% else %}</button>{% endif %}
 {%- endmacro %}
 
-{#- page_head(title, lede="", tag="", back=none)
-    The page's title and one line under it.
-    tag:  a small tag beside the title, such as "Coming soon"
-    back: (href, label) for a link above the title, on detail pages
-    Called with {% call %}, the body goes at the right (tools or the
+{#- link_more(href, label, extra="")
+    The onward link: accent text and an arrow ("View all →").
+    extra: more classes -#}
+{% macro link_more(href, label, extra="") -%}
+<a class="link-more{% if extra %} {{ extra }}{% endif %}" href="{{ href }}">{{ label }}{{ icon("arrow", "icon-sm") }}</a>
+{%- endmacro %}
+
+{#- external(href, label)
+    A link that opens in a new tab, with the external icon, and says so
+    to screen readers. -#}
+{% macro external(href, label) -%}
+<a class="address" href="{{ href }}" rel="noopener noreferrer" target="_blank"><span class="address-text">{{ label }}</span>{{ icon("external", "icon-sm") }}<span class="visually-hidden"> (opens in a new tab)</span></a>
+{%- endmacro %}
+
+{#- icon_link(href, icon_name, label, external=false)
+    A square icon-only link; label is its accessible name. -#}
+{% macro icon_link(href, icon_name, label, external=false) -%}
+<a class="icon-btn" href="{{ href }}"{% if external %} rel="noopener noreferrer" target="_blank"{% endif %} aria-label="{{ label }}">{{ icon(icon_name, "icon-sm") }}</a>
+{%- endmacro %}
+
+{#- copy_button(text, label)
+    Copies text. Hidden until the script shows it, so it never appears
+    without a clipboard. label: what it copies, for its accessible name. -#}
+{% macro copy_button(text, label) -%}
+<button class="icon-btn copy" type="button" data-copy="{{ text }}" aria-label="Copy {{ label }}" title="Copy" hidden>{{ icon("copy", "icon-sm") }}</button>
+{%- endmacro %}
+
+{#- page_head(title, lede="", status="", tag="", back=none)
+    The page's title and one line under it. Every page starts with it.
+    lede:   a plain line under the title (the Apps design)
+    status: a larger, quieter line saying how things are
+    tag:    a small tag beside the title, such as "Coming soon"
+    back:   (href, label) for a link above the title, on detail pages
+    Called with {% call %}, the body goes at the right (list tools, or the
     page's primary button). -#}
-{% macro page_head(title, lede="", tag="", back=none) -%}
+{% macro page_head(title, lede="", status="", tag="", back=none) -%}
 {% if back %}<a class="back" href="{{ back.0 }}">{{ icon("chevron", "icon-sm back-icon") }}{{ back.1 }}</a>{% endif %}
 <div class="page-head">
   <div>
     <h1 class="page-title">{{ title }}{% if tag %} <span class="tag">{{ tag }}</span>{% endif %}</h1>
     {% if lede %}<p class="page-lede">{{ lede }}</p>{% endif %}
+    {% if status %}<p class="status-line">{{ status }}</p>{% endif %}
   </div>
   {% if caller is defined %}<div class="page-tools">{{ caller() }}</div>{% endif %}
 </div>
 {%- endmacro %}
 
-{#- empty_state(title, text="")
+{#- status_line(text, tone="ok", id="", plain=false)
+    A sentence about how a thing is, with a toned check, under a page
+    head ("All copies are ready."). plain: without the check, for a
+    sentence of warning before a form. -#}
+{% macro status_line(text, tone="ok", id="", plain=false) -%}
+<p class="status-line"{% if id %} id="{{ id }}"{% endif %}>{% if plain %}{{ text }}{% else %}{{ status(text, tone) }}{% endif %}</p>
+{%- endmacro %}
+
+{#- section(id, title, count=none, tag="", more=none, first=false,
+            stack=false)
+    A titled part of a page; the {% call %} body is its content.
+    id:    the heading's id, which the section is labelled by (and a
+           link target, such as #versions)
+    count: a muted number after the title
+    tag:   a tag after the title ("Coming soon")
+    more:  (href, label) for an onward link at the right
+    first: right under the page head, without the gap above
+    stack: its children are spaced by a gap (a block of instructions) -#}
+{% macro section(id, title, count=none, tag="", more=none, first=false, stack=false) -%}
+<section{% if not first or stack %} class="{% if not first %}section{% endif %}{% if stack %} section-stack{% endif %}"{% endif %} aria-labelledby="{{ id }}">
+  <div class="section-head">
+    <h2 class="section-title" id="{{ id }}">{{ title }}{% if count is not none %}<span class="count">{{ count }}</span>{% endif %}{% if tag %} <span class="tag">{{ tag }}</span>{% endif %}</h2>
+    {% if more %}{{ link_more(more.0, more.1) }}{% endif %}
+  </div>
+  {{ caller() }}
+</section>
+{%- endmacro %}
+
+{#- tabs(label, tabs, active)
+    Splits one sidebar section into pages, as links.
+    label: the nav's accessible name
+    tabs:  (key, href, text) triples; active: the current key -#}
+{% macro tabs(label, tabs, active) -%}
+<nav class="tabs" aria-label="{{ label }}">
+  {% for key, href, text in tabs %}<a class="tab{% if active == key %} is-active{% endif %}" href="{{ href }}"{% if active == key %} aria-current="page"{% endif %}>{{ text }}</a>
+  {% endfor %}
+</nav>
+{%- endmacro %}
+
+{#- org_tabs(org, active): the organisation's General and Members tabs. -#}
+{% macro org_tabs(org, active) -%}
+{{ tabs("Organisation", [("general", "/" ~ org.slug ~ "/settings", "General"), ("members", "/" ~ org.slug ~ "/settings/members", "Members")], active) }}
+{%- endmacro %}
+
+{#- callout(title, text, icon_name="", tone="", spinner=false, more=none,
+            danger=false)
+    Something happening now or needing attention.
+    icon_name, tone: a large toned icon; spinner: a turning ring instead
+    more:   (href, label) for one onward link
+    danger: on the danger surface, for failures -#}
+{% macro callout(title, text, icon_name="", tone="", spinner=false, more=none, danger=false) -%}
+<div class="callout{% if danger %} callout-danger{% endif %}">
+  {% if spinner %}<span class="spinner" aria-hidden="true"></span>{% elif icon_name %}{{ icon(icon_name, "icon-lg tone-" ~ tone) }}{% endif %}
+  <div class="callout-body">
+    <p class="callout-title">{{ title }}</p>
+    <p class="callout-text">{{ text }}</p>
+  </div>
+  {% if more %}{{ link_more(more.0, more.1) }}{% endif %}
+</div>
+{%- endmacro %}
+
+{#- notice(text, icon_name="box", tone="orange", more=none)
+    A one-line fact with an icon and an onward link at the right. -#}
+{% macro notice(text, icon_name="box", tone="orange", more=none) -%}
+<p class="notice">{{ icon(icon_name, "tone-" ~ tone) }}{{ text }}{% if more %}{{ link_more(more.0, more.1) }}{% endif %}</p>
+{%- endmacro %}
+
+{#- stats(facts): small print at the foot, (icon_name, text) pairs. -#}
+{% macro stats(facts) -%}
+<ul class="stats">
+  {% for icon_name, text in facts %}<li>{{ icon(icon_name, "icon-sm") }}{{ text }}</li>
+  {% endfor %}
+</ul>
+{%- endmacro %}
+
+{#- empty_state(title="", text="")
     A dashed box: what is missing, and one sentence on how it appears.
     Called with {% call %}, the body replaces text (for a link or code). -#}
-{% macro empty_state(title, text="") -%}
-<div class="empty"><strong>{{ title }}</strong>{% if caller is defined %}{{ caller() }}{% else %}{{ text }}{% endif %}</div>
+{% macro empty_state(title="", text="") -%}
+<div class="empty">{% if title %}<strong>{{ title }}</strong>{% endif %}{% if caller is defined %}{{ caller() }}{% else %}{{ text }}{% endif %}</div>
 {%- endmacro %}
 
 {#- add_card(href, title, text)
@@ -114,107 +215,46 @@
 <p class="note"{% if filter_empty %} data-filter-empty{% endif %}{% if hidden %} hidden{% endif %}>{% if caller is defined %}{{ caller() }}{% else %}{{ text }}{% endif %}</p>
 {%- endmacro %}
 
-{#- copy_button(text, label)
-    Copies text. Hidden until the script shows it, so it never appears
-    without a clipboard. label: what it copies, for its accessible name. -#}
-{% macro copy_button(text, label) -%}
-<button class="icon-btn copy" type="button" data-copy="{{ text }}" aria-label="Copy {{ label }}" title="Copy" hidden>{{ icon("copy", "icon-sm") }}</button>
+{#- hint(text="")
+    Small muted print: a caveat, a reference id. Called with {% call %},
+    the body replaces text. -#}
+{% macro hint(text="") -%}
+<p class="hint">{% if caller is defined %}{{ caller() }}{% else %}{{ text }}{% endif %}</p>
 {%- endmacro %}
 
-{#- menu(label, icon_name="more")
-    A kebab (or other icon) button opening a list, as a <details>, so it
-    opens without script; the script closes it on Escape or a click
-    elsewhere. label: the button's accessible name. The {% call %} body is
-    menu_item()s. -#}
-{% macro menu(label, icon_name="more") -%}
-<details class="menu">
-  <summary class="icon-btn icon-btn-boxed" aria-label="{{ label }}">{{ icon(icon_name, "icon-sm") }}</summary>
-  <ul class="menu-list">{{ caller() }}</ul>
-</details>
+{#- aside(text="")
+    A secondary paragraph in quieter text, for the other way to do it.
+    Called with {% call %}, the body replaces text. -#}
+{% macro aside(text="") -%}
+<p class="aside">{% if caller is defined %}{{ caller() }}{% else %}{{ text }}{% endif %}</p>
 {%- endmacro %}
 
-{#- menu_item(href, icon_name, label, danger=false, external=false)
-    One entry of a menu. A destructive one is danger and ends in "…"
-    when it leads to a confirmation; external opens in a new tab. -#}
-{% macro menu_item(href, icon_name, label, danger=false, external=false) -%}
-<li><a class="menu-item{% if danger %} menu-item-danger{% endif %}" href="{{ href }}"{% if external %} rel="noopener noreferrer" target="_blank"{% endif %}>{{ icon(icon_name, "icon-sm") }}{{ label }}</a></li>
+{#- command(text, id="")
+    A command to run, in a box, wrapping anywhere. -#}
+{% macro command(text, id="") -%}
+<p class="command"{% if id %} id="{{ id }}"{% endif %}>{{ text }}</p>
 {%- endmacro %}
 
-{#- list_tools(sorts, sort, list_href, grid_href, view, hidden={})
-    Sort and the grid/list toggle above a list.
-    sorts:     (value, label) pairs; sort: the chosen value
-    list_href, grid_href: the same page in either view; view: the current
-    hidden:    other query values the sort form keeps (q, view)
-    Sort is a GET form; the script submits it on change and hides its
-    button. -#}
-{% macro list_tools(sorts, sort, list_href, grid_href, view, hidden={}) -%}
-<div class="list-tools">
-  <form class="sort" method="get">
-    {% for name, value in hidden | items %}{% if value %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endif %}{% endfor %}
-    <label for="sort">Sort by</label>
-    <span class="select-wrap">
-      <select class="select" id="sort" name="sort" data-autosubmit>
-        {% for option in sorts %}<option value="{{ option.0 }}"{% if option.0 == sort %} selected{% endif %}>{{ option.1 }}</option>{% endfor %}
-      </select>
-      {{ icon("down", "icon-sm select-chevron") }}
-    </span>
-    {{ button("Sort", kind="secondary", size="sm", extra="js-hide") }}
-  </form>
-  <div class="view-toggle" role="group" aria-label="View">
-    <a class="icon-btn{% if view == 'grid' %} is-active{% endif %}" href="{{ grid_href }}" aria-label="Grid view"{% if view == 'grid' %} aria-current="true"{% endif %}>{{ icon("grid", "icon-sm") }}</a>
-    <a class="icon-btn{% if view == 'list' %} is-active{% endif %}" href="{{ list_href }}" aria-label="List view"{% if view == 'list' %} aria-current="true"{% endif %}>{{ icon("list", "icon-sm") }}</a>
-  </div>
-</div>
+{#- code_block(text, id="")
+    Preformatted text in the mono face: a file, a licence. -#}
+{% macro code_block(text, id="") -%}
+<pre class="mono"{% if id %} id="{{ id }}"{% endif %}>{{ text }}</pre>
 {%- endmacro %}
 
-{#- image_icon(key): an app's image icon; key from web::apps::image_icon.
-    The page must carry images.sprite() with that key, except "image",
-    the neutral box from the main sprite. -#}
-{% macro image_icon(key) -%}
-{% if key == "image" %}<span class="image-icon image-icon-neutral" aria-hidden="true">{{ icon("box") }}</span>
-{%- else %}<svg class="image-icon" viewBox="0 0 32 32" aria-hidden="true"><use href="#img-{{ key }}"/></svg>{% endif %}
+{#- auth_head(title, lede="")
+    A signed-out page's title and the line under it. -#}
+{% macro auth_head(title, lede="") -%}
+<h1 class="auth-title">{{ title }}</h1>
+{% if lede %}{{ auth_lede(lede) }}{% endif %}
 {%- endmacro %}
 
-{#- app_address(app)
-    app.address: its public name, shown as an https link opening in a new
-    tab; else app.internal (<app>.grund.internal:<port>) with a copy
-    button; else nothing. -#}
-{% macro app_address(app) -%}
-{% if app.address %}<a class="address" href="https://{{ app.address }}" rel="noopener noreferrer" target="_blank"><span class="address-text">https://{{ app.address }}</span>{{ icon("external", "icon-sm") }}<span class="visually-hidden"> (opens in a new tab)</span></a>
-{%- elif app.internal %}<span class="address"><code class="address-text">{{ app.internal }}</code>{{ copy_button(app.internal, app.internal) }}</span>
-{%- endif %}
+{#- auth_lede(text): one more line under a signed-out page's title. -#}
+{% macro auth_lede(text) -%}
+<p class="auth-lede">{{ text }}</p>
 {%- endmacro %}
 
-{#- app_row(org, app)
-    One app in a list (or, inside .items-grid, a card): its image icon,
-    its name over its image, its address and its menu.
-    org: the current organisation (slug, manages)
-    app: web::apps::listing_context (name, image, icon, address, internal) -#}
-{% macro app_row(org, app) -%}
-{% set base = "/" ~ org.slug ~ "/apps/" ~ app.name %}
-<li class="item" data-name="{{ app.name }}" data-image="{{ app.image }}">
-  {{ image_icon(app.icon) }}
-  <div class="item-text">
-    <a class="item-name" href="{{ base }}">{{ app.name }}</a>
-    <p class="item-sub">{{ app.image or "No version yet" }}</p>
-  </div>
-  <div class="item-meta">{{ app_address(app) }}</div>
-  {% call menu("Actions for " ~ app.name) %}
-    {% if app.address %}{{ menu_item("https://" ~ app.address, "external", "Open", external=true) }}{% endif %}
-    {{ menu_item(base, "grid", "Details") }}
-    {{ menu_item(base ~ "#versions", "clock", "Releases") }}
-    {% if org.manages %}
-    {{ menu_item(base ~ "#deploy", "arrow", "Deploy a new version") }}
-    {{ menu_item(base ~ "#copies", "bars", "Scale") }}
-    {{ menu_item(base ~ "#danger", "trash", "Delete…", danger=true) }}
-    {% endif %}
-  {% endcall %}
-</li>
-{%- endmacro %}
-
-{#- items(view="list"): the box of rows (list) or the grid of cards around
-    app_row()s; the {% call %} body is the rows. The script's search
-    filters it. -#}
-{% macro items(view="list") -%}
-<ul class="items items-{{ view }}" data-filterable>{{ caller() }}</ul>
+{#- foot(): the small print under a form (secondary links); the
+    {% call %} body is <p>s. -#}
+{% macro foot() -%}
+<div class="form-foot">{{ caller() }}</div>
 {%- endmacro %}

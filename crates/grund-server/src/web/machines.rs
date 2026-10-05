@@ -159,14 +159,14 @@ async fn machines_view(
         .organisation_machines(membership.organisation_id)
         .await?;
     let machines: Vec<Value> = rows.iter().map(|row| machine_context(row, now)).collect();
-    let hosts: Vec<Value> = rows
+    let hosts: Vec<(String, String)> = rows
         .iter()
         .filter(|row| cannot_host(row).is_none() && connected(row.last_seen_at, now))
         .map(|row| {
-            context! {
-                id => row.machine_id.to_string(),
-                name => row.pool_name.clone().unwrap_or_else(|| row.name.clone()),
-            }
+            (
+                row.machine_id.to_string(),
+                row.pool_name.clone().unwrap_or_else(|| row.name.clone()),
+            )
         })
         .collect();
     let vms: Vec<Value> = state

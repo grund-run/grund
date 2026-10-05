@@ -11,8 +11,9 @@ fn page(given: &Given) -> String {
 }
 
 fn ids_in_actions(html: &str, before: &str, after: &str) -> Vec<String> {
+    let html = html.replace("&#x2f;", "/");
     let mut ids = Vec::new();
-    let mut rest = html;
+    let mut rest = html.as_str();
     while let Some(start) = rest.find(before) {
         let tail = &rest[start + before.len()..];
         let id: String = tail

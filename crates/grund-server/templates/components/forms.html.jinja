@@ -1,0 +1,151 @@
+{#- ------------------------------------------------------------------
+    Forms: the form itself, its fields, its banners and one-button
+    actions. A label sits above each control; a hint under it until there
+    is an error, which replaces the hint (aria-invalid, aria-describedby).
+    One banner for the whole form goes above the fields. Every form that
+    changes something posts with the CSRF field, and the handler checks it.
+    ------------------------------------------------------------------ -#}
+{% import "components/ui.html.jinja" as ui %}
+
+{#- form(action, csrf, layout="stack", method="post", autocomplete="")
+    The {% call %} body is the fields and the button.
+    layout:       stack (a column, signed-out pages), narrow (a column at
+                  most 32 rem wide), row (the fields side by side, the
+                  button after them; a column below 900 px) or "" (no
+                  layout, for a sentence and one button)
+    csrf:         the token; none for a GET form
+    autocomplete: "off" for a form whose values the browser must not
+                  remember -#}
+{% macro form(action, csrf, layout="stack", method="post", autocomplete="") -%}
+<form{% if layout %} class="{{ 'form' if layout == 'stack' else 'form form-narrow' if layout == 'narrow' else 'form-row' }}"{% endif %} method="{{ method }}" action="{{ action }}" novalidate{% if autocomplete %} autocomplete="{{ autocomplete }}"{% endif %}>
+  {% if csrf %}{{ csrf_field(csrf) }}{% endif %}
+  {{ caller() }}
+</form>
+{%- endmacro %}
+
+{#- post_button(action, csrf, label, kind="secondary", size="",
+                block=false, layout="", hidden={})
+    A form that is only a button: remove, stop, sign out, run again.
+    Destructive ones are kind="danger" and say what they do.
+    layout: as for form(); hidden: more fields it sends, name: value -#}
+{% macro post_button(action, csrf, label, kind="secondary", size="", block=false, layout="", hidden={}) -%}
+<form{% if layout %} class="{{ 'form' if layout == 'stack' else 'form form-narrow' }}"{% endif %} method="post" action="{{ action }}">
+  {{ csrf_field(csrf) }}
+  {% for name, value in hidden | items %}{{ hidden_field(name, value) }}{% endfor %}
+  {{ ui.button(label, kind=kind, size=size, block=block) }}
+</form>
+{%- endmacro %}
+
+{#- csrf_field(token): the hidden CSRF field. -#}
+{% macro csrf_field(token) -%}
+<input type="hidden" name="csrf" value="{{ token }}">
+{%- endmacro %}
+
+{#- hidden_field(name, value): a value the form carries unseen. -#}
+{% macro hidden_field(name, value) -%}
+<input type="hidden" name="{{ name }}" value="{{ value }}">
+{%- endmacro %}
+
+{#- describe(id, error, hint): the attributes tying a control to its
+    error or hint. -#}
+{% macro describe(id, error, hint) -%}
+{% if error %} aria-invalid="true" aria-describedby="{{ id }}-error"{% elif hint %} aria-describedby="{{ id }}-hint"{% endif %}
+{%- endmacro %}
+
+{#- message(id, error, hint): the error, else the hint, under a control. -#}
+{% macro message(id, error, hint) -%}
+{%- if error %}
+  <p class="field-error" id="{{ id }}-error">{{ error }}</p>
+{%- elif hint %}
+  <p class="hint" id="{{ id }}-hint">{{ hint }}</p>
+{%- endif %}
+{%- endmacro %}
+
+{#- field(name, label, type="text", value="", autocomplete="", error="",
+          hint="", required=true, autofocus=false, disabled=false, id="",
+          state="")
+    A labelled input.
+    error:    replaces the hint and marks the input invalid
+    disabled: shown, not editable and not sent (a known value)
+    id:       defaults to name
+    state:    "focus" pins the focus look (the style guide only) -#}
+{% macro field(name, label, type="text", value="", autocomplete="", error="", hint="", required=true, autofocus=false, disabled=false, id="", state="") -%}
+{% set id = id or name %}
+<div class="field">
+  <label for="{{ id }}">{{ label }}</label>
+  <input{% if state %} class="is-{{ state }}"{% endif %} id="{{ id }}" name="{{ name }}" type="{{ type }}"{% if value %} value="{{ value }}"{% endif %}{% if autocomplete %} autocomplete="{{ autocomplete }}"{% endif %}{% if required %} required{% endif %}{% if autofocus %} autofocus{% endif %}{% if disabled %} disabled{% endif %}{{ describe(id, error, hint) }}>
+  {{- message(id, error, hint) }}
+</div>
+{%- endmacro %}
+
+{#- select_field(name, label, options, selected="", hint="", id="",
+                 state="")
+    A labelled select. options: (value, label) pairs. state: as for
+    field(). -#}
+{% macro select_field(name, label, options, selected="", hint="", id="", state="") -%}
+{% set id = id or name %}
+<div class="field">
+  <label for="{{ id }}">{{ label }}</label>
+  <select class="select{% if state %} is-{{ state }}{% endif %}" id="{{ id }}" name="{{ name }}"{{ describe(id, "", hint) }}>
+    {% for value, text in options %}<option value="{{ value }}"{% if value == selected %} selected{% endif %}>{{ text }}</option>{% endfor %}
+  </select>
+  {{- message(id, "", hint) }}
+</div>
+{%- endmacro %}
+
+{#- textarea_field(name, label, value="", rows=4, hint="", error="")
+    A labelled box for several lines. -#}
+{% macro textarea_field(name, label, value="", rows=4, hint="", error="") -%}
+<div class="field">
+  <label for="{{ name }}">{{ label }}</label>
+  <textarea id="{{ name }}" name="{{ name }}" rows="{{ rows }}"{{ describe(name, error, hint) }}>{{ value }}</textarea>
+  {{- message(name, error, hint) }}
+</div>
+{%- endmacro %}
+
+{#- select_form(action, csrf, name, id, label, options, selected, button)
+    A select and a small button in a row, posting one choice (a member's
+    role). label: the select's accessible name (not shown). -#}
+{% macro select_form(action, csrf, name, id, label, options, selected, button) -%}
+<form class="row-form" method="post" action="{{ action }}">
+  {{ csrf_field(csrf) }}
+  <label class="visually-hidden" for="{{ id }}">{{ label }}</label>
+  <select class="select" id="{{ id }}" name="{{ name }}">
+    {% for value, text in options %}<option value="{{ value }}"{% if value == selected %} selected{% endif %}>{{ text }}</option>{% endfor %}
+  </select>
+  {{ ui.button(button, kind="secondary", size="sm") }}
+</form>
+{%- endmacro %}
+
+{#- form_error(message): the banner for the whole form; nothing when
+    message is empty. -#}
+{% macro form_error(message) -%}
+{% if message %}<div class="form-error" role="alert">{{ ui.icon("alert", "icon-sm") }}<span>{{ message }}</span></div>{% endif %}
+{%- endmacro %}
+
+{#- form_ok(message): the banner saying it worked; nothing when message
+    is empty. -#}
+{% macro form_ok(message) -%}
+{% if message %}<div class="form-ok" role="status">{{ ui.icon("ok", "icon-sm") }}<span>{{ message }}</span></div>{% endif %}
+{%- endmacro %}
+
+{#- field_error(text): an error on its own line, outside a field. -#}
+{% macro field_error(text) -%}
+<span class="field-error">{{ text }}</span>
+{%- endmacro %}
+
+{#- or_divider(): the "or" line between a form and the other ways in. -#}
+{% macro or_divider() -%}
+<p class="or">or</p>
+{%- endmacro %}
+
+{#- providers(providers)
+    The other ways to sign in, one full-width button each.
+    providers: (id, name, icon) for each -#}
+{% macro providers(providers) -%}
+<div class="providers">
+  {% for provider in providers %}
+  {{ ui.button("Continue with " ~ provider.name, href="/auth/" ~ provider.id ~ "/start", icon_name=provider.icon, kind="secondary", block=true, icon_size="") }}
+  {% endfor %}
+</div>
+{%- endmacro %}

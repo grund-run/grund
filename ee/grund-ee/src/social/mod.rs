@@ -114,3 +114,17 @@ impl Extension for Registered {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod template_tests {
+    use super::TEMPLATES;
+
+    #[test]
+    fn these_pages_call_the_catalogue_and_render_in_the_core_environment() {
+        for (name, source) in TEMPLATES {
+            let offences = grund_server::templates::raw_component_markup(source);
+            assert!(offences.is_empty(), "{name}: {offences:?}");
+        }
+        grund_server::templates::Templates::new(TEMPLATES).expect("templates parse");
+    }
+}

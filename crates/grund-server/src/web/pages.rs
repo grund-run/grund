@@ -1017,18 +1017,28 @@ pub async fn licenses(AxumState(state): AxumState<State>, browser: Browser) -> P
 pub const SWATCHES: &[(&str, &str)] = &[
     ("bg", "page background"),
     ("bg-raised", "sidebar, inputs"),
-    ("surface", "cards, callouts"),
-    ("active", "selected nav item"),
-    ("border", "dividers (strong shown)"),
-    ("text", "primary text"),
+    ("surface", "boxes of rows, cards, callouts, menus"),
+    ("surface-hover", "hover on surfaces and nav items"),
+    ("control", "boxed icon buttons"),
+    (
+        "active",
+        "the selected nav item and view, marks, success banners",
+    ),
+    ("border", "dividers between rows"),
+    ("border-strong", "control edges, tags, dashed boxes"),
+    ("text", "titles, names, body"),
     ("text-2", "secondary text"),
     ("muted", "counts, hints"),
-    ("accent", "primary buttons, brand"),
+    ("accent", "primary buttons, focus rings"),
+    ("accent-hover", "primary buttons on hover"),
+    ("accent-text", "links"),
+    ("accent-ink", "text on the accent"),
     ("ok", "serving, success"),
     ("blue", "in progress"),
     ("orange", "updates, attention"),
-    ("violet", "code, APIs"),
-    ("danger", "errors, sign-out"),
+    ("violet", "code, APIs, devices"),
+    ("danger", "errors, destructive actions"),
+    ("danger-surface", "behind errors and danger buttons"),
 ];
 
 const KNOWN_IMAGE_ICONS: &[&str] = &[
@@ -1043,6 +1053,21 @@ const KNOWN_IMAGE_ICONS: &[&str] = &[
     "prometheus",
     "rabbitmq",
 ];
+
+/// The name of every icon in the sprite (`components/icons.html.jinja`), in
+/// its order, so the style guide shows them all without a second list.
+pub fn sprite_icons() -> Vec<&'static str> {
+    let source = crate::templates::TEMPLATES
+        .iter()
+        .find(|(name, _)| *name == "components/icons.html.jinja")
+        .map(|(_, source)| *source)
+        .unwrap_or_default();
+    source
+        .split("<symbol id=\"i-")
+        .skip(1)
+        .filter_map(|rest| rest.split('"').next())
+        .collect()
+}
 
 pub async fn style_guide(AxumState(state): AxumState<State>, browser: Browser) -> PageResult {
     let viewer = context! {
@@ -1092,7 +1117,7 @@ pub async fn style_guide(AxumState(state): AxumState<State>, browser: Browser) -
         "pages/style-guide.html.jinja",
         context! {
             viewer, csrf => browser.csrf_token(), section => "", swatches => SWATCHES,
-            apps, icons, gallery => KNOWN_IMAGE_ICONS,
+            apps, icons, gallery => KNOWN_IMAGE_ICONS, sprite_icons => sprite_icons(),
         },
     )
 }

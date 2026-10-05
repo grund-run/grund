@@ -273,10 +273,10 @@ async fn members_view(
             }
         })
         .collect();
-    let roles: &[&str] = if viewer_role == Role::Owner {
-        &["member", "admin", "owner"]
+    let roles: &[(&str, &str)] = if viewer_role == Role::Owner {
+        &[("member", "Member"), ("admin", "Admin"), ("owner", "Owner")]
     } else {
-        &["member", "admin"]
+        &[("member", "Member"), ("admin", "Admin")]
     };
     let viewer = viewer_context(state, session, Some(membership)).await?;
     render(

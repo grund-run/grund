@@ -1462,7 +1462,7 @@ async fn the_machines_page_adds_a_device_shows_it_connected_and_runs_a_vm_on_it(
         .body_contains("vm1")?
         .body_contains("on desk · 1 vCPU, 512 MiB, 2 GiB")?
         .body_contains("Running")?;
-    let body = then.body()?;
+    let body = then.body()?.replace("&#x2f;", "/");
     let stop = body
         .split("/machines/vms/")
         .nth(1)

@@ -1,0 +1,139 @@
+{#- ------------------------------------------------------------------
+    Lists of things. Two shapes:
+    - rows(): an open list of resources divided by lines, no box (copies,
+      versions, machines, members, sessions);
+    - items(): one bordered box of rows, or a grid of cards, for the
+      things a page is about (apps). A new kind gets its own *_row macro
+      on the same classes, as app_row does.
+    Menus (the kebab) and the sort and view tools live here too.
+    ------------------------------------------------------------------ -#}
+{% import "components/ui.html.jinja" as ui %}
+
+{#- rows(): the open list; the {% call %} body is row()s. -#}
+{% macro rows() -%}
+<ul class="rows">{{ caller() }}</ul>
+{%- endmacro %}
+
+{#- row(name, sub="", icon_name="", tone="ok", letter="", href="",
+        tags=[], detail="", status=none, status_tone="ok", plain=false)
+    One resource: an icon, its name over a mono sub-line, how it is, and
+    an action at the end.
+    icon_name, tone: a large toned icon; letter: a round letter instead
+                     (people)
+    href:   the name links there
+    tags:   tags after the name ("You", "Runs VMs")
+    detail: a second sub-line (why a version failed)
+    status: status(status, status_tone) in the third column
+    plain:  no icon and no status: a name over a value, and the end
+    Called with {% call(slot) %}, the body is asked for slot "end" (the
+    last column: a post_button, a link, a hint) and, when status is none,
+    for slot "status" (a control in place of the status, such as a
+    select_form). An empty slot leaves its column empty. -#}
+{% macro row(name, sub="", icon_name="", tone="ok", letter="", href="", tags=[], detail="", status=none, status_tone="ok", plain=false) -%}
+<li class="row{% if plain %} row-plain{% endif %}">
+  {% if not plain %}<span class="row-icon">{% if letter %}{{ ui.mark(letter, "lg") }}{% else %}{{ ui.icon(icon_name, "icon-lg tone-" ~ tone) }}{% endif %}</span>{% endif %}
+  <div><p class="row-name">{% if href %}<a href="{{ href }}">{{ name }}</a>{% else %}{{ name }}{% endif %}{% for text in tags %} <span class="tag">{{ text }}</span>{% endfor %}</p><p class="row-sub">{{ sub }}{% if detail %}<br>{{ detail }}{% endif %}</p></div>
+  {% if not plain %}{% if status is not none %}{{ ui.status(status, status_tone) }}{% else %}{% set slot = caller("status") if caller is defined else "" %}{% if slot | trim %}{{ slot }}{% else %}<span></span>{% endif %}{% endif %}{% endif %}
+  {% set end = caller("end") if caller is defined else "" %}{% if end | trim %}<div class="row-end">{{ end }}</div>{% else %}<span></span>{% endif %}
+</li>
+{%- endmacro %}
+
+{#- items(view="list"): the box of rows (list) or the grid of cards around
+    app_row()s; the {% call %} body is the rows. The script's search
+    filters it. -#}
+{% macro items(view="list") -%}
+<ul class="items items-{{ view }}" data-filterable>{{ caller() }}</ul>
+{%- endmacro %}
+
+{#- image_icon(key): an app's image icon; key from web::apps::image_icon.
+    The page must carry images.sprite() with that key, except "image",
+    the neutral box from the main sprite. -#}
+{% macro image_icon(key) -%}
+{% if key == "image" %}<span class="image-icon image-icon-neutral" aria-hidden="true">{{ ui.icon("box") }}</span>
+{%- else %}<svg class="image-icon" viewBox="0 0 32 32" aria-hidden="true"><use href="#img-{{ key }}"/></svg>{% endif %}
+{%- endmacro %}
+
+{#- app_address(app)
+    app.address: its public name, shown as an https link opening in a new
+    tab; else app.internal (<app>.grund.internal:<port>) with a copy
+    button; else nothing. -#}
+{% macro app_address(app) -%}
+{% if app.address %}{{ ui.external("https://" ~ app.address, "https://" ~ app.address) }}
+{%- elif app.internal %}<span class="address"><code class="address-text">{{ app.internal }}</code>{{ ui.copy_button(app.internal, app.internal) }}</span>
+{%- endif %}
+{%- endmacro %}
+
+{#- app_row(org, app)
+    One app in a list (or, inside .items-grid, a card): its image icon,
+    its name over its image, its address and its menu.
+    org: the current organisation (slug, manages)
+    app: web::apps::listing_context (name, image, icon, address, internal) -#}
+{% macro app_row(org, app) -%}
+{% set base = "/" ~ org.slug ~ "/apps/" ~ app.name %}
+<li class="item" data-name="{{ app.name }}" data-image="{{ app.image }}">
+  {{ image_icon(app.icon) }}
+  <div class="item-text">
+    <a class="item-name" href="{{ base }}">{{ app.name }}</a>
+    <p class="item-sub">{{ app.image or "No version yet" }}</p>
+  </div>
+  <div class="item-meta">{{ app_address(app) }}</div>
+  {% call menu("Actions for " ~ app.name) %}
+    {% if app.address %}{{ menu_item("https://" ~ app.address, "external", "Open", external=true) }}{% endif %}
+    {{ menu_item(base, "grid", "Details") }}
+    {{ menu_item(base ~ "#versions", "clock", "Releases") }}
+    {% if org.manages %}
+    {{ menu_item(base ~ "#deploy", "arrow", "Deploy a new version") }}
+    {{ menu_item(base ~ "#copies", "bars", "Scale") }}
+    {{ menu_item(base ~ "#danger", "trash", "Delete…", danger=true) }}
+    {% endif %}
+  {% endcall %}
+</li>
+{%- endmacro %}
+
+{#- menu(label, icon_name="more", open=false)
+    A kebab (or other icon) button opening a list, as a <details>, so it
+    opens without script; the script closes it on Escape or a click
+    elsewhere. label: the button's accessible name; open: shown open (the
+    style guide). The {% call %} body is menu_item()s. -#}
+{% macro menu(label, icon_name="more", open=false) -%}
+<details class="menu"{% if open %} open{% endif %}>
+  <summary class="icon-btn icon-btn-boxed" aria-label="{{ label }}">{{ ui.icon(icon_name, "icon-sm") }}</summary>
+  <ul class="menu-list">{{ caller() }}</ul>
+</details>
+{%- endmacro %}
+
+{#- menu_item(href, icon_name, label, danger=false, external=false,
+              state="")
+    One entry of a menu. A destructive one is danger and ends in "…"
+    when it leads to a confirmation; external opens in a new tab.
+    state: "hover" pins the hover look (the style guide only). -#}
+{% macro menu_item(href, icon_name, label, danger=false, external=false, state="") -%}
+<li><a class="menu-item{% if danger %} menu-item-danger{% endif %}{% if state %} is-{{ state }}{% endif %}" href="{{ href }}"{% if external %} rel="noopener noreferrer" target="_blank"{% endif %}>{{ ui.icon(icon_name, "icon-sm") }}{{ label }}</a></li>
+{%- endmacro %}
+
+{#- list_tools(sorts, sort, list_href, grid_href, view, hidden={})
+    Sort and the grid/list toggle above a list.
+    sorts:     (value, label) pairs; sort: the chosen value
+    list_href, grid_href: the same page in either view; view: the current
+    hidden:    other query values the sort form keeps (q, view)
+    Sort is a GET form; the script submits it on change and hides its
+    button. -#}
+{% macro list_tools(sorts, sort, list_href, grid_href, view, hidden={}) -%}
+<div class="list-tools">
+  <form class="sort" method="get">
+    {% for name, value in hidden | items %}{% if value %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endif %}{% endfor %}
+    <label for="sort">Sort by</label>
+    <span class="select-wrap">
+      <select class="select" id="sort" name="sort" data-autosubmit>
+        {% for option in sorts %}<option value="{{ option.0 }}"{% if option.0 == sort %} selected{% endif %}>{{ option.1 }}</option>{% endfor %}
+      </select>
+      {{ ui.icon("down", "icon-sm select-chevron") }}
+    </span>
+    {{ ui.button("Sort", kind="secondary", size="sm", extra="js-hide") }}
+  </form>
+  <div class="view-toggle" role="group" aria-label="View">
+    <a class="icon-btn{% if view == 'grid' %} is-active{% endif %}" href="{{ grid_href }}" aria-label="Grid view"{% if view == 'grid' %} aria-current="true"{% endif %}>{{ ui.icon("grid", "icon-sm") }}</a>
+    <a class="icon-btn{% if view == 'list' %} is-active{% endif %}" href="{{ list_href }}" aria-label="List view"{% if view == 'list' %} aria-current="true"{% endif %}>{{ ui.icon("list", "icon-sm") }}</a>
+  </div>
+</div>
+{%- endmacro %}

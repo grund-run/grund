@@ -1,141 +1,93 @@
 {% extends "layout-app.html.jinja" %}
 {% set org = viewer.current %}
+{% set base = "/" ~ org.slug ~ "/apps/" ~ app.name %}
 {% block title %}{{ app.name }} · Apps · {{ org.slug }} · grund{% endblock %}
 {% block head %}{% if app.busy %}<meta http-equiv="refresh" content="3">{% endif %}{% endblock %}
 {% block content %}
 {{ ui.page_head(app.name, back=("/" ~ org.slug ~ "/apps", "Apps")) }}
-<p class="status-line" id="app-status">{{ ui.status(app.line, app.tone) }}</p>
-{{ ui.form_ok(notice) }}
-{{ ui.form_error(error) }}
-{% for message in waiting %}{{ ui.form_error(message) }}{% endfor %}
-{% if crowded %}<p class="hint">All copies run on {{ crowded }}. If it goes down, so does {{ app.name }}. Add a machine to spread them.</p>{% endif %}
+{{ ui.status_line(app.line, app.tone, id="app-status") }}
+{{ forms.form_ok(notice) }}
+{{ forms.form_error(error) }}
+{% for message in waiting %}{{ forms.form_error(message) }}{% endfor %}
+{% if crowded %}{{ ui.hint("All copies run on " ~ crowded ~ ". If it goes down, so does " ~ app.name ~ ". Add a machine to spread them.") }}{% endif %}
 
-<section class="section" aria-labelledby="copies">
-  <div class="section-head">
-    <h2 class="section-title" id="copies">Copies<span class="count">{{ replicas | length }}</span></h2>
-  </div>
+{% call ui.section("copies", "Copies", count=replicas | length) %}
   {% if replicas %}
-  <ul class="rows">
+  {% call lists.rows() %}
     {% for replica in replicas %}
-    <li class="row">
-      <span class="row-icon">{{ ui.icon("server", "icon-lg tone-" ~ replica.tone) }}</span>
-      <div>
-        <p class="row-name">Copy {{ replica.slot }} of {{ replica.of }} · v{{ replica.release }}</p>
-        <p class="row-sub">on {{ replica.machine }} · since {{ replica.placed }}</p>
-      </div>
-      {{ ui.status(replica.words, replica.tone) }}
-      <span></span>
-    </li>
+    {{ lists.row("Copy " ~ replica.slot ~ " of " ~ replica.of ~ " · v" ~ replica.release, "on " ~ replica.machine ~ " · since " ~ replica.placed, icon_name="server", tone=replica.tone, status=replica.words, status_tone=replica.tone) }}
     {% endfor %}
-  </ul>
+  {% endcall %}
   {% else %}
-  <p class="empty">No copies run yet.</p>
+  {{ ui.empty_state(text="No copies run yet.") }}
   {% endif %}
   {% if org.manages %}
-  <form class="inline-form" method="post" action="/{{ org.slug }}/apps/{{ app.name }}/scale" novalidate>
-    {{ ui.csrf_field(csrf) }}
-    {{ ui.form_error(scale_error) }}
-    {{ ui.field("copies", "Copies", type="number", value=app.copies ~ "", autocomplete="off") }}
-    <button class="btn btn-secondary" type="submit">Change copies</button>
-  </form>
+  {% call forms.form(base ~ "/scale", csrf, layout="") %}
+    {{ forms.form_error(scale_error) }}
+    {{ forms.field("copies", "Copies", type="number", value=app.copies ~ "", autocomplete="off") }}
+    {{ ui.button("Change copies", kind="secondary") }}
+  {% endcall %}
   {% endif %}
-</section>
+{% endcall %}
 
 {% if org.manages %}
-<section class="section" aria-labelledby="deploy">
-  <div class="section-head">
-    <h2 class="section-title" id="deploy">Deploy a new version</h2>
-  </div>
-  <form class="invite-form" method="post" action="/{{ org.slug }}/apps/{{ app.name }}/deploy" novalidate>
-    {{ ui.csrf_field(csrf) }}
-    {{ ui.form_error(deploy_error) }}
-    {{ ui.field("image", "Image", value=deploy.image, autocomplete="off") }}
-    {{ ui.field("port", "Port", type="number", value=deploy.port, autocomplete="off", required=false) }}
-    {{ ui.field("check", "Ready check", value=deploy.check, autocomplete="off", required=false) }}
-    <div class="field">
-      <label for="env">Settings</label>
-      <textarea class="select" id="env" name="env" rows="4" aria-describedby="env-hint">{{ deploy.env }}</textarea>
-      <p class="hint" id="env-hint">NAME=value, one per line. Shown here and in every version; put passwords in a secret.</p>
-    </div>
-    <button class="btn btn-primary" type="submit">Deploy</button>
-  </form>
-</section>
+{% call ui.section("deploy", "Deploy a new version") %}
+  {% call forms.form(base ~ "/deploy", csrf, layout="row") %}
+    {{ forms.form_error(deploy_error) }}
+    {{ forms.field("image", "Image", value=deploy.image, autocomplete="off") }}
+    {{ forms.field("port", "Port", type="number", value=deploy.port, autocomplete="off", required=false) }}
+    {{ forms.field("check", "Ready check", value=deploy.check, autocomplete="off", required=false) }}
+    {{ forms.textarea_field("env", "Settings", value=deploy.env, hint="NAME=value, one per line. Shown here and in every version; put passwords in a secret.") }}
+    {{ ui.button("Deploy") }}
+  {% endcall %}
+{% endcall %}
 {% endif %}
 
-<section class="section" aria-labelledby="versions">
-  <div class="section-head">
-    <h2 class="section-title" id="versions">Versions<span class="count">{{ releases | length }}</span></h2>
-  </div>
+{% call ui.section("versions", "Versions", count=releases | length) %}
   {% if releases %}
-  <ul class="rows">
+  {% call lists.rows() %}
     {% for release in releases %}
-    <li class="row">
-      <span class="row-icon">{{ ui.icon("grid", "icon-lg tone-" ~ release.tone) }}</span>
-      <div>
-        <p class="row-name">v{{ release.number }} · {{ release.image }}</p>
-        <p class="row-sub">{{ release.at }} · {{ release.by }} {{ release.source }}{% if release.note %} · {{ release.note }}{% endif %} · {{ release.digest[:19] }}{% if release.reason %}<br>{{ release.reason }}{% endif %}</p>
-      </div>
-      {{ ui.status(release.outcome, release.tone) }}
-      {% if org.manages and not release.live %}
-      <form class="row-end" method="post" action="/{{ org.slug }}/apps/{{ app.name }}/releases/{{ release.number }}/rollback">
-        {{ ui.csrf_field(csrf) }}
-        <button class="btn btn-secondary btn-sm" type="submit">Run this again</button>
-      </form>
-      {% else %}<span></span>{% endif %}
-    </li>
+    {% call(slot) lists.row("v" ~ release.number ~ " · " ~ release.image, release.at ~ " · " ~ release.by ~ " " ~ release.source ~ (" · " ~ release.note if release.note else "") ~ " · " ~ release.digest[:19], icon_name="grid", tone=release.tone, detail=release.reason, status=release.outcome, status_tone=release.tone) %}
+      {%- if slot == "end" and org.manages and not release.live %}{{ forms.post_button(base ~ "/releases/" ~ release.number ~ "/rollback", csrf, "Run this again", size="sm") }}{% endif -%}
+    {% endcall %}
     {% endfor %}
-  </ul>
+  {% endcall %}
   {% else %}
-  <p class="empty">No versions yet.</p>
+  {{ ui.empty_state(text="No versions yet.") }}
   {% endif %}
-</section>
+{% endcall %}
 
-<section class="section" aria-labelledby="secrets">
-  <div class="section-head">
-    <h2 class="section-title" id="secrets">Secrets<span class="count">{{ secrets | length }}</span></h2>
-  </div>
+{% call ui.section("secrets", "Secrets", count=secrets | length) %}
   {% if secrets %}
-  <ul class="rows">
+  {% call lists.rows() %}
     {% for secret in secrets %}
-    <li class="row">
-      <span class="row-icon">{{ ui.icon("gear", "icon-lg tone-muted") }}</span>
-      <div><p class="row-name">{{ secret.name }}</p><p class="row-sub">version {{ secret.version }} · {{ secret.at }}</p></div>
-      <span></span><span></span>
-    </li>
+    {{ lists.row(secret.name, "version " ~ secret.version ~ " · " ~ secret.at, icon_name="gear", tone="muted") }}
     {% endfor %}
-  </ul>
+  {% endcall %}
   {% endif %}
   {% if org.manages %}
-  <form class="invite-form" method="post" action="/{{ org.slug }}/apps/{{ app.name }}/secrets" novalidate autocomplete="off">
-    {{ ui.csrf_field(csrf) }}
-    {{ ui.form_error(secret_error) }}
-    {{ ui.field("secret", "Name", autocomplete="off", hint="a–z, digits and '-'. A version names it in grund.toml's [secrets].") }}
-    {{ ui.field("value", "Value", type="password", autocomplete="new-password", hint="Never shown again, and never in a version or a log.") }}
-    <button class="btn btn-secondary" type="submit">Store it</button>
-  </form>
+  {% call forms.form(base ~ "/secrets", csrf, layout="row", autocomplete="off") %}
+    {{ forms.form_error(secret_error) }}
+    {{ forms.field("secret", "Name", autocomplete="off", hint="a–z, digits and '-'. A version names it in grund.toml's [secrets].") }}
+    {{ forms.field("value", "Value", type="password", autocomplete="new-password", hint="Never shown again, and never in a version or a log.") }}
+    {{ ui.button("Store it", kind="secondary") }}
+  {% endcall %}
   {% endif %}
-</section>
+{% endcall %}
 
 {% if file %}
-<section class="section" aria-labelledby="file">
-  <div class="section-head">
-    <h2 class="section-title" id="file">As a file</h2>
-  </div>
+{% call ui.section("file", "As a file") %}
   <p>The latest version as <code>grund.toml</code>, for your repository. Deploying the file through the API makes the same app.</p>
-  <pre class="mono" id="grund-toml">{{ file }}</pre>
-</section>
+  {{ ui.code_block(file, id="grund-toml") }}
+{% endcall %}
 {% endif %}
 
 {% if org.manages %}
-<section class="section" aria-labelledby="danger">
-  <div class="section-head">
-    <h2 class="section-title" id="danger">Delete</h2>
-  </div>
-  <form method="post" action="/{{ org.slug }}/apps/{{ app.name }}/delete">
-    {{ ui.csrf_field(csrf) }}
+{% call ui.section("danger", "Delete") %}
+  {% call forms.form(base ~ "/delete", csrf, layout="") %}
     <p>Its copies stop and its name is free again. Its versions stay in the history.</p>
-    <button class="btn btn-danger" type="submit">Delete {{ app.name }}</button>
-  </form>
-</section>
+    {{ ui.button("Delete " ~ app.name, kind="danger") }}
+  {% endcall %}
+{% endcall %}
 {% endif %}
 {% endblock %}
