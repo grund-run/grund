@@ -1006,3 +1006,49 @@ async fn an_app_is_served_through_the_edge_while_grund_is_down_and_keeps_its_cop
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn an_edge_killed_while_the_ca_validates_its_name_still_gets_the_certificate_after_it_restarts()
+-> anyhow::Result<()> {
+    let Some(mut stack) = a_stack().await? else {
+        return Ok(());
+    };
+    let owner = stack.given.a_signed_in_account().await?;
+    let org = owner.username.clone();
+    let a = stack.a_machine(&org, "box-a").await?;
+    stack.deploy(&org, "ordered", "1", 1).await?;
+    let running = stack
+        .until(
+            &org,
+            "ordered",
+            Duration::from_secs(40),
+            "a ready copy",
+            |app| running_replicas(app).len() == 1,
+        )
+        .await?;
+    write_remote_copies(&[("box-a", &a)], "ordered", &running_replicas(&running));
+    stack.start_edge()?;
+    let name = stack.name_of(&org, "ordered");
+    let started = Instant::now();
+    while !stack
+        .edge_log()
+        .contains("edge: answering a TLS-ALPN-01 challenge")
+    {
+        anyhow::ensure!(
+            started.elapsed() < Duration::from_secs(60),
+            "the CA never validated on the edge:\n{}",
+            stack.edge_log()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    stack.edge = None;
+    let killed = Instant::now();
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    stack.start_edge()?;
+    stack.served(&name, Duration::from_secs(300)).await?;
+    eprintln!(
+        "an edge killed during validation served {name} {:?} after the kill",
+        killed.elapsed()
+    );
+    Ok(())
+}

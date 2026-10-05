@@ -870,3 +870,85 @@ async fn a_relay_beside_grund_serves_the_instances_own_certificate_under_both_na
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn a_relay_that_was_down_past_its_renewal_serves_its_stored_certificate_and_renews_when_it_is_back()
+-> anyhow::Result<()> {
+    if external_target().is_some() {
+        return Ok(());
+    }
+    let Some(pebble) = Pebble::start(free_port()).await? else {
+        return Ok(());
+    };
+    let host = a_relay_host();
+    let Some(Instance { when, .. }) = an_instance_ordering_for(
+        &pebble,
+        &[(&host, pebble.tls_port)],
+        &[("GRUND_ACME_PROFILE", "short")],
+    )
+    .await?
+    else {
+        return Ok(());
+    };
+    let token = a_token_for(&when, &host)?;
+    let dir = a_relay_dir();
+    let relay = a_relay_process(&when, &dir, Some(&token), pebble.tls_port)?;
+    let roots = pebble.roots().await?;
+    let first = eventually(
+        "the relay serving a certificate from its grund",
+        Duration::from_secs(60),
+        || served_leaf(&host, pebble.tls_port, roots.clone()),
+    )
+    .await
+    .map_err(|error| error.context(relay_log(&dir)))?;
+
+    drop(relay);
+    tokio::time::sleep(Duration::from_secs(SHORT_PROFILE_SECONDS + 5)).await;
+    let back = Instant::now();
+    let relay = a_relay_process(&when, &dir, None, pebble.tls_port)?;
+    let started = eventually(
+        "the relay listening again",
+        Duration::from_secs(20),
+        || async {
+            tokio::net::TcpStream::connect(("127.0.0.1", pebble.tls_port)).await?;
+            Ok(())
+        },
+    )
+    .await;
+    anyhow::ensure!(
+        started.is_ok(),
+        "the relay did not start:\n{}",
+        relay_log(&dir)
+    );
+    anyhow::ensure!(
+        relay_log(&dir).contains("serving the certificate kept on disk"),
+        "the relay did not serve its stored certificate first:\n{}",
+        relay_log(&dir)
+    );
+    let renewed = eventually(
+        "a renewed certificate after the relay came back",
+        Duration::from_secs(SHORT_PROFILE_SECONDS * 3),
+        || async {
+            let now = served_leaf(&host, pebble.tls_port, roots.clone()).await?;
+            anyhow::ensure!(now != first, "still the first certificate");
+            Ok(now)
+        },
+    )
+    .await
+    .map_err(|error| {
+        error.context(format!(
+            "relay:\n{}\n--- grund:\n{}",
+            relay_log(&dir),
+            when.testcase.fixture.log()
+        ))
+    })?;
+    anyhow::ensure!(renewed != first);
+    eprintln!(
+        "a relay down for {} s past its certificate's end renewed {:?} after it was back",
+        SHORT_PROFILE_SECONDS + 5,
+        back.elapsed()
+    );
+    drop(relay);
+    let _ = std::fs::remove_dir_all(dir);
+    Ok(())
+}
