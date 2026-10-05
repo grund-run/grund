@@ -2558,3 +2558,141 @@ async fn a_revocation_made_while_a_member_is_cut_off_reaches_it_by_gossip_when_i
     );
     Ok(())
 }
+
+const RELAY_BACK_WITHIN: Duration = Duration::from_secs(3);
+
+#[tokio::test]
+async fn a_relayed_pair_is_back_within_seconds_of_its_relay_answering_again() -> anyhow::Result<()>
+{
+    use crate::accepttest::fixtures::netlab::RELAY_1;
+    let Some(lab) = Lab::start().await? else {
+        return Ok(());
+    };
+    lab.spawn_relay("rl1", RELAY_1, RELAY_TOKEN)?;
+    let relay = format!("https://{RELAY_1}");
+    let settings = relays_elsewhere(&format!("lab-1={relay}"));
+    let Some(net) = a_lab_with(lab, &as_env(&settings)).await? else {
+        return Ok(());
+    };
+    let a = net.join("a", "a").await?;
+    let b = net.join("b", "b").await?;
+    anyhow::ensure!(
+        net.reaches_by_name(&a, &b, Duration::from_secs(30))
+            .await
+            .is_some(),
+        "a never reached b: {}",
+        a.status()
+    );
+    net.lab.cut_direct_udp().await?;
+    let relayed = eventually(Duration::from_secs(30), || async {
+        net.pings(&a, &b.address().to_string()).await && a.path_to(&b).starts_with("relay")
+    })
+    .await;
+    anyhow::ensure!(relayed.is_some(), "never over the relay: {}", a.status());
+
+    anyhow::ensure!(net.lab.stop("relay-rl1.log"), "the relay was not running");
+    let dark = eventually(Duration::from_secs(60), || async {
+        !net.pings(&a, &b.address().to_string()).await
+    })
+    .await;
+    anyhow::ensure!(
+        dark.is_some(),
+        "a reached b with no relay and no direct UDP"
+    );
+    tokio::time::sleep(Duration::from_secs(15)).await;
+
+    net.lab.spawn_relay("rl1", RELAY_1, RELAY_TOKEN)?;
+    let ca = net.lab.ca.to_string_lossy().into_owned();
+    let ping = format!("{relay}/ping");
+    let answering = eventually(Duration::from_secs(30), || async {
+        net.lab
+            .succeeds("a", &["curl", "-fsS", "-m", "1", "--cacert", &ca, &ping])
+            .await
+    })
+    .await;
+    anyhow::ensure!(answering.is_some(), "the relay never answered again");
+    let back = eventually(Duration::from_secs(60), || async {
+        net.pings(&a, &b.address().to_string()).await
+    })
+    .await;
+    anyhow::ensure!(
+        back.is_some(),
+        "a never reached b over the restarted relay: {}\nb: {}",
+        a.status(),
+        b.status()
+    );
+    let revivals = a.status()["relay_revivals"].as_u64().unwrap_or_default()
+        + b.status()["relay_revivals"].as_u64().unwrap_or_default();
+    eprintln!(
+        "relayed pair dark {dark:?} after the relay stopped; back {back:?} after the relay answered again; revivals {revivals}"
+    );
+    anyhow::ensure!(
+        back.is_some_and(|t| t <= RELAY_BACK_WITHIN),
+        "back only {back:?} after the relay answered, over {RELAY_BACK_WITHIN:?}"
+    );
+    Ok(())
+}
+
+const MEET_WHILE_CUT_WITHIN: Duration = Duration::from_secs(10);
+
+#[tokio::test]
+async fn a_new_member_reaches_a_member_cut_off_from_its_relay_at_its_listed_direct_addresses()
+-> anyhow::Result<()> {
+    use crate::accepttest::fixtures::netlab::RELAY_1;
+    let Some(lab) = Lab::start().await? else {
+        return Ok(());
+    };
+    lab.spawn_relay("rl1", RELAY_1, RELAY_TOKEN)?;
+    let relay = format!("https://{RELAY_1}");
+    let settings = relays_elsewhere(&format!("lab-1={relay}"));
+    let Some(net) = a_lab_with(lab, &as_env(&settings)).await? else {
+        return Ok(());
+    };
+    let a = net.join("a", "a").await?;
+    let b = net.join("b", "b").await?;
+    anyhow::ensure!(
+        net.reaches_by_name(&a, &b, Duration::from_secs(30))
+            .await
+            .is_some(),
+        "a never reached b: {}",
+        a.status()
+    );
+    let listed = eventually(Duration::from_secs(20), || async {
+        a.status()["mesh"]["epoch"].as_u64().is_some()
+            && std::fs::read_to_string(a.dir.join("network.json"))
+                .map(|_| true)
+                .unwrap_or(false)
+    })
+    .await;
+    anyhow::ensure!(listed.is_some());
+
+    net.cut("b", "norelay", &format!("ip daddr {RELAY_1} drop"))
+        .await?;
+    let lost = eventually(Duration::from_secs(30), || async {
+        b.status()["relays"]
+            .as_array()
+            .is_some_and(|r| r.iter().all(|r| r["connected"] != true))
+    })
+    .await;
+    anyhow::ensure!(lost.is_some(), "b still reaches its relay: {}", b.status());
+
+    let c = net.join("c", "c").await?;
+    let met = net.reaches_by_name(&c, &b, MEET_WHILE_CUT_WITHIN).await;
+    eprintln!(
+        "b cut off from its relay after {lost:?}; c met b while it was cut off {met:?}; b greeted {}",
+        b.counter("greetings_sent")
+    );
+    anyhow::ensure!(
+        met.is_some(),
+        "c did not reach b within {MEET_WHILE_CUT_WITHIN:?} while b was cut off from its relay: c {}\nb {}",
+        c.status(),
+        b.status()
+    );
+    anyhow::ensure!(
+        b.status()["relays"]
+            .as_array()
+            .is_some_and(|r| r.iter().all(|r| r["connected"] != true)),
+        "b reached its relay again during the test"
+    );
+    Ok(())
+}

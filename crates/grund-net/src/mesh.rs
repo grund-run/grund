@@ -24,7 +24,8 @@
 //!
 //! A member is dialled through the relay the list says it is homed on
 //! ([`dial_through`]), or through every relay when there is no hint or the
-//! last dial through it failed.
+//! last dial through it failed, and at the direct addresses the list gives
+//! for it, so two members meet with no relay answering.
 //!
 //! Members also hand each other grund's newest signed list over their
 //! connections ([`crate::gossip`], [`Mesh::gossip`]); the mesh's owner
@@ -232,6 +233,7 @@ struct Counters {
     probes_failed: AtomicU64,
     probes_answered: AtomicU64,
     probe_bytes: AtomicU64,
+    greetings_sent: AtomicU64,
 }
 
 /// What a mesh is doing, for status output and tests.
@@ -456,6 +458,86 @@ impl Mesh {
         {
             tracing::info!(%address, "mesh: replica detached");
         }
+    }
+
+    /// Whether a peer the mesh talks to depends on a relay now: its newest
+    /// connection runs over one or has no path, or it is being dialled.
+    pub fn waiting_on_relay(&self) -> bool {
+        let mut peers = self.inner.peers.lock().expect("peers lock");
+        peers.values_mut().any(|peer| {
+            peer.connections.retain(|c| c.close_reason().is_none());
+            peer.dialing
+                || peer
+                    .connections
+                    .last()
+                    .is_some_and(|c| selected_is_relay(c) != Some(false))
+        })
+    }
+
+    /// Opens a short connection on [`crate::PROBE_ALPN`] to each member this
+    /// machine has no live connection to, at the direct addresses the list
+    /// gives for it and through no relay. With no relay to arrange a punch, a
+    /// home router drops a peer's first packets until this machine has sent
+    /// some to the peer; this sends them, so a member dialling it gets in.
+    /// Returns how many it greeted.
+    pub fn greet_unconnected(&self) -> usize {
+        let Some(endpoint) = self.endpoint() else {
+            return 0;
+        };
+        let own = self.inner.own;
+        let members: Vec<(EndpointId, Vec<std::net::SocketAddr>)> = {
+            let view = self.inner.view.read().expect("view lock");
+            view.as_ref()
+                .map(|v| {
+                    v.list
+                        .members
+                        .iter()
+                        .filter(|m| !m.direct_addrs.is_empty())
+                        .filter_map(|m| {
+                            let id = EndpointId::from_str(&m.endpoint_id).ok()?;
+                            (id != own).then(|| (id, m.direct_addrs.clone()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let mut greeted = 0;
+        for (id, addrs) in members {
+            {
+                let mut peers = self.inner.peers.lock().expect("peers lock");
+                let peer = peers.entry(id).or_default();
+                peer.connections.retain(|c| c.close_reason().is_none());
+                if peer.probing || !peer.connections.is_empty() {
+                    continue;
+                }
+                peer.probing = true;
+            }
+            greeted += 1;
+            self.inner.counters.greetings_sent.fetch_add(1, Relaxed);
+            tokio::spawn(self.clone().probe_at(endpoint.clone(), id, Some(addrs)));
+        }
+        greeted
+    }
+
+    /// The epoch of the list in force, once there is one.
+    pub fn epoch(&self) -> Option<u64> {
+        self.inner
+            .view
+            .read()
+            .expect("view lock")
+            .as_ref()
+            .map(|v| v.list.epoch)
+    }
+
+    /// Whether any peer has a live connection on a direct path, which a new
+    /// endpoint would cut.
+    pub fn has_direct_path(&self) -> bool {
+        let peers = self.inner.peers.lock().expect("peers lock");
+        peers.values().any(|peer| {
+            peer.connections
+                .iter()
+                .any(|c| c.close_reason().is_none() && selected_is_relay(c) == Some(false))
+        })
     }
 
     /// The addresses of the replicas the mesh carries.
@@ -683,6 +765,7 @@ impl Mesh {
             ("probes_failed", &c.probes_failed),
             ("probes_answered", &c.probes_answered),
             ("probe_bytes", &c.probe_bytes),
+            ("greetings_sent", &c.greetings_sent),
         ]
         .into_iter()
         .map(|(k, v)| (k, v.load(Relaxed)))
@@ -880,10 +963,28 @@ impl Mesh {
     }
 
     async fn probe(self, endpoint: Endpoint, target: EndpointId) {
+        self.probe_at(endpoint, target, None).await;
+    }
+
+    async fn probe_at(
+        self,
+        endpoint: Endpoint,
+        target: EndpointId,
+        direct: Option<Vec<std::net::SocketAddr>>,
+    ) {
         let c = &self.inner.counters;
         let mut addr = EndpointAddr::new(target);
-        for url in self.dial_relays(target) {
-            addr = addr.with_relay_url(url);
+        match direct {
+            Some(direct) => {
+                for a in direct {
+                    addr = addr.with_ip_addr(a);
+                }
+            }
+            None => {
+                for url in self.dial_relays(target) {
+                    addr = addr.with_relay_url(url);
+                }
+            }
         }
         c.probes_sent.fetch_add(1, Relaxed);
         match tokio::time::timeout(DIAL_TIMEOUT, endpoint.connect(addr, crate::PROBE_ALPN)).await {
@@ -1012,6 +1113,17 @@ impl Mesh {
 
     async fn dial(self, target: EndpointId) {
         let mut addr = EndpointAddr::new(target);
+        let listed: Vec<std::net::SocketAddr> = self
+            .inner
+            .view
+            .read()
+            .expect("view lock")
+            .as_ref()
+            .and_then(|v| v.list.member_by_id(&target).map(|m| m.direct_addrs.clone()))
+            .unwrap_or_default();
+        for direct in listed {
+            addr = addr.with_ip_addr(direct);
+        }
         let through = self.dial_relays(target);
         let timeout =
             if through.len() == 1 && self.inner.relays.read().expect("relays lock").len() > 1 {

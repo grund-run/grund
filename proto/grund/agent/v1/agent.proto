@@ -69,6 +69,10 @@ message GetMembershipRequest {
   // empty when it has none. grund puts it in the list, so members dial the
   // machine through that one relay rather than all of them.
   string home_relay_url = 3;
+  // Where this machine is reached directly, as IP:port: its bound uplink
+  // addresses and those address discovery found. grund puts the fresh ones
+  // in the list, so a member reaches it without a relay.
+  repeated string direct_addrs = 4;
 }
 
 message GetMembershipResponse {

@@ -275,6 +275,11 @@ impl AgentService for AgentApi {
                 network_id,
                 request.since_epoch,
                 request.home_relay_url,
+                &request
+                    .direct_addrs
+                    .iter()
+                    .map(|a| a.to_string())
+                    .collect::<Vec<_>>(),
             )
             .await
             .map_err(internal)?;

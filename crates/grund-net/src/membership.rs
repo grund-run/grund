@@ -19,7 +19,11 @@
 //! ([`replica_address`]) and the ports its app declares, which are all a
 //! peer may reach on it ([`crate::filter`]).
 
-use std::{collections::HashSet, net::Ipv6Addr, str::FromStr};
+use std::{
+    collections::HashSet,
+    net::{Ipv6Addr, SocketAddr},
+    str::FromStr,
+};
 
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
@@ -92,7 +96,17 @@ pub struct Member {
     /// as they did.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub apps: Vec<AppReplica>,
+    /// Where the member is reached directly: its bound uplink addresses and
+    /// those address discovery found, as its agent reported them recently.
+    /// A peer dials them beside the relay, so it reaches the member while
+    /// no relay answers. Every member of the network sees them, as iroh
+    /// already hands them to a peer on connect. Absent in older lists.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub direct_addrs: Vec<SocketAddr>,
 }
+
+/// The most direct addresses a member may list.
+pub const MAX_DIRECT_ADDRS: usize = 8;
 
 /// One replica of an app, as the list names it on its member.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -279,6 +293,9 @@ impl MembershipList {
             if !keys.insert(id) {
                 return Err(MembershipError::DuplicateEndpointId(m.endpoint_id.clone()));
             }
+            if m.direct_addrs.len() > MAX_DIRECT_ADDRS {
+                return Err(MembershipError::BadPorts(m.machine_id.clone()));
+            }
             if m.ports.len() > MAX_PORTS || m.ports.iter().any(|p| p.port == 0) {
                 return Err(MembershipError::BadPorts(m.machine_id.clone()));
             }
@@ -436,6 +453,7 @@ mod tests {
                     ports: vec![],
                     relay_url: None,
                     apps: Vec::new(),
+                    direct_addrs: Vec::new(),
                 },
                 Member {
                     machine_id: "m_b".into(),
@@ -445,6 +463,7 @@ mod tests {
                     ports: vec![],
                     relay_url: None,
                     apps: Vec::new(),
+                    direct_addrs: Vec::new(),
                 },
             ],
         }
@@ -525,6 +544,7 @@ mod tests {
                 ports: vec![],
                 relay_url: None,
                 apps: Vec::new(),
+                direct_addrs: Vec::new(),
             }],
         };
         assert_eq!(

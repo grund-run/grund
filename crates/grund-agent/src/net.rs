@@ -135,6 +135,21 @@ pub const STATUS_FILE: &str = "network.json";
 /// retrying it (it took about 25 s in the lab). Peers still dial through it.
 pub const RELAY_BENCH: Duration = Duration::from_secs(30);
 
+/// How often the agent asks a home relay it lost whether it answers again.
+pub const RELAY_REVIVE_POLL: Duration = Duration::from_millis(250);
+
+/// How long the home relay must have been unreachable before the agent
+/// checks it itself: iroh's own first retries come sooner.
+pub const RELAY_REVIVE_AFTER: Duration = Duration::from_secs(1);
+
+/// How often a member whose home relay is lost greets the members it has no
+/// connection to, at their direct addresses ([`Mesh::greet_unconnected`]),
+/// beside once for every new list (a member may have joined).
+pub const GREET_EVERY: Duration = Duration::from_secs(10);
+
+/// The least time between two rebinds for a relay that answered again.
+pub const RELAY_REVIVE_COOLDOWN: Duration = Duration::from_secs(5);
+
 /// How often the agent looks at the uplink for a changed address or route.
 pub const UPLINK_POLL: Duration = Duration::from_secs(2);
 
@@ -178,6 +193,7 @@ struct Counters {
     rebinds: AtomicU64,
     network_changes: AtomicU64,
     relay_failovers: AtomicU64,
+    relay_revivals: AtomicU64,
     host_resolver: std::sync::Mutex<crate::resolved::HostResolver>,
 }
 
@@ -187,6 +203,7 @@ impl Default for Counters {
             rebinds: AtomicU64::new(0),
             network_changes: AtomicU64::new(0),
             relay_failovers: AtomicU64::new(0),
+            relay_revivals: AtomicU64::new(0),
             host_resolver: std::sync::Mutex::new(crate::resolved::HostResolver::Pending),
         }
     }
@@ -260,6 +277,7 @@ pub(crate) async fn run(
         ..NetConfig::default()
     };
     let counters = Arc::new(Counters::default());
+    let revive = Arc::new(tokio::sync::Notify::new());
     let tx = options.lists.unwrap_or_else(|| watch::channel(None).0);
     let rx = tx.subscribe();
     let lists = tx.subscribe();
@@ -277,7 +295,8 @@ pub(crate) async fn run(
         result = mesh.run(rx) => result,
         result = follow(&link, &held, &mesh) => result,
         () = hear(&held, incoming_rx) => Ok(()),
-        result = carry(&mesh, key, &config, relays_rx.clone(), &counters, extra.as_ref()) => result,
+        result = carry(&mesh, key, &config, relays_rx.clone(), &counters, extra.as_ref(), &revive) => result,
+        () = revive_relay(&mesh, &revive) => Ok(()),
         () = track_relays(&mesh, relays_rx) => Ok(()),
         () = resolve_or_warn(resolve(&mesh, lists, own_id, &counters)) => Ok(()),
         () = report(&mesh, &counters, &held, &data_dir) => Ok(()),
@@ -326,6 +345,7 @@ async fn carry(
     relays: watch::Receiver<Vec<RelayUrl>>,
     counters: &Counters,
     extra: Option<&ExtraProtocol>,
+    revive: &tokio::sync::Notify,
 ) -> anyhow::Result<()> {
     let mut bound: Option<(Vec<SocketAddr>, iroh::protocol::Router)> = None;
     let mut last = endpoint::Uplinks::default();
@@ -334,7 +354,10 @@ async fn carry(
     let mut tick = tokio::time::interval(UPLINK_POLL);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
-        tick.tick().await;
+        let revived = tokio::select! {
+            _ = tick.tick() => false,
+            () = revive.notified() => true,
+        };
         if let Some((_, router)) = &bound {
             let endpoint = router.endpoint();
             let wanted = relays.borrow().clone();
@@ -366,7 +389,7 @@ async fn carry(
         }
         let now = endpoint::uplinks().await;
         match &bound {
-            Some((addrs, router)) if !needs_rebind(addrs, &now.addrs) => {
+            Some((addrs, router)) if !revived && !needs_rebind(addrs, &now.addrs) => {
                 if now != last {
                     tracing::info!(uplink = ?now.default_route, addrs = ?now.addrs, "private network: the network changed; telling iroh");
                     router.endpoint().network_change().await;
@@ -409,8 +432,13 @@ async fn carry(
                 }
                 let router = router.spawn();
                 if let Some((old, old_router)) = bound.replace((addrs.clone(), router)) {
-                    tracing::info!(from = ?old, to = ?addrs, "private network: the uplink's address changed; rebound");
-                    counters.rebinds.fetch_add(1, Relaxed);
+                    if revived {
+                        tracing::info!(from = ?old, to = ?addrs, "private network: the home relay answers again; rebound so iroh dials it now");
+                        counters.relay_revivals.fetch_add(1, Relaxed);
+                    } else {
+                        tracing::info!(from = ?old, to = ?addrs, "private network: the uplink's address changed; rebound");
+                        counters.rebinds.fetch_add(1, Relaxed);
+                    }
                     let _ = old_router.shutdown().await;
                 } else {
                     tracing::info!(bound = ?addrs, "private network: bound to the uplink");
@@ -500,6 +528,72 @@ async fn resolve(
         .context("the stub resolver stopped")
 }
 
+async fn revive_relay(mesh: &Mesh, revive: &tokio::sync::Notify) {
+    let Ok(http) = crate::join::http_client() else {
+        return;
+    };
+    let mut lost_since: Option<tokio::time::Instant> = None;
+    let mut last_revival: Option<tokio::time::Instant> = None;
+    let mut last_greeting: Option<tokio::time::Instant> = None;
+    let mut greeted_epoch: Option<u64> = None;
+    loop {
+        tokio::time::sleep(RELAY_REVIVE_POLL).await;
+        let Some(endpoint) = mesh.endpoint() else {
+            lost_since = None;
+            continue;
+        };
+        let Some(home) = unanswering_home(&endpoint) else {
+            lost_since = None;
+            last_greeting = None;
+            continue;
+        };
+        let since = *lost_since.get_or_insert_with(tokio::time::Instant::now);
+        let epoch = mesh.epoch();
+        if since.elapsed() >= RELAY_REVIVE_AFTER
+            && (last_greeting.is_none_or(|at| at.elapsed() >= GREET_EVERY)
+                || epoch != greeted_epoch)
+        {
+            last_greeting = Some(tokio::time::Instant::now());
+            greeted_epoch = epoch;
+            let greeted = mesh.greet_unconnected();
+            if greeted > 0 {
+                tracing::info!(
+                    greeted,
+                    "private network: no relay; greeting unconnected members at their direct addresses"
+                );
+            }
+        }
+        if since.elapsed() < RELAY_REVIVE_AFTER
+            || last_revival.is_some_and(|at| at.elapsed() < RELAY_REVIVE_COOLDOWN)
+            || (mesh.has_direct_path() && !mesh.waiting_on_relay())
+        {
+            continue;
+        }
+        let ping = format!("{}/ping", home.as_str().trim_end_matches('/'));
+        let answered = http
+            .get(&ping)
+            .timeout(Duration::from_secs(1))
+            .send()
+            .await
+            .is_ok_and(|r| r.status().is_success());
+        if answered {
+            tracing::info!(relay = %home, "private network: the home relay answers again; rebinding rather than waiting out iroh's backoff");
+            last_revival = Some(tokio::time::Instant::now());
+            lost_since = None;
+            revive.notify_one();
+        }
+    }
+}
+
+fn direct_addrs(mesh: &Mesh) -> Vec<String> {
+    let Some(endpoint) = mesh.endpoint() else {
+        return Vec::new();
+    };
+    let mut addrs: Vec<SocketAddr> = endpoint.addr().ip_addrs().copied().collect();
+    addrs.sort();
+    addrs.iter().map(ToString::to_string).collect()
+}
+
 fn unanswering_home(endpoint: &iroh::Endpoint) -> Option<RelayUrl> {
     use iroh::Watcher;
     let homes = endpoint.home_relay_status().get();
@@ -562,6 +656,7 @@ async fn report(mesh: &Mesh, counters: &Counters, lists: &Lists, data_dir: &std:
             "rebinds": counters.rebinds.load(Relaxed),
             "network_changes": counters.network_changes.load(Relaxed),
             "relay_failovers": counters.relay_failovers.load(Relaxed),
+            "relay_revivals": counters.relay_revivals.load(Relaxed),
             "lists_from_members": lists.from_members(),
             "replicas": mesh.egress_counters().into_iter().map(|(address, egress)| {
                 serde_json::json!({ "address": address, "egress": egress })
@@ -712,10 +807,12 @@ async fn follow(link: &Link, lists: &Lists, mesh: &Mesh) -> anyhow::Result<()> {
     let mut failures = 0u32;
     loop {
         let reported = home_relay(mesh);
+        let reported_addrs = direct_addrs(mesh);
         let request = GetMembershipRequest {
             network_id: lists.network.network_id.clone(),
             since_epoch: lists.epoch(),
             home_relay_url: reported.clone(),
+            direct_addrs: reported_addrs.clone(),
             ..Default::default()
         };
         let call = link.call::<_, GetMembershipResponse>("GetMembership", &request);
@@ -727,6 +824,11 @@ async fn follow(link: &Link, lists: &Lists, mesh: &Mesh) -> anyhow::Result<()> {
                     let now = home_relay(mesh);
                     if !now.is_empty() && now != reported {
                         tracing::info!(home = %now, "private network: homed on another relay; telling grund now");
+                        break None;
+                    }
+                    let addrs = direct_addrs(mesh);
+                    if !addrs.is_empty() && addrs != reported_addrs {
+                        tracing::info!(?addrs, "private network: reached at other addresses; telling grund now");
                         break None;
                     }
                 }
@@ -815,6 +917,7 @@ mod tests {
                 ports: vec![],
                 relay_url: None,
                 apps: Vec::new(),
+                direct_addrs: Vec::new(),
             }],
         }
     }

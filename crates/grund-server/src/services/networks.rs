@@ -36,7 +36,7 @@ use std::{
 use chrono::{DateTime, Duration, Utc};
 use grund_domain::machine::{KeyPurpose, prefix};
 use grund_net::membership::{
-    AppReplica, Member, MembershipList, Port, Relay, Transport, replica_address,
+    AppReplica, MAX_DIRECT_ADDRS, Member, MembershipList, Port, Relay, Transport, replica_address,
 };
 use grund_store::networks::{self, NetworkRow, SlotRow};
 use uuid::Uuid;
@@ -50,6 +50,15 @@ use crate::{
 /// How long a freed slot stays held before another machine may get it
 /// (network.md §6.1).
 pub const SLOT_HOLD: Duration = Duration::hours(24);
+
+/// How long a member's reported direct addresses stay in the list without a
+/// fresh report: a member that stops asking (gone, or cut off) drops out of
+/// its peers' dials once they age past this.
+pub const DIRECT_ADDRS_FRESH: Duration = Duration::minutes(5);
+
+/// How often a member's unchanged direct addresses are written again, to
+/// keep them fresh.
+pub const DIRECT_ADDRS_REFRESH: Duration = Duration::minutes(1);
 
 /// The longest a membership request waits for a newer epoch. Below the
 /// request timeout (15 s by default), so the wait ends before the server
@@ -235,6 +244,7 @@ impl Networks {
         network_id: Option<Uuid>,
         since_epoch: u64,
         home_relay_url: &str,
+        direct_addrs: &[String],
     ) -> anyhow::Result<MembershipOutcome> {
         let Some(organisation_id) = caller.organisation_id else {
             return Ok(MembershipOutcome::NotFound);
@@ -245,6 +255,14 @@ impl Networks {
         } else if self.relays().iter().any(|r| r.url == hint) {
             networks::set_home_relay(&self.state.pool, caller.machine_id, Some(hint)).await?;
         }
+        networks::set_direct_addrs(
+            &self.state.pool,
+            caller.machine_id,
+            &usable_direct_addrs(direct_addrs),
+            Utc::now(),
+            DIRECT_ADDRS_REFRESH,
+        )
+        .await?;
         let deadline = tokio::time::Instant::now() + LONG_POLL;
         loop {
             let network = self.reconcile(organisation_id).await?;
@@ -267,6 +285,37 @@ impl Networks {
     }
 }
 
+fn usable_direct_addrs(reported: &[String]) -> Vec<String> {
+    let mut addrs: Vec<std::net::SocketAddr> = reported
+        .iter()
+        .filter_map(|a| a.parse::<std::net::SocketAddr>().ok())
+        .filter(|a| {
+            let ip = a.ip();
+            a.port() != 0
+                && !ip.is_loopback()
+                && !ip.is_unspecified()
+                && !ip.is_multicast()
+                && !matches!(ip, std::net::IpAddr::V4(v4) if v4.is_link_local())
+                && !matches!(ip, std::net::IpAddr::V6(v6) if (v6.segments()[0] & 0xffc0) == 0xfe80)
+        })
+        .collect();
+    addrs.sort();
+    addrs.dedup();
+    addrs.truncate(MAX_DIRECT_ADDRS);
+    addrs.iter().map(ToString::to_string).collect()
+}
+
+fn fresh_direct_addrs(slot: &SlotRow, now: DateTime<Utc>) -> Vec<std::net::SocketAddr> {
+    match slot.direct_addrs_at {
+        Some(at) if now - at <= DIRECT_ADDRS_FRESH => slot
+            .direct_addrs
+            .iter()
+            .filter_map(|a| a.parse().ok())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 fn members(
     slots: &[SlotRow],
     names: &HashMap<Uuid, (&str, Vec<Port>)>,
@@ -285,6 +334,7 @@ fn members(
                 ports: entry.map(|(_, p)| p.clone()).unwrap_or_default(),
                 relay_url: s.home_relay_url.clone(),
                 apps: apps.get(&s.machine_id).cloned().unwrap_or_default(),
+                direct_addrs: fresh_direct_addrs(s, Utc::now()),
             }
         })
         .collect()
@@ -468,7 +518,52 @@ mod tests {
             endpoint_id: key.into(),
             freed_at: freed,
             home_relay_url: None,
+            direct_addrs: Vec::new(),
+            direct_addrs_at: None,
         }
+    }
+
+    #[test]
+    fn reported_direct_addresses_keep_only_what_a_peer_could_dial() {
+        let reported: Vec<String> = [
+            "198.51.100.11:41641",
+            "10.1.0.2:41641",
+            "127.0.0.1:41641",
+            "0.0.0.0:41641",
+            "169.254.1.2:41641",
+            "[fe80::1]:41641",
+            "[ff02::1]:41641",
+            "198.51.100.11:0",
+            "not an address",
+            "198.51.100.11:41641",
+            "[2001:db8::7]:41641",
+        ]
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+        assert_eq!(
+            usable_direct_addrs(&reported),
+            [
+                "10.1.0.2:41641",
+                "198.51.100.11:41641",
+                "[2001:db8::7]:41641"
+            ]
+        );
+        let many: Vec<String> = (1..=20).map(|n| format!("198.51.100.{n}:1")).collect();
+        assert_eq!(usable_direct_addrs(&many).len(), MAX_DIRECT_ADDRS);
+    }
+
+    #[test]
+    fn direct_addresses_reported_long_ago_leave_the_list() {
+        let now = Utc::now();
+        let mut row = slot(1, Uuid::now_v7(), "k", None);
+        row.direct_addrs = vec!["198.51.100.11:41641".into()];
+        row.direct_addrs_at = Some(now - Duration::minutes(4));
+        assert_eq!(fresh_direct_addrs(&row, now).len(), 1);
+        row.direct_addrs_at = Some(now - DIRECT_ADDRS_FRESH - Duration::seconds(1));
+        assert!(fresh_direct_addrs(&row, now).is_empty());
+        row.direct_addrs_at = None;
+        assert!(fresh_direct_addrs(&row, now).is_empty());
     }
 
     #[test]

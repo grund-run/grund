@@ -105,6 +105,8 @@ pub struct SlotRow {
     pub endpoint_id: String,
     pub freed_at: Option<DateTime<Utc>>,
     pub home_relay_url: Option<String>,
+    pub direct_addrs: Vec<String>,
+    pub direct_addrs_at: Option<DateTime<Utc>>,
 }
 
 /// Every slot the network has ever given out, one row per slot.
@@ -113,7 +115,8 @@ pub async fn slots(
     network_id: Uuid,
 ) -> Result<Vec<SlotRow>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT slot, machine_id, endpoint_id, freed_at, home_relay_url FROM grund_network_slots \
+        "SELECT slot, machine_id, endpoint_id, freed_at, home_relay_url, direct_addrs, direct_addrs_at \
+         FROM grund_network_slots \
          WHERE network_id = $1 ORDER BY slot",
     )
     .bind(network_id)
@@ -141,6 +144,35 @@ pub async fn set_home_relay(
         > 0)
 }
 
+/// Records where `machine_id` is reached directly, for the slot it holds
+/// now. The row is written when the addresses changed or the stored ones are
+/// older than `refresh_after`, so a member polling every few seconds costs a
+/// write a minute at most. `true` when the addresses changed.
+pub async fn set_direct_addrs(
+    executor: impl PgExecutor<'_>,
+    machine_id: Uuid,
+    direct_addrs: &[String],
+    at: DateTime<Utc>,
+    refresh_after: chrono::Duration,
+) -> Result<bool, sqlx::Error> {
+    let changed: Option<bool> = sqlx::query_scalar(
+        "UPDATE grund_network_slots s SET direct_addrs = $2, direct_addrs_at = $3 \
+         FROM (SELECT direct_addrs AS before FROM grund_network_slots \
+               WHERE machine_id = $1 AND freed_at IS NULL) old \
+         WHERE s.machine_id = $1 AND s.freed_at IS NULL \
+           AND (s.direct_addrs IS DISTINCT FROM $2 OR s.direct_addrs_at IS NULL \
+                OR s.direct_addrs_at < $3 - $4::interval) \
+         RETURNING old.before IS DISTINCT FROM $2",
+    )
+    .bind(machine_id)
+    .bind(direct_addrs)
+    .bind(at)
+    .bind(format!("{} seconds", refresh_after.num_seconds()))
+    .fetch_optional(executor)
+    .await?;
+    Ok(changed.unwrap_or(false))
+}
+
 /// Gives `slot` to a machine, taking over the row of whoever held it last.
 pub async fn assign_slot(
     executor: impl PgExecutor<'_>,
@@ -155,7 +187,7 @@ pub async fn assign_slot(
          VALUES ($1, $2, $3, $4, $5) \
          ON CONFLICT (network_id, slot) DO UPDATE SET machine_id = EXCLUDED.machine_id, \
            endpoint_id = EXCLUDED.endpoint_id, assigned_at = EXCLUDED.assigned_at, freed_at = NULL, \
-           home_relay_url = NULL",
+           home_relay_url = NULL, direct_addrs = '{}', direct_addrs_at = NULL",
     )
     .bind(network_id)
     .bind(slot)

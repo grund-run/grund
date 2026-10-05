@@ -360,6 +360,7 @@ mod tests {
                     ports: vec![],
                     relay_url: None,
                     apps: Vec::new(),
+                    direct_addrs: Vec::new(),
                 },
                 Member {
                     machine_id: "m_b".into(),
@@ -369,6 +370,7 @@ mod tests {
                     ports: vec![],
                     relay_url: None,
                     apps: Vec::new(),
+                    direct_addrs: Vec::new(),
                 },
             ],
         }
