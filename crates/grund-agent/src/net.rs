@@ -373,7 +373,7 @@ async fn carry(
                     .await;
                 tracing::info!(relay = %url, "private network: trying a benched relay again");
             }
-            match unanswering_home(endpoint) {
+            match grund_net::endpoint::unanswering_home(endpoint) {
                 Some(home) if wanted.len() > benched.len() + 1 => {
                     homeless += 1;
                     if homeless >= 2 {
@@ -542,7 +542,7 @@ async fn revive_relay(mesh: &Mesh, revive: &tokio::sync::Notify) {
             lost_since = None;
             continue;
         };
-        let Some(home) = unanswering_home(&endpoint) else {
+        let Some(home) = grund_net::endpoint::unanswering_home(&endpoint) else {
             lost_since = None;
             last_greeting = None;
             continue;
@@ -569,7 +569,7 @@ async fn revive_relay(mesh: &Mesh, revive: &tokio::sync::Notify) {
         {
             continue;
         }
-        let ping = format!("{}/ping", home.as_str().trim_end_matches('/'));
+        let ping = grund_net::endpoint::relay_ping_url(&home);
         let answered = http
             .get(&ping)
             .timeout(Duration::from_secs(1))
@@ -592,15 +592,6 @@ fn direct_addrs(mesh: &Mesh) -> Vec<String> {
     let mut addrs: Vec<SocketAddr> = endpoint.addr().ip_addrs().copied().collect();
     addrs.sort();
     addrs.iter().map(ToString::to_string).collect()
-}
-
-fn unanswering_home(endpoint: &iroh::Endpoint) -> Option<RelayUrl> {
-    use iroh::Watcher;
-    let homes = endpoint.home_relay_status().get();
-    if homes.iter().any(|s| s.is_connected()) {
-        return None;
-    }
-    homes.first().map(|s| s.url().clone())
 }
 
 fn relay_status(endpoint: &iroh::Endpoint, relays: &[RelayUrl]) -> Vec<serde_json::Value> {

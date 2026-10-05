@@ -124,6 +124,20 @@ pub async fn bind(
     config: &NetConfig,
     alpns: Vec<Vec<u8>>,
 ) -> anyhow::Result<Endpoint> {
+    let endpoint = bind_now(key, config, alpns).await?;
+    if !config.relays.is_empty() {
+        let _ = tokio::time::timeout(Duration::from_secs(5), endpoint.online()).await;
+    }
+    Ok(endpoint)
+}
+
+/// [`bind`] without waiting for a relay: for an endpoint that only dials,
+/// whose owner must not wait on a relay that may be down.
+pub async fn bind_now(
+    key: SecretKey,
+    config: &NetConfig,
+    alpns: Vec<Vec<u8>>,
+) -> anyhow::Result<Endpoint> {
     let transport = QuicTransportConfig::builder()
         .default_path_max_idle_timeout(config.path_idle)
         .default_path_keep_alive_interval(config.path_keepalive)
@@ -162,11 +176,26 @@ pub async fn bind(
     if let Some(roots) = &config.relay_roots {
         builder = builder.ca_tls_config(CaTlsConfig::custom_roots(roots.iter().cloned()));
     }
-    let endpoint = builder.bind().await.context("bind the iroh endpoint")?;
-    if !config.relays.is_empty() {
-        let _ = tokio::time::timeout(Duration::from_secs(5), endpoint.online()).await;
+    builder.bind().await.context("bind the iroh endpoint")
+}
+
+/// The endpoint's home relay while it is not connected to any, as iroh's
+/// relay actor backs off: up to 16 s between attempts, with no way to reset
+/// it but a new endpoint ([`relay_ping_url`]).
+pub fn unanswering_home(endpoint: &Endpoint) -> Option<RelayUrl> {
+    use iroh::Watcher;
+    let homes = endpoint.home_relay_status().get();
+    if homes.iter().any(|s| s.is_connected()) {
+        return None;
     }
-    Ok(endpoint)
+    homes.first().map(|s| s.url().clone())
+}
+
+/// The URL that answers once the relay at `relay` serves again: its
+/// `/ping`. An endpoint bound anew when it answers reaches the relay at
+/// once, where the old one may wait out its back-off.
+pub fn relay_ping_url(relay: &RelayUrl) -> String {
+    format!("{}/ping", relay.as_str().trim_end_matches('/'))
 }
 
 /// The uplink as the machine sees it now: the interface carrying the

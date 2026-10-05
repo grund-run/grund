@@ -1007,6 +1007,64 @@ async fn an_app_is_served_through_the_edge_while_grund_is_down_and_keeps_its_cop
     Ok(())
 }
 
+const EDGE_LISTENS_WITHIN: Duration = Duration::from_secs(2);
+
+#[tokio::test]
+async fn an_edge_restarted_while_grund_and_its_relay_are_down_answers_tls_at_once()
+-> anyhow::Result<()> {
+    let Some(mut stack) = a_stack().await? else {
+        return Ok(());
+    };
+    let owner = stack.given.a_signed_in_account().await?;
+    let org = owner.username.clone();
+    let a = stack.a_machine(&org, "box-a").await?;
+    stack.registry.publish("acme/steady", "1");
+    stack
+        .call(
+            "CreateApp",
+            json!({"organisation": org, "name": "steady", "settings": {
+                "copies": 1,
+                "rollout": {"minReadySeconds": 1, "readyDeadlineSeconds": 20, "drainSeconds": 1},
+                "rescheduleAfterSeconds": 30,
+            }}),
+        )
+        .await?;
+    stack.deploy(&org, "steady", "1", 1).await?;
+    let running = stack
+        .until(&org, "steady", Duration::from_secs(40), "one copy", |app| {
+            running_replicas(app).len() == 1
+        })
+        .await?;
+    write_remote_copies(&[("box-a", &a)], "steady", &running_replicas(&running));
+    stack.start_edge()?;
+    let name = stack.name_of(&org, "steady");
+    stack.served(&name, Duration::from_secs(60)).await?;
+
+    let fixture = stack.when.testcase.fixture.clone();
+    let outage = tokio::spawn(async move { fixture.down_for(Duration::from_secs(15)).await });
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    stack.edge = None;
+    stack.start_edge()?;
+    let restarted = Instant::now();
+    let mut answered = None;
+    while restarted.elapsed() < Duration::from_secs(10) {
+        if stack.connect(&name).await.is_ok() {
+            answered = Some(restarted.elapsed());
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    eprintln!("edge restarted without grund or its relay: TLS after {answered:?}");
+    anyhow::ensure!(
+        answered.is_some_and(|t| t <= EDGE_LISTENS_WITHIN),
+        "the edge answered TLS only after {answered:?}, over {EDGE_LISTENS_WITHIN:?}:\n{}",
+        stack.edge_log()
+    );
+    outage.await??;
+    stack.served(&name, Duration::from_secs(60)).await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn an_edge_killed_while_the_ca_validates_its_name_still_gets_the_certificate_after_it_restarts()
 -> anyhow::Result<()> {

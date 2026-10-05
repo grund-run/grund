@@ -49,7 +49,7 @@ struct Ejection {
 pub struct Machine {
     pub endpoint_id: EndpointId,
     relays: Mutex<Vec<RelayUrl>>,
-    connection: tokio::sync::Mutex<Option<Connection>>,
+    connection: tokio::sync::Mutex<Option<(Connection, u64)>>,
     pub streams: AtomicUsize,
     ready: AtomicU32,
     ejected: Mutex<HashMap<String, Ejection>>,
@@ -137,10 +137,12 @@ impl Machine {
     }
 }
 
-/// Every machine the edge knows, by endpoint id.
+/// Every machine the edge knows, by endpoint id, and the endpoint that
+/// dials them. The endpoint can be replaced ([`Pool::replace_endpoint`]);
+/// connections the old one opened are then not handed out again.
 #[derive(Debug, Clone)]
 pub struct Pool {
-    endpoint: Endpoint,
+    endpoint: Arc<Mutex<(Endpoint, u64)>>,
     machines: Arc<Mutex<HashMap<EndpointId, Arc<Machine>>>>,
 }
 
@@ -153,13 +155,49 @@ fn random_below(n: usize) -> usize {
 impl Pool {
     pub fn new(endpoint: Endpoint) -> Self {
         Self {
-            endpoint,
+            endpoint: Arc::new(Mutex::new((endpoint, 0))),
             machines: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    pub fn endpoint(&self) -> &Endpoint {
-        &self.endpoint
+    /// The endpoint new connections are opened from.
+    pub fn endpoint(&self) -> Endpoint {
+        self.endpoint.lock().expect("pool lock").0.clone()
+    }
+
+    /// Opens new connections from `endpoint` from now on, and returns the
+    /// one it replaces, whose open streams carry on until it is closed.
+    pub fn replace_endpoint(&self, endpoint: Endpoint) -> Endpoint {
+        let mut current = self.endpoint.lock().expect("pool lock");
+        let generation = current.1 + 1;
+        std::mem::replace(&mut *current, (endpoint, generation)).0
+    }
+
+    /// Whether every open connection goes direct, and there is one: then a
+    /// relay that comes back changes nothing for the edge.
+    pub fn all_direct(&self) -> bool {
+        let machines: Vec<Arc<Machine>> = self
+            .machines
+            .lock()
+            .expect("pool lock")
+            .values()
+            .cloned()
+            .collect();
+        let mut any = false;
+        for machine in machines {
+            let Ok(slot) = machine.connection.try_lock() else {
+                return false;
+            };
+            if let Some((connection, _)) = slot.as_ref()
+                && connection.close_reason().is_none()
+            {
+                if Machine::relayed(connection) {
+                    return false;
+                }
+                any = true;
+            }
+        }
+        any
     }
 
     /// The machines for `name` in the order to try them: those not ejected
@@ -210,7 +248,9 @@ impl Pool {
     pub async fn connection(&self, machine: &Machine) -> anyhow::Result<Connection> {
         let mut slot = machine.connection.lock().await;
         *machine.last_used.lock().expect("machine lock") = Instant::now();
-        if let Some(connection) = slot.as_ref()
+        let (endpoint, generation) = self.endpoint.lock().expect("pool lock").clone();
+        if let Some((connection, opened_by)) = slot.as_ref()
+            && *opened_by == generation
             && connection.close_reason().is_none()
         {
             return Ok(connection.clone());
@@ -221,12 +261,12 @@ impl Pool {
         }
         let connection = tokio::time::timeout(
             CONNECT_TIMEOUT,
-            self.endpoint.connect(addr, grund_entry::ENTRY_ALPN),
+            endpoint.connect(addr, grund_entry::ENTRY_ALPN),
         )
         .await
         .map_err(|_| anyhow::anyhow!("no connection within {} s", CONNECT_TIMEOUT.as_secs()))?
         .map_err(|e| anyhow::anyhow!("connect: {e}"))?;
-        *slot = Some(connection.clone());
+        *slot = Some((connection.clone(), generation));
         Ok(connection)
     }
 
@@ -260,7 +300,7 @@ impl Pool {
             let idle = machine.last_used.lock().expect("machine lock").elapsed() >= IDLE;
             if idle && machine.streams.load(Relaxed) == 0 {
                 let mut slot = machine.connection.lock().await;
-                if let Some(connection) = slot.take() {
+                if let Some((connection, _)) = slot.take() {
                     connection.close(0u32.into(), b"idle");
                 }
             }

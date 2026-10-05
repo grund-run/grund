@@ -223,6 +223,13 @@ pub async fn run(command: EdgeCommand) -> anyhow::Result<()> {
     grund_tls::install_default();
     std::fs::create_dir_all(&command.data_dir)
         .with_context(|| format!("create GRUND_EDGE_DATA_DIR {}", command.data_dir.display()))?;
+    let tls_listener = tokio::net::TcpListener::bind(command.listen)
+        .await
+        .with_context(|| format!("bind GRUND_EDGE_LISTEN {}", command.listen))?;
+    let http_listener = tokio::net::TcpListener::bind(command.http_listen)
+        .await
+        .with_context(|| format!("bind GRUND_EDGE_HTTP_LISTEN {}", command.http_listen))?;
+    tracing::info!(tls = %command.listen, http = %command.http_listen, "edge: listening");
     let key = command.enrollment().await?;
     let routes = routes::Routes::load(&command.data_dir);
     let http = crate::relay_certificate::http_client(Some(crate::relay_certificate::CALL_TIMEOUT))?;
@@ -239,28 +246,13 @@ pub async fn run(command: EdgeCommand) -> anyhow::Result<()> {
         tracing::info!("edge: waiting for the first route table from the instance");
         let _ = changed.changed().await;
     }
-    let relays: Vec<iroh::RelayUrl> = routes
-        .current()
-        .relay_urls
-        .iter()
-        .filter_map(|u| u.parse().ok())
-        .collect();
-    let endpoint = grund_net::endpoint::bind(
-        iroh::SecretKey::from_bytes(&key.seed()),
-        &grund_net::endpoint::NetConfig {
-            relays: relays.clone(),
-            bind: match command.iroh_listen {
-                Some(addr) => grund_net::endpoint::Bind::Addrs(vec![addr]),
-                None => grund_net::endpoint::Bind::Uplinks(0),
-            },
-            relay_roots: relay_roots()?,
-            path_idle: Duration::from_secs(15),
-            path_keepalive: Duration::from_secs(5),
-        },
-        Vec::new(),
-    )
-    .await
-    .context("bind the edge's iroh endpoint")?;
+    let relays = relay_urls(&routes);
+    let binder = Binder {
+        key: iroh::SecretKey::from_bytes(&key.seed()),
+        iroh_listen: command.iroh_listen,
+        relay_roots: relay_roots()?,
+    };
+    let endpoint = binder.bind(relays.clone()).await?;
     tracing::info!(edge = %endpoint.id(), host = %key.host, "edge: running");
     let pool = machines::Pool::new(endpoint.clone());
     let edge = Arc::new(serve::Edge {
@@ -285,7 +277,13 @@ pub async fn run(command: EdgeCommand) -> anyhow::Result<()> {
     certificates.load();
     tokio::spawn(certificates.run());
     tokio::spawn(report_usage(edge.clone(), key.clone(), http.clone()));
-    tokio::spawn(keep_relays(endpoint.clone(), routes.clone(), relays));
+    tokio::spawn(keep_relays(pool.clone(), routes.clone(), relays));
+    tokio::spawn(revive_relay(
+        pool.clone(),
+        routes.clone(),
+        binder,
+        http.clone(),
+    ));
     tokio::spawn({
         let pool = pool.clone();
         async move {
@@ -295,13 +293,6 @@ pub async fn run(command: EdgeCommand) -> anyhow::Result<()> {
             }
         }
     });
-    let tls_listener = tokio::net::TcpListener::bind(command.listen)
-        .await
-        .with_context(|| format!("bind GRUND_EDGE_LISTEN {}", command.listen))?;
-    let http_listener = tokio::net::TcpListener::bind(command.http_listen)
-        .await
-        .with_context(|| format!("bind GRUND_EDGE_HTTP_LISTEN {}", command.http_listen))?;
-    tracing::info!(tls = %command.listen, http = %command.http_listen, "edge: listening");
     tokio::spawn(async move {
         loop {
             if let Ok((tcp, _)) = http_listener.accept().await {
@@ -331,7 +322,7 @@ pub async fn run(command: EdgeCommand) -> anyhow::Result<()> {
     }
     tracing::info!("edge: stopping");
     let deadline = tokio::time::Instant::now() + Duration::from_secs(command.shutdown_grace);
-    let _ = tokio::time::timeout_at(deadline, endpoint.close()).await;
+    let _ = tokio::time::timeout_at(deadline, pool.endpoint().close()).await;
     Ok(())
 }
 
@@ -349,19 +340,108 @@ async fn shutdown() {
     }
 }
 
-async fn keep_relays(
-    endpoint: iroh::Endpoint,
+#[derive(Debug, Clone)]
+struct Binder {
+    key: iroh::SecretKey,
+    iroh_listen: Option<std::net::SocketAddr>,
+    relay_roots: Option<Vec<rustls::pki_types::CertificateDer<'static>>>,
+}
+
+impl Binder {
+    async fn bind(&self, relays: Vec<iroh::RelayUrl>) -> anyhow::Result<iroh::Endpoint> {
+        grund_net::endpoint::bind_now(
+            self.key.clone(),
+            &grund_net::endpoint::NetConfig {
+                relays,
+                bind: match self.iroh_listen {
+                    Some(addr) => grund_net::endpoint::Bind::Addrs(vec![addr]),
+                    None => grund_net::endpoint::Bind::Uplinks(0),
+                },
+                relay_roots: self.relay_roots.clone(),
+                path_idle: Duration::from_secs(15),
+                path_keepalive: Duration::from_secs(5),
+            },
+            Vec::new(),
+        )
+        .await
+        .context("bind the edge's iroh endpoint")
+    }
+}
+
+fn relay_urls(routes: &routes::Routes) -> Vec<iroh::RelayUrl> {
+    routes
+        .current()
+        .relay_urls
+        .iter()
+        .filter_map(|u| u.parse().ok())
+        .collect()
+}
+
+/// How often the edge looks at its home relay while it is lost.
+pub const RELAY_REVIVE_POLL: Duration = Duration::from_millis(250);
+/// How long the home relay is lost before the edge asks whether it is back.
+pub const RELAY_REVIVE_AFTER: Duration = Duration::from_secs(1);
+/// The least time between two new endpoints.
+pub const RELAY_REVIVE_COOLDOWN: Duration = Duration::from_secs(5);
+/// How long streams on a replaced endpoint may carry on.
+pub const REPLACED_ENDPOINT_GRACE: Duration = Duration::from_secs(60);
+
+async fn revive_relay(
+    pool: machines::Pool,
     routes: routes::Routes,
-    mut have: Vec<iroh::RelayUrl>,
+    binder: Binder,
+    http: reqwest::Client,
 ) {
+    let mut lost_since: Option<tokio::time::Instant> = None;
+    let mut last_revival: Option<tokio::time::Instant> = None;
+    loop {
+        tokio::time::sleep(RELAY_REVIVE_POLL).await;
+        let Some(home) = grund_net::endpoint::unanswering_home(&pool.endpoint()) else {
+            lost_since = None;
+            continue;
+        };
+        let since = *lost_since.get_or_insert_with(tokio::time::Instant::now);
+        if since.elapsed() < RELAY_REVIVE_AFTER
+            || last_revival.is_some_and(|at| at.elapsed() < RELAY_REVIVE_COOLDOWN)
+            || pool.all_direct()
+        {
+            continue;
+        }
+        let answered = http
+            .get(grund_net::endpoint::relay_ping_url(&home))
+            .timeout(Duration::from_secs(1))
+            .send()
+            .await
+            .is_ok_and(|r| r.status().is_success());
+        if !answered {
+            continue;
+        }
+        last_revival = Some(tokio::time::Instant::now());
+        lost_since = None;
+        if binder.iroh_listen.is_some_and(|a| a.port() != 0) {
+            pool.endpoint().close().await;
+        }
+        match binder.bind(relay_urls(&routes)).await {
+            Ok(endpoint) => {
+                let old = pool.replace_endpoint(endpoint);
+                tracing::info!(relay = %home, "edge: the home relay answers again; dialing machines from a new endpoint rather than waiting out iroh's backoff");
+                tokio::spawn(async move {
+                    tokio::time::sleep(REPLACED_ENDPOINT_GRACE).await;
+                    old.close().await;
+                });
+            }
+            Err(error) => {
+                tracing::warn!(error = %format!("{error:#}"), "edge: could not bind a new endpoint; keeping the one it has");
+            }
+        }
+    }
+}
+
+async fn keep_relays(pool: machines::Pool, routes: routes::Routes, mut have: Vec<iroh::RelayUrl>) {
     let mut changed = routes.subscribe();
     while changed.changed().await.is_ok() {
-        let wanted: Vec<iroh::RelayUrl> = routes
-            .current()
-            .relay_urls
-            .iter()
-            .filter_map(|u| u.parse().ok())
-            .collect();
+        let endpoint = pool.endpoint();
+        let wanted = relay_urls(&routes);
         for url in have.iter().filter(|u| !wanted.contains(u)) {
             endpoint.remove_relay(url).await;
         }
