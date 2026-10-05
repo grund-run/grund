@@ -1,9 +1,12 @@
-//! `/{org}/apps`: an organisation's apps, a new app, and each app's page
-//! with its copies, its rollout, its releases and the forms that deploy,
-//! scale, roll back and set secrets (grund-docs design/apps.md §8.5, §5.4,
-//! §9). Every member sees the pages; owners and admins change. The handlers
-//! call the same service as `grund.app.v1.AppService`, so the pages and the
-//! API refuse the same things.
+//! `/{org}/apps`: an organisation's apps (searched, sorted, as a list or a
+//! grid), `/{org}/deploy` for a new app, and each app's page with its
+//! copies, its rollout, its releases and the forms that deploy, scale, roll
+//! back and set secrets (grund-docs design/apps.md §8.5, §5.4, §9). Also
+//! `/{org}/domains`, the apps' addresses, and `/{org}/templates`, which says
+//! templates are not built yet. Every member sees the pages; owners and
+//! admins change. The handlers call the same service as
+//! `grund.app.v1.AppService`, so the pages and the API refuse the same
+//! things.
 
 use axum::{
     Form,
@@ -31,7 +34,7 @@ use serde::Deserialize;
 
 use crate::{
     services::{
-        apps::{AppView, AppsError, AppsState, DeployInput},
+        apps::{AppListing, AppView, AppsError, AppsState, DeployInput},
         sessions::Session,
     },
     state::State,
@@ -165,15 +168,128 @@ fn status_line(view: &AppView) -> (String, &'static str) {
     }
 }
 
-fn app_summary(view: &AppView) -> Value {
+/// The icon a page draws for `image`: a well-known image's own, `docker`
+/// for any other image on Docker Hub, and `image` for one from elsewhere.
+pub fn image_icon(image: &str) -> &'static str {
+    const KNOWN: &[(&str, &[&str])] = &[
+        ("nginx", &["nginx", "nginx-unprivileged", "openresty"]),
+        (
+            "postgres",
+            &[
+                "postgres",
+                "postgresql",
+                "postgis",
+                "timescaledb",
+                "timescaledb-ha",
+            ],
+        ),
+        ("redis", &["redis", "redis-stack", "redis-stack-server"]),
+        ("nats", &["nats", "nats-streaming", "nats-server"]),
+        ("clickhouse", &["clickhouse", "clickhouse-server"]),
+        ("mongo", &["mongo", "mongodb", "mongodb-community-server"]),
+        ("node", &["node"]),
+        ("python", &["python"]),
+        ("prometheus", &["prometheus"]),
+        ("rabbitmq", &["rabbitmq"]),
+    ];
+    let reference = image.split('@').next().unwrap_or_default().trim();
+    let mut parts: Vec<&str> = reference.split('/').collect();
+    let hosted = parts.len() > 1
+        && (parts[0].contains('.') || parts[0].contains(':') || parts[0] == "localhost");
+    if hosted {
+        parts.remove(0);
+    }
+    let name = parts
+        .last()
+        .and_then(|last| last.split(':').next())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let known = KNOWN
+        .iter()
+        .find(|(_, names)| names.contains(&name.as_str()));
+    match known {
+        Some((icon, _)) => icon,
+        None if reference.is_empty() || hosted => "image",
+        None => "docker",
+    }
+}
+
+fn internal_address(name: &str, spec: &AppSpec) -> Option<String> {
+    spec.ports
+        .first()
+        .map(|port| format!("{name}.grund.internal:{}", port.port))
+}
+
+/// An app as a list row or card shows it.
+pub fn listing_context(listing: &AppListing) -> Value {
+    let view = &listing.view;
     let (line, tone) = status_line(view);
+    let image = listing
+        .spec
+        .as_ref()
+        .map(|spec| spec.image.clone())
+        .unwrap_or_default();
     context! {
         name => view.row.name,
         line,
         tone,
-        current => view.row.current_release,
         copies => view.row.settings.0.copies,
+        icon => image_icon(&image),
+        image,
+        address => listing.address,
+        internal => listing.spec.as_ref().and_then(|spec| internal_address(&view.row.name, spec)),
     }
+}
+
+/// The distinct icons of `listings`, for the page's sprite.
+pub fn icons_of(listings: &[&AppListing]) -> Vec<&'static str> {
+    let mut icons: Vec<&'static str> = listings
+        .iter()
+        .map(|l| {
+            image_icon(
+                l.spec
+                    .as_ref()
+                    .map(|s| s.image.as_str())
+                    .unwrap_or_default(),
+            )
+        })
+        .collect();
+    icons.sort_unstable();
+    icons.dedup();
+    icons
+}
+
+const SORTS: &[(&str, &str)] = &[
+    ("name", "Name"),
+    ("deployed", "Last deployed"),
+    ("created", "Newest"),
+];
+
+fn sort_listings(listings: &mut [&AppListing], sort: &str) {
+    match sort {
+        "deployed" => listings.sort_by(|a, b| {
+            b.deployed_at
+                .cmp(&a.deployed_at)
+                .then_with(|| a.view.row.name.cmp(&b.view.row.name))
+        }),
+        "created" => listings.sort_by(|a, b| {
+            b.view
+                .row
+                .created_at
+                .cmp(&a.view.row.created_at)
+                .then_with(|| a.view.row.name.cmp(&b.view.row.name))
+        }),
+        _ => listings.sort_by(|a, b| a.view.row.name.cmp(&b.view.row.name)),
+    }
+}
+
+fn matches(listing: &AppListing, query: &str) -> bool {
+    query.is_empty()
+        || listing.view.row.name.contains(query)
+        || listing
+            .spec
+            .as_ref()
+            .is_some_and(|spec| spec.image.to_ascii_lowercase().contains(query))
 }
 
 fn release_context(row: &ReleaseRow) -> Value {
@@ -208,11 +324,17 @@ fn release_context(row: &ReleaseRow) -> Value {
 }
 
 #[derive(Deserialize, Default)]
-pub struct NoticeQuery {
+pub struct ListQuery {
     #[serde(default)]
     done: String,
     #[serde(default)]
     error: String,
+    #[serde(default)]
+    q: String,
+    #[serde(default)]
+    sort: String,
+    #[serde(default)]
+    view: String,
 }
 
 fn notice_words(done: &str) -> &'static str {
@@ -235,64 +357,153 @@ fn error_words(error: &str) -> &'static str {
     }
 }
 
-/// `/{org}/apps`.
+/// `/{org}/apps`, searched by `q`, ordered by `sort` and drawn as `view`
+/// (`list` or `grid`).
 pub async fn apps_page(
     AxumState(state): AxumState<State>,
     browser: Browser,
     uri: Uri,
     Path(slug): Path<String>,
-    Query(query): Query<NoticeQuery>,
+    Query(query): Query<ListQuery>,
 ) -> PageResult {
     let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
-    list_view(
+    let listings = state
+        .apps()
+        .listings(membership.organisation_id, &membership.slug)
+        .await
+        .map_err(|e| PageError::from(anyhow::anyhow!(e)))?;
+    let q: String = query
+        .q
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .take(100)
+        .collect();
+    let sort = SORTS
+        .iter()
+        .find(|(value, _)| *value == query.sort)
+        .map_or("name", |(value, _)| value);
+    let view = if query.view == "grid" { "grid" } else { "list" };
+    let mut shown: Vec<&AppListing> = listings.iter().filter(|l| matches(l, &q)).collect();
+    sort_listings(&mut shown, sort);
+    let href = |q: &str, view: &str| {
+        let mut pairs = Vec::new();
+        if !q.is_empty() {
+            pairs.push(("q", q));
+        }
+        pairs.extend([("sort", sort), ("view", view)]);
+        format!(
+            "/{}/apps?{}",
+            membership.slug,
+            serde_urlencoded::to_string(pairs).unwrap_or_default()
+        )
+    };
+    let viewer = viewer_context(&state, &session, Some(&membership)).await?;
+    render(
+        &state,
+        &browser,
+        StatusCode::OK,
+        "pages/apps.html.jinja",
+        context! {
+            viewer,
+            list_href => href(&q, "list"), grid_href => href(&q, "grid"), all_href => href("", view),
+            icons => icons_of(&shown),
+            apps => shown.iter().map(|l| listing_context(l)).collect::<Vec<_>>(),
+            total => listings.len(),
+            list => context! { q, sort, view }, sorts => SORTS,
+            notice => notice_words(&query.done), error => error_words(&query.error),
+            csrf => browser.csrf_token(), section => "apps",
+        },
+    )
+}
+
+/// `/{org}/deploy`: the form that makes an app and deploys its first
+/// version.
+pub async fn deploy_page(
+    AxumState(state): AxumState<State>,
+    browser: Browser,
+    uri: Uri,
+    Path(slug): Path<String>,
+) -> PageResult {
+    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
+    new_view(
         &state,
         &browser,
         &session,
         &membership,
-        ListForm {
-            notice: notice_words(&query.done).into(),
-            error: error_words(&query.error).into(),
-            ..Default::default()
-        },
+        "",
+        NewForm::default(),
     )
     .await
 }
 
-#[derive(Default)]
-struct ListForm {
-    notice: String,
-    error: String,
-    new_error: String,
-    new: NewForm,
-}
-
-async fn list_view(
+async fn new_view(
     state: &State,
     browser: &Browser,
     session: &Session,
     membership: &Membership,
-    form: ListForm,
+    new_error: &str,
+    new: NewForm,
 ) -> PageResult {
-    let apps: Vec<Value> = state
-        .apps()
-        .list(membership.organisation_id)
-        .await
-        .map_err(|e| PageError::from(anyhow::anyhow!(e)))?
-        .iter()
-        .map(app_summary)
-        .collect();
     let viewer = viewer_context(state, session, Some(membership)).await?;
     render(
         state,
         browser,
         StatusCode::OK,
-        "pages/apps.html.jinja",
+        "pages/deploy.html.jinja",
         context! {
-            viewer, apps,
-            notice => form.notice, error => form.error,
-            new_error => form.new_error, new => Value::from_serialize(&form.new),
-            csrf => browser.csrf_token(), section => "apps",
+            viewer, new_error, new => Value::from_serialize(&new),
+            csrf => browser.csrf_token(), section => "deploy",
         },
+    )
+}
+
+/// `/{org}/domains`: the address each app holds. Custom domains are not
+/// built; the page says so.
+pub async fn domains_page(
+    AxumState(state): AxumState<State>,
+    browser: Browser,
+    uri: Uri,
+    Path(slug): Path<String>,
+) -> PageResult {
+    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
+    let addresses: Vec<Value> = state
+        .apps()
+        .listings(membership.organisation_id, &membership.slug)
+        .await
+        .map_err(|e| PageError::from(anyhow::anyhow!(e)))?
+        .iter()
+        .filter_map(|l| {
+            l.address
+                .as_ref()
+                .map(|address| context! { name => l.view.row.name, address })
+        })
+        .collect();
+    let viewer = viewer_context(&state, &session, Some(&membership)).await?;
+    render(
+        &state,
+        &browser,
+        StatusCode::OK,
+        "pages/domains.html.jinja",
+        context! { viewer, addresses, csrf => browser.csrf_token(), section => "domains" },
+    )
+}
+
+/// `/{org}/templates`: not built yet, and the page says so.
+pub async fn templates_page(
+    AxumState(state): AxumState<State>,
+    browser: Browser,
+    uri: Uri,
+    Path(slug): Path<String>,
+) -> PageResult {
+    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
+    let viewer = viewer_context(&state, &session, Some(&membership)).await?;
+    render(
+        &state,
+        &browser,
+        StatusCode::OK,
+        "pages/templates.html.jinja",
+        context! { viewer, csrf => browser.csrf_token(), section => "templates" },
     )
 }
 
@@ -385,20 +596,7 @@ pub async fn create(
     }
     let refuse = |message: String, form: NewForm| {
         let (state, browser, session, membership) = (&state, &browser, &session, &membership);
-        async move {
-            list_view(
-                state,
-                browser,
-                session,
-                membership,
-                ListForm {
-                    new_error: message,
-                    new: form,
-                    ..Default::default()
-                },
-            )
-            .await
-        }
+        async move { new_view(state, browser, session, membership, &message, form).await }
     };
     let copies = match form.copies.trim() {
         "" => None,
@@ -907,5 +1105,41 @@ pub async fn delete(
         Ok(()) => Ok(redirect(&format!("/{slug}/apps?done=deleted"))),
         Err(AppsError::NotFound) => Ok(redirect(&format!("/{slug}/apps?error=gone"))),
         Err(error) => Err(PageError::from(anyhow::anyhow!(error))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::image_icon;
+
+    #[test]
+    fn well_known_images_get_their_own_icon_wherever_they_come_from() {
+        for (image, icon) in [
+            ("nginx", "nginx"),
+            ("nginx:1.27-alpine", "nginx"),
+            ("nginxinc/nginx-unprivileged:stable", "nginx"),
+            ("postgres:16", "postgres"),
+            ("bitnami/postgresql:16", "postgres"),
+            ("docker.io/library/redis:7", "redis"),
+            ("nats:2.10", "nats"),
+            ("clickhouse/clickhouse-server:24", "clickhouse"),
+            ("mongo@sha256:0123", "mongo"),
+            ("ghcr.io/acme/python:3.13-slim", "python"),
+            ("quay.io/prometheus/prometheus", "prometheus"),
+            ("rabbitmq:4-management", "rabbitmq"),
+            ("node:22", "node"),
+        ] {
+            assert_eq!(image_icon(image), icon, "{image}");
+        }
+    }
+
+    #[test]
+    fn other_images_get_docker_on_docker_hub_and_a_neutral_icon_elsewhere() {
+        assert_eq!(image_icon("traefik/whoami:v1.11.0"), "docker");
+        assert_eq!(image_icon("myapp/worker:latest"), "docker");
+        assert_eq!(image_icon("nodered/node-red"), "docker");
+        assert_eq!(image_icon("ghcr.io/ours/api:v1.4.0"), "image");
+        assert_eq!(image_icon("localhost:5000/shop"), "image");
+        assert_eq!(image_icon(""), "image");
     }
 }

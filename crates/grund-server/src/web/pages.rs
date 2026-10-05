@@ -1031,6 +1031,19 @@ pub const SWATCHES: &[(&str, &str)] = &[
     ("danger", "errors, sign-out"),
 ];
 
+const KNOWN_IMAGE_ICONS: &[&str] = &[
+    "nginx",
+    "postgres",
+    "redis",
+    "nats",
+    "clickhouse",
+    "mongo",
+    "node",
+    "python",
+    "prometheus",
+    "rabbitmq",
+];
+
 pub async fn style_guide(AxumState(state): AxumState<State>, browser: Browser) -> PageResult {
     let viewer = context! {
         username => "example", initials => "EX", email => "", registered_on => "",
@@ -1043,6 +1056,35 @@ pub async fn style_guide(AxumState(state): AxumState<State>, browser: Browser) -
         ],
         can_create => true,
     };
+    let apps = [
+        (
+            "storefront",
+            "nginx:1.27",
+            Some("storefront-nord-studio.example.run"),
+            None,
+        ),
+        ("db", "postgres:17", None, Some("db.grund.internal:5432")),
+        ("cache", "redis:7", None, Some("cache.grund.internal:6379")),
+        (
+            "events",
+            "clickhouse/clickhouse-server:24",
+            None,
+            Some("events.grund.internal:9000"),
+        ),
+        ("bus", "nats:2.10", None, Some("bus.grund.internal:4222")),
+        ("worker", "acme/worker:3", None, None),
+        (
+            "api",
+            "ghcr.io/nord/api:1.4.0",
+            Some("api-nord-studio.example.run"),
+            None,
+        ),
+    ]
+    .map(|(name, image, address, internal)| {
+        context! { name, image, address, internal, icon => crate::web::apps::image_icon(image) }
+    });
+    let mut icons: Vec<&str> = KNOWN_IMAGE_ICONS.to_vec();
+    icons.push("docker");
     render(
         &state,
         &browser,
@@ -1050,6 +1092,7 @@ pub async fn style_guide(AxumState(state): AxumState<State>, browser: Browser) -
         "pages/style-guide.html.jinja",
         context! {
             viewer, csrf => browser.csrf_token(), section => "", swatches => SWATCHES,
+            apps, icons, gallery => KNOWN_IMAGE_ICONS,
         },
     )
 }

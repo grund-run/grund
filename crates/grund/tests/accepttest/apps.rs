@@ -756,9 +756,11 @@ async fn an_app_made_on_the_dashboard_shows_its_copies_ready_and_its_versions() 
     let digest = registry.publish("acme/hello", "1");
     let page = format!("/{org}/apps");
     when.visiting(&page).await?;
-    then.status(200)?.body_contains("No apps yet.")?;
+    then.status(200)?
+        .body_contains("Deploy a new app")?
+        .body_contains(&format!("href=\"&#x2f;{org}&#x2f;deploy\""))?;
     when.submitting(
-        &page,
+        &format!("/{org}/deploy"),
         &format!("{page}/new"),
         &[
             ("name", "hello"),
@@ -812,5 +814,96 @@ async fn an_app_made_on_the_dashboard_shows_its_copies_ready_and_its_versions() 
     outsider.a_signed_in_account().await?;
     outsider_when.visiting(&app_page).await?;
     outsider_then.status(404)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_apps_list_shows_each_image_with_its_icon_and_where_to_reach_it_and_finds_by_name()
+-> anyhow::Result<()> {
+    let registry = FakeRegistry::start().await?;
+    let Some((given, when, then)) = testcase_configured(&[
+        ("GRUND_INSECURE_REGISTRIES", &registry.host),
+        ("GRUND_APP_DOMAIN", "apps.accept.test"),
+    ])
+    .await?
+    else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let org = owner.username.clone();
+    registry.publish("acme/postgres", "16");
+    registry.publish("acme/shop", "1");
+    for (name, image, public) in [
+        ("db", registry.image("acme/postgres", "16"), false),
+        ("shop", registry.image("acme/shop", "1"), true),
+    ] {
+        call(
+            &when,
+            &then,
+            "CreateApp",
+            json!({"organisation": org, "name": name}),
+        )
+        .await?;
+        then.status(200)?;
+        let mut spec = spec(&image, json!([]));
+        spec["ports"][0]["public"] = json!(public);
+        call(
+            &when,
+            &then,
+            "Deploy",
+            json!({"organisation": org, "name": name, "spec": spec}),
+        )
+        .await?;
+        then.status(200)?;
+    }
+
+    let page = format!("/{org}/apps");
+    when.visiting(&page).await?;
+    then.status(200)?
+        .body_contains(&format!("https://shop-{org}.apps.accept.test"))?
+        .body_contains("db.grund.internal:80")?
+        .body_contains("data-copy=\"db.grund.internal:80\"")?
+        .body_contains("postgres:16</p>")?
+        .body_contains("<use href=\"#img-postgres\"/>")?
+        .body_contains("id=\"img-postgres\"")?
+        .body_lacks("id=\"img-redis\"")?
+        .body_contains(&format!(
+            "href=\"&#x2f;{org}&#x2f;apps&#x2f;shop#versions\""
+        ))?
+        .body_contains(&format!("href=\"&#x2f;{org}&#x2f;apps&#x2f;shop#danger\""))?
+        .body_contains("Deploy a new app")?;
+    let body = then.body()?;
+    let (db, shop) = (body.find(">db<"), body.find(">shop<"));
+    anyhow::ensure!(
+        db.is_some() && shop.is_some() && db < shop,
+        "sorted by name: {body}"
+    );
+
+    when.visiting(&format!("{page}?q=SHO&view=grid&sort=created"))
+        .await?;
+    then.status(200)?
+        .body_contains("class=\"items items-grid\"")?
+        .body_contains(">shop<")?
+        .body_lacks(">db<")?
+        .body_contains("1 of 2 apps match")?;
+
+    when.visiting(&format!("/{org}/domains")).await?;
+    then.status(200)?
+        .body_contains(&format!("https://shop-{org}.apps.accept.test"))?
+        .body_lacks(">db<")?
+        .body_contains("Custom domains are in development")?;
+
+    when.visiting(&format!("/{org}")).await?;
+    then.status(200)?
+        .body_contains(&format!("https://shop-{org}.apps.accept.test"))?
+        .body_contains("db.grund.internal:80")?;
+
+    when.visiting(&format!("/{org}/apps/shop")).await?;
+    then.status(200)?
+        .carries_the_security_headers()?
+        .body_contains("class=\"shell\"")?
+        .body_contains("id=\"versions\"")?
+        .body_contains("id=\"danger\"")?
+        .body_lacks(" style=")?;
     Ok(())
 }

@@ -1,6 +1,6 @@
 //! Organisation pages: `/` sends a signed-in person to one of their
-//! organisations; `/{org}`, `/{org}/members` and `/{org}/settings` are about
-//! one of them; `/orgs/new` creates one; `/invite` accepts an invitation.
+//! organisations; `/{org}` (the Overview, with its first apps),
+//! `/{org}/members` and `/{org}/settings` are about one of them; `/orgs/new` creates one; `/invite` accepts an invitation.
 //!
 //! Every `/{org}` page first resolves the viewer's membership. A slug the
 //! viewer is not a member of gets the same 404 as one that does not exist.
@@ -20,6 +20,7 @@ use uuid::Uuid;
 use crate::{
     services::{
         accounts::{AccountsState, FieldErrors, InvitedSignupOutcome},
+        apps::{AppListing, AppsState},
         billing::BillingView,
         organisations::{
             AcceptOutcome, ChangeOutcome, CreateOutcome, DeleteOutcome, InviteOutcome,
@@ -29,6 +30,7 @@ use crate::{
     },
     state::State,
     web::{
+        apps,
         browser::Browser,
         pages::{
             PageError, forged, message, not_found_page, redirect, render, require_session,
@@ -38,6 +40,8 @@ use crate::{
 };
 
 type PageResult = Result<Response, PageError>;
+
+const OVERVIEW_APPS: usize = 5;
 
 pub(super) async fn member_of(
     state: &State,
@@ -130,12 +134,24 @@ pub async fn overview(
         .members(membership.organisation_id)
         .await?
         .len();
+    let listings = state
+        .apps()
+        .listings(membership.organisation_id, &membership.slug)
+        .await
+        .map_err(|e| PageError::from(anyhow::anyhow!(e)))?;
+    let shown: Vec<&AppListing> = listings.iter().take(OVERVIEW_APPS).collect();
     render(
         &state,
         &browser,
         StatusCode::OK,
         "pages/home.html.jinja",
-        context! { viewer, members, csrf => browser.csrf_token(), section => "overview" },
+        context! {
+            viewer, members,
+            icons => apps::icons_of(&shown),
+            apps => shown.iter().map(|l| apps::listing_context(l)).collect::<Vec<_>>(),
+            app_count => listings.len(),
+            csrf => browser.csrf_token(), section => "overview",
+        },
     )
 }
 

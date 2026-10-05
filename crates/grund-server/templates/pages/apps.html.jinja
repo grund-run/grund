@@ -1,47 +1,24 @@
 {% extends "layout-app.html.jinja" %}
+{% import "components/images.html.jinja" as images %}
 {% set org = viewer.current %}
 {% block title %}Apps · {{ org.slug }} · grund{% endblock %}
-{% block crumbs %}<li>Apps</li>{% endblock %}
 {% block content %}
-<div class="page-head">
-  <div>
-    <h1 class="page-title">Apps</h1>
-    <p class="status-line">What {{ org.slug }} runs on its machines. Each app runs a container image, as many copies as you ask for.</p>
-  </div>
-</div>
+{{ images.sprite(icons) }}
+{% call ui.page_head("Apps", "Run and manage your applications. Simple, powerful, yours.") %}
+{{ ui.list_tools(sorts, list.sort, list_href, grid_href, list.view, {"q": list.q, "view": list.view}) }}
+{% endcall %}
 {{ ui.form_ok(notice) }}
 {{ ui.form_error(error) }}
-
-<ul class="rows">
-  {% for app in apps %}
-  <li class="row">
-    <span class="row-icon">{{ ui.icon("grid", "icon-lg tone-" ~ app.tone) }}</span>
-    <div>
-      <p class="row-name"><a href="/{{ org.slug }}/apps/{{ app.name }}">{{ app.name }}</a></p>
-      <p class="row-sub">{{ app.line }}</p>
-    </div>
-    {{ ui.status(app.copies ~ (" copy" if app.copies == 1 else " copies"), app.tone) }}
-    <span></span>
-  </li>
-  {% endfor %}
-</ul>
-{% if not apps %}<p class="empty">No apps yet.</p>{% endif %}
-
+{% if list.q %}{% call ui.note() %}{{ apps | length }} of {{ total }} app{% if total != 1 %}s{% endif %} match “{{ list.q }}”. <a href="{{ all_href }}">Show all</a>{% endcall %}{% endif %}
+{% if apps %}
+{% call ui.items(list.view) %}{% for app in apps %}{{ ui.app_row(org, app) }}{% endfor %}{% endcall %}
+{{ ui.note("No app matches that.", hidden=true, filter_empty=true) }}
+{% elif list.q %}
+{{ ui.note("No app matches that.") }}
+{% endif %}
 {% if org.manages %}
-<section class="section" aria-labelledby="new">
-  <div class="section-head">
-    <h2 class="section-title" id="new">New app</h2>
-  </div>
-  <form class="invite-form" method="post" action="/{{ org.slug }}/apps/new" novalidate>
-    {{ ui.csrf_field(csrf) }}
-    {{ ui.form_error(new_error) }}
-    {{ ui.field("name", "Name", value=new.name, autocomplete="off", hint="Letters a–z, digits and single hyphens. It never changes.") }}
-    {{ ui.field("image", "Image", value=new.image, autocomplete="off", hint="A container image, such as traefik/whoami:v1.10. grund pins the version it finds now.") }}
-    {{ ui.field("port", "Port", type="number", value=new.port, autocomplete="off", required=false, hint="Optional. The port the app listens on.") }}
-    {{ ui.field("check", "Ready check", value=new.check, autocomplete="off", required=false, hint="Optional. A path grund asks for on that port, such as /healthz, before a copy counts as ready.") }}
-    {{ ui.field("copies", "Copies", type="number", value=new.copies or "1", autocomplete="off", required=false) }}
-    <button class="btn btn-primary" type="submit">{{ ui.icon("plus", "icon-sm") }}Make it and deploy</button>
-  </form>
-</section>
+{{ ui.add_card("/" ~ org.slug ~ "/deploy", "Deploy a new app", "Deploy any container image by its name, such as nginx:1.27.") }}
+{% elif not apps and not list.q %}
+{{ ui.empty_state("No apps yet", "An owner or admin of " ~ org.slug ~ " deploys them, and they show up here.") }}
 {% endif %}
 {% endblock %}

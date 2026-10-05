@@ -1,0 +1,31 @@
+{% extends "layout-app.html.jinja" %}
+{% set org = viewer.current %}
+{% block title %}Domains · {{ org.slug }} · grund{% endblock %}
+{% block content %}
+{{ ui.page_head("Domains", "Where " ~ org.slug ~ "'s apps answer on the internet.") }}
+<section aria-labelledby="addresses">
+  <div class="section-head">
+    <h2 class="section-title" id="addresses">App addresses<span class="count">{{ addresses | length }}</span></h2>
+  </div>
+  {% if addresses %}
+  <ul class="rows">
+    {% for app in addresses %}
+    <li class="row">
+      <span class="row-icon">{{ ui.icon("globe", "icon-lg tone-ok") }}</span>
+      <div><p class="row-name"><a href="/{{ org.slug }}/apps/{{ app.name }}">{{ app.name }}</a></p><p class="row-sub">https://{{ app.address }}</p></div>
+      <span></span>
+      <a class="row-end icon-btn" href="https://{{ app.address }}" rel="noopener noreferrer" target="_blank" aria-label="Open https://{{ app.address }} in a new tab">{{ ui.icon("external", "icon-sm") }}</a>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  {% call ui.empty_state("No app has an address yet") %}An app gets one, <code>&lt;app&gt;-{{ org.slug }}.&lt;domain&gt;</code>, when a version publishes an HTTP port.{% endcall %}
+  {% endif %}
+</section>
+<section class="section" aria-labelledby="custom">
+  <div class="section-head">
+    <h2 class="section-title" id="custom">Your own domains <span class="tag">Coming soon</span></h2>
+  </div>
+  {{ ui.empty_state("Custom domains are in development", "Pointing a domain you own at an app is not built yet. Until then, each app answers on its address above.") }}
+</section>
+{% endblock %}

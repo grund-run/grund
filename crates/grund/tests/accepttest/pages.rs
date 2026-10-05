@@ -23,11 +23,102 @@ async fn every_page_is_html_that_needs_nothing_the_csp_forbids_and_is_never_cach
         then.carries_the_security_headers()
             .and_then(|t| t.header_contains("content-type", "text/html"))
             .and_then(|t| t.header("cache-control", "no-store"))
-            .and_then(|t| t.body_lacks("<script"))
             .and_then(|t| t.body_lacks(" style="))
             .and_then(|t| t.body_lacks("<style"))
             .and_then(|t| t.body_lacks(" onclick="))
             .map_err(|error| error.context(*path))?;
+        only_the_script_file(&then.body()?).map_err(|error| error.context(*path))?;
+    }
+    Ok(())
+}
+
+fn only_the_script_file(body: &str) -> anyhow::Result<()> {
+    let scripts = body.matches("<script").count();
+    let linked = body.matches("<script src=\"/static/grund.js?v=").count();
+    anyhow::ensure!(
+        scripts == linked && linked <= 1,
+        "a page loads only /static/grund.js, and no inline script"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn every_signed_in_page_renders_in_the_shell_with_nothing_the_csp_forbids()
+-> anyhow::Result<()> {
+    let (given, when, then) = testcase().await?;
+    let account = given.a_signed_in_account().await?;
+    let org = account.username.clone();
+    let pages = [
+        format!("/{org}"),
+        format!("/{org}/apps"),
+        format!("/{org}/apps?view=grid&sort=deployed&q=x"),
+        format!("/{org}/deploy"),
+        format!("/{org}/domains"),
+        format!("/{org}/templates"),
+        format!("/{org}/machines"),
+        format!("/{org}/settings"),
+        format!("/{org}/settings/members"),
+        "/settings/sessions".to_string(),
+        "/orgs/new".to_string(),
+    ];
+    let mut script = None;
+    for path in &pages {
+        when.visiting(path).await?;
+        then.status(200)
+            .and_then(|t| t.carries_the_security_headers())
+            .and_then(|t| t.header("cache-control", "no-store"))
+            .and_then(|t| t.body_contains("class=\"shell\""))
+            .and_then(|t| t.body_contains("action=\"/logout\""))
+            .and_then(|t| t.body_lacks(" style="))
+            .and_then(|t| t.body_lacks("<style"))
+            .and_then(|t| t.body_lacks(" onclick="))
+            .map_err(|error| error.context(path.clone()))?;
+        let body = then.body()?;
+        only_the_script_file(&body).map_err(|error| error.context(path.clone()))?;
+        if path.starts_with(&format!("/{org}")) {
+            anyhow::ensure!(
+                body.contains("placeholder=\"Search apps…\""),
+                "{path} has the search"
+            );
+            anyhow::ensure!(
+                path.ends_with("/deploy")
+                    || body.contains("<span class=\"btn-label\">Deploy app</span>"),
+                "{path} has the deploy button"
+            );
+        }
+        let start = body.find("/static/grund.js?v=");
+        script = start.map(|start| {
+            body[start..]
+                .chars()
+                .take_while(|c| *c != '"')
+                .collect::<String>()
+        });
+    }
+    when.visiting(&format!("/{org}/templates")).await?;
+    then.body_contains("Templates are in development")?
+        .body_contains("aria-current=\"page\">")?;
+
+    let script = script.expect("signed-in pages load the script");
+    when.visiting(&script).await?;
+    then.status(200)?
+        .header_contains("content-type", "text/javascript")?
+        .header("cache-control", "public, max-age=31536000, immutable")?
+        .body_contains("data-copy")?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_new_organisation_pages_are_a_404_to_someone_outside_it() -> anyhow::Result<()> {
+    let (given, _when, _then) = testcase().await?;
+    let owner = given.a_signed_in_account().await?;
+    let org = owner.username.clone();
+    let (outsider, outsider_when, outsider_then) = given.testcase.another_browser();
+    outsider.a_signed_in_account().await?;
+    for path in ["deploy", "domains", "templates"] {
+        outsider_when.visiting(&format!("/{org}/{path}")).await?;
+        outsider_then
+            .status(404)
+            .map_err(|error| error.context(path))?;
     }
     Ok(())
 }

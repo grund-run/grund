@@ -1,21 +1,23 @@
 {% extends "layout-app.html.jinja" %}
+{% import "components/images.html.jinja" as images %}
 {% set org = viewer.current %}
 {% block title %}{{ org.slug }} · grund{% endblock %}
 {% block content %}
-<div class="page-head">
-  <div>
-    <h1 class="page-title">Overview</h1>
-    <p class="status-line">{{ ui.icon("ok", "tone-ok") }}Signed in as {{ viewer.username }}, {{ org.role }} of {{ org.slug }}.</p>
+{{ images.sprite(icons) }}
+{{ ui.page_head("Overview", "Signed in as " ~ viewer.username ~ ", " ~ org.role ~ " of " ~ org.slug ~ ".") }}
+<section aria-labelledby="apps">
+  <div class="section-head">
+    <h2 class="section-title" id="apps">Apps<span class="count">{{ app_count }}</span></h2>
+    {% if app_count %}<a class="link-more" href="/{{ org.slug }}/apps">View all {{ ui.icon("arrow", "icon-sm") }}</a>{% endif %}
   </div>
-  <span class="btn btn-primary" aria-disabled="true">{{ ui.icon("plus") }}Deploy application</span>
-</div>
-<div class="callout">
-  {{ ui.icon("box", "icon-lg tone-orange") }}
-  <div class="callout-body">
-    <p class="callout-title">Deploying applications is in development</p>
-    <p class="callout-text">{{ org.slug }} is ready. Its applications, machines and domains arrive here next, and everything it runs is billed to it, not to a person.</p>
-  </div>
-</div>
+  {% if apps %}
+  {% call ui.items() %}{% for app in apps %}{{ ui.app_row(org, app) }}{% endfor %}{% endcall %}
+  {% elif org.manages %}
+  {{ ui.add_card("/" ~ org.slug ~ "/deploy", "Deploy your first app", "Deploy any container image by its name, such as nginx:1.27.") }}
+  {% else %}
+  {{ ui.empty_state("No apps yet", "An owner or admin of " ~ org.slug ~ " deploys them, and they show up here.") }}
+  {% endif %}
+</section>
 <section class="section" aria-labelledby="org">
   <div class="section-head">
     <h2 class="section-title" id="org">Organisation</h2>

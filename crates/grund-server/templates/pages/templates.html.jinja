@@ -1,0 +1,7 @@
+{% extends "layout-app.html.jinja" %}
+{% set org = viewer.current %}
+{% block title %}Templates · {{ org.slug }} · grund{% endblock %}
+{% block content %}
+{{ ui.page_head("Templates", "Ready-made apps you can deploy in one step.", tag="Coming soon") }}
+{% call ui.empty_state("Templates are in development") %}They are not built yet. Until then, deploy any container image by its name{% if org.manages %} from <a href="/{{ org.slug }}/deploy">Deploy an app</a>{% endif %}.{% endcall %}
+{% endblock %}

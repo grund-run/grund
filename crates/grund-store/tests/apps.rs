@@ -304,3 +304,43 @@ async fn each_new_secret_value_is_the_next_version(pool: PgPool) {
         Some(b"sealed-1".to_vec())
     );
 }
+
+#[sqlx::test(migrations = false)]
+async fn the_list_shows_the_release_an_app_runs_or_its_newest_before_one_is_live(pool: PgPool) {
+    let events = store(&pool).await;
+    let organisation_id = Uuid::now_v7();
+    let shop = create(&events, organisation_id, "shop").await;
+    let first = release(&events, shop).await;
+    decide(&events, shop, |app| {
+        let rollout = app.rollout.clone().unwrap();
+        vec![
+            AppEvent::RolloutSucceeded {
+                rollout_id: rollout.rollout_id,
+                succeeded_at: Utc::now(),
+            },
+            AppEvent::CurrentReleaseSet {
+                release: first,
+                set_at: Utc::now(),
+            },
+        ]
+    })
+    .await;
+    release(&events, shop).await;
+    let fresh = create(&events, organisation_id, "fresh").await;
+    release(&events, fresh).await;
+    release(&events, fresh).await;
+    create(&events, organisation_id, "empty").await;
+    let elsewhere = create(&events, Uuid::now_v7(), "other").await;
+    release(&events, elsewhere).await;
+
+    let mut running: Vec<(Uuid, i32)> = apps::running_releases(&pool, organisation_id)
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| (r.app_id, r.number))
+        .collect();
+    running.sort();
+    let mut expected = vec![(shop, 1), (fresh, 2)];
+    expected.sort();
+    assert_eq!(running, expected);
+}

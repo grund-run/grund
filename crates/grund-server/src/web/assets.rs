@@ -1,7 +1,7 @@
-//! Static files, embedded in the binary: the stylesheet, the fonts and the
-//! mark, which is also the favicon. The stylesheet is linked with a content
-//! hash in its query, so it is cached for a year and a new build is fetched
-//! at once.
+//! Static files, embedded in the binary: the stylesheet, the script, the
+//! fonts and the mark, which is also the favicon. The stylesheet and the
+//! script are linked with a content hash in their query, so they are cached
+//! for a year and a new build is fetched at once.
 
 use std::sync::LazyLock;
 
@@ -13,6 +13,7 @@ use axum::{
 use sha2::{Digest, Sha256};
 
 const CSS: &str = include_str!("../../assets/grund.css");
+const JS: &str = include_str!("../../assets/grund.js");
 const INTER: &[u8] = include_bytes!("../../assets/fonts/inter-latin.woff2");
 const MONO: &[u8] = include_bytes!("../../assets/fonts/jetbrains-mono-latin.woff2");
 const MARK: &str = include_str!("../../assets/mark.svg");
@@ -24,12 +25,21 @@ pub const MONO_LICENSE: &str = include_str!("../../assets/licenses/jetbrains-mon
 static CSS_VERSION: LazyLock<String> =
     LazyLock::new(|| hex::encode(&Sha256::digest(CSS.as_bytes())[..8]));
 
+static JS_VERSION: LazyLock<String> =
+    LazyLock::new(|| hex::encode(&Sha256::digest(JS.as_bytes())[..8]));
+
+/// Where signed-in pages load the script from.
+pub fn js_href() -> String {
+    format!("/static/grund.js?v={}", *JS_VERSION)
+}
+
 /// Where pages link the stylesheet from.
 pub fn css_href() -> String {
     format!("/static/grund.css?v={}", *CSS_VERSION)
 }
 
-/// The stylesheet's URL changes with its content, so it may be kept forever.
+/// The stylesheet's and the script's URLs change with their content, so they
+/// may be kept forever.
 pub const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 /// Fonts and the mark keep their names across builds, so they revalidate daily.
 pub const A_DAY: &str = "public, max-age=86400";
@@ -38,6 +48,7 @@ pub const A_DAY: &str = "public, max-age=86400";
 pub async fn serve(Path(path): Path<String>) -> Response {
     let (body, content_type, cache): (&'static [u8], &str, &str) = match path.as_str() {
         "grund.css" => (CSS.as_bytes(), "text/css; charset=utf-8", IMMUTABLE),
+        "grund.js" => (JS.as_bytes(), "text/javascript; charset=utf-8", IMMUTABLE),
         "fonts/inter-latin.woff2" => (INTER, "font/woff2", A_DAY),
         "fonts/jetbrains-mono-latin.woff2" => (MONO, "font/woff2", A_DAY),
         "favicon.svg" | "mark.svg" => (MARK.as_bytes(), "image/svg+xml", A_DAY),

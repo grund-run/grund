@@ -32,7 +32,10 @@ use uuid::Uuid;
 
 use crate::{
     registry::{Registry, ResolveError},
-    services::agents::{AgentsState, MachineCaller},
+    services::{
+        agents::{AgentsState, MachineCaller},
+        entry::{EntryState, publishes},
+    },
     state::State,
 };
 
@@ -113,6 +116,18 @@ pub struct AppView {
     pub row: AppRow,
     pub replicas: Vec<ReplicaRow>,
     pub secrets: Vec<(String, i32, DateTime<Utc>)>,
+}
+
+/// An app as its organisation's list shows it.
+#[derive(Debug, Clone)]
+pub struct AppListing {
+    pub view: AppView,
+    /// The spec of the release it runs, or of its newest while none is live.
+    pub spec: Option<AppSpec>,
+    /// When that release was made.
+    pub deployed_at: Option<DateTime<Utc>>,
+    /// `<app>-<organisation>.<GRUND_APP_DOMAIN>`, when it holds one.
+    pub address: Option<String>,
 }
 
 /// One secret value of a replica.
@@ -247,6 +262,43 @@ impl Apps {
             views.push(self.view(row).await?);
         }
         Ok(views)
+    }
+
+    /// The organisation's apps as its list shows them: each with the
+    /// release it runs and, when that release publishes a port, the
+    /// address it holds.
+    pub async fn listings(
+        &self,
+        organisation_id: Uuid,
+        slug: &str,
+    ) -> Result<Vec<AppListing>, AppsError> {
+        let mut running: std::collections::HashMap<Uuid, apps::RunningRow> =
+            apps::running_releases(&self.state.pool, organisation_id)
+                .await?
+                .into_iter()
+                .map(|row| (row.app_id, row))
+                .collect();
+        let entry = self.state.entry();
+        let mut connection = self.state.pool.acquire().await?;
+        let mut listings = Vec::new();
+        for view in self.list(organisation_id).await? {
+            let release = running.remove(&view.row.app_id);
+            let address = match &release {
+                Some(release) if publishes(&release.spec.0) => {
+                    entry
+                        .address(&mut connection, view.row.app_id, &view.row.name, slug)
+                        .await?
+                }
+                _ => None,
+            };
+            listings.push(AppListing {
+                view,
+                spec: release.as_ref().map(|r| r.spec.0.clone()),
+                deployed_at: release.map(|r| r.created_at),
+                address,
+            });
+        }
+        Ok(listings)
     }
 
     pub async fn create(

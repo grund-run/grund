@@ -658,6 +658,32 @@ pub async fn releases(
     .await
 }
 
+/// The release an app runs, for its organisation's list.
+#[derive(Debug, Clone, FromRow)]
+pub struct RunningRow {
+    pub app_id: Uuid,
+    pub number: i32,
+    pub spec: Json<grund_domain::app::AppSpec>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// For each live app of the organisation that has a release, its current
+/// release, or its newest while none has gone live. One row per app.
+pub async fn running_releases(
+    executor: impl PgExecutor<'_>,
+    organisation_id: Uuid,
+) -> Result<Vec<RunningRow>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT DISTINCT ON (r.app_id) r.app_id, r.number, r.spec, r.created_at \
+         FROM grund_releases r JOIN grund_apps a ON a.app_id = r.app_id \
+         WHERE a.organisation_id = $1 AND a.deleted_at IS NULL \
+         ORDER BY r.app_id, (r.number = a.current_release) IS TRUE DESC, r.number DESC",
+    )
+    .bind(organisation_id)
+    .fetch_all(executor)
+    .await
+}
+
 /// A replica with what its machine last said about it.
 #[derive(Debug, Clone, FromRow)]
 pub struct ReplicaRow {

@@ -40,3 +40,181 @@
   <a class="tab{% if active == 'members' %} is-active{% endif %}" href="/{{ org.slug }}/settings/members"{% if active == 'members' %} aria-current="page"{% endif %}>Members</a>
 </nav>
 {%- endmacro %}
+
+{#- ------------------------------------------------------------------
+    The shell's and the app list's building blocks. Each documents its
+    parameters; classes are grund.css's, built on its tokens. A new page
+    is page_head plus these, with no page-specific CSS.
+    ------------------------------------------------------------------ -#}
+
+{#- mark(name): the round-cornered letter standing for an organisation. -#}
+{% macro mark(name) -%}
+<span class="org-mark" aria-hidden="true">{{ name[:1] }}</span>
+{%- endmacro %}
+
+{#- nav_item(href, icon_name, label, active=false)
+    One sidebar link; active marks it as the current page. -#}
+{% macro nav_item(href, icon_name, label, active=false) -%}
+<li><a class="nav-item{% if active %} is-active{% endif %}" href="{{ href }}"{% if active %} aria-current="page"{% endif %}>{{ icon(icon_name) }}{{ label }}</a></li>
+{%- endmacro %}
+
+{#- button(label, href="", icon_name="", kind="primary", size="",
+           type="submit", collapse=false, extra="")
+    A link when href is set, else a <button type=type>.
+    kind:     primary (one per page), secondary, danger or ghost
+    size:     "" or "sm"
+    collapse: below 520 px only the icon shows (the label stays for
+              screen readers)
+    extra:    more classes, such as js-hide -#}
+{% macro button(label, href="", icon_name="", kind="primary", size="", type="submit", collapse=false, extra="") -%}
+{% set class = "btn btn-" ~ kind ~ (" btn-" ~ size if size else "") ~ (" " ~ extra if extra else "") %}
+{% if href %}<a class="{{ class }}" href="{{ href }}">{% else %}<button class="{{ class }}" type="{{ type }}">{% endif -%}
+{% if icon_name %}{{ icon(icon_name, "icon-sm") }}{% endif %}<span{% if collapse %} class="btn-label"{% endif %}>{{ label }}</span>
+{%- if href %}</a>{% else %}</button>{% endif %}
+{%- endmacro %}
+
+{#- page_head(title, lede="", tag="", back=none)
+    The page's title and one line under it.
+    tag:  a small tag beside the title, such as "Coming soon"
+    back: (href, label) for a link above the title, on detail pages
+    Called with {% call %}, the body goes at the right (tools or the
+    page's primary button). -#}
+{% macro page_head(title, lede="", tag="", back=none) -%}
+{% if back %}<a class="back" href="{{ back.0 }}">{{ icon("chevron", "icon-sm back-icon") }}{{ back.1 }}</a>{% endif %}
+<div class="page-head">
+  <div>
+    <h1 class="page-title">{{ title }}{% if tag %} <span class="tag">{{ tag }}</span>{% endif %}</h1>
+    {% if lede %}<p class="page-lede">{{ lede }}</p>{% endif %}
+  </div>
+  {% if caller is defined %}<div class="page-tools">{{ caller() }}</div>{% endif %}
+</div>
+{%- endmacro %}
+
+{#- empty_state(title, text="")
+    A dashed box: what is missing, and one sentence on how it appears.
+    Called with {% call %}, the body replaces text (for a link or code). -#}
+{% macro empty_state(title, text="") -%}
+<div class="empty"><strong>{{ title }}</strong>{% if caller is defined %}{{ caller() }}{% else %}{{ text }}{% endif %}</div>
+{%- endmacro %}
+
+{#- add_card(href, title, text)
+    The dashed card under a list that leads to making one more. -#}
+{% macro add_card(href, title, text) -%}
+<a class="empty empty-action" href="{{ href }}">
+  <span class="icon-btn icon-btn-boxed" aria-hidden="true">{{ icon("plus", "icon-sm") }}</span>
+  <strong>{{ title }}</strong>{{ text }}
+</a>
+{%- endmacro %}
+
+{#- note(text, hidden=false, filter_empty=false)
+    A quiet line about the list below it. filter_empty marks the one the
+    script shows when typing in the search matches nothing. Called with
+    {% call %}, the body replaces text. -#}
+{% macro note(text="", hidden=false, filter_empty=false) -%}
+<p class="note"{% if filter_empty %} data-filter-empty{% endif %}{% if hidden %} hidden{% endif %}>{% if caller is defined %}{{ caller() }}{% else %}{{ text }}{% endif %}</p>
+{%- endmacro %}
+
+{#- copy_button(text, label)
+    Copies text. Hidden until the script shows it, so it never appears
+    without a clipboard. label: what it copies, for its accessible name. -#}
+{% macro copy_button(text, label) -%}
+<button class="icon-btn copy" type="button" data-copy="{{ text }}" aria-label="Copy {{ label }}" title="Copy" hidden>{{ icon("copy", "icon-sm") }}</button>
+{%- endmacro %}
+
+{#- menu(label, icon_name="more")
+    A kebab (or other icon) button opening a list, as a <details>, so it
+    opens without script; the script closes it on Escape or a click
+    elsewhere. label: the button's accessible name. The {% call %} body is
+    menu_item()s. -#}
+{% macro menu(label, icon_name="more") -%}
+<details class="menu">
+  <summary class="icon-btn icon-btn-boxed" aria-label="{{ label }}">{{ icon(icon_name, "icon-sm") }}</summary>
+  <ul class="menu-list">{{ caller() }}</ul>
+</details>
+{%- endmacro %}
+
+{#- menu_item(href, icon_name, label, danger=false, external=false)
+    One entry of a menu. A destructive one is danger and ends in "…"
+    when it leads to a confirmation; external opens in a new tab. -#}
+{% macro menu_item(href, icon_name, label, danger=false, external=false) -%}
+<li><a class="menu-item{% if danger %} menu-item-danger{% endif %}" href="{{ href }}"{% if external %} rel="noopener noreferrer" target="_blank"{% endif %}>{{ icon(icon_name, "icon-sm") }}{{ label }}</a></li>
+{%- endmacro %}
+
+{#- list_tools(sorts, sort, list_href, grid_href, view, hidden={})
+    Sort and the grid/list toggle above a list.
+    sorts:     (value, label) pairs; sort: the chosen value
+    list_href, grid_href: the same page in either view; view: the current
+    hidden:    other query values the sort form keeps (q, view)
+    Sort is a GET form; the script submits it on change and hides its
+    button. -#}
+{% macro list_tools(sorts, sort, list_href, grid_href, view, hidden={}) -%}
+<div class="list-tools">
+  <form class="sort" method="get">
+    {% for name, value in hidden | items %}{% if value %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endif %}{% endfor %}
+    <label for="sort">Sort by</label>
+    <span class="select-wrap">
+      <select class="select" id="sort" name="sort" data-autosubmit>
+        {% for option in sorts %}<option value="{{ option.0 }}"{% if option.0 == sort %} selected{% endif %}>{{ option.1 }}</option>{% endfor %}
+      </select>
+      {{ icon("down", "icon-sm select-chevron") }}
+    </span>
+    {{ button("Sort", kind="secondary", size="sm", extra="js-hide") }}
+  </form>
+  <div class="view-toggle" role="group" aria-label="View">
+    <a class="icon-btn{% if view == 'grid' %} is-active{% endif %}" href="{{ grid_href }}" aria-label="Grid view"{% if view == 'grid' %} aria-current="true"{% endif %}>{{ icon("grid", "icon-sm") }}</a>
+    <a class="icon-btn{% if view == 'list' %} is-active{% endif %}" href="{{ list_href }}" aria-label="List view"{% if view == 'list' %} aria-current="true"{% endif %}>{{ icon("list", "icon-sm") }}</a>
+  </div>
+</div>
+{%- endmacro %}
+
+{#- image_icon(key): an app's image icon; key from web::apps::image_icon.
+    The page must carry images.sprite() with that key, except "image",
+    the neutral box from the main sprite. -#}
+{% macro image_icon(key) -%}
+{% if key == "image" %}<span class="image-icon image-icon-neutral" aria-hidden="true">{{ icon("box") }}</span>
+{%- else %}<svg class="image-icon" viewBox="0 0 32 32" aria-hidden="true"><use href="#img-{{ key }}"/></svg>{% endif %}
+{%- endmacro %}
+
+{#- app_address(app)
+    app.address: its public name, shown as an https link opening in a new
+    tab; else app.internal (<app>.grund.internal:<port>) with a copy
+    button; else nothing. -#}
+{% macro app_address(app) -%}
+{% if app.address %}<a class="address" href="https://{{ app.address }}" rel="noopener noreferrer" target="_blank"><span class="address-text">https://{{ app.address }}</span>{{ icon("external", "icon-sm") }}<span class="visually-hidden"> (opens in a new tab)</span></a>
+{%- elif app.internal %}<span class="address"><code class="address-text">{{ app.internal }}</code>{{ copy_button(app.internal, app.internal) }}</span>
+{%- endif %}
+{%- endmacro %}
+
+{#- app_row(org, app)
+    One app in a list (or, inside .items-grid, a card): its image icon,
+    its name over its image, its address and its menu.
+    org: the current organisation (slug, manages)
+    app: web::apps::listing_context (name, image, icon, address, internal) -#}
+{% macro app_row(org, app) -%}
+{% set base = "/" ~ org.slug ~ "/apps/" ~ app.name %}
+<li class="item" data-name="{{ app.name }}" data-image="{{ app.image }}">
+  {{ image_icon(app.icon) }}
+  <div class="item-text">
+    <a class="item-name" href="{{ base }}">{{ app.name }}</a>
+    <p class="item-sub">{{ app.image or "No version yet" }}</p>
+  </div>
+  <div class="item-meta">{{ app_address(app) }}</div>
+  {% call menu("Actions for " ~ app.name) %}
+    {% if app.address %}{{ menu_item("https://" ~ app.address, "external", "Open", external=true) }}{% endif %}
+    {{ menu_item(base, "grid", "Details") }}
+    {{ menu_item(base ~ "#versions", "clock", "Releases") }}
+    {% if org.manages %}
+    {{ menu_item(base ~ "#deploy", "arrow", "Deploy a new version") }}
+    {{ menu_item(base ~ "#copies", "bars", "Scale") }}
+    {{ menu_item(base ~ "#danger", "trash", "Delete…", danger=true) }}
+    {% endif %}
+  {% endcall %}
+</li>
+{%- endmacro %}
+
+{#- items(view="list"): the box of rows (list) or the grid of cards around
+    app_row()s; the {% call %} body is the rows. The script's search
+    filters it. -#}
+{% macro items(view="list") -%}
+<ul class="items items-{{ view }}" data-filterable>{{ caller() }}</ul>
+{%- endmacro %}

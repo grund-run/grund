@@ -19,6 +19,8 @@ pub const TEMPLATES: &[(&str, &str)] = embedded![
     "layout-auth.html.jinja",
     "layout-app.html.jinja",
     "components/ui.html.jinja",
+    "components/images.html.jinja",
+    "components/shell.html.jinja",
     "pages/login.html.jinja",
     "pages/signup.html.jinja",
     "pages/signup-owner.html.jinja",
@@ -35,6 +37,9 @@ pub const TEMPLATES: &[(&str, &str)] = embedded![
     "pages/machines.html.jinja",
     "pages/apps.html.jinja",
     "pages/app.html.jinja",
+    "pages/deploy.html.jinja",
+    "pages/domains.html.jinja",
+    "pages/templates.html.jinja",
     "pages/org-settings.html.jinja",
     "pages/org-new.html.jinja",
     "pages/no-organisation.html.jinja",
@@ -68,6 +73,10 @@ impl Templates {
         env.add_global(
             "css_href",
             Value::from_safe_string(crate::web::assets::css_href()),
+        );
+        env.add_global(
+            "js_href",
+            Value::from_safe_string(crate::web::assets::js_href()),
         );
         Ok(Self { env: Arc::new(env) })
     }

@@ -1,7 +1,8 @@
 {% extends "layout-app.html.jinja" %}
+{% import "components/images.html.jinja" as images %}
 {% block title %}Style guide · grund{% endblock %}
-{% block crumbs %}<li>Style guide</li>{% endblock %}
 {% block content %}
+{{ images.sprite(icons) }}
 <div class="page-head">
   <div>
     <h1 class="page-title">Style guide</h1>
@@ -58,6 +59,30 @@
   </ul>
 </section>
 
+<section class="section" aria-labelledby="sg-apps">
+  <div class="section-head"><h2 class="section-title" id="sg-apps">Lists of things</h2></div>
+  <p class="sg-caption">Macros in <code>components/ui.html.jinja</code>, each with its parameters documented there. <code>page_head</code> with a <code>{% raw %}{% call %}{% endraw %}</code> body for its tools, <code>list_tools</code> (sort as a GET form the script submits on change; the grid/list toggle as two links), <code>items</code> around <code>app_row</code>s, <code>add_card</code> under them. The top bar's search filters the list as you type. A new page is these plus <code>empty_state</code> and <code>button</code>, with no CSS of its own.</p>
+  {% call ui.page_head("Apps", "Run and manage your applications. Simple, powerful, yours.") %}
+  {{ ui.list_tools([("name", "Name"), ("deployed", "Last deployed"), ("created", "Newest")], "name", "#sg-apps", "#sg-apps", "list") }}
+  {% endcall %}
+  {% call ui.items() %}{% for app in apps %}{{ ui.app_row(viewer.current, app) }}{% endfor %}{% endcall %}
+  <p class="sg-caption">Each row: the image's icon, the name over the image, then the address. A public app shows its HTTPS address, which opens in a new tab; any other app with a port shows <code>&lt;app&gt;.grund.internal:&lt;port&gt;</code> with <code>copy_button</code> (shown only when the script runs; the text selects with one click without it). <code>menu</code> and <code>menu_item</code> make the kebab: open, details, releases, and for owners and admins deploy, scale and delete, which lead to the app's page.</p>
+  {% call ui.items("grid") %}{% for app in apps[:3] %}{{ ui.app_row(viewer.current, app) }}{% endfor %}{% endcall %}
+  {{ ui.add_card("#sg-apps", "Deploy a new app", "Deploy any container image by its name, such as nginx:1.27.") }}
+  <p class="sg-caption">Image icons (<code>image_icon</code>, sprite in <code>components/images.html.jinja</code>): well-known images get their own, any other Docker Hub image the whale, and an image from another registry the neutral box.</p>
+  <ul class="sg-images">
+    {% for key in gallery %}<li>{{ ui.image_icon(key) }}<code>{{ key }}</code></li>{% endfor %}
+    <li>{{ ui.image_icon("docker") }}<code>docker</code></li>
+    <li>{{ ui.image_icon("image") }}<code>image</code></li>
+  </ul>
+  <div class="sg-row">
+    {{ ui.button("Primary", icon_name="plus") }}
+    {{ ui.button("Secondary", kind="secondary") }}
+    {{ ui.button("Danger", kind="danger", size="sm") }}
+    {{ ui.button("Collapses on phones", href="#sg-apps", icon_name="plus", collapse=true) }}
+  </div>
+</section>
+
 <section class="section" aria-labelledby="sg-forms">
   <div class="section-head"><h2 class="section-title" id="sg-forms">Forms</h2></div>
   <div class="auth-card">
@@ -104,6 +129,6 @@
 
 <section class="section" aria-labelledby="sg-empty">
   <div class="section-head"><h2 class="section-title" id="sg-empty">Empty state</h2></div>
-  <div class="empty"><strong>No applications yet</strong>Deploy one and it shows up here.</div>
+  {{ ui.empty_state("No applications yet", "Deploy one and it shows up here.") }}
 </section>
 {% endblock %}

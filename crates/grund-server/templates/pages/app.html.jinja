@@ -2,14 +2,9 @@
 {% set org = viewer.current %}
 {% block title %}{{ app.name }} · Apps · {{ org.slug }} · grund{% endblock %}
 {% block head %}{% if app.busy %}<meta http-equiv="refresh" content="3">{% endif %}{% endblock %}
-{% block crumbs %}<li><a href="/{{ org.slug }}/apps">Apps</a></li><li>{{ app.name }}</li>{% endblock %}
 {% block content %}
-<div class="page-head">
-  <div>
-    <h1 class="page-title">{{ app.name }}</h1>
-    <p class="status-line" id="app-status">{{ ui.status(app.line, app.tone) }}</p>
-  </div>
-</div>
+{{ ui.page_head(app.name, back=("/" ~ org.slug ~ "/apps", "Apps")) }}
+<p class="status-line" id="app-status">{{ ui.status(app.line, app.tone) }}</p>
 {{ ui.form_ok(notice) }}
 {{ ui.form_error(error) }}
 {% for message in waiting %}{{ ui.form_error(message) }}{% endfor %}

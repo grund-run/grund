@@ -1,0 +1,108 @@
+{#- The signed-in app shell's parts. layout-app.html.jinja puts them
+    together; a page never calls them itself. Classes are grund.css's shell
+    vocabulary (.sidebar, .nav, .nav-item, .org-switch, .topbar, .search). -#}
+{% import "components/ui.html.jinja" as ui %}
+
+{#- sidebar(viewer, section, csrf)
+    viewer:  viewer_context (username, email, initials, orgs, current,
+             can_create)
+    section: the current page's section, which marks its nav item
+    csrf:    the token for the sign-out form in the account menu -#}
+{% macro sidebar(viewer, section, csrf) -%}
+{% set org = viewer.current %}
+<nav class="sidebar" aria-label="Main">
+  {{ ui.brand() }}
+  {% if org %}
+  {{ org_switcher(org, viewer.orgs, viewer.can_create) }}
+  <ul class="nav">
+    {{ ui.nav_item("/" ~ org.slug, "home", "Overview", section == "overview") }}
+    {{ ui.nav_item("/" ~ org.slug ~ "/apps", "grid", "Apps", section in ["apps", "deploy"]) }}
+    {{ ui.nav_item("/" ~ org.slug ~ "/machines", "server", "Machines", section == "machines") }}
+    {{ ui.nav_item("/" ~ org.slug ~ "/domains", "globe", "Domains", section == "domains") }}
+    {{ ui.nav_item("/" ~ org.slug ~ "/templates", "template", "Templates", section == "templates") }}
+    {{ ui.nav_item("/" ~ org.slug ~ "/settings", "users", "Organisation", section in ["org-settings", "members"]) }}
+  </ul>
+  {% else %}
+  <ul class="nav">
+    {% if viewer.can_create %}{{ ui.nav_item("/orgs/new", "plus", "New organisation", section == "new-organisation") }}{% endif %}
+  </ul>
+  {% endif %}
+  <ul class="nav nav-foot">
+    {{ ui.nav_item("https://git.kjuulh.io/grund/grund", "book", "Docs & community") }}
+    {{ ui.nav_item("/settings/sessions", "user", "Account", section == "settings") }}
+  </ul>
+  {{ account_menu(viewer, csrf) }}
+</nav>
+{%- endmacro %}
+
+{#- org_switcher(org, orgs, can_create)
+    org:        the current organisation (slug, role)
+    orgs:       every organisation of the viewer (slug, current)
+    can_create: whether to offer "New organisation"
+    A <details>, so it opens without script. -#}
+{% macro org_switcher(org, orgs, can_create) -%}
+<details class="org-switch menu">
+  <summary class="org-switch-current">
+    {{ ui.mark(org.slug) }}
+    <span class="org-switch-text"><span class="org-switch-name">{{ org.slug }}</span><span class="org-switch-role">{{ org.role | capitalize }}</span></span>
+    {{ ui.icon("down", "icon-sm org-switch-chevron") }}
+  </summary>
+  <ul class="menu-list menu-list-full">
+    {% for other in orgs %}
+    <li><a class="menu-item{% if other.current %} is-current{% endif %}" href="/{{ other.slug }}"{% if other.current %} aria-current="true"{% endif %}>{{ ui.mark(other.slug) }}{{ other.slug }}</a></li>
+    {% endfor %}
+    {% if can_create %}{{ ui.menu_item("/orgs/new", "plus", "New organisation") }}{% endif %}
+  </ul>
+</details>
+{%- endmacro %}
+
+{#- account_menu(viewer, csrf)
+    The avatar (initials) opening a menu with the username, the email and
+    Sign out. -#}
+{% macro account_menu(viewer, csrf) -%}
+<details class="account menu">
+  <summary class="avatar" aria-label="{{ viewer.username }}: account menu">{{ viewer.initials }}</summary>
+  <div class="menu-list menu-list-up">
+    <p class="menu-title">{{ viewer.username }}</p>
+    {% if viewer.email %}<p class="menu-text">{{ viewer.email }}</p>{% endif %}
+    <form method="post" action="/logout">
+      {{ ui.csrf_field(csrf) }}
+      <button class="menu-item" type="submit">{{ ui.icon("logout", "icon-sm") }}Sign out</button>
+    </form>
+  </div>
+</details>
+{%- endmacro %}
+
+{#- topbar(viewer, section, list=none)
+    On organisation pages: the app search and the Deploy app button (for
+    owners and admins, not on the deploy page itself).
+    list: the Apps page's query (q, sort, view), so the search keeps the
+          order and the view and filters the list as you type; none
+          elsewhere. -#}
+{% macro topbar(viewer, section, list=none) -%}
+{% set org = viewer.current %}
+<header class="topbar">
+  {% if org %}
+  {{ search("/" ~ org.slug ~ "/apps", "Search apps", list) }}
+  {% if org.manages and section != "deploy" %}
+  <span class="topbar-end">{{ ui.button("Deploy app", href="/" ~ org.slug ~ "/deploy", icon_name="plus", collapse=true) }}</span>
+  {% endif %}
+  {% else %}
+  <p class="topbar-title">{{ viewer.username }}</p>
+  {% endif %}
+</header>
+{%- endmacro %}
+
+{#- search(action, label, list=none)
+    A GET form sending q to action.
+    label: the field's accessible name; its placeholder is label ~ "…"
+    list:  as for topbar: kept as hidden fields, and data-filter turns on
+           the script's filtering of the page's [data-filterable] list. -#}
+{% macro search(action, label, list=none) -%}
+<form class="search" role="search" method="get" action="{{ action }}">
+  <label class="visually-hidden" for="search">{{ label }}</label>
+  {{ ui.icon("search", "icon-sm search-icon") }}
+  <input id="search" name="q" type="search" placeholder="{{ label }}…" autocomplete="off" value="{{ list.q if list else '' }}"{% if list %} data-filter{% endif %}>
+  {% if list %}<input type="hidden" name="sort" value="{{ list.sort }}"><input type="hidden" name="view" value="{{ list.view }}">{% endif %}
+</form>
+{%- endmacro %}
