@@ -276,20 +276,24 @@ pub async fn run<R: VmRuntime, C: ContainerRuntime + 'static>(
         .as_ref()
         .map(|n| n.relay_urls.clone())
         .unwrap_or_default();
+    let entry_endpoint: EntryEndpoint = Default::default();
     if record.network.is_none() && !args.once {
         tokio::spawn(entry_only(
             gate.clone(),
             link.key.to_bytes(),
             entry_relays.clone(),
+            entry_endpoint.clone(),
         ));
     }
-    let mesh = std::sync::Arc::new(std::sync::OnceLock::new());
+    let mesh: std::sync::Arc<std::sync::OnceLock<grund_net::mesh::Mesh>> =
+        std::sync::Arc::new(std::sync::OnceLock::new());
     if let Some(network) = record.network.clone().filter(|_| !args.once) {
         let (link, seed, data_dir) = (link.clone(), link.key.to_bytes(), args.data_dir.clone());
         let (lists, mesh) = (lists.clone(), mesh.clone());
         let entry_gate = gate.clone();
         let fallback_gate = gate.clone();
         let fallback_seed = link.key.to_bytes();
+        let fallback_endpoint = entry_endpoint.clone();
         tokio::spawn(async move {
             let options = crate::net::NetOptions {
                 lists: Some(lists),
@@ -304,7 +308,13 @@ pub async fn run<R: VmRuntime, C: ContainerRuntime + 'static>(
             if let Err(error) = crate::net::run(link, network, seed, data_dir, options).await {
                 tracing::error!(error = %format!("{error:#}"), "private network stopped");
             }
-            entry_only(fallback_gate, fallback_seed, entry_relays).await;
+            entry_only(
+                fallback_gate,
+                fallback_seed,
+                entry_relays,
+                fallback_endpoint,
+            )
+            .await;
         });
     }
     let mut apps = Apps::new(
@@ -346,7 +356,12 @@ pub async fn run<R: VmRuntime, C: ContainerRuntime + 'static>(
             record.machine_id.clone(),
             args.gate_remote_copies.clone(),
         ));
-        tokio::spawn(stop_at_shutdown(containers.clone(), gate.clone()));
+        tokio::spawn(stop_at_shutdown(
+            containers.clone(),
+            gate.clone(),
+            mesh.clone(),
+            entry_endpoint.clone(),
+        ));
     }
     let context = Round {
         link: &link,
@@ -457,7 +472,14 @@ async fn keep_gate(
     }
 }
 
-async fn entry_only(gate: crate::gate::Gate, seed: [u8; 32], relays: Vec<String>) {
+type EntryEndpoint = std::sync::Arc<std::sync::Mutex<Option<iroh::Endpoint>>>;
+
+async fn entry_only(
+    gate: crate::gate::Gate,
+    seed: [u8; 32],
+    relays: Vec<String>,
+    held: EntryEndpoint,
+) {
     let relays: Vec<iroh::RelayUrl> = relays.iter().filter_map(|u| u.parse().ok()).collect();
     let config = grund_net::endpoint::NetConfig {
         relays,
@@ -475,6 +497,7 @@ async fn entry_only(gate: crate::gate::Gate, seed: [u8; 32], relays: Vec<String>
         {
             Ok(endpoint) => {
                 tracing::info!(bound = ?endpoint.bound_sockets(), "gate: taking entry streams on the machine key, beside no private network");
+                *held.lock().expect("entry endpoint lock") = Some(endpoint.clone());
                 let _router = iroh::protocol::Router::builder(endpoint)
                     .accept(
                         grund_entry::ENTRY_ALPN,
@@ -546,9 +569,15 @@ fn read_remote_copies(path: &Path) -> Vec<crate::gate::RemoteCopy> {
         .collect()
 }
 
+/// How long the agent waits, at stop, for its peers to hear that its
+/// endpoints close.
+pub const CLOSE_ENDPOINTS_WITHIN: Duration = Duration::from_secs(1);
+
 async fn stop_at_shutdown<C: ContainerRuntime + 'static>(
     containers: std::sync::Arc<C>,
     gate: crate::gate::Gate,
+    mesh: std::sync::Arc<std::sync::OnceLock<grund_net::mesh::Mesh>>,
+    entry_endpoint: EntryEndpoint,
 ) {
     use tokio::signal::unix::{SignalKind, signal};
     let Ok(mut term) = signal(SignalKind::terminate()) else {
@@ -560,6 +589,23 @@ async fn stop_at_shutdown<C: ContainerRuntime + 'static>(
     tracing::info!(
         elapsed_ms = draining.elapsed().as_millis() as u64,
         "the gate drained"
+    );
+    let endpoints: Vec<iroh::Endpoint> = mesh
+        .get()
+        .and_then(|m| m.endpoint())
+        .into_iter()
+        .chain(entry_endpoint.lock().expect("entry endpoint lock").clone())
+        .collect();
+    let closing = std::time::Instant::now();
+    let mut closes = tokio::task::JoinSet::new();
+    for endpoint in endpoints.clone() {
+        closes.spawn(async move { endpoint.close().await });
+    }
+    let _ = tokio::time::timeout(CLOSE_ENDPOINTS_WITHIN, closes.join_all()).await;
+    tracing::info!(
+        endpoints = endpoints.len(),
+        elapsed_ms = closing.elapsed().as_millis() as u64,
+        "closed the endpoints, so the edge and peers know at once"
     );
     let stopping = tokio::process::Command::new("systemctl")
         .arg("is-system-running")

@@ -33,6 +33,13 @@ pub const IDLE: Duration = Duration::from_secs(300);
 /// How long the edge waits to reach a machine.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// After a machine closes its connection (an agent restarting), the edge
+/// dials it again this often, each attempt given [`REDIAL_TIMEOUT`], until
+/// it answers or [`REDIAL_FOR`] has passed.
+pub const REDIAL_EVERY: Duration = Duration::from_millis(250);
+pub const REDIAL_TIMEOUT: Duration = Duration::from_secs(1);
+pub const REDIAL_FOR: Duration = Duration::from_secs(300);
+
 /// The least, and the most, the edge waits for a gate's answer (§6.3: 1 s,
 /// or three times the round trip if that is larger).
 pub const ANSWER_MIN: Duration = Duration::from_secs(1);
@@ -114,6 +121,10 @@ impl Machine {
             until: now + next,
             next: (next * 2).min(EJECT_MAX),
         });
+    }
+
+    fn back(&self) {
+        *self.down.lock().expect("machine lock") = None;
     }
 
     /// The gate accepted a stream for `name`, with `ready` copies.
@@ -245,7 +256,7 @@ impl Pool {
     }
 
     /// The open connection to `machine`, opened now if there is none.
-    pub async fn connection(&self, machine: &Machine) -> anyhow::Result<Connection> {
+    pub async fn connection(&self, machine: &Arc<Machine>) -> anyhow::Result<Connection> {
         let mut slot = machine.connection.lock().await;
         *machine.last_used.lock().expect("machine lock") = Instant::now();
         let (endpoint, generation) = self.endpoint.lock().expect("pool lock").clone();
@@ -255,19 +266,80 @@ impl Pool {
         {
             return Ok(connection.clone());
         }
-        let mut addr = EndpointAddr::new(machine.endpoint_id);
-        for relay in machine.relays.lock().expect("machine lock").iter() {
-            addr = addr.with_relay_url(relay.clone());
-        }
         let connection = tokio::time::timeout(
             CONNECT_TIMEOUT,
-            endpoint.connect(addr, grund_entry::ENTRY_ALPN),
+            endpoint.connect(Self::addr(machine), grund_entry::ENTRY_ALPN),
         )
         .await
         .map_err(|_| anyhow::anyhow!("no connection within {} s", CONNECT_TIMEOUT.as_secs()))?
         .map_err(|e| anyhow::anyhow!("connect: {e}"))?;
         *slot = Some((connection.clone(), generation));
+        self.watch(machine.clone(), connection.clone());
         Ok(connection)
+    }
+
+    fn addr(machine: &Machine) -> EndpointAddr {
+        let mut addr = EndpointAddr::new(machine.endpoint_id);
+        for relay in machine.relays.lock().expect("machine lock").iter() {
+            addr = addr.with_relay_url(relay.clone());
+        }
+        addr
+    }
+
+    fn watch(&self, machine: Arc<Machine>, connection: Connection) {
+        let pool = self.clone();
+        tokio::spawn(async move {
+            let reason = connection.closed().await;
+            match &reason {
+                iroh::endpoint::ConnectionError::LocallyClosed => return,
+                iroh::endpoint::ConnectionError::ApplicationClosed(close)
+                    if close.error_code == grund_entry::NOT_AN_ENTRY_KEY.into() =>
+                {
+                    machine.eject_all();
+                    return;
+                }
+                _ => {}
+            }
+            {
+                let slot = machine.connection.lock().await;
+                if slot
+                    .as_ref()
+                    .is_none_or(|(c, _)| c.stable_id() != connection.stable_id())
+                {
+                    return;
+                }
+            }
+            machine.eject_all();
+            tracing::info!(machine = %machine.endpoint_id, %reason, "edge: a machine closed its connection; dialing it again");
+            pool.redial(machine).await;
+        });
+    }
+
+    async fn redial(&self, machine: Arc<Machine>) {
+        let lost = Instant::now();
+        while lost.elapsed() < REDIAL_FOR {
+            tokio::time::sleep(REDIAL_EVERY).await;
+            let mut slot = machine.connection.lock().await;
+            let (endpoint, generation) = self.endpoint.lock().expect("pool lock").clone();
+            if let Some((connection, opened_by)) = slot.as_ref()
+                && *opened_by == generation
+                && connection.close_reason().is_none()
+            {
+                return;
+            }
+            let dialed = tokio::time::timeout(
+                REDIAL_TIMEOUT,
+                endpoint.connect(Self::addr(&machine), grund_entry::ENTRY_ALPN),
+            )
+            .await;
+            if let Ok(Ok(connection)) = dialed {
+                *slot = Some((connection.clone(), generation));
+                machine.back();
+                tracing::info!(machine = %machine.endpoint_id, after_ms = lost.elapsed().as_millis() as u64, "edge: a machine answers again");
+                self.watch(machine.clone(), connection);
+                return;
+            }
+        }
     }
 
     /// Opens an entry stream on `connection`.
@@ -285,6 +357,36 @@ impl Pool {
             .find(|p| p.is_selected())
             .map(|p| p.rtt());
         rtt.map_or(ANSWER_MIN, |rtt| (rtt * 3).clamp(ANSWER_MIN, ANSWER_MAX))
+    }
+
+    /// Tells every machine the edge holds a connection to that it is
+    /// stopping ([`grund_entry::DRAIN`]), so its gate closes each client
+    /// connection after the current request. Returns how many were told.
+    pub async fn drain(&self) -> usize {
+        let machines: Vec<Arc<Machine>> = self
+            .machines
+            .lock()
+            .expect("pool lock")
+            .values()
+            .cloned()
+            .collect();
+        let mut told = 0;
+        for machine in machines {
+            let connection = machine.connection.lock().await.clone();
+            let Some((connection, _)) = connection else {
+                continue;
+            };
+            let notice = async {
+                let mut send = connection.open_uni().await?;
+                send.write_all(grund_entry::DRAIN).await?;
+                send.finish()?;
+                anyhow::Ok(())
+            };
+            if let Ok(Ok(())) = tokio::time::timeout(Duration::from_secs(1), notice).await {
+                told += 1;
+            }
+        }
+        told
     }
 
     /// Closes connections idle longer than [`IDLE`] with no stream open.

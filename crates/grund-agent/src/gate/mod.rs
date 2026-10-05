@@ -231,7 +231,14 @@ impl std::fmt::Debug for Gate {
 struct ConnectionState {
     active: AtomicUsize,
     last: Mutex<Instant>,
+    closing: AtomicBool,
 }
+
+/// While draining, how long a client connection must have nothing in
+/// flight before the gate closes it. A client sending back to back gets
+/// `Connection: close` on its next answer instead, so a request it sends as
+/// the connection closes is never lost.
+pub const DRAIN_QUIET: Duration = Duration::from_millis(250);
 
 struct InFlight {
     copy: Arc<CopyState>,
@@ -610,16 +617,42 @@ impl Gate {
     where
         I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
+        let (keep, never) = tokio::sync::watch::channel(false);
+        self.serve_until(io, client, never).await;
+        drop(keep);
+    }
+
+    /// [`Gate::serve`], also closing the connection after its current
+    /// request once `edge_stopping` turns true: the edge that handed it over
+    /// is stopping.
+    pub async fn serve_until<I>(
+        &self,
+        io: I,
+        client: EntryClient,
+        mut edge_stopping: tokio::sync::watch::Receiver<bool>,
+    ) where
+        I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
         self.0.connections.fetch_add(1, Relaxed);
         let connection = Arc::new(ConnectionState {
             active: AtomicUsize::new(0),
             last: Mutex::new(Instant::now()),
+            closing: AtomicBool::new(false),
         });
         let gate = self.clone();
         let state = connection.clone();
         let service = hyper::service::service_fn(move |request: Request<Incoming>| {
             let (gate, client, state) = (gate.clone(), client.clone(), state.clone());
-            async move { Ok::<_, std::convert::Infallible>(gate.route(request, &client, state).await) }
+            async move {
+                let http1 = request.version() < hyper::Version::HTTP_2;
+                let mut response = gate.route(request, &client, state.clone()).await;
+                if http1 && state.closing.load(Relaxed) {
+                    response
+                        .headers_mut()
+                        .insert(header::CONNECTION, HeaderValue::from_static("close"));
+                }
+                Ok::<_, std::convert::Infallible>(response)
+            }
         });
         let limits = &self.0.limits;
         let mut builder = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());
@@ -639,11 +672,29 @@ impl Gate {
         let mut shutdown = self.0.shutdown.subscribe();
         let mut idle_check = tokio::time::interval(Duration::from_secs(1));
         let mut closing = false;
+        let mut draining = false;
+        let mut edge_may_stop = true;
+        let mut quiet_check = tokio::time::interval(Duration::from_millis(50));
         loop {
             tokio::select! {
                 _ = served.as_mut() => break,
-                changed = shutdown.changed(), if !closing => {
+                changed = edge_stopping.changed(), if !draining && edge_may_stop => {
+                    if changed.is_err() {
+                        edge_may_stop = false;
+                    } else if *edge_stopping.borrow() {
+                        draining = true;
+                        connection.closing.store(true, Relaxed);
+                    }
+                }
+                changed = shutdown.changed(), if !draining => {
                     if changed.is_err() || *shutdown.borrow() {
+                        draining = true;
+                        connection.closing.store(true, Relaxed);
+                    }
+                }
+                _ = quiet_check.tick(), if draining && !closing => {
+                    let idle_for = connection.last.lock().expect("connection lock").elapsed();
+                    if connection.active.load(Relaxed) == 0 && idle_for >= DRAIN_QUIET {
                         closing = true;
                         served.as_mut().graceful_shutdown();
                     }

@@ -54,6 +54,61 @@ impl Agent {
     fn log(&self) -> String {
         std::fs::read_to_string(self.dir.join("agent.log")).unwrap_or_default()
     }
+
+    async fn stop(&mut self) -> anyhow::Result<()> {
+        let stopped = std::process::Command::new("kill")
+            .args(["-TERM", &self.child.id().to_string()])
+            .status()?;
+        anyhow::ensure!(stopped.success(), "kill -TERM failed");
+        while self.child.try_wait()?.is_none() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        Ok(())
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.child = spawn_agent(&self.dir)?;
+        Ok(())
+    }
+}
+
+fn spawn_agent(dir: &Path) -> anyhow::Result<std::process::Child> {
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("agent.log"))?;
+    Ok(
+        std::process::Command::new(crate::accepttest::fixtures::grund_binary())
+            .args([
+                "agent",
+                "--app-runtime",
+                "simulated",
+                "--interval",
+                "1",
+                "--data-dir",
+            ])
+            .arg(dir)
+            .arg("--policy")
+            .arg(dir.join("policy.toml"))
+            .arg("--gate-remote-copies")
+            .arg(dir.join("remote-copies.json"))
+            .env_clear()
+            .env("RUST_LOG", "grund_agent=debug,info")
+            .stdout(log.try_clone()?)
+            .stderr(log)
+            .spawn()?,
+    )
+}
+
+async fn appears(within: Duration, before: usize, read: impl Fn() -> usize) -> Option<Instant> {
+    let started = Instant::now();
+    while started.elapsed() < within {
+        if read() > before {
+            return Some(Instant::now());
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    None
 }
 
 fn simulated_address(replica_id: &str) -> Ipv4Addr {
@@ -226,26 +281,7 @@ impl Stack {
             "{}",
             String::from_utf8_lossy(&joined.stderr)
         );
-        let log = std::fs::File::create(dir.join("agent.log"))?;
-        let child = std::process::Command::new(crate::accepttest::fixtures::grund_binary())
-            .args([
-                "agent",
-                "--app-runtime",
-                "simulated",
-                "--interval",
-                "1",
-                "--data-dir",
-            ])
-            .arg(&dir)
-            .arg("--policy")
-            .arg(dir.join("policy.toml"))
-            .arg("--gate-remote-copies")
-            .arg(dir.join("remote-copies.json"))
-            .env_clear()
-            .env("RUST_LOG", "grund_agent=debug,info")
-            .stdout(log.try_clone()?)
-            .stderr(log)
-            .spawn()?;
+        let child = spawn_agent(&dir)?;
         Ok(Agent { dir, child })
     }
 
@@ -1003,6 +1039,190 @@ async fn an_app_is_served_through_the_edge_while_grund_is_down_and_keeps_its_cop
     anyhow::ensure!(
         after == before,
         "grund's return replaced copies that never stopped: {before:?} then {after:?}"
+    );
+    Ok(())
+}
+
+const EDGE_REDIALS_WITHIN: Duration = Duration::from_secs(2);
+
+#[tokio::test]
+async fn an_agent_restarted_under_load_costs_no_request_and_the_edge_redials_it_at_once()
+-> anyhow::Result<()> {
+    let Some(mut stack) = a_stack().await? else {
+        return Ok(());
+    };
+    let owner = stack.given.a_signed_in_account().await?;
+    let org = owner.username.clone();
+    let mut a = stack.a_machine(&org, "box-a").await?;
+    let b = stack.a_machine(&org, "box-b").await?;
+    stack.registry.publish("acme/steady", "1");
+    stack
+        .call(
+            "CreateApp",
+            json!({"organisation": org, "name": "steady", "settings": {
+                "copies": 2,
+                "rollout": {"minReadySeconds": 1, "readyDeadlineSeconds": 20, "drainSeconds": 5},
+                "rescheduleAfterSeconds": 120,
+            }}),
+        )
+        .await?;
+    stack.deploy(&org, "steady", "1", 2).await?;
+    let running = stack
+        .until(
+            &org,
+            "steady",
+            Duration::from_secs(40),
+            "two copies on two machines",
+            |app| {
+                let copies = running_replicas(app);
+                copies.len() == 2 && copies[0].1 != copies[1].1
+            },
+        )
+        .await?;
+    let copies = running_replicas(&running);
+    write_remote_copies(&[("box-a", &a), ("box-b", &b)], "steady", &copies);
+    stack.start_edge()?;
+    let name = stack.name_of(&org, "steady");
+    stack.served(&name, Duration::from_secs(60)).await?;
+
+    let (tally, handles) = load(&stack, &name, 8);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let edge_log = |line: &'static str| {
+        let dir = stack.edge_dir.clone();
+        move || {
+            std::fs::read_to_string(dir.join("edge.log"))
+                .unwrap_or_default()
+                .matches(line)
+                .count()
+        }
+    };
+    let (closed, answers) = (
+        edge_log("a machine closed its connection"),
+        edge_log("a machine answers again"),
+    );
+    let noticed = tokio::spawn(appears(Duration::from_secs(30), closed(), closed));
+    let redialed = tokio::spawn(appears(Duration::from_secs(60), answers(), answers));
+    let a_dir = a.dir.clone();
+    let taking = move || {
+        std::fs::read_to_string(a_dir.join("agent.log"))
+            .unwrap_or_default()
+            .matches("gate: taking entry streams")
+            .count()
+    };
+    let taking_before = taking();
+    a.stop().await?;
+    let stopped = Instant::now();
+    a.start()?;
+    let back = appears(Duration::from_secs(30), taking_before, taking).await;
+    let (noticed, redialed) = (noticed.await?, redialed.await?);
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    tally.stop.store(true, Relaxed);
+    for handle in handles {
+        let _ = handle.await;
+    }
+    let (ok, failed) = (tally.ok.load(Relaxed), tally.failed.load(Relaxed));
+    let noticed_after = noticed.map(|t| t.saturating_duration_since(stopped));
+    let redialed_after = back
+        .zip(redialed)
+        .map(|(b, r)| r.saturating_duration_since(b));
+    eprintln!(
+        "agent restarted under load: {ok} served, {failed} failed; the edge noticed {noticed_after:?} after the agent stopped, and redialed {redialed_after:?} after it was back"
+    );
+    anyhow::ensure!(
+        failed == 0,
+        "{failed} of {} requests failed: {:?}",
+        ok + failed,
+        tally
+            .failures
+            .lock()
+            .unwrap()
+            .iter()
+            .take(10)
+            .collect::<Vec<_>>()
+    );
+    anyhow::ensure!(
+        noticed_after.is_some_and(|t| t <= Duration::from_secs(1)),
+        "the edge did not notice the agent stop at once ({noticed_after:?}):\n{}",
+        stack.edge_log()
+    );
+    anyhow::ensure!(
+        redialed_after.is_some_and(|t| t <= EDGE_REDIALS_WITHIN),
+        "the edge redialed only {redialed_after:?} after the agent was back:\n{}",
+        stack.edge_log()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_edge_stopped_under_load_finishes_every_request_it_took() -> anyhow::Result<()> {
+    let Some(mut stack) = a_stack().await? else {
+        return Ok(());
+    };
+    let owner = stack.given.a_signed_in_account().await?;
+    let org = owner.username.clone();
+    let a = stack.a_machine(&org, "box-a").await?;
+    stack.registry.publish("acme/steady", "1");
+    stack
+        .call(
+            "CreateApp",
+            json!({"organisation": org, "name": "steady", "settings": {
+                "copies": 1,
+                "rollout": {"minReadySeconds": 1, "readyDeadlineSeconds": 20, "drainSeconds": 1},
+                "rescheduleAfterSeconds": 30,
+            }}),
+        )
+        .await?;
+    stack.deploy(&org, "steady", "1", 1).await?;
+    let running = stack
+        .until(&org, "steady", Duration::from_secs(40), "one copy", |app| {
+            running_replicas(app).len() == 1
+        })
+        .await?;
+    write_remote_copies(&[("box-a", &a)], "steady", &running_replicas(&running));
+    stack.start_edge()?;
+    let name = stack.name_of(&org, "steady");
+    stack.served(&name, Duration::from_secs(60)).await?;
+
+    let mut held = Vec::new();
+    for _ in 0..8 {
+        let (name, port, roots) = (name.clone(), stack.pebble.tls_port, stack.roots.clone());
+        held.push(tokio::spawn(async move {
+            let mut conn = Conn::open(&name, port, roots, None).await?;
+            conn.get(&name, "/?wait=2000", &[]).await
+        }));
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let mut edge = stack
+        .edge
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("the edge runs"))?;
+    let stopped = std::process::Command::new("kill")
+        .args(["-TERM", &edge.0.id().to_string()])
+        .status()?;
+    anyhow::ensure!(stopped.success());
+    let mut statuses = Vec::new();
+    for request in held {
+        statuses.push(match request.await? {
+            Ok(answer) => answer.status.to_string(),
+            Err(error) => format!("{error:#}"),
+        });
+    }
+    let exited = loop {
+        if let Some(status) = edge.0.try_wait()? {
+            break status;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    eprintln!("edge stopped with 8 requests in flight: {statuses:?}, exit {exited}");
+    anyhow::ensure!(
+        statuses.iter().all(|s| s == "200"),
+        "the edge cut requests it had taken: {statuses:?}\n{}",
+        stack.edge_log()
+    );
+    anyhow::ensure!(
+        stack.edge_log().contains("edge: drained"),
+        "{}",
+        stack.edge_log()
     );
     Ok(())
 }

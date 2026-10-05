@@ -16,7 +16,10 @@
 use std::{
     collections::HashMap,
     net::{IpAddr, SocketAddr},
-    sync::{Arc, Mutex, atomic::Ordering::Relaxed},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering::Relaxed},
+    },
     time::{Duration, Instant},
 };
 
@@ -155,6 +158,16 @@ pub struct Edge {
     pub meter: Meter,
     /// Sources that put a PROXY header before the ClientHello.
     pub proxy_from: Vec<super::proxy::Source>,
+    /// Client connections open now, for the drain at stop.
+    pub clients: AtomicUsize,
+}
+
+struct Counted<'a>(&'a AtomicUsize);
+
+impl Drop for Counted<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Relaxed);
+    }
 }
 
 async fn page<I>(io: I, status: StatusCode, words: &'static str)
@@ -189,6 +202,8 @@ where
 
 /// Serves one TCP connection on 443.
 pub async fn connection(edge: Arc<Edge>, mut tcp: TcpStream, peer: SocketAddr) {
+    edge.clients.fetch_add(1, Relaxed);
+    let _counted = Counted(&edge.clients);
     let peer = if edge.proxy_from.iter().any(|s| s.contains(peer.ip())) {
         match tokio::time::timeout(HANDSHAKE_TIMEOUT, super::proxy::read(&mut tcp, peer)).await {
             Ok(Ok(client)) => client,
@@ -291,7 +306,7 @@ pub async fn connection(edge: Arc<Edge>, mut tcp: TcpStream, peer: SocketAddr) {
 
 async fn hand_over(
     pool: &Pool,
-    machine: &Machine,
+    machine: &Arc<Machine>,
     name: &str,
     header: &[u8],
 ) -> Option<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream, bool)> {

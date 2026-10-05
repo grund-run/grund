@@ -8,6 +8,10 @@
 //! gate → edge:  1 byte answer + u16 ready copies
 //!               0 accept | 1 no ready copy | 2 not placed here | 3 draining
 //!               then the response bytes
+//!
+//! edge → gate, on a unidirectional stream:  "drain"
+//!               the edge is stopping: close each client connection it
+//!               handed over after its current request
 //! ```
 //!
 //! Nothing of the client's reaches an app before the gate answers
@@ -21,6 +25,13 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 /// The ALPN of the edge's connections to machines.
 pub const ENTRY_ALPN: &[u8] = b"grund/entry/1";
+
+/// The QUIC application error code a gate closes a connection with when
+/// the key is not one of its entry keys.
+pub const NOT_AN_ENTRY_KEY: u32 = 403;
+
+/// What an edge sends on a unidirectional stream when it stops.
+pub const DRAIN: &[u8] = b"drain";
 
 /// The largest header either end accepts.
 pub const MAX_HEADER_BYTES: usize = 4096;

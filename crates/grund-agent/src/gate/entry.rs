@@ -16,9 +16,7 @@ use iroh::{
 
 use super::{EntryClient, Gate};
 
-/// The QUIC application error code a refused entry connection is closed
-/// with.
-pub const NOT_AN_ENTRY_KEY: u32 = 403;
+pub use grund_entry::NOT_AN_ENTRY_KEY;
 
 /// How long the edge has to send a stream's header.
 pub const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
@@ -35,14 +33,27 @@ impl ProtocolHandler for EntryProtocol {
             connection.close(NOT_AN_ENTRY_KEY.into(), b"not an entry key");
             return Ok(());
         }
+        let (drain, drained) = tokio::sync::watch::channel(false);
+        let notices = connection.clone();
+        let listening = tokio::spawn(async move {
+            while let Ok(mut notice) = notices.accept_uni().await {
+                if let Ok(bytes) = notice.read_to_end(grund_entry::DRAIN.len()).await
+                    && bytes == grund_entry::DRAIN
+                {
+                    tracing::info!(edge = %notices.remote_id(), "gate: the edge is stopping; closing its client connections after their current request");
+                    let _ = drain.send(true);
+                }
+            }
+        });
         while let Ok((send, recv)) = connection.accept_bi().await {
-            let gate = self.0.clone();
+            let (gate, drained) = (self.0.clone(), drained.clone());
             tokio::spawn(async move {
-                if let Err(error) = stream(gate, send, recv).await {
+                if let Err(error) = stream(gate, send, recv, drained).await {
                     tracing::debug!(%error, "gate: entry stream ended");
                 }
             });
         }
+        listening.abort();
         Ok(())
     }
 }
@@ -51,6 +62,7 @@ async fn stream(
     gate: Gate,
     mut send: SendStream,
     mut recv: RecvStream,
+    edge_stopping: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), grund_entry::EntryError> {
     gate.stats()
         .streams
@@ -74,12 +86,13 @@ async fn stream(
         return Ok(());
     }
     let io = tokio::io::join(recv, send);
-    gate.serve(
+    gate.serve_until(
         io,
         EntryClient {
             client: header.client,
             host,
         },
+        edge_stopping,
     )
     .await;
     Ok(())

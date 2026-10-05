@@ -266,6 +266,7 @@ pub async fn run(command: EdgeCommand) -> anyhow::Result<()> {
         }),
         meter: serve::Meter::default(),
         proxy_from: command.proxy_protocol_from.clone(),
+        clients: Default::default(),
     });
     let certificates = certificates::EdgeCertificates::new(
         crate::relay_certificate::Instance::new(key.clone())?,
@@ -320,8 +321,25 @@ pub async fn run(command: EdgeCommand) -> anyhow::Result<()> {
         () = accepting => {}
         () = shutdown() => {}
     }
-    tracing::info!("edge: stopping");
     let deadline = tokio::time::Instant::now() + Duration::from_secs(command.shutdown_grace);
+    let notified = pool.drain().await;
+    let open = edge.clients.load(std::sync::atomic::Ordering::Relaxed);
+    tracing::info!(
+        clients = open,
+        machines = notified,
+        "edge: stopping; no new connections, the open ones close after their current request"
+    );
+    let draining = tokio::time::Instant::now();
+    while edge.clients.load(std::sync::atomic::Ordering::Relaxed) > 0
+        && tokio::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    tracing::info!(
+        left = edge.clients.load(std::sync::atomic::Ordering::Relaxed),
+        elapsed_ms = draining.elapsed().as_millis() as u64,
+        "edge: drained"
+    );
     let _ = tokio::time::timeout_at(deadline, pool.endpoint().close()).await;
     Ok(())
 }
