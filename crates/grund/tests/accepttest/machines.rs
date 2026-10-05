@@ -1390,7 +1390,9 @@ async fn the_machines_page_adds_a_device_shows_it_connected_and_runs_a_vm_on_it(
         .await?;
     then.status(200)?
         .header("cache-control", "no-store")?
-        .body_contains("this is the only time it is shown")?;
+        .body_contains("this is the only time it is shown")?
+        .body_contains("aria-label=\"Copy the command\"")?
+        .body_contains("data-copy=\"grund join --url ")?;
     let args = setup_command(&then.body()?)?;
     anyhow::ensure!(args[0] == "--url" && args[1] == origin(&when), "{args:?}");
     anyhow::ensure!(args[2].starts_with("grund_join_"), "{args:?}");

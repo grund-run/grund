@@ -10,11 +10,11 @@
 {% call ui.section("setup", "Set up your machine", stack=true) %}
   {% if setup.install %}
   <p>On the machine, run this within {{ setup.minutes }} minutes. It installs grund and its agent, and connects the machine here. The code works once, and this is the only time it is shown.</p>
-  {{ ui.command(setup.install, id="setup-install") }}
+  {{ ui.command(setup.install, id="setup-install", copy=true) }}
   {% call ui.aside() %}With grund already installed, register it with <code>{{ setup.command }}</code> and keep <code>grund agent</code> running.{% endcall %}
   {% else %}
   <p>On the machine, with the grund binary installed, run this within {{ setup.minutes }} minutes, then keep <code>grund agent</code> running. The code works once, and this is the only time it is shown.</p>
-  {{ ui.command(setup.command, id="setup-command") }}
+  {{ ui.command(setup.command, id="setup-command", copy=true) }}
   {% endif %}
 {% endcall %}
 {% endif %}

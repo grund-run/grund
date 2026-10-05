@@ -758,6 +758,17 @@ a.nav-item:hover,
   overflow-wrap: anywhere;
 }
 
+.command-copy {
+  position: relative;
+  padding-right: var(--space-14);
+}
+
+.command-copy .copy {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+}
+
 .aside {
   color: var(--text-2);
 }

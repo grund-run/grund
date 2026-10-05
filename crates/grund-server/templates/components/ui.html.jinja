@@ -229,10 +229,11 @@
 <p class="aside">{% if caller is defined %}{{ caller() }}{% else %}{{ text }}{% endif %}</p>
 {%- endmacro %}
 
-{#- command(text, id="")
-    A command to run, in a box, wrapping anywhere. -#}
-{% macro command(text, id="") -%}
-<p class="command"{% if id %} id="{{ id }}"{% endif %}>{{ text }}</p>
+{#- command(text, id="", copy=false)
+    A command to run, in a box, wrapping anywhere. copy: a copy button in
+    its corner (shown only with the script). -#}
+{% macro command(text, id="", copy=false) -%}
+<p class="command{% if copy %} command-copy{% endif %}"{% if id %} id="{{ id }}"{% endif %}>{{ text }}{% if copy %}{{ copy_button(text, "the command") }}{% endif %}</p>
 {%- endmacro %}
 
 {#- code_block(text, id="")
