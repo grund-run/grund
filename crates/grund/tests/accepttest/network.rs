@@ -2696,3 +2696,75 @@ async fn a_new_member_reaches_a_member_cut_off_from_its_relay_at_its_listed_dire
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn while_grund_cannot_be_asked_the_relay_admits_the_keys_it_last_admitted_and_no_others()
+-> anyhow::Result<()> {
+    use crate::accepttest::fixtures::netlab::{LIGHTHOUSE, RELAY_1};
+    let Some((net, relay)) = a_lab_with_one_relay_elsewhere().await? else {
+        return Ok(());
+    };
+    let a = net.join("a", "a").await?;
+    net.cut("c", "norelay", &format!("ip daddr {RELAY_1} reject"))
+        .await?;
+    let c = net.join("c", "c").await?;
+    anyhow::ensure!(
+        eventually(Duration::from_secs(20), || async {
+            a.relay(&relay)["connected"] == true
+        })
+        .await
+        .is_some(),
+        "a never reached the relay: {}",
+        a.status()
+    );
+    anyhow::ensure!(
+        c.relay(&relay)["connected"] != true,
+        "c reached the relay through the cut: {}",
+        c.status()
+    );
+
+    net.cut("rl1", "nogrund", &format!("ip daddr {LIGHTHOUSE} reject"))
+        .await?;
+    net.lab.stop("relay-rl1.log");
+    net.lab.spawn_relay("rl1", RELAY_1, RELAY_TOKEN)?;
+    net.heal("c", "norelay").await?;
+    let back = eventually(Duration::from_secs(30), || async {
+        net.log("relay-rl1.log")
+            .contains("admitting a key it admitted last")
+            && a.relay(&relay)["connected"] == true
+    })
+    .await;
+    anyhow::ensure!(
+        back.is_some(),
+        "the relay, restarted without grund, refused a key grund had admitted: {}\n{}",
+        a.status(),
+        net.log("relay-rl1.log")
+    );
+    let refused = eventually(Duration::from_secs(30), || async {
+        c.relay(&relay)["denied"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("could not check"))
+    })
+    .await;
+    anyhow::ensure!(
+        refused.is_some() && c.relay(&relay)["connected"] != true,
+        "the relay, without grund, did not refuse a key it never admitted: {}\n{}",
+        c.status(),
+        net.log("relay-rl1.log")
+    );
+
+    net.heal("rl1", "nogrund").await?;
+    let admitted = eventually(Duration::from_secs(30), || async {
+        c.relay(&relay)["connected"] == true
+    })
+    .await;
+    anyhow::ensure!(
+        admitted.is_some(),
+        "c was not admitted once grund answered again: {}",
+        c.status()
+    );
+    eprintln!(
+        "without grund: a back on the restarted relay after {back:?}; c refused; admitted {admitted:?} after grund answered"
+    );
+    Ok(())
+}

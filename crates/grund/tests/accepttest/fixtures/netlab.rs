@@ -402,6 +402,8 @@ impl Lab {
             self.ca.to_string_lossy().into_owned(),
         );
         let log = format!("relay-{ns}.log");
+        let data = self.work.join(format!("relay-{ns}"));
+        let data = data.to_string_lossy().into_owned();
         self.spawn(
             ns,
             &[
@@ -420,6 +422,7 @@ impl Lab {
             ],
             &[
                 ("GRUND_RELAY_ACCESS_TOKEN", token),
+                ("GRUND_RELAY_DATA_DIR", &data),
                 ("SSL_CERT_FILE", &ca),
                 ("RUST_LOG", "grund_server=debug,iroh_relay=info,warn"),
             ],

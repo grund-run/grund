@@ -283,7 +283,10 @@ impl Component for StandaloneRelay {
             grund = %self.command.grund_url,
             "relay listening"
         );
-        let access = RelayAccess::new(self.policy.clone());
+        let access = RelayAccess::remembering(
+            self.policy.clone(),
+            crate::relay::Remembered::in_file(self.command.data_dir.join("admitted-keys.json")),
+        );
         let relay = Relay::new(access.clone());
         let routes = Relay::probe_routes()
             .route("/health/live", get(|| async { r#"{"status":"ok"}"# }))
