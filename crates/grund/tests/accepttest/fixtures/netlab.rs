@@ -382,6 +382,27 @@ impl Lab {
         Ok(())
     }
 
+    pub fn terminate(&self, log: &str, within: std::time::Duration) -> bool {
+        let mut children = self.children.lock().unwrap();
+        let mut stopped = false;
+        for (name, child) in children.iter_mut() {
+            if name != log {
+                continue;
+            }
+            let _ = Command::new("kill")
+                .args(["-TERM", &child.id().to_string()])
+                .status();
+            let started = std::time::Instant::now();
+            while matches!(child.try_wait(), Ok(None)) && started.elapsed() < within {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            stopped = true;
+        }
+        stopped
+    }
+
     pub fn stop(&self, log: &str) -> bool {
         let mut children = self.children.lock().unwrap();
         let mut stopped = false;

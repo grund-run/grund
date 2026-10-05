@@ -2768,3 +2768,63 @@ async fn while_grund_cannot_be_asked_the_relay_admits_the_keys_it_last_admitted_
     );
     Ok(())
 }
+
+const PEER_HEARS_STOP_WITHIN: Duration = Duration::from_millis(2500);
+
+#[tokio::test]
+async fn an_agent_with_systemd_resolved_stopped_with_sigterm_closes_its_connections_so_its_peers_know_at_once()
+-> anyhow::Result<()> {
+    let Some(net) = a_lab().await? else {
+        return Ok(());
+    };
+    let Some(bus) = net.lab.start_resolved("a").await? else {
+        eprintln!(
+            "skipped: the lab cannot run systemd-resolved here; the agent's stop with it is what this checks"
+        );
+        return Ok(());
+    };
+    let token = net
+        .join_token(&net.when, &net.then, &net.owner, "a")
+        .await?;
+    let a = net
+        .join_with_env("a", "a", &token, &[("DBUS_SYSTEM_BUS_ADDRESS", &bus)])
+        .await?;
+    let b = net.join("b", "b").await?;
+    direct(&net, &a, &b).await?;
+    anyhow::ensure!(
+        a.status()["host_resolver"]["state"] == "configured",
+        "a does not use systemd-resolved: {}",
+        a.status()
+    );
+    anyhow::ensure!(
+        eventually(Duration::from_secs(10), || async {
+            b.peer(&a)["connections"].as_u64().unwrap_or_default() > 0
+        })
+        .await
+        .is_some(),
+        "b holds no connection to a: {}",
+        b.status()
+    );
+    let lab = net.lab.clone();
+    let stopping = Instant::now();
+    let stopped =
+        tokio::task::spawn_blocking(move || lab.terminate("agent-a.log", Duration::from_secs(15)));
+    let heard = eventually(Duration::from_secs(15), || async {
+        b.peer(&a)["connections"].as_u64().unwrap_or_default() == 0
+    })
+    .await
+    .map(|_| stopping.elapsed());
+    anyhow::ensure!(stopped.await?, "a's agent was not running");
+    let log = net.log("agent-a.log");
+    eprintln!("a stopped with SIGTERM; b saw its connection close after {heard:?}");
+    anyhow::ensure!(
+        log.contains("the gate drained") && log.contains("closed the endpoints"),
+        "a did not drain and close before it exited:\n{log}"
+    );
+    anyhow::ensure!(
+        heard.is_some_and(|t| t <= PEER_HEARS_STOP_WITHIN),
+        "b heard of a's stop only after {heard:?}: {}",
+        b.status()
+    );
+    Ok(())
+}

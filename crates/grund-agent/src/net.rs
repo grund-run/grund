@@ -619,10 +619,10 @@ async fn revert_on_signal(bus: zbus::Connection, ifindex: i32) {
     ) else {
         return;
     };
-    tokio::select! {
-        _ = term.recv() => {}
-        _ = int.recv() => {}
-    }
+    let interrupted = tokio::select! {
+        _ = term.recv() => false,
+        _ = int.recv() => true,
+    };
     let reverted = tokio::time::timeout(
         Duration::from_secs(1),
         crate::resolved::revert(&bus, ifindex),
@@ -632,7 +632,9 @@ async fn revert_on_signal(bus: zbus::Connection, ifindex: i32) {
         reverted = matches!(reverted, Ok(Ok(()))),
         "private network: stopping; systemd-resolved's settings for grund0 reverted"
     );
-    std::process::exit(0);
+    if interrupted {
+        std::process::exit(0);
+    }
 }
 
 async fn report(mesh: &Mesh, counters: &Counters, lists: &Lists, data_dir: &std::path::Path) {
