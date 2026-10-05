@@ -260,7 +260,20 @@ pub struct ServeConfig {
     /// the kubelet's terminationGracePeriodSeconds (30 s by default).
     #[arg(long, env = "GRUND_SHUTDOWN_GRACE", value_parser = secs, default_value = "10")]
     pub shutdown_grace: Duration,
+
+    /// How long `serve` waits at start for PostgreSQL to answer, trying again
+    /// with a back-off, before it gives up naming DATABASE_URL (default 120,
+    /// at most 3600; 0: give up at once). A database that is restarting or
+    /// failing over is then joined when it is back, instead of the process
+    /// exiting into an orchestrator's crash-loop back-off. Meanwhile the
+    /// listener answers /health/live with 200 and everything else with 503.
+    #[arg(long, env = "GRUND_DATABASE_WAIT", value_parser = secs, default_value = "120")]
+    pub database_wait: Duration,
 }
+
+/// The longest GRUND_DATABASE_WAIT may be: past an hour, a missing database
+/// is a configuration to fix, not an outage to ride out.
+pub const MAX_DATABASE_WAIT: Duration = Duration::from_secs(3600);
 
 /// The traffic path's settings on the instance (grund-docs
 /// design/traffic.md §6, §7.3).
@@ -950,6 +963,11 @@ impl ServeConfig {
             }
         }
         self.database.validate()?;
+        anyhow::ensure!(
+            self.database_wait <= MAX_DATABASE_WAIT,
+            "GRUND_DATABASE_WAIT must be at most {} seconds",
+            MAX_DATABASE_WAIT.as_secs()
+        );
         self.tls.validate()?;
 
         let public_url = self

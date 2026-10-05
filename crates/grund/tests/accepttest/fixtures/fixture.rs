@@ -68,6 +68,18 @@ async fn fresh_database(admin: &str) -> anyhow::Result<(String, String)> {
     Ok((format!("{base}/{name}"), name))
 }
 
+async fn allow_connections(admin: &str, name: &str, allow: bool) -> anyhow::Result<()> {
+    let mut connection = <sqlx::PgConnection as sqlx::Connection>::connect(admin).await?;
+    sqlx::Executor::execute(
+        &mut connection,
+        sqlx::AssertSqlSafe(format!(
+            "ALTER DATABASE \"{name}\" WITH ALLOW_CONNECTIONS {allow}"
+        )),
+    )
+    .await?;
+    Ok(())
+}
+
 fn env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|value| !value.is_empty())
 }
@@ -101,6 +113,18 @@ impl Fixture {
     }
 
     pub async fn spawn(extra: &[(&str, &str)]) -> anyhow::Result<Self> {
+        let fixture = Self::spawn_unwaited(extra, false).await?;
+        fixture
+            .wait_until_live(fixture.log_path.clone().as_deref())
+            .await?;
+        Ok(fixture)
+    }
+
+    pub async fn spawn_while_its_database_refuses(extra: &[(&str, &str)]) -> anyhow::Result<Self> {
+        Self::spawn_unwaited(extra, true).await
+    }
+
+    async fn spawn_unwaited(extra: &[(&str, &str)], refusing: bool) -> anyhow::Result<Self> {
         let port = free_port();
         let log_path =
             std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("grund-{port}.log"));
@@ -109,6 +133,9 @@ impl Fixture {
         let public_url = format!("http://127.0.0.1:{port}");
         let admin_url = env("GRUND_ACCEPT_DATABASE_URL").unwrap_or(DEFAULT_DATABASE_URL.into());
         let (database_url, database_name) = fresh_database(&admin_url).await?;
+        if refusing {
+            allow_connections(&admin_url, &database_name, false).await?;
+        }
         let smtp_url = env("GRUND_ACCEPT_SMTP_URL").unwrap_or(DEFAULT_SMTP_URL.into());
         let mailpit_url = env("GRUND_ACCEPT_MAILPIT_URL").unwrap_or(DEFAULT_MAILPIT_URL.into());
         let secret_key = random_hex(32);
@@ -146,11 +173,36 @@ impl Fixture {
             child: std::sync::Mutex::new(Some(child)),
             database: Some((admin_url, database_name)),
             settings,
-            log_path: Some(log_path.clone()),
+            log_path: Some(log_path),
             lab: None,
         };
-        fixture.wait_until_live(Some(&log_path)).await?;
         Ok(fixture)
+    }
+
+    pub async fn database_accepts_connections(&self) -> anyhow::Result<()> {
+        let (admin, name) = self
+            .database
+            .as_ref()
+            .context("only a spawned instance has a database")?;
+        allow_connections(admin, name, true).await
+    }
+
+    pub async fn becomes_ready_within(&self, within: Duration) -> anyhow::Result<Duration> {
+        let started = Instant::now();
+        loop {
+            if let Ok(response) =
+                client::send(&self.origin, "GET", "/health/ready", &[], None).await
+                && response.status == 200
+            {
+                return Ok(started.elapsed());
+            }
+            anyhow::ensure!(
+                started.elapsed() < within,
+                "not ready within {within:?}:\n{}",
+                self.log()
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
     }
 
     pub async fn spawn_in_lab(
@@ -505,7 +557,8 @@ pub async fn refused_at_start(extra: &[(&str, &str)]) -> anyhow::Result<String> 
         .env_clear()
         .env("DATABASE_URL", "postgres://grund@127.0.0.1:1/unreachable")
         .env("GRUND_SECRET_KEY", random_hex(32))
-        .env("GRUND_LISTEN", "127.0.0.1:0");
+        .env("GRUND_LISTEN", "127.0.0.1:0")
+        .env("GRUND_DATABASE_WAIT", "0");
     for (name, value) in extra {
         command.env(name, value);
     }

@@ -2,7 +2,7 @@
 //!
 //! ```text
 //!   grund serve
-//!     config ─► tracing ─► PostgreSQL ─► migrations ─► NATS (optional) ─► State
+//!     config ─► tracing ─► PostgreSQL (waited for up to GRUND_DATABASE_WAIT) ─► migrations ─► NATS (optional) ─► State
 //!     notmad, drained in this order on SIGTERM:
 //!       grund/http          pages and health                stops taking requests first
 //!       grund/https         the same, over TLS               only with GRUND_DOMAIN or GRUND_TLS_CERT_FILE
@@ -64,7 +64,7 @@ pub async fn serve(
     }
     certificates::check_files(&config)?;
     let secret = secrets::SecretKey::load(&config)?;
-    let pool = db::connect(&config.database).await?;
+    let pool = db::connect_waiting(&config.database, config.database_wait, config.listen).await?;
     grund_store::migrate(&pool).await?;
     if config.organisations == config::OrganisationMode::Single {
         use grund_store::organisations::{InstanceCheck, prepare_single_instance};

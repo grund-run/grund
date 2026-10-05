@@ -207,6 +207,24 @@ pub async fn ready(AxumState(state): AxumState<State>) -> Response {
     no_store((status, Json(body)))
 }
 
+/// Readiness while `serve` waits at start for PostgreSQL
+/// (`db::connect_waiting`): 503, the PostgreSQL check unhealthy, and the
+/// revision, as the full answer gives them.
+pub async fn waiting_for_database() -> Response {
+    let body = Readiness {
+        status: CheckStatus::Unhealthy,
+        revision: revision(),
+        version: VERSION,
+        uptime_seconds: 0,
+        checks: vec![ReadinessCheck {
+            name: "postgres".into(),
+            severity: Severity::Critical,
+            status: CheckStatus::Unhealthy,
+        }],
+    };
+    no_store((StatusCode::SERVICE_UNAVAILABLE, Json(body)))
+}
+
 fn no_store(body: impl IntoResponse) -> Response {
     let mut response = body.into_response();
     response
