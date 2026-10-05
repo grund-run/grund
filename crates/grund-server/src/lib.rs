@@ -29,6 +29,7 @@ pub mod doctor;
 pub mod edge;
 pub mod extension;
 pub mod health;
+pub mod hearing;
 pub mod keys;
 pub mod license;
 pub mod projections;
@@ -99,8 +100,10 @@ pub async fn serve(
     let secret = std::sync::Arc::new(secret);
     let certificates = certificates::Certificates::new(&config, pool.clone(), secret.clone());
     certificates.start().await?;
+    let hearing = std::sync::Arc::new(hearing::Hearing::new(chrono::Utc::now()));
     let health = health::registry(
         pool.clone(),
+        hearing.clone(),
         nats.clone(),
         mailer.configured(),
         &certificates,
@@ -128,6 +131,7 @@ pub async fn serve(
         extensions: std::sync::Arc::new(extensions),
         started: health::started(),
         wakes: wakes::Wakes::default(),
+        hearing,
     };
 
     if state.config.social.social_login && state.extensions.is_empty() {

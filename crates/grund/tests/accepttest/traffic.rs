@@ -923,3 +923,86 @@ async fn the_edge_and_the_gate_keep_apps_apart_and_refuse_what_is_not_theirs() -
     stranger.close().await;
     Ok(())
 }
+
+#[tokio::test]
+async fn an_app_is_served_through_the_edge_while_grund_is_down_and_keeps_its_copies_when_it_returns()
+-> anyhow::Result<()> {
+    let Some(mut stack) = a_stack().await? else {
+        return Ok(());
+    };
+    let owner = stack.given.a_signed_in_account().await?;
+    let org = owner.username.clone();
+    let a = stack.a_machine(&org, "box-a").await?;
+    let b = stack.a_machine(&org, "box-b").await?;
+    stack.registry.publish("acme/steady", "1");
+    stack
+        .call(
+            "CreateApp",
+            json!({"organisation": org, "name": "steady", "settings": {
+                "copies": 2,
+                "rollout": {"minReadySeconds": 1, "readyDeadlineSeconds": 20, "drainSeconds": 5},
+                "rescheduleAfterSeconds": 30,
+            }}),
+        )
+        .await?;
+    stack.deploy(&org, "steady", "1", 2).await?;
+    let running = stack
+        .until(
+            &org,
+            "steady",
+            Duration::from_secs(40),
+            "two copies on two machines",
+            |app| {
+                let copies = running_replicas(app);
+                copies.len() == 2 && copies[0].1 != copies[1].1
+            },
+        )
+        .await?;
+    let before = running_replicas(&running);
+    write_remote_copies(&[("box-a", &a), ("box-b", &b)], "steady", &before);
+    stack.start_edge()?;
+    let name = stack.name_of(&org, "steady");
+    stack.served(&name, Duration::from_secs(60)).await?;
+
+    let (tally, handles) = load(&stack, &name, 8);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let fixture = &stack.when.testcase.fixture;
+    fixture.down_for(Duration::from_secs(40)).await?;
+    let during = tally.ok.load(Relaxed);
+    tokio::time::sleep(Duration::from_secs(15)).await;
+    tally.stop.store(true, Relaxed);
+    for handle in handles {
+        let _ = handle.await;
+    }
+    let (ok, failed) = (tally.ok.load(Relaxed), tally.failed.load(Relaxed));
+    eprintln!("grund down 40 s: {ok} requests served, {failed} failed ({during} by its return)");
+    anyhow::ensure!(
+        failed == 0,
+        "{failed} of {} requests failed: {:?}\nedge:\n{}",
+        ok + failed,
+        tally
+            .failures
+            .lock()
+            .unwrap()
+            .iter()
+            .take(10)
+            .collect::<Vec<_>>(),
+        stack
+            .edge_log()
+            .lines()
+            .rev()
+            .take(30)
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    anyhow::ensure!(
+        ok > during,
+        "requests kept being served after grund returned"
+    );
+    let after = running_replicas(&stack.app(&org, "steady").await?);
+    anyhow::ensure!(
+        after == before,
+        "grund's return replaced copies that never stopped: {before:?} then {after:?}"
+    );
+    Ok(())
+}

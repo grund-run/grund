@@ -121,7 +121,9 @@ impl Entry {
 
     /// The route table as it stands.
     pub async fn route_table(&self) -> anyhow::Result<edge::RouteTable> {
-        let rows = grund_store::entry::route_rows(&self.state.pool).await?;
+        let rows = grund_store::entry::route_rows(&self.state.pool).await;
+        self.state.hearing.observe(&rows);
+        let rows = rows?;
         let Some(domain) = self.app_domain() else {
             let relay_urls = self.relay_urls();
             return Ok(edge::RouteTable {
@@ -155,7 +157,10 @@ impl Entry {
             };
             if row.suspended
                 || !publishes(&spec.0)
-                || !crate::services::agents::connected(row.last_seen_at, now)
+                || !crate::services::agents::connected(
+                    self.state.hearing.seen(row.last_seen_at),
+                    now,
+                )
                 || route
                     .machines
                     .iter()

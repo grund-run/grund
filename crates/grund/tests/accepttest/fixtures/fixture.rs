@@ -252,6 +252,23 @@ impl Fixture {
         self.wait_until_live(Some(&log_path)).await
     }
 
+    pub async fn down_for(&self, outage: Duration) -> anyhow::Result<()> {
+        let log_path = self
+            .log_path
+            .clone()
+            .context("only a spawned instance can stop")?;
+        if let Some(mut running) = self.child.lock().unwrap().take() {
+            let _ = running.kill();
+            let _ = running.wait();
+        }
+        tokio::time::sleep(outage).await;
+        {
+            let log = std::fs::OpenOptions::new().append(true).open(&log_path)?;
+            *self.child.lock().unwrap() = Some(serve(&self.settings, log)?);
+        }
+        self.wait_until_live(Some(&log_path)).await
+    }
+
     pub async fn restart_in_lab(&self, extra: &[(&str, &str)]) -> anyhow::Result<()> {
         let lab = self
             .lab

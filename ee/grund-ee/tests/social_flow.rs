@@ -153,6 +153,7 @@ async fn state(pool: PgPool, issuer: &str) -> State {
         ))))]),
         started: Instant::now(),
         wakes: grund_server::wakes::Wakes::default(),
+        hearing: Arc::new(grund_server::hearing::Hearing::new(chrono::Utc::now())),
     }
 }
 

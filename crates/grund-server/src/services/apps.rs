@@ -643,7 +643,9 @@ impl Apps {
                         .iter()
                         .find(|(id, _, _)| *id == m.machine_id)
                         .map(|(_, mem, cpu)| (*mem, *cpu));
-                    machine_view(m, r)
+                    let mut view = machine_view(m, r);
+                    view.last_seen = self.state.hearing.seen(view.last_seen);
+                    view
                 })
                 .collect();
         let observations: Vec<Observation> = apps::app_statuses(&mut **work.sql(), app_id)
@@ -680,7 +682,9 @@ impl Apps {
     /// One pass over every app. A failure of one app is logged and the rest
     /// go on.
     pub async fn reconcile_all(&self) -> anyhow::Result<()> {
-        for (app_id, organisation_id) in apps::apps_to_reconcile(&self.state.pool).await? {
+        let apps = apps::apps_to_reconcile(&self.state.pool).await;
+        self.state.hearing.observe(&apps);
+        for (app_id, organisation_id) in apps? {
             if let Err(error) = self.reconcile_app(app_id, organisation_id).await {
                 tracing::warn!(%app_id, error = %format!("{error:#}"), "app reconcile failed; trying again");
             }

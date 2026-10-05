@@ -55,6 +55,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// expiring certificate is something to see, not a reason to restart.
 pub fn registry(
     pool: sqlx::PgPool,
+    hearing: std::sync::Arc<crate::hearing::Hearing>,
     nats: Option<async_nats::Client>,
     mail_configured: bool,
     certificates: &crate::certificates::Certificates,
@@ -72,11 +73,11 @@ pub fn registry(
             .severity(Severity::Critical),
         move || {
             let pool = pool.clone();
+            let hearing = hearing.clone();
             async move {
-                sqlx::query("SELECT 1")
-                    .execute(&pool)
-                    .await
-                    .map_err(|error| StatusError::from(anyhow::Error::from(error)))?;
+                let answered = sqlx::query("SELECT 1").execute(&pool).await;
+                hearing.observe(&answered);
+                answered.map_err(|error| StatusError::from(anyhow::Error::from(error)))?;
                 Ok(CheckStatus::Healthy)
             }
         },

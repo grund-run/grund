@@ -41,4 +41,6 @@ pub struct State {
     pub started: Instant,
     /// Wakes the control link's long polls when a document changes.
     pub wakes: crate::wakes::Wakes,
+    /// Since when this instance has been hearing its machines (hearing.rs).
+    pub hearing: Arc<crate::hearing::Hearing>,
 }
