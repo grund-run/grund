@@ -126,7 +126,6 @@ fn ago(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
 struct Health {
     word: &'static str,
     tone: &'static str,
-    line: String,
 }
 
 fn ready_copies(view: &AppView, release: i64, now: DateTime<Utc>) -> usize {
@@ -144,52 +143,19 @@ fn ready_copies(view: &AppView, release: i64, now: DateTime<Utc>) -> usize {
 fn health(view: &AppView, now: DateTime<Utc>) -> Health {
     let row = &view.row;
     let wanted = row.settings.0.copies as usize;
-    let rollout = row.rollout.as_ref();
-    let to = rollout.and_then(|r| r["to"].as_i64()).unwrap_or(0);
     let current = row.current_release.map(i64::from);
     let ready = current.map_or(0, |c| ready_copies(view, c, now));
-    let health = |word, tone, line: String| Health { word, tone, line };
-    if row.halted {
-        return health("Failed", "danger", format!("v{to} failed; rollback is off"));
-    }
-    match rollout.and_then(|r| r["state"].as_str()) {
-        Some("in_progress") => {
-            let ready_new = ready_copies(view, to, now);
-            health(
-                "Rolling out",
-                "blue",
-                format!("v{to}: {ready_new} of {wanted} ready"),
-            )
-        }
-        Some("failed") => {
-            let reason = rollout
-                .and_then(|r| r["reason"].as_str())
-                .unwrap_or_default();
-            let after = match current {
-                Some(current) => format!("v{current} is still serving"),
-                None => "Nothing is running".into(),
-            };
-            health(
-                "Failed",
-                "danger",
-                format!("{reason} {after}").trim().to_string(),
-            )
-        }
+    let (word, tone) = match row.rollout.as_ref().and_then(|r| r["state"].as_str()) {
+        _ if row.halted => ("Failed", "danger"),
+        Some("in_progress") => ("Rolling out", "blue"),
+        Some("failed") => ("Failed", "danger"),
         _ => match current {
-            None => health("Stopped", "muted", "No release yet".into()),
-            Some(current) if ready >= wanted => health(
-                "Live",
-                "ok",
-                format!("v{current} is live on {}", copies(ready)),
-            ),
-            Some(_) if ready == 0 => health("Degraded", "orange", "No copy is ready".into()),
-            Some(_) => health(
-                "Degraded",
-                "orange",
-                format!("{ready} of {wanted} copies ready"),
-            ),
+            None => ("Stopped", "muted"),
+            Some(_) if ready >= wanted => ("Live", "ok"),
+            Some(_) => ("Degraded", "orange"),
         },
-    }
+    };
+    Health { word, tone }
 }
 
 /// The icon a page draws for `image`: a well-known image's own, `docker`
@@ -251,7 +217,7 @@ fn internal_address(name: &str, spec: &AppSpec) -> Option<String> {
 /// An app as a list row or card shows it.
 pub fn listing_context(listing: &AppListing) -> Value {
     let view = &listing.view;
-    let Health { line, tone, .. } = health(view, Utc::now());
+    let Health { tone, .. } = health(view, Utc::now());
     let image = listing
         .spec
         .as_ref()
@@ -259,7 +225,6 @@ pub fn listing_context(listing: &AppListing) -> Value {
         .unwrap_or_default();
     context! {
         name => view.row.name,
-        line,
         tone,
         copies => view.row.settings.0.copies,
         icon => image_icon(&image),
