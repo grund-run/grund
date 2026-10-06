@@ -33,13 +33,11 @@ use crate::{
         apps,
         browser::Browser,
         pages::{
-            Notice, PageError, forged, message, not_found_page, redirect, render, require_session,
-            signed_in, start_session,
+            Notice, PageError, PageResult, forged, message, not_found_page, redirect, render,
+            require_session, signed_in, start_session,
         },
     },
 };
-
-type PageResult = Result<Response, PageError>;
 
 const OVERVIEW_APPS: usize = 5;
 
@@ -110,11 +108,10 @@ impl FromRequestParts<State> for Member {
 
 impl Member {
     /// Renders `template` in the signed-in layout for this organisation, as
-    /// [`signed_in`] does.
+    /// [`signed_in`] does, with 200: an extracted member's page only reads.
     pub async fn render(
         &self,
         state: &State,
-        status: StatusCode,
         template: &str,
         section: &str,
         page: Value,
@@ -124,7 +121,7 @@ impl Member {
             &self.browser,
             &self.session,
             Some(&self.membership),
-            status,
+            StatusCode::OK,
             template,
             section,
             page,
@@ -191,7 +188,6 @@ pub async fn overview(AxumState(state): AxumState<State>, member: Member) -> Pag
     member
         .render(
             &state,
-            StatusCode::OK,
             "pages/home.html.jinja",
             "overview",
             context! {

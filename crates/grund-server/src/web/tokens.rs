@@ -8,7 +8,6 @@ use axum::{
     Form,
     extract::{Path, State as AxumState},
     http::{StatusCode, Uri},
-    response::Response,
 };
 use grund_store::organisations::Membership;
 use minijinja::{Value, context};
@@ -24,11 +23,9 @@ use crate::{
     web::{
         browser::Browser,
         orgs::Member,
-        pages::{Notice, PageError, forged, redirect, signed_in},
+        pages::{Notice, PageResult, forged, redirect, signed_in},
     },
 };
-
-type PageResult = Result<Response, PageError>;
 
 /// `GET /{org}/settings/tokens`.
 pub async fn tokens_page(

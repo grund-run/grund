@@ -54,7 +54,8 @@ impl IntoResponse for PageError {
 #[derive(Clone)]
 pub struct Failed(pub std::sync::Arc<anyhow::Error>);
 
-type PageResult = Result<Response, PageError>;
+/// What a page handler answers: the page, or why it could not be served.
+pub type PageResult = Result<Response, PageError>;
 
 pub fn render(
     state: &State,

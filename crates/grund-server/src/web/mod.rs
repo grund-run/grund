@@ -18,6 +18,7 @@ macro_rules! member_or_return {
     };
 }
 
+pub mod about;
 pub mod apps;
 pub mod assets;
 pub mod browser;
@@ -145,6 +146,7 @@ pub fn router(state: State) -> Router {
         .route("/{org}/settings/tokens/{token}/revoke", post(tokens::revoke))
         .route("/{org}/settings/registries", get(registries::registries_page).post(registries::set))
         .route("/{org}/settings/registries/remove", post(registries::remove))
+        .route("/{org}/settings/about", get(about::about_page))
         .route("/{org}/settings", get(orgs::settings_page))
         .route("/{org}/settings/rename", post(orgs::rename))
         .route("/{org}/settings/delete", post(orgs::delete))

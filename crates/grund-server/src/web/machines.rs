@@ -10,7 +10,6 @@ use axum::{
     Form,
     extract::{Path, Query, State as AxumState},
     http::{StatusCode, Uri},
-    response::Response,
 };
 use chrono::Utc;
 use grund_domain::{machine::Authority, machine::TokenKind, organisation::Role};
@@ -29,11 +28,9 @@ use crate::{
     web::{
         browser::Browser,
         orgs::Member,
-        pages::{Notice, PageError, forged, redirect, signed_in},
+        pages::{Notice, PageResult, forged, redirect, signed_in},
     },
 };
-
-type PageResult = Result<Response, PageError>;
 
 fn manages(membership: &Membership) -> bool {
     Role::parse(&membership.role).is_some_and(|role| role.manages_members())

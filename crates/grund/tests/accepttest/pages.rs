@@ -56,6 +56,7 @@ const ORG_PAGES: &[&str] = &[
     "/settings/members",
     "/settings/tokens",
     "/settings/registries",
+    "/settings/about",
 ];
 
 #[tokio::test]
@@ -191,5 +192,22 @@ async fn every_response_says_which_request_it_was() -> anyhow::Result<()> {
         .header("x-request-id")
         .map(str::to_string);
     anyhow::ensure!(id.is_some_and(|id| id.len() == 36), "no request id");
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_about_page_names_the_revision_readiness_reports() -> anyhow::Result<()> {
+    let (given, when, then) = testcase().await?;
+    let account = given.a_signed_in_account().await?;
+    when.requesting("GET", "/health/ready").await?;
+    let revision = then.json()?["revision"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    when.visiting(&format!("/{}/settings/about", account.username))
+        .await?;
+    then.status(200)?
+        .body_contains(&revision)?
+        .body_contains("aria-current=\"page\">About")?;
     Ok(())
 }

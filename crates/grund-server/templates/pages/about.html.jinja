@@ -1,0 +1,13 @@
+{% extends "pages/organisation.html.jinja" %}
+{% set title = "About" %}
+{% set tab = "about" %}
+{% set lede = "The grund " ~ viewer.current.slug ~ " lives on: the build it runs, where it answers and how its apps are reached." %}
+{% block tab %}
+{% call lists.rows() %}
+  {{ lists.row("Version", revision, plain=true) }}
+  {{ lists.row("Address", address, plain=true) }}
+  {{ lists.row("App addresses", "<app>-" ~ org.slug ~ "." ~ app_domain if app_domain else "None: apps answer only inside grund", plain=true) }}
+  {{ lists.row("Organisations", "One, which everyone joins by invitation" if single else "One per account, and more on request", plain=true) }}
+{% endcall %}
+{% call ui.para() %}grund is free software under the AGPL-3.0. The fonts' licenses are on <a href="/licenses">Licenses</a>.{% endcall %}
+{% endblock %}
