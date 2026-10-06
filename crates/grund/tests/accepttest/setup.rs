@@ -75,8 +75,9 @@ async fn a_setup_link_creates_the_signed_in_owner_and_sends_no_mail() -> anyhow:
     anyhow::ensure!(status == 303, "the owner form answered {status}");
     then.redirects_to(&format!("/{owner}"))?;
     when.visiting_home().await?;
-    then.status(200)?
-        .body_contains(&format!("owner of {owner}"))?;
+    then.status(200)?.body_contains(&format!(
+        "<span class=\"org-switch-name\">{owner}</span><span class=\"org-switch-role\">Owner</span>"
+    ))?;
 
     when.submitting(&format!("/{owner}"), "/logout", &[])
         .await?;

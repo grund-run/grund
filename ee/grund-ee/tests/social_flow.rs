@@ -319,7 +319,7 @@ async fn a_licensed_instance_offers_the_provider_and_a_new_identity_becomes_an_a
     let home = browser.send("GET", &landing.location, None).await;
     assert!(
         home.body
-            .contains(&format!("Signed in as {username}, owner of {username}"))
+            .contains(&format!("<span class=\"org-switch-name\">{username}</span><span class=\"org-switch-role\">Owner</span>"))
     );
 
     let mut again = Browser {

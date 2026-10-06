@@ -40,14 +40,13 @@
 <span class="tag">{{ text }}</span>
 {%- endmacro %}
 
-{#- pill(text, tone="", icon_name="")
-    A rounded label saying what a thing is or how it is, larger than a
-    tag: "Live" beside an app's name, "Public HTTP" under its address.
-    tone:      a dot of that colour before the text (ok, blue, orange,
-               danger, muted)
-    icon_name: an icon before the text instead -#}
-{% macro pill(text, tone="", icon_name="") -%}
-<span class="pill">{% if icon_name %}{{ icon(icon_name, "icon-sm") }}{% elif tone %}<span class="dot tone-{{ tone }}" aria-hidden="true"></span>{% endif %}{{ text }}</span>
+{#- pill(text, tone="")
+    A rounded label saying how a thing is, larger than a tag: "Live"
+    beside an app's name.
+    tone: a dot of that colour before the text (ok, blue, orange,
+          danger, muted) -#}
+{% macro pill(text, tone="") -%}
+<span class="pill">{% if tone %}<span class="dot tone-{{ tone }}" aria-hidden="true"></span>{% endif %}{{ text }}</span>
 {%- endmacro %}
 
 {#- image_icon(key, size="")
@@ -123,36 +122,37 @@
 {%- else %}<button class="icon-btn copy" type="button" data-copy="{{ text }}" aria-label="Copy {{ label }}" title="Copy" hidden>{{ icon("copy", "icon-sm") }}</button>{% endif %}
 {%- endmacro %}
 
-{#- page_head(title, lede="", status="", back=none, image="", state=none)
-    The page's title and one line under it. Every page starts with it.
-    lede:   a plain line under the title (the Apps design)
-    status: a larger, quieter line saying how things are
-    back:   (href, label) for a link above the title, on detail pages
-    image:  an image icon key, drawn large before the title (an app)
-    state:  (text, tone) for a pill() beside the title ("Live")
+{#- page_head(title, reference="", back=none, image="", state=none)
+    The page's title. Every page starts with it. No line of prose goes
+    under it.
+    reference: an image reference under the title (an app's), on one line,
+               a digest shown as its first 12 hex; the whole in its title
+               and its copy button
+    back:      (href, label) for a link above the title, on detail pages
+    image:     an image icon key, drawn large before the title (an app)
+    state:     (text, tone) for a pill() beside the title ("Live")
     Called with {% call %}, the body goes at the right (list tools, or the
-    page's primary button). -#}
-{% macro page_head(title, lede="", status="", back=none, image="", state=none) -%}
+    page's primary button); it keeps its width and the title's column
+    gives way. -#}
+{% macro page_head(title, reference="", back=none, image="", state=none) -%}
 {% if back %}<a class="back" href="{{ back.0 }}">{{ icon("arrow", "icon-sm back-icon") }}{{ back.1 }}</a>{% endif %}
 <div class="page-head">
   <div class="page-id">
     {% if image %}{{ image_icon(image, "lg") }}{% endif %}
-    <div>
+    <div class="page-name">
       <h1 class="page-title">{{ title }}{% if state %} {{ pill(state.0, state.1) }}{% endif %}</h1>
-      {% if lede %}<p class="page-lede">{{ lede }}</p>{% endif %}
-      {% if status %}{{ status_line(status, plain=true) }}{% endif %}
+      {% if reference %}<p class="page-ref"><span class="page-ref-text" title="{{ reference }}">{{ reference | short_image }}</span>{{ copy_button(reference, "the image reference") }}</p>{% endif %}
     </div>
   </div>
   {% if caller is defined %}<div class="page-tools">{{ caller() }}</div>{% endif %}
 </div>
 {%- endmacro %}
 
-{#- status_line(text, tone="ok", id="", plain=false)
-    A sentence about how a thing is, with a toned check, under a page
-    head ("All copies are ready."). plain: without the check, for a
-    sentence of warning before a form. -#}
-{% macro status_line(text, tone="ok", id="", plain=false) -%}
-<p class="status-line"{% if id %} id="{{ id }}"{% endif %}>{% if plain %}{{ text }}{% else %}{{ status(text, tone) }}{% endif %}</p>
+{#- status_line(text, tone="ok", id="")
+    A sentence about how a thing is, with a toned check ("All copies are
+    ready."). -#}
+{% macro status_line(text, tone="ok", id="") -%}
+<p class="status-line"{% if id %} id="{{ id }}"{% endif %}>{{ status(text, tone) }}</p>
 {%- endmacro %}
 
 {#- section(id, title, count=none, more=none, first=false, stack=false)
@@ -173,17 +173,16 @@
 </section>
 {%- endmacro %}
 
-{#- panel(id, title, lede="", action=none)
+{#- panel(id, title, action=none)
     A titled box holding one part of a page's work, such as a form; the
     {% call %} body is its content. id: the heading's id, which labels
-    it (and a link target). What cannot be undone goes in an expander of
-    kind "danger" instead.
+    it (and a link target). No line of prose goes under the title.
     action: (href, label) for a secondary button at the right of the
             title ("All releases →") -#}
-{% macro panel(id, title, lede="", action=none) -%}
+{% macro panel(id, title, action=none) -%}
 <section class="panel" aria-labelledby="{{ id }}">
   <div class="panel-head">
-    <div><h2 class="panel-title" id="{{ id }}">{{ title }}</h2>{% if lede %}<p class="panel-lede">{{ lede }}</p>{% endif %}</div>
+    <h2 class="panel-title" id="{{ id }}">{{ title }}</h2>
     {% if action %}{{ button(action.1, href=action.0, icon_name="arrow", kind="secondary", size="sm", icon_end=true) }}{% endif %}
   </div>
   {{ caller() }}
@@ -231,15 +230,19 @@
     icon_name: an icon before the value
     tone:      a large dot of that colour before the value instead (a
                state)
-    lines:     the lines under the value, the first brighter
-    wide:      takes the room the others leave (an address)
+    lines:     the lines under the value, the first brighter; each a
+               text, or (text, title) for one cut short whose whole is
+               its title
+    wide:      takes the most room (an address)
+    The value stays on one line, cut with an ellipsis, the whole in its
+    title.
     Called with {% call %}, the body replaces the value and its lines. -#}
 {% macro fact(label, value="", icon_name="", tone="", lines=[], wide=false) -%}
 <div class="fact{% if wide %} fact-wide{% endif %}">
   <dt class="fact-label">{{ label }}</dt>
   {% if caller is defined %}<dd class="fact-body">{{ caller() }}</dd>{% else %}
-  <dd class="fact-value">{% if icon_name %}{{ icon(icon_name) }}{% elif tone %}<span class="dot dot-lg tone-{{ tone }}" aria-hidden="true"></span>{% endif %}<span>{{ value }}</span></dd>
-  {% for line in lines %}<dd class="fact-line">{{ line }}</dd>{% endfor %}
+  <dd class="fact-value">{% if icon_name %}{{ icon(icon_name) }}{% elif tone %}<span class="dot dot-lg tone-{{ tone }}" aria-hidden="true"></span>{% endif %}<span title="{{ value }}">{{ value }}</span></dd>
+  {% for line in lines %}{% if line is string %}<dd class="fact-line">{{ line }}</dd>{% else %}<dd class="fact-line" title="{{ line[1] }}">{{ line[0] }}</dd>{% endif %}{% endfor %}
   {% endif %}
 </div>
 {%- endmacro %}
@@ -272,21 +275,17 @@
 </table>
 {%- endmacro %}
 
-{#- callout(title, text, icon_name="", tone="", danger=false, boxed=false,
-            action=none)
+{#- callout(title, text, icon_name="", tone="", danger=false)
     Something happening now or needing attention.
     icon_name, tone: a large toned icon
-    action: (href, label) for one onward button ("Browse templates →")
-    boxed:  the icon in an accent tile, for an offer rather than a state
     danger: on the danger surface, for failures -#}
-{% macro callout(title, text, icon_name="", tone="", danger=false, boxed=false, action=none) -%}
+{% macro callout(title, text, icon_name="", tone="", danger=false) -%}
 <div class="callout{% if danger %} callout-danger{% endif %}">
-  {% if icon_name and boxed %}<span class="icon-tile" aria-hidden="true">{{ icon(icon_name) }}</span>{% elif icon_name %}{{ icon(icon_name, "icon-lg tone-" ~ tone) }}{% endif %}
+  {% if icon_name %}{{ icon(icon_name, "icon-lg tone-" ~ tone) }}{% endif %}
   <div class="callout-body">
     <p class="callout-title">{{ title }}</p>
     <p class="callout-text">{{ text }}</p>
   </div>
-  {% if action %}{{ button(action.1, href=action.0, icon_name="arrow", kind="secondary", icon_end=true) }}{% endif %}
 </div>
 {%- endmacro %}
 
@@ -305,12 +304,12 @@
 <div class="empty">{% if title %}<strong>{{ title }}</strong>{% endif %}{% if caller is defined %}{{ caller() }}{% else %}{{ text }}{% endif %}</div>
 {%- endmacro %}
 
-{#- add_card(href, title, text)
+{#- add_card(href, title)
     The dashed card under a list that leads to making one more. -#}
-{% macro add_card(href, title, text) -%}
+{% macro add_card(href, title) -%}
 <a class="empty empty-action" href="{{ href }}">
   <span class="icon-btn icon-btn-boxed" aria-hidden="true">{{ icon("plus", "icon-sm") }}</span>
-  <strong>{{ title }}</strong>{{ text }}
+  <strong>{{ title }}</strong>
 </a>
 {%- endmacro %}
 
@@ -357,21 +356,20 @@
 {#- expander(title, summary="", icon_name="", tone="", state=none,
              meta=[], open=false, kind="", id="")
     One thing in one line that opens to show more, as a details element,
-    so it opens without the script: a setting (its value in the summary,
-    its form inside), a release (its outcome, its details inside), a
-    form's optional part. The {% call %} body is what it opens to.
+    so it opens without the script: a release (its outcome, its details
+    inside), a form's optional part, an organisation's rename. The
+    {% call %} body is what it opens to.
     summary: one line, cut with an ellipsis when it does not fit
     icon_name, tone: an icon before the title, toned
     state:   (text, tone) for a pill() after the title ("Live")
     meta:    short facts at the right ("2 hours ago"), hidden on a phone
     open:    open (the one a refused form is in, or a link's target)
-    kind:    "add" (a thing not set yet: "Add a health check", in the
-             accent with a plus) or "danger" (delete)
+    kind:    "danger" (delete)
     id:      a link target; it must not be a field's name -#}
 {% macro expander(title, summary="", icon_name="", tone="", state=none, meta=[], open=false, kind="", id="") -%}
 <details class="expander{% if kind %} expander-{{ kind }}{% endif %}"{% if id %} id="{{ id }}"{% endif %}{% if open %} open{% endif %}>
   <summary class="expander-head">
-    {% if kind == "add" %}{{ icon("plus", "icon-sm expander-icon") }}{% elif icon_name %}{{ icon(icon_name, "icon-sm expander-icon" ~ (" tone-" ~ tone if tone else "")) }}{% endif %}
+    {% if icon_name %}{{ icon(icon_name, "icon-sm expander-icon" ~ (" tone-" ~ tone if tone else "")) }}{% endif %}
     <span class="expander-text"><span class="expander-title">{{ title }}{% if state %} {{ pill(state.0, state.1) }}{% endif %}</span>{% if summary %}<span class="expander-summary">{{ summary }}</span>{% endif %}</span>
     {% if meta %}<span class="expander-meta">{% for fact in meta %}<span>{{ fact }}</span>{% endfor %}</span>{% endif %}
     {{ icon("down", "icon-sm expander-chevron") }}
@@ -380,11 +378,12 @@
 </details>
 {%- endmacro %}
 
-{#- auth_head(title, lede="")
-    A signed-out page's title and the line under it. -#}
-{% macro auth_head(title, lede="") -%}
+{#- auth_head(title, text="")
+    A signed-out page's title. text: one line under it, only for a fact
+    the page needs (an error, what to do next, what the form does). -#}
+{% macro auth_head(title, text="") -%}
 <h1 class="auth-title">{{ title }}</h1>
-{% if lede %}{{ para(lede, "auth-lede") }}{% endif %}
+{% if text %}{{ para(text, "auth-lede") }}{% endif %}
 {%- endmacro %}
 
 {#- foot(): the small print under a form (secondary links); the

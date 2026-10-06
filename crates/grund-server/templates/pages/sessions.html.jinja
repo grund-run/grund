@@ -1,7 +1,7 @@
 {% extends "layout-app.html.jinja" %}
 {% block title %}Sessions · grund{% endblock %}
 {% block content %}
-{% call ui.page_head("Sessions", status="Where your account is signed in. Signing a device out takes effect at once.") %}
+{% call ui.page_head("Sessions") %}
 {% if sessions | length > 1 %}{{ forms.post_button("/settings/sessions/revoke-others", csrf, "Sign out everywhere else") }}{% endif %}
 {% endcall %}
 {{ forms.banner(ok=notice) }}

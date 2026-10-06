@@ -33,8 +33,8 @@ pub async fn registries_page(
     Query(query): Query<Notice>,
 ) -> PageResult {
     let notice = match query.done.as_str() {
-        "set" => "Credential saved. Deploys and pulls from that registry use it from now on.",
-        "removed" => "Credential removed. Images from that registry are pulled without a login.",
+        "set" => "Login saved. Deploys and pulls from that registry use it.",
+        "removed" => "Login removed. Images from that registry are pulled without one.",
         _ => "",
     };
     let error = match query.error.as_str() {

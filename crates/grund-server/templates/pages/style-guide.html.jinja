@@ -6,11 +6,11 @@
 {% block title %}Style guide · grund{% endblock %}
 {% block content %}
 {{ images.sprite(icons) }}
-{% call ui.page_head("Style guide", "Every component of grund's pages, its variants and states, and the call that makes it. Names and figures are examples.") %}
+{% call ui.page_head("Style guide") %}
 {{ ui.button("Primary action", href="#sg-buttons", icon_name="plus") }}
 {% endcall %}
 {% call ui.para() %}The macros live in <code>templates/components/</code>: <code>ui</code> (basics and page parts), <code>forms</code>, <code>lists</code>, <code>shell</code> and <code>images</code>, each parameter documented above its macro. A page under <code>pages/</code> calls them and writes no class of its own; the build fails otherwise.{% endcall %}
-{{ cat.contents([("sg-tokens", "Tokens"), ("sg-icons", "Icons"), ("sg-buttons", "Buttons and links"), ("sg-heads", "Page and section heads"), ("sg-status", "Status and tags"), ("sg-messages", "Callouts and messages"), ("sg-empty", "Empty states and notes"), ("sg-code", "Code"), ("sg-forms", "Forms"), ("sg-choices", "Panels, facts, choices and steppers"), ("sg-rows", "Rows and timelines"), ("sg-items", "Apps, menus and list tools"), ("sg-shell", "Shell")]) }}
+{{ cat.contents([("sg-tokens", "Tokens"), ("sg-icons", "Icons"), ("sg-buttons", "Buttons and links"), ("sg-heads", "Page and section heads"), ("sg-status", "Status and tags"), ("sg-messages", "Callouts and messages"), ("sg-empty", "Empty states and notes"), ("sg-code", "Code"), ("sg-forms", "Forms"), ("sg-choices", "Panels, facts, choices and steppers"), ("sg-rows", "Rows, links and timelines"), ("sg-items", "Apps, menus and list tools"), ("sg-shell", "Shell")]) }}
 
 {% call ui.section("sg-tokens", "Tokens") %}
   {% call cat.specimen("Colour", "var(--surface)", "Custom properties on :root. A rule never writes a raw hex; add a token instead.") %}
@@ -91,21 +91,19 @@
 {% endcall %}
 
 {% call ui.section("sg-heads", "Page and section heads") %}
-  {% call cat.specimen("Page head", '{% call ui.page_head("Apps", "Run and manage your applications.") %}
+  {% call cat.specimen("Page head", '{% call ui.page_head("Apps") %}
   {{ ui.button("Deploy app", href=url, icon_name="plus") }}
-{% endcall %}', "Every page starts with it: the title and one line under it, and at the right the page's tools or its one primary button.") %}
-    {% call ui.page_head("Apps", "Run and manage your applications. Simple, powerful, yours.") %}{{ ui.button("Deploy app", href="#sg-heads", icon_name="plus") }}{% endcall %}
-  {% endcall %}
-  {% call cat.specimen("Variants", '{{ ui.page_head("Machines", status="The machines nord-studio runs things on.") }}
-{{ ui.page_head(app.name, back=(url, "Back to apps")) }}', "status is the larger, quieter line; back puts a link above the title on detail pages.") %}
-    {{ ui.page_head("Machines", status="The machines nord-studio runs things on: your own, and any grund machines you rent.") }}
+{% endcall %}
+{{ ui.page_head(app.name, back=(url, "Back to apps")) }}', "Every page starts with it: the title, and at the right the page's tools or its one primary button. No line of prose under it. back puts a link above the title on detail pages.") %}
+    {% call ui.page_head("Apps") %}{{ ui.button("Deploy app", href="#sg-heads", icon_name="plus") }}{% endcall %}
     {{ ui.page_head("storefront", back=("#sg-heads", "Back to apps")) }}
   {% endcall %}
-  {% call cat.specimen("A thing's head", '{% call ui.page_head(app.name, lede=app.image, back=(url, "Back to apps"), image=app.icon, state=(app.word, app.tone)) %}
+  {% call cat.specimen("A thing's head", '{% call ui.page_head(app.name, reference=app.image, back=(url, "Back to apps"), image=app.icon, state=(app.word, app.tone)) %}
   {{ ui.button("Deploy change", href=url) }}{{ lists.app_menu(org, app) }}
 {% endcall %}
-{{ ui.tabs(app.name, tabs, tab) }}', "A page about one thing (an app): its image icon large, a pill with its state beside the name, its primary action and its kebab. Tabs with an icon each split it into pages.") %}
-    {% call ui.page_head("storefront", lede="nginx:1.27", back=("#sg-heads", "Back to apps"), image="nginx", state=("Live", "ok")) %}{{ ui.button("Deploy change", href="#sg-heads") }}{{ lists.app_menu(org, apps[0]) }}{% endcall %}
+{{ ui.tabs(app.name, tabs, tab) }}', "A page about one thing (an app): its image icon large, a pill with its state beside the name, the image it runs (a digest cut to 12 hex, the whole in its title and its copy button), its primary action and its kebab. The name gives way; the buttons keep their width. Tabs with an icon each split it into pages.") %}
+    {% call ui.page_head("storefront", reference="nginx:1.27", back=("#sg-heads", "Back to apps"), image="nginx", state=("Live", "ok")) %}{{ ui.button("Deploy change", href="#sg-heads") }}{{ lists.app_menu(org, apps[0]) }}{% endcall %}
+    {% call ui.page_head("customer-billing-reconciler", reference="ghcr.io/nord-studio/customer-billing-reconciler:2026.10.06-3f9c0a1@sha256:200689790a0a0ea48ca45992e0450bc26ccab5307375b41c84dfc4f2475937ab", back=("#sg-heads", "Back to apps"), image="image", state=("Degraded", "orange")) %}{{ ui.button("Deploy change", href="#sg-heads") }}{{ lists.app_menu(org, apps[0]) }}{% endcall %}
     {{ ui.tabs("storefront", [("overview", "#sg-heads", "Overview", "home"), ("deployments", "#sg-heads", "Deployments", "layers"), ("logs", "#sg-heads", "Logs", "file"), ("metrics", "#sg-heads", "Metrics", "bars"), ("settings", "#sg-heads", "Settings", "gear")], "overview") }}
   {% endcall %}
   {% call cat.specimen("Section", '{% call ui.section("versions", "Versions", count=3, more=(url, "View all")) %}
@@ -125,8 +123,8 @@
     {% call cat.demos() %}{{ ui.status("Serving") }}{{ ui.status("Releasing", "blue") }}{{ ui.status("Failed", "orange") }}{{ ui.status("Running", "violet") }}{{ ui.status("Rejected", "danger") }}{{ ui.status("Offline", "muted") }}{% endcall %}
     {{ ui.status_line("All copies are ready.") }}
   {% endcall %}
-  {% call cat.specimen("Pills", '{{ ui.pill("Live", "ok") }}  {{ ui.pill("Public HTTP", icon_name="globe") }}', "Larger than a tag: a thing's state beside its name, as a dot of its tone (ok live, blue rolling out, orange degraded, danger failed, muted stopped), or what it is, with an icon.") %}
-    {% call cat.demos() %}{{ ui.pill("Live", "ok") }}{{ ui.pill("Rolling out", "blue") }}{{ ui.pill("Degraded", "orange") }}{{ ui.pill("Failed", "danger") }}{{ ui.pill("Stopped", "muted") }}{{ ui.pill("Public HTTP", icon_name="globe") }}{{ ui.pill("Private", icon_name="lock") }}{% endcall %}
+  {% call cat.specimen("Pills", '{{ ui.pill("Live", "ok") }}', "Larger than a tag: a thing's state beside its name, as a dot of its tone (ok live, blue rolling out, orange degraded, danger failed, muted stopped).") %}
+    {% call cat.demos() %}{{ ui.pill("Live", "ok") }}{{ ui.pill("Rolling out", "blue") }}{{ ui.pill("Degraded", "orange") }}{{ ui.pill("Failed", "danger") }}{{ ui.pill("Stopped", "muted") }}{% endcall %}
   {% endcall %}
   {% call cat.specimen("Tags", '{{ ui.tag("You") }}', "Tiny, rounded and muted: You, Runs VMs, Needs storage.") %}
     {% call cat.demos() %}{{ ui.tag("Needs storage") }}{{ ui.tag("You") }}{% endcall %}
@@ -135,11 +133,8 @@
 
 {% call ui.section("sg-messages", "Callouts and messages") %}
   {% call cat.specimen("Callout", '{{ ui.callout(title, text, icon_name="clock", tone="orange") }}', "Something happening now or needing attention: a toned icon, a title naming the thing and one sentence. danger for failures.") %}
-    {{ ui.callout("Deleting nord-studio", "Waiting for billing to agree. This page refreshes itself.", icon_name="clock", tone="orange") }}
+    {{ ui.callout("Deleting nord-studio", "Waiting for billing. Nothing is deleted until it answers.", icon_name="clock", tone="orange") }}
     {{ ui.callout("The release failed", "v4 could not start: its ready check never answered.", icon_name="alert", tone="orange", danger=true) }}
-  {% endcall %}
-  {% call cat.specimen("Offer", '{{ ui.callout(title, text, icon_name="grid", boxed=true, action=(url, "Browse templates")) }}', "An onward step that is not a state: the icon in a tile, one secondary button with its arrow after the label (button(…, icon_end=true)).") %}
-    {{ ui.callout("Looking for a faster start?", "Switch to premade templates for apps like NATS, whoami and nginx.", icon_name="grid", boxed=true, action=("#sg-messages", "Browse templates")) }}
   {% endcall %}
   {% call cat.specimen("Banners", '{{ forms.banner(error, ok=notice) }}', "One banner for a whole form or page, above it: what happened and what to do next. Nothing renders when the message is empty.") %}
     {% call cat.column() %}{{ forms.banner(ok="Your email is confirmed. Sign in to continue.") }}{{ forms.banner("That email, username or password is not right.") }}{% endcall %}
@@ -150,20 +145,20 @@
 {% endcall %}
 
 {% call ui.section("sg-empty", "Empty states and notes") %}
-  {% call cat.specimen("Empty state", '{{ ui.empty_state("No apps yet", "Deploy one and it shows up here.") }}
+  {% call cat.specimen("Empty state", '{{ ui.empty_state("No apps yet", "Owners and admins deploy them.") }}
 {{ ui.empty_state(text="No versions yet.") }}', "A dashed box: what is missing, and how it will appear. With {% call %}, the body holds a link or code.") %}
-    {{ ui.empty_state("No apps yet", "An owner or admin of nord-studio deploys them, and they show up here.") }}
+    {{ ui.empty_state("No apps yet", "Owners and admins deploy them.") }}
     {{ ui.empty_state(text="No versions yet.") }}
   {% endcall %}
-  {% call cat.specimen("Add card", '{{ ui.add_card(url, "Deploy a new app", text) }}', "The dashed card under a list that makes one more.") %}
-    {{ ui.add_card("#sg-empty", "Deploy a new app", "Deploy any container image by its name, such as nginx:1.27.") }}
+  {% call cat.specimen("Add card", '{{ ui.add_card(url, "Deploy a new app") }}', "The dashed card under a list that makes one more.") %}
+    {{ ui.add_card("#sg-empty", "Deploy a new app") }}
   {% endcall %}
   {% call cat.specimen("Paragraphs", '{{ ui.para("2 of 7 apps match “re”.", "note") }}
 {{ ui.para("All copies run on homelab-1.") }}
 {% call ui.para(kind="aside") %}With grund installed, run <code>…</code>.{% endcall %}', "para(text, kind): hint (the default) is small print, a caveat or a reference; note a quiet line about the list under it; aside the other way to do it; auth-lede the line under a signed-out title.") %}
     {{ ui.para("2 of 7 apps match “re”.", "note") }}
-    {{ ui.para("All copies run on homelab-1. If it goes down, so does storefront. Add a machine to spread them.") }}
-    {% call ui.para(kind="aside") %}With grund already installed, register it with <code>grund machines register</code> and keep <code>grund agent</code> running.{% endcall %}
+    {{ ui.para("All copies run on homelab-1; add a machine to spread them.") }}
+    {% call ui.para(kind="aside") %}With grund installed: <code>grund machines register</code>, then keep <code>grund agent</code> running.{% endcall %}
   {% endcall %}
 {% endcall %}
 
@@ -183,20 +178,20 @@
 {% endcall %}
 
 {% call ui.section("sg-forms", "Forms") %}
-  {% call cat.specimen("The rule", '{% call ui.panel("set", "Add or replace a login", lede) %}
+  {% call cat.specimen("The rule", '{% call ui.panel("set", "Add or replace a login") %}
   {% call forms.form(url, csrf) %}
     {{ forms.banner(error, fields=[host_error]) }}
     {{ forms.field("host", "Registry", error=host_error, hint=hint, width="md") }}
     {% call forms.actions("Saving a registry that has a login replaces it.") %}{{ ui.button("Save login") }}{% endcall %}
   {% endcall %}
 {% endcall %}', "A form on a signed-in page lives in a panel (or an expander): label, control, then one line, the hint or the error in its place. A refused form says so once at its top; banner(fields=…) does it when the handler only marked a field. It ends in actions(): what saving does on the left, the buttons on the right, the submit primary (danger when it destroys) and last. Short values take width sm, names md; the rest fill their column.") %}
-    {% call ui.panel("sg-rule", "Add or replace a login", "An organisation holds logins for at most 20 registries.") %}
+    {% call ui.panel("sg-rule", "Add or replace a login") %}
       {% call forms.form("#sg-forms", csrf) %}
         {{ forms.banner(fields=["That is not a registry host."]) }}
         {{ forms.field("sg-host", "Registry", value="not a host", error="That is not a registry host, such as ghcr.io.", width="md", mono=true) }}
         {% call forms.grid() %}
           {{ forms.field("sg-user", "Username", value="robot") }}
-          {{ forms.field("sg-secret", "Password or access token", type="password", hint="Stored sealed, never shown again.") }}
+          {{ forms.field("sg-secret", "Password or access token", type="password", hint="Never shown again.") }}
         {% endcall %}
         {% call forms.actions("Saving a registry that has a login replaces it.") %}{{ ui.button("Save login", type="button") }}{% endcall %}
       {% endcall %}
@@ -249,70 +244,67 @@
 
 {% call ui.section("sg-choices", "Panels, facts, choices and steppers") %}
   {% call cat.specimen("Choice links", '{{ ui.choice_links("Deployment mode", modes, mode) }}', "A choice between ways of doing a page's work, as large cards that are links, so it works without the script; the chosen one is marked like a selected radio. Each mode is a dict of key, href, icon, title, text and sub.") %}
-    {{ ui.choice_links("Deployment mode", [{"key": "premade", "href": "#sg-choices", "icon": "grid", "title": "Premade", "text": "Quickly deploy popular apps", "sub": "NATS, whoami and nginx"}, {"key": "custom", "href": "#sg-choices", "icon": "box", "title": "Custom", "text": "Deploy any container image", "sub": "Paste an image and deploy with sensible defaults"}], "custom") }}
+    {{ ui.choice_links("Deployment mode", [{"key": "premade", "href": "#sg-choices", "icon": "grid", "title": "Premade", "text": "A pinned version of a common app", "sub": "NATS, whoami, nginx"}, {"key": "custom", "href": "#sg-choices", "icon": "box", "title": "Custom", "text": "Any container image"}], "custom") }}
   {% endcall %}
-  {% call cat.specimen("Panel and grid", '{% call ui.panel("custom", "Custom deployment", lede) %}
+  {% call cat.specimen("Panel and grid", '{% call ui.panel("custom", "Custom deployment") %}
   {% call forms.grid() %}{{ forms.field(…) }}{{ forms.field(…) }}{% endcall %}
 {% endcall %}
 {% call forms.actions(note, "layers") %}{{ ui.button("Cancel", href=url, kind="secondary") }}{{ ui.button("Deploy app") }}{% endcall %}', "A titled box for one part of a page's work. grid() puts fields in two columns (one below 900 px), and a grid inside a grid splits a column. actions() ends a form: the note says what it does, the primary is last.") %}
-    {% call ui.panel("sg-panel", "Custom deployment", "Paste any container image and deploy with sensible defaults.") %}
+    {% call ui.panel("sg-panel", "Custom deployment") %}
       {% call forms.grid() %}
-        {{ forms.field("sg-app-name", "Name", value="storefront", hint="A unique name for your app.", required=false) }}
+        {{ forms.field("sg-app-name", "Name", value="storefront", hint="Lowercase letters, digits and -.", required=false) }}
         {% call forms.grid() %}
-          {{ forms.field("sg-port-2", "Port", type="number", hint="Found from the image when empty.", required=false) }}
-          {{ forms.stepper_field("sg-copies", "Copies", 2, max=20, hint="Number of app instances.") }}
+          {{ forms.field("sg-port-2", "Port", type="number", hint="Empty: from the image.", required=false) }}
+          {{ forms.stepper_field("sg-copies", "Copies", 2, max=20) }}
         {% endcall %}
       {% endcall %}
     {% endcall %}
-    {% call forms.actions("Makes the app and rolls out its first release.", "layers") %}{{ ui.button("Cancel", href="#sg-choices", kind="secondary") }}{{ ui.button("Deploy app", type="button") }}{% endcall %}
+    {% call forms.actions("Deploying makes the app and its first release.", "layers") %}{{ ui.button("Cancel", href="#sg-choices", kind="secondary") }}{{ ui.button("Deploy app", type="button") }}{% endcall %}
   {% endcall %}
-  {% call cat.specimen("Panel with an action, and facts", '{% call ui.panel("status", "Application status", lede, action=(url, "All releases")) %}
+  {% call cat.specimen("Panel with an action, and facts", '{% call ui.panel("status", "Application status", action=(url, "All releases")) %}
   {% call ui.facts() %}
-    {% call ui.fact("Reachable at", wide=true) %}{{ ui.endpoint(address, href=address) }}{{ ui.pill("Public HTTP", icon_name="globe") }}{% endcall %}
-    {{ ui.fact("Status", "Live", tone="ok", lines=[line]) }}
-    {{ ui.fact("Running", "v8", icon_name="layers", lines=[image, digest]) }}
-    {{ ui.fact("Last change", "2 hours ago", icon_name="clock", lines=["by " ~ who, what]) }}
+    {% call ui.fact("Reachable at", wide=true) %}{{ ui.endpoint(address, href=address) }}{% endcall %}
+    {{ ui.fact("Status", "Live", tone="ok") }}
+    {{ ui.fact("Running", "v8", icon_name="layers", lines=[(image ~ " · " ~ digest, reference)]) }}
+    {{ ui.fact("Last change", ago ~ " · " ~ who, icon_name="clock") }}
   {% endcall %}
-{% endcall %}', "action puts one secondary button at the right of a panel's title. facts() is a row of fact()s divided by lines (two columns below 900 px): a label, the value large with an icon or a state's dot, and quieter lines, each one line, cut with an ellipsis when long. endpoint() is an address with a copy button: a link when public, code when internal.") %}
-    {% call ui.panel("sg-facts", "Application status", "Your application is running and accessible.", action=("#sg-choices", "All releases")) %}
+{% endcall %}', "action puts one secondary button at the right of a panel's title. facts() is fact()s divided by lines: a wide one on a row of its own, the rest three across (two below 900 px): a label, the value large with an icon or a state's dot, and at most a quieter line, each on one line, cut with an ellipsis, the whole in its title. Each fact says one thing once (Kasper, 2026-10-06: the version appears once). endpoint() is an address with a copy button: a link when public, code when internal.") %}
+    {% call ui.panel("sg-facts", "Application status", action=("#sg-choices", "All releases")) %}
       {% call ui.facts() %}
-        {% call ui.fact("Reachable at", wide=true) %}{{ ui.endpoint("https://storefront-nord-studio.example.run", href="#sg-choices") }}{{ ui.pill("Public HTTP", icon_name="globe") }}{% endcall %}
-        {{ ui.fact("Status", "Live", tone="ok", lines=["v8 is live on 2 copies"]) }}
-        {{ ui.fact("Running", "v8", icon_name="layers", lines=["nginx:1.27", "2006897a0a1c"]) }}
-        {{ ui.fact("Last change", "2 hours ago", icon_name="clock", lines=["by a-rather-long-account-name", "v8 · rolled back to v5"]) }}
+        {% call ui.fact("Reachable at", wide=true) %}{{ ui.endpoint("https://storefront-nord-studio.example.run", href="#sg-choices") }}{% endcall %}
+        {{ ui.fact("Status", "Live", tone="ok") }}
+        {{ ui.fact("Running", "v8", icon_name="layers", lines=[("nginx:1.27 · 2006897a0a1c", "nginx:1.27@sha256:2006897a0a1c0ea48ca45992e0450bc26ccab5307375b41c84dfc4f2475937ab")]) }}
+        {{ ui.fact("Last change", "2 hours ago · a-rather-long-account-name", icon_name="clock") }}
       {% endcall %}
     {% endcall %}
-    {% call ui.panel("sg-facts-private", "Internal") %}{% call ui.facts() %}{% call ui.fact("Reachable at", wide=true) %}{{ ui.endpoint("db.grund.internal:5432") }}{{ ui.pill("Private", icon_name="lock") }}{% endcall %}{{ ui.fact("Status", "Failed", tone="danger", lines=["v3 is still serving"]) }}{% endcall %}{% endcall %}
+    {% call ui.panel("sg-facts-private", "Internal") %}{% call ui.facts() %}{% call ui.fact("Reachable at", wide=true) %}{{ ui.endpoint("db.grund.internal:5432") }}{% endcall %}{{ ui.fact("Status", "Failed", tone="danger") }}{% endcall %}{% endcall %}
   {% endcall %}
   {% call cat.specimen("Choice field", '{{ forms.choice_field("exposure", "Exposure", exposures, "private", hint=hint) }}', "A choice of one as cards over radio buttons. Each option is a dict of value, title, text and icon or image; disabled and tag mark one not offered yet; state pins hover or focus (the style guide only); error replaces the hint. large widens the cards; fill names a field the script fills with the chosen value.") %}
-    {{ forms.choice_field("sg-exposure", "Exposure", [{"value": "private", "title": "Private", "text": "Only accessible within grund", "icon": "lock"}, {"value": "public", "title": "Public HTTP", "text": "Via a example.run address", "icon": "globe"}], "private", hint="Public: https://<name>-nord-studio.example.run") }}
+    {{ forms.choice_field("sg-exposure", "Exposure", [{"value": "private", "title": "Private", "text": "Only other apps reach it", "icon": "lock"}, {"value": "public", "title": "Public HTTP", "text": "Via a example.run address", "icon": "globe"}], "private", hint="Public: https://<name>-nord-studio.example.run") }}
     {{ forms.choice_field("sg-template", "App (large, with a disabled one and an error)", [{"value": "nats", "title": "NATS", "text": "A messaging server for your apps.", "image": "nats"}, {"value": "postgres", "title": "PostgreSQL", "text": "A relational database.", "image": "postgres", "disabled": true, "tag": "Needs storage"}], "", error="Choose one of the apps.", large=true) }}
     {{ forms.choice_field("sg-states", "States (hover, focus)", [{"value": "a", "title": "Hover", "text": "state: hover", "icon": "lock", "state": "hover"}, {"value": "b", "title": "Focus", "text": "state: focus", "icon": "globe", "state": "focus"}], "") }}
   {% endcall %}
-  {% call cat.specimen("Stepper", '{{ forms.stepper_field("copies", "Copies", new.copies, max=20, hint="Number of app instances.") }}', "A whole number with − and +. The buttons show only with the script; without it the number is typed, with the browser's own arrows.") %}
+  {% call cat.specimen("Stepper", '{{ forms.stepper_field("copies", "Copies", new.copies, max=20) }}', "A whole number with − and +. The buttons show only with the script; without it the number is typed, with the browser's own arrows.") %}
     {% call cat.column() %}{{ forms.stepper_field("sg-copies-2", "Copies", 1, max=20, error="Copies is a whole number from 1 to 20.") }}{% endcall %}
   {% endcall %}
   {% call cat.specimen("Expanders", '{% call ui.expanders() %}
-  {% call ui.expander("Exposure", "Public HTTP on port 80", icon_name="globe", meta=["Makes a release"]) %}…{% endcall %}
-  {% call ui.expander("Add a health check", "grund asks before a copy counts as ready", kind="add") %}…{% endcall %}
-  {% call ui.expander("Delete " ~ app.name, text, icon_name="trash", kind="danger") %}…{% endcall %}
-{% endcall %}', "Things in one line each that open to show more, as details elements, so they open without the script: a setting with its value as the summary and its form inside, a release, a form's optional part. kind add is a thing not set yet; danger is delete. state puts a pill after the title. Open the one a refused form is in.") %}
+  {% call ui.expander("v8", summary, icon_name="layers", state=("Live", "ok"), meta=[digest, ago]) %}…{% endcall %}
+  {% call ui.expander("Delete " ~ org.slug, "Cannot be undone.", icon_name="trash", kind="danger") %}…{% endcall %}
+{% endcall %}', "Things in one line each that open to show more, as details elements, so they open without the script: a release, a form's optional part, an organisation's rename and delete. kind danger is delete. state puts a pill after the title. Open the one a refused form is in.") %}
     {% call ui.expanders() %}
-      {% call ui.expander("Exposure", "Public HTTP on port 80 · https://storefront-nord-studio.example.run", icon_name="globe", meta=["Makes a release"]) %}<p>Its form.</p>{% endcall %}
       {% call ui.expander("v8", "Rolled back to v5 by ada from the dashboard", icon_name="layers", tone="ok", state=("Live", "ok"), meta=["2006897a", "2 hours ago"]) %}<p>Its details.</p>{% endcall %}
       {% call ui.expander("Copies (open)", "2 copies · rolls back a failed release on its own", icon_name="copy", open=true) %}
         {% call forms.form("#sg-choices", csrf) %}
           {{ forms.stepper_field("sg-copies-3", "Copies", 2, max=20) }}
-          {% call forms.actions("Saved at once. No new release.") %}{{ ui.button("Save", type="button") }}{% endcall %}
+          {% call forms.actions("Saving applies at once, without a release.") %}{{ ui.button("Save", type="button") }}{% endcall %}
         {% endcall %}
       {% endcall %}
-      {% call ui.expander("Add a health check", "grund asks before a copy counts as ready", kind="add") %}<p>Its form.</p>{% endcall %}
-      {% call ui.expander("Delete storefront", "Its copies stop and its name is free again.", icon_name="trash", kind="danger") %}<p>Its form.</p>{% endcall %}
+      {% call ui.expander("Delete nord-studio", "Cannot be undone.", icon_name="trash", kind="danger") %}<p>Its form.</p>{% endcall %}
     {% endcall %}
   {% endcall %}
 {% endcall %}
 
-{% call ui.section("sg-rows", "Rows and timelines") %}
+{% call ui.section("sg-rows", "Rows, links and timelines") %}
   {% call cat.specimen("Rows", '{% call lists.rows() %}
   {% call(slot) lists.row(machine.name, sub, icon_name="server", tags=["Runs VMs"], status="Connected") %}
     {% if slot == "end" %}{{ forms.post_button(url, csrf, "Remove", kind="danger", size="sm") }}{% endif %}
@@ -330,6 +322,31 @@
       {% call(slot) lists.row("Managed by", "ada", plain=true) %}{% if slot == "end" %}{{ ui.link_more("#sg-rows", "Manage billing") }}{% endif %}{% endcall %}
     {% endcall %}
   {% endcall %}
+  {% call cat.specimen("Links and tiles", '{% call ui.panel("configured", "Configured") %}
+  {% call lists.links() %}
+    {% for item in items.configured %}{{ lists.link(url ~ "?edit=" ~ item.key, item.title, item.value, item.icon, "Edit") }}{% endfor %}
+  {% endcall %}
+{% endcall %}
+{% call ui.panel("more", "Add more") %}
+  {% call lists.tiles() %}{% for item in items.more %}{{ lists.tile(url ~ "?edit=" ~ item.key, item.title) }}{% endfor %}{% endcall %}
+{% endcall %}
+{% call lists.links() %}{{ lists.link(url ~ "?edit=delete", "Delete " ~ app.name, icon_name="trash", danger=true) }}{% endcall %}', "An app's Settings: links() is a box of lines that each open a page of their own (icon, name, value, action word, chevron); tiles() a grid of things to add, three across and one on a phone. A link after a panel stands alone, as Delete does.") %}
+    {% call ui.panel("sg-configured", "Configured") %}
+      {% call lists.links() %}
+        {{ lists.link("#sg-rows", "Exposure", "Public HTTP on port 80 · https://storefront-nord-studio.example.run", "globe", "Edit") }}
+        {{ lists.link("#sg-rows", "Copies (hover)", "3 copies", "copy", "Edit", state="hover") }}
+        {{ lists.link("#sg-rows", "Resources (focus)", "64 MiB and 0.20 CPU per copy", "bars", "Edit", state="focus") }}
+      {% endcall %}
+    {% endcall %}
+    {% call ui.panel("sg-more", "Add more") %}
+      {% call lists.tiles() %}
+        {{ lists.tile("#sg-rows", "Environment variables") }}
+        {{ lists.tile("#sg-rows", "Secrets (hover)", state="hover") }}
+        {{ lists.tile("#sg-rows", "Custom domain (focus)", state="focus") }}
+      {% endcall %}
+    {% endcall %}
+    {% call lists.links() %}{{ lists.link("#sg-rows", "Delete storefront", icon_name="trash", danger=true) }}{% endcall %}
+  {% endcall %}
   {% call cat.specimen("Timeline", '{% call lists.timeline() %}
   {% call lists.event(title, release.ago, release.at, release.iso, "v" ~ release.number, release.state) %}Deployed by <strong>{{ release.by }}</strong>{% endcall %}
 {% endcall %}', "What happened, newest first, on a line. The marker says how it ended: ok a check (what runs now), failed an alert, busy a blue ring, otherwise a quiet ring. The time is a time element with the exact time as its title.") %}
@@ -343,7 +360,7 @@
 {% endcall %}
 
 {% call ui.section("sg-items", "Apps, menus and list tools") %}
-  {% call cat.specimen("Apps as a list", '{% call ui.page_head("Apps", lede) %}
+  {% call cat.specimen("Apps as a list", '{% call ui.page_head("Apps") %}
   {{ lists.list_tools(sorts, list.sort, list_href, grid_href, list.view, {"q": list.q, "view": list.view}) }}
 {% endcall %}
 {% call lists.items(list.view) %}{% for app in apps %}{{ lists.app_row(org, app) }}{% endfor %}{% endcall %}', "items is one bordered box of rows; each app_row is its image icon, its name over its image, its address and its menu. A public app shows its https address; one with a port its internal name with a copy button; one with no port nothing.") %}
@@ -351,7 +368,7 @@
     {% call lists.items() %}{% for app in apps %}{{ lists.app_row(org, app) }}{% endfor %}{% endcall %}
   {% endcall %}
   {% call cat.specimen("Apps as a grid", '{% call lists.items("grid") %}…{% endcall %}
-{{ ui.add_card(url, "Deploy a new app", text) }}', "The same rows as cards.") %}
+{{ ui.add_card(url, "Deploy a new app") }}', "The same rows as cards.") %}
     {% call lists.items("grid") %}{% for app in apps[:3] %}{{ lists.app_row(org, app) }}{% endfor %}{% endcall %}
   {% endcall %}
   {% call cat.specimen("Menu", '{% call lists.menu("Actions for " ~ app.name) %}

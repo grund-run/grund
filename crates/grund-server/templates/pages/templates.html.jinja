@@ -3,8 +3,7 @@
 {% set title = "Templates" %}
 {% block content %}
 {{ images.sprite(image_keys) }}
-{{ ui.page_head("Templates", "Ready-made apps you can deploy in one step, each pinned to one version.") }}
-{% call ui.para(kind="note") %}PostgreSQL, Redis and MinIO keep their data on disk, so they come when grund has volumes. Until then, any other image deploys by its name{% if org.manages %} from <a href="/{{ org.slug }}/deploy">Deploy app</a>{% endif %}.{% endcall %}
+{{ ui.page_head("Templates") }}
 {% call lists.items("grid") %}
 {% for template in templates %}{{ lists.template_row(template, ("/" ~ org.slug ~ "/deploy?template=" ~ template.key) if org.manages else "") }}{% endfor %}
 {% endcall %}

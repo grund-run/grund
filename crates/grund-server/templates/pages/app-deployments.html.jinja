@@ -10,7 +10,7 @@
   {% else %}
   {{ ui.empty_state(text="No copies run yet.") }}
   {% endif %}
-  {% if crowded %}{{ ui.para("All copies run on " ~ crowded ~ ". If it goes down, so does " ~ app.name ~ ". Add a machine to spread them.") }}{% endif %}
+  {% if crowded %}{{ ui.para("All copies run on " ~ crowded ~ "; add a machine to spread them.") }}{% endif %}
 {% endcall %}
 
 {% call ui.section("versions", "Releases", count=releases | length) %}
@@ -19,7 +19,7 @@
     {% for release in releases %}
     {% call ui.expander("v" ~ release.number, release.verb ~ " by " ~ release.by ~ (" " ~ release.source if release.source else "") ~ (" · " ~ release.note if release.note else ""), icon_name="layers", tone=release.tone, state=(release.outcome, release.tone), meta=[release.short_digest, release.ago], id="v" ~ release.number) %}
       {% call lists.rows() %}
-        {{ lists.row("Image", release.image, plain=true) }}
+        {{ lists.row("Image", release.image | short_image, plain=true) }}
         {% call(slot) lists.row("Digest", release.digest, plain=true) %}{% if slot == "end" %}{{ ui.copy_button(release.digest, "the digest") }}{% endif %}{% endcall %}
         {{ lists.row("Made", release.at ~ " · " ~ release.verb ~ " by " ~ release.by ~ (" " ~ release.source if release.source else ""), plain=true) }}
         {% if release.note %}{{ lists.row("Note", release.note, plain=true) }}{% endif %}

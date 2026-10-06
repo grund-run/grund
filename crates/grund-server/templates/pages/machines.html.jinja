@@ -1,17 +1,17 @@
 {% extends "layout-app.html.jinja" %}
 {% set title = "Machines" %}
 {% block content %}
-{{ ui.page_head("Machines", status="The machines " ~ org.slug ~ " runs things on: your own, and any grund machines you rent.") }}
+{{ ui.page_head("Machines") }}
 {{ forms.banner(error, ok=notice) }}
 
 {% if setup %}
 {% call ui.section("setup", "Set up your machine", stack=true) %}
   {% if setup.install %}
-  <p>On the machine, run this within {{ setup.minutes }} minutes. It installs grund and its agent, and connects the machine here. The code works once, and this is the only time it is shown.</p>
+  <p>On the machine, run this within {{ setup.minutes }} minutes. The code works once and is not shown again.</p>
   {{ ui.code(setup.install, id="setup-install", wrap=true, what="the command") }}
-  {% call ui.para(kind="aside") %}With grund already installed, register it with <code>{{ setup.command }}</code> and keep <code>grund agent</code> running.{% endcall %}
+  {% call ui.para(kind="aside") %}With grund installed: <code>{{ setup.command }}</code>, then keep <code>grund agent</code> running.{% endcall %}
   {% else %}
-  <p>On the machine, with the grund binary installed, run this within {{ setup.minutes }} minutes, then keep <code>grund agent</code> running. The code works once, and this is the only time it is shown.</p>
+  <p>On the machine, run this within {{ setup.minutes }} minutes, then keep <code>grund agent</code> running. The code works once and is not shown again.</p>
   {{ ui.code(setup.command, id="setup-command", wrap=true, what="the command") }}
   {% endif %}
 {% endcall %}
@@ -29,10 +29,10 @@
 {% if not machines %}{{ ui.empty_state(text="No machines yet.") }}{% endif %}
 
 {% if org.manages %}
-{% call ui.panel("add", "Add a machine", "grund gives you a command to run on it, with a code that works once.") %}
+{% call ui.panel("add", "Add a machine") %}
   {% call forms.form("/" ~ org.slug ~ "/machines/add", csrf, layout="row") %}
     {{ forms.banner(add_error) }}
-    {{ forms.field("name", "Name", value=name, autocomplete="off", required=false, hint="Without one, the machine is named after its hostname.") }}
+    {{ forms.field("name", "Name", value=name, autocomplete="off", required=false, hint="Empty: its hostname.") }}
     {{ ui.button("Get a setup code") }}
   {% endcall %}
 {% endcall %}
@@ -54,7 +54,7 @@
 
 {% if org.manages %}
 {% if hosts %}
-{% call ui.panel("run", "Run a virtual machine", "It joins this organisation as a machine of its own.") %}
+{% call ui.panel("run", "Run a virtual machine") %}
   {% call forms.form("/" ~ org.slug ~ "/machines/vms", csrf) %}
     {{ forms.banner(run_error) }}
     {% call forms.grid() %}
@@ -77,7 +77,7 @@
 {% endcall %}
 {% else %}
 {% call ui.section("run", "Run a virtual machine") %}
-  {{ ui.empty_state(text="None of your machines can run virtual machines yet: it needs a connected machine with KVM whose guests can reach grund.") }}
+  {{ ui.empty_state(text="That needs a connected machine with KVM.") }}
 {% endcall %}
 {% endif %}
 {% endif %}

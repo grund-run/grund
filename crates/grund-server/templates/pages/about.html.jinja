@@ -1,7 +1,6 @@
 {% extends "pages/organisation.html.jinja" %}
 {% set title = "About" %}
 {% set tab = "about" %}
-{% set lede = "The grund " ~ viewer.current.slug ~ " lives on: the build it runs, where it answers and how its apps are reached." %}
 {% block tab %}
 {% call lists.rows() %}
   {{ lists.row("Version", revision, plain=true) }}

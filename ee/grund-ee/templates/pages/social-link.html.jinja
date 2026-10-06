@@ -1,7 +1,7 @@
 {% extends "layout-auth.html.jinja" %}
 {% set title = "Connect " ~ provider %}
 {% block card %}
-{{ ui.auth_head("Connect " ~ provider, "An account with " ~ email ~ " already exists. Enter its password to connect " ~ provider ~ " to it. After that, either way signs you in.") }}
+{{ ui.auth_head("Connect " ~ provider, "An account with " ~ email ~ " exists. Enter its password to connect " ~ provider ~ ".") }}
 {% call forms.form("/auth/link", csrf) %}
   {{ forms.banner(error) }}
   {{ forms.field("password", "Password", type="password", autocomplete="current-password", autofocus=true) }}

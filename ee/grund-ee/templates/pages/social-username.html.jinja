@@ -1,7 +1,7 @@
 {% extends "layout-auth.html.jinja" %}
 {% set title = "Choose a username" %}
 {% block card %}
-{{ ui.auth_head("Choose a username", provider ~ " confirmed " ~ email ~ ". Pick the name your account and organisation go by.") }}
+{{ ui.auth_head("Choose a username") }}
 {% call forms.form("/auth/complete", csrf) %}
   {{ forms.banner(error) }}
   {{ forms.field("username", "Username", value=username, autocomplete="username", hint="3 to 32 letters, digits and single hyphens. It is public.", autofocus=true) }}

@@ -1384,13 +1384,13 @@ async fn the_machines_page_adds_a_device_shows_it_connected_and_runs_a_vm_on_it(
     then.status(200)?
         .body_contains("No machines yet.")?
         .body_contains("Get a setup code")?
-        .body_contains("None of your machines can run virtual machines yet")?;
+        .body_contains("That needs a connected machine with KVM.")?;
 
     when.submitting(&page, &format!("{page}/add"), &[("name", "desk")])
         .await?;
     then.status(200)?
         .header("cache-control", "no-store")?
-        .body_contains("this is the only time it is shown")?
+        .body_contains("The code works once and is not shown again.")?
         .body_contains("aria-label=\"Copy the command\"")?
         .body_contains("data-copy=\"grund join --url ")?;
     let args = setup_command(&then.body()?)?;

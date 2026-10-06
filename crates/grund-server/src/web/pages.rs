@@ -121,7 +121,7 @@ pub fn forged(state: &State, browser: &Browser) -> PageResult {
         browser,
         StatusCode::FORBIDDEN,
         "This form has expired",
-        "For your safety grund only accepts forms it just showed you. Go back, reload the page and try again.",
+        "This form has expired. Reload the page and try again.",
         Some(("/", "Go to grund")),
     )
 }

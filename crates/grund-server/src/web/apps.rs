@@ -127,7 +127,6 @@ struct Health {
     word: &'static str,
     tone: &'static str,
     line: String,
-    detail: String,
 }
 
 fn ready_copies(view: &AppView, release: i64, now: DateTime<Utc>) -> usize {
@@ -142,96 +141,52 @@ fn ready_copies(view: &AppView, release: i64, now: DateTime<Utc>) -> usize {
         .count()
 }
 
-fn health(view: &AppView, releases: &[ReleaseRow], now: DateTime<Utc>) -> Health {
+fn health(view: &AppView, now: DateTime<Utc>) -> Health {
     let row = &view.row;
     let wanted = row.settings.0.copies as usize;
     let rollout = row.rollout.as_ref();
     let to = rollout.and_then(|r| r["to"].as_i64()).unwrap_or(0);
     let current = row.current_release.map(i64::from);
     let ready = current.map_or(0, |c| ready_copies(view, c, now));
-    let health = |word, tone, line: String, detail: String| Health {
-        word,
-        tone,
-        line,
-        detail,
-    };
+    let health = |word, tone, line: String| Health { word, tone, line };
     if row.halted {
-        return health(
-            "Failed",
-            "danger",
-            format!("v{to} failed; rollback is off"),
-            format!(
-                "grund is leaving {} as it is: v{to} failed and automatic rollback is off. Deploy or roll back to go on.",
-                row.name
-            ),
-        );
+        return health("Failed", "danger", format!("v{to} failed; rollback is off"));
     }
     match rollout.and_then(|r| r["state"].as_str()) {
         Some("in_progress") => {
-            let started = releases
-                .iter()
-                .find(|r| r.number as i64 == to)
-                .map(|r| {
-                    let words = release_words(r);
-                    format!(" · started by {} {}", words.by, words.source)
-                })
-                .unwrap_or_default();
             let ready_new = ready_copies(view, to, now);
             health(
                 "Rolling out",
                 "blue",
                 format!("v{to}: {ready_new} of {wanted} ready"),
-                format!(
-                    "Releasing v{to}{}. {ready_new} of {wanted} copies are ready; it goes on behind its ready check.",
-                    started.trim_end()
-                ),
             )
         }
         Some("failed") => {
             let reason = rollout
                 .and_then(|r| r["reason"].as_str())
                 .unwrap_or_default();
-            match current {
-                Some(current) => health(
-                    "Failed",
-                    "danger",
-                    format!("v{current} is still serving"),
-                    format!("{reason} v{current} is still serving."),
-                ),
-                None => health(
-                    "Failed",
-                    "danger",
-                    "Nothing is running".into(),
-                    format!("{reason} Nothing is running."),
-                ),
-            }
+            let after = match current {
+                Some(current) => format!("v{current} is still serving"),
+                None => "Nothing is running".into(),
+            };
+            health(
+                "Failed",
+                "danger",
+                format!("{reason} {after}").trim().to_string(),
+            )
         }
         _ => match current {
-            None => health(
-                "Stopped",
-                "muted",
-                "No release yet".into(),
-                format!("{} has no version yet. Deploy one.", row.name),
-            ),
+            None => health("Stopped", "muted", "No release yet".into()),
             Some(current) if ready >= wanted => health(
                 "Live",
                 "ok",
                 format!("v{current} is live on {}", copies(ready)),
-                String::new(),
             ),
-            Some(current) if ready == 0 => health(
-                "Degraded",
-                "orange",
-                "No copy is ready".into(),
-                format!("No copy of v{current} is ready. grund keeps trying."),
-            ),
-            Some(current) => health(
+            Some(_) if ready == 0 => health("Degraded", "orange", "No copy is ready".into()),
+            Some(_) => health(
                 "Degraded",
                 "orange",
                 format!("{ready} of {wanted} copies ready"),
-                format!(
-                    "v{current} is live on {ready} of {wanted} copies. grund keeps trying the rest."
-                ),
             ),
         },
     }
@@ -296,7 +251,7 @@ fn internal_address(name: &str, spec: &AppSpec) -> Option<String> {
 /// An app as a list row or card shows it.
 pub fn listing_context(listing: &AppListing) -> Value {
     let view = &listing.view;
-    let Health { line, tone, .. } = health(view, &[], Utc::now());
+    let Health { line, tone, .. } = health(view, Utc::now());
     let image = listing
         .spec
         .as_ref()
@@ -470,18 +425,14 @@ pub struct ListQuery {
 
 fn notice_words(done: &str) -> &'static str {
     match done {
-        "created" => "App made. Its first version is rolling out.",
-        "deployed" => "New release made. It rolls out behind its ready check.",
-        "released-file" => {
-            "grund.yaml applied as a new release. It rolls out behind its ready check."
-        }
-        "released" => {
-            "Settings saved as a new release of the same image. It rolls out behind its ready check."
-        }
+        "created" => "App made. Its first release is rolling out.",
+        "deployed" => "New release made. It is rolling out.",
+        "released-file" => "grund.yaml applied as a new release. It is rolling out.",
+        "released" => "Saved as a new release. It is rolling out.",
         "saved" => "Saved.",
         "secret" => "Secret stored. A release that reads it is rolling out.",
         "secret-removed" => "Secret removed. A release without it is rolling out.",
-        "rolled-back" => "Rolling back: an earlier release's image and settings, as a new release.",
+        "rolled-back" => "Rolling back, as a new release.",
         "deleted" => "App deleted. Its copies are stopping.",
         _ => "",
     }
@@ -693,7 +644,7 @@ fn exposures(app_domain: Option<&str>) -> Vec<Value> {
         },
     };
     vec![
-        context! { value => "private", title => "Private", icon => "lock", text => "Only accessible within grund" },
+        context! { value => "private", title => "Private", icon => "lock", text => "Only other apps reach it" },
         public,
     ]
 }
@@ -779,11 +730,11 @@ async fn new_view(
             modes => vec![
                 context! {
                     key => "premade", href => mode_href("premade"), icon => "grid", title => "Premade",
-                    text => "Quickly deploy popular apps", sub => "NATS, whoami and nginx; databases with storage",
+                    text => "A pinned version of a common app", sub => "NATS, whoami, nginx",
                 },
                 context! {
                     key => "custom", href => mode_href("custom"), icon => "box", title => "Custom",
-                    text => "Deploy any container image", sub => "Paste an image and deploy with sensible defaults",
+                    text => "Any container image", sub => "",
                 },
             ],
             new => Value::from_serialize(&new),
@@ -1215,6 +1166,8 @@ pub struct AppQuery {
     error: String,
     #[serde(default)]
     deploy_error: String,
+    #[serde(default)]
+    edit: String,
 }
 
 const APP_TABS: &[(&str, &str, &str, &str)] = &[
@@ -1280,10 +1233,12 @@ fn names(items: &[String]) -> String {
     }
 }
 
-fn summaries(
+fn setting_items(
     spec: &AppSpec,
     settings: &grund_domain::app::AppSettings,
     address: Option<&str>,
+    secrets: &[String],
+    domains: &[String],
 ) -> Value {
     let main = spec.ports.iter().find(|p| p.public).or(spec.ports.first());
     let exposure = match (main, address) {
@@ -1295,9 +1250,9 @@ fn summaries(
         (None, _) => "No port: nothing reaches it".into(),
     };
     let check = match spec.check.as_ref().map(|c| &c.kind) {
-        Some(CheckKind::Http { path }) => format!("An HTTP request to {path} must answer"),
-        Some(CheckKind::Tcp) => "A TCP connection must open".into(),
-        None => String::new(),
+        Some(CheckKind::Http { path }) => Some(format!("An HTTP request to {path} must answer")),
+        Some(CheckKind::Tcp) => Some("A TCP connection must open".into()),
+        None => None,
     };
     let memory = if spec.memory_mib == 0 {
         512
@@ -1309,7 +1264,6 @@ fn summaries(
     } else {
         spec.cpu_millis
     };
-    let defaults = spec.memory_mib == 0 && spec.cpu_millis == 0;
     let signal = if spec.stop.signal.is_empty() {
         "SIGTERM"
     } else {
@@ -1320,26 +1274,98 @@ fn summaries(
     } else {
         spec.stop.grace_seconds
     };
-    context! {
-        exposure,
-        copies => format!(
-            "{} · {}",
-            copies(settings.copies as usize),
-            if settings.auto_rollback { "a failed release rolls back on its own" } else { "a failed release is left as it is" }
+    let command = (!spec.command.is_empty() || signal != "SIGTERM" || grace != 30).then(|| {
+        let run = if spec.command.is_empty() {
+            "The image's own command".to_string()
+        } else {
+            spec.command.join(" ")
+        };
+        format!("{run} · stops with {signal}, killed after {grace} s")
+    });
+    let env: Vec<String> = spec.env.iter().map(|e| e.name.clone()).collect();
+    let optional = [
+        ("check", "Health check", "ok", check),
+        (
+            "env",
+            "Environment variables",
+            "list",
+            (!env.is_empty()).then(|| names(&env)),
         ),
-        env => names(&spec.env.iter().map(|e| e.name.clone()).collect::<Vec<_>>()),
-        secrets => names(&spec.secrets.iter().map(|s| s.env.clone()).collect::<Vec<_>>()),
-        check,
-        resources => format!("{} and {} per copy{}", mib(memory), cpus(cpu), if defaults { ", the defaults" } else { "" }),
-        command => if spec.command.is_empty() { "The image's own".to_string() } else { spec.command.join(" ") },
-        stop => format!("Stops with {signal}, killed after {grace} s"),
-        custom_command => !spec.command.is_empty() || !spec.stop.signal.is_empty() || spec.stop.grace_seconds != 0,
+        (
+            "secrets",
+            "Secrets",
+            "key",
+            (!secrets.is_empty()).then(|| names(secrets)),
+        ),
+        (
+            "domains",
+            "Custom domain",
+            "link",
+            (!domains.is_empty()).then(|| domains.join(", ")),
+        ),
+        ("volumes", "Volumes / storage", "box", None),
+        ("command", "Command override", "code", command),
+    ];
+    let item = |key: &str, title: &str, icon: &str, value: Option<String>| {
+        context! { key, title, icon, value }
+    };
+    let mut configured = vec![
+        item(
+            "exposure",
+            "Exposure",
+            if main.is_some_and(|p| p.public) {
+                "globe"
+            } else {
+                "lock"
+            },
+            Some(exposure),
+        ),
+        item(
+            "copies",
+            "Copies",
+            "copy",
+            Some(copies(settings.copies as usize)),
+        ),
+    ];
+    let mut more = Vec::new();
+    for (key, title, icon, value) in optional {
+        match value {
+            Some(value) => configured.push(item(key, title, icon, Some(value))),
+            None => more.push(item(key, title, icon, None)),
+        }
+        if key == "check" {
+            configured.push(item(
+                "resources",
+                "Resources",
+                "bars",
+                Some(format!("{} and {} per copy", mib(memory), cpus(cpu))),
+            ));
+        }
     }
+    more.push(item("file", FILE_NAME, "file", None));
+    context! { configured, more }
 }
+
+const SETTING_KEYS: &[&str] = &[
+    "exposure",
+    "copies",
+    "check",
+    "resources",
+    "env",
+    "secrets",
+    "domains",
+    "volumes",
+    "command",
+    "file",
+    "delete",
+];
+
+const FILE_NAME: &str = "grund.yaml";
 
 #[derive(Default)]
 struct Refused {
     part: &'static str,
+    edit: String,
     refusal: Refusal,
     form: Option<NewForm>,
     variable: String,
@@ -1371,7 +1397,10 @@ macro_rules! app_page {
                 &name,
                 $tab,
                 (notice_words(&query.done).to_string(), error),
-                Refused::default(),
+                Refused {
+                    edit: query.edit,
+                    ..Refused::default()
+                },
             )
             .await
         }
@@ -1431,25 +1460,16 @@ async fn app_view(
     let now = Utc::now();
     let wanted = view.row.settings.0.copies;
     let current = view.row.current_release;
-    let health = health(view, &releases, now);
+    let health = health(view, now);
     let shown = listing_context(&listing);
-    let lede = match health.word {
-        "Live" if listing.address.is_some() => {
-            "Your application is running and accessible.".to_string()
-        }
-        "Live" if shown.get_attr("internal").is_ok_and(|i| !i.is_none()) => {
-            "Your application is running. Other apps reach it by its internal name.".to_string()
-        }
-        "Live" => "Your application is running.".to_string(),
-        _ => health.detail.clone(),
-    };
     let running = current
         .and_then(|number| releases.iter().find(|r| r.number == number))
         .map(|r| {
+            let image = r.spec.0.image.split('@').next().unwrap_or_default();
             context! {
                 version => format!("v{}", r.number),
-                image => r.spec.0.image,
-                digest => r.image_digest.trim_start_matches("sha256:").chars().take(12).collect::<String>(),
+                line => format!("{image} · {}", r.image_digest.trim_start_matches("sha256:").chars().take(12).collect::<String>()),
+                reference => format!("{image}@{}", r.image_digest),
             }
         });
     let replicas: Vec<Value> = view
@@ -1511,6 +1531,7 @@ async fn app_view(
         None => NewForm::default(),
     });
     let read: Vec<&SecretEnv> = spec.map(|s| s.secrets.iter().collect()).unwrap_or_default();
+    let secret_names: Vec<String> = read.iter().map(|s| s.env.clone()).collect();
     let mut secrets: Vec<Value> = read
         .iter()
         .map(|secret| {
@@ -1567,11 +1588,11 @@ async fn app_view(
     let soon = match tab {
         "logs" => context! {
             title => "Logs are coming",
-            text => "grund does not collect what an app writes yet. When it does, each copy's output and errors show here, as they happen.",
+            text => "grund does not collect logs yet.",
         },
         _ => context! {
             title => "Metrics are coming",
-            text => "grund does not measure apps yet. When it does, each copy's CPU and memory, and the requests that reach the app, show here.",
+            text => "grund does not collect metrics yet.",
         },
     };
     let template = match tab {
@@ -1580,18 +1601,19 @@ async fn app_view(
         "settings" => "pages/app-settings.html.jinja",
         _ => "pages/app-soon.html.jinja",
     };
-    let domains: Vec<Value> = state
+    let bound = state
         .domains()
         .of_app(view.row.app_id)
         .await
-        .map_err(|e| PageError::from(anyhow::anyhow!(e)))?
+        .map_err(|e| PageError::from(anyhow::anyhow!(e)))?;
+    let domain_names: Vec<String> = bound.iter().map(|d| d.name.clone()).collect();
+    let domains: Vec<Value> = bound
         .into_iter()
         .map(|domain| {
             let serving = domain.status == crate::services::domains::Status::Issued;
             context! {
                 summary => if serving { domain.name.clone() } else { format!("{} (certificate on its way)", domain.name) },
                 state_words => if serving { "Serving with its own certificate" } else { "Bound; its certificate is on its way once its DNS points here" },
-                line => if serving { String::new() } else { format!("{}: waiting for its certificate", domain.name) },
                 name => domain.name,
                 serving,
             }
@@ -1621,7 +1643,7 @@ async fn app_view(
                 domains,
                 domains_href => format!("/{slug}/domains#custom"),
                 internal => shown.get_attr("internal").ok(),
-                word => health.word, tone => health.tone, line => health.line, lede,
+                word => health.word, tone => health.tone,
             },
             running,
             latest => history.first(),
@@ -1650,11 +1672,11 @@ async fn app_view(
             file,
             file_href => format!("{base}/grund.yaml"),
             signals => STOP_SIGNALS.iter().map(|s| (*s, *s)).collect::<Vec<_>>(),
-            items => spec.map(|spec| summaries(spec, &view.row.settings.0, listing.address.as_deref())),
+            items => spec.map(|spec| setting_items(spec, &view.row.settings.0, listing.address.as_deref(), &secret_names, &domain_names)),
             next => newest.map(|r| r.number + 1),
-            open => refused.part,
+            edit => if refused.part.is_empty() { SETTING_KEYS.iter().find(|k| **k == refused.edit).copied().unwrap_or_default() } else { refused.part },
+            file_name => FILE_NAME,
             notice, error,
-            topbar_action => (format!("/{slug}/apps/{}/deploy", view.row.name), "Deploy change"),
         },
     )
     .await
@@ -1818,6 +1840,7 @@ async fn refuse_setting(
             form,
             variable: String::new(),
             file: None,
+            edit: String::new(),
         },
     )
     .await
@@ -2075,6 +2098,7 @@ pub async fn apply_file(
             form: None,
             variable: String::new(),
             file: Some(form.file),
+            edit: String::new(),
         },
     )
     .await
@@ -2203,6 +2227,7 @@ pub async fn set_secret(
             form: None,
             variable,
             file: None,
+            edit: String::new(),
         },
     )
     .await
@@ -2383,6 +2408,73 @@ mod tests {
         ] {
             assert_eq!(ago(now - chrono::Duration::seconds(seconds), now), words);
         }
+    }
+
+    #[test]
+    fn settings_lists_what_is_set_in_order_and_offers_the_rest() {
+        let keys = |items: &Value, list: &str| -> Vec<String> {
+            items
+                .get_attr(list)
+                .expect("a list")
+                .try_iter()
+                .expect("items")
+                .map(|item| item.get_attr("key").expect("a key").to_string())
+                .collect()
+        };
+        let mut spec = AppSpec {
+            image: "traefik/whoami:v1.11.0".into(),
+            ports: vec![PortSpec {
+                name: "http".into(),
+                port: 80,
+                protocol: Protocol::Http,
+                public: true,
+            }],
+            secrets: Vec::new(),
+            command: Vec::new(),
+            memory_mib: 64,
+            cpu_millis: 200,
+            env: Vec::new(),
+            check: None,
+            stop: StopSpec::default(),
+        };
+        let settings = grund_domain::app::AppSettings::default();
+        let bare = setting_items(&spec, &settings, None, &[], &[]);
+        assert_eq!(
+            keys(&bare, "configured"),
+            ["exposure", "copies", "resources"]
+        );
+        assert_eq!(
+            keys(&bare, "more"),
+            [
+                "check", "env", "secrets", "domains", "volumes", "command", "file"
+            ]
+        );
+
+        spec.check = Some(CheckSpec {
+            kind: CheckKind::Http { path: "/".into() },
+            port: 80,
+            interval_ms: 1000,
+            timeout_ms: 1000,
+        });
+        spec.env = vec![EnvVar {
+            name: "LOG_LEVEL".into(),
+            value: "info".into(),
+        }];
+        spec.stop.grace_seconds = 10;
+        let set = setting_items(&spec, &settings, None, &["TOKEN".into()], &[]);
+        assert_eq!(
+            keys(&set, "configured"),
+            [
+                "exposure",
+                "copies",
+                "check",
+                "resources",
+                "env",
+                "secrets",
+                "command"
+            ]
+        );
+        assert_eq!(keys(&set, "more"), ["domains", "volumes", "file"]);
     }
 
     #[test]

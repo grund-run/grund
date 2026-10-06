@@ -1,7 +1,7 @@
 {% extends "layout-app.html.jinja" %}
 {% set title = "Domains" %}
 {% block content %}
-{{ ui.page_head("Domains", "Where " ~ org.slug ~ "'s apps answer on the internet.") }}
+{{ ui.page_head("Domains") }}
 {{ forms.banner(error, ok=notice) }}
 {% call ui.section("addresses", "App addresses", count=addresses | length, first=true) %}
   {% if addresses %}
@@ -13,13 +13,13 @@
     {% endfor %}
   {% endcall %}
   {% else %}
-  {% call ui.empty_state("No app has an address yet") %}An app gets one, <code>&lt;app&gt;-{{ org.slug }}.&lt;domain&gt;</code>, when a version publishes an HTTP port.{% endcall %}
+  {% call ui.empty_state("No app has an address yet") %}An app gets <code>&lt;app&gt;-{{ org.slug }}.&lt;domain&gt;</code> when it publishes an HTTP port.{% endcall %}
   {% endif %}
 {% endcall %}
 
 {% call ui.section("custom", "Your own domains", count=domains | length) %}
   {% if not domains %}
-  {{ ui.empty_state("No domains of your own yet", "Add a domain you own, prove it with a TXT record, and bind it to an app. grund serves the app on it with its own certificate.") }}
+  {{ ui.empty_state("No domains of your own yet") }}
   {% endif %}
 {% endcall %}
 {% for domain in domains %}
@@ -27,7 +27,7 @@
   {% if domain.tone == "danger" %}{{ ui.callout("Not working yet", domain.sentence, icon_name="alert", tone="danger", danger=true) }}
   {% else %}{{ ui.status_line(domain.sentence, domain.tone, id=domain.id ~ "-status") }}{% endif %}
   {% if domain.state == "pending" %}
-  {{ ui.para("Make this record at your DNS provider, then check it. It proves the domain is yours; only this organisation's value works.", "aside") }}
+  {{ ui.para("Make this record at your DNS provider, then check it.", "aside") }}
   {{ ui.dns_records(domain.records, "Records for " ~ domain.name) }}
   {% elif domain.records %}
   {{ ui.para(domain.records_aside, "aside") }}
@@ -42,7 +42,7 @@
     {{ ui.button("Bind" if domain.state == "verified" else "Move", kind="secondary") }}
   {% endcall %}
   {% else %}
-  {{ ui.para("No app publishes an HTTP port yet. Deploy one with a public port, then bind this domain to it.") }}
+  {{ ui.para("No app has a public HTTP port to bind it to.") }}
   {% endif %}
   {% endif %}
   {% call forms.actions() %}
@@ -55,10 +55,10 @@
 {% endfor %}
 
 {% if org.manages %}
-{% call ui.panel("add", "Add a domain", "An organisation holds at most " ~ max ~ " domains. A domain removed after it was verified waits " ~ cooldown ~ " before another organisation can add it.") %}
+{% call ui.panel("add", "Add a domain") %}
   {% call forms.form("/" ~ org.slug ~ "/domains", csrf, layout="row", autocomplete="off") %}
     {{ forms.banner(form_error, fields=[name_error]) }}
-    {{ forms.field("name", "Domain", value=name, autocomplete="off", error=name_error, hint="A name you own, such as shop.example.com. Not a wildcard.", mono=true) }}
+    {{ forms.field("name", "Domain", value=name, autocomplete="off", error=name_error, hint="Such as shop.example.com. No wildcards.", mono=true) }}
     {{ ui.button("Add domain") }}
   {% endcall %}
 {% endcall %}

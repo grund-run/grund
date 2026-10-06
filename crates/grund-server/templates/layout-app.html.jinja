@@ -13,7 +13,7 @@
 <div class="shell">
   {{ shell.sidebar(viewer, section, csrf) }}
   <div class="main">
-    {{ shell.topbar(viewer, section, list if list is defined else none, topbar_action if topbar_action is defined else none) }}
+    {{ shell.topbar(viewer, section, list if list is defined else none) }}
     <main class="content" id="main">
       {% block content %}{% endblock %}
     </main>

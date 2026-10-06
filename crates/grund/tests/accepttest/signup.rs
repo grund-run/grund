@@ -29,8 +29,10 @@ async fn a_new_account_can_sign_in_only_after_confirming_its_email() -> anyhow::
         .await?;
     then.redirects_to("/")?;
     when.visiting_home().await?;
-    then.status(200)?
-        .body_contains(&format!("Signed in as {}", account.username))?;
+    then.status(200)?.body_contains(&format!(
+        "aria-label=\"{}: account menu\"",
+        account.username
+    ))?;
     Ok(())
 }
 

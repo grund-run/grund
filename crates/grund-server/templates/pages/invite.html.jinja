@@ -9,10 +9,10 @@
 {{ forms.banner("You are signed in as " ~ signed_in_as ~ ", whose address is not " ~ email ~ ". Sign out, then open the link again.") }}
 {{ forms.post_button("/logout", csrf, "Sign out", block=true, layout="stack") }}
 {% elif mode == "sign-in" %}
-{{ ui.para(email ~ " already has a grund account. Sign in, and you come back here to join.", "auth-lede") }}
+{{ ui.para(email ~ " has an account. Sign in to join.", "auth-lede") }}
 {{ ui.button("Sign in to join", href="/login?" ~ return_to, block=true) }}
 {% else %}
-{{ ui.para("Create your account to join. Opening this link confirmed your address.", "auth-lede") }}
+{{ ui.para("Create an account to join.", "auth-lede") }}
 {% call forms.form("/invite", csrf) %}
   {{ forms.hidden_field("token", token) }}
   {{ forms.field("invited-email", "Email", type="email", value=email, required=false, disabled=true) }}

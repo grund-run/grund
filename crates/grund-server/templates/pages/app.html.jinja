@@ -6,7 +6,7 @@
 {% block head %}{% if refresh %}<meta http-equiv="refresh" content="5">{% endif %}{% endblock %}
 {% block content %}
 {{ images.sprite([app.icon]) }}
-{% call ui.page_head(app.name, lede=app.image or "No version yet", back=("/" ~ org.slug ~ "/apps", "Back to apps"), image=app.icon, state=(app.word, app.tone)) %}
+{% call ui.page_head(app.name, reference=app.image, back=("/" ~ org.slug ~ "/apps", "Back to apps"), image=app.icon, state=(app.word, app.tone)) %}
   {% if org.manages %}{{ ui.button("Deploy change", href=app.base ~ "/deploy") }}{% endif %}
   {{ lists.app_menu(org, app) }}
 {% endcall %}

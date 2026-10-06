@@ -4,60 +4,58 @@
 {% block content %}
 {{ images.sprite(image_keys) }}
 {% if change %}
-{{ ui.page_head("Deploy change", "A new release of " ~ change.name ~ ", starting from what it runs now.", back=(change.base, "Back to " ~ change.name)) }}
+{{ ui.page_head("Deploy change", back=(change.base, "Back to " ~ change.name)) }}
 {% else %}
-{{ ui.page_head("Deploy app", "Choose a deployment mode to get started.", back=("/" ~ org.slug ~ "/apps", "Back to apps")) }}
+{{ ui.page_head("Deploy app", back=("/" ~ org.slug ~ "/apps", "Back to apps")) }}
 {% endif %}
 {% if org.manages %}
 {% if not change %}{{ ui.choice_links("Deployment mode", modes, mode) }}{% endif %}
 {% call forms.form(action, csrf, autocomplete="off") %}
   {{ forms.hidden_field("mode", mode) }}
   {% if mode == "premade" %}
-  {% call ui.panel("premade", "Premade app", "Pick an app. grund runs the version named here, pinned by its digest.") %}
+  {% call ui.panel("premade", "Premade app") %}
     {{ forms.banner(new_error) }}
     {{ forms.choice_field("template", "App", templates, new.template, error=errors.template, large=true, fill="name") }}
     {% call forms.grid() %}
-      {{ forms.field("name", "Name", value=new.name, error=errors.name, hint="A unique name for your app. Only lowercase letters, numbers and -.") }}
-      {{ forms.stepper_field("copies", "Copies", new.copies or "1", max=20, error=errors.copies, hint="Number of app instances.") }}
+      {{ forms.field("name", "Name", value=new.name, error=errors.name, hint="Lowercase letters, digits and -.") }}
+      {{ forms.stepper_field("copies", "Copies", new.copies or "1", max=20, error=errors.copies) }}
       {{ forms.choice_field("exposure", "Exposure", exposures, new.exposure or "private", error=errors.exposure, hint=public_hint) }}
     {% endcall %}
   {% endcall %}
-  {{ ui.callout("Need something else?", "Deploy any container image by its name, with the port, settings and secrets you choose.", icon_name="box", boxed=true, action=(other_mode, "Deploy a custom image")) }}
   {% else %}
-  {% call ui.panel("custom", "Your change" if change else "Custom deployment", "Change what you need; the rest stays as it is. grund resolves the image again, so a moved tag is picked up." if change else "Paste any container image and deploy with sensible defaults.") %}
+  {% call ui.panel("custom", "Your change" if change else "Custom deployment") %}
     {{ forms.banner(new_error) }}
     {% call forms.grid() %}
       {% if change %}{{ forms.field("name", "Name", value=change.name, disabled=true, hint="An app keeps its name.") }}
-      {% else %}{{ forms.field("name", "Name", value=new.name, error=errors.name, hint="A unique name for your app. Only lowercase letters, numbers and -.") }}{% endif %}
-      {{ forms.field("image", "Image", value=new.image, error=errors.image, hint="Container image (e.g. nats:2.10 or ghcr.io/org/app:latest). grund pins the version it finds now.") }}
+      {% else %}{{ forms.field("name", "Name", value=new.name, error=errors.name, hint="Lowercase letters, digits and -.") }}{% endif %}
+      {{ forms.field("image", "Image", value=new.image, error=errors.image, hint="Such as nats:2.10 or ghcr.io/org/app:latest. The tag is resolved now.") }}
       {{ forms.choice_field("exposure", "Exposure", exposures, new.exposure or "private", error=errors.exposure, hint=public_hint) }}
       {% call forms.grid() %}
-        {{ forms.field("port", "Port", type="number", value=new.port, required=false, error=errors.port, hint="Found from the image when empty.") }}
-        {{ forms.stepper_field("copies", "Copies", new.copies or "1", max=20, error=errors.copies, hint="Number of app instances.") }}
+        {{ forms.field("port", "Port", type="number", value=new.port, required=false, error=errors.port, hint="Empty: from the image.") }}
+        {{ forms.stepper_field("copies", "Copies", new.copies or "1", max=20, error=errors.copies) }}
       {% endcall %}
     {% endcall %}
     {% call ui.expanders() %}
     {% call ui.expander("Advanced options", "Environment variables, secrets, ready check, resources and command.", icon_name="gear", open=advanced) %}
-      {{ forms.pairs_field("env", "Environment variables", new.env, error=errors.env, hint="Shown on the app's page. Put passwords and keys in secrets.") }}
-      {{ forms.pairs_field("secrets", "Secrets", error=errors.secrets, secret=true, hint=("Enter them again: a refused form never shows a secret. " if secrets_dropped else "") ~ ("New values only; " ~ secrets_kept ~ " keep theirs. " if secrets_kept else "") ~ "Stored sealed and never shown again; the app gets each as that variable.") }}
+      {{ forms.pairs_field("env", "Environment variables", new.env, error=errors.env, hint="Shown in the clear.") }}
+      {{ forms.pairs_field("secrets", "Secrets", error=errors.secrets, secret=true, hint=("Enter them again: a refused form never shows a secret. " if secrets_dropped else "") ~ ("New values only; " ~ secrets_kept ~ " keep theirs. " if secrets_kept else "") ~ "Never shown again.") }}
       {% call forms.grid() %}
-        {{ forms.select_field("check", "Ready check", checks, new.check, hint="What grund asks before a copy counts as ready, on the app's port.") }}
-        {{ forms.field("check_path", "Check path", value=new.check_path, required=false, error=errors.check, hint="For an HTTP check, such as /healthz. Empty: /.", mono=true) }}
+        {{ forms.select_field("check", "Ready check", checks, new.check) }}
+        {{ forms.field("check_path", "Check path", value=new.check_path, required=false, error=errors.check, hint="For an HTTP check. Empty: /.", mono=true) }}
         {{ forms.field("memory", "Memory (MiB)", type="number", value=new.memory, required=false, error=errors.memory, hint="Per copy. Empty: 512.", width="sm") }}
         {{ forms.field("cpu", "CPU (thousandths)", type="number", value=new.cpu, required=false, error=errors.cpu, hint="Per copy; 1000 is one CPU. Empty: 1000.", width="sm") }}
         {{ forms.select_field("stop_signal", "Stop signal", signals, new.stop_signal or "SIGTERM", width="sm") }}
-        {{ forms.field("stop_grace", "Grace (seconds)", type="number", value=new.stop_grace, required=false, error=errors.stop, hint="Before it is killed. Empty: 30.", width="sm") }}
+        {{ forms.field("stop_grace", "Grace (seconds)", type="number", value=new.stop_grace, required=false, error=errors.stop, hint="From the signal to a kill. Empty: 30.", width="sm") }}
       {% endcall %}
-      {{ forms.code_field("command", "Command", value=new.command, error=errors.command, rows=3, hint="One argument per line. It replaces the image's entrypoint and command; empty runs the image's own.") }}
-      {% call ui.para() %}<strong>Storage</strong> is not available yet: it needs volumes, which grund does not have. An app keeps nothing on disk when a copy is replaced.{% endcall %}
+      {{ forms.code_field("command", "Command", value=new.command, error=errors.command, rows=3, hint="One argument per line. Empty: the image's own.") }}
+      {{ ui.para("Volumes are not available yet: a replaced copy keeps nothing on disk.") }}
     {% endcall %}
     {% endcall %}
   {% endcall %}
-  {% if not change %}{{ ui.callout("Looking for a faster start?", "Switch to premade templates for apps like NATS, whoami and nginx. PostgreSQL, Redis and MinIO come with storage.", icon_name="grid", boxed=true, action=(templates_href, "Browse templates")) }}{% endif %}
   {% endif %}
-  {% call forms.actions("Makes a new release and rolls it out behind its ready check." if change else "Makes the app and rolls out its first release.", "layers") %}{{ ui.button("Cancel", href=change.base if change else "/" ~ org.slug ~ "/apps", kind="secondary") }}{{ ui.button("Deploy change" if change else "Deploy app") }}{% endcall %}
+  {% call forms.actions("Deploying makes a new release." if change else "Deploying makes the app and its first release.", "layers") %}{{ ui.button("Cancel", href=change.base if change else "/" ~ org.slug ~ "/apps", kind="secondary") }}{{ ui.button("Deploy change" if change else "Deploy app") }}{% endcall %}
 {% endcall %}
 {% else %}
-{{ ui.empty_state("Your role does not deploy apps", "Owners and admins of " ~ org.slug ~ " deploy them. Ask one to make you an admin.") }}
+{{ ui.empty_state("Your role does not deploy apps", "Owners and admins deploy them.") }}
 {% endif %}
 {% endblock %}

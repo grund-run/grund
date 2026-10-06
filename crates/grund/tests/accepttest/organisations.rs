@@ -40,7 +40,10 @@ async fn a_new_account_lands_on_its_own_organisation() -> anyhow::Result<()> {
     when.visiting_home().await?;
     then.status(200)?
         .body_contains("Overview")?
-        .body_contains(&format!("owner of {}", account.username))?;
+        .body_contains(&format!(
+            "<span class=\"org-switch-name\">{}</span><span class=\"org-switch-role\">Owner</span>",
+            account.username
+        ))?;
     Ok(())
 }
 
@@ -335,8 +338,9 @@ async fn creating_an_organisation_makes_its_creator_the_owner_and_names_are_one_
         .await?;
     then.redirects_to(&format!("/{slug}"))?;
     when.visiting(&format!("/{slug}")).await?;
-    then.status(200)?
-        .body_contains(&format!("owner of {slug}"))?;
+    then.status(200)?.body_contains(&format!(
+        "<span class=\"org-switch-name\">{slug}</span><span class=\"org-switch-role\">Owner</span>"
+    ))?;
 
     for (taken, message) in [
         (slug.as_str(), "That name is taken."),
@@ -364,7 +368,10 @@ async fn a_single_organisation_instance_is_invite_only_after_its_admin() -> anyh
     let admin = given.the_owner().await?;
     when.visiting_home().await?;
     then.status(200)?
-        .body_contains(&format!("owner of {}", admin.username))?
+        .body_contains(&format!(
+            "<span class=\"org-switch-name\">{}</span><span class=\"org-switch-role\">Owner</span>",
+            admin.username
+        ))?
         .body_lacks("New organisation")?;
     when.visiting("/orgs/new").await?;
     then.status(404)?;

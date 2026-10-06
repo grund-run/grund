@@ -2,14 +2,14 @@
 {% import "components/images.html.jinja" as images %}
 {% block content %}
 {{ images.sprite(icons) }}
-{{ ui.page_head("Overview", "Signed in as " ~ viewer.username ~ ", " ~ org.role ~ " of " ~ org.slug ~ ".") }}
+{{ ui.page_head("Overview") }}
 {% call ui.section("apps", "Apps", count=app_count, more=("/" ~ org.slug ~ "/apps", "View all") if app_count else none, first=true) %}
   {% if apps %}
   {% call lists.items() %}{% for app in apps %}{{ lists.app_row(org, app) }}{% endfor %}{% endcall %}
   {% elif org.manages %}
-  {{ ui.add_card("/" ~ org.slug ~ "/deploy", "Deploy your first app", "Deploy any container image by its name, such as nginx:1.27.") }}
+  {{ ui.add_card("/" ~ org.slug ~ "/deploy", "Deploy your first app") }}
   {% else %}
-  {{ ui.empty_state("No apps yet", "An owner or admin of " ~ org.slug ~ " deploys them, and they show up here.") }}
+  {{ ui.empty_state("No apps yet", "Owners and admins deploy them.") }}
   {% endif %}
 {% endcall %}
 {% call ui.section("org", "Organisation", more=("/" ~ org.slug ~ "/settings/members", "Members")) %}

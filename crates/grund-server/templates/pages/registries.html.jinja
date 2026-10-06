@@ -1,7 +1,6 @@
 {% extends "pages/organisation.html.jinja" %}
 {% set title = "Registries" %}
 {% set tab = "registries" %}
-{% set lede = "Logins to the registries " ~ viewer.current.slug ~ "'s private images come from. grund uses one to resolve a tag when you deploy, and gives it to a machine only to pull an image of an app placed on it." %}
 {% block tab %}
 {% call ui.section("credentials", "Registries with a login", count=credentials | length) %}
   {% if credentials %}
@@ -18,13 +17,13 @@
 {% endcall %}
 
 {% if org.manages %}
-{% call ui.panel("set", "Add or replace a login", "An organisation holds logins for at most " ~ max ~ " registries.") %}
+{% call ui.panel("set", "Add or replace a login") %}
   {% call forms.form("/" ~ org.slug ~ "/settings/registries", csrf, autocomplete="off") %}
     {{ forms.banner(form_error, fields=[host_error, username_error, password_error]) }}
-    {{ forms.field("host", "Registry", value=host, autocomplete="off", error=host_error, hint="The host your image names start with: ghcr.io, registry.gitlab.com, or docker.io for Docker Hub.", width="md", mono=true) }}
+    {{ forms.field("host", "Registry", value=host, autocomplete="off", error=host_error, hint="Such as ghcr.io, or docker.io for Docker Hub.", width="md", mono=true) }}
     {% call forms.grid() %}
     {{ forms.field("username", "Username", value=username, autocomplete="off", error=username_error) }}
-    {{ forms.field("password", "Password or access token", type="password", autocomplete="new-password", error=password_error, hint="Prefer a token that can only read packages. Stored sealed, never shown again.") }}
+    {{ forms.field("password", "Password or access token", type="password", autocomplete="new-password", error=password_error, hint="Never shown again.") }}
     {% endcall %}
     {% call forms.actions("Saving a registry that has a login replaces it.") %}{{ ui.button("Save login") }}{% endcall %}
   {% endcall %}

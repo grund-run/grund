@@ -1,11 +1,10 @@
 {% extends "pages/organisation.html.jinja" %}
 {% set title = "API tokens" %}
 {% set tab = "tokens" %}
-{% set lede = "Tokens let CI and scripts call grund's API as you, in " ~ viewer.current.slug ~ " only. A token can do what your role here allows, except delete apps and change the organisation." %}
 {% block tab %}
 {% if minted %}
 {% call ui.section("new-token", "Your new token: " ~ minted.name, stack=true) %}
-  <p>Copy it now and keep it in your CI's secrets. grund keeps only a digest of it and cannot show it again. It works until {{ minted.expires }}, or until it is revoked.</p>
+  <p>Copy it now: it is not shown again. It works until {{ minted.expires }}.</p>
   {{ ui.code(minted.token, id="new-token-value", wrap=true, what="the token") }}
   <p>To deploy from CI, with the token in <code>GRUND_TOKEN</code>:</p>
   {{ ui.code(minted.example, id="new-token-example", wrap=true, what="the command") }}
@@ -26,10 +25,10 @@
   {% endif %}
 {% endcall %}
 
-{% call ui.panel("create", "Make a token", "An organisation holds at most " ~ max_live ~ " live tokens.") %}
+{% call ui.panel("create", "Make a token") %}
   {% call forms.form("/" ~ org.slug ~ "/settings/tokens", csrf, layout="row", autocomplete="off") %}
     {{ forms.banner(create_error) }}
-    {{ forms.field("name", "Name", value=name, autocomplete="off", hint="What uses it, such as the repository or CI job. Up to 64 characters.") }}
+    {{ forms.field("name", "Name", value=name, autocomplete="off", hint="Up to 64 characters.") }}
     {{ forms.select_field("days", "Expires after", lifetimes, days, id="token-days", width="sm") }}
     {{ ui.button("Make a token") }}
   {% endcall %}

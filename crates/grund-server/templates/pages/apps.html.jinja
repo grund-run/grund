@@ -3,7 +3,7 @@
 {% set title = "Apps" %}
 {% block content %}
 {{ images.sprite(icons) }}
-{% call ui.page_head("Apps", "Run and manage your applications. Simple, powerful, yours.") %}
+{% call ui.page_head("Apps") %}
 {{ lists.list_tools(sorts, list.sort, list_href, grid_href, list.view, {"q": list.q, "view": list.view}) }}
 {% endcall %}
 {{ forms.banner(error, ok=notice) }}
@@ -15,8 +15,8 @@
 {{ ui.para("No app matches that.", "note") }}
 {% endif %}
 {% if org.manages %}
-{{ ui.add_card("/" ~ org.slug ~ "/deploy", "Deploy a new app", "Deploy any container image by its name, such as nginx:1.27.") }}
+{{ ui.add_card("/" ~ org.slug ~ "/deploy", "Deploy a new app") }}
 {% elif not apps and not list.q %}
-{{ ui.empty_state("No apps yet", "An owner or admin of " ~ org.slug ~ " deploys them, and they show up here.") }}
+{{ ui.empty_state("No apps yet", "Owners and admins deploy them.") }}
 {% endif %}
 {% endblock %}

@@ -1,7 +1,7 @@
 {% extends "layout-auth.html.jinja" %}
 {% set title = "Create the owner" %}
 {% block card %}
-{{ ui.auth_head("Create the owner", "This grund has no account yet. The one you create here owns it: its organisation, everything deployed to it, and who else may join. Everyone after you joins by invitation.") }}
+{{ ui.auth_head("Create the owner", "This account owns this grund. Others join by invitation.") }}
 {% call forms.form("/signup/owner", csrf) %}
   {{ forms.hidden_field("token", token) }}
   {{ forms.field("username", "Username", value=username, autocomplete="username", error=errors.username, hint="3 to 32 letters, digits and single hyphens. It is public, and names the organisation.", autofocus=true) }}

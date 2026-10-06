@@ -881,7 +881,7 @@ async fn an_app_made_on_the_dashboard_shows_its_copies_ready_and_its_versions() 
         when.visiting(&app_page).await?;
         then.status(200)?;
         let body = then.body()?;
-        if body.contains("v1 is live on 1 copy") {
+        if body.contains(">Live</span>") {
             anyhow::ensure!(body.contains(">Live</span>"), "the pill says Live: {body}");
             anyhow::ensure!(body.contains("v1 · deployed"), "{body}");
             break;
@@ -899,7 +899,8 @@ async fn an_app_made_on_the_dashboard_shows_its_copies_ready_and_its_versions() 
         .body_contains("on desk")?
         .body_contains(&digest[..19])?
         .body_contains("from the dashboard")?;
-    when.visiting(&format!("{app_page}/settings")).await?;
+    when.visiting(&format!("{app_page}/settings?edit=file"))
+        .await?;
     then.status(200)?.body_contains("\n  hello:\n")?;
     let settings = format!("{app_page}/settings");
     when.submitting(
@@ -910,14 +911,17 @@ async fn an_app_made_on_the_dashboard_shows_its_copies_ready_and_its_versions() 
     .await?;
     then.status(303)?
         .redirects_to(&format!("{app_page}/settings?done=secret"))?;
-    when.visiting(&settings).await?;
+    when.visiting(&format!("{settings}?edit=secrets")).await?;
     then.status(200)?
-        .body_contains("secret token · version 1")?
-        .body_contains("TOKEN: token")?;
+        .body_contains("secret token · version 1")?;
     anyhow::ensure!(
         !then.body()?.contains("s3cr3t-value"),
         "a secret is never shown"
     );
+    when.visiting(&format!("{settings}?edit=file")).await?;
+    then.status(200)?
+        .body_contains("TOKEN: token")?
+        .body_lacks("s3cr3t-value")?;
 
     let (outsider, outsider_when, outsider_then) = given.testcase.another_browser();
     outsider.a_signed_in_account().await?;
@@ -980,7 +984,7 @@ async fn the_apps_list_shows_each_image_with_its_icon_and_where_to_reach_it_and_
             "href=\"&#x2f;{org}&#x2f;apps&#x2f;shop&#x2f;deployments\""
         ))?
         .body_contains(&format!(
-            "href=\"&#x2f;{org}&#x2f;apps&#x2f;shop&#x2f;settings#danger\""
+            "href=\"&#x2f;{org}&#x2f;apps&#x2f;shop&#x2f;settings?edit=delete\""
         ))?
         .body_contains("Deploy a new app")?;
     let body = then.body()?;
@@ -1015,12 +1019,11 @@ async fn the_apps_list_shows_each_image_with_its_icon_and_where_to_reach_it_and_
         .carries_the_security_headers()?
         .body_contains("class=\"shell\"")?
         .body_contains(&format!("https:&#x2f;&#x2f;shop-{org}.apps.accept.test"))?
-        .body_contains("Public HTTP")?
         .body_lacks(" style=")?;
     when.visiting(&format!("/{org}/apps/db")).await?;
     then.status(200)?
         .body_contains("db.grund.internal:80")?
-        .body_contains(">Private<")?;
+        .body_lacks(&format!("https:&#x2f;&#x2f;db-{org}"))?;
     Ok(())
 }
 
@@ -1043,7 +1046,7 @@ async fn the_deploy_page_finds_the_port_an_image_declares_and_its_copy_gets_read
         .carries_the_security_headers()?
         .body_contains("Custom deployment")?
         .body_contains("Advanced options")?
-        .body_contains("Storage</strong> is not available yet")?;
+        .body_contains("Volumes are not available yet")?;
     when.submitting(
         &deploy,
         &deploy,
@@ -1077,8 +1080,9 @@ async fn the_deploy_page_finds_the_port_an_image_declares_and_its_copy_gets_read
         when.visiting(&app_page).await?;
         then.status(200)?;
         let body = then.body()?;
-        if body.contains("v1 is live on 1 copy") {
-            when.visiting(&format!("{app_page}/settings")).await?;
+        if body.contains(">Live</span>") {
+            when.visiting(&format!("{app_page}/settings?edit=file"))
+                .await?;
             then.status(200)?;
             let body = then.body()?;
             anyhow::ensure!(
@@ -1297,7 +1301,7 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
         when.visiting(&page).await?;
         then.status(200)?;
         let body = then.body()?;
-        if body.contains("v1 is live on 1 copy") {
+        if body.contains(">Live</span>") {
             break;
         }
         anyhow::ensure!(
@@ -1307,15 +1311,16 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
     then.body_contains(">Live</span>")?
-        .body_contains("Your application is running and accessible.")?
         .body_contains(&format!("https:&#x2f;&#x2f;hello-{org}.apps.accept.test"))?
-        .body_contains("Public HTTP")?
         .body_contains("Reachable at")?
         .body_contains(">v1</span>")?
-        .body_contains(&format!("by {org}"))?
+        .body_contains(&format!(" · {org}</span>"))?
+        .body_lacks("is live on")?
         .body_contains(&format!("by <strong>{org}</strong> from the dashboard"))?
         .body_lacks("View logs")?
-        .body_contains("<span class=\"btn-label\">Deploy change</span>")?
+        .body_contains("<span class=\"btn-label\">Deploy app</span>")?
+        .body_lacks("<span class=\"btn-label\">Deploy change</span>")?
+        .body_contains("<span>Deploy change</span>")?
         .body_contains(&format!(
             "href=\"&#x2f;{org}&#x2f;apps&#x2f;hello&#x2f;deploy\""
         ))?;
@@ -1325,7 +1330,7 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
         ("/deployments", "Releases"),
         ("/logs", "Logs are coming"),
         ("/metrics", "Metrics are coming"),
-        ("/settings", "Each setting saves on its own."),
+        ("/settings", "Configured"),
         ("/deploy", "Your change"),
     ] {
         when.visiting(&format!("{page}{tab}")).await?;
@@ -1407,7 +1412,8 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
     then.status(422)?
         .body_contains("Nothing was released. Check the field marked below.")?
         .body_contains("A port is a number from 1 to 65535.")?
-        .body_contains("id=\"exposure\" open")?;
+        .body_contains("id=\"exposure\">Exposure</h2>")?
+        .body_contains("value=\"99999\"")?;
     when.submitting(
         &settings,
         &format!("{page}/secrets/remove"),
@@ -1444,10 +1450,25 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
     }
     when.visiting(&settings).await?;
     then.status(200)?
+        .body_contains("1: GREETING")?
+        .body_lacks("API_KEY")?
+        .body_contains(&format!(
+            "<a class=\"tile\" href=\"&#x2f;{org}&#x2f;apps&#x2f;hello&#x2f;settings?edit=secrets\">"
+        ))?
+        .body_contains("Volumes &#x2f; storage")?;
+    when.visiting(&format!("{settings}?edit=env")).await?;
+    then.status(200)?
         .body_contains("value=\"GREETING\"")?
         .body_contains("value=\"hallo\"")?
+        .body_contains("Saving makes release v")?;
+    when.visiting(&format!("{settings}?edit=secrets")).await?;
+    then.status(200)?
         .body_contains("not read by the app")?
         .body_lacks("s3cr3t-value")?;
+    when.visiting(&format!("{settings}?edit=volumes")).await?;
+    then.status(200)?
+        .body_contains("Volumes are not available yet.")?
+        .body_lacks("Save and release")?;
 
     let yaml = format!("{page}/grund.yaml");
     when.visiting(&yaml).await?;
@@ -1474,7 +1495,7 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
     then.status(422)?
         .body_contains("Nothing was released. Check the file.")?
         .body_contains("apps.hello.copies: use 1 to 20.")?
-        .body_contains("id=\"as-file\" open")?;
+        .body_contains("id=\"as-file\">grund.yaml</h2>")?;
     when.submitting(
         &settings,
         &format!("{page}/settings/file"),
@@ -1548,6 +1569,25 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
             .status(404)
             .map_err(|error| error.context(format!("{page}{tab}")))?;
     }
+
+    when.visiting(&settings).await?;
+    then.status(200)?
+        .body_contains("?edit=check\">")?
+        .body_lacks(&format!(
+            "<a class=\"tile\" href=\"&#x2f;{org}&#x2f;apps&#x2f;hello&#x2f;settings?edit=check\">"
+        ))?;
+    when.submitting(
+        &settings,
+        &format!("{page}/settings/release"),
+        &[("part", "check"), ("check", "")],
+    )
+    .await?;
+    then.status(303)?
+        .redirects_to(&format!("{page}/settings?done=released"))?;
+    when.visiting(&settings).await?;
+    then.status(200)?.body_contains(&format!(
+        "<a class=\"tile\" href=\"&#x2f;{org}&#x2f;apps&#x2f;hello&#x2f;settings?edit=check\">"
+    ))?;
 
     when.submitting(&settings, &format!("{page}/delete"), &[("confirm", "hell")])
         .await?;

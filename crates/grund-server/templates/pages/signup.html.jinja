@@ -1,7 +1,7 @@
 {% extends "layout-auth.html.jinja" %}
 {% set title = "Create an account" %}
 {% block card %}
-{{ ui.auth_head("Create an account", "Your account comes with its own organisation. Everything you deploy will belong to it, and you can invite others.") }}
+{{ ui.auth_head("Create an account") }}
 {% call forms.form("/signup", csrf) %}
   {{ forms.banner(error) }}
   {{ forms.field("username", "Username", value=username, autocomplete="username", error=errors.username, hint="3 to 32 letters, digits and single hyphens. It is public.", autofocus=true) }}

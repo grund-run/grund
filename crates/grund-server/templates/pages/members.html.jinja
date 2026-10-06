@@ -1,7 +1,6 @@
 {% extends "pages/organisation.html.jinja" %}
 {% set title = "Members" %}
 {% set tab = "members" %}
-{% set lede = "Everyone here can use what " ~ viewer.current.slug ~ " owns. Owners and admins manage who is in it; only owners manage billing." %}
 {% block tab %}
 {% call lists.rows() %}
   {% for member in members %}
@@ -19,10 +18,10 @@
 {% endcall %}
 
 {% if org.manages %}
-{% call ui.panel("invite", "Invite someone", "We mail them a link that works for 7 days.") %}
+{% call ui.panel("invite", "Invite someone") %}
   {% call forms.form("/" ~ org.slug ~ "/settings/members/invite", csrf, layout="row") %}
     {{ forms.banner(invite_error) }}
-    {{ forms.field("email", "Email", type="email", value=email, autocomplete="off", placeholder="name@example.com") }}
+    {{ forms.field("email", "Email", type="email", value=email, autocomplete="off", placeholder="name@example.com", hint="They get a link that works for 7 days.") }}
     {{ forms.select_field("role", "Role", [("member", "Member"), ("admin", "Admin")], role, id="invite-role", width="sm") }}
     {{ ui.button("Send invitation") }}
   {% endcall %}

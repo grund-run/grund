@@ -67,7 +67,7 @@
   {{ ui.image_icon(app.icon) }}
   <div class="item-text">
     <a class="item-name" href="{{ base }}">{{ app.name }}</a>
-    <p class="item-sub">{{ app.image or "No version yet" }}</p>
+    <p class="item-sub"{% if app.image %} title="{{ app.image }}"{% endif %}>{{ (app.image | short_image) if app.image else "No version yet" }}</p>
   </div>
   <div class="item-meta">{{ app_address(app) }}</div>
   {{ app_menu(org, app) }}
@@ -85,8 +85,8 @@
   {{ menu_item(base ~ "/deployments", "layers", "Deployments") }}
   {% if org.manages %}
   {{ menu_item(base ~ "/deploy", "arrow", "Deploy change") }}
-  {{ menu_item(base ~ "/settings#scale", "bars", "Scale") }}
-  {{ menu_item(base ~ "/settings#danger", "trash", "Delete…", danger=true) }}
+  {{ menu_item(base ~ "/settings?edit=copies", "bars", "Scale") }}
+  {{ menu_item(base ~ "/settings?edit=delete", "trash", "Delete…", danger=true) }}
   {% endif %}
 {% endcall %}
 {%- endmacro %}
@@ -106,6 +106,38 @@
   <div class="item-meta">{% if template.soon %}{{ ui.tag(template.soon) }}{% elif href %}{{ ui.button("Deploy", href=href, kind="secondary", size="sm") }}{% endif %}</div>
   <span></span>
 </li>
+{%- endmacro %}
+
+{#- links(): a box of link()s divided by lines; the {% call %} body is
+    the links. -#}
+{% macro links() -%}
+<ul class="links">{{ caller() }}</ul>
+{%- endmacro %}
+
+{#- link(href, title, value="", icon_name="", action="", danger=false,
+         state="")
+    One thing that opens on a page of its own, the whole line a link: an
+    icon, its name, its value on one line (cut with an ellipsis), an
+    action word and a chevron. An app's setting; Delete. On a phone the
+    value goes under the name and the action word is left out.
+    action: a word before the chevron ("Edit")
+    danger: in the danger colour
+    state:  "hover" or "focus" pins that look (the style guide only) -#}
+{% macro link(href, title, value="", icon_name="", action="", danger=false, state="") -%}
+<li><a class="link{% if danger %} link-danger{% endif %}{% if state %} is-{{ state }}{% endif %}" href="{{ href }}">
+  {%- if icon_name %}{{ ui.icon(icon_name, "link-icon") }}{% endif %}<span class="link-title">{{ title }}</span><span class="link-value">{{ value }}</span>
+  {%- if action %}<span class="link-action">{{ action }}</span>{% endif %}{{ ui.icon("chevron", "icon-sm link-chevron") }}</a></li>
+{%- endmacro %}
+
+{#- tiles(): a grid of tile()s, three across, one on a phone. -#}
+{% macro tiles() -%}
+<ul class="tiles">{{ caller() }}</ul>
+{%- endmacro %}
+
+{#- tile(href, title, state=""): something to add, as a link with a plus.
+    state: "hover" or "focus" pins that look (the style guide only) -#}
+{% macro tile(href, title, state="") -%}
+<li><a class="tile{% if state %} is-{{ state }}{% endif %}" href="{{ href }}"><span class="tile-plus" aria-hidden="true">{{ ui.icon("plus", "icon-sm") }}</span>{{ title }}</a></li>
 {%- endmacro %}
 
 {#- timeline(): what happened, newest first, as event()s on a line. -#}

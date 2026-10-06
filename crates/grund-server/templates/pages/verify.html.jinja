@@ -2,10 +2,10 @@
 {% set title = "Confirm your email" %}
 {% block card %}
 {% if valid %}
-{{ ui.auth_head("Confirm your email", "Confirm this address to finish creating your account.") }}
+{{ ui.auth_head("Confirm your email") }}
 {{ forms.post_button("/verify", csrf, "Confirm email", kind="primary", block=true, layout="stack", hidden={"token": token}) }}
 {% else %}
-{{ ui.auth_head("This link has expired", "Links work once, for 24 hours. Sign in with your password and we send a new one.") }}
+{{ ui.auth_head("This link has expired", "Sign in with your password to get a new link.") }}
 {% call ui.foot() %}<p>{{ ui.link_more("/login", "Sign in") }}</p>{% endcall %}
 {% endif %}
 {% endblock %}
