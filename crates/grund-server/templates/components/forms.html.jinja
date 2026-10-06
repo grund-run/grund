@@ -170,13 +170,13 @@
 {%- endmacro %}
 
 {#- toggle_field(name, label, checked=false, hint="", state="")
-    One yes or no, as a switch: a checkbox, so it works without the
-    script. It sends name=on when on and nothing when off.
+    One yes or no, as a switch: a checkbox drawn as a track and a knob,
+    so it works without the script and takes the focus ring every
+    control has. It sends name=on when on and nothing when off.
     state: "focus" pins the focus look (the style guide only) -#}
 {% macro toggle_field(name, label, checked=false, hint="", state="") -%}
-<label class="toggle{% if state %} is-{{ state }}{% endif %}">
-  <input class="toggle-input" type="checkbox" role="switch" id="{{ name }}" name="{{ name }}" value="on"{% if checked %} checked{% endif %}{% if hint %} aria-describedby="{{ name }}-hint"{% endif %}>
-  <span class="toggle-track" aria-hidden="true"></span>
+<label class="toggle">
+  <input class="toggle-input{% if state %} is-{{ state }}{% endif %}" type="checkbox" role="switch" id="{{ name }}" name="{{ name }}" value="on"{% if checked %} checked{% endif %}{% if hint %} aria-describedby="{{ name }}-hint"{% endif %}>
   <span class="toggle-text"><span class="field-label">{{ label }}</span>{% if hint %}<span class="hint" id="{{ name }}-hint">{{ hint }}</span>{% endif %}</span>
 </label>
 {%- endmacro %}

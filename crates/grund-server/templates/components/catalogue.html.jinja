@@ -13,7 +13,7 @@
 <div class="sg-specimen">
   <div class="sg-head"><p class="sg-title">{{ title }}</p>{% if note %}<p class="sg-note">{{ note }}</p>{% endif %}</div>
   <div class="sg-demo">{{ caller() }}</div>
-  <pre class="sg-code"><code>{{ code }}</code></pre>
+  <div class="code"><pre class="code-body mono"><code>{{ code }}</code></pre></div>
 </div>
 {%- endmacro %}
 
