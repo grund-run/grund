@@ -275,6 +275,7 @@ code,
   display: grid;
   grid-template-columns: var(--sidebar) minmax(0, 1fr);
   min-height: 100vh;
+  background: linear-gradient(to right, var(--bg-raised) calc(var(--sidebar) - 1px), var(--border) 0 var(--sidebar), transparent 0);
 }
 
 .sidebar {
@@ -2465,6 +2466,7 @@ a.endpoint-text:hover {
 
   .shell {
     grid-template-columns: minmax(0, 1fr);
+    background: none;
   }
 
   .sidebar {
