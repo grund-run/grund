@@ -18,12 +18,12 @@ use chrono::{DateTime, Utc};
 use grund_domain::app::ReleaseSource;
 use grund_domain::{
     app::{
+        file::{SCHEMA_PATH, render as render_file},
         spec::{
             AppSpec, CheckKind, CheckSpec, EnvVar, MAX_COPIES, PortSpec, Protocol, STOP_SIGNALS,
             SecretEnv, SettingsInput, StopSpec,
         },
         templates,
-        toml::render as render_toml,
     },
     organisation::Role,
 };
@@ -384,7 +384,7 @@ fn release_words(row: &ReleaseRow) -> ReleaseWords {
         source: match row.source.as_str() {
             "dashboard" => "from the dashboard",
             "api" => "from the API",
-            "file" => "from grund.toml",
+            "file" => "from grund.yaml",
             _ => "",
         },
     }
@@ -473,7 +473,7 @@ fn notice_words(done: &str) -> &'static str {
         "created" => "App made. Its first version is rolling out.",
         "deployed" => "New release made. It rolls out behind its ready check.",
         "released-file" => {
-            "grund.toml applied as a new release. It rolls out behind its ready check."
+            "grund.yaml applied as a new release. It rolls out behind its ready check."
         }
         "released" => {
             "Settings saved as a new release of the same image. It rolls out behind its ready check."
@@ -1554,10 +1554,16 @@ async fn app_view(
             )
         })
         .collect();
-    let file = refused
-        .file
-        .clone()
-        .or_else(|| newest.map(|r| render_toml(&view.row.name, &r.spec.0, &view.row.settings.0)));
+    let file = refused.file.clone().or_else(|| {
+        newest.map(|r| {
+            render_file(
+                &view.row.name,
+                &r.spec.0,
+                &view.row.settings.0,
+                &schema_url(state),
+            )
+        })
+    });
     let soon = match tab {
         "logs" => context! {
             title => "Logs are coming",
@@ -1642,7 +1648,7 @@ async fn app_view(
             secrets, errors, banners,
             file_rows => file.as_ref().map_or(0, |f| f.lines().count() + 1),
             file,
-            file_href => format!("{base}/grund.toml"),
+            file_href => format!("{base}/grund.yaml"),
             signals => STOP_SIGNALS.iter().map(|s| (*s, *s)).collect::<Vec<_>>(),
             items => spec.map(|spec| summaries(spec, &view.row.settings.0, listing.address.as_deref())),
             next => newest.map(|r| r.number + 1),
@@ -2009,9 +2015,9 @@ pub struct FileForm {
     file: String,
 }
 
-/// `POST /{org}/apps/{app}/settings/file`: the app's `grund.toml`, edited
+/// `POST /{org}/apps/{app}/settings/file`: the app's `grund.yaml`, edited
 /// on the page, deployed as the API deploys one: the same parsing and
-/// checks, the image resolved again, a release from grund.toml.
+/// checks, the image resolved again, a release from grund.yaml.
 pub async fn apply_file(
     AxumState(state): AxumState<State>,
     browser: Browser,
@@ -2074,7 +2080,11 @@ pub async fn apply_file(
     .await
 }
 
-/// `GET /{org}/apps/{app}/grund.toml`: the newest release as a file to
+fn schema_url(state: &State) -> String {
+    format!("{}{SCHEMA_PATH}", state.config.public_origin().serialized)
+}
+
+/// `GET /{org}/apps/{app}/grund.yaml`: the newest release as a file to
 /// save, for any member.
 pub async fn file(
     AxumState(state): AxumState<State>,
@@ -2096,14 +2106,19 @@ pub async fn file(
     };
     Ok((
         [
-            (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+            (header::CONTENT_TYPE, "application/yaml; charset=utf-8"),
             (
                 header::CONTENT_DISPOSITION,
-                "attachment; filename=\"grund.toml\"",
+                "attachment; filename=\"grund.yaml\"",
             ),
             (header::CACHE_CONTROL, "no-store"),
         ],
-        render_toml(&view.row.name, &newest.spec.0, &view.row.settings.0),
+        render_file(
+            &view.row.name,
+            &newest.spec.0,
+            &view.row.settings.0,
+            &schema_url(&state),
+        ),
     )
         .into_response())
 }

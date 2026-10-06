@@ -168,6 +168,30 @@ async fn the_stylesheet_each_page_links_is_served_and_cached_for_a_year() -> any
 }
 
 #[tokio::test]
+async fn the_grund_yaml_schema_is_served_to_anyone_and_describes_the_file() -> anyhow::Result<()> {
+    let (_given, when, then) = testcase().await?;
+    when.visiting("/schema/grund.json").await?;
+    then.status(200)?
+        .header("content-type", "application/schema+json")?
+        .header("cache-control", "public, max-age=3600")?
+        .header("access-control-allow-origin", "*")?;
+    let schema = then.json()?;
+    anyhow::ensure!(
+        schema["$schema"] == "http://json-schema.org/draft-07/schema#",
+        "{schema}"
+    );
+    anyhow::ensure!(schema["title"] == "grund.yaml", "{schema}");
+    anyhow::ensure!(
+        schema
+            == serde_json::from_str::<serde_json::Value>(include_str!(
+                "../../../../schema/grund.json"
+            ))?,
+        "the instance serves the schema the repository keeps"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn pages_whose_address_carries_a_token_send_referrers_only_to_this_origin()
 -> anyhow::Result<()> {
     let (_given, when, then) = testcase().await?;

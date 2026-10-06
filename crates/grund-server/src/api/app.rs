@@ -525,10 +525,10 @@ impl AppService for AppApi {
             .await?;
         let input = match &request.source {
             Some(proto::deploy_request::Source::Spec(spec)) => DeployInput::Spec(spec_input(spec)),
-            Some(proto::deploy_request::Source::GrundToml(text)) => DeployInput::File(text.clone()),
+            Some(proto::deploy_request::Source::GrundYaml(text)) => DeployInput::File(text.clone()),
             None => {
                 return Err(refusal(
-                    ConnectError::invalid_argument("give a spec or a grund.toml"),
+                    ConnectError::invalid_argument("give a spec or a grund.yaml"),
                     "spec_invalid",
                 ));
             }

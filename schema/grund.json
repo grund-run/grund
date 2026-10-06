@@ -1,0 +1,385 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "FileApp": {
+      "additionalProperties": false,
+      "description": "One app: what each copy runs, and how many copies run where.",
+      "properties": {
+        "auto_rollback": {
+          "description": "Go back to the release before when a rollout fails. Default true;\nfalse halts the app as it is until the next release.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "check": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/FileCheck"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The ready check a new copy must pass before it takes traffic and\nbefore an older copy leaves. Leave it out to count a running copy as\nready."
+        },
+        "command": {
+          "description": "Replaces the image's entrypoint and command, one argument per item.\nLeave it out to run what the image says.",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 64,
+          "type": "array"
+        },
+        "copies": {
+          "description": "How many copies run. Default 1, at most 20.",
+          "format": "uint32",
+          "maximum": 20,
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "env": {
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          },
+          "description": "Environment variables, by name. A value is kept as written: `8080`,\n`1.50` and `true` are those strings. At most 128, 32 KiB in all.",
+          "type": "object"
+        },
+        "image": {
+          "description": "The container image, as `docker pull` takes it, for example\n`ghcr.io/acme/shop:2026-09-26.1` or `nginx:1.27`. grund resolves the\ntag to a digest once, at deploy, and every copy runs that digest.",
+          "type": "string"
+        },
+        "machines": {
+          "description": "The machines the copies may run on, by name. Leave it out for any\nmachine in the organisation.",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 50,
+          "type": "array"
+        },
+        "ports": {
+          "description": "The ports the app listens on. At most 8, of which at most 2 public.",
+          "items": {
+            "$ref": "#/definitions/FilePort"
+          },
+          "maxItems": 8,
+          "type": "array"
+        },
+        "release": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/FileRelease"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How a new release replaces the copies of the one before."
+        },
+        "reschedule_after": {
+          "description": "Seconds a copy's machine may be unreachable before the copy is placed\nelsewhere. Default 120, 30 to 3600.",
+          "format": "uint32",
+          "maximum": 3600,
+          "minimum": 30,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "resources": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/FileResources"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What each copy reserves on its machine. Default 512 MiB and 1 CPU."
+        },
+        "secrets": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Environment variables taken from the organisation's secrets: the\nvariable's name, then the secret's. The value never appears in the\nfile. At most 50.",
+          "type": "object"
+        },
+        "stop": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/FileStop"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How a copy is stopped."
+        }
+      },
+      "required": [
+        "image"
+      ],
+      "type": "object"
+    },
+    "FileCheck": {
+      "additionalProperties": false,
+      "description": "A ready check: an HTTP path that answers 2xx or 3xx, or a TCP port that\naccepts a connection. Give exactly one of `http` and `tcp`.",
+      "properties": {
+        "http": {
+          "description": "The path to ask, for example `/healthz`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interval_ms": {
+          "description": "Milliseconds between checks. Default 2000, 500 to 60000.",
+          "format": "uint32",
+          "maximum": 60000,
+          "minimum": 500,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "port": {
+          "description": "The port an `http` check asks. Default the app's first port.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "tcp": {
+          "description": "The port to connect to.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "timeout_ms": {
+          "description": "Milliseconds one check may take, below the interval. Default 1000,\n100 to 30000.",
+          "format": "uint32",
+          "maximum": 30000,
+          "minimum": 100,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "FilePort": {
+      "additionalProperties": false,
+      "description": "A port the app listens on.",
+      "properties": {
+        "name": {
+          "description": "A name for the port, unique in the app, for example `http`.",
+          "type": "string"
+        },
+        "port": {
+          "description": "The port inside the container, 1 to 65535.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "protocol": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/FileProtocol"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What the port speaks. Default `http`."
+        },
+        "public": {
+          "description": "Serve the port at the app's public address. Default false: reachable\nonly inside the organisation, at `<app>.grund.internal`.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "port"
+      ],
+      "type": "object"
+    },
+    "FileProtocol": {
+      "description": "What a port speaks.",
+      "oneOf": [
+        {
+          "const": "http",
+          "description": "HTTP/1.1, and HTTP/2 where the client asks for it.",
+          "type": "string"
+        },
+        {
+          "const": "h2c",
+          "description": "HTTP/2 without TLS, for gRPC.",
+          "type": "string"
+        },
+        {
+          "const": "tcp",
+          "description": "Plain TCP.",
+          "type": "string"
+        }
+      ]
+    },
+    "FileRelease": {
+      "additionalProperties": false,
+      "description": "How a release rolls out.",
+      "properties": {
+        "drain": {
+          "description": "Seconds an old copy keeps serving after traffic leaves it. Default\n30, at most 300.",
+          "format": "uint32",
+          "maximum": 300,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_surge": {
+          "description": "Copies of the new release started beyond `copies` at once. Default\n1, at most `copies`.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_unavailable": {
+          "description": "Copies that may be missing during the rollout. Default 0.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "min_ready": {
+          "description": "Seconds a new copy must stay ready before it counts. Default 10, at\nmost 600.",
+          "format": "uint32",
+          "maximum": 600,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "ready_deadline": {
+          "description": "Seconds the whole rollout may take before it fails. Default 300, 10\nto 1800.",
+          "format": "uint32",
+          "maximum": 1800,
+          "minimum": 10,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "FileResources": {
+      "additionalProperties": false,
+      "description": "What each copy reserves.",
+      "properties": {
+        "cpu": {
+          "description": "CPUs, for example 0.5 or 2. Default 1, 0.01 to 64.",
+          "format": "double",
+          "maximum": 64,
+          "minimum": 0.01,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "memory": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Memory"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Memory, as `512 MiB` or `4 GiB`, or a number of MiB. Default\n512 MiB, 16 MiB to 256 GiB."
+        }
+      },
+      "type": "object"
+    },
+    "FileStop": {
+      "additionalProperties": false,
+      "description": "How a copy is stopped: the signal, then a kill after the grace period.",
+      "properties": {
+        "grace": {
+          "description": "Seconds between the signal and the kill. Default 30, at most 300.",
+          "format": "uint32",
+          "maximum": 300,
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "signal": {
+          "description": "The signal sent first. Default SIGTERM; one of SIGTERM, SIGINT,\nSIGQUIT, SIGUSR1, SIGUSR2 or SIGHUP.",
+          "examples": [
+            "SIGTERM",
+            "SIGINT",
+            "SIGQUIT",
+            "SIGUSR1",
+            "SIGUSR2",
+            "SIGHUP"
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "Memory": {
+      "anyOf": [
+        {
+          "maximum": 262144,
+          "minimum": 16,
+          "type": "integer"
+        },
+        {
+          "pattern": "^\\s*[0-9.]+\\s*(MiB|M|MB|GiB|G|GB)?\\s*$",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "description": "A grund.yaml: the apps one repository declares. Each deploy names one of\nthem; the others are left for their own deploys.",
+  "properties": {
+    "apps": {
+      "additionalProperties": {
+        "$ref": "#/definitions/FileApp"
+      },
+      "default": {},
+      "description": "The apps, by name: lowercase letters, digits and dashes, at most 32\ncharacters, starting with a letter.",
+      "type": "object"
+    }
+  },
+  "title": "grund.yaml",
+  "type": "object"
+}

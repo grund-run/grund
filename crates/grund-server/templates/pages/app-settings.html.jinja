@@ -116,15 +116,15 @@
     {% call ui.para() %}Domains are proved and bound to an app on <a href="{{ app.domains_href }}">Domains</a>, where grund gives you the records to make.{% endcall %}
   {% endcall %}
 
-  {% call ui.expander("grund.toml", "Every setting above as one file, to keep in your repository or to change several at once.", icon_name="file", meta=["New release"], open=open == "file", id="as-file") %}
+  {% call ui.expander("grund.yaml", "Every setting above as one file, to keep in your repository or to change several at once.", icon_name="file", meta=["New release"], open=open == "file", id="as-file") %}
     {% if org.manages %}
     {% call forms.form(app.base ~ "/settings/file", csrf, autocomplete="off") %}
       {{ forms.banner(banners.file) }}
-      {{ forms.code_field("file", "grund.toml", value=file, filename="grund.toml", rows=file_rows, error=errors.file, required=true, download=file_href, hint="Applied the way the API applies one: the same checks, and the image's tag resolved again. Secrets are named here; their values stay sealed.") }}
+      {{ forms.code_field("file", "grund.yaml", value=file, filename="grund.yaml", rows=file_rows, error=errors.file, required=true, download=file_href, hint="Applied the way the API applies one: the same checks, and the image's tag resolved again. Secrets are named here; their values stay sealed.") }}
       {% call forms.actions("Applying makes release v" ~ next ~ " from the file.", "layers") %}{{ ui.button("Apply as a release") }}{% endcall %}
     {% endcall %}
     {% else %}
-    {{ ui.code(file, filename="grund.toml", download=file_href) }}
+    {{ ui.code(file, filename="grund.yaml", download=file_href) }}
     {% endif %}
   {% endcall %}
 

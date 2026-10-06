@@ -22,6 +22,8 @@ const MARK: &str = include_str!("../../assets/mark.svg");
 pub const INTER_LICENSE: &str = include_str!("../../assets/licenses/inter.txt");
 pub const MONO_LICENSE: &str = include_str!("../../assets/licenses/jetbrains-mono.txt");
 
+static SCHEMA: LazyLock<String> = LazyLock::new(grund_domain::app::file::schema_text);
+
 static CSS_VERSION: LazyLock<String> =
     LazyLock::new(|| hex::encode(&Sha256::digest(CSS.as_bytes())[..8]));
 
@@ -43,6 +45,26 @@ pub fn css_href() -> String {
 pub const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 /// Fonts and the mark keep their names across builds, so they revalidate daily.
 pub const A_DAY: &str = "public, max-age=86400";
+
+/// The schema changes only with a new build, and editors fetch it often.
+pub const AN_HOUR: &str = "public, max-age=3600";
+
+/// `GET /schema/grund.json`: the JSON Schema of grund.yaml, for editors.
+/// Public and the same for everyone, so any origin may fetch it.
+pub async fn schema() -> Response {
+    let mut response = SCHEMA.as_str().into_response();
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/schema+json"),
+    );
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static(AN_HOUR));
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        HeaderValue::from_static("*"),
+    );
+    response
+}
 
 /// Serves one embedded file, or 404.
 pub async fn serve(Path(path): Path<String>) -> Response {

@@ -38,7 +38,7 @@ service AppService {
   }
 
   // Owners and admins. Makes the next release from spec, or from a
-  // grund.toml naming exactly this app, and rolls it out. A release while
+  // grund.yaml naming exactly this app, and rolls it out. A release while
   // another rolls out supersedes it.
   rpc Deploy(DeployRequest) returns (DeployResponse);
 
@@ -369,9 +369,11 @@ message DeployRequest {
   string name = 2;
   oneof source {
     AppSpec spec = 3;
-    // A grund.toml with one [apps.<name>] table, for this app. Its copies
-    // and placement are applied as ConfigureApp would.
-    string grund_toml = 4;
+    // A grund.yaml declaring this app under apps:, for this app; other
+    // apps in the file are left alone. Its copies and placement are
+    // applied as ConfigureApp would. The JSON Schema is at the instance's
+    // /schema/grund.json. Field 4 was grund_toml (TOML) until 2026-10-06.
+    string grund_yaml = 4;
   }
   // Where the deploy came from, for the release list: a commit, a CI run.
   // At most 200 bytes. Shown, never trusted.

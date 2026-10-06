@@ -178,14 +178,42 @@ curl --fail-with-body -sS https://grund.example.com/grund.app.v1.AppService/Depl
                 "ports": [{"name": "http", "port": 8080, "public": true}]}}'
 ```
 
-Or send the repository's `grund.toml` instead of a spec:
+Or send the repository's `grund.yaml` instead of a spec:
 
 ```bash
-jq -n --rawfile toml grund.toml --arg note "$CI_COMMIT_SHA" \
-  '{organisation: "acme", name: "shop", grundToml: $toml, note: $note}' |
+jq -n --rawfile file grund.yaml --arg note "$CI_COMMIT_SHA" \
+  '{organisation: "acme", name: "shop", grundYaml: $file, note: $note}' |
 curl --fail-with-body -sS https://grund.example.com/grund.app.v1.AppService/Deploy \
   -H "Authorization: Bearer $GRUND_TOKEN" -H 'Content-Type: application/json' -d @-
 ```
+
+A `grund.yaml` declares one or more apps; a deploy takes the one it names:
+
+```yaml
+# yaml-language-server: $schema=https://grund.example.com/schema/grund.json
+apps:
+  shop:
+    image: ghcr.io/acme/shop:2026-09-26.1
+    copies: 2
+    ports:
+    - name: http
+      port: 8080
+      public: true
+    env:
+      DATABASE_URL: postgres://shop@db.grund.internal:5432/shop
+    secrets:
+      DATABASE_PASSWORD: db-password
+    check:
+      http: /healthz
+```
+
+Every instance serves the file's JSON Schema at `/schema/grund.json`
+([schema/grund.json](schema/grund.json) in this repository). Editors that
+read the first line's `$schema` (VS Code with the YAML extension, and other
+editors using yaml-language-server) complete and check the file. In the
+dashboard, an app's Settings has its newest release as this file, to copy,
+download, or edit and apply. An unknown key is refused with its line,
+column and path.
 
 `Deploy` answers with the new release once its image is resolved to a
 digest; the rollout then runs on its own. `GetApp` shows it

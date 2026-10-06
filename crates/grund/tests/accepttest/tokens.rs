@@ -97,14 +97,14 @@ async fn ci_deploys_with_a_token_and_no_session_in_the_tokens_organisation_only(
     );
     let second = registry.publish("acme/shop", "2");
     let file = format!(
-        "[apps.shop]\nimage = \"{}\"\n\n[[apps.shop.ports]]\nname = \"http\"\nport = 80\n",
+        "apps:\n  shop:\n    image: {}\n    ports:\n      - name: http\n        port: 80\n",
         registry.image("acme/shop", "2")
     );
     calling_with_token(
         &ci_when,
         &token,
         "Deploy",
-        json!({"organisation": org, "name": "shop", "grundToml": file}),
+        json!({"organisation": org, "name": "shop", "grundYaml": file}),
     )
     .await?;
     ci_then.status(200)?;

@@ -6,11 +6,11 @@
 //! Observations (a replica became ready, a machine stopped answering) are
 //! not events; what grund decides because of them is ([`reconcile`]).
 
+pub mod file;
 pub mod placement;
 pub mod reconcile;
 pub mod spec;
 pub mod templates;
-pub mod toml;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

@@ -14,3 +14,4 @@ pub mod machine;
 pub mod names;
 
 pub mod organisation;
+pub mod yaml;

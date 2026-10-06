@@ -13,13 +13,13 @@ use chrono::{DateTime, Utc};
 use grund_domain::app::{
     App, AppCommand, AppError, AppEvent, AppName, AppSettings, AppSpec, ReleaseSource,
     SecretVersion,
+    file::parse_app,
     placement::MachineView,
     reconcile::{Observation, Observed, reconcile},
     spec::{
         ImageReference, MAX_APPS_PER_ORGANISATION, MAX_SECRET_BYTES, PortSpec, SecretEnv,
         SettingsInput, SpecError, secret_name_ok,
     },
-    toml::parse_app,
 };
 use grund_store::{
     apps::{self, AppRow, ReleaseRow, ReplicaRow},
@@ -108,7 +108,7 @@ impl From<sqlx::Error> for AppsError {
 #[derive(Debug, Clone)]
 pub enum DeployInput {
     Spec(AppSpec),
-    /// A grund.toml naming the app.
+    /// A grund.yaml naming the app.
     File(String),
 }
 

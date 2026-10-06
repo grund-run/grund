@@ -12,8 +12,13 @@ license = "AGPL-3.0-only"
 chrono.workspace = true
 indexmap = { version = "2", features = ["serde"] }
 mire.workspace = true
+schemars = { version = "1.2", default-features = false, features = ["derive", "std", "indexmap2"] }
 serde.workspace = true
 serde_json.workspace = true
+serde-saphyr = "1.3"
+serde_path_to_error = "0.1"
 thiserror.workspace = true
-toml = { version = "1", features = ["preserve_order"] }
 uuid.workspace = true
+
+[dev-dependencies]
+jsonschema = { version = "0.58", default-features = false }

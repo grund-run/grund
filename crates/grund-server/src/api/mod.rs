@@ -475,11 +475,11 @@ pub fn router(state: State) -> axum::Router {
         .merge(relay_access::router(state))
 }
 
-/// The largest app request: a deploy with its env and a grund.toml.
+/// The largest app request: a deploy with its env and a grund.yaml.
 pub const MAX_APP_REQUEST_BYTES: usize = 128 * 1024;
 
 /// The app service, on a Connect service of its own: a deploy carries more
-/// than any other session call (a spec's env is up to 32 KiB, a grund.toml
+/// than any other session call (a spec's env is up to 32 KiB, a grund.yaml
 /// up to 64 KiB). A deploy resolves the image at its registry, so it gets
 /// up to 30 s.
 pub fn app_service(state: State) -> ConnectRpcService {

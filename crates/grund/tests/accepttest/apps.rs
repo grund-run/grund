@@ -761,7 +761,7 @@ async fn a_copy_on_a_machine_that_stops_answering_is_started_on_another() -> any
 }
 
 #[tokio::test]
-async fn a_grund_toml_deploys_and_an_unknown_tag_is_refused_with_its_reason() -> anyhow::Result<()>
+async fn a_grund_yaml_deploys_and_an_unknown_tag_is_refused_with_its_reason() -> anyhow::Result<()>
 {
     let registry = FakeRegistry::start().await?;
     let Some((given, when, then)) =
@@ -798,14 +798,14 @@ async fn a_grund_toml_deploys_and_an_unknown_tag_is_refused_with_its_reason() ->
 
     registry.publish("acme/shop", "2026-10-01");
     let file = format!(
-        "[apps.shop]\nimage = \"{}\"\ncopies = 2\n\n[[apps.shop.ports]]\nname = \"http\"\nport = 8080\n\n[apps.shop.check]\nhttp = \"/healthz\"\n",
+        "apps:\n  shop:\n    image: {}\n    copies: 2\n    ports:\n      - name: http\n        port: 8080\n    check:\n      http: /healthz\n",
         registry.image("acme/shop", "2026-10-01")
     );
     let made = call(
         &when,
         &then,
         "Deploy",
-        json!({"organisation": org, "name": "shop", "grundToml": file}),
+        json!({"organisation": org, "name": "shop", "grundYaml": file}),
     )
     .await?;
     then.status(200)?;
@@ -828,13 +828,15 @@ async fn a_grund_toml_deploys_and_an_unknown_tag_is_refused_with_its_reason() ->
             .is_some_and(|m| m.contains("shop needs a machine")),
         "with no machine the copies wait and say why: {shop}"
     );
-    call(&when, &then, "Deploy", json!({"organisation": org, "name": "shop", "grundToml": "[apps.shop]\nimage = \"nginx\"\ncopis = 3\n"})).await?;
+    call(&when, &then, "Deploy", json!({"organisation": org, "name": "shop", "grundYaml": "apps:\n  shop:\n    image: nginx\n    copis: 3\n"})).await?;
     then.status(400)?.connect_code("invalid_argument")?;
+    let refused = then.json()?.to_string();
     anyhow::ensure!(
-        then.json()?.to_string().contains("copis"),
-        "{}",
-        then.json()?
+        refused.contains("apps.shop.copis") && refused.contains("line 4, column 5"),
+        "the refusal names the field, line and column: {refused}"
     );
+    call(&when, &then, "Deploy", json!({"organisation": org, "name": "shop", "grundYaml": "[apps.shop]\nimage = \"nginx\"\n"})).await?;
+    then.status(400)?.connect_code("invalid_argument")?;
     Ok(())
 }
 
@@ -898,7 +900,7 @@ async fn an_app_made_on_the_dashboard_shows_its_copies_ready_and_its_versions() 
         .body_contains(&digest[..19])?
         .body_contains("from the dashboard")?;
     when.visiting(&format!("{app_page}/settings")).await?;
-    then.status(200)?.body_contains("[apps.hello]")?;
+    then.status(200)?.body_contains("\n  hello:\n")?;
     let settings = format!("{app_page}/settings");
     when.submitting(
         &settings,
@@ -911,7 +913,7 @@ async fn an_app_made_on_the_dashboard_shows_its_copies_ready_and_its_versions() 
     when.visiting(&settings).await?;
     then.status(200)?
         .body_contains("secret token · version 1")?
-        .body_contains("TOKEN = &quot;token&quot;")?;
+        .body_contains("TOKEN: token")?;
     anyhow::ensure!(
         !then.body()?.contains("s3cr3t-value"),
         "a secret is never shown"
@@ -1080,11 +1082,11 @@ async fn the_deploy_page_finds_the_port_an_image_declares_and_its_copy_gets_read
             then.status(200)?;
             let body = then.body()?;
             anyhow::ensure!(
-                body.contains("port = 8080"),
+                body.contains("port: 8080"),
                 "the lowest TCP port it declares: {body}"
             );
-            anyhow::ensure!(body.contains("GREETING = &quot;hej&quot;"), "{body}");
-            anyhow::ensure!(body.contains("API_TOKEN = &quot;api-token&quot;"), "{body}");
+            anyhow::ensure!(body.contains("GREETING: hej"), "{body}");
+            anyhow::ensure!(body.contains("API_TOKEN: api-token"), "{body}");
             anyhow::ensure!(!body.contains("s3cr3t-value"), "a secret is never shown");
             break;
         }
@@ -1447,30 +1449,48 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
         .body_contains("not read by the app")?
         .body_lacks("s3cr3t-value")?;
 
-    let toml = format!("{page}/grund.toml");
-    when.visiting(&toml).await?;
+    let yaml = format!("{page}/grund.yaml");
+    when.visiting(&yaml).await?;
     then.status(200)?
-        .header("content-type", "text/plain; charset=utf-8")?
-        .header("content-disposition", "attachment; filename=\"grund.toml\"")?
-        .body_contains("[apps.hello]")?
-        .body_contains("GREETING = \"hallo\"")?;
+        .header("content-type", "application/yaml; charset=utf-8")?
+        .header("content-disposition", "attachment; filename=\"grund.yaml\"")?
+        .body_contains("\n  hello:\n")?
+        .body_contains("GREETING: hallo\n")?;
     let file = then.body()?;
+    let schema_line = format!(
+        "# yaml-language-server: $schema={}/schema/grund.json\n",
+        when.origin_a_browser_sends(None)
+    );
+    anyhow::ensure!(file.starts_with(&schema_line), "{file}");
     when.submitting(
         &settings,
         &format!("{page}/settings/file"),
-        &[("file", &format!("{file}\ncopies = 99\n"))],
+        &[(
+            "file",
+            &file.replace("    image:", "    copies: 99\n    image:"),
+        )],
     )
     .await?;
     then.status(422)?
         .body_contains("Nothing was released. Check the file.")?
+        .body_contains("apps.hello.copies: use 1 to 20.")?
         .body_contains("id=\"as-file\" open")?;
     when.submitting(
         &settings,
         &format!("{page}/settings/file"),
         &[(
             "file",
-            &file.replace("GREETING = \"hallo\"", "GREETING = \"moin\""),
+            &file.replace("    image:", "    copis: 2\n    image:"),
         )],
+    )
+    .await?;
+    then.status(422)?
+        .body_contains("apps.hello.copis: line ")?
+        .body_contains("unknown field `copis`")?;
+    when.submitting(
+        &settings,
+        &format!("{page}/settings/file"),
+        &[("file", &file.replace("GREETING: hallo", "GREETING: moin"))],
     )
     .await?;
     then.status(303)?
@@ -1521,7 +1541,7 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
         "/metrics",
         "/settings",
         "/deploy",
-        "/grund.toml",
+        "/grund.yaml",
     ] {
         outsider_when.visiting(&format!("{page}{tab}")).await?;
         outsider_then
