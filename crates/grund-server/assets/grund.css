@@ -1281,6 +1281,7 @@ code.address-text {
 }
 
 .address .icon-btn,
+.endpoint .icon-btn,
 .event-ok .event-mark .icon,
 .event-failed .event-mark .icon {
   width: 1.75rem;
@@ -1880,7 +1881,7 @@ legend.field-label {
 
 .facts {
   display: grid;
-  grid-template-columns: minmax(0, 1.6fr) repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 2fr) repeat(3, minmax(0, 1fr));
   margin: 0;
 }
 
@@ -1929,11 +1930,11 @@ legend.field-label {
 .endpoint {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-2);
   max-width: 100%;
   margin-top: var(--space-1);
   color: var(--text);
-  font-size: var(--text-xl);
+  font-size: var(--text-lg);
   font-weight: 500;
 }
 
