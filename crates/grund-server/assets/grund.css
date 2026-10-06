@@ -1426,7 +1426,7 @@ code.address-text {
   display: flex;
   flex-direction: column;
   gap: var(--space-6);
-  padding: var(--space-8);
+  padding: var(--space-7) var(--space-8);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -1491,7 +1491,7 @@ fieldset.field {
 .choices-lg {
   grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
   gap: var(--space-4);
-  margin-bottom: var(--space-6);
+  margin-bottom: var(--space-4);
 }
 
 .choice {
