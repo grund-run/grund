@@ -185,9 +185,9 @@
 </nav>
 {%- endmacro %}
 
-{#- org_tabs(org, active): the organisation's General and Members tabs. -#}
+{#- org_tabs(org, active): the organisation's General, Members and API tokens tabs. -#}
 {% macro org_tabs(org, active) -%}
-{{ tabs("Organisation", [("general", "/" ~ org.slug ~ "/settings", "General"), ("members", "/" ~ org.slug ~ "/settings/members", "Members")], active) }}
+{{ tabs("Organisation", [("general", "/" ~ org.slug ~ "/settings", "General"), ("members", "/" ~ org.slug ~ "/settings/members", "Members"), ("tokens", "/" ~ org.slug ~ "/settings/tokens", "API tokens")], active) }}
 {%- endmacro %}
 
 {#- callout(title, text, icon_name="", tone="", spinner=false, more=none,

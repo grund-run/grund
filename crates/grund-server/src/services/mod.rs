@@ -22,6 +22,7 @@ pub mod passwords;
 pub mod relays;
 pub mod sessions;
 pub mod terminators;
+pub mod tokens;
 
 pub use accounts::AccountsState;
 pub use entitlements::EntitlementsState;
@@ -31,3 +32,4 @@ pub use organisations::OrganisationsState;
 pub use passwords::PasswordsState;
 pub use relays::RelaysState;
 pub use sessions::SessionsState;
+pub use tokens::TokensState;

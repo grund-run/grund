@@ -16,6 +16,7 @@ pub mod install;
 pub mod machines;
 pub mod orgs;
 pub mod pages;
+pub mod tokens;
 
 use axum::{
     Router,
@@ -113,6 +114,8 @@ pub fn router(state: State) -> Router {
         .route("/{org}/machines/vms", post(machines::run_vm))
         .route("/{org}/machines/vms/{vm}/stop", post(machines::stop_vm))
         .route("/{org}/machines/{machine}/remove", post(machines::remove))
+        .route("/{org}/settings/tokens", get(tokens::tokens_page).post(tokens::create))
+        .route("/{org}/settings/tokens/{token}/revoke", post(tokens::revoke))
         .route("/{org}/settings", get(orgs::settings_page))
         .route("/{org}/settings/rename", post(orgs::rename))
         .route("/{org}/settings/delete", post(orgs::delete))

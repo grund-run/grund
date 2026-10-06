@@ -8,13 +8,23 @@
 //!           └► handler: acts on the caller only
 //! ```
 //!
-//! The caller today is the dashboard, same-origin, with its session cookie.
-//! A cookie-authenticated call whose `Origin` or `Sec-Fetch-Site` names another
-//! site is refused: a cross-site page cannot make a browser send Connect's
-//! content types without a CORS preflight, which grund never grants, and this
-//! check does not rely on that alone. Bearer tokens (personal access tokens
-//! for the CLI) are designed and not built; a call
-//! presenting one is refused as unauthenticated.
+//! A caller is the dashboard, same-origin, with its session cookie, or CI
+//! and scripts with a personal access token (`Authorization: Bearer
+//! grund_pat_…`, grund-docs design/auth.md §6). A cookie-authenticated call
+//! whose `Origin` or `Sec-Fetch-Site` names another site is refused: a
+//! cross-site page cannot make a browser send Connect's content types without
+//! a CORS preflight, which grund never grants, and this check does not rely
+//! on that alone. A token-authenticated call carries no cookie, so the origin
+//! check does not apply to it; a cross-site page cannot set the header
+//! without a preflight either. A call that presents an `Authorization`
+//! header is judged by the token alone, never by a cookie beside it.
+//!
+//! A token may call only the procedures [`AUTHORIZATION`] marks
+//! [`Requirement::SessionOrToken`]: the app procedures CI needs, and not
+//! DeleteApp. Everything else stays session-only: the account, members and
+//! invitations, renaming and deleting organisations, machines and their join
+//! tokens, and the management pool. A token acts only on its own
+//! organisation; any other is `not_found`, as for a non-member.
 
 pub mod account;
 pub mod agent;
@@ -52,7 +62,11 @@ use grund_proto::grund::{
 use uuid::Uuid;
 
 use crate::{
-    services::{agents::AgentsState, sessions::SessionsState},
+    services::{
+        agents::AgentsState,
+        sessions::SessionsState,
+        tokens::{TokenCaller, TokensState},
+    },
     state::State,
     web::browser::{CookieJar, client_address, cookie, same_origin},
 };
@@ -60,8 +74,8 @@ use crate::{
 /// The largest request the API accepts. Its largest message is a session id.
 pub const MAX_REQUEST_BYTES: usize = 16 * 1024;
 
-/// Who an API call is from, stamped by [`authenticate`]. Handlers act on this
-/// account only.
+/// Who a session-authenticated API call is from, stamped by
+/// [`authenticate`]. Handlers act on this account only.
 #[derive(Debug, Clone, Copy)]
 pub struct Caller {
     pub account_id: Uuid,
@@ -76,8 +90,12 @@ pub struct ClientAddress(pub String);
 /// What a procedure requires of its caller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Requirement {
-    /// Any signed-in person, acting on their own account.
+    /// Any signed-in person, acting on their own account. A token is
+    /// refused.
     Session,
+    /// A signed-in person, or a personal access token acting as the account
+    /// that made it, within the token's organisation only.
+    SessionOrToken,
     /// No session: a one-time token in the request is the credential, checked
     /// by the handler (machine enrollment). Served on routes without the
     /// session and same-origin checks.
@@ -283,21 +301,42 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
         "/grund.machine.v1.MachineService/ListVms",
         Requirement::Session,
     ),
-    ("/grund.app.v1.AppService/CreateApp", Requirement::Session),
-    ("/grund.app.v1.AppService/GetApp", Requirement::Session),
-    ("/grund.app.v1.AppService/ListApps", Requirement::Session),
-    ("/grund.app.v1.AppService/Deploy", Requirement::Session),
+    (
+        "/grund.app.v1.AppService/CreateApp",
+        Requirement::SessionOrToken,
+    ),
+    (
+        "/grund.app.v1.AppService/GetApp",
+        Requirement::SessionOrToken,
+    ),
+    (
+        "/grund.app.v1.AppService/ListApps",
+        Requirement::SessionOrToken,
+    ),
+    (
+        "/grund.app.v1.AppService/Deploy",
+        Requirement::SessionOrToken,
+    ),
     (
         "/grund.app.v1.AppService/ListReleases",
-        Requirement::Session,
+        Requirement::SessionOrToken,
     ),
-    ("/grund.app.v1.AppService/Rollback", Requirement::Session),
-    ("/grund.app.v1.AppService/Scale", Requirement::Session),
+    (
+        "/grund.app.v1.AppService/Rollback",
+        Requirement::SessionOrToken,
+    ),
+    (
+        "/grund.app.v1.AppService/Scale",
+        Requirement::SessionOrToken,
+    ),
     (
         "/grund.app.v1.AppService/ConfigureApp",
-        Requirement::Session,
+        Requirement::SessionOrToken,
     ),
-    ("/grund.app.v1.AppService/SetSecret", Requirement::Session),
+    (
+        "/grund.app.v1.AppService/SetSecret",
+        Requirement::SessionOrToken,
+    ),
     ("/grund.app.v1.AppService/DeleteApp", Requirement::Session),
 ];
 
@@ -715,10 +754,30 @@ pub async fn authenticate(
     next: Next,
 ) -> Response {
     let headers = request.headers();
-    if headers.contains_key(header::AUTHORIZATION) {
-        return refuse(ConnectError::unauthenticated(
-            "API tokens are not available yet; sign in to the dashboard",
-        ));
+    if let Some(authorization) = headers.get(header::AUTHORIZATION) {
+        let token = authorization
+            .to_str()
+            .ok()
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let caller = match state.tokens().authenticate(&token).await {
+            Ok(Some(caller)) => caller,
+            Ok(None) => {
+                return refuse(ConnectError::unauthenticated(
+                    "the token is unknown, revoked or expired",
+                ));
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "token lookup failed for an API call");
+                return refuse(ConnectError::unavailable(
+                    "grund is temporarily unavailable",
+                ));
+            }
+        };
+        request.extensions_mut().insert(caller);
+        return finish(next.run(request).await);
     }
     let origin = state.config.public_origin();
     if !same_origin(headers, &origin) {
@@ -744,7 +803,10 @@ pub async fn authenticate(
         account_id: session.account_id,
         session_id: session.session_id,
     });
-    let mut response = next.run(request).await;
+    finish(next.run(request).await)
+}
+
+fn finish(mut response: Response) -> Response {
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -772,7 +834,17 @@ pub fn authorized(ctx: &connectrpc::RequestContext) -> Result<(), ConnectError> 
     let extensions = ctx.extensions();
     match requirement {
         Some(Requirement::Session) if extensions.get::<Caller>().is_some() => Ok(()),
+        Some(Requirement::Session) if extensions.get::<TokenCaller>().is_some() => Err(
+            ConnectError::permission_denied("an API token cannot call this; use the dashboard"),
+        ),
         Some(Requirement::Session) => Err(ConnectError::unauthenticated("sign in first")),
+        Some(Requirement::SessionOrToken)
+            if extensions.get::<Caller>().is_some()
+                || extensions.get::<TokenCaller>().is_some() =>
+        {
+            Ok(())
+        }
+        Some(Requirement::SessionOrToken) => Err(ConnectError::unauthenticated("sign in first")),
         Some(Requirement::Token) => Ok(()),
         Some(Requirement::Machine)
             if extensions
@@ -826,11 +898,47 @@ impl Interceptor for Authorize {
     }
 }
 
-/// The caller [`authenticate`] stamped on the request.
+/// The session caller [`authenticate`] stamped on the request.
 pub fn caller(ctx: &connectrpc::RequestContext) -> Result<Caller, ConnectError> {
     ctx.extensions()
         .get::<Caller>()
         .copied()
+        .ok_or_else(|| ConnectError::unauthenticated("sign in first"))
+}
+
+/// Who a call for a [`Requirement::SessionOrToken`] procedure acts as: an
+/// account, and for a token the one organisation it may act on.
+#[derive(Debug, Clone, Copy)]
+pub struct Principal {
+    pub account_id: Uuid,
+    /// `Some` for a token: every other organisation is `not_found` to it.
+    pub organisation_id: Option<Uuid>,
+}
+
+impl Principal {
+    /// Whether this principal may act on `organisation_id` at all, before
+    /// its account's role there is asked.
+    pub fn reaches(&self, organisation_id: Uuid) -> bool {
+        self.organisation_id
+            .is_none_or(|own| own == organisation_id)
+    }
+}
+
+/// The session or token caller [`authenticate`] stamped on the request.
+pub fn principal(ctx: &connectrpc::RequestContext) -> Result<Principal, ConnectError> {
+    let extensions = ctx.extensions();
+    if let Some(caller) = extensions.get::<Caller>() {
+        return Ok(Principal {
+            account_id: caller.account_id,
+            organisation_id: None,
+        });
+    }
+    extensions
+        .get::<TokenCaller>()
+        .map(|token| Principal {
+            account_id: token.account_id,
+            organisation_id: Some(token.organisation_id),
+        })
         .ok_or_else(|| ConnectError::unauthenticated("sign in first"))
 }
 
@@ -1339,6 +1447,13 @@ mod tests {
                         organisation_id: None,
                     });
                 }
+                "token" => {
+                    extensions.insert(TokenCaller {
+                        account_id: Uuid::now_v7(),
+                        token_id: Uuid::now_v7(),
+                        organisation_id: Uuid::now_v7(),
+                    });
+                }
                 "edge" => {
                     extensions.insert(edge::EdgeCaller(crate::services::relays::RelayCaller {
                         relay_id: Uuid::now_v7(),
@@ -1375,6 +1490,88 @@ mod tests {
                 "{path}"
             );
         }
+    }
+
+    #[test]
+    fn a_token_reaches_the_app_procedures_ci_needs_and_nothing_else() {
+        let for_tokens: BTreeSet<&str> = AUTHORIZATION
+            .iter()
+            .filter(|(_, r)| *r == Requirement::SessionOrToken)
+            .map(|(p, _)| *p)
+            .collect();
+        let expected: BTreeSet<&str> = [
+            "CreateApp",
+            "GetApp",
+            "ListApps",
+            "Deploy",
+            "ListReleases",
+            "Rollback",
+            "Scale",
+            "ConfigureApp",
+            "SetSecret",
+        ]
+        .into_iter()
+        .map(|m| format!("/grund.app.v1.AppService/{m}").leak() as &str)
+        .collect();
+        assert_eq!(for_tokens, expected);
+        for path in &for_tokens {
+            authorized(&context(path, &["token"])).unwrap();
+            authorized(&context(path, &["session"])).unwrap();
+            let error = authorized(&context(path, &[])).unwrap_err();
+            assert_eq!(error.code, connectrpc::ErrorCode::Unauthenticated, "{path}");
+        }
+    }
+
+    #[test]
+    fn a_token_is_refused_every_session_only_procedure() {
+        let session_only: Vec<&str> = AUTHORIZATION
+            .iter()
+            .filter(|(_, r)| *r == Requirement::Session)
+            .map(|(p, _)| *p)
+            .collect();
+        for required in [
+            "/grund.app.v1.AppService/DeleteApp",
+            "/grund.account.v1.AccountService/GetViewer",
+            "/grund.organisation.v1.OrganisationService/InviteMember",
+            "/grund.organisation.v1.OrganisationService/DeleteOrganisation",
+            "/grund.machine.v1.MachineService/CreateJoinToken",
+        ] {
+            assert!(session_only.contains(&required), "{required}");
+        }
+        for path in session_only {
+            let error = authorized(&context(path, &["token"])).unwrap_err();
+            assert_eq!(
+                error.code,
+                connectrpc::ErrorCode::PermissionDenied,
+                "{path}"
+            );
+            authorized(&context(path, &["session"])).unwrap();
+        }
+        for (path, requirement) in AUTHORIZATION {
+            if matches!(
+                requirement,
+                Requirement::Machine | Requirement::Terminator | Requirement::Edge
+            ) {
+                let error = authorized(&context(path, &["token"])).unwrap_err();
+                assert_eq!(error.code, connectrpc::ErrorCode::Unauthenticated, "{path}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_principal_reaches_only_its_tokens_organisation() {
+        let own = Uuid::now_v7();
+        let token = Principal {
+            account_id: Uuid::now_v7(),
+            organisation_id: Some(own),
+        };
+        assert!(token.reaches(own));
+        assert!(!token.reaches(Uuid::now_v7()));
+        let session = Principal {
+            account_id: Uuid::now_v7(),
+            organisation_id: None,
+        };
+        assert!(session.reaches(Uuid::now_v7()));
     }
 
     #[test]

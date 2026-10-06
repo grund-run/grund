@@ -134,7 +134,8 @@ confirmed (see [.env.example](.env.example)). Without them nothing is queued.
   joins by invitation. `multi` gives every sign-up its own organisation and lets
   anyone create more, as grund's hosted service does.
 - Pages: `/signup`, `/signup/owner` (the setup link), `/verify`, `/login`, `/reset`, `/` (which opens your
-  organisation), `/{org}`, `/{org}/members`, `/{org}/settings`, `/orgs/new`,
+  organisation), `/{org}`, `/{org}/members`, `/{org}/settings`,
+  `/{org}/settings/tokens`, `/orgs/new`,
   `/invite`, `/settings/sessions`, and `/style-guide`, which renders every
   component with example data.
 - The API is ConnectRPC (`proto/`, generated at build time; Connect, gRPC and
@@ -142,8 +143,9 @@ confirmed (see [.env.example](.env.example)). Without them nothing is queued.
   `GetViewer`, `ListSessions` and `RevokeSession`;
   `grund.organisation.v1.OrganisationService` lists, creates, renames and
   deletes organisations and manages their members and invitations, with the
-  same rules as the pages. Today it takes the dashboard's session cookie,
-  from this origin only.
+  same rules as the pages. It takes the dashboard's session cookie, from this
+  origin only, or a personal access token for the app procedures CI needs
+  (see "Deploy from CI" below).
 - Organisations can be renamed (the old name redirects members and stays
   reserved) and deleted by their owners. A deletion is a mire saga: billing
   answers first, and while it cannot be reached grund keeps asking.
@@ -156,6 +158,55 @@ curl -s -X POST -H 'Content-Type: application/json' -d '{}' \
   http://localhost:8080/grund.account.v1.AccountService/GetViewer
 # {"code":"unauthenticated","message":"sign in first"}
 ```
+
+## Deploy from CI
+
+grund has no deploy command: CI calls the API with a personal access
+token.
+
+1. Create the app once, in the dashboard or with `CreateApp`.
+2. Under Organisation, API tokens, make a token. It is shown once: keep it
+   in your CI's secrets, here as `GRUND_TOKEN`. It starts with `grund_pat_`
+   so secret scanners can find a leaked one. grund stores only its SHA-256.
+3. Each build calls `Deploy` with the image it just pushed:
+
+```bash
+curl --fail-with-body -sS https://grund.example.com/grund.app.v1.AppService/Deploy \
+  -H "Authorization: Bearer $GRUND_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"organisation": "acme", "name": "shop", "note": "'"$CI_COMMIT_SHA"'",
+       "spec": {"image": "ghcr.io/acme/shop:'"$CI_COMMIT_SHA"'",
+                "ports": [{"name": "http", "port": 8080, "public": true}]}}'
+```
+
+Or send the repository's `grund.toml` instead of a spec:
+
+```bash
+jq -n --rawfile toml grund.toml --arg note "$CI_COMMIT_SHA" \
+  '{organisation: "acme", name: "shop", grundToml: $toml, note: $note}' |
+curl --fail-with-body -sS https://grund.example.com/grund.app.v1.AppService/Deploy \
+  -H "Authorization: Bearer $GRUND_TOKEN" -H 'Content-Type: application/json' -d @-
+```
+
+`Deploy` answers with the new release once its image is resolved to a
+digest; the rollout then runs on its own. `GetApp` shows it
+(`app.rollout.state` is `ROLLOUT_STATE_SUCCEEDED` or `ROLLOUT_STATE_FAILED`).
+An error answers with a non-2xx status and a JSON body whose `code` says
+why (`unauthenticated`, `not_found`, `invalid_argument`,
+`failed_precondition`), so `--fail-with-body` fails the job.
+
+What a token can do:
+- It acts as the account that made it, in its own organisation only: any
+  other organisation is `not_found`. It never does more than that account's
+  role allows today, so a member's token can read apps but not deploy, and
+  leaving the organisation leaves the token powerless.
+- It may call `CreateApp`, `GetApp`, `ListApps`, `Deploy`, `ListReleases`,
+  `Rollback`, `Scale`, `ConfigureApp` and `SetSecret`. Everything else,
+  `DeleteApp` included, needs the dashboard: a token gets
+  `permission_denied`.
+- It expires after 7, 30, 90 or 365 days, chosen when it is made. Owners and
+  admins see and revoke every token of the organisation, members their own.
+  A revoked or expired token is `unauthenticated` from the next call.
+- An organisation holds at most 100 live tokens.
 
 ## Layout
 

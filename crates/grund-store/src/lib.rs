@@ -7,6 +7,7 @@
 
 pub mod accounts;
 pub mod agents;
+pub mod api_tokens;
 pub mod apps;
 pub mod certificates;
 pub mod doctor;

@@ -1,7 +1,9 @@
 //! `grund.app.v1.AppService`: an organisation's apps (grund-docs
 //! design/apps.md §3.2). Members get and list; owners and admins change.
-//! An organisation the caller is not a member of, and an app that is not
-//! the organisation's, are not_found alike.
+//! An organisation the caller is not a member of, an organisation a token
+//! is not for, and an app that is not the organisation's, are not_found
+//! alike. A token acts as the account that made it, with that account's
+//! role (`api::AUTHORIZATION` says which of these procedures it may call).
 
 use buffa::{EnumValue, MessageField, MessageView};
 use buffa_types::google::protobuf::Timestamp;
@@ -26,7 +28,7 @@ use grund_proto::grund::app::v1::{
 use grund_store::{apps::ReleaseRow, organisations::Membership};
 
 use crate::{
-    api::{Caller, caller},
+    api::{Principal, principal},
     services::{
         OrganisationsState,
         apps::{AppView, AppsError, AppsState, DeployInput},
@@ -414,7 +416,7 @@ enum Access {
 impl AppApi {
     async fn member(
         &self,
-        caller: &Caller,
+        caller: &Principal,
         slug: &str,
         needed: Access,
     ) -> Result<Membership, ConnectError> {
@@ -424,6 +426,7 @@ impl AppApi {
             .membership(slug, caller.account_id)
             .await
             .map_err(|e| failed(AppsError::Internal(e)))?
+            .filter(|m| caller.reaches(m.organisation_id))
             .ok_or_else(|| ConnectError::not_found("no such organisation"))?;
         if needed == Access::Manage && !matches!(membership.role.as_str(), "owner" | "admin") {
             return Err(ConnectError::permission_denied(
@@ -446,7 +449,7 @@ impl AppService for AppApi {
         ctx: RequestContext,
         request: ServiceRequest<'_, CreateAppRequest>,
     ) -> ServiceResult<CreateAppResponse> {
-        let caller = caller(&ctx)?;
+        let caller = principal(&ctx)?;
         let request: CreateAppRequest = owned(&*request)?;
         let membership = self
             .member(&caller, &request.organisation, Access::Manage)
@@ -473,7 +476,7 @@ impl AppService for AppApi {
         ctx: RequestContext,
         request: ServiceRequest<'_, GetAppRequest>,
     ) -> ServiceResult<GetAppResponse> {
-        let caller = caller(&ctx)?;
+        let caller = principal(&ctx)?;
         let membership = self
             .member(&caller, request.organisation, Access::Read)
             .await?;
@@ -494,7 +497,7 @@ impl AppService for AppApi {
         ctx: RequestContext,
         request: ServiceRequest<'_, ListAppsRequest>,
     ) -> ServiceResult<ListAppsResponse> {
-        let caller = caller(&ctx)?;
+        let caller = principal(&ctx)?;
         let membership = self
             .member(&caller, request.organisation, Access::Read)
             .await?;
@@ -515,7 +518,7 @@ impl AppService for AppApi {
         ctx: RequestContext,
         request: ServiceRequest<'_, DeployRequest>,
     ) -> ServiceResult<DeployResponse> {
-        let caller = caller(&ctx)?;
+        let caller = principal(&ctx)?;
         let request: DeployRequest = owned(&*request)?;
         let membership = self
             .member(&caller, &request.organisation, Access::Manage)
@@ -554,7 +557,7 @@ impl AppService for AppApi {
         ctx: RequestContext,
         request: ServiceRequest<'_, ListReleasesRequest>,
     ) -> ServiceResult<ListReleasesResponse> {
-        let caller = caller(&ctx)?;
+        let caller = principal(&ctx)?;
         let membership = self
             .member(&caller, request.organisation, Access::Read)
             .await?;
@@ -575,7 +578,7 @@ impl AppService for AppApi {
         ctx: RequestContext,
         request: ServiceRequest<'_, RollbackRequest>,
     ) -> ServiceResult<RollbackResponse> {
-        let caller = caller(&ctx)?;
+        let caller = principal(&ctx)?;
         let membership = self
             .member(&caller, request.organisation, Access::Manage)
             .await?;
@@ -601,7 +604,7 @@ impl AppService for AppApi {
         ctx: RequestContext,
         request: ServiceRequest<'_, ScaleRequest>,
     ) -> ServiceResult<ScaleResponse> {
-        let caller = caller(&ctx)?;
+        let caller = principal(&ctx)?;
         let membership = self
             .member(&caller, request.organisation, Access::Manage)
             .await?;
@@ -627,7 +630,7 @@ impl AppService for AppApi {
         ctx: RequestContext,
         request: ServiceRequest<'_, ConfigureAppRequest>,
     ) -> ServiceResult<ConfigureAppResponse> {
-        let caller = caller(&ctx)?;
+        let caller = principal(&ctx)?;
         let request: ConfigureAppRequest = owned(&*request)?;
         let membership = self
             .member(&caller, &request.organisation, Access::Manage)
@@ -654,7 +657,7 @@ impl AppService for AppApi {
         ctx: RequestContext,
         request: ServiceRequest<'_, SetSecretRequest>,
     ) -> ServiceResult<SetSecretResponse> {
-        let caller = caller(&ctx)?;
+        let caller = principal(&ctx)?;
         let membership = self
             .member(&caller, request.organisation, Access::Manage)
             .await?;
@@ -686,7 +689,7 @@ impl AppService for AppApi {
         ctx: RequestContext,
         request: ServiceRequest<'_, DeleteAppRequest>,
     ) -> ServiceResult<DeleteAppResponse> {
-        let caller = caller(&ctx)?;
+        let caller = principal(&ctx)?;
         let membership = self
             .member(&caller, request.organisation, Access::Manage)
             .await?;
