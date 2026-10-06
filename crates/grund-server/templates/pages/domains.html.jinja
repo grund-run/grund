@@ -1,10 +1,8 @@
 {% extends "layout-app.html.jinja" %}
-{% set org = viewer.current %}
-{% block title %}Domains · {{ org.slug }} · grund{% endblock %}
+{% set title = "Domains" %}
 {% block content %}
 {{ ui.page_head("Domains", "Where " ~ org.slug ~ "'s apps answer on the internet.") }}
-{{ forms.form_ok(notice) }}
-{{ forms.form_error(error) }}
+{{ forms.banner(error, ok=notice) }}
 {% call ui.section("addresses", "App addresses", count=addresses | length, first=true) %}
   {% if addresses %}
   {% call lists.rows() %}
@@ -29,10 +27,10 @@
   {% if domain.tone == "danger" %}{{ ui.callout("Not working yet", domain.sentence, icon_name="alert", tone="danger", danger=true) }}
   {% else %}{{ ui.status_line(domain.sentence, domain.tone, id=domain.id ~ "-status") }}{% endif %}
   {% if domain.state == "pending" %}
-  {{ ui.aside("Make this record at your DNS provider, then check it. It proves the domain is yours; only this organisation's value works.") }}
+  {{ ui.para("Make this record at your DNS provider, then check it. It proves the domain is yours; only this organisation's value works.", "aside") }}
   {{ ui.dns_records(domain.records, "Records for " ~ domain.name) }}
   {% elif domain.records %}
-  {{ ui.aside(domain.records_aside) }}
+  {{ ui.para(domain.records_aside, "aside") }}
   {{ ui.dns_records(domain.records, "Records for " ~ domain.name) }}
   {% endif %}
   {% if org.manages %}
@@ -44,7 +42,7 @@
     {{ ui.button("Bind" if domain.state == "verified" else "Move", kind="secondary") }}
   {% endcall %}
   {% else %}
-  {{ ui.hint("No app publishes an HTTP port yet. Deploy one with a public port, then bind this domain to it.") }}
+  {{ ui.para("No app publishes an HTTP port yet. Deploy one with a public port, then bind this domain to it.") }}
   {% endif %}
   {% endif %}
   {% call forms.actions() %}
@@ -59,11 +57,11 @@
 {% if org.manages %}
 {% call ui.section("add", "Add a domain") %}
   {% call forms.form("/" ~ org.slug ~ "/domains", csrf, layout="narrow", autocomplete="off") %}
-    {{ forms.form_error(form_error) }}
+    {{ forms.banner(form_error) }}
     {{ forms.field("name", "Domain", value=name, autocomplete="off", error=name_error, hint="A name you own, such as shop.example.com. Not a wildcard.") }}
     {{ ui.button("Add domain", icon_name="globe") }}
   {% endcall %}
-  {{ ui.hint("An organisation holds at most " ~ max ~ " domains. A domain that is removed after it was verified waits " ~ cooldown ~ " before another organisation can add it.") }}
+  {{ ui.para("An organisation holds at most " ~ max ~ " domains. A domain that is removed after it was verified waits " ~ cooldown ~ " before another organisation can add it.") }}
 {% endcall %}
 {% endif %}
 {% endblock %}

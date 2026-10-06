@@ -9,7 +9,7 @@
 {% call ui.page_head("Style guide", "Every component of grund's pages, its variants and states, and the call that makes it. Names and figures are examples.") %}
 {{ ui.button("Primary action", href="#sg-buttons", icon_name="plus") }}
 {% endcall %}
-{% call ui.hint() %}The macros live in <code>templates/components/</code>: <code>ui</code> (basics and page parts), <code>forms</code>, <code>lists</code>, <code>shell</code> and <code>images</code>, each parameter documented above its macro. A page under <code>pages/</code> calls them and writes no class of its own; the build fails otherwise.{% endcall %}
+{% call ui.para() %}The macros live in <code>templates/components/</code>: <code>ui</code> (basics and page parts), <code>forms</code>, <code>lists</code>, <code>shell</code> and <code>images</code>, each parameter documented above its macro. A page under <code>pages/</code> calls them and writes no class of its own; the build fails otherwise.{% endcall %}
 {{ cat.contents([("sg-tokens", "Tokens"), ("sg-icons", "Icons"), ("sg-buttons", "Buttons and links"), ("sg-heads", "Page and section heads"), ("sg-status", "Status and tags"), ("sg-messages", "Callouts and messages"), ("sg-empty", "Empty states and notes"), ("sg-code", "Code"), ("sg-forms", "Forms"), ("sg-choices", "Panels, facts, choices and steppers"), ("sg-rows", "Rows and timelines"), ("sg-items", "Apps, menus and list tools"), ("sg-shell", "Shell")]) }}
 
 {% call ui.section("sg-tokens", "Tokens") %}
@@ -66,14 +66,12 @@
     {% endcall %}
     {% call cat.column() %}{{ ui.button("Sign in", block=true, type="button") }}{% endcall %}
   {% endcall %}
-  {% call cat.specimen("States", '{{ ui.button("Deploy", disabled=true) }}', "Hover and focus are the browser's; the style guide pins them with is-hover and is-focus. Focus is the accent ring on everything a keyboard reaches.") %}
+  {% call cat.specimen("States", '{{ ui.button("Deploy", extra="is-focus") }}', "Hover and focus are the browser's; the style guide pins them with is-hover and is-focus. Focus is the accent ring on everything a keyboard reaches.") %}
     {% call cat.demos() %}
       {% call cat.labelled("rest") %}{{ ui.button("Deploy", type="button") }}{% endcall %}
       {% call cat.labelled("hover") %}{{ ui.button("Deploy", type="button", extra="is-hover") }}{% endcall %}
       {% call cat.labelled("focus") %}{{ ui.button("Deploy", type="button", extra="is-focus") }}{% endcall %}
-      {% call cat.labelled("disabled") %}{{ ui.button("Deploy", type="button", disabled=true) }}{% endcall %}
       {% call cat.labelled("secondary hover") %}{{ ui.button("Change", kind="secondary", type="button", extra="is-hover") }}{% endcall %}
-      {% call cat.labelled("secondary disabled") %}{{ ui.button("Change", kind="secondary", type="button", disabled=true) }}{% endcall %}
     {% endcall %}
   {% endcall %}
   {% call cat.specimen("Post button", '{{ forms.post_button(url, csrf, "Remove", kind="danger", size="sm") }}', "A form that is only a button, with the CSRF field: remove, stop, sign out, run again.") %}
@@ -84,8 +82,7 @@
 {{ ui.icon_link(url, "external", "Open it in a new tab", external=true) }}
 {{ ui.copy_button(text, label) }}', "Onward links are accent text and an arrow. An external link says it opens a new tab. Icon-only links and buttons always have an accessible name. The copy button shows only when the script runs.") %}
     {% call cat.demos() %}
-      {% call cat.labelled("rest") %}{{ ui.link_more("#sg-buttons", "View all") }}{% endcall %}
-      {% call cat.labelled("hover") %}{{ ui.link_more("#sg-buttons", "View all", extra="is-hover") }}{% endcall %}
+      {{ ui.link_more("#sg-buttons", "View all") }}
       {{ ui.external("https://storefront-nord-studio.example.run", "https://storefront-nord-studio.example.run") }}
       {{ ui.icon_link("https://storefront-nord-studio.example.run", "external", "Open storefront in a new tab", external=true) }}
       {{ ui.copy_button("db.grund.internal:5432", "db.grund.internal:5432") }}
@@ -100,10 +97,8 @@
     {% call ui.page_head("Apps", "Run and manage your applications. Simple, powerful, yours.") %}{{ ui.button("Deploy app", href="#sg-heads", icon_name="plus") }}{% endcall %}
   {% endcall %}
   {% call cat.specimen("Variants", '{{ ui.page_head("Machines", status="The machines nord-studio runs things on.") }}
-{{ ui.page_head("Templates", "Ready-made apps.", tag="Coming soon") }}
-{{ ui.page_head(app.name, back=(url, "Back to apps")) }}', "status is the larger, quieter line; tag marks something unbuilt; back puts a link above the title on detail pages.") %}
+{{ ui.page_head(app.name, back=(url, "Back to apps")) }}', "status is the larger, quieter line; back puts a link above the title on detail pages.") %}
     {{ ui.page_head("Machines", status="The machines nord-studio runs things on: your own, and any grund machines you rent.") }}
-    {{ ui.page_head("Templates", "Ready-made apps you can deploy in one step.", tag="Coming soon") }}
     {{ ui.page_head("storefront", back=("#sg-heads", "Back to apps")) }}
   {% endcall %}
   {% call cat.specimen("A thing's head", '{% call ui.page_head(app.name, lede=app.image, back=(url, "Back to apps"), image=app.icon, state=(app.word, app.tone)) %}
@@ -115,9 +110,8 @@
   {% endcall %}
   {% call cat.specimen("Section", '{% call ui.section("versions", "Versions", count=3, more=(url, "View all")) %}
   …
-{% endcall %}', "A titled part of a page. count is muted after the title; tag marks it unbuilt; more is one onward link; first drops the gap under the page head.") %}
+{% endcall %}', "A titled part of a page. count is muted after the title; more is one onward link; first drops the gap under the page head.") %}
     {% call ui.section("sg-demo-section", "Versions", count=3, more=("#sg-heads", "View all"), first=true) %}<p>The section's content.</p>{% endcall %}
-    {% call ui.section("sg-demo-soon", "Your own domains", tag="Coming soon") %}<p>Another section.</p>{% endcall %}
   {% endcall %}
   {% call cat.specimen("Tabs", '{{ ui.tabs("Organisation", [("general", url, "General"), ("members", url, "Members")], "members") }}', "Split one sidebar section into pages, so the sidebar keeps one item per area.") %}
     {{ ui.tabs("Example", [("general", "#sg-heads", "General"), ("members", "#sg-heads", "Members"), ("billing", "#sg-heads", "Billing")], "members") }}
@@ -134,28 +128,23 @@
   {% call cat.specimen("Pills", '{{ ui.pill("Live", "ok") }}  {{ ui.pill("Public HTTP", icon_name="globe") }}', "Larger than a tag: a thing's state beside its name, as a dot of its tone (ok live, blue rolling out, orange degraded, danger failed, muted stopped), or what it is, with an icon.") %}
     {% call cat.demos() %}{{ ui.pill("Live", "ok") }}{{ ui.pill("Rolling out", "blue") }}{{ ui.pill("Degraded", "orange") }}{{ ui.pill("Failed", "danger") }}{{ ui.pill("Stopped", "muted") }}{{ ui.pill("Public HTTP", icon_name="globe") }}{{ ui.pill("Private", icon_name="lock") }}{% endcall %}
   {% endcall %}
-  {% call cat.specimen("Tags", '{{ ui.tag("Coming soon") }}  {{ ui.tag("Current", "ok") }}', "Tiny, rounded and muted: Soon, You, Runs VMs.") %}
-    {% call cat.demos() %}{{ ui.tag("Coming soon") }}{{ ui.tag("You") }}{{ ui.tag("Current", "ok") }}{% endcall %}
+  {% call cat.specimen("Tags", '{{ ui.tag("You") }}', "Tiny, rounded and muted: You, Runs VMs, Needs storage.") %}
+    {% call cat.demos() %}{{ ui.tag("Needs storage") }}{{ ui.tag("You") }}{% endcall %}
   {% endcall %}
 {% endcall %}
 
 {% call ui.section("sg-messages", "Callouts and messages") %}
-  {% call cat.specimen("Callout", '{{ ui.callout(title, text, spinner=true, more=(url, "View rollout")) }}
-{{ ui.callout(title, text, icon_name="clock", tone="orange") }}', "Something happening now or needing attention: an icon or spinner, a title naming the thing, one sentence, one onward link. danger for failures.") %}
-    {{ ui.callout("Storefront is updating", "Checking the new release. The current version is serving traffic.", spinner=true, more=("#sg-messages", "View rollout")) }}
+  {% call cat.specimen("Callout", '{{ ui.callout(title, text, icon_name="clock", tone="orange") }}', "Something happening now or needing attention: a toned icon, a title naming the thing and one sentence. danger for failures.") %}
     {{ ui.callout("Deleting nord-studio", "Waiting for billing to agree. This page refreshes itself.", icon_name="clock", tone="orange") }}
     {{ ui.callout("The release failed", "v4 could not start: its ready check never answered.", icon_name="alert", tone="orange", danger=true) }}
   {% endcall %}
   {% call cat.specimen("Offer", '{{ ui.callout(title, text, icon_name="grid", boxed=true, action=(url, "Browse templates")) }}', "An onward step that is not a state: the icon in a tile, one secondary button with its arrow after the label (button(…, icon_end=true)).") %}
     {{ ui.callout("Looking for a faster start?", "Switch to premade templates for apps like NATS, whoami and nginx.", icon_name="grid", boxed=true, action=("#sg-messages", "Browse templates")) }}
   {% endcall %}
-  {% call cat.specimen("Banners", '{{ forms.form_ok(notice) }}
-{{ forms.form_error(error) }}', "One banner for a whole form or page, above it: what happened and what to do next. Nothing renders when the message is empty.") %}
-    {% call cat.column() %}{{ forms.form_ok("Your email is confirmed. Sign in to continue.") }}{{ forms.form_error("That email, username or password is not right.") }}{% endcall %}
+  {% call cat.specimen("Banners", '{{ forms.banner(error, ok=notice) }}', "One banner for a whole form or page, above it: what happened and what to do next. Nothing renders when the message is empty.") %}
+    {% call cat.column() %}{{ forms.banner(ok="Your email is confirmed. Sign in to continue.") }}{{ forms.banner("That email, username or password is not right.") }}{% endcall %}
   {% endcall %}
-  {% call cat.specimen("Notice and stats", '{{ ui.notice(text, more=(url, "Review update")) }}
-{{ ui.stats([("server", "3 machines online"), ("globe", "4 domains")]) }}', "A one-line fact with an onward link; small print at the foot of a page.") %}
-    {{ ui.notice("An update is available for Plausible.", more=("#sg-messages", "Review update")) }}
+  {% call cat.specimen("Stats", '{{ ui.stats([("server", "3 machines online"), ("globe", "4 domains")]) }}', "Small print at the foot of a page.") %}
     {{ ui.stats([("server", "3 machines online"), ("globe", "4 domains connected")]) }}
   {% endcall %}
 {% endcall %}
@@ -169,12 +158,12 @@
   {% call cat.specimen("Add card", '{{ ui.add_card(url, "Deploy a new app", text) }}', "The dashed card under a list that makes one more.") %}
     {{ ui.add_card("#sg-empty", "Deploy a new app", "Deploy any container image by its name, such as nginx:1.27.") }}
   {% endcall %}
-  {% call cat.specimen("Note, hint, aside", '{{ ui.note("2 of 7 apps match “re”.") }}
-{{ ui.hint("All copies run on homelab-1.") }}
-{% call ui.aside() %}With grund installed, run <code>…</code>.{% endcall %}', "note: a quiet line about the list under it. hint: small print, a caveat or a reference. aside: the other way to do it.") %}
-    {{ ui.note("2 of 7 apps match “re”.") }}
-    {{ ui.hint("All copies run on homelab-1. If it goes down, so does storefront. Add a machine to spread them.") }}
-    {% call ui.aside() %}With grund already installed, register it with <code>grund machines register</code> and keep <code>grund agent</code> running.{% endcall %}
+  {% call cat.specimen("Paragraphs", '{{ ui.para("2 of 7 apps match “re”.", "note") }}
+{{ ui.para("All copies run on homelab-1.") }}
+{% call ui.para(kind="aside") %}With grund installed, run <code>…</code>.{% endcall %}', "para(text, kind): hint (the default) is small print, a caveat or a reference; note a quiet line about the list under it; aside the other way to do it; auth-lede the line under a signed-out title.") %}
+    {{ ui.para("2 of 7 apps match “re”.", "note") }}
+    {{ ui.para("All copies run on homelab-1. If it goes down, so does storefront. Add a machine to spread them.") }}
+    {% call ui.para(kind="aside") %}With grund already installed, register it with <code>grund machines register</code> and keep <code>grund agent</code> running.{% endcall %}
   {% endcall %}
 {% endcall %}
 
@@ -195,7 +184,7 @@
 
 {% call ui.section("sg-forms", "Forms") %}
   {% call cat.specimen("Stacked form", '{% call forms.form("/login", csrf) %}
-  {{ forms.form_error(error) }}
+  {{ forms.banner(error) }}
   {{ forms.field("login", "Email or username", autocomplete="username") }}
   {{ ui.button("Sign in", block=true) }}
 {% endcall %}', "layout stack (signed-out pages, at the card width) or narrow (signed-in, at most 32 rem). The label sits above; the hint under it until an error replaces it.") %}
@@ -322,7 +311,7 @@
       {{ lists.row("storefront", "https://storefront-nord-studio.example.run", icon_name="globe", href="#sg-rows") }}
     {% endcall %}
     {% call lists.rows() %}
-      {% call(slot) lists.row("Plan", "Free", plain=true) %}{% if slot == "end" %}{{ ui.hint("Nothing is charged.") }}{% endif %}{% endcall %}
+      {% call(slot) lists.row("Plan", "Free", plain=true) %}{% if slot == "end" %}{{ ui.para("Nothing is charged.") }}{% endif %}{% endcall %}
       {% call(slot) lists.row("Managed by", "ada", plain=true) %}{% if slot == "end" %}{{ ui.link_more("#sg-rows", "Manage billing") }}{% endif %}{% endcall %}
     {% endcall %}
   {% endcall %}

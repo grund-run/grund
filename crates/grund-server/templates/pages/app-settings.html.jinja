@@ -3,7 +3,7 @@
 {% if org.manages %}
 {% call ui.panel("scale", "Copies and rollback", "How many copies run, and what grund does when a release fails. Saved at once; no new release.") %}
   {% call forms.form(app.base ~ "/settings/copies", csrf, layout="") %}
-    {{ forms.form_error(banners.copies) }}
+    {{ forms.banner(banners.copies) }}
     {% call forms.grid() %}
       {{ forms.stepper_field("copies", "Copies", settings.copies, max=20, error=errors.copies, hint="Number of app instances.") }}
       {{ forms.choice_field("auto_rollback", "When a release fails", rollback_choices, settings.auto_rollback) }}
@@ -14,7 +14,7 @@
 
 {% call ui.panel("release", "Exposure, port and checks", "Saving makes a new release of the image v" ~ settings.number ~ " runs (" ~ settings.digest ~ "), so nothing else changes.") %}
   {% call forms.form(app.base ~ "/settings/release", csrf, layout="", autocomplete="off") %}
-    {{ forms.form_error(banners.release) }}
+    {{ forms.banner(banners.release) }}
     {% call forms.grid() %}
       {{ forms.choice_field("exposure", "Exposure", exposures, form.exposure, error=errors.exposure, hint=public_hint) }}
       {% call forms.grid() %}
@@ -43,12 +43,12 @@
   {% endif %}
   {% if org.manages %}
   {% call forms.form(app.base ~ "/secrets", csrf, layout="row", autocomplete="off") %}
-    {{ forms.form_error(banners.secrets) }}
+    {{ forms.banner(banners.secrets) }}
     {{ forms.field("variable", "Variable", value=form.variable, error=errors.variable, autocomplete="off", hint="Such as API_KEY. An existing one gets a new value.") }}
     {{ forms.field("value", "Value", type="password", autocomplete="new-password", error=errors.value, hint="Never shown again, and never in a release or a log.") }}
     {{ ui.button("Store and release", kind="secondary") }}
   {% endcall %}
-  {{ ui.hint("Storing or removing one makes a new release of the same image, so the copies get it.") }}
+  {{ ui.para("Storing or removing one makes a new release of the same image, so the copies get it.") }}
   {% endif %}
 {% endcall %}
 
@@ -61,7 +61,7 @@
 {% if org.manages %}
 {% call ui.panel("danger", "Delete " ~ app.name, "Its copies stop and its name is free again. Its releases stay in the history. This cannot be undone.", danger=true) %}
   {% call forms.form(app.base ~ "/delete", csrf, layout="row", autocomplete="off") %}
-    {{ forms.form_error(banners.delete) }}
+    {{ forms.banner(banners.delete) }}
     {{ forms.field("confirm", "Type " ~ app.name ~ " to confirm", error=errors.confirm, autocomplete="off") }}
     {{ ui.button("Delete " ~ app.name, kind="danger") }}
   {% endcall %}

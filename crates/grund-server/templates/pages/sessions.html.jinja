@@ -4,7 +4,7 @@
 {% call ui.page_head("Sessions", status="Where your account is signed in. Signing a device out takes effect at once.") %}
 {% if sessions | length > 1 %}{{ forms.post_button("/settings/sessions/revoke-others", csrf, "Sign out everywhere else") }}{% endif %}
 {% endcall %}
-{{ forms.form_ok(notice) }}
+{{ forms.banner(ok=notice) }}
 {% call lists.rows() %}
   {% for session in sessions %}
   {% call(slot) lists.row(session.device, (session.address ~ " · " if session.address else "") ~ "signed in " ~ session.created ~ ", last seen " ~ session.last_seen, icon_name="monitor", tone="violet") %}

@@ -1,8 +1,13 @@
+{#- The signed-in layout: the sidebar, the top bar and the page. A page
+    extends it, sets title (the window's title before the organisation's
+    name) and fills block content; org is the organisation it is about. -#}
 {% extends "base.html.jinja" %}
 {% import "components/ui.html.jinja" as ui %}
 {% import "components/forms.html.jinja" as forms %}
 {% import "components/lists.html.jinja" as lists %}
 {% import "components/shell.html.jinja" as shell %}
+{% set org = viewer.current %}
+{% block title %}{% if title is defined %}{{ title }} · {% endif %}{% if org %}{{ org.slug }} · {% endif %}grund{% endblock %}
 {% block scripts %}<script src="{{ js_href }}" defer></script>{% endblock %}
 {% block body %}
 <div class="shell">

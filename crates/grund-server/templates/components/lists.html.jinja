@@ -8,6 +8,7 @@
     Menus (the kebab) and the sort and view tools live here too.
     ------------------------------------------------------------------ -#}
 {% import "components/ui.html.jinja" as ui %}
+{% import "components/forms.html.jinja" as forms %}
 
 {#- rows(): the open list; the {% call %} body is row()s. -#}
 {% macro rows() -%}
@@ -163,7 +164,7 @@
     <label for="sort">Sort by</label>
     <span class="select-wrap">
       <select class="select" id="sort" name="sort" data-autosubmit>
-        {% for option in sorts %}<option value="{{ option.0 }}"{% if option.0 == sort %} selected{% endif %}>{{ option.1 }}</option>{% endfor %}
+        {{ forms.options_of(sorts, sort) }}
       </select>
       {{ ui.icon("down", "icon-sm select-chevron") }}
     </span>

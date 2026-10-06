@@ -9,6 +9,15 @@
 //!           └► pages (server-rendered minijinja)
 //! ```
 
+macro_rules! member_or_return {
+    ($state:expr, $browser:expr, $uri:expr, $slug:expr) => {
+        match $crate::web::orgs::member_of($state, $browser, $uri, $slug).await {
+            Ok(found) => found,
+            Err(response) => return Ok(*response),
+        }
+    };
+}
+
 pub mod apps;
 pub mod assets;
 pub mod browser;

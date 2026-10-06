@@ -23,39 +23,19 @@ use crate::{
     state::State,
     web::{
         browser::Browser,
-        orgs::member_of,
-        pages::{PageError, forged, redirect, render, viewer_context},
+        orgs::Member,
+        pages::{Notice, PageError, forged, redirect, signed_in},
     },
 };
 
 type PageResult = Result<Response, PageError>;
 
-macro_rules! member_or_return {
-    ($state:expr, $browser:expr, $uri:expr, $slug:expr) => {
-        match member_of($state, $browser, $uri, $slug).await {
-            Ok(found) => found,
-            Err(response) => return Ok(*response),
-        }
-    };
-}
-
-#[derive(Default, Deserialize)]
-pub struct NoticeQuery {
-    #[serde(default)]
-    done: String,
-    #[serde(default)]
-    error: String,
-}
-
 /// `GET /{org}/settings/tokens`.
 pub async fn tokens_page(
     AxumState(state): AxumState<State>,
-    browser: Browser,
-    uri: Uri,
-    Path(slug): Path<String>,
-    axum::extract::Query(query): axum::extract::Query<NoticeQuery>,
+    member: Member,
+    axum::extract::Query(query): axum::extract::Query<Notice>,
 ) -> PageResult {
-    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
     let notice = match query.done.as_str() {
         "revoked" => "Token revoked. Calls with it are refused from now on.",
         _ => "",
@@ -66,9 +46,9 @@ pub async fn tokens_page(
     };
     tokens_view(
         &state,
-        &browser,
-        &session,
-        &membership,
+        &member.browser,
+        &member.session,
+        &member.membership,
         StatusCode::OK,
         TokensForm {
             notice,
@@ -142,22 +122,24 @@ async fn tokens_view(
             example,
         }
     });
-    let viewer = viewer_context(state, session, Some(membership)).await?;
-    render(
+    signed_in(
         state,
         browser,
+        session,
+        Some(membership),
         status,
         "pages/tokens.html.jinja",
+        "org-settings",
         context! {
-            viewer, tokens, lifetimes, minted,
+            tokens, lifetimes, minted,
             days => days.to_string(),
             name => form.name,
             max_live => MAX_LIVE_PER_ORGANISATION,
             notice => form.notice, error => form.error,
             create_error => form.create_error,
-            csrf => browser.csrf_token(), section => "org-settings",
         },
     )
+    .await
 }
 
 #[derive(Deserialize)]

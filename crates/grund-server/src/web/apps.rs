@@ -42,21 +42,12 @@ use crate::{
     state::State,
     web::{
         browser::Browser,
-        orgs::member_of,
-        pages::{PageError, forged, redirect, render, viewer_context},
+        orgs::Member,
+        pages::{PageError, forged, redirect, signed_in},
     },
 };
 
 type PageResult = Result<Response, PageError>;
-
-macro_rules! member_or_return {
-    ($state:expr, $browser:expr, $uri:expr, $slug:expr) => {
-        match member_of($state, $browser, $uri, $slug).await {
-            Ok(found) => found,
-            Err(response) => return Ok(*response),
-        }
-    };
-}
 
 fn manages(membership: &Membership) -> bool {
     Role::parse(&membership.role).is_some_and(|role| role.manages_members())
@@ -487,12 +478,13 @@ fn error_words(error: &str) -> &'static str {
 /// (`list` or `grid`).
 pub async fn apps_page(
     AxumState(state): AxumState<State>,
-    browser: Browser,
-    uri: Uri,
-    Path(slug): Path<String>,
+    Member {
+        browser,
+        session,
+        membership,
+    }: Member,
     Query(query): Query<ListQuery>,
 ) -> PageResult {
-    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
     let listings = state
         .apps()
         .listings(membership.organisation_id, &membership.slug)
@@ -524,23 +516,24 @@ pub async fn apps_page(
             serde_urlencoded::to_string(pairs).unwrap_or_default()
         )
     };
-    let viewer = viewer_context(&state, &session, Some(&membership)).await?;
-    render(
+    signed_in(
         &state,
         &browser,
+        &session,
+        Some(&membership),
         StatusCode::OK,
         "pages/apps.html.jinja",
+        "apps",
         context! {
-            viewer,
             list_href => href(&q, "list"), grid_href => href(&q, "grid"), all_href => href("", view),
             icons => icons_of(&shown),
             apps => shown.iter().map(|l| listing_context(l)).collect::<Vec<_>>(),
             total => listings.len(),
             list => context! { q, sort, view }, sorts => SORTS,
             notice => notice_words(&query.done), error => error_words(&query.error),
-            csrf => browser.csrf_token(), section => "apps",
         },
     )
+    .await
 }
 
 /// Which mode `/{org}/deploy` shows, and the template it starts on.
@@ -556,12 +549,13 @@ pub struct DeployQuery {
 /// mode is a query parameter, so the switch works without the script.
 pub async fn deploy_page(
     AxumState(state): AxumState<State>,
-    browser: Browser,
-    uri: Uri,
-    Path(slug): Path<String>,
+    Member {
+        browser,
+        session,
+        membership,
+    }: Member,
     Query(query): Query<DeployQuery>,
 ) -> PageResult {
-    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
     let template = templates::find(&query.template).filter(|t| !t.needs_storage);
     let premade = query.mode == "premade" || template.is_some();
     let form = NewForm {
@@ -725,7 +719,6 @@ async fn new_view(
     change: Option<Changing>,
 ) -> PageResult {
     let slug = &membership.slug;
-    let viewer = viewer_context(state, session, Some(membership)).await?;
     let choices: Vec<Value> = templates::CATALOGUE
         .iter()
         .map(|t| {
@@ -746,17 +739,19 @@ async fn new_view(
         .iter()
         .map(|field| (*field, refused.fields.get(field).map_or("", String::as_str)))
         .collect();
-    render(
+    signed_in(
         state,
         browser,
+        session,
+        Some(membership),
         if refused.banner.is_empty() {
             StatusCode::OK
         } else {
             StatusCode::UNPROCESSABLE_ENTITY
         },
         "pages/deploy.html.jinja",
+        "deploy",
         context! {
-            viewer,
             mode => if premade { "premade" } else { "custom" },
             modes => vec![
                 context! {
@@ -781,31 +776,34 @@ async fn new_view(
             other_mode => mode_href(if premade { "custom" } else { "premade" }),
             templates_href => format!("/{slug}/templates"),
             action => change.as_ref().map_or(format!("/{slug}/deploy"), |c| format!("/{slug}/apps/{}/deploy", c.name)),
-            csrf => browser.csrf_token(), section => "deploy",
         },
     )
+    .await
 }
 
 /// `/{org}/templates`: the premade apps, the same list Deploy app offers.
 pub async fn templates_page(
     AxumState(state): AxumState<State>,
-    browser: Browser,
-    uri: Uri,
-    Path(slug): Path<String>,
+    Member {
+        browser,
+        session,
+        membership,
+    }: Member,
 ) -> PageResult {
-    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
-    let viewer = viewer_context(&state, &session, Some(&membership)).await?;
     let shown: Vec<Value> = templates::CATALOGUE.iter().map(template_context).collect();
-    render(
+    signed_in(
         &state,
         &browser,
+        &session,
+        Some(&membership),
         StatusCode::OK,
         "pages/templates.html.jinja",
+        "templates",
         context! {
-            viewer, templates => shown, image_keys => template_icons(),
-            csrf => browser.csrf_token(), section => "templates",
+            templates => shown, image_keys => template_icons(),
         },
     )
+    .await
 }
 
 /// The Deploy app form, in either mode. `secrets` is never written back
@@ -1195,12 +1193,14 @@ macro_rules! app_page {
         #[doc = $doc]
         pub async fn $name(
             AxumState(state): AxumState<State>,
-            browser: Browser,
-            uri: Uri,
-            Path((slug, name)): Path<(String, String)>,
+            Member {
+                browser,
+                session,
+                membership,
+            }: Member,
+            Path((_, name)): Path<(String, String)>,
             Query(query): Query<AppQuery>,
         ) -> PageResult {
-            let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
             let error = match error_words(&query.error) {
                 "" => query.deploy_error.chars().take(300).collect(),
                 words => words.to_string(),
@@ -1419,18 +1419,19 @@ async fn app_view(
             }
         })
         .collect();
-    let viewer = viewer_context(state, session, Some(membership)).await?;
-    render(
+    signed_in(
         state,
         browser,
+        session,
+        Some(membership),
         if refused.part.is_empty() {
             StatusCode::OK
         } else {
             StatusCode::UNPROCESSABLE_ENTITY
         },
         template,
+        "apps",
         context! {
-            viewer,
             tab,
             tabs => APP_TABS.iter().map(|(key, path, label, icon)| (*key, format!("{base}{path}"), *label, *icon)).collect::<Vec<_>>(),
             app => context! {
@@ -1471,9 +1472,9 @@ async fn app_view(
             file => newest.map(|r| render_toml(&view.row.name, &r.spec.0, &view.row.settings.0)),
             notice, error,
             topbar_action => (format!("/{slug}/apps/{}/deploy", view.row.name), "Deploy change"),
-            csrf => browser.csrf_token(), section => "apps",
         },
     )
+    .await
 }
 
 async fn newest_spec(
@@ -1511,11 +1512,13 @@ macro_rules! newest_or_return {
 /// app runs now, to make its next release.
 pub async fn change_page(
     AxumState(state): AxumState<State>,
-    browser: Browser,
-    uri: Uri,
+    Member {
+        browser,
+        session,
+        membership,
+    }: Member,
     Path((slug, name)): Path<(String, String)>,
 ) -> PageResult {
-    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
     if !manages(&membership) {
         return Ok(redirect(&format!("/{slug}/apps/{name}?error=not-allowed")));
     }

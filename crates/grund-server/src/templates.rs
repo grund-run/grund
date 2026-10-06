@@ -48,6 +48,7 @@ pub const TEMPLATES: &[(&str, &str)] = embedded![
     "pages/deploy.html.jinja",
     "pages/domains.html.jinja",
     "pages/templates.html.jinja",
+    "pages/organisation.html.jinja",
     "pages/org-settings.html.jinja",
     "pages/tokens.html.jinja",
     "pages/registries.html.jinja",
@@ -163,21 +164,24 @@ mod tests {
     }
 
     #[test]
-    fn every_template_parses_and_every_component_is_registered() {
+    fn every_template_parses_and_every_file_is_embedded() {
         Templates::new(&[]).expect("templates parse");
         let registered: Vec<&str> = TEMPLATES.iter().map(|(name, _)| *name).collect();
-        let on_disk =
-            std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/templates/components"))
-                .expect("components directory")
-                .map(|entry| {
-                    format!(
-                        "components/{}",
-                        entry.expect("entry").file_name().to_string_lossy()
-                    )
-                })
-                .filter(|name| !registered.contains(&name.as_str()))
-                .collect::<Vec<_>>();
-        assert!(on_disk.is_empty(), "not embedded: {on_disk:?}");
+        let on_disk = ["components", "pages", "mail"]
+            .iter()
+            .flat_map(|dir| {
+                std::fs::read_dir(format!("{}/templates/{dir}", env!("CARGO_MANIFEST_DIR")))
+                    .expect("templates directory")
+                    .map(move |entry| {
+                        format!(
+                            "{dir}/{}",
+                            entry.expect("entry").file_name().to_string_lossy()
+                        )
+                    })
+            })
+            .filter(|name| !registered.contains(&name.as_str()))
+            .collect::<Vec<_>>();
+        assert!(on_disk.is_empty(), "add to TEMPLATES: {on_disk:?}");
     }
 
     #[test]

@@ -1,5 +1,5 @@
 {% extends "layout-auth.html.jinja" %}
-{% block title %}Create the owner · grund{% endblock %}
+{% set title = "Create the owner" %}
 {% block card %}
 {{ ui.auth_head("Create the owner", "This grund has no account yet. The one you create here owns it: its organisation, everything deployed to it, and who else may join. Everyone after you joins by invitation.") }}
 {% call forms.form("/signup/owner", csrf) %}

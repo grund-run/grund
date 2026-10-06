@@ -7,9 +7,9 @@
 
 use axum::{
     Form,
-    extract::{Path, Query, State as AxumState},
-    http::{StatusCode, Uri},
-    response::Response,
+    extract::{FromRequestParts, Path, Query, RawPathParams, State as AxumState},
+    http::{StatusCode, Uri, request::Parts},
+    response::{IntoResponse, Response},
 };
 use grund_domain::organisation::Role;
 use grund_store::organisations::Membership;
@@ -33,8 +33,8 @@ use crate::{
         apps,
         browser::Browser,
         pages::{
-            PageError, forged, message, not_found_page, redirect, render, require_session,
-            start_session, viewer_context,
+            Notice, PageError, forged, message, not_found_page, redirect, render, require_session,
+            signed_in, start_session,
         },
     },
 };
@@ -73,6 +73,66 @@ pub(super) async fn member_of(
     }
 }
 
+/// A page handler's signed-in member of the organisation its `{org}` path
+/// segment names, with the browser asking. Extracting it answers instead
+/// of the handler when there is no session (sign-in, coming back here), the
+/// organisation was renamed (a permanent redirect) or the viewer is not a
+/// member (the 404 page). For pages that only read; a handler that takes a
+/// form checks its CSRF token first and then calls `member_or_return!`.
+pub struct Member {
+    pub browser: Browser,
+    pub session: Session,
+    pub membership: Membership,
+}
+
+impl FromRequestParts<State> for Member {
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, state: &State) -> Result<Self, Response> {
+        let Ok(browser) = Browser::from_request_parts(parts, state).await;
+        let slug = RawPathParams::from_request_parts(parts, state)
+            .await
+            .map_err(IntoResponse::into_response)?
+            .iter()
+            .find(|(name, _)| *name == "org")
+            .map(|(_, value)| value.to_string())
+            .unwrap_or_default();
+        let (session, membership) = member_of(state, &browser, &parts.uri, &slug)
+            .await
+            .map_err(|response| *response)?;
+        Ok(Self {
+            browser,
+            session,
+            membership,
+        })
+    }
+}
+
+impl Member {
+    /// Renders `template` in the signed-in layout for this organisation, as
+    /// [`signed_in`] does.
+    pub async fn render(
+        &self,
+        state: &State,
+        status: StatusCode,
+        template: &str,
+        section: &str,
+        page: Value,
+    ) -> PageResult {
+        signed_in(
+            state,
+            &self.browser,
+            &self.session,
+            Some(&self.membership),
+            status,
+            template,
+            section,
+            page,
+        )
+        .await
+    }
+}
+
 fn permanent_redirect(to: &str) -> Response {
     let mut response = axum::response::IntoResponse::into_response(StatusCode::PERMANENT_REDIRECT);
     if let Ok(location) = axum::http::HeaderValue::from_str(to) {
@@ -91,15 +151,6 @@ fn error_response(error: PageError) -> Response {
     axum::response::IntoResponse::into_response(error)
 }
 
-macro_rules! member_or_return {
-    ($state:expr, $browser:expr, $uri:expr, $slug:expr) => {
-        match member_of($state, $browser, $uri, $slug).await {
-            Ok(found) => found,
-            Err(response) => return Ok(*response),
-        }
-    };
-}
-
 /// `/`: the organisation used last, or the first; a page saying there is
 /// none when the account belongs to no organisation.
 pub async fn landing(AxumState(state): AxumState<State>, browser: Browser, uri: Uri) -> PageResult {
@@ -110,25 +161,22 @@ pub async fn landing(AxumState(state): AxumState<State>, browser: Browser, uri: 
     if let Some(slug) = state.organisations().landing(session.account_id).await? {
         return Ok(redirect(&format!("/{slug}")));
     }
-    let viewer = viewer_context(&state, &session, None).await?;
-    render(
+    signed_in(
         &state,
         &browser,
+        &session,
+        None,
         StatusCode::OK,
         "pages/no-organisation.html.jinja",
-        context! { viewer, csrf => browser.csrf_token(), section => "overview" },
+        "overview",
+        context! {},
     )
+    .await
 }
 
 /// `/{org}`: the organisation's overview.
-pub async fn overview(
-    AxumState(state): AxumState<State>,
-    browser: Browser,
-    uri: Uri,
-    Path(slug): Path<String>,
-) -> PageResult {
-    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
-    let viewer = viewer_context(&state, &session, Some(&membership)).await?;
+pub async fn overview(AxumState(state): AxumState<State>, member: Member) -> PageResult {
+    let membership = &member.membership;
     let members = state
         .organisations()
         .members(membership.organisation_id)
@@ -140,39 +188,29 @@ pub async fn overview(
         .await
         .map_err(|e| PageError::from(anyhow::anyhow!(e)))?;
     let shown: Vec<&AppListing> = listings.iter().take(OVERVIEW_APPS).collect();
-    render(
-        &state,
-        &browser,
-        StatusCode::OK,
-        "pages/home.html.jinja",
-        context! {
-            viewer, members,
-            icons => apps::icons_of(&shown),
-            apps => shown.iter().map(|l| apps::listing_context(l)).collect::<Vec<_>>(),
-            app_count => listings.len(),
-            csrf => browser.csrf_token(), section => "overview",
-        },
-    )
-}
-
-#[derive(Deserialize, Default)]
-pub struct NoticeQuery {
-    #[serde(default)]
-    done: String,
-    #[serde(default)]
-    error: String,
+    member
+        .render(
+            &state,
+            StatusCode::OK,
+            "pages/home.html.jinja",
+            "overview",
+            context! {
+                members,
+                icons => apps::icons_of(&shown),
+                apps => shown.iter().map(|l| apps::listing_context(l)).collect::<Vec<_>>(),
+                app_count => listings.len(),
+            },
+        )
+        .await
 }
 
 /// `/{org}/settings/members`: members, pending invitations, and (for owners and
 /// admins) the forms that change them.
 pub async fn members_page(
     AxumState(state): AxumState<State>,
-    browser: Browser,
-    uri: Uri,
-    Path(slug): Path<String>,
-    Query(query): Query<NoticeQuery>,
+    member: Member,
+    Query(query): Query<Notice>,
 ) -> PageResult {
-    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
     let notice = match query.done.as_str() {
         "invited" => "Invitation sent. The link works for 7 days.",
         "revoked" => "Invitation withdrawn. Its link no longer works.",
@@ -190,9 +228,9 @@ pub async fn members_page(
     };
     members_view(
         &state,
-        &browser,
-        &session,
-        &membership,
+        &member.browser,
+        &member.session,
+        &member.membership,
         StatusCode::OK,
         MembersForm {
             notice,
@@ -278,20 +316,22 @@ async fn members_view(
     } else {
         &[("member", "Member"), ("admin", "Admin")]
     };
-    let viewer = viewer_context(state, session, Some(membership)).await?;
-    render(
+    signed_in(
         state,
         browser,
+        session,
+        Some(membership),
         status,
         "pages/members.html.jinja",
+        "members",
         context! {
-            viewer, members, pending, roles,
+            members, pending, roles,
             notice => form.notice, error => form.error,
             invite_error => form.invite_error, email => form.email,
             role => if form.role.is_empty() { "member".to_string() } else { form.role },
-            csrf => browser.csrf_token(), section => "members",
         },
     )
+    .await
 }
 
 #[derive(Deserialize)]
@@ -476,21 +516,18 @@ pub async fn revoke_invitation(
 /// billing, and for owners, renaming and deleting.
 pub async fn settings_page(
     AxumState(state): AxumState<State>,
-    browser: Browser,
-    uri: Uri,
-    Path(slug): Path<String>,
-    Query(query): Query<NoticeQuery>,
+    member: Member,
+    Query(query): Query<Notice>,
 ) -> PageResult {
-    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
     let notice = match query.done.as_str() {
         "renamed" => "Renamed. The old name keeps working as a redirect for members.",
         _ => "",
     };
     settings_view(
         &state,
-        &browser,
-        &session,
-        &membership,
+        &member.browser,
+        &member.session,
+        &member.membership,
         StatusCode::OK,
         SettingsForm {
             notice,
@@ -537,27 +574,29 @@ async fn settings_view(
             context! { state => "unavailable", plan => "", past_due => false, manage_url => () }
         }
     };
-    let viewer = viewer_context(state, session, Some(membership)).await?;
     let rename_value = if form.rename_value.is_empty() {
         membership.slug.clone()
     } else {
         form.rename_value
     };
-    render(
+    signed_in(
         state,
         browser,
+        session,
+        Some(membership),
         status,
         "pages/org-settings.html.jinja",
+        "org-settings",
         context! {
-            viewer, owners, billing, rename_value,
+            owners, billing, rename_value,
             deleting => membership.deletion_requested_at.is_some(),
             refusal => membership.deletion_refusal.clone().unwrap_or_default(),
             notice => form.notice,
             rename_error => form.rename_error,
             delete_error => form.delete_error,
-            csrf => browser.csrf_token(), section => "org-settings",
         },
     )
+    .await
 }
 
 #[derive(Deserialize)]
@@ -711,14 +750,17 @@ async fn new_page(
     slug: &str,
     error: &str,
 ) -> PageResult {
-    let viewer = viewer_context(state, session, None).await?;
-    render(
+    signed_in(
         state,
         browser,
+        session,
+        None,
         status,
         "pages/org-new.html.jinja",
-        context! { viewer, slug, error, csrf => browser.csrf_token(), section => "new-organisation" },
+        "new-organisation",
+        context! { slug, error },
     )
+    .await
 }
 
 #[derive(Deserialize)]

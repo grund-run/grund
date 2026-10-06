@@ -1,7 +1,5 @@
 {% extends "layout-app.html.jinja" %}
 {% import "components/images.html.jinja" as images %}
-{% set org = viewer.current %}
-{% block title %}{{ org.slug }} · grund{% endblock %}
 {% block content %}
 {{ images.sprite(icons) }}
 {{ ui.page_head("Overview", "Signed in as " ~ viewer.username ~ ", " ~ org.role ~ " of " ~ org.slug ~ ".") }}

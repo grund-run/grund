@@ -1,11 +1,11 @@
 {% extends "layout-auth.html.jinja" %}
-{% block title %}Choose a new password · grund{% endblock %}
+{% set title = "Choose a new password" %}
 {% block card %}
 {% if valid %}
 {{ ui.auth_head("Choose a new password", "Every device signed in to your account is signed out.") }}
 {% call forms.form("/reset/confirm", csrf) %}
   {{ forms.hidden_field("token", token) }}
-  {{ forms.form_error(error) }}
+  {{ forms.banner(error) }}
   {{ forms.field("password", "New password", type="password", autocomplete="new-password", error=password_error, hint="At least 12 characters.", autofocus=true) }}
   {{ ui.button("Set password", block=true) }}
 {% endcall %}

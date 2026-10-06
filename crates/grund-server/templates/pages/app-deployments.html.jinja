@@ -10,7 +10,7 @@
   {% else %}
   {{ ui.empty_state(text="No copies run yet.") }}
   {% endif %}
-  {% if crowded %}{{ ui.hint("All copies run on " ~ crowded ~ ". If it goes down, so does " ~ app.name ~ ". Add a machine to spread them.") }}{% endif %}
+  {% if crowded %}{{ ui.para("All copies run on " ~ crowded ~ ". If it goes down, so does " ~ app.name ~ ". Add a machine to spread them.") }}{% endif %}
 {% endcall %}
 
 {% call ui.section("versions", "Releases", count=releases | length) %}
@@ -22,7 +22,7 @@
     {% endcall %}
     {% endfor %}
   {% endcall %}
-  {{ ui.hint("Rolling back makes a new release with an earlier one's image and settings, and the secrets' newest values.") }}
+  {{ ui.para("Rolling back makes a new release with an earlier one's image and settings, and the secrets' newest values.") }}
   {% else %}
   {{ ui.empty_state(text="No releases yet.") }}
   {% endif %}

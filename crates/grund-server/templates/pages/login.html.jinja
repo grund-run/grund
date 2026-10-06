@@ -1,11 +1,10 @@
 {% extends "layout-auth.html.jinja" %}
-{% block title %}Sign in · grund{% endblock %}
+{% set title = "Sign in" %}
 {% block card %}
 {{ ui.auth_head("Sign in") }}
 {% call forms.form("/login", csrf) %}
   {% if return_to %}{{ forms.hidden_field("return_to", return_to) }}{% endif %}
-  {{ forms.form_ok(notice) }}
-  {{ forms.form_error(error) }}
+  {{ forms.banner(error, ok=notice) }}
   {{ forms.field("login", "Email or username", value=login, autocomplete="username", autofocus=not login) }}
   {{ forms.field("password", "Password", type="password", autocomplete="current-password", autofocus=login) }}
   {{ ui.button("Sign in", block=true) }}

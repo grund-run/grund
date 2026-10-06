@@ -1,5 +1,4 @@
 {% extends "layout-app.html.jinja" %}
-{% block title %}grund{% endblock %}
 {% block content %}
 {% call ui.page_head("No organisation yet", status="Everything in grund belongs to an organisation. You are not a member of one.") %}
 {% if viewer.can_create %}{{ ui.button("New organisation", href="/orgs/new", icon_name="plus") }}{% endif %}

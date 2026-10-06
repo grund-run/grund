@@ -1,7 +1,6 @@
 {% extends "layout-app.html.jinja" %}
 {% import "components/images.html.jinja" as images %}
-{% set org = viewer.current %}
-{% block title %}{% if change %}Deploy change · {{ change.name }}{% else %}Deploy app{% endif %} · {{ org.slug }} · grund{% endblock %}
+{% set title = ("Deploy change · " ~ change.name) if change else "Deploy app" %}
 {% block content %}
 {{ images.sprite(image_keys) }}
 {% if change %}
@@ -15,7 +14,7 @@
   {{ forms.hidden_field("mode", mode) }}
   {% if mode == "premade" %}
   {% call ui.panel("premade", "Premade app", "Pick an app. grund runs the version named here, pinned by its digest.") %}
-    {{ forms.form_error(new_error) }}
+    {{ forms.banner(new_error) }}
     {{ forms.choice_field("template", "App", templates, new.template, error=errors.template, large=true, fill="name") }}
     {% call forms.grid() %}
       {{ forms.field("name", "Name", value=new.name, error=errors.name, hint="A unique name for your app. Only lowercase letters, numbers and -.") }}
@@ -26,7 +25,7 @@
   {{ ui.callout("Need something else?", "Deploy any container image by its name, with the port, settings and secrets you choose.", icon_name="box", boxed=true, action=(other_mode, "Deploy a custom image")) }}
   {% else %}
   {% call ui.panel("custom", "Your change" if change else "Custom deployment", "Change what you need; the rest stays as it is. grund resolves the image again, so a moved tag is picked up." if change else "Paste any container image and deploy with sensible defaults.") %}
-    {{ forms.form_error(new_error) }}
+    {{ forms.banner(new_error) }}
     {% call forms.grid() %}
       {% if change %}{{ forms.field("name", "Name", value=change.name, disabled=true, hint="An app keeps its name.") }}
       {% else %}{{ forms.field("name", "Name", value=new.name, error=errors.name, hint="A unique name for your app. Only lowercase letters, numbers and -.") }}{% endif %}
@@ -51,7 +50,7 @@
           {{ forms.field("stop_grace", "Grace (seconds)", type="number", value=new.stop_grace, required=false, error=errors.stop, hint="Before it is killed. Empty: 30.") }}
         {% endcall %}
       {% endcall %}
-      {% call ui.hint() %}<strong>Storage</strong> is not available yet: it needs volumes, which grund does not have. An app keeps nothing on disk when a copy is replaced.{% endcall %}
+      {% call ui.para() %}<strong>Storage</strong> is not available yet: it needs volumes, which grund does not have. An app keeps nothing on disk when a copy is replaced.{% endcall %}
     {% endcall %}
   {% endcall %}
   {% if not change %}{{ ui.callout("Looking for a faster start?", "Switch to premade templates for apps like NATS, whoami and nginx. PostgreSQL, Redis and MinIO come with storage.", icon_name="grid", boxed=true, action=(templates_href, "Browse templates")) }}{% endif %}

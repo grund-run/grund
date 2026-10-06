@@ -1,9 +1,9 @@
 {% extends "layout-auth.html.jinja" %}
-{% block title %}Reset your password · grund{% endblock %}
+{% set title = "Reset your password" %}
 {% block card %}
 {{ ui.auth_head("Reset your password", "Enter the email address of your account. We send a link to choose a new password.") }}
 {% call forms.form("/reset", csrf) %}
-  {{ forms.form_error(error) }}
+  {{ forms.banner(error) }}
   {{ forms.field("email", "Email", type="email", value=email, autocomplete="email", autofocus=true) }}
   {{ ui.button("Send link", block=true) }}
 {% endcall %}

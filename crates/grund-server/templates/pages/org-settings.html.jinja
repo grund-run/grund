@@ -1,13 +1,11 @@
-{% extends "layout-app.html.jinja" %}
-{% set org = viewer.current %}
-{% block title %}Organisation · {{ org.slug }} · grund{% endblock %}
+{% extends "pages/organisation.html.jinja" %}
+{% set title = "Organisation" %}
+{% set tab = "general" %}
+{% set lede = "What " ~ viewer.current.slug ~ " is, who is in it, and who pays for what it runs." %}
 {% block head %}{% if deleting %}<meta http-equiv="refresh" content="3">{% endif %}{% endblock %}
-{% block content %}
-{{ ui.page_head("Organisation", status="What " ~ org.slug ~ " is, who is in it, and who pays for what it runs.") }}
-{{ ui.org_tabs(org, "general") }}
-{{ forms.form_ok(notice) }}
+{% block tab %}
 {% call lists.rows() %}
-  {% call(slot) lists.row("Name", org.slug, plain=true) %}{% if slot == "end" %}{{ ui.hint("Owners can rename it below." if org.owner else "Owners can rename it.") }}{% endif %}{% endcall %}
+  {% call(slot) lists.row("Name", org.slug, plain=true) %}{% if slot == "end" %}{{ ui.para("Owners can rename it below." if org.owner else "Owners can rename it.") }}{% endif %}{% endcall %}
   {{ lists.row("Created", org.since, plain=true) }}
   {{ lists.row("Your role", org.role, plain=true) }}
 {% endcall %}
@@ -15,11 +13,11 @@
 {% call ui.section("billing", "Billing") %}
   {% call lists.rows() %}
     {% if billing.state == "unavailable" %}
-    {% call(slot) lists.row("Plan", "Billing is unavailable right now", plain=true) %}{% if slot == "end" %}{{ ui.hint("Nothing else is affected. Try again in a few minutes.") }}{% endif %}{% endcall %}
+    {% call(slot) lists.row("Plan", "Billing is unavailable right now", plain=true) %}{% if slot == "end" %}{{ ui.para("Nothing else is affected. Try again in a few minutes.") }}{% endif %}{% endcall %}
     {% else %}
     {% call(slot) lists.row("Plan", billing.plan, plain=true) %}
       {%- if slot == "end" %}
-        {%- if billing.state == "free" %}{{ ui.hint("Nothing is charged. Billing belongs to " ~ org.slug ~ ", never to a person.") }}
+        {%- if billing.state == "free" %}{{ ui.para("Nothing is charged. Billing belongs to " ~ org.slug ~ ", never to a person.") }}
         {%- elif billing.past_due %}{{ forms.field_error("A payment failed. " ~ ("Update the payment details." if org.owner else "An owner needs to update the payment details.")) }}{% endif %}
       {%- endif -%}
     {% endcall %}
@@ -27,7 +25,7 @@
     {% call(slot) lists.row("Managed by", owners | join(", "), plain=true) %}
       {%- if slot == "end" %}
         {%- if org.owner and billing.manage_url %}{{ ui.link_more(billing.manage_url, "Manage billing") }}
-        {%- else %}{{ ui.hint("Owners manage billing.") }}{% endif %}
+        {%- else %}{{ ui.para("Owners manage billing.") }}{% endif %}
       {%- endif -%}
     {% endcall %}
   {% endcall %}
@@ -46,7 +44,7 @@
   {{ ui.callout("Deleting " ~ org.slug, "Waiting for billing to agree. If billing cannot be reached, grund keeps asking; nothing is deleted until it answers. This page refreshes itself.", icon_name="clock", tone="orange") }}
   {{ forms.post_button("/" ~ org.slug ~ "/settings/cancel-deletion", csrf, "Cancel the deletion", layout="narrow") }}
   {% else %}
-  {{ forms.form_error(refusal) }}
+  {{ forms.banner(refusal) }}
   {{ ui.status_line("Deleting ends every membership and invitation, and cannot be undone. The name stays reserved.", plain=true) }}
   {% call forms.form("/" ~ org.slug ~ "/settings/delete", csrf, layout="narrow") %}
     {{ forms.field("confirm", "Type " ~ org.slug ~ " to confirm", autocomplete="off", error=delete_error) }}

@@ -1,5 +1,5 @@
 {% extends "layout-auth.html.jinja" %}
-{% block title %}Confirm your email · grund{% endblock %}
+{% set title = "Confirm your email" %}
 {% block card %}
 {% if valid %}
 {{ ui.auth_head("Confirm your email", "Confirm this address to finish creating your account.") }}

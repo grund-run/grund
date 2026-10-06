@@ -28,43 +28,23 @@ use crate::{
     state::State,
     web::{
         browser::Browser,
-        orgs::member_of,
-        pages::{PageError, forged, redirect, render, viewer_context},
+        orgs::Member,
+        pages::{Notice, PageError, forged, redirect, signed_in},
     },
 };
 
 type PageResult = Result<Response, PageError>;
 
-macro_rules! member_or_return {
-    ($state:expr, $browser:expr, $uri:expr, $slug:expr) => {
-        match member_of($state, $browser, $uri, $slug).await {
-            Ok(found) => found,
-            Err(response) => return Ok(*response),
-        }
-    };
-}
-
 fn manages(membership: &Membership) -> bool {
     Role::parse(&membership.role).is_some_and(|role| role.manages_members())
-}
-
-#[derive(Deserialize, Default)]
-pub struct NoticeQuery {
-    #[serde(default)]
-    done: String,
-    #[serde(default)]
-    error: String,
 }
 
 /// `/{org}/machines`.
 pub async fn machines_page(
     AxumState(state): AxumState<State>,
-    browser: Browser,
-    uri: Uri,
-    Path(slug): Path<String>,
-    Query(query): Query<NoticeQuery>,
+    member: Member,
+    Query(query): Query<Notice>,
 ) -> PageResult {
-    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
     let notice = match query.done.as_str() {
         "removed" => "Machine removed. Its key no longer works here.",
         "running" => "Virtual machine placed. It joins as a machine once it boots.",
@@ -79,9 +59,9 @@ pub async fn machines_page(
     };
     machines_view(
         &state,
-        &browser,
-        &session,
-        &membership,
+        &member.browser,
+        &member.session,
+        &member.membership,
         StatusCode::OK,
         MachinesForm {
             notice,
@@ -185,20 +165,22 @@ async fn machines_view(
         run.rootfs_url = or_empty(&defaults.vm_rootfs_url);
         run.rootfs_sha256 = or_empty(&defaults.vm_rootfs_sha256);
     }
-    let viewer = viewer_context(state, session, Some(membership)).await?;
-    render(
+    signed_in(
         state,
         browser,
+        session,
+        Some(membership),
         status,
         "pages/machines.html.jinja",
+        "machines",
         context! {
-            viewer, machines, hosts, vms,
+            machines, hosts, vms,
             notice => form.notice, error => form.error,
             setup => form.setup, add_error => form.add_error, name => form.name,
             run_error => form.run_error, run => Value::from_serialize(&run),
-            csrf => browser.csrf_token(), section => "machines",
         },
     )
+    .await
 }
 
 #[derive(Deserialize)]

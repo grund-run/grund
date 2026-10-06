@@ -1,11 +1,8 @@
-{% extends "layout-app.html.jinja" %}
-{% set org = viewer.current %}
-{% block title %}Members · {{ org.slug }} · grund{% endblock %}
-{% block content %}
-{{ ui.page_head("Organisation", status="Everyone here can use what " ~ org.slug ~ " owns. Owners and admins manage who is in it; only owners manage billing.") }}
-{{ ui.org_tabs(org, "members") }}
-{{ forms.form_ok(notice) }}
-{{ forms.form_error(error) }}
+{% extends "pages/organisation.html.jinja" %}
+{% set title = "Members" %}
+{% set tab = "members" %}
+{% set lede = "Everyone here can use what " ~ viewer.current.slug ~ " owns. Owners and admins manage who is in it; only owners manage billing." %}
+{% block tab %}
 {% call lists.rows() %}
   {% for member in members %}
   {% set remove = "/" ~ org.slug ~ "/settings/members/" ~ member.id ~ "/remove" %}
@@ -24,7 +21,7 @@
 {% if org.manages %}
 {% call ui.section("invite", "Invite someone") %}
   {% call forms.form("/" ~ org.slug ~ "/settings/members/invite", csrf, layout="row") %}
-    {{ forms.form_error(invite_error) }}
+    {{ forms.banner(invite_error) }}
     {{ forms.field("email", "Email", type="email", value=email, autocomplete="off", hint="We mail them a link that works for 7 days.") }}
     {{ forms.select_field("role", "Role", [("member", "Member"), ("admin", "Admin")], role, id="invite-role") }}
     {{ ui.button("Send invitation", icon_name="mail") }}

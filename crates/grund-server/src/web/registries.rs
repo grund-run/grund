@@ -22,39 +22,19 @@ use crate::{
     state::State,
     web::{
         browser::Browser,
-        orgs::member_of,
-        pages::{PageError, forged, redirect, render, viewer_context},
+        orgs::Member,
+        pages::{Notice, PageError, forged, redirect, signed_in},
     },
 };
 
 type PageResult = Result<Response, PageError>;
 
-macro_rules! member_or_return {
-    ($state:expr, $browser:expr, $uri:expr, $slug:expr) => {
-        match member_of($state, $browser, $uri, $slug).await {
-            Ok(found) => found,
-            Err(response) => return Ok(*response),
-        }
-    };
-}
-
-#[derive(Default, Deserialize)]
-pub struct NoticeQuery {
-    #[serde(default)]
-    done: String,
-    #[serde(default)]
-    error: String,
-}
-
 /// `GET /{org}/settings/registries`.
 pub async fn registries_page(
     AxumState(state): AxumState<State>,
-    browser: Browser,
-    uri: Uri,
-    Path(slug): Path<String>,
-    Query(query): Query<NoticeQuery>,
+    member: Member,
+    Query(query): Query<Notice>,
 ) -> PageResult {
-    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
     let notice = match query.done.as_str() {
         "set" => "Credential saved. Deploys and pulls from that registry use it from now on.",
         "removed" => "Credential removed. Images from that registry are pulled without a login.",
@@ -67,9 +47,9 @@ pub async fn registries_page(
     };
     registries_view(
         &state,
-        &browser,
-        &session,
-        &membership,
+        &member.browser,
+        &member.session,
+        &member.membership,
         StatusCode::OK,
         RegistriesForm {
             notice,
@@ -117,14 +97,16 @@ async fn registries_view(
             }
         })
         .collect();
-    let viewer = viewer_context(state, session, Some(membership)).await?;
-    render(
+    signed_in(
         state,
         browser,
+        session,
+        Some(membership),
         status,
         "pages/registries.html.jinja",
+        "org-settings",
         context! {
-            viewer, credentials,
+            credentials,
             max => MAX_PER_ORGANISATION,
             notice => form.notice, error => form.error,
             form_error => form.form_error,
@@ -132,9 +114,9 @@ async fn registries_view(
             username_error => form.username_error,
             password_error => form.password_error,
             host => form.host, username => form.username,
-            csrf => browser.csrf_token(), section => "org-settings",
         },
     )
+    .await
 }
 
 #[derive(Deserialize)]

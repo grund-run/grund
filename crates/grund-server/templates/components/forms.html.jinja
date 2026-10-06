@@ -29,11 +29,10 @@
     Destructive ones are kind="danger" and say what they do.
     layout: as for form(); hidden: more fields it sends, name: value -#}
 {% macro post_button(action, csrf, label, kind="secondary", size="", block=false, layout="", hidden={}) -%}
-<form{% if layout %} class="{{ 'form' if layout == 'stack' else 'form form-narrow' }}"{% endif %} method="post" action="{{ action }}">
-  {{ csrf_field(csrf) }}
+{% call form(action, csrf, layout=layout) %}
   {% for name, value in hidden | items %}{{ hidden_field(name, value) }}{% endfor %}
   {{ ui.button(label, kind=kind, size=size, block=block) }}
-</form>
+{% endcall %}
 {%- endmacro %}
 
 {#- csrf_field(token): the hidden CSRF field. -#}
@@ -87,10 +86,15 @@
 <div class="field">
   <label for="{{ id }}">{{ label }}</label>
   <select class="select{% if state %} is-{{ state }}{% endif %}" id="{{ id }}" name="{{ name }}"{{ describe(id, "", hint) }}>
-    {% for value, text in options %}<option value="{{ value }}"{% if value == selected %} selected{% endif %}>{{ text }}</option>{% endfor %}
+    {{ options_of(options, selected) }}
   </select>
   {{- message(id, "", hint) }}
 </div>
+{%- endmacro %}
+
+{#- options_of(options, selected): a select's (value, label) options. -#}
+{% macro options_of(options, selected) -%}
+{% for value, text in options %}<option value="{{ value }}"{% if value == selected %} selected{% endif %}>{{ text }}</option>{% endfor %}
 {%- endmacro %}
 
 {#- textarea_field(name, label, value="", rows=4, hint="", error="",
@@ -178,22 +182,19 @@
   {{ csrf_field(csrf) }}
   <label class="visually-hidden" for="{{ id }}">{{ label }}</label>
   <select class="select" id="{{ id }}" name="{{ name }}">
-    {% for value, text in options %}<option value="{{ value }}"{% if value == selected %} selected{% endif %}>{{ text }}</option>{% endfor %}
+    {{ options_of(options, selected) }}
   </select>
   {{ ui.button(button, kind="secondary", size="sm") }}
 </form>
 {%- endmacro %}
 
-{#- form_error(message): the banner for the whole form; nothing when
-    message is empty. -#}
-{% macro form_error(message) -%}
-{% if message %}<div class="form-error" role="alert">{{ ui.icon("alert", "icon-sm") }}<span>{{ message }}</span></div>{% endif %}
-{%- endmacro %}
-
-{#- form_ok(message): the banner saying it worked; nothing when message
-    is empty. -#}
-{% macro form_ok(message) -%}
-{% if message %}<div class="form-ok" role="status">{{ ui.icon("ok", "icon-sm") }}<span>{{ message }}</span></div>{% endif %}
+{#- banner(error="", ok="")
+    A form's or a page's banner: ok says it worked, error what went
+    wrong, each only when it is not empty (ok first). A page passes the
+    notice and error its handler gives it: banner(error, ok=notice). -#}
+{% macro banner(error="", ok="") -%}
+{% if ok %}<div class="form-ok" role="status">{{ ui.icon("ok", "icon-sm") }}<span>{{ ok }}</span></div>{% endif %}
+{%- if error %}<div class="form-error" role="alert">{{ ui.icon("alert", "icon-sm") }}<span>{{ error }}</span></div>{% endif %}
 {%- endmacro %}
 
 {#- field_error(text): an error on its own line, outside a field. -#}

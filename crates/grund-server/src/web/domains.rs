@@ -23,29 +23,12 @@ use crate::{
     state::State,
     web::{
         browser::Browser,
-        orgs::member_of,
-        pages::{PageError, forged, redirect, render, viewer_context},
+        orgs::Member,
+        pages::{Notice, PageError, forged, redirect, signed_in},
     },
 };
 
 type PageResult = Result<Response, PageError>;
-
-macro_rules! member_or_return {
-    ($state:expr, $browser:expr, $uri:expr, $slug:expr) => {
-        match member_of($state, $browser, $uri, $slug).await {
-            Ok(found) => found,
-            Err(response) => return Ok(*response),
-        }
-    };
-}
-
-#[derive(Default, Deserialize)]
-pub struct NoticeQuery {
-    #[serde(default)]
-    done: String,
-    #[serde(default)]
-    error: String,
-}
 
 #[derive(Default)]
 struct AddForm {
@@ -167,32 +150,31 @@ async fn domains_view(
         .enumerate()
         .map(|(index, domain)| domain_context(index, domain, address_of(&domain.app_name)))
         .collect();
-    let viewer = viewer_context(state, session, Some(membership)).await?;
-    render(
+    signed_in(
         state,
         browser,
+        session,
+        Some(membership),
         status,
         "pages/domains.html.jinja",
+        "domains",
         context! {
-            viewer, addresses, domains, apps,
+            addresses, domains, apps,
             max => MAX_PER_ORGANISATION,
             cooldown => cooldown_words(state.config.entry.domain_cooldown),
             notice => form.notice, error => form.error,
             form_error => form.form_error, name_error => form.name_error, name => form.name,
-            csrf => browser.csrf_token(), section => "domains",
         },
     )
+    .await
 }
 
 /// `GET /{org}/domains`.
 pub async fn domains_page(
     AxumState(state): AxumState<State>,
-    browser: Browser,
-    uri: Uri,
-    Path(slug): Path<String>,
-    Query(query): Query<NoticeQuery>,
+    member: Member,
+    Query(query): Query<Notice>,
 ) -> PageResult {
-    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
     let notice = match query.done.as_str() {
         "added" => "Domain added. Make its TXT record, then check it.",
         "verified" => "Domain verified. Bind it to an app to serve it.",
@@ -217,9 +199,9 @@ pub async fn domains_page(
     };
     domains_view(
         &state,
-        &browser,
-        &session,
-        &membership,
+        &member.browser,
+        &member.session,
+        &member.membership,
         StatusCode::OK,
         AddForm {
             notice,

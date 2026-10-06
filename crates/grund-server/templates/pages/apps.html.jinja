@@ -1,20 +1,18 @@
 {% extends "layout-app.html.jinja" %}
 {% import "components/images.html.jinja" as images %}
-{% set org = viewer.current %}
-{% block title %}Apps · {{ org.slug }} · grund{% endblock %}
+{% set title = "Apps" %}
 {% block content %}
 {{ images.sprite(icons) }}
 {% call ui.page_head("Apps", "Run and manage your applications. Simple, powerful, yours.") %}
 {{ lists.list_tools(sorts, list.sort, list_href, grid_href, list.view, {"q": list.q, "view": list.view}) }}
 {% endcall %}
-{{ forms.form_ok(notice) }}
-{{ forms.form_error(error) }}
-{% if list.q %}{% call ui.note() %}{{ apps | length }} of {{ total }} app{% if total != 1 %}s{% endif %} match “{{ list.q }}”. <a href="{{ all_href }}">Show all</a>{% endcall %}{% endif %}
+{{ forms.banner(error, ok=notice) }}
+{% if list.q %}{% call ui.para(kind="note") %}{{ apps | length }} of {{ total }} app{% if total != 1 %}s{% endif %} match “{{ list.q }}”. <a href="{{ all_href }}">Show all</a>{% endcall %}{% endif %}
 {% if apps %}
 {% call lists.items(list.view) %}{% for app in apps %}{{ lists.app_row(org, app) }}{% endfor %}{% endcall %}
-{{ ui.note("No app matches that.", hidden=true, filter_empty=true) }}
+{{ ui.para("No app matches that.", "note", hidden=true, filter_empty=true) }}
 {% elif list.q %}
-{{ ui.note("No app matches that.") }}
+{{ ui.para("No app matches that.", "note") }}
 {% endif %}
 {% if org.manages %}
 {{ ui.add_card("/" ~ org.slug ~ "/deploy", "Deploy a new app", "Deploy any container image by its name, such as nginx:1.27.") }}

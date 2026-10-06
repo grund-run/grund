@@ -217,6 +217,48 @@ pub async fn viewer_context(
     })
 }
 
+/// Renders a page in the signed-in layout: `page` plus what the layout
+/// reads on every page. `viewer` is built for `membership`'s organisation
+/// (or the one `/` would open), `section` marks the sidebar's item, and
+/// `notice` and `error` are empty unless `page` gives them.
+#[allow(clippy::too_many_arguments)]
+pub async fn signed_in(
+    state: &State,
+    browser: &Browser,
+    session: &Session,
+    membership: Option<&Membership>,
+    status: StatusCode,
+    template: &str,
+    section: &str,
+    page: Value,
+) -> PageResult {
+    let viewer = viewer_context(state, session, membership).await?;
+    render(
+        state,
+        browser,
+        status,
+        template,
+        context! {
+            viewer, section, csrf => browser.csrf_token(),
+            ..with_layout_defaults(page)
+        },
+    )
+}
+
+fn with_layout_defaults(page: Value) -> Value {
+    minijinja::value::merge_maps([context! { notice => "", error => "" }, page])
+}
+
+/// The `?done=` and `?error=` a form's redirect leaves for the page it
+/// lands on, which turns each into a sentence.
+#[derive(Deserialize, Default)]
+pub struct Notice {
+    #[serde(default)]
+    pub done: String,
+    #[serde(default)]
+    pub error: String,
+}
+
 #[derive(Deserialize, Default)]
 pub struct LoginQuery {
     return_to: Option<String>,
@@ -832,23 +874,16 @@ pub async fn reset_confirm(
     }
 }
 
-#[derive(Deserialize, Default)]
-pub struct NoticeQuery {
-    #[serde(default)]
-    done: String,
-}
-
 pub async fn sessions_page(
     AxumState(state): AxumState<State>,
     browser: Browser,
     uri: Uri,
-    Query(query): Query<NoticeQuery>,
+    Query(query): Query<Notice>,
 ) -> PageResult {
     let session = match require_session(&browser, &uri) {
         Ok(session) => session,
         Err(redirect) => return Ok(*redirect),
     };
-    let viewer = viewer_context(&state, &session, None).await?;
     let sessions: Vec<Value> = state
         .sessions()
         .list(session.account_id)
@@ -870,15 +905,17 @@ pub async fn sessions_page(
         "others" => "Every other device is signed out.",
         _ => "",
     };
-    render(
+    signed_in(
         &state,
         &browser,
+        &session,
+        None,
         StatusCode::OK,
         "pages/sessions.html.jinja",
-        context! {
-            viewer, sessions, notice, csrf => browser.csrf_token(), section => "settings",
-        },
+        "settings",
+        context! { sessions, notice },
     )
+    .await
 }
 
 pub async fn revoke_session(
@@ -1126,6 +1163,18 @@ pub async fn style_guide(AxumState(state): AxumState<State>, browser: Browser) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_page_notice_or_error_wins_over_the_layout_default() {
+        let env = minijinja::Environment::new();
+        let render = |page| {
+            env.render_str("[{{ notice }}][{{ error }}]", with_layout_defaults(page))
+                .expect("renders")
+        };
+        assert_eq!(render(context! { notice => "Saved." }), "[Saved.][]");
+        assert_eq!(render(context! { error => "Too short." }), "[][Too short.]");
+        assert_eq!(render(context! {}), "[][]");
+    }
 
     #[test]
     fn only_same_origin_paths_are_returned_to() {

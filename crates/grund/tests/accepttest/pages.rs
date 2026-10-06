@@ -42,29 +42,34 @@ fn only_the_script_file(body: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+const ORG_PAGES: &[&str] = &[
+    "",
+    "/apps",
+    "/apps?view=grid&sort=deployed&q=x",
+    "/deploy",
+    "/deploy?mode=premade",
+    "/deploy?template=nginx",
+    "/domains",
+    "/templates",
+    "/machines",
+    "/settings",
+    "/settings/members",
+    "/settings/tokens",
+    "/settings/registries",
+];
+
 #[tokio::test]
 async fn every_signed_in_page_renders_in_the_shell_with_nothing_the_csp_forbids()
 -> anyhow::Result<()> {
     let (given, when, then) = testcase().await?;
     let account = given.a_signed_in_account().await?;
     let org = account.username.clone();
-    let pages = [
-        format!("/{org}"),
-        format!("/{org}/apps"),
-        format!("/{org}/apps?view=grid&sort=deployed&q=x"),
-        format!("/{org}/deploy"),
-        format!("/{org}/deploy?mode=premade"),
-        format!("/{org}/deploy?template=nginx"),
-        format!("/{org}/domains"),
-        format!("/{org}/templates"),
-        format!("/{org}/machines"),
-        format!("/{org}/settings"),
-        format!("/{org}/settings/members"),
-        "/settings/sessions".to_string(),
-        "/orgs/new".to_string(),
-    ];
+    let pages = ORG_PAGES
+        .iter()
+        .map(|page| format!("/{org}{page}"))
+        .chain(["/settings/sessions".to_string(), "/orgs/new".to_string()]);
     let mut script = None;
-    for path in &pages {
+    for path in &pages.collect::<Vec<_>>() {
         when.visiting(path).await?;
         then.status(200)
             .and_then(|t| t.carries_the_security_headers())
@@ -110,17 +115,17 @@ async fn every_signed_in_page_renders_in_the_shell_with_nothing_the_csp_forbids(
 }
 
 #[tokio::test]
-async fn the_new_organisation_pages_are_a_404_to_someone_outside_it() -> anyhow::Result<()> {
+async fn every_organisation_page_is_a_404_to_someone_outside_it() -> anyhow::Result<()> {
     let (given, _when, _then) = testcase().await?;
     let owner = given.a_signed_in_account().await?;
     let org = owner.username.clone();
     let (outsider, outsider_when, outsider_then) = given.testcase.another_browser();
     outsider.a_signed_in_account().await?;
-    for path in ["deploy", "domains", "templates"] {
-        outsider_when.visiting(&format!("/{org}/{path}")).await?;
+    for page in ORG_PAGES {
+        outsider_when.visiting(&format!("/{org}{page}")).await?;
         outsider_then
             .status(404)
-            .map_err(|error| error.context(path))?;
+            .map_err(|error| error.context(*page))?;
     }
     Ok(())
 }

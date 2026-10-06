@@ -2,8 +2,7 @@
     block tab (app-overview, app-deployments, app-soon, app-settings). -#}
 {% extends "layout-app.html.jinja" %}
 {% import "components/images.html.jinja" as images %}
-{% set org = viewer.current %}
-{% block title %}{{ app.name }} · Apps · {{ org.slug }} · grund{% endblock %}
+{% set title = app.name ~ " · Apps" %}
 {% block head %}{% if refresh %}<meta http-equiv="refresh" content="5">{% endif %}{% endblock %}
 {% block content %}
 {{ images.sprite([app.icon]) }}
@@ -12,8 +11,7 @@
   {{ lists.app_menu(org, app) }}
 {% endcall %}
 {{ ui.tabs(app.name, tabs, tab) }}
-{{ forms.form_ok(notice) }}
-{{ forms.form_error(error) }}
-{% for message in waiting %}{{ forms.form_error(message) }}{% endfor %}
+{{ forms.banner(error, ok=notice) }}
+{% for message in waiting %}{{ forms.banner(message) }}{% endfor %}
 {% block tab %}{% endblock %}
 {% endblock %}

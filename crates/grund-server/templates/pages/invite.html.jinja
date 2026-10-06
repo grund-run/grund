@@ -1,18 +1,18 @@
 {% extends "layout-auth.html.jinja" %}
-{% block title %}Join {{ organisation }} · grund{% endblock %}
+{% set title = "Join " ~ organisation %}
 {% block card %}
 {{ ui.auth_head("Join " ~ organisation, invited_by ~ " invited " ~ email ~ " to " ~ organisation ~ " as " ~ ("an" if role == "admin" else "a") ~ " " ~ role ~ ".") }}
 {% if mode == "join" %}
 {{ forms.post_button("/invite", csrf, "Join " ~ organisation, kind="primary", block=true, layout="stack", hidden={"token": token}) }}
 {% call ui.foot() %}<p>Signed in as {{ signed_in_as }}.</p>{% endcall %}
 {% elif mode == "other-account" %}
-{{ forms.form_error("You are signed in as " ~ signed_in_as ~ ", whose address is not " ~ email ~ ". Sign out, then open the link again.") }}
+{{ forms.banner("You are signed in as " ~ signed_in_as ~ ", whose address is not " ~ email ~ ". Sign out, then open the link again.") }}
 {{ forms.post_button("/logout", csrf, "Sign out", block=true, layout="stack") }}
 {% elif mode == "sign-in" %}
-{{ ui.auth_lede(email ~ " already has a grund account. Sign in, and you come back here to join.") }}
+{{ ui.para(email ~ " already has a grund account. Sign in, and you come back here to join.", "auth-lede") }}
 {{ ui.button("Sign in to join", href="/login?" ~ return_to, block=true) }}
 {% else %}
-{{ ui.auth_lede("Create your account to join. Opening this link confirmed your address.") }}
+{{ ui.para("Create your account to join. Opening this link confirmed your address.", "auth-lede") }}
 {% call forms.form("/invite", csrf) %}
   {{ forms.hidden_field("token", token) }}
   {{ forms.field("invited-email", "Email", type="email", value=email, required=false, disabled=true) }}
