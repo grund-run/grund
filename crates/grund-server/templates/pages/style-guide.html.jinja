@@ -266,37 +266,29 @@
         {% endcall %}
       {% endcall %}
     {% endcall %}
-    {% call forms.actions() %}{{ ui.button("Cancel", href="#sg-choices", kind="secondary") }}{{ ui.button("Deploy app", type="button") }}{% endcall %}
+    {% call forms.actions("Makes the app and rolls out its first release.", "layers") %}{{ ui.button("Cancel", href="#sg-choices", kind="secondary") }}{{ ui.button("Deploy app", type="button") }}{% endcall %}
   {% endcall %}
-  {% call cat.specimen("Panel with an action, and facts", '{% call ui.panel("status", "Application status", lede) %}
+  {% call cat.specimen("Panel with an action, and facts", '{% call ui.panel("status", "Application status", lede, action=(url, "All releases")) %}
   {% call ui.facts() %}
-    {% call ui.fact("Endpoint", wide=true) %}{{ ui.endpoint(address, href=address) }}{{ ui.pill("Public HTTP", icon_name="globe") }}{% endcall %}
+    {% call ui.fact("Reachable at", wide=true) %}{{ ui.endpoint(address, href=address) }}{{ ui.pill("Public HTTP", icon_name="globe") }}{% endcall %}
     {{ ui.fact("Status", "Live", tone="ok", lines=[line]) }}
-    {{ ui.fact("Copies", "2", icon_name="copy", lines=["Running instances"]) }}
+    {{ ui.fact("Running", "v8", icon_name="layers", lines=[image, digest]) }}
+    {{ ui.fact("Last change", "2 hours ago", icon_name="clock", lines=["by " ~ who, what]) }}
   {% endcall %}
-{% endcall %}', "action puts one secondary button at the right of a panel's title. facts() is a row of fact()s divided by lines (two columns below 900 px): a label, the value large with an icon or a state's dot, and quieter lines. endpoint() is an address with a copy button: a link when public, code when internal.") %}
-    {% call ui.panel("sg-facts", "Application status", "Your application is running and accessible.", action=("#sg-choices", "View deployment history")) %}
+{% endcall %}', "action puts one secondary button at the right of a panel's title. facts() is a row of fact()s divided by lines (two columns below 900 px): a label, the value large with an icon or a state's dot, and quieter lines, each one line, cut with an ellipsis when long. endpoint() is an address with a copy button: a link when public, code when internal.") %}
+    {% call ui.panel("sg-facts", "Application status", "Your application is running and accessible.", action=("#sg-choices", "All releases")) %}
       {% call ui.facts() %}
-        {% call ui.fact("Endpoint", wide=true) %}{{ ui.endpoint("https://storefront-nord-studio.example.run", href="#sg-choices") }}{{ ui.pill("Public HTTP", icon_name="globe") }}{% endcall %}
-        {{ ui.fact("Status", "Live", tone="ok", lines=["v3 is live on 2 copies"]) }}
-        {{ ui.fact("Copies", "2", icon_name="copy", lines=["Running instances"]) }}
-        {{ ui.fact("Last deployed", "by ada", icon_name="user", lines=["2 hours ago", "Deployed successfully"]) }}
+        {% call ui.fact("Reachable at", wide=true) %}{{ ui.endpoint("https://storefront-nord-studio.example.run", href="#sg-choices") }}{{ ui.pill("Public HTTP", icon_name="globe") }}{% endcall %}
+        {{ ui.fact("Status", "Live", tone="ok", lines=["v8 is live on 2 copies"]) }}
+        {{ ui.fact("Running", "v8", icon_name="layers", lines=["nginx:1.27", "2006897a0a1c"]) }}
+        {{ ui.fact("Last change", "2 hours ago", icon_name="clock", lines=["by a-rather-long-account-name", "v8 · rolled back to v5"]) }}
       {% endcall %}
     {% endcall %}
-    {% call ui.panel("sg-facts-private", "Internal") %}{% call ui.facts() %}{% call ui.fact("Endpoint", wide=true) %}{{ ui.endpoint("db.grund.internal:5432") }}{{ ui.pill("Private", icon_name="lock") }}{% endcall %}{{ ui.fact("Status", "Failed", tone="danger", lines=["v4 didn't start. v3 is still serving."]) }}{% endcall %}{% endcall %}
+    {% call ui.panel("sg-facts-private", "Internal") %}{% call ui.facts() %}{% call ui.fact("Reachable at", wide=true) %}{{ ui.endpoint("db.grund.internal:5432") }}{{ ui.pill("Private", icon_name="lock") }}{% endcall %}{{ ui.fact("Status", "Failed", tone="danger", lines=["v3 is still serving"]) }}{% endcall %}{% endcall %}
   {% endcall %}
   {% call cat.specimen("Danger panel", '{% call ui.panel("danger", "Delete " ~ app.name, text, danger=true) %}…{% endcall %}', "For what cannot be undone: edged and titled in the danger colour. Ask for the thing's name before deleting it.") %}
     {% call ui.panel("sg-danger", "Delete storefront", "Its copies stop and its name is free again. This cannot be undone.", danger=true) %}
       {% call forms.form("#sg-choices", csrf, layout="row") %}{{ forms.field("sg-confirm", "Type storefront to confirm", required=false) }}{{ ui.button("Delete storefront", kind="danger", type="button") }}{% endcall %}
-    {% endcall %}
-  {% endcall %}
-  {% call cat.specimen("Link cards", '{% call ui.link_cards() %}
-  {{ ui.link_card(url, "file", "View logs", "Inspect runtime logs and output") }}
-{% endcall %}', "Cards that are each one link onward, side by side (stacked below 900 px).") %}
-    {% call ui.link_cards() %}
-      {{ ui.link_card("#sg-choices", "file", "View logs", "Inspect runtime logs and output") }}
-      {{ ui.link_card("#sg-choices", "bars", "View metrics", "Check performance and usage", state="hover") }}
-      {{ ui.link_card("#sg-choices", "layers", "Deployment history", "See all past deployments") }}
     {% endcall %}
   {% endcall %}
   {% call cat.specimen("Choice field", '{{ forms.choice_field("exposure", "Exposure", exposures, "private", hint=hint) }}', "A choice of one as cards over radio buttons. Each option is a dict of value, title, text and icon or image; disabled and tag mark one not offered yet; state pins hover or focus (the style guide only); error replaces the hint. large widens the cards; fill names a field the script fills with the chosen value.") %}

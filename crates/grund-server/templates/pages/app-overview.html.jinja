@@ -2,35 +2,29 @@
 {% block tab %}
 {% call ui.panel("status", "Application status", app.lede) %}
   {% call ui.facts() %}
-    {% call ui.fact("Endpoint", wide=true) %}
+    {% call ui.fact("Reachable at", wide=true) %}
       {% if app.address %}{{ ui.endpoint("https://" ~ app.address, href="https://" ~ app.address) }}{{ ui.pill("Public HTTP", icon_name="globe") }}
       {% for domain in app.domains %}{% if domain.serving %}{{ ui.endpoint("https://" ~ domain.name, href="https://" ~ domain.name) }}{% else %}{{ ui.para(domain.line) }}{% endif %}{% endfor %}
-      {% if app.domains %}{{ ui.link_more(app.domains_href, "Custom domains") }}{% endif %}
       {% elif app.internal %}{{ ui.endpoint(app.internal) }}{{ ui.pill("Private", icon_name="lock") }}
-      {% else %}{{ ui.para("No port: nothing reaches it.") }}{% endif %}
+      {% else %}{{ ui.para("Nowhere: it has no port, so nothing reaches it.") }}{% endif %}
     {% endcall %}
     {{ ui.fact("Status", app.word, tone=app.tone, lines=[app.line]) }}
-    {{ ui.fact("Copies", app.ready ~ "", icon_name="copy", lines=[app.copies_line]) }}
-    {% if latest %}{{ ui.fact("Last deployed", "by " ~ latest.by, icon_name="user", lines=[latest.ago, latest.result]) }}
-    {% else %}{{ ui.fact("Last deployed", "Never", icon_name="user") }}{% endif %}
+    {% if running %}{{ ui.fact("Running", running.version, icon_name="layers", lines=[running.image, running.digest]) }}
+    {% else %}{{ ui.fact("Running", "Nothing", icon_name="layers", lines=["No release is live"]) }}{% endif %}
+    {% if latest %}{{ ui.fact("Last change", latest.ago, icon_name="clock", lines=["by " ~ latest.by, latest.event]) }}
+    {% else %}{{ ui.fact("Last change", "None", icon_name="clock") }}{% endif %}
   {% endcall %}
 {% endcall %}
 
-{% call ui.panel("activity", "Latest activity", "Recent deployments and changes to this application.", action=(app.base ~ "/deployments", "View deployment history")) %}
+{% call ui.panel("activity", "Latest activity", "The newest releases and what became of them.", action=(app.base ~ "/deployments", "All releases")) %}
   {% if activity %}
   {% call lists.timeline() %}
     {% for release in activity %}
-    {% call lists.event(release.title, release.ago, release.at, release.iso, "v" ~ release.number, release.state) %}{{ release.verb }} by <strong>{{ release.by }}</strong> {{ release.source }}{% endcall %}
+    {% call lists.event(release.event, release.ago, release.at, release.iso, release.outcome, release.state) %}by <strong>{{ release.by }}</strong> {{ release.source }}{% if release.reason %} · {{ release.reason }}{% endif %}{% endcall %}
     {% endfor %}
   {% endcall %}
   {% else %}
   {{ ui.empty_state(text="No deployments yet.") }}
   {% endif %}
-{% endcall %}
-
-{% call ui.link_cards() %}
-  {{ ui.link_card(app.base ~ "/logs", "file", "View logs", "Inspect runtime logs and output") }}
-  {{ ui.link_card(app.base ~ "/metrics", "bars", "View metrics", "Check performance and usage") }}
-  {{ ui.link_card(app.base ~ "/deployments", "layers", "Deployment history", "See all past deployments") }}
 {% endcall %}
 {% endblock %}

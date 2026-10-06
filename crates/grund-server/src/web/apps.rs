@@ -126,7 +126,7 @@ struct Health {
     word: &'static str,
     tone: &'static str,
     line: String,
-    ready: usize,
+    detail: String,
 }
 
 fn ready_copies(view: &AppView, release: i64, now: DateTime<Utc>) -> usize {
@@ -148,16 +148,17 @@ fn health(view: &AppView, releases: &[ReleaseRow], now: DateTime<Utc>) -> Health
     let to = rollout.and_then(|r| r["to"].as_i64()).unwrap_or(0);
     let current = row.current_release.map(i64::from);
     let ready = current.map_or(0, |c| ready_copies(view, c, now));
-    let health = |word, tone, line: String| Health {
+    let health = |word, tone, line: String, detail: String| Health {
         word,
         tone,
         line,
-        ready,
+        detail,
     };
     if row.halted {
         return health(
             "Failed",
             "danger",
+            format!("v{to} failed; rollback is off"),
             format!(
                 "grund is leaving {} as it is: v{to} failed and automatic rollback is off. Deploy or roll back to go on.",
                 row.name
@@ -174,13 +175,14 @@ fn health(view: &AppView, releases: &[ReleaseRow], now: DateTime<Utc>) -> Health
                     format!(" · started by {} {}", words.by, words.source)
                 })
                 .unwrap_or_default();
+            let ready_new = ready_copies(view, to, now);
             health(
                 "Rolling out",
                 "blue",
+                format!("v{to}: {ready_new} of {wanted} ready"),
                 format!(
-                    "Releasing v{to}{} · {} of {wanted} ready",
-                    started.trim_end(),
-                    ready_copies(view, to, now)
+                    "Releasing v{to}{}. {ready_new} of {wanted} copies are ready; it goes on behind its ready check.",
+                    started.trim_end()
                 ),
             )
         }
@@ -192,31 +194,43 @@ fn health(view: &AppView, releases: &[ReleaseRow], now: DateTime<Utc>) -> Health
                 Some(current) => health(
                     "Failed",
                     "danger",
+                    format!("v{current} is still serving"),
                     format!("{reason} v{current} is still serving."),
                 ),
-                None => health("Failed", "danger", format!("{reason} Nothing is running.")),
+                None => health(
+                    "Failed",
+                    "danger",
+                    "Nothing is running".into(),
+                    format!("{reason} Nothing is running."),
+                ),
             }
         }
         _ => match current {
             None => health(
                 "Stopped",
                 "muted",
+                "No release yet".into(),
                 format!("{} has no version yet. Deploy one.", row.name),
             ),
             Some(current) if ready >= wanted => health(
                 "Live",
                 "ok",
                 format!("v{current} is live on {}", copies(ready)),
+                String::new(),
             ),
             Some(current) if ready == 0 => health(
                 "Degraded",
                 "orange",
+                "No copy is ready".into(),
                 format!("No copy of v{current} is ready. grund keeps trying."),
             ),
             Some(current) => health(
                 "Degraded",
                 "orange",
-                format!("v{current} is live on {ready} of {wanted} copies"),
+                format!("{ready} of {wanted} copies ready"),
+                format!(
+                    "v{current} is live on {ready} of {wanted} copies. grund keeps trying the rest."
+                ),
             ),
         },
     }
@@ -415,7 +429,13 @@ fn release_context(row: &ReleaseRow, current: Option<i32>, now: DateTime<Utc>) -
         ),
     };
     let words = release_words(row);
+    let digest = row.image_digest.trim_start_matches("sha256:");
     context! {
+        event => match row.rollback_of {
+            Some(number) if row.source == "rollback" => format!("v{} · rolled back to v{number}", row.number),
+            _ => format!("v{} · deployed", row.number),
+        },
+        short_digest => digest.chars().take(12).collect::<String>(),
         number => row.number,
         image => row.spec.0.image,
         digest => row.image_digest,
@@ -1299,16 +1319,24 @@ async fn app_view(
     let health = health(view, &releases, now);
     let shown = listing_context(&listing);
     let lede = match health.word {
-        "Live" if listing.address.is_some() => "Your application is running and accessible.",
-        "Live" if shown.get_attr("internal").is_ok_and(|i| !i.is_none()) => {
-            "Your application is running. Other apps reach it by its internal name."
+        "Live" if listing.address.is_some() => {
+            "Your application is running and accessible.".to_string()
         }
-        "Live" => "Your application is running.",
-        "Rolling out" => "A new release is rolling out behind its ready check.",
-        "Degraded" => "Not every copy is ready.",
-        "Failed" => "The newest release did not start.",
-        _ => "Nothing runs yet.",
+        "Live" if shown.get_attr("internal").is_ok_and(|i| !i.is_none()) => {
+            "Your application is running. Other apps reach it by its internal name.".to_string()
+        }
+        "Live" => "Your application is running.".to_string(),
+        _ => health.detail.clone(),
     };
+    let running = current
+        .and_then(|number| releases.iter().find(|r| r.number == number))
+        .map(|r| {
+            context! {
+                version => format!("v{}", r.number),
+                image => r.spec.0.image,
+                digest => r.image_digest.trim_start_matches("sha256:").chars().take(12).collect::<String>(),
+            }
+        });
     let replicas: Vec<Value> = view
         .replicas
         .iter()
@@ -1467,9 +1495,8 @@ async fn app_view(
                 domains_href => format!("/{slug}/domains#custom"),
                 internal => shown.get_attr("internal").ok(),
                 word => health.word, tone => health.tone, line => health.line, lede,
-                ready => health.ready,
-                copies_line => if health.ready >= wanted as usize { "Running instances".to_string() } else { format!("Ready, of {wanted} wanted") },
             },
+            running,
             latest => history.first(),
             activity => history.iter().take(3).collect::<Vec<_>>(),
             releases => history,

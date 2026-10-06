@@ -881,7 +881,7 @@ async fn an_app_made_on_the_dashboard_shows_its_copies_ready_and_its_versions() 
         let body = then.body()?;
         if body.contains("v1 is live on 1 copy") {
             anyhow::ensure!(body.contains(">Live</span>"), "the pill says Live: {body}");
-            anyhow::ensure!(body.contains("Deployment successful"), "{body}");
+            anyhow::ensure!(body.contains("v1 · deployed"), "{body}");
             break;
         }
         anyhow::ensure!(
@@ -1308,11 +1308,11 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
         .body_contains("Your application is running and accessible.")?
         .body_contains(&format!("https:&#x2f;&#x2f;hello-{org}.apps.accept.test"))?
         .body_contains("Public HTTP")?
-        .body_contains("Running instances")?
+        .body_contains("Reachable at")?
+        .body_contains(">v1</span>")?
         .body_contains(&format!("by {org}"))?
-        .body_contains(&format!(
-            "Deployed by <strong>{org}</strong> from the dashboard"
-        ))?
+        .body_contains(&format!("by <strong>{org}</strong> from the dashboard"))?
+        .body_lacks("View logs")?
         .body_contains("<span class=\"btn-label\">Deploy change</span>")?
         .body_contains(&format!(
             "href=\"&#x2f;{org}&#x2f;apps&#x2f;hello&#x2f;deploy\""
@@ -1450,7 +1450,7 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
         .redirects_to(&format!("{page}/deployments?done=rolled-back"))?;
     when.visiting(&deployments).await?;
     then.status(200)?
-        .body_contains("v5 · ")?
+        .body_contains("id=\"v5\"")?
         .body_contains(&format!("Rolled back to v1 by {org}"))?;
 
     when.submitting(

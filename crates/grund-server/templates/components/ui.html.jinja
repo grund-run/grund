@@ -269,18 +269,6 @@
 </table>
 {%- endmacro %}
 
-{#- link_cards(): link_card()s side by side, stacked below 900 px. -#}
-{% macro link_cards() -%}
-<nav class="link-cards" aria-label="More">{{ caller() }}</nav>
-{%- endmacro %}
-
-{#- link_card(href, icon_name, title, text, state="")
-    A card that is one link onward: an icon, a title over one line, an
-    arrow. state: "hover" pins the hover look (the style guide only). -#}
-{% macro link_card(href, icon_name, title, text, state="") -%}
-<a class="link-card{% if state %} is-{{ state }}{% endif %}" href="{{ href }}">{{ icon(icon_name, "icon-lg") }}<span class="link-card-text"><span class="link-card-title">{{ title }}</span><span class="link-card-line">{{ text }}</span></span>{{ icon("arrow", "icon-sm") }}</a>
-{%- endmacro %}
-
 {#- callout(title, text, icon_name="", tone="", danger=false, boxed=false,
             action=none)
     Something happening now or needing attention.

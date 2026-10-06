@@ -1921,7 +1921,7 @@ legend.field-label {
   white-space: normal;
 }
 
-/* ------------------------------------------------------------ pills, facts, timelines, link cards */
+/* ------------------------------------------------------------ pills, facts, timelines */
 
 .pill {
   display: inline-flex;
@@ -1958,7 +1958,7 @@ legend.field-label {
 
 .facts {
   display: grid;
-  grid-template-columns: minmax(0, 2.4fr) repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1.6fr) repeat(3, minmax(0, 1fr));
   margin: 0;
 }
 
@@ -2000,6 +2000,9 @@ legend.field-label {
 .fact-line {
   color: var(--text-2);
   font-size: var(--text-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .fact-line + .fact-line {
@@ -2194,52 +2197,8 @@ a.endpoint-text:hover {
   white-space: nowrap;
 }
 
-.panel + .panel,
-.panel + .link-cards {
-  margin-top: var(--space-6);
-}
-
-.link-cards {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: var(--space-4);
-}
-
-.link-card {
-  display: flex;
-  align-items: center;
-  gap: var(--space-5);
-  padding: var(--space-6);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text-2);
-}
-
-.link-card:hover,
-.link-card.is-hover {
-  background: var(--surface-hover);
-  border-color: var(--border-strong);
-  color: var(--text);
-}
-
-.link-card-text {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.link-card-title {
-  color: var(--text);
-  font-weight: 500;
-}
-
-.link-card-line {
-  font-size: var(--text-sm);
-}
-
-/* ------------------------------------------------------------ style guide
+.panel:not(:first-child),
+.panel + /* ------------------------------------------------------------ style guide
  * The catalogue's own layout (components/catalogue.html.jinja). No
  * product page uses these. */
 
@@ -2758,9 +2717,6 @@ a.endpoint-text:hover {
     align-items: center;
   }
 
-  .link-cards {
-    grid-template-columns: minmax(0, 1fr);
-  }
 }
 
 @media (max-width: 520px) {
