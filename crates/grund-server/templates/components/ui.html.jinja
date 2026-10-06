@@ -42,6 +42,26 @@
 <span class="tag{% if tone %} tag-{{ tone }}{% endif %}">{{ text }}</span>
 {%- endmacro %}
 
+{#- pill(text, tone="", icon_name="")
+    A rounded label saying what a thing is or how it is, larger than a
+    tag: "Live" beside an app's name, "Public HTTP" under its address.
+    tone:      a dot of that colour before the text (ok, blue, orange,
+               danger, muted)
+    icon_name: an icon before the text instead -#}
+{% macro pill(text, tone="", icon_name="") -%}
+<span class="pill">{% if icon_name %}{{ icon(icon_name, "icon-sm") }}{% elif tone %}<span class="dot tone-{{ tone }}" aria-hidden="true"></span>{% endif %}{{ text }}</span>
+{%- endmacro %}
+
+{#- image_icon(key, size="")
+    An app's image icon; key from web::apps::image_icon. The page must
+    carry images.sprite() with that key, except "image", the neutral box
+    from the main sprite. size: "" (32 px) or "lg" (72 px, a page head) -#}
+{% macro image_icon(key, size="") -%}
+{% set class = "image-icon" ~ (" image-icon-" ~ size if size else "") %}
+{% if key == "image" %}<span class="{{ class }} image-icon-neutral" aria-hidden="true">{{ icon("box") }}</span>
+{%- else %}<svg class="{{ class }}" viewBox="0 0 32 32" aria-hidden="true"><use href="#img-{{ key }}"/></svg>{% endif %}
+{%- endmacro %}
+
 {#- status(text, tone="ok")
     A toned check and a word: how a thing is ("Serving", "Offline").
     tone: ok, blue, orange, violet or muted -#}
@@ -98,21 +118,27 @@
 <button class="icon-btn copy" type="button" data-copy="{{ text }}" aria-label="Copy {{ label }}" title="Copy" hidden>{{ icon("copy", "icon-sm") }}</button>
 {%- endmacro %}
 
-{#- page_head(title, lede="", status="", tag="", back=none)
+{#- page_head(title, lede="", status="", tag="", back=none, image="",
+              state=none)
     The page's title and one line under it. Every page starts with it.
     lede:   a plain line under the title (the Apps design)
     status: a larger, quieter line saying how things are
     tag:    a small tag beside the title, such as "Coming soon"
     back:   (href, label) for a link above the title, on detail pages
+    image:  an image icon key, drawn large before the title (an app)
+    state:  (text, tone) for a pill() beside the title ("Live")
     Called with {% call %}, the body goes at the right (list tools, or the
     page's primary button). -#}
-{% macro page_head(title, lede="", status="", tag="", back=none) -%}
+{% macro page_head(title, lede="", status="", tag="", back=none, image="", state=none) -%}
 {% if back %}<a class="back" href="{{ back.0 }}">{{ icon("arrow", "icon-sm back-icon") }}{{ back.1 }}</a>{% endif %}
 <div class="page-head">
-  <div>
-    <h1 class="page-title">{{ title }}{% if tag %} <span class="tag">{{ tag }}</span>{% endif %}</h1>
-    {% if lede %}<p class="page-lede">{{ lede }}</p>{% endif %}
-    {% if status %}<p class="status-line">{{ status }}</p>{% endif %}
+  <div class="page-id">
+    {% if image %}{{ image_icon(image, "lg") }}{% endif %}
+    <div>
+      <h1 class="page-title">{{ title }}{% if tag %} <span class="tag">{{ tag }}</span>{% endif %}{% if state %} {{ pill(state.0, state.1) }}{% endif %}</h1>
+      {% if lede %}<p class="page-lede">{{ lede }}</p>{% endif %}
+      {% if status %}<p class="status-line">{{ status }}</p>{% endif %}
+    </div>
   </div>
   {% if caller is defined %}<div class="page-tools">{{ caller() }}</div>{% endif %}
 </div>
@@ -146,13 +172,19 @@
 </section>
 {%- endmacro %}
 
-{#- panel(id, title, lede="")
+{#- panel(id, title, lede="", action=none, danger=false)
     A titled box holding one part of a page's work, such as a form; the
     {% call %} body is its content. id: the heading's id, which labels
-    it. -#}
-{% macro panel(id, title, lede="") -%}
-<section class="panel" aria-labelledby="{{ id }}">
-  <div><h2 class="panel-title" id="{{ id }}">{{ title }}</h2>{% if lede %}<p class="panel-lede">{{ lede }}</p>{% endif %}</div>
+    it (and a link target, such as #danger).
+    action: (href, label) for a secondary button at the right of the
+            title ("View deployment history →")
+    danger: edged in the danger colour, for what cannot be undone -#}
+{% macro panel(id, title, lede="", action=none, danger=false) -%}
+<section class="panel{% if danger %} panel-danger{% endif %}" aria-labelledby="{{ id }}">
+  <div class="panel-head">
+    <div><h2 class="panel-title" id="{{ id }}">{{ title }}</h2>{% if lede %}<p class="panel-lede">{{ lede }}</p>{% endif %}</div>
+    {% if action %}{{ button(action.1, href=action.0, icon_name="arrow", kind="secondary", size="sm", icon_end=true) }}{% endif %}
+  </div>
   {{ caller() }}
 </section>
 {%- endmacro %}
@@ -175,12 +207,14 @@
 {%- endmacro %}
 
 {#- tabs(label, tabs, active)
-    Splits one sidebar section into pages, as links.
+    Splits one thing into pages, as links, so they work without the
+    script: an organisation's settings, an app's Overview and Settings.
     label: the nav's accessible name
-    tabs:  (key, href, text) triples; active: the current key -#}
+    tabs:  (key, href, text) triples, or (key, href, text, icon_name)
+    active: the current key -#}
 {% macro tabs(label, tabs, active) -%}
 <nav class="tabs" aria-label="{{ label }}">
-  {% for key, href, text in tabs %}<a class="tab{% if active == key %} is-active{% endif %}" href="{{ href }}"{% if active == key %} aria-current="page"{% endif %}>{{ text }}</a>
+  {% for tab in tabs %}<a class="tab{% if active == tab[0] %} is-active{% endif %}" href="{{ tab[1] }}"{% if active == tab[0] %} aria-current="page"{% endif %}>{% if tab | length > 3 %}{{ icon(tab[3], "icon-sm") }}{% endif %}{{ tab[2] }}</a>
   {% endfor %}
 </nav>
 {%- endmacro %}
@@ -188,6 +222,50 @@
 {#- org_tabs(org, active): the organisation's General, Members, API tokens and Registries tabs. -#}
 {% macro org_tabs(org, active) -%}
 {{ tabs("Organisation", [("general", "/" ~ org.slug ~ "/settings", "General"), ("members", "/" ~ org.slug ~ "/settings/members", "Members"), ("tokens", "/" ~ org.slug ~ "/settings/tokens", "API tokens"), ("registries", "/" ~ org.slug ~ "/settings/registries", "Registries")], active) }}
+{%- endmacro %}
+
+{#- facts(): a row of fact()s divided by lines, a column below 900 px;
+    the {% call %} body is the facts. -#}
+{% macro facts() -%}
+<dl class="facts">{{ caller() }}</dl>
+{%- endmacro %}
+
+{#- fact(label, value="", icon_name="", tone="", lines=[], wide=false)
+    One fact: a small label, the value large, and quieter lines under it.
+    icon_name: an icon before the value
+    tone:      a large dot of that colour before the value instead (a
+               state)
+    lines:     the lines under the value, the first brighter
+    wide:      takes the room the others leave (an address)
+    Called with {% call %}, the body replaces the value and its lines. -#}
+{% macro fact(label, value="", icon_name="", tone="", lines=[], wide=false) -%}
+<div class="fact{% if wide %} fact-wide{% endif %}">
+  <dt class="fact-label">{{ label }}</dt>
+  {% if caller is defined %}<dd class="fact-body">{{ caller() }}</dd>{% else %}
+  <dd class="fact-value">{% if icon_name %}{{ icon(icon_name) }}{% elif tone %}<span class="dot dot-lg tone-{{ tone }}" aria-hidden="true"></span>{% endif %}<span>{{ value }}</span></dd>
+  {% for line in lines %}<dd class="fact-line">{{ line }}</dd>{% endfor %}
+  {% endif %}
+</div>
+{%- endmacro %}
+
+{#- endpoint(text, href="")
+    Where to reach a thing, large, with a copy button: a link when href
+    is set (a public address, opening in a new tab), else code (an
+    internal name). -#}
+{% macro endpoint(text, href="") -%}
+<p class="endpoint">{{ icon("link") }}{% if href %}<a class="endpoint-text" href="{{ href }}" rel="noopener noreferrer" target="_blank">{{ text }}<span class="visually-hidden"> (opens in a new tab)</span></a>{% else %}<code class="endpoint-text">{{ text }}</code>{% endif %}{{ copy_button(text, "the address") }}</p>
+{%- endmacro %}
+
+{#- link_cards(): link_card()s side by side, stacked below 900 px. -#}
+{% macro link_cards() -%}
+<nav class="link-cards" aria-label="More">{{ caller() }}</nav>
+{%- endmacro %}
+
+{#- link_card(href, icon_name, title, text, state="")
+    A card that is one link onward: an icon, a title over one line, an
+    arrow. state: "hover" pins the hover look (the style guide only). -#}
+{% macro link_card(href, icon_name, title, text, state="") -%}
+<a class="link-card{% if state %} is-{{ state }}{% endif %}" href="{{ href }}">{{ icon(icon_name, "icon-lg") }}<span class="link-card-text"><span class="link-card-title">{{ title }}</span><span class="link-card-line">{{ text }}</span></span>{{ icon("arrow", "icon-sm") }}</a>
 {%- endmacro %}
 
 {#- callout(title, text, icon_name="", tone="", spinner=false, more=none,

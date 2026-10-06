@@ -45,14 +45,6 @@
 <ul class="items items-{{ view }}" data-filterable>{{ caller() }}</ul>
 {%- endmacro %}
 
-{#- image_icon(key): an app's image icon; key from web::apps::image_icon.
-    The page must carry images.sprite() with that key, except "image",
-    the neutral box from the main sprite. -#}
-{% macro image_icon(key) -%}
-{% if key == "image" %}<span class="image-icon image-icon-neutral" aria-hidden="true">{{ ui.icon("box") }}</span>
-{%- else %}<svg class="image-icon" viewBox="0 0 32 32" aria-hidden="true"><use href="#img-{{ key }}"/></svg>{% endif %}
-{%- endmacro %}
-
 {#- app_address(app)
     app.address: its public name, shown as an https link opening in a new
     tab; else app.internal (<app>.grund.internal:<port>) with a copy
@@ -71,23 +63,31 @@
 {% macro app_row(org, app) -%}
 {% set base = "/" ~ org.slug ~ "/apps/" ~ app.name %}
 <li class="item" data-name="{{ app.name }}" data-image="{{ app.image }}">
-  {{ image_icon(app.icon) }}
+  {{ ui.image_icon(app.icon) }}
   <div class="item-text">
     <a class="item-name" href="{{ base }}">{{ app.name }}</a>
     <p class="item-sub">{{ app.image or "No version yet" }}</p>
   </div>
   <div class="item-meta">{{ app_address(app) }}</div>
-  {% call menu("Actions for " ~ app.name) %}
-    {% if app.address %}{{ menu_item("https://" ~ app.address, "external", "Open", external=true) }}{% endif %}
-    {{ menu_item(base, "grid", "Details") }}
-    {{ menu_item(base ~ "#versions", "clock", "Releases") }}
-    {% if org.manages %}
-    {{ menu_item(base ~ "#deploy", "arrow", "Deploy a new version") }}
-    {{ menu_item(base ~ "#copies", "bars", "Scale") }}
-    {{ menu_item(base ~ "#danger", "trash", "Delete…", danger=true) }}
-    {% endif %}
-  {% endcall %}
+  {{ app_menu(org, app) }}
 </li>
+{%- endmacro %}
+
+{#- app_menu(org, app)
+    An app's kebab: open it, its pages, and for owners and admins Deploy
+    change, Scale and Delete. org, app: as for app_row. -#}
+{% macro app_menu(org, app) -%}
+{% set base = "/" ~ org.slug ~ "/apps/" ~ app.name %}
+{% call menu("Actions for " ~ app.name) %}
+  {% if app.address %}{{ menu_item("https://" ~ app.address, "external", "Open", external=true) }}{% endif %}
+  {{ menu_item(base, "home", "Overview") }}
+  {{ menu_item(base ~ "/deployments", "layers", "Deployments") }}
+  {% if org.manages %}
+  {{ menu_item(base ~ "/deploy", "arrow", "Deploy change") }}
+  {{ menu_item(base ~ "/settings#scale", "bars", "Scale") }}
+  {{ menu_item(base ~ "/settings#danger", "trash", "Delete…", danger=true) }}
+  {% endif %}
+{% endcall %}
 {%- endmacro %}
 
 {#- template_row(template, href="")
@@ -97,13 +97,34 @@
               soon); href: where Deploy leads (none: no button) -#}
 {% macro template_row(template, href="") -%}
 <li class="item" data-name="{{ template.key }}">
-  {{ image_icon(template.icon) }}
+  {{ ui.image_icon(template.icon) }}
   <div class="item-text">
     <p class="item-name">{{ template.title }}</p>
     <p class="item-sub item-sub-wrap">{{ template.summary }}</p>
   </div>
   <div class="item-meta">{% if template.soon %}{{ ui.tag(template.soon) }}{% elif href %}{{ ui.button("Deploy", href=href, kind="secondary", size="sm") }}{% endif %}</div>
   <span></span>
+</li>
+{%- endmacro %}
+
+{#- timeline(): what happened, newest first, as event()s on a line. -#}
+{% macro timeline() -%}
+<ol class="timeline">{{ caller() }}</ol>
+{%- endmacro %}
+
+{#- event(title, when="", at="", iso="", meta="", state="")
+    One thing that happened, on the timeline: a marker, a title over the
+    {% call %} body (who and how, with <strong> for a name), and at the
+    right when it was and one more fact (a version).
+    when:  how long ago ("2 hours ago"); at: the exact time, as its title;
+           iso: the same as an ISO 8601 datetime
+    state: the marker. "ok" a check (what runs now), "failed" an alert,
+           "busy" a ring in blue (rolling out), "" a quiet ring -#}
+{% macro event(title, when="", at="", iso="", meta="", state="") -%}
+<li class="event{% if state %} event-{{ state }}{% endif %}">
+  <span class="event-mark" aria-hidden="true">{% if state == "ok" %}{{ ui.icon("ok", "icon-sm") }}{% elif state == "failed" %}{{ ui.icon("alert", "icon-sm") }}{% endif %}</span>
+  <div class="event-text"><p class="event-title">{{ title }}</p><p class="event-sub">{{ caller() }}</p></div>
+  <p class="event-meta">{% if when %}<time datetime="{{ iso }}" title="{{ at }}">{{ when }}</time>{% endif %}{% if meta %}<span>{{ meta }}</span>{% endif %}</p>
 </li>
 {%- endmacro %}
 

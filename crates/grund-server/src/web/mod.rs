@@ -105,9 +105,21 @@ pub fn router(state: State) -> Router {
         .route("/{org}/domains", get(apps::domains_page))
         .route("/{org}/templates", get(apps::templates_page))
         .route("/{org}/apps/{app}", get(apps::app_page))
-        .route("/{org}/apps/{app}/deploy", post(apps::deploy))
-        .route("/{org}/apps/{app}/scale", post(apps::scale))
+        .route("/{org}/apps/{app}/deployments", get(apps::deployments_page))
+        .route("/{org}/apps/{app}/logs", get(apps::logs_page))
+        .route("/{org}/apps/{app}/metrics", get(apps::metrics_page))
+        .route("/{org}/apps/{app}/settings", get(apps::settings_page))
+        .route(
+            "/{org}/apps/{app}/deploy",
+            get(apps::change_page).post(apps::change),
+        )
+        .route("/{org}/apps/{app}/settings/copies", post(apps::configure))
+        .route(
+            "/{org}/apps/{app}/settings/release",
+            post(apps::release_settings),
+        )
         .route("/{org}/apps/{app}/secrets", post(apps::set_secret))
+        .route("/{org}/apps/{app}/secrets/remove", post(apps::remove_secret))
         .route("/{org}/apps/{app}/releases/{number}/rollback", post(apps::rollback))
         .route("/{org}/apps/{app}/delete", post(apps::delete))
         .route("/{org}/machines", get(machines::machines_page))

@@ -1,12 +1,16 @@
 {% extends "layout-app.html.jinja" %}
 {% import "components/images.html.jinja" as images %}
 {% set org = viewer.current %}
-{% block title %}Deploy app · {{ org.slug }} · grund{% endblock %}
+{% block title %}{% if change %}Deploy change · {{ change.name }}{% else %}Deploy app{% endif %} · {{ org.slug }} · grund{% endblock %}
 {% block content %}
 {{ images.sprite(image_keys) }}
+{% if change %}
+{{ ui.page_head("Deploy change", "A new release of " ~ change.name ~ ", starting from what it runs now.", back=(change.base, "Back to " ~ change.name)) }}
+{% else %}
 {{ ui.page_head("Deploy app", "Choose a deployment mode to get started.", back=("/" ~ org.slug ~ "/apps", "Back to apps")) }}
+{% endif %}
 {% if org.manages %}
-{{ ui.choice_links("Deployment mode", modes, mode) }}
+{% if not change %}{{ ui.choice_links("Deployment mode", modes, mode) }}{% endif %}
 {% call forms.form(action, csrf, autocomplete="off") %}
   {{ forms.hidden_field("mode", mode) }}
   {% if mode == "premade" %}
@@ -21,10 +25,11 @@
   {% endcall %}
   {{ ui.callout("Need something else?", "Deploy any container image by its name, with the port, settings and secrets you choose.", icon_name="box", boxed=true, action=(other_mode, "Deploy a custom image")) }}
   {% else %}
-  {% call ui.panel("custom", "Custom deployment", "Paste any container image and deploy with sensible defaults.") %}
+  {% call ui.panel("custom", "Your change" if change else "Custom deployment", "Change what you need; the rest stays as it is. grund resolves the image again, so a moved tag is picked up." if change else "Paste any container image and deploy with sensible defaults.") %}
     {{ forms.form_error(new_error) }}
     {% call forms.grid() %}
-      {{ forms.field("name", "Name", value=new.name, error=errors.name, hint="A unique name for your app. Only lowercase letters, numbers and -.") }}
+      {% if change %}{{ forms.field("name", "Name", value=change.name, disabled=true, hint="An app keeps its name.") }}
+      {% else %}{{ forms.field("name", "Name", value=new.name, error=errors.name, hint="A unique name for your app. Only lowercase letters, numbers and -.") }}{% endif %}
       {{ forms.field("image", "Image", value=new.image, error=errors.image, hint="Container image (e.g. nats:2.10 or ghcr.io/org/app:latest). grund pins the version it finds now.") }}
       {{ forms.choice_field("exposure", "Exposure", exposures, new.exposure or "private", error=errors.exposure, hint=public_hint) }}
       {% call forms.grid() %}
@@ -35,7 +40,7 @@
     {% call forms.disclosure("Advanced options", "Environment variables, secrets, ready check, resources and more.", open=advanced) %}
       {% call forms.grid() %}
         {{ forms.textarea_field("env", "Environment variables", value=new.env, error=errors.env, hint="NAME=value, one per line. Shown on the app's page.", mono=true) }}
-        {{ forms.textarea_field("secrets", "Secrets", error=errors.secrets, hint=("Enter them again: a refused form never shows a secret. " if secrets_dropped else "") ~ "NAME=value, one per line. Stored sealed and never shown again; the app gets each as that variable.", mono=true) }}
+        {{ forms.textarea_field("secrets", "Secrets", error=errors.secrets, hint=("Enter them again: a refused form never shows a secret. " if secrets_dropped else "") ~ ("New values only; " ~ secrets_kept ~ " keep theirs. " if secrets_kept else "") ~ "NAME=value, one per line. Stored sealed and never shown again; the app gets each as that variable.", mono=true) }}
         {{ forms.select_field("check", "Ready check", checks, new.check, hint="What grund asks before a copy counts as ready, on the app's port.") }}
         {{ forms.field("check_path", "Check path", value=new.check_path, required=false, error=errors.check, hint="For an HTTP check, such as /healthz. Empty: /.") }}
         {{ forms.field("memory", "Memory (MiB)", type="number", value=new.memory, required=false, error=errors.memory, hint="Per copy. Empty: 512.") }}
@@ -49,9 +54,9 @@
       {% call ui.hint() %}<strong>Storage</strong> is not available yet: it needs volumes, which grund does not have. An app keeps nothing on disk when a copy is replaced.{% endcall %}
     {% endcall %}
   {% endcall %}
-  {{ ui.callout("Looking for a faster start?", "Switch to premade templates for apps like NATS, whoami and nginx. PostgreSQL, Redis and MinIO come with storage.", icon_name="grid", boxed=true, action=(templates_href, "Browse templates")) }}
+  {% if not change %}{{ ui.callout("Looking for a faster start?", "Switch to premade templates for apps like NATS, whoami and nginx. PostgreSQL, Redis and MinIO come with storage.", icon_name="grid", boxed=true, action=(templates_href, "Browse templates")) }}{% endif %}
   {% endif %}
-  {% call forms.actions() %}{{ ui.button("Cancel", href="/" ~ org.slug ~ "/apps", kind="secondary") }}{{ ui.button("Deploy app") }}{% endcall %}
+  {% call forms.actions() %}{{ ui.button("Cancel", href=change.base if change else "/" ~ org.slug ~ "/apps", kind="secondary") }}{{ ui.button("Deploy change" if change else "Deploy app") }}{% endcall %}
 {% endcall %}
 {% else %}
 {{ ui.empty_state("Your role does not deploy apps", "Owners and admins of " ~ org.slug ~ " deploy them. Ask one to make you an admin.") }}

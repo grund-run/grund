@@ -1,93 +1,19 @@
+{#- An app's page: its head and tabs. Each tab extends this and fills
+    block tab (app-overview, app-deployments, app-soon, app-settings). -#}
 {% extends "layout-app.html.jinja" %}
+{% import "components/images.html.jinja" as images %}
 {% set org = viewer.current %}
-{% set base = "/" ~ org.slug ~ "/apps/" ~ app.name %}
 {% block title %}{{ app.name }} · Apps · {{ org.slug }} · grund{% endblock %}
-{% block head %}{% if app.busy %}<meta http-equiv="refresh" content="3">{% endif %}{% endblock %}
+{% block head %}{% if refresh %}<meta http-equiv="refresh" content="5">{% endif %}{% endblock %}
 {% block content %}
-{{ ui.page_head(app.name, back=("/" ~ org.slug ~ "/apps", "Back to apps")) }}
-{{ ui.status_line(app.line, app.tone, id="app-status") }}
+{{ images.sprite([app.icon]) }}
+{% call ui.page_head(app.name, lede=app.image or "No version yet", back=("/" ~ org.slug ~ "/apps", "Back to apps"), image=app.icon, state=(app.word, app.tone)) %}
+  {% if org.manages %}{{ ui.button("Deploy change", href=app.base ~ "/deploy") }}{% endif %}
+  {{ lists.app_menu(org, app) }}
+{% endcall %}
+{{ ui.tabs(app.name, tabs, tab) }}
 {{ forms.form_ok(notice) }}
 {{ forms.form_error(error) }}
 {% for message in waiting %}{{ forms.form_error(message) }}{% endfor %}
-{% if crowded %}{{ ui.hint("All copies run on " ~ crowded ~ ". If it goes down, so does " ~ app.name ~ ". Add a machine to spread them.") }}{% endif %}
-
-{% call ui.section("copies", "Copies", count=replicas | length) %}
-  {% if replicas %}
-  {% call lists.rows() %}
-    {% for replica in replicas %}
-    {{ lists.row("Copy " ~ replica.slot ~ " of " ~ replica.of ~ " · v" ~ replica.release, "on " ~ replica.machine ~ " · since " ~ replica.placed, icon_name="server", tone=replica.tone, status=replica.words, status_tone=replica.tone) }}
-    {% endfor %}
-  {% endcall %}
-  {% else %}
-  {{ ui.empty_state(text="No copies run yet.") }}
-  {% endif %}
-  {% if org.manages %}
-  {% call forms.form(base ~ "/scale", csrf, layout="") %}
-    {{ forms.form_error(scale_error) }}
-    {{ forms.field("copies", "Copies", type="number", value=app.copies ~ "", autocomplete="off") }}
-    {{ ui.button("Change copies", kind="secondary") }}
-  {% endcall %}
-  {% endif %}
-{% endcall %}
-
-{% if org.manages %}
-{% call ui.section("deploy", "Deploy a new version") %}
-  {% call forms.form(base ~ "/deploy", csrf, layout="row") %}
-    {{ forms.form_error(deploy_error) }}
-    {{ forms.field("image", "Image", value=deploy.image, autocomplete="off") }}
-    {{ forms.field("port", "Port", type="number", value=deploy.port, autocomplete="off", required=false) }}
-    {{ forms.field("check", "Ready check", value=deploy.check, autocomplete="off", required=false) }}
-    {{ forms.textarea_field("env", "Settings", value=deploy.env, hint="NAME=value, one per line. Shown here and in every version; put passwords in a secret.") }}
-    {{ ui.button("Deploy") }}
-  {% endcall %}
-{% endcall %}
-{% endif %}
-
-{% call ui.section("versions", "Versions", count=releases | length) %}
-  {% if releases %}
-  {% call lists.rows() %}
-    {% for release in releases %}
-    {% call(slot) lists.row("v" ~ release.number ~ " · " ~ release.image, release.at ~ " · " ~ release.by ~ " " ~ release.source ~ (" · " ~ release.note if release.note else "") ~ " · " ~ release.digest[:19], icon_name="grid", tone=release.tone, detail=release.reason, status=release.outcome, status_tone=release.tone) %}
-      {%- if slot == "end" and org.manages and not release.live %}{{ forms.post_button(base ~ "/releases/" ~ release.number ~ "/rollback", csrf, "Run this again", size="sm") }}{% endif -%}
-    {% endcall %}
-    {% endfor %}
-  {% endcall %}
-  {% else %}
-  {{ ui.empty_state(text="No versions yet.") }}
-  {% endif %}
-{% endcall %}
-
-{% call ui.section("secrets", "Secrets", count=secrets | length) %}
-  {% if secrets %}
-  {% call lists.rows() %}
-    {% for secret in secrets %}
-    {{ lists.row(secret.name, "version " ~ secret.version ~ " · " ~ secret.at, icon_name="gear", tone="muted") }}
-    {% endfor %}
-  {% endcall %}
-  {% endif %}
-  {% if org.manages %}
-  {% call forms.form(base ~ "/secrets", csrf, layout="row", autocomplete="off") %}
-    {{ forms.form_error(secret_error) }}
-    {{ forms.field("secret", "Name", autocomplete="off", hint="a–z, digits and '-'. A version names it in grund.toml's [secrets].") }}
-    {{ forms.field("value", "Value", type="password", autocomplete="new-password", hint="Never shown again, and never in a version or a log.") }}
-    {{ ui.button("Store it", kind="secondary") }}
-  {% endcall %}
-  {% endif %}
-{% endcall %}
-
-{% if file %}
-{% call ui.section("file", "As a file") %}
-  <p>The latest version as <code>grund.toml</code>, for your repository. Deploying the file through the API makes the same app.</p>
-  {{ ui.code_block(file, id="grund-toml") }}
-{% endcall %}
-{% endif %}
-
-{% if org.manages %}
-{% call ui.section("danger", "Delete") %}
-  {% call forms.form(base ~ "/delete", csrf, layout="") %}
-    <p>Its copies stop and its name is free again. Its versions stay in the history.</p>
-    {{ ui.button("Delete " ~ app.name, kind="danger") }}
-  {% endcall %}
-{% endcall %}
-{% endif %}
+{% block tab %}{% endblock %}
 {% endblock %}

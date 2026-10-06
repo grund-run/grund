@@ -87,18 +87,22 @@
 </details>
 {%- endmacro %}
 
-{#- topbar(viewer, section, list=none)
+{#- topbar(viewer, section, list=none, action=none)
     On organisation pages: the app search and the Deploy app button (for
     owners and admins, not on the deploy page itself).
-    list: the Apps page's query (q, sort, view), so the search keeps the
-          order and the view and filters the list as you type; none
-          elsewhere. -#}
-{% macro topbar(viewer, section, list=none) -%}
+    list:   the Apps page's query (q, sort, view), so the search keeps the
+            order and the view and filters the list as you type; none
+            elsewhere.
+    action: (href, label) for the button instead, where a page has a
+            primary action of its own (an app's "Deploy change") -#}
+{% macro topbar(viewer, section, list=none, action=none) -%}
 {% set org = viewer.current %}
 <header class="topbar">
   {% if org %}
   {{ search("/" ~ org.slug ~ "/apps", "Search apps", list) }}
-  {% if org.manages and section != "deploy" %}
+  {% if org.manages and action %}
+  <span class="topbar-end">{{ ui.button(action.1, href=action.0, icon_name="plus", collapse=true) }}</span>
+  {% elif org.manages and section != "deploy" %}
   <span class="topbar-end">{{ ui.button("Deploy app", href="/" ~ org.slug ~ "/deploy", icon_name="plus", collapse=true) }}</span>
   {% endif %}
   {% else %}

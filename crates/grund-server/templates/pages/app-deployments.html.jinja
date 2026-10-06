@@ -1,0 +1,30 @@
+{% extends "pages/app.html.jinja" %}
+{% block tab %}
+{% if crowded %}{{ ui.hint("All copies run on " ~ crowded ~ ". If it goes down, so does " ~ app.name ~ ". Add a machine to spread them.") }}{% endif %}
+{% call ui.section("copies", "Copies", count=replicas | length, first=true) %}
+  {% if replicas %}
+  {% call lists.rows() %}
+    {% for replica in replicas %}
+    {{ lists.row("Copy " ~ replica.slot ~ " of " ~ replica.of ~ " · v" ~ replica.release, "on " ~ replica.machine ~ " · since " ~ replica.placed, icon_name="server", tone=replica.tone, status=replica.words, status_tone=replica.tone) }}
+    {% endfor %}
+  {% endcall %}
+  {% else %}
+  {{ ui.empty_state(text="No copies run yet.") }}
+  {% endif %}
+{% endcall %}
+
+{% call ui.section("versions", "Releases", count=releases | length) %}
+  {% if releases %}
+  {% call lists.rows() %}
+    {% for release in releases %}
+    {% call(slot) lists.row("v" ~ release.number ~ " · " ~ release.image, release.at ~ " · " ~ release.verb ~ " by " ~ release.by ~ (" " ~ release.source if release.source else "") ~ (" · " ~ release.note if release.note else "") ~ " · " ~ release.digest[:19], icon_name="layers", tone=release.tone, detail=release.reason, status=release.outcome, status_tone=release.tone) %}
+      {%- if slot == "end" and org.manages and not release.live %}{{ forms.post_button(app.base ~ "/releases/" ~ release.number ~ "/rollback", csrf, release.again, size="sm") }}{% endif -%}
+    {% endcall %}
+    {% endfor %}
+  {% endcall %}
+  {{ ui.hint("Rolling back makes a new release with an earlier one's image and settings, and the secrets' newest values.") }}
+  {% else %}
+  {{ ui.empty_state(text="No releases yet.") }}
+  {% endif %}
+{% endcall %}
+{% endblock %}

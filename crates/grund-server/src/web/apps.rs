@@ -17,10 +17,9 @@ use axum::{
 use chrono::{DateTime, Utc};
 use grund_domain::{
     app::{
-        ReleaseSource,
         spec::{
             AppSpec, CheckKind, CheckSpec, EnvVar, MAX_COPIES, PortSpec, Protocol, STOP_SIGNALS,
-            SettingsInput, StopSpec,
+            SecretEnv, SettingsInput, StopSpec,
         },
         templates,
         toml::render as render_toml,
@@ -36,7 +35,7 @@ use serde::Deserialize;
 
 use crate::{
     services::{
-        apps::{AppListing, AppView, AppsError, AppsState, DeployInput, Launch},
+        apps::{AppListing, AppView, AppsError, AppsState, Change, Launch},
         sessions::Session,
     },
     state::State,
@@ -121,51 +120,114 @@ fn capitalise(text: &str) -> String {
         .unwrap_or_default()
 }
 
-fn status_line(view: &AppView) -> (String, &'static str) {
-    let row = &view.row;
-    let name = &row.name;
-    let ready = |release: i64| {
-        view.replicas
-            .iter()
-            .filter(|r| {
-                r.release as i64 == release && r.state == "running" && r.ready == Some(true)
-            })
-            .count()
+fn ago(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    let seconds = (now - at).num_seconds().max(0);
+    let (n, unit) = match seconds {
+        0..60 => return "just now".into(),
+        60..3_600 => (seconds / 60, "minute"),
+        3_600..86_400 => (seconds / 3_600, "hour"),
+        86_400..2_592_000 => (seconds / 86_400, "day"),
+        _ => return at.format("%-d %b %Y").to_string(),
     };
+    format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" })
+}
+
+struct Health {
+    word: &'static str,
+    tone: &'static str,
+    line: String,
+    ready: usize,
+}
+
+fn ready_copies(view: &AppView, release: i64, now: DateTime<Utc>) -> usize {
+    view.replicas
+        .iter()
+        .filter(|r| {
+            r.release as i64 == release
+                && r.state == "running"
+                && r.ready == Some(true)
+                && connected(r.last_seen_at, now)
+        })
+        .count()
+}
+
+fn health(view: &AppView, releases: &[ReleaseRow], now: DateTime<Utc>) -> Health {
+    let row = &view.row;
     let wanted = row.settings.0.copies as usize;
     let rollout = row.rollout.as_ref();
     let to = rollout.and_then(|r| r["to"].as_i64()).unwrap_or(0);
     let current = row.current_release.map(i64::from);
-    match rollout.and_then(|r| r["state"].as_str()) {
-        _ if row.halted => (
+    let ready = current.map_or(0, |c| ready_copies(view, c, now));
+    let health = |word, tone, line: String| Health {
+        word,
+        tone,
+        line,
+        ready,
+    };
+    if row.halted {
+        return health(
+            "Failed",
+            "danger",
             format!(
-                "grund is leaving {name} as it is: v{to} failed and automatic rollback is off. Deploy or roll back to go on."
+                "grund is leaving {} as it is: v{to} failed and automatic rollback is off. Deploy or roll back to go on.",
+                row.name
             ),
-            "orange",
-        ),
-        Some("in_progress") => (
-            format!("Releasing v{to} · {} of {wanted} ready", ready(to)),
-            "muted",
-        ),
+        );
+    }
+    match rollout.and_then(|r| r["state"].as_str()) {
+        Some("in_progress") => {
+            let started = releases
+                .iter()
+                .find(|r| r.number as i64 == to)
+                .map(|r| {
+                    let words = release_words(r);
+                    format!(" · started by {} {}", words.by, words.source)
+                })
+                .unwrap_or_default();
+            health(
+                "Rolling out",
+                "blue",
+                format!(
+                    "Releasing v{to}{} · {} of {wanted} ready",
+                    started.trim_end(),
+                    ready_copies(view, to, now)
+                ),
+            )
+        }
         Some("failed") => {
             let reason = rollout
                 .and_then(|r| r["reason"].as_str())
                 .unwrap_or_default();
             match current {
-                Some(current) => (format!("{reason} v{current} is still serving."), "orange"),
-                None => (format!("{reason} Nothing is running."), "orange"),
+                Some(current) => health(
+                    "Failed",
+                    "danger",
+                    format!("{reason} v{current} is still serving."),
+                ),
+                None => health("Failed", "danger", format!("{reason} Nothing is running.")),
             }
         }
         _ => match current {
-            Some(current) => (
-                format!("v{current} is live on {}", copies(ready(current))),
-                if ready(current) >= wanted {
-                    "ok"
-                } else {
-                    "orange"
-                },
+            None => health(
+                "Stopped",
+                "muted",
+                format!("{} has no version yet. Deploy one.", row.name),
             ),
-            None => (format!("{name} has no version yet. Deploy one."), "muted"),
+            Some(current) if ready >= wanted => health(
+                "Live",
+                "ok",
+                format!("v{current} is live on {}", copies(ready)),
+            ),
+            Some(current) if ready == 0 => health(
+                "Degraded",
+                "orange",
+                format!("No copy of v{current} is ready. grund keeps trying."),
+            ),
+            Some(current) => health(
+                "Degraded",
+                "orange",
+                format!("v{current} is live on {ready} of {wanted} copies"),
+            ),
         },
     }
 }
@@ -229,7 +291,7 @@ fn internal_address(name: &str, spec: &AppSpec) -> Option<String> {
 /// An app as a list row or card shows it.
 pub fn listing_context(listing: &AppListing) -> Value {
     let view = &listing.view;
-    let (line, tone) = status_line(view);
+    let Health { line, tone, .. } = health(view, &[], Utc::now());
     let image = listing
         .spec
         .as_ref()
@@ -298,34 +360,86 @@ fn matches(listing: &AppListing, query: &str) -> bool {
             .is_some_and(|spec| spec.image.to_ascii_lowercase().contains(query))
 }
 
-fn release_context(row: &ReleaseRow) -> Value {
-    let outcome = match row.outcome.as_deref() {
-        Some("rolling_out") => ("Releasing", "muted"),
-        Some("live") => ("Live", "ok"),
-        Some("replaced") => ("Replaced", "muted"),
-        Some("failed") => ("Failed", "orange"),
-        Some("superseded") => ("Superseded", "muted"),
-        _ => ("Made", "muted"),
+struct ReleaseWords {
+    by: String,
+    verb: String,
+    source: &'static str,
+}
+
+fn release_words(row: &ReleaseRow) -> ReleaseWords {
+    ReleaseWords {
+        by: row
+            .created_by_name
+            .clone()
+            .unwrap_or_else(|| "someone".into()),
+        verb: match row.rollback_of {
+            Some(number) if row.source == "rollback" => format!("Rolled back to v{number}"),
+            _ => "Deployed".into(),
+        },
+        source: match row.source.as_str() {
+            "dashboard" => "from the dashboard",
+            "api" => "from the API",
+            "file" => "from grund.toml",
+            _ => "",
+        },
+    }
+}
+
+fn release_context(row: &ReleaseRow, current: Option<i32>, now: DateTime<Utc>) -> Value {
+    let (outcome, tone, title, state, result) = match row.outcome.as_deref() {
+        Some("rolling_out") => ("Releasing", "blue", "Rolling out", "busy", "Rolling out"),
+        Some("live") => (
+            "Live",
+            "ok",
+            "Deployment successful",
+            "ok",
+            "Deployed successfully",
+        ),
+        Some("replaced") => (
+            "Replaced",
+            "muted",
+            "Deployment successful",
+            "",
+            "Deployed successfully",
+        ),
+        Some("failed") => (
+            "Failed",
+            "danger",
+            "Deployment failed",
+            "failed",
+            "Failed to start",
+        ),
+        Some("superseded") => (
+            "Superseded",
+            "muted",
+            "Superseded by a newer release",
+            "",
+            "Superseded",
+        ),
+        _ => (
+            "Made",
+            "muted",
+            "Waiting to roll out",
+            "",
+            "Waiting to roll out",
+        ),
     };
-    let source = match row.source.as_str() {
-        "dashboard" => "from the dashboard".to_string(),
-        "api" => "from the API".to_string(),
-        "file" => "from grund.toml".to_string(),
-        "rollback" => format!("rolled back to v{}", row.rollback_of.unwrap_or(0)),
-        _ => String::new(),
-    };
+    let words = release_words(row);
     context! {
         number => row.number,
         image => row.spec.0.image,
         digest => row.image_digest,
-        by => row.created_by_name.clone().unwrap_or_else(|| "someone".into()),
+        by => words.by,
+        verb => words.verb,
+        source => words.source,
         at => when(row.created_at),
-        source,
+        ago => ago(row.created_at, now),
+        iso => row.created_at.to_rfc3339(),
         note => row.note,
-        outcome => outcome.0,
-        tone => outcome.1,
+        outcome, tone, title, state, result,
         reason => row.reason,
         live => row.outcome.as_deref() == Some("live"),
+        again => if current.is_some_and(|c| row.number < c) { "Roll back to this" } else { "Run this again" },
     }
 }
 
@@ -346,10 +460,14 @@ pub struct ListQuery {
 fn notice_words(done: &str) -> &'static str {
     match done {
         "created" => "App made. Its first version is rolling out.",
-        "deployed" => "New version made. It rolls out behind its ready check.",
-        "scaled" => "Copies changed.",
-        "secret" => "Secret stored. The next version you deploy uses it.",
-        "rolled-back" => "Rolling back: an earlier version's contents, as a new version.",
+        "deployed" => "New release made. It rolls out behind its ready check.",
+        "released" => {
+            "Settings saved as a new release of the same image. It rolls out behind its ready check."
+        }
+        "saved" => "Saved.",
+        "secret" => "Secret stored. A release that reads it is rolling out.",
+        "secret-removed" => "Secret removed. A release without it is rolling out.",
+        "rolled-back" => "Rolling back: an earlier release's image and settings, as a new release.",
         "deleted" => "App deleted. Its copies are stopping.",
         _ => "",
     }
@@ -359,6 +477,7 @@ fn error_words(error: &str) -> &'static str {
     match error {
         "not-allowed" => "Your role does not allow that.",
         "gone" => "That app is no longer there.",
+        "no-release" => "It has no release to change yet.",
         _ => "",
     }
 }
@@ -457,6 +576,7 @@ pub async fn deploy_page(
         &membership,
         form,
         Refusal::default(),
+        None,
     )
     .await
 }
@@ -589,6 +709,11 @@ pub fn template_context(template: &templates::Template) -> Value {
     }
 }
 
+struct Changing {
+    name: String,
+    secrets: Vec<String>,
+}
+
 async fn new_view(
     state: &State,
     browser: &Browser,
@@ -596,6 +721,7 @@ async fn new_view(
     membership: &Membership,
     new: NewForm,
     refused: Refusal,
+    change: Option<Changing>,
 ) -> PageResult {
     let slug = &membership.slug;
     let viewer = viewer_context(state, session, Some(membership)).await?;
@@ -645,13 +771,15 @@ async fn new_view(
             new_error => refused.banner.clone(), errors,
             advanced, secrets_dropped,
             exposures => exposures(state.config.entry.app_domain.as_deref()),
-            public_hint => state.config.entry.app_domain.as_deref().map(|domain| format!("Public: https://<name>-{slug}.{domain}")).unwrap_or_default(),
+            public_hint => state.config.entry.app_domain.as_deref().map(|domain| format!("Public: https://{}-{slug}.{domain}", change.as_ref().map_or("<name>", |c| c.name.as_str()))).unwrap_or_default(),
+            change => change.as_ref().map(|c| context! { name => c.name, base => format!("/{slug}/apps/{}", c.name) }),
+            secrets_kept => change.as_ref().map(|c| c.secrets.join(", ")).unwrap_or_default(),
             templates => choices, image_keys => template_icons(),
             signals => STOP_SIGNALS.iter().map(|s| (*s, *s)).collect::<Vec<_>>(),
             checks => [("", "None"), ("http", "HTTP request"), ("tcp", "TCP connection")],
-            action => format!("/{slug}/deploy"),
             other_mode => mode_href(if premade { "custom" } else { "premade" }),
             templates_href => format!("/{slug}/templates"),
+            action => change.as_ref().map_or(format!("/{slug}/deploy"), |c| format!("/{slug}/apps/{}/deploy", c.name)),
             csrf => browser.csrf_token(), section => "deploy",
         },
     )
@@ -750,6 +878,51 @@ pub struct NewForm {
     stop_grace: String,
 }
 
+fn nonzero(n: impl Into<u64>) -> String {
+    match n.into() {
+        0 => String::new(),
+        n => n.to_string(),
+    }
+}
+
+impl NewForm {
+    fn from_spec(spec: &AppSpec, copies: u32) -> Self {
+        let main = spec.ports.iter().find(|p| p.public).or(spec.ports.first());
+        let lines = |items: Vec<String>| items.join("\n");
+        let (check, check_path) = match spec.check.as_ref().map(|c| &c.kind) {
+            Some(CheckKind::Http { path }) => ("http", path.clone()),
+            Some(CheckKind::Tcp) => ("tcp", String::new()),
+            None => ("", String::new()),
+        };
+        Self {
+            mode: "custom".into(),
+            image: spec.image.clone(),
+            exposure: if main.is_some_and(|p| p.public) {
+                "public"
+            } else {
+                "private"
+            }
+            .into(),
+            port: main.map(|p| p.port.to_string()).unwrap_or_default(),
+            copies: copies.to_string(),
+            env: lines(
+                spec.env
+                    .iter()
+                    .map(|e| format!("{}={}", e.name, e.value))
+                    .collect(),
+            ),
+            check: check.into(),
+            check_path,
+            memory: nonzero(spec.memory_mib),
+            cpu: nonzero(spec.cpu_millis),
+            command: lines(spec.command.clone()),
+            stop_signal: spec.stop.signal.clone(),
+            stop_grace: nonzero(spec.stop.grace_seconds),
+            ..Self::default()
+        }
+    }
+}
+
 fn number<T: std::str::FromStr>(
     text: &str,
     field: &'static str,
@@ -791,22 +964,51 @@ fn copies_of(form: &NewForm) -> Result<Option<u32>, Refusal> {
     )
 }
 
-fn custom_launch(form: &NewForm, public: bool) -> Result<Launch, Refusal> {
-    let copies = copies_of(form)?;
+fn form_spec(
+    form: &NewForm,
+    base: Option<&AppSpec>,
+    public: bool,
+) -> Result<(AppSpec, Option<PortSpec>), Refusal> {
     let port: Option<u16> = number(&form.port, "port", "A port is a number from 1 to 65535.")?;
-    let main = PortSpec {
-        name: "http".into(),
-        port: port.unwrap_or(0),
-        protocol: Protocol::Http,
-        public,
+    let mut ports = base.map(|b| b.ports.clone()).unwrap_or_default();
+    let main_at = ports.iter().position(|p| p.public).unwrap_or(0);
+    let mut main = match ports.get(main_at) {
+        Some(main) => main.clone(),
+        None => PortSpec {
+            name: "http".into(),
+            port: 0,
+            protocol: Protocol::Http,
+            public,
+        },
+    };
+    main.public = public;
+    if public {
+        for other in &mut ports {
+            other.public = false;
+        }
+    }
+    let detect = match port {
+        Some(number) => {
+            main.port = number;
+            match ports.get_mut(main_at) {
+                Some(slot) => *slot = main,
+                None => ports.push(main),
+            }
+            None
+        }
+        None => {
+            if main_at < ports.len() {
+                ports.remove(main_at);
+            }
+            Some(main)
+        }
     };
     let env = pairs(&form.env)
         .map_err(|message| Refusal::field("env", message))?
         .into_iter()
         .map(|(name, value)| EnvVar { name, value })
         .collect();
-    let secrets = pairs(&form.secrets).map_err(|message| Refusal::field("secrets", message))?;
-    let check = match form.check.as_str() {
+    let kind = match form.check.as_str() {
         "http" => Some(CheckKind::Http {
             path: match form.check_path.trim() {
                 "" => "/".to_string(),
@@ -816,6 +1018,16 @@ fn custom_launch(form: &NewForm, public: bool) -> Result<Launch, Refusal> {
         "tcp" => Some(CheckKind::Tcp),
         _ => None,
     };
+    let before = base.and_then(|b| b.check.as_ref());
+    let check = kind.map(|kind| CheckSpec {
+        kind,
+        port: before
+            .map(|c| c.port)
+            .filter(|p| ports.iter().any(|port| port.port == *p))
+            .unwrap_or(0),
+        interval_ms: before.map_or(0, |c| c.interval_ms),
+        timeout_ms: before.map_or(0, |c| c.timeout_ms),
+    });
     let memory_mib = number(
         &form.memory,
         "memory",
@@ -831,13 +1043,8 @@ fn custom_launch(form: &NewForm, public: bool) -> Result<Launch, Refusal> {
         "stop",
         "The grace period is a whole number of seconds, at most 300.",
     )?;
-    Ok(Launch {
-        name: form.name.clone(),
-        settings: SettingsInput {
-            copies,
-            ..Default::default()
-        },
-        spec: AppSpec {
+    Ok((
+        AppSpec {
             image: form.image.trim().to_string(),
             command: form
                 .command
@@ -846,28 +1053,32 @@ fn custom_launch(form: &NewForm, public: bool) -> Result<Launch, Refusal> {
                 .filter(|l| !l.is_empty())
                 .map(str::to_string)
                 .collect(),
-            ports: if port.is_some() {
-                vec![main.clone()]
-            } else {
-                Vec::new()
-            },
+            ports,
             memory_mib: memory_mib.unwrap_or(0),
             cpu_millis: cpu_millis.unwrap_or(0),
             env,
-            secrets: Vec::new(),
-            check: check.map(|kind| CheckSpec {
-                kind,
-                port: 0,
-                interval_ms: 0,
-                timeout_ms: 0,
-            }),
+            secrets: base.map(|b| b.secrets.clone()).unwrap_or_default(),
+            check,
             stop: StopSpec {
                 signal: form.stop_signal.trim().to_string(),
                 grace_seconds: grace_seconds.unwrap_or(0),
             },
         },
-        detect_port: port.is_none().then_some(main),
-        secrets,
+        detect,
+    ))
+}
+
+fn custom_launch(form: &NewForm, public: bool) -> Result<Launch, Refusal> {
+    let (spec, detect_port) = form_spec(form, None, public)?;
+    Ok(Launch {
+        name: form.name.clone(),
+        settings: SettingsInput {
+            copies: copies_of(form)?,
+            ..Default::default()
+        },
+        spec,
+        detect_port,
+        secrets: pairs(&form.secrets).map_err(|message| Refusal::field("secrets", message))?,
     })
 }
 
@@ -902,52 +1113,6 @@ fn premade_launch(form: &NewForm, public: bool) -> Result<Launch, Refusal> {
         spec,
         detect_port: None,
         secrets: Vec::new(),
-    })
-}
-
-fn simple_spec(image: &str, port: &str, check: &str, env: Vec<EnvVar>) -> Result<AppSpec, String> {
-    let port = port.trim();
-    let ports = if port.is_empty() {
-        Vec::new()
-    } else {
-        let number: u16 = port
-            .parse()
-            .ok()
-            .filter(|p| *p > 0)
-            .ok_or("A port is a number from 1 to 65535.")?;
-        vec![PortSpec {
-            name: "http".into(),
-            port: number,
-            protocol: Protocol::Http,
-            public: false,
-        }]
-    };
-    let check = check.trim();
-    let check = if check.is_empty() {
-        None
-    } else {
-        Some(CheckSpec {
-            kind: CheckKind::Http {
-                path: check.to_string(),
-            },
-            port: 0,
-            interval_ms: 0,
-            timeout_ms: 0,
-        })
-    };
-    Ok(AppSpec {
-        image: image.trim().to_string(),
-        command: Vec::new(),
-        ports,
-        memory_mib: 0,
-        cpu_millis: 0,
-        env,
-        secrets: Vec::new(),
-        check,
-        stop: StopSpec {
-            signal: String::new(),
-            grace_seconds: 0,
-        },
     })
 }
 
@@ -1016,7 +1181,7 @@ pub async fn create(
         }
         Err(refused) => refused,
     };
-    new_view(&state, &browser, &session, &membership, form, refused).await
+    new_view(&state, &browser, &session, &membership, form, refused, None).await
 }
 
 fn urlencode(text: &str) -> String {
@@ -1035,53 +1200,97 @@ pub struct AppQuery {
     deploy_error: String,
 }
 
-/// `/{org}/apps/{app}`.
-pub async fn app_page(
-    AxumState(state): AxumState<State>,
-    browser: Browser,
-    uri: Uri,
-    Path((slug, name)): Path<(String, String)>,
-    Query(query): Query<AppQuery>,
-) -> PageResult {
-    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
-    app_view(
-        &state,
-        &browser,
-        &session,
-        &membership,
-        &name,
-        AppForm {
-            notice: notice_words(&query.done).into(),
-            error: error_words(&query.error).into(),
-            deploy_error: query.deploy_error.chars().take(300).collect(),
-            ..Default::default()
-        },
-    )
-    .await
-}
+const APP_TABS: &[(&str, &str, &str, &str)] = &[
+    ("overview", "", "Overview", "home"),
+    ("deployments", "/deployments", "Deployments", "layers"),
+    ("logs", "/logs", "Logs", "file"),
+    ("metrics", "/metrics", "Metrics", "bars"),
+    ("settings", "/settings", "Settings", "gear"),
+];
+
+const SETTINGS_FIELDS: &[&str] = &[
+    "copies", "exposure", "port", "check", "env", "variable", "value", "confirm",
+];
 
 #[derive(Default)]
-struct AppForm {
-    notice: String,
-    error: String,
-    deploy_error: String,
-    deploy: Option<DeployForm>,
-    secret_error: String,
-    scale_error: String,
+struct Refused {
+    part: &'static str,
+    refusal: Refusal,
+    form: Option<NewForm>,
+    variable: String,
 }
 
+macro_rules! app_page {
+    ($name:ident, $tab:literal, $doc:literal) => {
+        #[doc = $doc]
+        pub async fn $name(
+            AxumState(state): AxumState<State>,
+            browser: Browser,
+            uri: Uri,
+            Path((slug, name)): Path<(String, String)>,
+            Query(query): Query<AppQuery>,
+        ) -> PageResult {
+            let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
+            let error = match error_words(&query.error) {
+                "" => query.deploy_error.chars().take(300).collect(),
+                words => words.to_string(),
+            };
+            app_view(
+                &state,
+                &browser,
+                &session,
+                &membership,
+                &name,
+                $tab,
+                (notice_words(&query.done).to_string(), error),
+                Refused::default(),
+            )
+            .await
+        }
+    };
+}
+
+app_page!(
+    app_page,
+    "overview",
+    "`/{org}/apps/{app}`: how it is, where it answers and what happened lately."
+);
+app_page!(
+    deployments_page,
+    "deployments",
+    "`/{org}/apps/{app}/deployments`: its copies and every release, with rollback."
+);
+app_page!(
+    logs_page,
+    "logs",
+    "`/{org}/apps/{app}/logs`: not built; the page says so."
+);
+app_page!(
+    metrics_page,
+    "metrics",
+    "`/{org}/apps/{app}/metrics`: not built; the page says so."
+);
+app_page!(
+    settings_page,
+    "settings",
+    "`/{org}/apps/{app}/settings`: copies, exposure, port, checks, environment, secrets and delete."
+);
+
+#[allow(clippy::too_many_arguments)]
 async fn app_view(
     state: &State,
     browser: &Browser,
     session: &Session,
     membership: &Membership,
     name: &str,
-    form: AppForm,
+    tab: &str,
+    (notice, error): (String, String),
+    refused: Refused,
 ) -> PageResult {
     let slug = &membership.slug;
     let apps = state.apps();
-    let view = match apps.get(membership.organisation_id, name).await {
-        Ok(view) => view,
+    let listing = match apps.listing(membership.organisation_id, slug, name).await {
+        Ok(listing) => listing,
         Err(AppsError::NotFound) => return Ok(redirect(&format!("/{slug}/apps?error=gone"))),
         Err(error) => return Err(PageError::from(anyhow::anyhow!(error))),
     };
@@ -1089,8 +1298,24 @@ async fn app_view(
         .releases(membership.organisation_id, name)
         .await
         .map_err(|e| PageError::from(anyhow::anyhow!(e)))?;
+    let view = &listing.view;
+    let base = format!("/{slug}/apps/{}", view.row.name);
     let now = Utc::now();
-    let copies_wanted = view.row.settings.0.copies;
+    let wanted = view.row.settings.0.copies;
+    let current = view.row.current_release;
+    let health = health(view, &releases, now);
+    let shown = listing_context(&listing);
+    let lede = match health.word {
+        "Live" if listing.address.is_some() => "Your application is running and accessible.",
+        "Live" if shown.get_attr("internal").is_ok_and(|i| !i.is_none()) => {
+            "Your application is running. Other apps reach it by its internal name."
+        }
+        "Live" => "Your application is running.",
+        "Rolling out" => "A new release is rolling out behind its ready check.",
+        "Degraded" => "Not every copy is ready.",
+        "Failed" => "The newest release did not start.",
+        _ => "Nothing runs yet.",
+    };
     let replicas: Vec<Value> = view
         .replicas
         .iter()
@@ -1098,7 +1323,7 @@ async fn app_view(
             let (words, tone) = replica_words(replica, now);
             context! {
                 slot => replica.slot + 1,
-                of => copies_wanted,
+                of => wanted,
                 release => replica.release,
                 machine => replica.machine_name.clone().unwrap_or_default(),
                 words,
@@ -1113,7 +1338,7 @@ async fn app_view(
         .filter(|r| r.state == "running")
         .filter_map(|r| r.machine_name.as_deref())
         .collect();
-    let crowded = (copies_wanted >= 2 && machines.len() == 1)
+    let crowded = (wanted >= 2 && machines.len() == 1)
         .then(|| machines.iter().next().map(|m| m.to_string()))
         .flatten();
     let waiting: Vec<String> = view
@@ -1129,7 +1354,6 @@ async fn app_view(
             messages
         })
         .unwrap_or_default();
-    let (line, tone) = status_line(&view);
     let busy = view
         .row
         .rollout
@@ -1140,90 +1364,199 @@ async fn app_view(
             .replicas
             .iter()
             .any(|r| r.state == "draining" || r.ready != Some(true));
-    let latest = releases.first();
-    let deploy = form.deploy.unwrap_or_else(|| match latest {
-        Some(release) => DeployForm::from_spec(&release.spec.0),
-        None => DeployForm::default(),
-    });
-    let file = latest.map(|r| render_toml(&view.row.name, &r.spec.0, &view.row.settings.0));
-    let secrets: Vec<Value> = view
-        .secrets
+    let history: Vec<Value> = releases
         .iter()
-        .map(|(name, version, at)| context! { name, version, at => when(*at) })
+        .map(|r| release_context(r, current, now))
         .collect();
+    let newest = releases.first();
+    let spec = newest.map(|r| &r.spec.0);
+    let form = refused.form.unwrap_or_else(|| match spec {
+        Some(spec) => NewForm::from_spec(spec, wanted),
+        None => NewForm::default(),
+    });
+    let read: Vec<&SecretEnv> = spec.map(|s| s.secrets.iter().collect()).unwrap_or_default();
+    let mut secrets: Vec<Value> = read
+        .iter()
+        .map(|secret| {
+            let stored = view.secrets.iter().find(|(n, _, _)| *n == secret.secret);
+            context! {
+                variable => secret.env,
+                name => secret.secret,
+                sub => match stored {
+                    Some((_, version, at)) => format!("secret {} · version {version} · set {}", secret.secret, when(*at)),
+                    None => format!("secret {} · not stored", secret.secret),
+                },
+            }
+        })
+        .collect();
+    secrets.extend(
+        view.secrets
+            .iter()
+            .filter(|(n, _, _)| !read.iter().any(|s| s.secret == *n))
+            .map(|(name, version, at)| {
+                context! {
+                    variable => "", name,
+                    sub => format!("not read by the app · version {version} · set {}", when(*at)),
+                }
+            }),
+    );
+    let errors: std::collections::BTreeMap<&str, &str> = SETTINGS_FIELDS
+        .iter()
+        .map(|f| (*f, refused.refusal.fields.get(f).map_or("", String::as_str)))
+        .collect();
+    let banners: std::collections::BTreeMap<&str, &str> =
+        ["copies", "release", "secrets", "delete"]
+            .into_iter()
+            .map(|part| {
+                (
+                    part,
+                    if part == refused.part {
+                        refused.refusal.banner.as_str()
+                    } else {
+                        ""
+                    },
+                )
+            })
+            .collect();
+    let soon = match tab {
+        "logs" => context! {
+            title => "Logs are coming",
+            text => "grund does not collect what an app writes yet. When it does, each copy's output and errors show here, as they happen.",
+        },
+        _ => context! {
+            title => "Metrics are coming",
+            text => "grund does not measure apps yet. When it does, each copy's CPU and memory, and the requests that reach the app, show here.",
+        },
+    };
+    let template = match tab {
+        "overview" => "pages/app-overview.html.jinja",
+        "deployments" => "pages/app-deployments.html.jinja",
+        "settings" => "pages/app-settings.html.jinja",
+        _ => "pages/app-soon.html.jinja",
+    };
     let viewer = viewer_context(state, session, Some(membership)).await?;
     render(
         state,
         browser,
-        StatusCode::OK,
-        "pages/app.html.jinja",
+        if refused.part.is_empty() {
+            StatusCode::OK
+        } else {
+            StatusCode::UNPROCESSABLE_ENTITY
+        },
+        template,
         context! {
             viewer,
+            tab,
+            tabs => APP_TABS.iter().map(|(key, path, label, icon)| (*key, format!("{base}{path}"), *label, *icon)).collect::<Vec<_>>(),
             app => context! {
                 name => view.row.name,
-                line, tone, busy,
-                copies => copies_wanted,
-                current => view.row.current_release,
-                halted => view.row.halted,
+                base,
+                icon => shown.get_attr("icon").ok(),
+                image => spec.map(|s| s.image.clone()),
+                address => listing.address,
+                internal => shown.get_attr("internal").ok(),
+                word => health.word, tone => health.tone, line => health.line, lede,
+                ready => health.ready,
+                copies_line => if health.ready >= wanted as usize { "Running instances".to_string() } else { format!("Ready, of {wanted} wanted") },
             },
+            latest => history.first(),
+            activity => history.iter().take(3).collect::<Vec<_>>(),
+            releases => history,
             replicas, waiting, crowded,
-            releases => releases.iter().map(release_context).collect::<Vec<_>>(),
-            secrets, file,
-            deploy => Value::from_serialize(&deploy),
-            notice => form.notice, error => form.error,
-            deploy_error => form.deploy_error, secret_error => form.secret_error,
-            scale_error => form.scale_error,
+            refresh => busy && matches!(tab, "overview" | "deployments"),
+            soon,
+            settings => context! {
+                copies => wanted,
+                auto_rollback => if view.row.settings.0.auto_rollback { "on" } else { "off" },
+                number => newest.map(|r| r.number),
+                digest => newest.map(|r| r.image_digest.chars().take(19).collect::<String>()),
+            },
+            rollback_choices => vec![
+                context! { value => "on", title => "Roll back on its own", text => "The release before keeps serving" },
+                context! { value => "off", title => "Leave it as it is", text => "To debug a failing release in place" },
+            ],
+            exposures => exposures(state.config.entry.app_domain.as_deref()),
+            public_hint => state.config.entry.app_domain.as_deref().map(|domain| format!("Public: https://{}-{slug}.{domain}", view.row.name)).unwrap_or_default(),
+            checks => [("", "None"), ("http", "HTTP request"), ("tcp", "TCP connection")],
+            form => Value::from_serialize(&form),
+            variable => refused.variable,
+            secrets, errors, banners,
+            file => newest.map(|r| render_toml(&view.row.name, &r.spec.0, &view.row.settings.0)),
+            notice, error,
+            topbar_action => (format!("/{slug}/apps/{}/deploy", view.row.name), "Deploy change"),
             csrf => browser.csrf_token(), section => "apps",
         },
     )
 }
 
-#[derive(Deserialize, Default, serde::Serialize, Clone)]
-pub struct DeployForm {
-    #[serde(default, skip_serializing)]
-    csrf: String,
-    #[serde(default)]
-    image: String,
-    #[serde(default)]
-    port: String,
-    #[serde(default)]
-    check: String,
-    #[serde(default)]
-    env: String,
+async fn newest_spec(
+    state: &State,
+    membership: &Membership,
+    name: &str,
+) -> Result<Result<(AppSpec, u32), Response>, PageError> {
+    let slug = &membership.slug;
+    let apps = state.apps();
+    let view = match apps.get(membership.organisation_id, name).await {
+        Ok(view) => view,
+        Err(AppsError::NotFound) => return Ok(Err(redirect(&format!("/{slug}/apps?error=gone")))),
+        Err(error) => return Err(PageError::from(anyhow::anyhow!(error))),
+    };
+    let releases = apps
+        .releases(membership.organisation_id, name)
+        .await
+        .map_err(|e| PageError::from(anyhow::anyhow!(e)))?;
+    Ok(match releases.into_iter().next() {
+        Some(release) => Ok((release.spec.0, view.row.settings.0.copies)),
+        None => Err(redirect(&format!("/{slug}/apps/{name}?error=no-release"))),
+    })
 }
 
-impl DeployForm {
-    fn from_spec(spec: &AppSpec) -> Self {
-        Self {
-            csrf: String::new(),
-            image: spec.image.clone(),
-            port: spec
-                .ports
-                .first()
-                .map(|p| p.port.to_string())
-                .unwrap_or_default(),
-            check: match spec.check.as_ref().map(|c| &c.kind) {
-                Some(CheckKind::Http { path }) => path.clone(),
-                _ => String::new(),
-            },
-            env: spec
-                .env
-                .iter()
-                .map(|e| format!("{}={}", e.name, e.value))
-                .collect::<Vec<_>>()
-                .join("\n"),
+macro_rules! newest_or_return {
+    ($state:expr, $membership:expr, $name:expr) => {
+        match newest_spec($state, $membership, $name).await? {
+            Ok(found) => found,
+            Err(response) => return Ok(response),
         }
-    }
+    };
 }
 
-/// `POST /{org}/apps/{app}/deploy`: the next version, from the form. Its
-/// secrets, command and stop settings are kept from the latest version.
-pub async fn deploy(
+/// `/{org}/apps/{app}/deploy`: Deploy app's form, filled in with what the
+/// app runs now, to make its next release.
+pub async fn change_page(
     AxumState(state): AxumState<State>,
     browser: Browser,
     uri: Uri,
     Path((slug, name)): Path<(String, String)>,
-    Form(form): Form<DeployForm>,
+) -> PageResult {
+    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
+    if !manages(&membership) {
+        return Ok(redirect(&format!("/{slug}/apps/{name}?error=not-allowed")));
+    }
+    let (spec, copies) = newest_or_return!(&state, &membership, &name);
+    let changing = Changing {
+        name: name.clone(),
+        secrets: spec.secrets.iter().map(|s| s.env.clone()).collect(),
+    };
+    new_view(
+        &state,
+        &browser,
+        &session,
+        &membership,
+        NewForm::from_spec(&spec, copies),
+        Refusal::default(),
+        Some(changing),
+    )
+    .await
+}
+
+/// `POST /{org}/apps/{app}/deploy`: the next release, from Deploy change.
+/// A refusal comes back as the form with 422, and nothing is made.
+pub async fn change(
+    AxumState(state): AxumState<State>,
+    browser: Browser,
+    uri: Uri,
+    Path((slug, name)): Path<(String, String)>,
+    Form(form): Form<NewForm>,
 ) -> PageResult {
     if !browser.form_is_genuine(&form.csrf) {
         return forged(&state, &browser);
@@ -1232,83 +1565,107 @@ pub async fn deploy(
     if !manages(&membership) {
         return Ok(redirect(&format!("/{slug}/apps/{name}?error=not-allowed")));
     }
-    let refuse = |message: String, form: DeployForm| {
-        let (state, browser, session, membership, name) =
-            (&state, &browser, &session, &membership, &name);
-        async move {
-            app_view(
-                state,
-                browser,
-                session,
-                membership,
-                name,
-                AppForm {
-                    deploy_error: message,
-                    deploy: Some(form),
-                    ..Default::default()
-                },
+    let (spec, _) = newest_or_return!(&state, &membership, &name);
+    let changing = Changing {
+        name: name.clone(),
+        secrets: spec.secrets.iter().map(|s| s.env.clone()).collect(),
+    };
+    let public = form.exposure == "public";
+    let made = if public && state.config.entry.app_domain.is_none() {
+        Err(Refusal::field(
+            "exposure",
+            "This instance gives apps no public address. Choose Private.",
+        ))
+    } else {
+        changed(&form, &spec, public)
+    };
+    let refused = match made {
+        Ok(change) => match state
+            .apps()
+            .change(
+                session.account_id,
+                membership.organisation_id,
+                &name,
+                change,
             )
             .await
-        }
+        {
+            Ok(_) => return Ok(redirect(&format!("/{slug}/apps/{name}?done=deployed"))),
+            Err(AppsError::NotFound) => return Ok(redirect(&format!("/{slug}/apps?error=gone"))),
+            Err(error) => refusal(&error),
+        },
+        Err(refused) => refused,
     };
-    let env = match pairs(&form.env) {
-        Ok(pairs) => pairs
-            .into_iter()
-            .map(|(name, value)| EnvVar { name, value })
-            .collect(),
-        Err(message) => return refuse(message, form).await,
-    };
-    let mut spec = match simple_spec(&form.image, &form.port, &form.check, env) {
-        Ok(spec) => spec,
-        Err(message) => return refuse(message, form).await,
-    };
-    let apps = state.apps();
-    if let Ok(releases) = apps.releases(membership.organisation_id, &name).await
-        && let Some(latest) = releases.first()
-    {
-        let before = &latest.spec.0;
-        spec.secrets = before.secrets.clone();
-        spec.command = before.command.clone();
-        spec.stop = before.stop.clone();
-        spec.memory_mib = before.memory_mib;
-        spec.cpu_millis = before.cpu_millis;
-        if let (Some(check), Some(old)) = (&mut spec.check, &before.check) {
-            check.interval_ms = old.interval_ms;
-            check.timeout_ms = old.timeout_ms;
-        }
-    }
-    match apps
-        .deploy(
-            session.account_id,
-            membership.organisation_id,
-            &name,
-            DeployInput::Spec(spec),
-            ReleaseSource::Dashboard,
-            "",
-        )
-        .await
-    {
-        Ok(_) => Ok(redirect(&format!("/{slug}/apps/{name}?done=deployed"))),
-        Err(AppsError::NotFound) => Ok(redirect(&format!("/{slug}/apps?error=gone"))),
-        Err(error) => refuse(sentence(&error), form).await,
-    }
+    new_view(
+        &state,
+        &browser,
+        &session,
+        &membership,
+        form,
+        refused,
+        Some(changing),
+    )
+    .await
+}
+
+fn changed(form: &NewForm, base: &AppSpec, public: bool) -> Result<Change, Refusal> {
+    let (spec, detect_port) = form_spec(form, Some(base), public)?;
+    Ok(Change {
+        copies: copies_of(form)?,
+        spec,
+        detect_port,
+        secrets: pairs(&form.secrets).map_err(|message| Refusal::field("secrets", message))?,
+        same_image: false,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn refuse_setting(
+    state: &State,
+    browser: &Browser,
+    session: &Session,
+    membership: &Membership,
+    name: &str,
+    part: &'static str,
+    refusal: Refusal,
+    form: Option<NewForm>,
+) -> PageResult {
+    app_view(
+        state,
+        browser,
+        session,
+        membership,
+        name,
+        "settings",
+        (String::new(), String::new()),
+        Refused {
+            part,
+            refusal,
+            form,
+            variable: String::new(),
+        },
+    )
+    .await
 }
 
 #[derive(Deserialize)]
-pub struct ScaleForm {
+pub struct CopiesForm {
     #[serde(default)]
     csrf: String,
     #[serde(default)]
     copies: String,
+    #[serde(default)]
+    auto_rollback: String,
 }
 
-/// `POST /{org}/apps/{app}/scale`.
-pub async fn scale(
+/// `POST /{org}/apps/{app}/settings/copies`: how many copies, and whether
+/// a failed release rolls back on its own. No new release.
+pub async fn configure(
     AxumState(state): AxumState<State>,
     browser: Browser,
     uri: Uri,
     Path((slug, name)): Path<(String, String)>,
-    Form(form): Form<ScaleForm>,
+    Form(form): Form<CopiesForm>,
 ) -> PageResult {
     if !browser.form_is_genuine(&form.csrf) {
         return forged(&state, &browser);
@@ -1317,33 +1674,122 @@ pub async fn scale(
     if !manages(&membership) {
         return Ok(redirect(&format!("/{slug}/apps/{name}?error=not-allowed")));
     }
-    let message = match form.copies.trim().parse::<u32>() {
-        Err(_) => "Copies is a whole number.".to_string(),
-        Ok(copies) => match state
-            .apps()
-            .scale(
-                session.account_id,
-                membership.organisation_id,
-                &name,
-                copies,
-            )
-            .await
-        {
-            Ok(_) => return Ok(redirect(&format!("/{slug}/apps/{name}?done=scaled"))),
-            Err(AppsError::NotFound) => return Ok(redirect(&format!("/{slug}/apps?error=gone"))),
-            Err(error) => sentence(&error),
-        },
+    let apps = state.apps();
+    let view = match apps.get(membership.organisation_id, &name).await {
+        Ok(view) => view,
+        Err(AppsError::NotFound) => return Ok(redirect(&format!("/{slug}/apps?error=gone"))),
+        Err(error) => return Err(PageError::from(anyhow::anyhow!(error))),
     };
-    app_view(
+    let refusal = match form.copies.trim().parse::<u32>() {
+        Ok(copies) => match view.row.settings.0.with_copies(copies) {
+            Ok(settings) => {
+                let mut input = settings.as_input();
+                input.auto_rollback = Some(form.auto_rollback != "off");
+                match apps
+                    .configure(session.account_id, membership.organisation_id, &name, input)
+                    .await
+                {
+                    Ok(_) => {
+                        return Ok(redirect(&format!(
+                            "/{slug}/apps/{name}/settings?done=saved"
+                        )));
+                    }
+                    Err(AppsError::NotFound) => {
+                        return Ok(redirect(&format!("/{slug}/apps?error=gone")));
+                    }
+                    Err(error) => refusal(&error),
+                }
+            }
+            Err(error) => refusal(&AppsError::Spec(error)),
+        },
+        _ => Refusal::field(
+            "copies",
+            format!("Copies is a whole number from 1 to {MAX_COPIES}."),
+        ),
+    };
+    refuse_setting(
         &state,
         &browser,
         &session,
         &membership,
         &name,
-        AppForm {
-            scale_error: message,
-            ..Default::default()
+        "copies",
+        refusal,
+        None,
+    )
+    .await
+}
+
+/// `POST /{org}/apps/{app}/settings/release`: exposure, port, ready check
+/// and environment, as a new release of the image the newest one runs.
+pub async fn release_settings(
+    AxumState(state): AxumState<State>,
+    browser: Browser,
+    uri: Uri,
+    Path((slug, name)): Path<(String, String)>,
+    Form(posted): Form<NewForm>,
+) -> PageResult {
+    if !browser.form_is_genuine(&posted.csrf) {
+        return forged(&state, &browser);
+    }
+    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
+    if !manages(&membership) {
+        return Ok(redirect(&format!("/{slug}/apps/{name}?error=not-allowed")));
+    }
+    let (spec, copies) = newest_or_return!(&state, &membership, &name);
+    let form = NewForm {
+        exposure: posted.exposure,
+        port: posted.port,
+        check: posted.check,
+        check_path: posted.check_path,
+        env: posted.env,
+        ..NewForm::from_spec(&spec, copies)
+    };
+    let public = form.exposure == "public";
+    let made = if public && state.config.entry.app_domain.is_none() {
+        Err(Refusal::field(
+            "exposure",
+            "This instance gives apps no public address. Choose Private.",
+        ))
+    } else {
+        form_spec(&form, Some(&spec), public).map(|(spec, _)| Change {
+            copies: None,
+            spec,
+            detect_port: None,
+            secrets: Vec::new(),
+            same_image: true,
+        })
+    };
+    let refusal = match made {
+        Ok(change) => match state
+            .apps()
+            .change(
+                session.account_id,
+                membership.organisation_id,
+                &name,
+                change,
+            )
+            .await
+        {
+            Ok(_) => {
+                return Ok(redirect(&format!(
+                    "/{slug}/apps/{name}/settings?done=released"
+                )));
+            }
+            Err(AppsError::NotFound) => return Ok(redirect(&format!("/{slug}/apps?error=gone"))),
+            Err(error) => refusal(&error),
         },
+        Err(refusal) => refusal,
+    };
+    refuse_setting(
+        &state,
+        &browser,
+        &session,
+        &membership,
+        &name,
+        "release",
+        refusal,
+        Some(form),
     )
     .await
 }
@@ -1353,13 +1799,14 @@ pub struct SecretForm {
     #[serde(default)]
     csrf: String,
     #[serde(default)]
-    secret: String,
+    variable: String,
     #[serde(default)]
     value: String,
 }
 
-/// `POST /{org}/apps/{app}/secrets`: stores a value; the page never shows
-/// it again.
+/// `POST /{org}/apps/{app}/secrets`: stores a value for a variable and
+/// releases the newest release's image again with it. The page never
+/// shows the value again.
 pub async fn set_secret(
     AxumState(state): AxumState<State>,
     browser: Browser,
@@ -1374,30 +1821,121 @@ pub async fn set_secret(
     if !manages(&membership) {
         return Ok(redirect(&format!("/{slug}/apps/{name}?error=not-allowed")));
     }
-    match state
+    let (spec, _) = newest_or_return!(&state, &membership, &name);
+    let variable = form.variable.trim().to_string();
+    let change = Change {
+        copies: None,
+        spec,
+        detect_port: None,
+        secrets: vec![(variable.clone(), form.value)],
+        same_image: true,
+    };
+    let refusal = match state
         .apps()
-        .set_secret(
+        .change(
             session.account_id,
             membership.organisation_id,
             &name,
-            form.secret.trim(),
-            form.value.as_bytes(),
+            change,
         )
         .await
     {
-        Ok(_) => Ok(redirect(&format!("/{slug}/apps/{name}?done=secret"))),
+        Ok(_) => {
+            return Ok(redirect(&format!(
+                "/{slug}/apps/{name}/settings?done=secret"
+            )));
+        }
+        Err(AppsError::NotFound) => return Ok(redirect(&format!("/{slug}/apps?error=gone"))),
+        Err(AppsError::Spec(spec))
+            if spec.field.starts_with("secrets")
+                || spec.field == "secret"
+                || spec.field.starts_with("env") =>
+        {
+            let field = if spec.field.ends_with(".value") {
+                "value"
+            } else {
+                "variable"
+            };
+            Refusal::field(field, format!("{}.", capitalise(&spec.problem)))
+        }
+        Err(error) => Refusal::banner(sentence(&error)),
+    };
+    app_view(
+        &state,
+        &browser,
+        &session,
+        &membership,
+        &name,
+        "settings",
+        (String::new(), String::new()),
+        Refused {
+            part: "secrets",
+            refusal,
+            form: None,
+            variable,
+        },
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+pub struct VariableForm {
+    #[serde(default)]
+    csrf: String,
+    #[serde(default)]
+    variable: String,
+}
+
+/// `POST /{org}/apps/{app}/secrets/remove`: a new release of the same
+/// image that no longer reads a secret through `variable`. The stored
+/// values stay, for the releases before.
+pub async fn remove_secret(
+    AxumState(state): AxumState<State>,
+    browser: Browser,
+    uri: Uri,
+    Path((slug, name)): Path<(String, String)>,
+    Form(form): Form<VariableForm>,
+) -> PageResult {
+    if !browser.form_is_genuine(&form.csrf) {
+        return forged(&state, &browser);
+    }
+    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
+    if !manages(&membership) {
+        return Ok(redirect(&format!("/{slug}/apps/{name}?error=not-allowed")));
+    }
+    let (mut spec, _) = newest_or_return!(&state, &membership, &name);
+    spec.secrets.retain(|s| s.env != form.variable);
+    let change = Change {
+        copies: None,
+        spec,
+        detect_port: None,
+        secrets: Vec::new(),
+        same_image: true,
+    };
+    match state
+        .apps()
+        .change(
+            session.account_id,
+            membership.organisation_id,
+            &name,
+            change,
+        )
+        .await
+    {
+        Ok(_) => Ok(redirect(&format!(
+            "/{slug}/apps/{name}/settings?done=secret-removed"
+        ))),
         Err(AppsError::NotFound) => Ok(redirect(&format!("/{slug}/apps?error=gone"))),
         Err(error) => {
-            app_view(
+            refuse_setting(
                 &state,
                 &browser,
                 &session,
                 &membership,
                 &name,
-                AppForm {
-                    secret_error: sentence(&error),
-                    ..Default::default()
-                },
+                "secrets",
+                Refusal::banner(sentence(&error)),
+                None,
             )
             .await
         }
@@ -1435,22 +1973,32 @@ pub async fn rollback(
         )
         .await
     {
-        Ok(_) => Ok(redirect(&format!("/{slug}/apps/{name}?done=rolled-back"))),
+        Ok(_) => Ok(redirect(&format!(
+            "/{slug}/apps/{name}/deployments?done=rolled-back"
+        ))),
         Err(AppsError::NotFound) => Ok(redirect(&format!("/{slug}/apps?error=gone"))),
         Err(error) => Ok(redirect(&format!(
-            "/{slug}/apps/{name}?deploy_error={}",
+            "/{slug}/apps/{name}/deployments?deploy_error={}",
             urlencode(&sentence(&error))
         ))),
     }
 }
 
-/// `POST /{org}/apps/{app}/delete`.
+#[derive(Deserialize)]
+pub struct DeleteForm {
+    #[serde(default)]
+    csrf: String,
+    #[serde(default)]
+    confirm: String,
+}
+
+/// `POST /{org}/apps/{app}/delete`, once its name is typed to confirm.
 pub async fn delete(
     AxumState(state): AxumState<State>,
     browser: Browser,
     uri: Uri,
     Path((slug, name)): Path<(String, String)>,
-    Form(form): Form<CsrfForm>,
+    Form(form): Form<DeleteForm>,
 ) -> PageResult {
     if !browser.form_is_genuine(&form.csrf) {
         return forged(&state, &browser);
@@ -1458,6 +2006,22 @@ pub async fn delete(
     let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
     if !manages(&membership) {
         return Ok(redirect(&format!("/{slug}/apps/{name}?error=not-allowed")));
+    }
+    if form.confirm.trim() != name {
+        return refuse_setting(
+            &state,
+            &browser,
+            &session,
+            &membership,
+            &name,
+            "delete",
+            Refusal {
+                banner: "Nothing was deleted.".into(),
+                ..Refusal::field("confirm", format!("Type {name} exactly to delete it."))
+            },
+            None,
+        )
+        .await;
     }
     match state
         .apps()
@@ -1472,7 +2036,79 @@ pub async fn delete(
 
 #[cfg(test)]
 mod tests {
-    use super::image_icon;
+    use super::*;
+
+    #[test]
+    fn a_time_reads_as_how_long_ago_it_was_then_as_a_date() {
+        let now = DateTime::parse_from_rfc3339("2026-10-06T12:00:00Z")
+            .expect("a time")
+            .with_timezone(&Utc);
+        for (seconds, words) in [
+            (5, "just now"),
+            (60, "1 minute ago"),
+            (7_200, "2 hours ago"),
+            (86_400, "1 day ago"),
+            (3 * 86_400, "3 days ago"),
+            (40 * 86_400, "27 Aug 2026"),
+        ] {
+            assert_eq!(ago(now - chrono::Duration::seconds(seconds), now), words);
+        }
+    }
+
+    #[test]
+    fn a_change_keeps_the_ports_and_secrets_the_form_does_not_show() {
+        let port = |name: &str, port, public| PortSpec {
+            name: name.into(),
+            port,
+            protocol: Protocol::Http,
+            public,
+        };
+        let base = AppSpec {
+            image: "nats:2.10".into(),
+            ports: vec![port("client", 4222, false), port("monitor", 8222, true)],
+            secrets: vec![SecretEnv {
+                env: "TOKEN".into(),
+                secret: "token".into(),
+            }],
+            command: Vec::new(),
+            memory_mib: 0,
+            cpu_millis: 0,
+            env: Vec::new(),
+            check: None,
+            stop: StopSpec {
+                signal: String::new(),
+                grace_seconds: 0,
+            },
+        };
+        assert_eq!(
+            NewForm::from_spec(&base, 1).port,
+            "8222",
+            "the public port is the form's"
+        );
+        let form = NewForm {
+            port: "9222".into(),
+            ..NewForm::from_spec(&base, 1)
+        };
+        let (spec, detect) = form_spec(&form, Some(&base), false).ok().expect("a spec");
+        assert!(detect.is_none());
+        assert_eq!(
+            spec.ports,
+            vec![port("client", 4222, false), port("monitor", 9222, false)]
+        );
+        assert_eq!(spec.secrets, base.secrets);
+        let (spec, detect) = form_spec(
+            &NewForm {
+                port: String::new(),
+                ..form
+            },
+            Some(&base),
+            true,
+        )
+        .ok()
+        .expect("a spec");
+        assert_eq!(spec.ports, vec![port("client", 4222, false)]);
+        assert_eq!(detect, Some(port("monitor", 8222, true)));
+    }
 
     #[test]
     fn well_known_images_get_their_own_icon_wherever_they_come_from() {

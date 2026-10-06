@@ -879,15 +879,9 @@ async fn an_app_made_on_the_dashboard_shows_its_copies_ready_and_its_versions() 
         when.visiting(&app_page).await?;
         then.status(200)?;
         let body = then.body()?;
-        if body.contains("v1 is live on 1 copy") && body.contains(">Ready<") {
-            anyhow::ensure!(body.contains("Copy 1 of 1 · v1"), "{body}");
-            anyhow::ensure!(body.contains("on desk"), "{body}");
-            anyhow::ensure!(body.contains(&digest[..19]), "the version shows its digest");
-            anyhow::ensure!(body.contains("from the dashboard"), "{body}");
-            anyhow::ensure!(
-                body.contains("[apps.hello]"),
-                "the page offers the app as a file"
-            );
+        if body.contains("v1 is live on 1 copy") {
+            anyhow::ensure!(body.contains(">Live</span>"), "the pill says Live: {body}");
+            anyhow::ensure!(body.contains("Deployment successful"), "{body}");
             break;
         }
         anyhow::ensure!(
@@ -896,15 +890,28 @@ async fn an_app_made_on_the_dashboard_shows_its_copies_ready_and_its_versions() 
         );
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
+    when.visiting(&format!("{app_page}/deployments")).await?;
+    then.status(200)?
+        .body_contains(">Ready<")?
+        .body_contains("Copy 1 of 1 · v1")?
+        .body_contains("on desk")?
+        .body_contains(&digest[..19])?
+        .body_contains("from the dashboard")?;
+    when.visiting(&format!("{app_page}/settings")).await?;
+    then.status(200)?.body_contains("[apps.hello]")?;
+    let settings = format!("{app_page}/settings");
     when.submitting(
-        &app_page,
+        &settings,
         &format!("{app_page}/secrets"),
-        &[("secret", "token"), ("value", "s3cr3t-value")],
+        &[("variable", "TOKEN"), ("value", "s3cr3t-value")],
     )
     .await?;
-    then.status(303)?;
-    when.visiting(&app_page).await?;
-    then.status(200)?.body_contains("version 1")?;
+    then.status(303)?
+        .redirects_to(&format!("{app_page}/settings?done=secret"))?;
+    when.visiting(&settings).await?;
+    then.status(200)?
+        .body_contains("secret token · version 1")?
+        .body_contains("TOKEN = &quot;token&quot;")?;
     anyhow::ensure!(
         !then.body()?.contains("s3cr3t-value"),
         "a secret is never shown"
@@ -968,9 +975,11 @@ async fn the_apps_list_shows_each_image_with_its_icon_and_where_to_reach_it_and_
         .body_contains("id=\"img-postgres\"")?
         .body_lacks("id=\"img-redis\"")?
         .body_contains(&format!(
-            "href=\"&#x2f;{org}&#x2f;apps&#x2f;shop#versions\""
+            "href=\"&#x2f;{org}&#x2f;apps&#x2f;shop&#x2f;deployments\""
         ))?
-        .body_contains(&format!("href=\"&#x2f;{org}&#x2f;apps&#x2f;shop#danger\""))?
+        .body_contains(&format!(
+            "href=\"&#x2f;{org}&#x2f;apps&#x2f;shop&#x2f;settings#danger\""
+        ))?
         .body_contains("Deploy a new app")?;
     let body = then.body()?;
     let (db, shop) = (body.find(">db<"), body.find(">shop<"));
@@ -1002,9 +1011,13 @@ async fn the_apps_list_shows_each_image_with_its_icon_and_where_to_reach_it_and_
     then.status(200)?
         .carries_the_security_headers()?
         .body_contains("class=\"shell\"")?
-        .body_contains("id=\"versions\"")?
-        .body_contains("id=\"danger\"")?
+        .body_contains(&format!("https:&#x2f;&#x2f;shop-{org}.apps.accept.test"))?
+        .body_contains("Public HTTP")?
         .body_lacks(" style=")?;
+    when.visiting(&format!("/{org}/apps/db")).await?;
+    then.status(200)?
+        .body_contains("db.grund.internal:80")?
+        .body_contains(">Private<")?;
     Ok(())
 }
 
@@ -1057,7 +1070,10 @@ async fn the_deploy_page_finds_the_port_an_image_declares_and_its_copy_gets_read
         when.visiting(&app_page).await?;
         then.status(200)?;
         let body = then.body()?;
-        if body.contains("v1 is live on 1 copy") && body.contains(">Ready<") {
+        if body.contains("v1 is live on 1 copy") {
+            when.visiting(&format!("{app_page}/settings")).await?;
+            then.status(200)?;
+            let body = then.body()?;
             anyhow::ensure!(
                 body.contains("port = 8080"),
                 "the lowest TCP port it declares: {body}"
@@ -1224,5 +1240,244 @@ async fn the_deploy_page_refuses_what_the_api_would_and_makes_nothing() -> anyho
     then.status(200)?
         .body_contains("value=\"whoami\" checked")?
         .body_contains("Premade app")?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_releases()
+-> anyhow::Result<()> {
+    let registry = FakeRegistry::start().await?;
+    let Some((given, when, then)) = testcase_configured(&[
+        ("GRUND_INSECURE_REGISTRIES", &registry.host),
+        ("GRUND_APP_DOMAIN", "apps.accept.test"),
+    ])
+    .await?
+    else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let org = owner.username.clone();
+    let _agent = a_machine(&when, &then, &org, "desk").await?;
+    let first = registry.publish("acme/hello", "1");
+    let second = registry.publish("acme/hello", "2");
+    when.submitting(
+        &format!("/{org}/deploy"),
+        &format!("/{org}/deploy"),
+        &[
+            ("mode", "custom"),
+            ("name", "hello"),
+            ("image", &registry.image("acme/hello", "1")),
+            ("exposure", "public"),
+            ("port", "80"),
+            ("check", "http"),
+            ("check_path", "/"),
+            ("copies", "1"),
+        ],
+    )
+    .await?;
+    then.status(303)?;
+    let page = format!("/{org}/apps/hello");
+    let started = Instant::now();
+    loop {
+        when.visiting(&page).await?;
+        then.status(200)?;
+        let body = then.body()?;
+        if body.contains("v1 is live on 1 copy") {
+            break;
+        }
+        anyhow::ensure!(
+            started.elapsed() < Duration::from_secs(30),
+            "not live: {body}"
+        );
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    then.body_contains(">Live</span>")?
+        .body_contains("Your application is running and accessible.")?
+        .body_contains(&format!("https:&#x2f;&#x2f;hello-{org}.apps.accept.test"))?
+        .body_contains("Public HTTP")?
+        .body_contains("Running instances")?
+        .body_contains(&format!("by {org}"))?
+        .body_contains(&format!(
+            "Deployed by <strong>{org}</strong> from the dashboard"
+        ))?
+        .body_contains("<span class=\"btn-label\">Deploy change</span>")?
+        .body_contains(&format!(
+            "href=\"&#x2f;{org}&#x2f;apps&#x2f;hello&#x2f;deploy\""
+        ))?;
+
+    for (tab, words) in [
+        ("", "Latest activity"),
+        ("/deployments", "Releases"),
+        ("/logs", "Logs are coming"),
+        ("/metrics", "Metrics are coming"),
+        ("/settings", "Copies and rollback"),
+        ("/deploy", "Your change"),
+    ] {
+        when.visiting(&format!("{page}{tab}")).await?;
+        then.status(200)
+            .and_then(|t| t.carries_the_security_headers())
+            .and_then(|t| t.header("cache-control", "no-store"))
+            .and_then(|t| t.body_contains(words))
+            .and_then(|t| t.body_lacks(" style="))
+            .and_then(|t| t.body_lacks(" onclick="))
+            .map_err(|error| error.context(format!("{page}{tab}")))?;
+    }
+    then.body_contains("value=\"80\"")?
+        .body_contains("An app keeps its name.")?;
+
+    let change = format!("{page}/deploy");
+    when.submitting(
+        &change,
+        &change,
+        &[
+            ("mode", "custom"),
+            ("image", &registry.image("acme/hello", "nope")),
+            ("exposure", "public"),
+            ("port", "80"),
+            ("copies", "1"),
+            ("secrets", "API_KEY=s3cr3t-value"),
+        ],
+    )
+    .await?;
+    then.status(422)?
+        .body_contains("Nothing was deployed.")?
+        .body_contains("Enter them again")?
+        .body_lacks("s3cr3t-value")?;
+    when.submitting(
+        &change,
+        &change,
+        &[
+            ("mode", "custom"),
+            ("image", &registry.image("acme/hello", "2")),
+            ("exposure", "public"),
+            ("port", "80"),
+            ("copies", "1"),
+            ("check", "http"),
+            ("check_path", "/"),
+            ("env", "GREETING=hej"),
+            ("secrets", "API_KEY=s3cr3t-value"),
+        ],
+    )
+    .await?;
+    then.status(303)?
+        .redirects_to(&format!("{page}?done=deployed"))?;
+
+    let settings = format!("{page}/settings");
+    when.submitting(
+        &settings,
+        &format!("{page}/settings/release"),
+        &[
+            ("exposure", "public"),
+            ("port", "80"),
+            ("check", "http"),
+            ("check_path", "/"),
+            ("env", "GREETING=hallo"),
+        ],
+    )
+    .await?;
+    then.status(303)?
+        .redirects_to(&format!("{page}/settings?done=released"))?;
+    when.submitting(
+        &settings,
+        &format!("{page}/settings/release"),
+        &[("exposure", "public"), ("port", "99999")],
+    )
+    .await?;
+    then.status(422)?
+        .body_contains("A port is a number from 1 to 65535.")?;
+    when.submitting(
+        &settings,
+        &format!("{page}/secrets/remove"),
+        &[("variable", "API_KEY")],
+    )
+    .await?;
+    then.status(303)?
+        .redirects_to(&format!("{page}/settings?done=secret-removed"))?;
+
+    let releases = call(
+        &when,
+        &then,
+        "ListReleases",
+        json!({"organisation": org, "name": "hello"}),
+    )
+    .await?;
+    then.status(200)?;
+    let releases = releases["releases"].as_array().cloned().unwrap_or_default();
+    let digest_of = |number: u64| {
+        releases
+            .iter()
+            .find(|r| r["number"].as_u64() == Some(number))
+            .and_then(|r| r["imageDigest"].as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    anyhow::ensure!(releases.len() == 4, "v1 to v4: {releases:#?}");
+    anyhow::ensure!(digest_of(1) == first, "v1 is the first image");
+    for number in [2, 3, 4] {
+        anyhow::ensure!(
+            digest_of(number) == second,
+            "a change of settings keeps v2's image: v{number} {releases:#?}"
+        );
+    }
+    when.visiting(&settings).await?;
+    then.status(200)?
+        .body_contains("GREETING=hallo")?
+        .body_contains("not read by the app")?
+        .body_lacks("s3cr3t-value")?;
+
+    let deployments = format!("{page}/deployments");
+    when.submitting(&deployments, &format!("{page}/releases/1/rollback"), &[])
+        .await?;
+    then.status(303)?
+        .redirects_to(&format!("{page}/deployments?done=rolled-back"))?;
+    when.visiting(&deployments).await?;
+    then.status(200)?
+        .body_contains("v5 · ")?
+        .body_contains(&format!("Rolled back to v1 by {org}"))?;
+
+    when.submitting(
+        &settings,
+        &format!("{page}/settings/copies"),
+        &[("copies", "2"), ("auto_rollback", "off")],
+    )
+    .await?;
+    then.status(303)?
+        .redirects_to(&format!("{page}/settings?done=saved"))?;
+    let shown = app(&when, &then, &org, "hello").await?;
+    anyhow::ensure!(
+        shown["settings"]["copies"] == 2 && shown["settings"]["autoRollback"] != true,
+        "{shown:#}"
+    );
+
+    let (outsider, outsider_when, outsider_then) = given.testcase.another_browser();
+    outsider.a_signed_in_account().await?;
+    for tab in [
+        "",
+        "/deployments",
+        "/logs",
+        "/metrics",
+        "/settings",
+        "/deploy",
+    ] {
+        outsider_when.visiting(&format!("{page}{tab}")).await?;
+        outsider_then
+            .status(404)
+            .map_err(|error| error.context(format!("{page}{tab}")))?;
+    }
+
+    when.submitting(&settings, &format!("{page}/delete"), &[("confirm", "hell")])
+        .await?;
+    then.status(422)?
+        .body_contains("Nothing was deleted.")?
+        .body_contains("Type hello exactly to delete it.")?;
+    app(&when, &then, &org, "hello").await?;
+    when.submitting(
+        &settings,
+        &format!("{page}/delete"),
+        &[("confirm", "hello")],
+    )
+    .await?;
+    then.status(303)?
+        .redirects_to(&format!("/{org}/apps?done=deleted"))?;
     Ok(())
 }

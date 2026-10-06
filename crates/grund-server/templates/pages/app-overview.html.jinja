@@ -1,0 +1,34 @@
+{% extends "pages/app.html.jinja" %}
+{% block tab %}
+{% call ui.panel("status", "Application status", app.lede) %}
+  {% call ui.facts() %}
+    {% call ui.fact("Endpoint", wide=true) %}
+      {% if app.address %}{{ ui.endpoint("https://" ~ app.address, href="https://" ~ app.address) }}{{ ui.pill("Public HTTP", icon_name="globe") }}
+      {% elif app.internal %}{{ ui.endpoint(app.internal) }}{{ ui.pill("Private", icon_name="lock") }}
+      {% else %}{{ ui.hint("No port: nothing reaches it.") }}{% endif %}
+    {% endcall %}
+    {{ ui.fact("Status", app.word, tone=app.tone, lines=[app.line]) }}
+    {{ ui.fact("Copies", app.ready ~ "", icon_name="copy", lines=[app.copies_line]) }}
+    {% if latest %}{{ ui.fact("Last deployed", "by " ~ latest.by, icon_name="user", lines=[latest.ago, latest.result]) }}
+    {% else %}{{ ui.fact("Last deployed", "Never", icon_name="user") }}{% endif %}
+  {% endcall %}
+{% endcall %}
+
+{% call ui.panel("activity", "Latest activity", "Recent deployments and changes to this application.", action=(app.base ~ "/deployments", "View deployment history")) %}
+  {% if activity %}
+  {% call lists.timeline() %}
+    {% for release in activity %}
+    {% call lists.event(release.title, release.ago, release.at, release.iso, "v" ~ release.number, release.state) %}{{ release.verb }} by <strong>{{ release.by }}</strong> {{ release.source }}{% endcall %}
+    {% endfor %}
+  {% endcall %}
+  {% else %}
+  {{ ui.empty_state(text="No deployments yet.") }}
+  {% endif %}
+{% endcall %}
+
+{% call ui.link_cards() %}
+  {{ ui.link_card(app.base ~ "/logs", "file", "View logs", "Inspect runtime logs and output") }}
+  {{ ui.link_card(app.base ~ "/metrics", "bars", "View metrics", "Check performance and usage") }}
+  {{ ui.link_card(app.base ~ "/deployments", "layers", "Deployment history", "See all past deployments") }}
+{% endcall %}
+{% endblock %}

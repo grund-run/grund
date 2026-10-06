@@ -6,7 +6,6 @@
     changes something posts with the CSRF field, and the handler checks it.
     ------------------------------------------------------------------ -#}
 {% import "components/ui.html.jinja" as ui %}
-{% import "components/lists.html.jinja" as lists %}
 
 {#- form(action, csrf, layout="stack", method="post", autocomplete="")
     The {% call %} body is the fields and the button.
@@ -129,7 +128,7 @@
   <div class="choices{% if large %} choices-wide{% endif %}">
     {% for option in options %}{% set disabled = option.disabled | default(false) %}<label class="choice{% if disabled %} is-disabled{% endif %}{% if option.state | default("") %} is-{{ option.state }}{% endif %}">
       <input class="choice-input" type="radio" name="{{ name }}" value="{{ option.value }}"{% if option.value == selected %} checked{% endif %}{% if disabled %} disabled{% endif %}{% if fill %} data-fill="{{ fill }}"{% endif %}>
-      {% if option.image | default("") %}{{ lists.image_icon(option.image) }}{% elif option.icon | default("") %}{{ ui.icon(option.icon, "choice-icon") }}{% endif %}
+      {% if option.image | default("") %}{{ ui.image_icon(option.image) }}{% elif option.icon | default("") %}{{ ui.icon(option.icon, "choice-icon") }}{% endif %}
       <span class="choice-text"><span class="choice-title">{{ option.title }}{% if option.tag | default("") %} {{ ui.tag(option.tag) }}{% endif %}</span>{% if option.text | default("") %}<span class="choice-sub">{{ option.text }}</span>{% endif %}</span>
     </label>
     {% endfor %}

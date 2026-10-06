@@ -128,6 +128,89 @@ pub struct Launch {
     pub secrets: Vec<(String, String)>,
 }
 
+/// The next release of an app as the dashboard's Deploy change and Settings
+/// ask for it, made by [`Apps::change`].
+#[derive(Debug, Clone)]
+pub struct Change {
+    /// The copies to run from this release on; `None` keeps them.
+    pub copies: Option<u32>,
+    pub spec: AppSpec,
+    /// As [`Launch::detect_port`].
+    pub detect_port: Option<PortSpec>,
+    /// Secret values stored before the release, `(variable, value)`. A
+    /// variable the spec already reads a secret through gets that secret's
+    /// next version; a new one is named as in [`Launch::secrets`].
+    pub secrets: Vec<(String, String)>,
+    /// Release the newest release's image digest again rather than
+    /// resolving `spec.image` now: a change of settings, not of image.
+    pub same_image: bool,
+}
+
+fn attach_secrets(
+    spec: &mut AppSpec,
+    secrets: &[(String, String)],
+) -> Result<Vec<String>, AppsError> {
+    let mut names = Vec::new();
+    for (i, (variable, value)) in secrets.iter().enumerate() {
+        let refuse = |field: &str, problem: &str| {
+            Err(AppsError::Spec(SpecError {
+                field: format!("secrets[{i}].{field}"),
+                problem: problem.into(),
+            }))
+        };
+        if value.len() > MAX_SECRET_BYTES {
+            return refuse("value", "a secret is at most 64 KiB");
+        }
+        if secrets[..i].iter().any(|(earlier, _)| earlier == variable) {
+            return refuse("env", "each variable once");
+        }
+        let secret = match spec.secrets.iter().find(|s| s.env == *variable) {
+            Some(read) => read.secret.clone(),
+            None => {
+                let secret = secret_name_for(variable);
+                if !secret_name_ok(&secret) {
+                    return refuse("env", "a secret's variable is letters, digits and '_'");
+                }
+                if spec.secrets.iter().any(|s| s.secret == secret) {
+                    return refuse("env", "each variable once");
+                }
+                spec.secrets.push(SecretEnv {
+                    env: variable.clone(),
+                    secret: secret.clone(),
+                });
+                secret
+            }
+        };
+        names.push(secret);
+    }
+    Ok(names)
+}
+
+fn probe(spec: &AppSpec, detect: Option<&PortSpec>) -> Result<(), AppsError> {
+    let mut probe = spec.clone();
+    if let Some(port) = detect {
+        probe.ports.push(PortSpec {
+            port: 1,
+            ..port.clone()
+        });
+    }
+    probe.validate()?;
+    Ok(())
+}
+
+fn detected(port: PortSpec, inspection: &Inspection) -> Result<PortSpec, AppsError> {
+    let Some(number) = inspection.exposed_ports.first() else {
+        return Err(AppsError::Spec(SpecError {
+            field: "port".into(),
+            problem: "the image declares no port; enter the one it listens on".into(),
+        }));
+    };
+    Ok(PortSpec {
+        port: *number,
+        ..port
+    })
+}
+
 /// The secret a variable's value is stored as: `API_KEY` is `api-key`.
 pub fn secret_name_for(variable: &str) -> String {
     variable
@@ -316,27 +399,37 @@ impl Apps {
                 .into_iter()
                 .map(|row| (row.app_id, row))
                 .collect();
-        let entry = self.state.entry();
         let mut connection = self.state.pool.acquire().await?;
         let mut listings = Vec::new();
         for view in self.list(organisation_id).await? {
             let release = running.remove(&view.row.app_id);
-            let address = match &release {
-                Some(release) if publishes(&release.spec.0) => {
-                    entry
-                        .address(&mut connection, view.row.app_id, &view.row.name, slug)
-                        .await?
-                }
-                _ => None,
-            };
-            listings.push(AppListing {
-                view,
-                spec: release.as_ref().map(|r| r.spec.0.clone()),
-                deployed_at: release.map(|r| r.created_at),
-                address,
-            });
+            listings.push(self.listed(&mut connection, slug, view, release).await?);
         }
         Ok(listings)
+    }
+
+    async fn listed(
+        &self,
+        connection: &mut PgConnection,
+        slug: &str,
+        view: AppView,
+        release: Option<apps::RunningRow>,
+    ) -> Result<AppListing, AppsError> {
+        let address = match &release {
+            Some(release) if publishes(&release.spec.0) => {
+                self.state
+                    .entry()
+                    .address(connection, view.row.app_id, &view.row.name, slug)
+                    .await?
+            }
+            _ => None,
+        };
+        Ok(AppListing {
+            view,
+            spec: release.as_ref().map(|r| r.spec.0.clone()),
+            deployed_at: release.map(|r| r.created_at),
+            address,
+        })
     }
 
     pub async fn create(
@@ -411,40 +504,9 @@ impl Apps {
         let name = AppName::parse(&launch.name)?;
         let settings = AppSettings::validate(launch.settings)?;
         let mut spec = launch.spec;
-        for (i, (variable, value)) in launch.secrets.iter().enumerate() {
-            let secret = secret_name_for(variable);
-            if !secret_name_ok(&secret) {
-                return Err(AppsError::Spec(SpecError {
-                    field: format!("secrets[{i}].env"),
-                    problem: "a secret's variable is letters, digits and '_'".into(),
-                }));
-            }
-            if value.len() > MAX_SECRET_BYTES {
-                return Err(AppsError::Spec(SpecError {
-                    field: format!("secrets[{i}].value"),
-                    problem: "a secret is at most 64 KiB".into(),
-                }));
-            }
-            if spec.secrets.iter().any(|s| s.secret == secret) {
-                return Err(AppsError::Spec(SpecError {
-                    field: format!("secrets[{i}].env"),
-                    problem: "each variable once".into(),
-                }));
-            }
-            spec.secrets.push(SecretEnv {
-                env: variable.clone(),
-                secret,
-            });
-        }
+        let secret_names = attach_secrets(&mut spec, &launch.secrets)?;
         let detect = launch.detect_port.filter(|_| spec.ports.is_empty());
-        let mut probe = spec.clone();
-        if let Some(port) = &detect {
-            probe.ports.push(PortSpec {
-                port: 1,
-                ..port.clone()
-            });
-        }
-        probe.validate()?;
+        probe(&spec, detect.as_ref())?;
         if apps::count_live_apps(&self.state.pool, organisation_id).await?
             >= MAX_APPS_PER_ORGANISATION
         {
@@ -458,16 +520,7 @@ impl Apps {
         }
         let inspection = self.inspect(organisation_id, &spec.image).await?;
         if let Some(port) = detect {
-            let Some(number) = inspection.exposed_ports.first() else {
-                return Err(AppsError::Spec(SpecError {
-                    field: "port".into(),
-                    problem: "the image declares no port; enter the one it listens on".into(),
-                }));
-            };
-            spec.ports.push(PortSpec {
-                port: *number,
-                ..port
-            });
+            spec.ports.push(detected(port, &inspection)?);
         }
         let spec = spec.validate()?;
         let app_id = Uuid::now_v7();
@@ -484,12 +537,12 @@ impl Apps {
         )
         .await?;
         work.commit().await?;
-        for (variable, value) in &launch.secrets {
+        for (secret, (_, value)) in secret_names.iter().zip(&launch.secrets) {
             self.set_secret(
                 actor,
                 organisation_id,
                 name.as_str(),
-                &secret_name_for(variable),
+                secret,
                 value.as_bytes(),
             )
             .await?;
@@ -515,6 +568,106 @@ impl Apps {
             )
             .await?;
         Ok((name, release))
+    }
+
+    /// Makes the app's next release from `change` and rolls it out. As
+    /// [`Apps::launch`], everything is refused before anything is written:
+    /// the spec, the secrets, the copies, and the image (resolved now, or
+    /// the newest release's digest for a change of settings).
+    pub async fn change(
+        &self,
+        actor: Uuid,
+        organisation_id: Uuid,
+        name: &str,
+        change: Change,
+    ) -> Result<ReleaseRow, AppsError> {
+        let row = self.live(organisation_id, name).await?;
+        let mut spec = change.spec;
+        let secret_names = attach_secrets(&mut spec, &change.secrets)?;
+        let detect = change.detect_port.filter(|_| spec.ports.is_empty());
+        probe(&spec, detect.as_ref())?;
+        let stored = apps::latest_secrets(&self.state.pool, row.app_id).await?;
+        if let Some((i, missing)) = spec.secrets.iter().enumerate().find(|(_, s)| {
+            !secret_names.contains(&s.secret) && !stored.iter().any(|(n, _, _)| *n == s.secret)
+        }) {
+            return Err(AppsError::Spec(SpecError {
+                field: format!("secrets[{i}].secret"),
+                problem: format!("the app has no secret {}; set it first", missing.secret),
+            }));
+        }
+        let settings = match change.copies {
+            Some(copies) if copies != row.settings.0.copies => {
+                Some(row.settings.0.with_copies(copies)?)
+            }
+            _ => None,
+        };
+        let (digest, platforms) = if change.same_image {
+            let newest = apps::releases(&self.state.pool, row.app_id, 1)
+                .await?
+                .into_iter()
+                .next()
+                .ok_or(AppsError::ReleaseNotFound)?;
+            if newest.spec.0.image != spec.image {
+                return Err(AppsError::Spec(SpecError {
+                    field: "image".into(),
+                    problem: "a change of settings keeps the image; deploy a change for another"
+                        .into(),
+                }));
+            }
+            if let Some(port) = detect {
+                spec.ports.push(detected(
+                    port,
+                    &self.inspect(organisation_id, &spec.image).await?,
+                )?);
+            }
+            (newest.image_digest, newest.platforms.0)
+        } else {
+            let inspection = self.inspect(organisation_id, &spec.image).await?;
+            if let Some(port) = detect {
+                spec.ports.push(detected(port, &inspection)?);
+            }
+            (inspection.resolved.digest, inspection.resolved.platforms)
+        };
+        let spec = spec.validate()?;
+        for (secret, (_, value)) in secret_names.iter().zip(&change.secrets) {
+            self.set_secret(actor, organisation_id, name, secret, value.as_bytes())
+                .await?;
+        }
+        let secret_versions = self.secret_versions(row.app_id, &spec).await?;
+        self.record_release(
+            actor,
+            row.app_id,
+            AppCommand::Release {
+                actor,
+                spec,
+                image_digest: digest,
+                platforms,
+                secret_versions,
+                source: ReleaseSource::Dashboard,
+                rollback_of: None,
+                note: String::new(),
+                rollout_id: Uuid::now_v7(),
+                at: Utc::now(),
+            },
+            settings,
+        )
+        .await
+    }
+
+    /// One app as its organisation's list shows it, with its address.
+    pub async fn listing(
+        &self,
+        organisation_id: Uuid,
+        slug: &str,
+        name: &str,
+    ) -> Result<AppListing, AppsError> {
+        let view = self.get(organisation_id, name).await?;
+        let release = apps::running_releases(&self.state.pool, organisation_id)
+            .await?
+            .into_iter()
+            .find(|r| r.app_id == view.row.app_id);
+        let mut connection = self.state.pool.acquire().await?;
+        self.listed(&mut connection, slug, view, release).await
     }
 
     async fn secret_versions(
