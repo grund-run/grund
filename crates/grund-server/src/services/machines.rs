@@ -838,6 +838,57 @@ impl Machines {
         .await
     }
 
+    /// Replaces a machine's labels, as `organisation_id`, the organisation
+    /// whose pool it is in. The app reconciler is woken: copies may move.
+    pub async fn set_labels(
+        &self,
+        actor: Uuid,
+        machine_id: Uuid,
+        organisation_id: Uuid,
+        labels: grund_domain::labels::Labels,
+    ) -> anyhow::Result<ChangeOutcome> {
+        let outcome = self
+            .change(
+                actor,
+                machine_id,
+                MachineCommand::SetLabels {
+                    actor,
+                    organisation_id,
+                    labels,
+                    at: Utc::now(),
+                },
+            )
+            .await?;
+        self.state.wakes.apps_changed();
+        Ok(outcome)
+    }
+
+    /// Takes a machine out of service or puts it back, as
+    /// `organisation_id`. The app reconciler is woken: copies move off it
+    /// (grund-docs design/apps.md §5.7), or may come back.
+    pub async fn set_in_service(
+        &self,
+        actor: Uuid,
+        machine_id: Uuid,
+        organisation_id: Uuid,
+        in_service: bool,
+    ) -> anyhow::Result<ChangeOutcome> {
+        let outcome = self
+            .change(
+                actor,
+                machine_id,
+                MachineCommand::SetInService {
+                    actor,
+                    organisation_id,
+                    in_service,
+                    at: Utc::now(),
+                },
+            )
+            .await?;
+        self.state.wakes.apps_changed();
+        Ok(outcome)
+    }
+
     async fn change(
         &self,
         actor: Uuid,

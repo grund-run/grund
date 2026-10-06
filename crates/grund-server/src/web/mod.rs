@@ -131,6 +131,10 @@ pub fn router(state: State) -> Router {
         )
         .route("/{org}/apps/{app}/settings/copies", post(apps::configure))
         .route(
+            "/{org}/apps/{app}/settings/placement",
+            post(apps::placement_settings),
+        )
+        .route(
             "/{org}/apps/{app}/settings/release",
             post(apps::release_settings),
         )
@@ -145,6 +149,8 @@ pub fn router(state: State) -> Router {
         .route("/{org}/machines/vms", post(machines::run_vm))
         .route("/{org}/machines/vms/{vm}/stop", post(machines::stop_vm))
         .route("/{org}/machines/{machine}/remove", post(machines::remove))
+        .route("/{org}/machines/{machine}/service", post(machines::service))
+        .route("/{org}/machines/{machine}/labels", post(machines::labels))
         .route("/{org}/settings/tokens", get(tokens::tokens_page).post(tokens::create))
         .route("/{org}/settings/tokens/{token}/revoke", post(tokens::revoke))
         .route("/{org}/settings/registries", get(registries::registries_page).post(registries::set))

@@ -95,6 +95,31 @@ pub fn settings_input(settings: Option<&proto::AppSettings>) -> SettingsInput {
         machines: settings.machines.clone(),
         reschedule_after_seconds: Some(settings.reschedule_after_seconds).filter(|s| *s > 0),
         auto_rollback: settings.auto_rollback,
+        ..placement_input(settings.placement.as_option())
+    }
+}
+
+fn placement_input(placement: Option<&proto::Placement>) -> SettingsInput {
+    let Some(placement) = placement else {
+        return SettingsInput::default();
+    };
+    let mut labels: Vec<(String, String)> = placement
+        .labels
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    labels.sort();
+    SettingsInput {
+        labels,
+        kind: match placement.kind.as_known() {
+            Some(proto::MachineKind::MACHINE_KIND_OWN) => "own".into(),
+            Some(proto::MachineKind::MACHINE_KIND_HOSTED) => "hosted".into(),
+            _ => String::new(),
+        },
+        spread_by: placement.spread_by.clone(),
+        near: placement.near.clone(),
+        apart: placement.apart.clone(),
+        ..SettingsInput::default()
     }
 }
 
@@ -243,6 +268,29 @@ fn settings_message(settings: &AppSettings) -> proto::AppSettings {
         machines: settings.machines.clone(),
         reschedule_after_seconds: settings.reschedule_after_seconds,
         auto_rollback: Some(settings.auto_rollback),
+        placement: MessageField::from(placement_message(&settings.placement)),
+        ..Default::default()
+    }
+}
+
+fn placement_message(rules: &grund_domain::app::spec::PlacementRules) -> proto::Placement {
+    proto::Placement {
+        labels: rules
+            .labels
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+        kind: match rules.kind {
+            Some(grund_domain::app::spec::MachineKind::Own) => proto::MachineKind::MACHINE_KIND_OWN,
+            Some(grund_domain::app::spec::MachineKind::Hosted) => {
+                proto::MachineKind::MACHINE_KIND_HOSTED
+            }
+            None => proto::MachineKind::MACHINE_KIND_UNSPECIFIED,
+        }
+        .into(),
+        spread_by: rules.spread_by.clone().unwrap_or_default(),
+        near: rules.near.clone(),
+        apart: rules.apart.clone(),
         ..Default::default()
     }
 }

@@ -38,6 +38,28 @@
   {% else %}{{ readonly }}{% endif %}
 {% endcall %}
 
+{% elif edit == "placement" %}
+{% call ui.panel("placement", "Placement") %}
+  {% if org.manages %}
+  {% call forms.form(here ~ "/placement", csrf) %}
+    {{ forms.banner(banners.placement) }}
+    {% if errors.placement %}{{ forms.field_error(errors.placement) }}{% endif %}
+    {{ forms.field("machines", "Machines", value=settings.machines, required=false, autocomplete="off", hint="Names, comma-separated. Empty: any.") }}
+    {{ forms.pairs_field("labels", "Labels a machine must carry", pairs=settings.labels, blank=1, key_label="Key", value_label="Value") }}
+    {% call forms.grid() %}
+    {{ forms.select_field("kind", "Kind", [("", "Any"), ("own", "Your own"), ("hosted", "Hosted by grund")], selected=settings.kind) }}
+    {{ forms.field("spread_by", "Spread over label", value=settings.spread_by, required=false, autocomplete="off", mono=true, hint="A label key, such as zone. Empty: machines.") }}
+    {% endcall %}
+    {% call forms.grid() %}
+    {{ forms.field("near", "Near apps", value=settings.near, required=false, autocomplete="off", hint="Names, comma-separated.") }}
+    {{ forms.field("apart", "Apart from apps", value=settings.apart, required=false, autocomplete="off", hint="Names, comma-separated.") }}
+    {% endcall %}
+    {{ forms.field("reschedule_after", "Replace after (seconds unreachable)", type="number", value=settings.reschedule_after, width="sm") }}
+    {% call forms.actions("Saving applies at once, without a release. Copies that no longer match move one at a time.") %}{{ cancel }}{{ ui.button("Save") }}{% endcall %}
+  {% endcall %}
+  {% else %}{{ readonly }}{% endif %}
+{% endcall %}
+
 {% elif edit == "check" %}
 {% call ui.panel("health", "Health check") %}
   {% if org.manages %}

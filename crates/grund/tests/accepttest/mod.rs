@@ -16,6 +16,7 @@ mod network;
 mod organisations;
 mod outages;
 mod pages;
+mod placement;
 mod registries;
 mod relay_certificates;
 mod reset;

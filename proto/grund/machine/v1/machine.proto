@@ -92,6 +92,23 @@ service MachineService {
     option idempotency_level = IDEMPOTENT;
   }
 
+  // Owners and admins. Sets the machine's labels, replacing those set
+  // before (apps.md §5.6): apps select machines by them and spread copies
+  // over a key's values. Copies on a machine that no longer matches their
+  // app move off. A lease that ends clears them.
+  rpc SetMachineLabels(SetMachineLabelsRequest) returns (SetMachineLabelsResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+
+  // Owners and admins. Takes the machine out of service (in_service false)
+  // or puts it back (apps.md §5.7). Out of service, nothing new is placed
+  // on it and the copies on it move to other machines, each started and
+  // ready before the old one stops; a copy no other machine has room for
+  // stays. Revoke it once none are left.
+  rpc SetMachineInService(SetMachineInServiceRequest) returns (SetMachineInServiceResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+
   // The key the organisation's machines trust for its desired-state
   // documents. Made on first use.
   rpc GetOrganisationKey(GetOrganisationKeyRequest) returns (GetOrganisationKeyResponse) {
@@ -143,6 +160,10 @@ message Machine {
   // What it accepts from its private network's other members, sorted.
   // Nothing else gets in.
   repeated NetworkPort network_ports = 16;
+  // What its owner labelled it.
+  map<string, string> labels = 17;
+  // Set while it is out of service: since when.
+  google.protobuf.Timestamp out_of_service_since = 18;
 }
 
 // The transport of a declared port.
@@ -350,6 +371,30 @@ message DeclareMachinePortsRequest {
 }
 
 message DeclareMachinePortsResponse {
+  Machine machine = 1;
+}
+
+message SetMachineLabelsRequest {
+  string organisation = 1;
+  string machine_id = 2;
+  // All its labels, at most 16; empty clears them. A key is 1 to 63
+  // lowercase letters, digits, '.', '-', '_' or '/', starting and ending
+  // with a letter or digit; a value is at most 63 letters, digits, '.',
+  // '-' or '_'.
+  map<string, string> labels = 3;
+}
+
+message SetMachineLabelsResponse {
+  Machine machine = 1;
+}
+
+message SetMachineInServiceRequest {
+  string organisation = 1;
+  string machine_id = 2;
+  bool in_service = 3;
+}
+
+message SetMachineInServiceResponse {
   Machine machine = 1;
 }
 

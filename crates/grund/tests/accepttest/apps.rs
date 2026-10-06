@@ -825,7 +825,7 @@ async fn a_grund_yaml_deploys_and_an_unknown_tag_is_refused_with_its_reason() ->
     anyhow::ensure!(
         shop["waiting"][0]["message"]
             .as_str()
-            .is_some_and(|m| m.contains("shop needs a machine")),
+            .is_some_and(|m| m == "Waiting for a machine."),
         "with no machine the copies wait and say why: {shop}"
     );
     call(&when, &then, "Deploy", json!({"organisation": org, "name": "shop", "grundYaml": "apps:\n  shop:\n    image: nginx\n    copis: 3\n"})).await?;

@@ -414,6 +414,7 @@ fn place_reason(reason: PlaceReason) -> &'static str {
         PlaceReason::Rollout => "rollout",
         PlaceReason::ReplaceLost => "replace_lost",
         PlaceReason::Spread => "spread",
+        PlaceReason::Move => "move",
     }
 }
 
@@ -942,17 +943,44 @@ pub async fn reservations(
     executor: impl PgExecutor<'_>,
     organisation_id: Uuid,
     except_app: Uuid,
-) -> Result<Vec<(Uuid, i64, i64)>, sqlx::Error> {
+) -> Result<Vec<Reservation>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT r.machine_id, COALESCE(sum((rel.spec->>'memory_mib')::bigint), 0)::bigint, \
-           COALESCE(sum((rel.spec->>'cpu_millis')::bigint), 0)::bigint \
+        "SELECT r.machine_id, COALESCE(sum((rel.spec->>'memory_mib')::bigint), 0)::bigint AS memory_mib, \
+           COALESCE(sum((rel.spec->>'cpu_millis')::bigint), 0)::bigint AS cpu_millis, \
+           COALESCE(array_agg(DISTINCT a.name) FILTER (WHERE r.state = 'running'), '{}') AS apps \
          FROM grund_replicas r JOIN grund_releases rel ON rel.app_id = r.app_id AND rel.number = r.release \
+         JOIN grund_apps a ON a.app_id = r.app_id \
          WHERE r.organisation_id = $1 AND r.app_id <> $2 GROUP BY r.machine_id",
     )
     .bind(organisation_id)
     .bind(except_app)
     .fetch_all(executor)
     .await
+}
+
+/// How many running (not draining) copies each machine of the organisation
+/// holds, for the Machines page.
+pub async fn copies_per_machine(
+    executor: impl PgExecutor<'_>,
+    organisation_id: Uuid,
+) -> Result<Vec<(Uuid, i64)>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT machine_id, count(*) FROM grund_replicas \
+         WHERE organisation_id = $1 AND state = 'running' GROUP BY machine_id",
+    )
+    .bind(organisation_id)
+    .fetch_all(executor)
+    .await
+}
+
+/// What the organisation's other apps hold on one machine.
+#[derive(Debug, Clone, FromRow)]
+pub struct Reservation {
+    pub machine_id: Uuid,
+    pub memory_mib: i64,
+    pub cpu_millis: i64,
+    /// The apps with a running (not draining) copy there, by name.
+    pub apps: Vec<String>,
 }
 
 /// One line of an app's history.

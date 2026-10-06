@@ -10,7 +10,7 @@
   {% else %}
   {{ ui.empty_state(text="No copies run yet.") }}
   {% endif %}
-  {% if crowded %}{{ ui.para("All copies run on " ~ crowded ~ "; add a machine to spread them.") }}{% endif %}
+  {% if crowded %}{{ ui.para("All copies run on " ~ crowded ~ ".") }}{% endif %}
 {% endcall %}
 
 {% call ui.section("versions", "Releases", count=releases | length) %}

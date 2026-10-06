@@ -16,6 +16,7 @@ use grund_domain::app::{
     file::parse_app,
     placement::MachineView,
     reconcile::{Observation, Observed, reconcile},
+    spec::MachineKind,
     spec::{
         ImageReference, MAX_APPS_PER_ORGANISATION, MAX_SECRET_BYTES, PortSpec, SecretEnv,
         SettingsInput, SpecError, secret_name_ok,
@@ -316,8 +317,10 @@ fn observed(row: &apps::StatusRow) -> Option<Observation> {
     })
 }
 
-/// A machine as placement sees it, from what its agent last reported.
-pub fn machine_view(row: &machines::MachineRow, reserved: Option<(i64, i64)>) -> MachineView {
+/// A machine as placement sees it, from what its agent last reported and
+/// what its owner set. `others` is what the organisation's other apps hold
+/// on it.
+pub fn machine_view(row: &machines::MachineRow, others: Option<&apps::Reservation>) -> MachineView {
     let capabilities = row.capabilities.as_ref().map(|c| &c.0);
     let number = |key: &str| capabilities.and_then(|c| c[key].as_u64()).unwrap_or(0);
     MachineView {
@@ -333,10 +336,18 @@ pub fn machine_view(row: &machines::MachineRow, reserved: Option<(i64, i64)>) ->
             .to_string(),
         memory_mib: number("memory_mib"),
         cpu_millis: number("cpu_millis") as u32,
-        reserved_memory_mib: reserved.map_or(0, |(m, _)| m.max(0) as u64),
-        reserved_cpu_millis: reserved.map_or(0, |(_, c)| c.max(0) as u32),
+        reserved_memory_mib: others.map_or(0, |o| o.memory_mib.max(0) as u64),
+        reserved_cpu_millis: others.map_or(0, |o| o.cpu_millis.max(0) as u32),
         max_replica_memory_mib: number("max_replica_memory_mib"),
         max_replica_cpu_millis: number("max_replica_cpu_millis") as u32,
+        labels: row.labels.0.clone(),
+        cordoned: row.cordoned_at.is_some(),
+        kind: if row.pool == "management" {
+            MachineKind::Hosted
+        } else {
+            MachineKind::Own
+        },
+        running_apps: others.map(|o| o.apps.clone()).unwrap_or_default(),
     }
 }
 
@@ -1024,11 +1035,8 @@ impl Apps {
                 .iter()
                 .filter(|m| matches!(m.state.as_str(), "active" | "leased"))
                 .map(|m| {
-                    let r = reserved
-                        .iter()
-                        .find(|(id, _, _)| *id == m.machine_id)
-                        .map(|(_, mem, cpu)| (*mem, *cpu));
-                    let mut view = machine_view(m, r);
+                    let others = reserved.iter().find(|r| r.machine_id == m.machine_id);
+                    let mut view = machine_view(m, others);
                     view.last_seen = self.state.hearing.seen(view.last_seen);
                     view
                 })

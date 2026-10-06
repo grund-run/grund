@@ -12,7 +12,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::names::MachineName;
+use crate::{labels::Labels, names::MachineName};
 
 pub const MACHINE_CATEGORY: &str = "grund-machine";
 
@@ -350,6 +350,24 @@ pub enum MachineEvent {
         declared_by: Uuid,
         declared_at: DateTime<Utc>,
     },
+    /// The labels its owner gave it, all of them: the set replaces the one
+    /// before (grund-docs design/apps.md §5.6).
+    LabelsSet {
+        labels: Labels,
+        set_by: Uuid,
+        set_at: DateTime<Utc>,
+    },
+    /// Taken out of service: nothing new is placed on it, and its copies
+    /// move off (apps.md §5.7).
+    Cordoned {
+        cordoned_by: Uuid,
+        cordoned_at: DateTime<Utc>,
+    },
+    /// Put back in service.
+    Uncordoned {
+        uncordoned_by: Uuid,
+        uncordoned_at: DateTime<Utc>,
+    },
 }
 
 /// A lease in force.
@@ -375,6 +393,10 @@ pub struct Machine {
     /// What it accepts from its network's other members; nothing else.
     #[serde(default)]
     pub ports: Vec<NetworkPort>,
+    #[serde(default)]
+    pub labels: Labels,
+    #[serde(default)]
+    pub cordoned: bool,
 }
 
 impl Machine {
@@ -438,6 +460,8 @@ impl mire::Aggregate for Machine {
                 self.state = Some(MachineState::Returning);
                 self.lease = None;
                 self.ports.clear();
+                self.labels.clear();
+                self.cordoned = false;
             }
             MachineEvent::Reregistered {
                 key, retired_key, ..
@@ -462,6 +486,15 @@ impl mire::Aggregate for Machine {
             }
             MachineEvent::PortsDeclared { ports, .. } => {
                 self.ports = ports.clone();
+            }
+            MachineEvent::LabelsSet { labels, .. } => {
+                self.labels = labels.clone();
+            }
+            MachineEvent::Cordoned { .. } => {
+                self.cordoned = true;
+            }
+            MachineEvent::Uncordoned { .. } => {
+                self.cordoned = false;
             }
         }
     }
@@ -525,6 +558,23 @@ pub enum MachineCommand {
         actor: Uuid,
         organisation_id: Uuid,
         ports: Vec<NetworkPort>,
+        at: DateTime<Utc>,
+    },
+    /// Replaces the machine's labels. Only the organisation whose pool the
+    /// machine is in now may; the same set again changes nothing.
+    SetLabels {
+        actor: Uuid,
+        organisation_id: Uuid,
+        labels: Labels,
+        at: DateTime<Utc>,
+    },
+    /// Takes the machine out of service (`true`) or puts it back. Only the
+    /// organisation whose pool it is in now may; asking for the state it is
+    /// in changes nothing.
+    SetInService {
+        actor: Uuid,
+        organisation_id: Uuid,
+        in_service: bool,
         at: DateTime<Utc>,
     },
 }
@@ -686,6 +736,45 @@ impl mire::Command for MachineCommand {
                     declared_by: actor,
                     declared_at: at,
                 }])
+            }
+            MachineCommand::SetLabels {
+                actor,
+                organisation_id,
+                labels,
+                at,
+            } => {
+                if machine.organisation() != Some(organisation_id) {
+                    return Err(MachineError::NotAllowed);
+                }
+                if machine.labels == labels {
+                    return Ok(Vec::new());
+                }
+                Ok(vec![MachineEvent::LabelsSet {
+                    labels,
+                    set_by: actor,
+                    set_at: at,
+                }])
+            }
+            MachineCommand::SetInService {
+                actor,
+                organisation_id,
+                in_service,
+                at,
+            } => {
+                if machine.organisation() != Some(organisation_id) {
+                    return Err(MachineError::NotAllowed);
+                }
+                Ok(match (machine.cordoned, in_service) {
+                    (false, false) => vec![MachineEvent::Cordoned {
+                        cordoned_by: actor,
+                        cordoned_at: at,
+                    }],
+                    (true, true) => vec![MachineEvent::Uncordoned {
+                        uncordoned_by: actor,
+                        uncordoned_at: at,
+                    }],
+                    _ => Vec::new(),
+                })
             }
         }
     }
@@ -1089,5 +1178,65 @@ mod tests {
         assert_eq!(json["pool"], "organisation");
         assert_eq!(json["organisation_id"], org.to_string());
         assert_eq!(serde_json::from_value::<MachineEvent>(json).unwrap(), event);
+    }
+
+    #[test]
+    fn only_the_pool_s_organisation_labels_a_machine_or_takes_it_out_of_service_and_a_lessee_leaves_neither()
+     {
+        let org = Uuid::now_v7();
+        let other = Uuid::now_v7();
+        let labels = crate::labels::labels([("zone", "a")]).unwrap();
+        let set = |organisation_id, labels: &Labels| MachineCommand::SetLabels {
+            actor: Uuid::now_v7(),
+            organisation_id,
+            labels: labels.clone(),
+            at: at(),
+        };
+        let service = |organisation_id, in_service| MachineCommand::SetInService {
+            actor: Uuid::now_v7(),
+            organisation_id,
+            in_service,
+            at: at(),
+        };
+        let mut own = registered(Pool::Organisation {
+            organisation_id: org,
+        });
+        assert_eq!(
+            run(&mut own, set(other, &labels)),
+            Err(MachineError::NotAllowed)
+        );
+        assert_eq!(
+            run(&mut own, service(other, false)),
+            Err(MachineError::NotAllowed)
+        );
+        assert_eq!(run(&mut own, set(org, &labels)).unwrap().len(), 1);
+        assert!(run(&mut own, set(org, &labels)).unwrap().is_empty());
+        assert_eq!(own.labels, labels);
+        assert!(run(&mut own, service(org, true)).unwrap().is_empty());
+        assert!(matches!(
+            run(&mut own, service(org, false)).unwrap()[..],
+            [MachineEvent::Cordoned { .. }]
+        ));
+        assert!(own.cordoned);
+        assert!(run(&mut own, service(org, false)).unwrap().is_empty());
+        assert!(matches!(
+            run(&mut own, service(org, true)).unwrap()[..],
+            [MachineEvent::Uncordoned { .. }]
+        ));
+        assert!(!own.cordoned);
+
+        let mut leased = registered(Pool::Management);
+        lease(&mut leased, org).unwrap();
+        run(&mut leased, set(org, &labels)).unwrap();
+        run(&mut leased, service(org, false)).unwrap();
+        run(
+            &mut leased,
+            MachineCommand::EndLease {
+                actor: Uuid::now_v7(),
+                at: at(),
+            },
+        )
+        .unwrap();
+        assert!(leased.labels.is_empty() && !leased.cordoned);
     }
 }

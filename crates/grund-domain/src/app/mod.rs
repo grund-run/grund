@@ -79,6 +79,9 @@ pub enum PlaceReason {
     ReplaceLost,
     /// The app's copies were crowded on one machine while another was free.
     Spread,
+    /// Its predecessor's machine was taken out of service, or no longer
+    /// matches the app's placement (apps.md §5.7).
+    Move,
 }
 
 /// Why a replica leaves.

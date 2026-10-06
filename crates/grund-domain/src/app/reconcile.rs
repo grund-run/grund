@@ -244,16 +244,17 @@ impl Pass<'_> {
     }
 
     fn wait(&mut self, slot: u32, reason: Unplaceable, release: &Release) {
-        let name = self
-            .work
-            .name
-            .as_ref()
-            .map_or("The app".to_string(), |n| n.to_string());
+        let message = reason.message(release, &self.work.settings);
         self.waiting.push(Waiting {
             slot,
             reason,
-            message: reason.message(&name, release),
+            message,
         });
+    }
+
+    fn misplaced(&self, replica: &Replica) -> bool {
+        self.machine(replica.machine_id)
+            .is_some_and(|m| !placement::allowed(&self.work.settings, m))
     }
 
     fn unavailable_slots(&self, copies: u32) -> u32 {
@@ -507,6 +508,17 @@ fn converge(pass: &mut Pass<'_>, lost_slots: &BTreeSet<u32>, new_id: &mut dyn Fn
         in_slot.sort_by_key(|r| std::cmp::Reverse(r.placement));
         let newest = in_slot.iter().find(|r| r.release == target.number).cloned();
         if let Some(newest) = newest {
+            if pass.misplaced(&newest) {
+                let running_in_range =
+                    pass.running().iter().filter(|r| r.slot < copies).count() as u32;
+                if running_in_range < copies + max_surge
+                    && let Err(unplaceable) =
+                        pass.place(slot, &target, PlaceReason::Move, None, new_id)
+                {
+                    pass.wait(slot, unplaceable, &target);
+                }
+                continue;
+            }
             let keep_other = if pass.available(&newest) {
                 None
             } else {
@@ -644,18 +656,36 @@ fn repair_spread(pass: &mut Pass<'_>, new_id: &mut dyn FnMut() -> Uuid) {
     {
         return;
     }
-    let mut crowded: Vec<(u32, Uuid)> = Vec::new();
-    for replica in &running {
-        let count = running
+    let spread_by = pass.work.settings.placement.spread_by.clone();
+    let spread_by = spread_by.as_deref();
+    let domain = |machine_id: Uuid| -> String {
+        pass.machine(machine_id)
+            .map_or(String::new(), |m| m.domain(spread_by).to_string())
+    };
+    let on_machine = |machine_id: Uuid| {
+        running
             .iter()
-            .filter(|r| r.machine_id == replica.machine_id)
-            .count() as u32;
-        if count >= 2 && !crowded.iter().any(|(_, m)| *m == replica.machine_id) {
-            crowded.push((count, replica.machine_id));
-        }
-    }
-    crowded.sort_by_key(|(count, machine)| (std::cmp::Reverse(*count), *machine));
-    let Some((_, machine_id)) = crowded.first().copied() else {
+            .filter(|r| r.machine_id == machine_id)
+            .count()
+    };
+    let in_domain = |name: &str| {
+        running
+            .iter()
+            .filter(|r| domain(r.machine_id) == name)
+            .count()
+    };
+    let Some(source) = running
+        .iter()
+        .max_by_key(|r| {
+            (
+                in_domain(&domain(r.machine_id)),
+                on_machine(r.machine_id),
+                std::cmp::Reverse(r.machine_id),
+                r.slot,
+            )
+        })
+        .cloned()
+    else {
         return;
     };
     let usage = |id: Uuid| pass.usage(id);
@@ -669,17 +699,18 @@ fn repair_spread(pass: &mut Pass<'_>, new_id: &mut dyn FnMut() -> Uuid) {
     ) else {
         return;
     };
-    if chosen == machine_id || pass.usage(chosen).running > 0 {
+    let (from, to) = (domain(source.machine_id), domain(chosen));
+    let (zs, zd) = (in_domain(&from), in_domain(&to));
+    let (ms, md) = (on_machine(source.machine_id), on_machine(chosen));
+    let better = if from == to {
+        ms >= md + 2
+    } else {
+        zs > zd + 1 || (zs == zd + 1 && ms >= md + 2)
+    };
+    if chosen == source.machine_id || !better {
         return;
     }
-    let Some(slot) = running
-        .iter()
-        .filter(|r| r.machine_id == machine_id)
-        .map(|r| r.slot)
-        .max()
-    else {
-        return;
-    };
+    let slot = source.slot;
     let placement = pass.work.next_placement;
     let now = pass.now;
     pass.emit(AppEvent::ReplicaPlaced {
@@ -723,6 +754,7 @@ mod tests {
         log: Vec<AppEvent>,
         waiting: Vec<Waiting>,
         gate_idle: bool,
+        down: BTreeSet<Uuid>,
     }
 
     fn start() -> DateTime<Utc> {
@@ -742,7 +774,17 @@ mod tests {
             reserved_cpu_millis: 0,
             max_replica_memory_mib: 0,
             max_replica_cpu_millis: 0,
+            labels: crate::labels::Labels::new(),
+            cordoned: false,
+            kind: crate::app::spec::MachineKind::Own,
+            running_apps: Vec::new(),
         }
+    }
+
+    fn labelled(id: u128, memory_mib: u64, pairs: &[(&str, &str)]) -> MachineView {
+        let mut m = machine(id, memory_mib);
+        m.labels = crate::labels::labels(pairs.iter().copied()).unwrap();
+        m
     }
 
     fn spec(memory_mib: u64) -> AppSpec {
@@ -801,7 +843,58 @@ mod tests {
                 log: Vec::new(),
                 waiting: Vec::new(),
                 gate_idle: false,
+                down: BTreeSet::new(),
             }
+        }
+
+        fn power_off(&mut self, id: u128) {
+            self.down.insert(Uuid::from_u128(id));
+        }
+
+        fn power_on(&mut self, id: u128) {
+            let id = Uuid::from_u128(id);
+            self.down.remove(&id);
+            let now = self.now;
+            if let Some(m) = self.machines.iter_mut().find(|m| m.machine_id == id) {
+                m.last_seen = Some(now);
+            }
+        }
+
+        fn set(&mut self, id: u128, change: impl FnOnce(&mut MachineView)) {
+            let id = Uuid::from_u128(id);
+            change(
+                self.machines
+                    .iter_mut()
+                    .find(|m| m.machine_id == id)
+                    .unwrap(),
+            );
+        }
+
+        fn copies_on(&self) -> Vec<(u128, usize)> {
+            let mut on: std::collections::BTreeMap<u128, usize> = Default::default();
+            for r in self
+                .app
+                .replicas
+                .iter()
+                .filter(|r| r.state == ReplicaState::Running)
+            {
+                *on.entry(r.machine_id.as_u128()).or_default() += 1;
+            }
+            on.into_iter().collect()
+        }
+
+        fn placed(&self, reason: PlaceReason) -> Vec<DateTime<Utc>> {
+            self.log
+                .iter()
+                .filter_map(|e| match e {
+                    AppEvent::ReplicaPlaced {
+                        reason: r,
+                        placed_at,
+                        ..
+                    } if *r == reason => Some(*placed_at),
+                    _ => None,
+                })
+                .collect()
         }
 
         fn configure(&mut self, input: SettingsInput) {
@@ -885,9 +978,10 @@ mod tests {
         fn tick(&mut self, seconds: i64) {
             self.now += Duration::seconds(seconds);
             for machine in &mut self.machines {
-                if machine
-                    .last_seen
-                    .is_some_and(|s| s >= self.now - Duration::seconds(seconds + 1))
+                if !self.down.contains(&machine.machine_id)
+                    && machine
+                        .last_seen
+                        .is_some_and(|s| s >= self.now - Duration::seconds(seconds + 1))
                 {
                     machine.last_seen = Some(self.now);
                 }
@@ -1292,7 +1386,7 @@ mod tests {
         assert!(events.is_empty());
         assert_eq!(world.waiting.len(), 1);
         assert_eq!(world.waiting[0].reason, Unplaceable::NoMachine);
-        assert!(world.waiting[0].message.contains("shop needs a machine"));
+        assert_eq!(world.waiting[0].message, "Waiting for a machine.");
     }
 
     #[test]
@@ -1446,5 +1540,303 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    fn three(copies: u32) -> World {
+        let mut world = World::new(
+            copies,
+            vec![machine(1, 4096), machine(2, 4096), machine(3, 4096)],
+        );
+        world.deploy(512, Behaviour::Healthy);
+        world.settled();
+        world
+    }
+
+    #[test]
+    fn a_machine_gone_for_good_has_its_copy_replaced_after_reschedule_after_and_the_app_is_whole_again()
+     {
+        let mut world = three(3);
+        assert_eq!(world.copies_on(), vec![(1, 1), (2, 1), (3, 1)]);
+        let before = world.log.len();
+        world.power_off(3);
+        world.run(118, |w| assert!(w.available().len() >= 2));
+        assert_eq!(world.log.len(), before, "nothing decided before 2 min");
+        world.run(60, |w| assert!(w.available().len() >= 2));
+        assert_eq!(world.placed(PlaceReason::ReplaceLost).len(), 1);
+        assert_eq!(world.available().len(), 3);
+        assert_eq!(world.copies_on().iter().map(|(_, n)| n).sum::<usize>(), 3);
+        assert!(world.copies_on().iter().all(|(m, _)| *m != 3));
+    }
+
+    #[test]
+    fn a_machine_that_flaps_off_and_on_within_reschedule_after_is_never_replaced_or_moved() {
+        let mut world = three(3);
+        let before = world.log.len();
+        for _ in 0..10 {
+            world.power_off(3);
+            world.run(60, |_| {});
+            world.power_on(3);
+            world.run(45, |_| {});
+        }
+        assert_eq!(world.log.len(), before, "{:#?}", &world.log[before..]);
+        assert_eq!(world.copies_on(), vec![(1, 1), (2, 1), (3, 1)]);
+    }
+
+    #[test]
+    fn a_machine_that_flaps_past_reschedule_after_gets_at_most_one_move_back_every_five_minutes() {
+        let mut world = three(3);
+        for _ in 0..4 {
+            world.power_off(3);
+            world.run(150, |w| assert!(w.available().len() >= 2));
+            world.power_on(3);
+            world.run(60, |w| {
+                assert!(w.available().len() >= 3);
+                assert!(
+                    w.app
+                        .replicas
+                        .iter()
+                        .filter(|r| r.state == ReplicaState::Running)
+                        .count()
+                        <= 4,
+                    "never more than a surge beside the copies"
+                );
+            });
+        }
+        let moves = world.placed(PlaceReason::Spread);
+        assert!(!moves.is_empty());
+        for pair in moves.windows(2) {
+            assert!(pair[1] - pair[0] >= SPREAD_MOVE_EVERY, "{moves:?}");
+        }
+        let lost = world.placed(PlaceReason::ReplaceLost).len();
+        assert!(
+            (1..=4).contains(&lost),
+            "only a copy that was there is replaced: {lost}"
+        );
+    }
+
+    #[test]
+    fn a_returning_machine_takes_a_copy_back_and_never_leaves_more_than_a_surge_running() {
+        let mut world = three(3);
+        world.power_off(3);
+        world.run(200, |_| {});
+        assert!(world.copies_on().iter().any(|(_, n)| *n == 2));
+        world.power_on(3);
+        world.run(300, |w| {
+            assert!(w.available().len() >= 3);
+            assert!(
+                w.app
+                    .replicas
+                    .iter()
+                    .filter(|r| r.state == ReplicaState::Running)
+                    .count()
+                    <= 4
+            );
+        });
+        assert_eq!(world.copies_on(), vec![(1, 1), (2, 1), (3, 1)]);
+    }
+
+    #[test]
+    fn a_new_machine_gets_a_copy_only_when_the_app_is_crowded_one_move_per_five_minutes() {
+        let mut world = World::new(3, vec![machine(1, 4096)]);
+        world.deploy(512, Behaviour::Healthy);
+        world.settled();
+        assert_eq!(world.copies_on(), vec![(1, 3)]);
+        let mut joined = machine(2, 4096);
+        joined.last_seen = Some(world.now);
+        world.machines.push(joined);
+        world.run(60, |w| assert!(w.available().len() >= 3));
+        assert_eq!(world.copies_on(), vec![(1, 2), (2, 1)]);
+        let mut joined = machine(3, 4096);
+        joined.last_seen = Some(world.now);
+        world.machines.push(joined);
+        world.run(400, |w| assert!(w.available().len() >= 3));
+        assert_eq!(world.copies_on(), vec![(1, 1), (2, 1), (3, 1)]);
+        let moves = world.placed(PlaceReason::Spread);
+        assert_eq!(moves.len(), 2);
+        assert!(moves[1] - moves[0] >= SPREAD_MOVE_EVERY);
+        let mut fourth = machine(4, 4096);
+        fourth.last_seen = Some(world.now);
+        world.machines.push(fourth);
+        let before = world.log.len();
+        world.run(400, |_| {});
+        assert_eq!(world.log.len(), before, "a spread app does not move");
+    }
+
+    #[test]
+    fn without_room_a_lost_copy_waits_saying_for_what_and_is_never_doubled_up() {
+        let mut world = World::new(
+            3,
+            vec![machine(1, 1536), machine(2, 1536), machine(3, 1536)],
+        );
+        world.deploy(700, Behaviour::Healthy);
+        world.settled();
+        assert_eq!(world.copies_on(), vec![(1, 1), (2, 1), (3, 1)]);
+        world.power_off(3);
+        world.run(200, |w| assert!(w.copies_on().iter().all(|(_, n)| *n <= 1)));
+        assert_eq!(world.waiting.len(), 1);
+        assert_eq!(world.waiting[0].reason, Unplaceable::InsufficientResources);
+        assert_eq!(
+            world.waiting[0].message,
+            "Waiting for a machine with 700 MiB of memory and 0.1 CPU free."
+        );
+        world.power_on(3);
+        world.run(30, |_| {});
+        assert!(world.waiting.is_empty());
+        assert_eq!(world.copies_on(), vec![(1, 1), (2, 1), (3, 1)]);
+    }
+
+    #[test]
+    fn a_cordoned_machine_has_its_copies_moved_off_one_at_a_time_without_dropping_a_ready_copy() {
+        let mut world = World::new(
+            3,
+            vec![machine(1, 4096), machine(2, 4096), machine(3, 4096)],
+        );
+        world.deploy(512, Behaviour::Healthy);
+        world.settled();
+        world.configure(SettingsInput {
+            copies: Some(4),
+            ..Default::default()
+        });
+        world.settled();
+        let on_one = world.copies_on().iter().find(|(m, _)| *m == 1).unwrap().1;
+        assert!(on_one >= 1);
+        world.set(1, |m| m.cordoned = true);
+        world.run(300, |w| {
+            assert!(w.available().len() >= 4, "never below the copies ready");
+            assert!(
+                w.app
+                    .replicas
+                    .iter()
+                    .filter(|r| r.state == ReplicaState::Running)
+                    .count()
+                    <= 5
+            );
+        });
+        assert!(world.copies_on().iter().all(|(m, _)| *m != 1));
+        assert_eq!(world.placed(PlaceReason::Move).len(), on_one);
+        world.configure(SettingsInput {
+            copies: Some(6),
+            ..Default::default()
+        });
+        world.settled();
+        assert!(
+            world.copies_on().iter().all(|(m, _)| *m != 1),
+            "nothing new on it"
+        );
+        world.set(1, |m| m.cordoned = false);
+        world.run(30, |_| {});
+        assert!(
+            world.copies_on().iter().any(|(m, _)| *m == 1),
+            "back in service"
+        );
+    }
+
+    #[test]
+    fn a_cordoned_machine_keeps_a_copy_no_other_machine_has_room_for_and_says_so() {
+        let mut world = World::new(2, vec![machine(1, 1536), machine(2, 1536)]);
+        world.deploy(700, Behaviour::Healthy);
+        world.settled();
+        world.set(1, |m| m.cordoned = true);
+        world.run(60, |w| assert_eq!(w.available().len(), 2));
+        assert_eq!(world.copies_on(), vec![(1, 1), (2, 1)]);
+        assert_eq!(
+            world.waiting[0].message,
+            "Waiting for a machine with 700 MiB of memory and 0.1 CPU free."
+        );
+    }
+
+    #[test]
+    fn copies_run_only_on_labelled_machines_and_leave_one_whose_label_is_taken_away() {
+        let mut world = World::new(
+            2,
+            vec![
+                labelled(1, 4096, &[("disk", "ssd")]),
+                labelled(2, 4096, &[("disk", "hdd")]),
+                labelled(3, 4096, &[("disk", "ssd")]),
+            ],
+        );
+        world.configure(SettingsInput {
+            labels: vec![("disk".into(), "ssd".into())],
+            ..Default::default()
+        });
+        world.deploy(512, Behaviour::Healthy);
+        world.settled();
+        assert_eq!(world.copies_on(), vec![(1, 1), (3, 1)]);
+        world.set(3, |m| m.labels.clear());
+        world.run(120, |w| assert!(w.available().len() >= 2));
+        assert_eq!(world.copies_on(), vec![(1, 2)]);
+        world.configure(SettingsInput {
+            labels: vec![("disk".into(), "nvme".into())],
+            ..Default::default()
+        });
+        world.run(30, |w| assert!(w.available().len() >= 2));
+        assert_eq!(
+            world.copies_on(),
+            vec![(1, 2)],
+            "nothing to move to: it stays"
+        );
+        assert_eq!(world.waiting[0].reason, Unplaceable::NoMatchingMachine);
+        assert_eq!(
+            world.waiting[0].message,
+            "Waiting for a machine labelled disk=nvme."
+        );
+    }
+
+    #[test]
+    fn pinning_an_app_to_named_machines_moves_its_copies_there() {
+        let mut world = three(2);
+        world.configure(SettingsInput {
+            machines: vec!["web-3".into()],
+            ..Default::default()
+        });
+        world.run(200, |w| assert!(w.available().len() >= 2));
+        assert_eq!(world.copies_on(), vec![(3, 2)]);
+    }
+
+    #[test]
+    fn copies_spread_over_zones_first_and_come_back_to_a_zone_that_returns() {
+        let mut world = World::new(
+            4,
+            vec![
+                labelled(1, 4096, &[("zone", "a")]),
+                labelled(2, 4096, &[("zone", "a")]),
+                labelled(3, 4096, &[("zone", "a")]),
+                labelled(4, 4096, &[("zone", "b")]),
+            ],
+        );
+        world.configure(SettingsInput {
+            spread_by: "zone".into(),
+            ..Default::default()
+        });
+        world.deploy(512, Behaviour::Healthy);
+        world.settled();
+        let in_b = |w: &World| {
+            w.copies_on()
+                .iter()
+                .filter(|(m, _)| *m == 4)
+                .map(|(_, n)| *n)
+                .sum::<usize>()
+        };
+        assert_eq!(in_b(&world), 2, "{:?}", world.copies_on());
+        world.power_off(4);
+        world.run(200, |w| assert!(w.available().len() >= 2));
+        assert_eq!(in_b(&world), 0);
+        assert_eq!(world.available().len(), 4);
+        world.power_on(4);
+        world.run(900, |w| assert!(w.available().len() >= 4));
+        assert_eq!(in_b(&world), 2, "{:?}", world.copies_on());
+    }
+
+    #[test]
+    fn a_machine_lost_during_a_rollout_still_ends_with_every_copy_on_the_new_release() {
+        let mut world = three(3);
+        world.deploy(512, Behaviour::Healthy);
+        world.run(3, |_| {});
+        world.power_off(2);
+        world.run(600, |_| {});
+        assert_eq!(world.releases_running(), vec![2, 2, 2]);
+        assert_eq!(world.available().len(), 3);
+        assert_eq!(world.app.current_release, Some(2));
+        assert!(!world.app.halted);
     }
 }

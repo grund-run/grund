@@ -306,6 +306,8 @@ pub struct MachineRow {
     pub last_seen_at: Option<DateTime<Utc>>,
     pub capabilities: Option<sqlx::types::Json<Value>>,
     pub network_ports: sqlx::types::Json<Vec<grund_domain::machine::NetworkPort>>,
+    pub labels: sqlx::types::Json<grund_domain::labels::Labels>,
+    pub cordoned_at: Option<DateTime<Utc>>,
 }
 
 macro_rules! select_machines {
@@ -315,7 +317,8 @@ macro_rules! select_machines {
                m.public_key, m.lease_id, m.lessee_organisation_id, o.slug AS lessee_slug, \
                m.lease_name, m.leased_at, m.pool_organisation_id, m.pool_name, m.facts, \
                m.minted_by, m.registered_at, m.key_registered_at, m.revoked_at, \
-               m.provider_machine_id, p.last_seen_at, p.capabilities, m.network_ports \
+               m.provider_machine_id, p.last_seen_at, p.capabilities, m.network_ports, \
+               m.labels, m.cordoned_at \
              FROM grund_machines m LEFT JOIN grund_organisations o \
                ON o.organisation_id = m.lessee_organisation_id \
              LEFT JOIN grund_machine_presence p ON p.machine_id = m.machine_id ",

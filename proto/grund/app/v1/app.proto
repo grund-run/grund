@@ -170,6 +170,36 @@ message AppSettings {
   uint32 reschedule_after_seconds = 4;
   // Roll back on its own when a release fails. Unset means true.
   optional bool auto_rollback = 5;
+  // Which machines beyond their names, and how copies spread (apps.md
+  // §5.6). Unset: any machine, spread over machines.
+  Placement placement = 6;
+}
+
+// An app's placement rules (apps.md §5.6). A copy on a machine that stops
+// matching them, or is taken out of service, moves off (§5.7).
+message Placement {
+  // Labels a machine must carry, each with this value; at most 16.
+  map<string, string> labels = 1;
+  // Own machines only, hosted only, or (unspecified) either.
+  MachineKind kind = 2;
+  // A label key whose values are failure domains, for example "zone":
+  // copies go to the value with the fewest copies first. Machines without
+  // the key share one domain. Empty: spread over machines only.
+  string spread_by = 3;
+  // Other apps of the organisation whose machines are preferred, after the
+  // spread; at most 10.
+  repeated string near = 4;
+  // Other apps whose machines are avoided, after the spread; at most 10,
+  // none also in near.
+  repeated string apart = 5;
+}
+
+enum MachineKind {
+  MACHINE_KIND_UNSPECIFIED = 0;
+  // The organisation's own machines.
+  MACHINE_KIND_OWN = 1;
+  // Machines grund leases to the organisation.
+  MACHINE_KIND_HOSTED = 2;
 }
 
 message Rollout {

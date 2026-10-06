@@ -19,14 +19,35 @@
 
 {% call lists.rows() %}
   {% for machine in machines %}
-  {% set tags = (["grund machine"] if machine.leased else []) + (["Runs VMs"] if machine.kvm else []) %}
+  {% set tags = (["grund machine"] if machine.leased else []) + (["Runs VMs"] if machine.kvm else []) + machine.labels %}
   {% set seen = "Connected" if machine.connected else ("Last seen " ~ machine.last_seen if machine.last_seen else "Not connected yet") %}
-  {% call(slot) lists.row(machine.name, (machine.hostname or "") if machine.connected else seen ~ (" · " ~ machine.hostname if machine.hostname else ""), icon_name="server", tone="ok" if machine.connected else "muted", tags=tags, status="Connected" if machine.connected else "Offline", status_tone="ok" if machine.connected else "muted") %}
-    {%- if slot == "end" and org.manages and not machine.leased %}{{ forms.post_button("/" ~ org.slug ~ "/machines/" ~ machine.id ~ "/remove", csrf, "Remove", kind="danger", size="sm") }}{% endif -%}
+  {% set sub = (machine.hostname or "") if machine.connected else seen ~ (" · " ~ machine.hostname if machine.hostname else "") %}
+  {% if machine.out_of_service %}{% set sub = "Out of service · " ~ machine.copies_words ~ (" · " ~ sub if sub else "") %}{% endif %}
+  {% set status = "Out of service" if machine.out_of_service else ("Connected" if machine.connected else "Offline") %}
+  {% call(slot) lists.row(machine.name, sub, icon_name="server", tone="ok" if machine.connected and not machine.out_of_service else "muted", tags=tags, status=status, status_tone="orange" if machine.out_of_service else ("ok" if machine.connected else "muted")) %}
+    {%- if slot == "end" and org.manages -%}
+    {%- if machine.out_of_service %}{{ forms.post_button("/" ~ org.slug ~ "/machines/" ~ machine.id ~ "/service", csrf, "Put back in service", size="sm", hidden={"in_service": "yes"}) }}{% else %}{{ forms.post_button("/" ~ org.slug ~ "/machines/" ~ machine.id ~ "/service", csrf, "Take out of service", size="sm", hidden={"in_service": "no"}) }}{% endif %}
+    {%- if not machine.leased %}{{ forms.post_button("/" ~ org.slug ~ "/machines/" ~ machine.id ~ "/remove", csrf, "Remove", kind="danger", size="sm") }}{% endif -%}
+    {%- endif -%}
   {% endcall %}
   {% endfor %}
 {% endcall %}
 {% if not machines %}{{ ui.empty_state(text="No machines yet.") }}{% endif %}
+
+{% if org.manages and machines %}
+{% call ui.section("labels", "Labels") %}
+  {% call ui.expanders() %}
+  {% for machine in machines %}
+  {% call ui.expander(machine.name, summary=(machine.labels | join(", ")) or "No labels", icon_name="server") %}
+    {% call forms.form("/" ~ org.slug ~ "/machines/" ~ machine.id ~ "/labels", csrf) %}
+      {{ forms.pairs_field("labels", "Labels", pairs=machine.pairs, blank=1, key_label="Key", value_label="Value") }}
+      {% call forms.actions("Copies on a machine that no longer matches their app move to one that does.") %}{{ ui.button("Save labels") }}{% endcall %}
+    {% endcall %}
+  {% endcall %}
+  {% endfor %}
+  {% endcall %}
+{% endcall %}
+{% endif %}
 
 {% if org.manages %}
 {% call ui.panel("add", "Add a machine") %}

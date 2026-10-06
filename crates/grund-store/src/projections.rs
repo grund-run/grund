@@ -328,7 +328,8 @@ pub async fn apply_machine(
             sqlx::query(
                 "UPDATE grund_machines SET state = 'returning', lease_id = NULL, \
                    lessee_organisation_id = NULL, lease_name = NULL, leased_at = NULL, \
-                   pool_organisation_id = NULL, pool_name = NULL, network_ports = '[]' \
+                   pool_organisation_id = NULL, pool_name = NULL, network_ports = '[]', \
+                   labels = '{}', cordoned_at = NULL \
                  WHERE machine_id = $1",
             )
             .bind(machine_id)
@@ -367,6 +368,26 @@ pub async fn apply_machine(
             sqlx::query("UPDATE grund_machines SET network_ports = $2 WHERE machine_id = $1")
                 .bind(machine_id)
                 .bind(sqlx::types::Json(ports))
+                .execute(&mut *connection)
+                .await?;
+        }
+        MachineEvent::LabelsSet { labels, .. } => {
+            sqlx::query("UPDATE grund_machines SET labels = $2 WHERE machine_id = $1")
+                .bind(machine_id)
+                .bind(sqlx::types::Json(labels))
+                .execute(&mut *connection)
+                .await?;
+        }
+        MachineEvent::Cordoned { cordoned_at, .. } => {
+            sqlx::query("UPDATE grund_machines SET cordoned_at = $2 WHERE machine_id = $1")
+                .bind(machine_id)
+                .bind(cordoned_at)
+                .execute(&mut *connection)
+                .await?;
+        }
+        MachineEvent::Uncordoned { .. } => {
+            sqlx::query("UPDATE grund_machines SET cordoned_at = NULL WHERE machine_id = $1")
+                .bind(machine_id)
                 .execute(&mut *connection)
                 .await?;
         }

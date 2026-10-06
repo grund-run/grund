@@ -25,7 +25,9 @@ use grund_proto::grund::{
         ProviderStep as ProviderStepProto, ProvisionPoolMachineRequest,
         ProvisionPoolMachineResponse, RebuildPoolMachineRequest, RebuildPoolMachineResponse,
         RevokeMachineRequest, RevokeMachineResponse, RevokePoolMachineRequest,
-        RevokePoolMachineResponse, RunVmRequest, RunVmResponse, StopVmRequest, StopVmResponse, Vm,
+        RevokePoolMachineResponse, RunVmRequest, RunVmResponse, SetMachineInServiceRequest,
+        SetMachineInServiceResponse, SetMachineLabelsRequest, SetMachineLabelsResponse,
+        StopVmRequest, StopVmResponse, Vm,
     },
 };
 use grund_store::{agents::VmRow, machines::MachineRow, organisations::Membership};
@@ -165,6 +167,13 @@ fn machine(row: &MachineRow, view: View, own_slug: Option<&str>) -> Machine {
                 ..Default::default()
             })
             .collect(),
+        labels: row
+            .labels
+            .0
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+        out_of_service_since: row.cordoned_at.map(timestamp).unwrap_or_default(),
         ..Default::default()
     }
 }
@@ -776,6 +785,78 @@ impl MachineService for MachineApi {
             outcome => changed(outcome)?,
         };
         Response::ok(DeclareMachinePortsResponse {
+            machine: MessageField::from(machine(&row, View::Organisation, Some(&membership.slug))),
+            ..Default::default()
+        })
+    }
+
+    async fn set_machine_labels(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, SetMachineLabelsRequest>,
+    ) -> ServiceResult<SetMachineLabelsResponse> {
+        let caller = caller(&ctx)?;
+        let membership = self
+            .member(&caller, request.organisation, Access::Manage)
+            .await?;
+        let labels = grund_domain::labels::labels(request.labels.iter().map(|(k, v)| (*k, *v)))
+            .map_err(|e| ConnectError::invalid_argument(e.to_string()))?;
+        let row = self.pool_machine(&membership, request.machine_id).await?;
+        let outcome = self
+            .state
+            .machines()
+            .set_labels(
+                caller.account_id,
+                row.machine_id,
+                membership.organisation_id,
+                labels,
+            )
+            .await
+            .map_err(internal)?;
+        let row = match outcome {
+            ChangeOutcome::NotAllowed => {
+                return Err(ConnectError::failed_precondition(
+                    "that machine is not in this organisation's pool",
+                ));
+            }
+            outcome => changed(outcome)?,
+        };
+        Response::ok(SetMachineLabelsResponse {
+            machine: MessageField::from(machine(&row, View::Organisation, Some(&membership.slug))),
+            ..Default::default()
+        })
+    }
+
+    async fn set_machine_in_service(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, SetMachineInServiceRequest>,
+    ) -> ServiceResult<SetMachineInServiceResponse> {
+        let caller = caller(&ctx)?;
+        let membership = self
+            .member(&caller, request.organisation, Access::Manage)
+            .await?;
+        let row = self.pool_machine(&membership, request.machine_id).await?;
+        let outcome = self
+            .state
+            .machines()
+            .set_in_service(
+                caller.account_id,
+                row.machine_id,
+                membership.organisation_id,
+                request.in_service,
+            )
+            .await
+            .map_err(internal)?;
+        let row = match outcome {
+            ChangeOutcome::NotAllowed => {
+                return Err(ConnectError::failed_precondition(
+                    "that machine is not in this organisation's pool",
+                ));
+            }
+            outcome => changed(outcome)?,
+        };
+        Response::ok(SetMachineInServiceResponse {
             machine: MessageField::from(machine(&row, View::Organisation, Some(&membership.slug))),
             ..Default::default()
         })

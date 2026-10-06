@@ -65,6 +65,17 @@
           "maxItems": 50,
           "type": "array"
         },
+        "placement": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/FilePlacement"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Which machines beyond their names, and how the copies spread over\nthem. Leave it out for any machine, spread one copy per machine\nfirst."
+        },
         "ports": {
           "description": "The ports the app listens on. At most 8, of which at most 2 public.",
           "items": {
@@ -177,6 +188,70 @@
           "minimum": 100,
           "type": [
             "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "FileMachineKind": {
+      "description": "Which kind of machine.",
+      "oneOf": [
+        {
+          "const": "own",
+          "description": "The organisation's own machines.",
+          "type": "string"
+        },
+        {
+          "const": "hosted",
+          "description": "Machines grund hosts.",
+          "type": "string"
+        }
+      ]
+    },
+    "FilePlacement": {
+      "additionalProperties": false,
+      "description": "Where the copies run, beyond the machines' names. A copy on a machine\nthat stops matching moves to one that does, started before it stops.",
+      "properties": {
+        "apart": {
+          "description": "Other apps whose machines are avoided, after the spread. At most 10.",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 10,
+          "type": "array"
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/FileMachineKind"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`own` for the organisation's own machines only, `hosted` for machines\ngrund hosts only. Leave it out for either."
+        },
+        "labels": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Labels a machine must carry, each with this value, as set on the\nMachines page, for example `disk: ssd`. At most 16.",
+          "maxProperties": 16,
+          "type": "object"
+        },
+        "near": {
+          "description": "Other apps whose machines are preferred, after the spread. At most\n10.",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 10,
+          "type": "array"
+        },
+        "spread_by": {
+          "description": "A label key whose values are failure domains, for example `zone`:\ncopies go to the value with the fewest copies first, then to the\nmachine with the fewest. Machines without the label count as one\ndomain.",
+          "type": [
+            "string",
             "null"
           ]
         }

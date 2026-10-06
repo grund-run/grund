@@ -215,6 +215,24 @@ dashboard, an app's Settings has its newest release as this file, to copy,
 download, or edit and apply. An unknown key is refused with its line,
 column and path.
 
+Copies spread over machines, one per machine first, and a copy on a
+machine that stays unreachable for 2 minutes (`reschedule_after`) starts
+on another. On the Machines page, owners and admins label machines
+(`zone=a`, `disk=ssd`) and take one out of service before maintenance: its
+copies move, each started and ready elsewhere before it stops. An app's
+`placement` picks machines by label and kind, and spreads over a label's
+values before machines:
+
+```yaml
+    placement:
+      labels: {disk: ssd}
+      spread_by: zone
+```
+
+A copy on a machine that no longer matches moves the same way. One with
+nowhere to go keeps running, and the app says what it waits for
+("Waiting for a machine labelled disk=ssd.").
+
 `Deploy` answers with the new release once its image is resolved to a
 digest; the rollout then runs on its own. `GetApp` shows it
 (`app.rollout.state` is `ROLLOUT_STATE_SUCCEEDED` or `ROLLOUT_STATE_FAILED`).

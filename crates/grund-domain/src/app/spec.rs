@@ -5,6 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::labels::Labels;
+
 /// The most ports an app may declare.
 pub const MAX_PORTS: usize = 8;
 /// The most public ports an app may declare.
@@ -542,6 +544,68 @@ impl Default for RolloutSettings {
     }
 }
 
+/// Which machines an app's copies run on, beyond their names
+/// (grund-docs design/apps.md §5.2, §5.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MachineKind {
+    /// The organisation's own machines, joined by their owner.
+    Own,
+    /// Machines grund leases to the organisation.
+    Hosted,
+}
+
+impl MachineKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MachineKind::Own => "own",
+            MachineKind::Hosted => "hosted",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        match text.trim() {
+            "own" => Some(MachineKind::Own),
+            "hosted" => Some(MachineKind::Hosted),
+            _ => None,
+        }
+    }
+}
+
+/// The most other apps one app may name in `near` and in `apart`.
+pub const MAX_RELATED_APPS: usize = 10;
+
+/// An app's placement rules besides machine names (apps.md §5.6). The
+/// default places anywhere, spread over machines.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlacementRules {
+    /// Labels a machine must carry, every one with this value.
+    #[serde(default, skip_serializing_if = "Labels::is_empty")]
+    pub labels: Labels,
+    /// Only own machines, or only hosted ones; `None`: either.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<MachineKind>,
+    /// A label key whose values are failure domains (`zone`): copies go to
+    /// the value with the fewest of them first, then to the machine with
+    /// the fewest. Machines without the key share one domain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spread_by: Option<String>,
+    /// Other apps of the organisation whose machines are preferred, after
+    /// the spread.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub near: Vec<String>,
+    /// Other apps of the organisation whose machines are avoided, after the
+    /// spread.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub apart: Vec<String>,
+}
+
+impl PlacementRules {
+    pub fn is_default(&self) -> bool {
+        *self == PlacementRules::default()
+    }
+}
+
 /// What is not per release. A value from [`AppSettings::validate`] has every
 /// default filled in.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -552,6 +616,8 @@ pub struct AppSettings {
     pub machines: Vec<String>,
     pub reschedule_after_seconds: u32,
     pub auto_rollback: bool,
+    #[serde(default, skip_serializing_if = "PlacementRules::is_default")]
+    pub placement: PlacementRules,
 }
 
 impl Default for AppSettings {
@@ -562,6 +628,7 @@ impl Default for AppSettings {
             machines: Vec::new(),
             reschedule_after_seconds: 120,
             auto_rollback: true,
+            placement: PlacementRules::default(),
         }
     }
 }
@@ -578,6 +645,13 @@ pub struct SettingsInput {
     pub machines: Vec<String>,
     pub reschedule_after_seconds: Option<u32>,
     pub auto_rollback: Option<bool>,
+    /// Label pairs as given, checked by `validate`.
+    pub labels: Vec<(String, String)>,
+    /// `own`, `hosted`, or empty for either.
+    pub kind: String,
+    pub spread_by: String,
+    pub near: Vec<String>,
+    pub apart: Vec<String>,
 }
 
 impl AppSettings {
@@ -648,12 +722,14 @@ impl AppSettings {
         if machines.len() > 50 {
             return refuse("machines", "name at most 50 machines");
         }
+        let placement = PlacementRules::validate(&input)?;
         Ok(Self {
             copies,
             rollout,
             machines,
             reschedule_after_seconds,
             auto_rollback: input.auto_rollback.unwrap_or(true),
+            placement,
         })
     }
 
@@ -685,7 +761,80 @@ impl AppSettings {
             machines: self.machines.clone(),
             reschedule_after_seconds: Some(self.reschedule_after_seconds),
             auto_rollback: Some(self.auto_rollback),
+            labels: self
+                .placement
+                .labels
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            kind: self
+                .placement
+                .kind
+                .map(|k| k.as_str().to_string())
+                .unwrap_or_default(),
+            spread_by: self.placement.spread_by.clone().unwrap_or_default(),
+            near: self.placement.near.clone(),
+            apart: self.placement.apart.clone(),
         }
+    }
+}
+
+impl PlacementRules {
+    fn validate(input: &SettingsInput) -> Result<Self, SpecError> {
+        let labels =
+            crate::labels::labels(input.labels.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+                .map_err(|e| SpecError {
+                    field: "placement.labels".into(),
+                    problem: e.to_string(),
+                })?;
+        let kind = match input.kind.trim() {
+            "" => None,
+            text => Some(MachineKind::parse(text).ok_or_else(|| SpecError {
+                field: "placement.kind".into(),
+                problem: "use own or hosted".into(),
+            })?),
+        };
+        let spread_by = match input.spread_by.trim() {
+            "" => None,
+            text => Some(crate::labels::label_key(text).map_err(|e| SpecError {
+                field: "placement.spread_by".into(),
+                problem: e.to_string(),
+            })?),
+        };
+        let related = |field: &str, names: &[String]| -> Result<Vec<String>, SpecError> {
+            let mut out: Vec<String> = Vec::new();
+            for (i, name) in names.iter().enumerate() {
+                let name = AppName::parse(name).map_err(|e| SpecError {
+                    field: format!("placement.{field}[{i}]"),
+                    problem: e.problem,
+                })?;
+                if !out.iter().any(|n| n == name.as_str()) {
+                    out.push(name.as_str().to_string());
+                }
+            }
+            if out.len() > MAX_RELATED_APPS {
+                return refuse(
+                    format!("placement.{field}"),
+                    format!("name at most {MAX_RELATED_APPS} apps"),
+                );
+            }
+            Ok(out)
+        };
+        let near = related("near", &input.near)?;
+        let apart = related("apart", &input.apart)?;
+        if let Some(both) = near.iter().find(|n| apart.contains(n)) {
+            return refuse(
+                "placement.apart",
+                format!("{both} is also in near; name it in one of them"),
+            );
+        }
+        Ok(Self {
+            labels,
+            kind,
+            spread_by,
+            near,
+            apart,
+        })
     }
 }
 

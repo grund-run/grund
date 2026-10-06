@@ -18,8 +18,8 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, generate::SchemaSettings, js
 use serde::{Deserialize, Serialize};
 
 use super::spec::{
-    AppSettings, AppSpec, CheckKind, CheckSpec, EnvVar, PortSpec, Protocol, STOP_SIGNALS,
-    SecretEnv, SettingsInput, SpecError, StopSpec,
+    AppSettings, AppSpec, CheckKind, CheckSpec, EnvVar, MachineKind, PlacementRules, PortSpec,
+    Protocol, STOP_SIGNALS, SecretEnv, SettingsInput, SpecError, StopSpec,
 };
 use crate::yaml;
 
@@ -66,6 +66,11 @@ pub struct FileApp {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(length(max = 50))]
     pub machines: Vec<String>,
+    /// Which machines beyond their names, and how the copies spread over
+    /// them. Leave it out for any machine, spread one copy per machine
+    /// first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<FilePlacement>,
     /// Seconds a copy's machine may be unreachable before the copy is placed
     /// elsewhere. Default 120, 30 to 3600.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -216,6 +221,47 @@ pub struct FileStop {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1, max = 300))]
     pub grace: Option<u32>,
+}
+
+/// Where the copies run, beyond the machines' names. A copy on a machine
+/// that stops matching moves to one that does, started before it stops.
+#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FilePlacement {
+    /// Labels a machine must carry, each with this value, as set on the
+    /// Machines page, for example `disk: ssd`. At most 16.
+    #[serde(default, skip_serializing_if = "indexmap::IndexMap::is_empty")]
+    #[schemars(extend("maxProperties" = 16))]
+    pub labels: indexmap::IndexMap<String, String>,
+    /// `own` for the organisation's own machines only, `hosted` for machines
+    /// grund hosts only. Leave it out for either.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<FileMachineKind>,
+    /// A label key whose values are failure domains, for example `zone`:
+    /// copies go to the value with the fewest copies first, then to the
+    /// machine with the fewest. Machines without the label count as one
+    /// domain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spread_by: Option<String>,
+    /// Other apps whose machines are preferred, after the spread. At most
+    /// 10.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 10))]
+    pub near: Vec<String>,
+    /// Other apps whose machines are avoided, after the spread. At most 10.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 10))]
+    pub apart: Vec<String>,
+}
+
+/// Which kind of machine.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FileMachineKind {
+    /// The organisation's own machines.
+    Own,
+    /// Machines grund hosts.
+    Hosted,
 }
 
 /// How a release rolls out.
@@ -425,6 +471,7 @@ pub fn parse_app(text: &str, name: &str) -> Result<Declared, SpecError> {
         machines: app.machines.clone(),
         reschedule_after_seconds: app.reschedule_after,
         auto_rollback: app.auto_rollback,
+        ..placement_input(app.placement.as_ref())
     };
     AppSettings::validate(settings.clone()).map_err(|e| SpecError {
         field: format!("apps.{name}.{}", e.field),
@@ -434,6 +481,45 @@ pub fn parse_app(text: &str, name: &str) -> Result<Declared, SpecError> {
         name: name.to_string(),
         spec,
         settings,
+    })
+}
+
+fn placement_input(placement: Option<&FilePlacement>) -> SettingsInput {
+    let Some(placement) = placement else {
+        return SettingsInput::default();
+    };
+    SettingsInput {
+        labels: placement
+            .labels
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+        kind: match placement.kind {
+            Some(FileMachineKind::Own) => "own".into(),
+            Some(FileMachineKind::Hosted) => "hosted".into(),
+            None => String::new(),
+        },
+        spread_by: placement.spread_by.clone().unwrap_or_default(),
+        near: placement.near.clone(),
+        apart: placement.apart.clone(),
+        ..SettingsInput::default()
+    }
+}
+
+fn file_placement(rules: &PlacementRules) -> Option<FilePlacement> {
+    (!rules.is_default()).then(|| FilePlacement {
+        labels: rules
+            .labels
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+        kind: rules.kind.map(|kind| match kind {
+            MachineKind::Own => FileMachineKind::Own,
+            MachineKind::Hosted => FileMachineKind::Hosted,
+        }),
+        spread_by: rules.spread_by.clone(),
+        near: rules.near.clone(),
+        apart: rules.apart.clone(),
     })
 }
 
@@ -461,6 +547,7 @@ fn file_app(spec: &AppSpec, settings: &AppSettings) -> FileApp {
         command: spec.command.clone(),
         copies: (settings.copies != 1).then_some(settings.copies),
         machines: settings.machines.clone(),
+        placement: file_placement(&settings.placement),
         reschedule_after: (settings.reschedule_after_seconds != defaults.reschedule_after_seconds)
             .then_some(settings.reschedule_after_seconds),
         auto_rollback: (!settings.auto_rollback).then_some(false),
@@ -751,6 +838,37 @@ apps:
         let error = parse_app(&bomb, "a").unwrap_err();
         assert!(error.problem.contains("alias"), "{error}");
         assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn placement_is_read_refused_by_field_and_written_back() {
+        let text = "apps:\n  web:\n    image: nginx:1.27\n    copies: 3\n    placement:\n      labels:\n        disk: ssd\n      kind: own\n      spread_by: zone\n      near: [db]\n      apart: [batch]\n";
+        let web = parse_app(text, "web").unwrap();
+        let settings = AppSettings::validate(web.settings.clone()).unwrap();
+        assert_eq!(settings.placement.spread_by.as_deref(), Some("zone"));
+        assert_eq!(
+            settings.placement.labels.get("disk").map(String::as_str),
+            Some("ssd")
+        );
+        assert_eq!(settings.placement.kind, Some(MachineKind::Own));
+        assert_eq!(settings.placement.near, vec!["db".to_string()]);
+        let rendered = render(
+            "web",
+            &web.spec,
+            &settings,
+            "https://grund.example/schema/grund.json",
+        );
+        assert!(rendered.contains("placement:"), "{rendered}");
+        let again = parse_app(&rendered, "web").unwrap();
+        assert_eq!(AppSettings::validate(again.settings).unwrap(), settings);
+        let bad = "apps:\n  web:\n    image: nginx:1.27\n    placement:\n      spread_by: Zone\n";
+        assert_eq!(
+            parse_app(bad, "web").unwrap_err().field,
+            "apps.web.placement.spread_by"
+        );
+        let plain = parse_app("apps:\n  web:\n    image: nginx:1.27\n", "web").unwrap();
+        let plain = AppSettings::validate(plain.settings).unwrap();
+        assert!(!render("web", &web.spec, &plain, "x").contains("placement"));
     }
 
     #[test]

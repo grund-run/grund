@@ -46,12 +46,20 @@ pub async fn machines_page(
         "removed" => "Machine removed. Its key no longer works here.",
         "running" => "Virtual machine placed. It joins as a machine once it boots.",
         "stopped" => "Virtual machine stopping.",
+        "out-of-service" => "Machine out of service. Its copies are moving to other machines.",
+        "in-service" => "Machine back in service.",
+        "labels" => "Labels saved.",
         _ => "",
     };
     let error = match query.error.as_str() {
         "not-allowed" => "Your role does not allow that.",
         "leased" => "A grund machine goes back when its lease ends; it cannot be removed here.",
         "gone" => "That machine or VM is no longer there.",
+        "label-key" => {
+            "A label key is 1 to 63 lowercase letters, digits, '.', '-', '_' or '/', starting and ending with a letter or digit."
+        }
+        "label-value" => "A label value is at most 63 letters, digits, '.', '-' or '_'.",
+        "label-many" => "A machine has at most 16 labels.",
         _ => "",
     };
     machines_view(
@@ -80,9 +88,28 @@ struct MachinesForm<'a> {
     run: RunForm,
 }
 
-fn machine_context(row: &MachineRow, now: chrono::DateTime<Utc>) -> Value {
+fn machine_context(row: &MachineRow, copies: i64, now: chrono::DateTime<Utc>) -> Value {
     let capabilities = row.capabilities.as_ref().map(|c| &c.0);
+    let labels: Vec<String> = row
+        .labels
+        .0
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect();
+    let pairs: Vec<(String, String)> = row
+        .labels
+        .0
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let copies_words = match copies {
+        0 => "no copies".to_string(),
+        1 => "1 copy".to_string(),
+        n => format!("{n} copies"),
+    };
     context! {
+        labels, pairs, copies_words,
+        out_of_service => row.cordoned_at.is_some(),
         id => row.machine_id.to_string(),
         name => row.pool_name.clone().unwrap_or_else(|| row.name.clone()),
         leased => row.pool == "management",
@@ -135,7 +162,19 @@ async fn machines_view(
         .machines()
         .organisation_machines(membership.organisation_id)
         .await?;
-    let machines: Vec<Value> = rows.iter().map(|row| machine_context(row, now)).collect();
+    let copies = grund_store::apps::copies_per_machine(&state.pool, membership.organisation_id)
+        .await
+        .map_err(anyhow::Error::from)?;
+    let machines: Vec<Value> = rows
+        .iter()
+        .map(|row| {
+            let n = copies
+                .iter()
+                .find(|(id, _)| *id == row.machine_id)
+                .map_or(0, |(_, n)| *n);
+            machine_context(row, n, now)
+        })
+        .collect();
     let hosts: Vec<(String, String)> = rows
         .iter()
         .filter(|row| cannot_host(row).is_none() && connected(row.last_seen_at, now))
@@ -306,6 +345,124 @@ pub async fn remove(
     {
         ChangeOutcome::Done(_) | ChangeOutcome::Leased(..) => "done=removed",
         ChangeOutcome::NotAllowed => "error=leased",
+        _ => "error=gone",
+    };
+    Ok(redirect(&format!("/{slug}/machines?{query}")))
+}
+
+#[derive(Deserialize)]
+pub struct ServiceForm {
+    #[serde(default)]
+    csrf: String,
+    #[serde(default)]
+    in_service: String,
+}
+
+/// `POST /{org}/machines/{machine}/service`: takes a machine out of
+/// service (`in_service=no`), so its copies move to other machines
+/// (grund-docs design/apps.md §5.7), or puts it back (`yes`).
+pub async fn service(
+    AxumState(state): AxumState<State>,
+    browser: Browser,
+    uri: Uri,
+    Path((slug, machine_id)): Path<(String, Uuid)>,
+    Form(form): Form<ServiceForm>,
+) -> PageResult {
+    if !browser.form_is_genuine(&form.csrf) {
+        return forged(&state, &browser);
+    }
+    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
+    if !manages(&membership) {
+        return Ok(redirect(&format!("/{slug}/machines?error=not-allowed")));
+    }
+    let machines = state.machines();
+    if machines
+        .organisation_machine(membership.organisation_id, machine_id)
+        .await?
+        .is_none()
+    {
+        return Ok(redirect(&format!("/{slug}/machines?error=gone")));
+    }
+    let in_service = form.in_service == "yes";
+    let query = match machines
+        .set_in_service(
+            session.account_id,
+            machine_id,
+            membership.organisation_id,
+            in_service,
+        )
+        .await?
+    {
+        ChangeOutcome::Done(_) if in_service => "done=in-service",
+        ChangeOutcome::Done(_) => "done=out-of-service",
+        _ => "error=gone",
+    };
+    Ok(redirect(&format!("/{slug}/machines?{query}")))
+}
+
+/// `POST /{org}/machines/{machine}/labels`: replaces a machine's labels,
+/// posted as rows (`labels_key`/`labels_value`); a row with no key is
+/// dropped.
+pub async fn labels(
+    AxumState(state): AxumState<State>,
+    browser: Browser,
+    uri: Uri,
+    Path((slug, machine_id)): Path<(String, Uuid)>,
+    Form(posted): Form<Vec<(String, String)>>,
+) -> PageResult {
+    let csrf = posted
+        .iter()
+        .find(|(k, _)| k == "csrf")
+        .map(|(_, v)| v.as_str())
+        .unwrap_or_default();
+    if !browser.form_is_genuine(csrf) {
+        return forged(&state, &browser);
+    }
+    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
+    if !manages(&membership) {
+        return Ok(redirect(&format!("/{slug}/machines?error=not-allowed")));
+    }
+    let keys = posted
+        .iter()
+        .filter(|(k, _)| k == "labels_key")
+        .map(|(_, v)| v);
+    let mut values = posted
+        .iter()
+        .filter(|(k, _)| k == "labels_value")
+        .map(|(_, v)| v.as_str());
+    let pairs: Vec<(&str, &str)> = keys
+        .map(|k| (k.as_str(), values.next().unwrap_or_default()))
+        .filter(|(k, _)| !k.trim().is_empty())
+        .collect();
+    let labels = match grund_domain::labels::labels(pairs) {
+        Ok(labels) => labels,
+        Err(error) => {
+            let code = match error {
+                grund_domain::labels::LabelError::Key => "label-key",
+                grund_domain::labels::LabelError::Value => "label-value",
+                grund_domain::labels::LabelError::TooMany => "label-many",
+            };
+            return Ok(redirect(&format!("/{slug}/machines?error={code}#labels")));
+        }
+    };
+    let machines = state.machines();
+    if machines
+        .organisation_machine(membership.organisation_id, machine_id)
+        .await?
+        .is_none()
+    {
+        return Ok(redirect(&format!("/{slug}/machines?error=gone")));
+    }
+    let query = match machines
+        .set_labels(
+            session.account_id,
+            machine_id,
+            membership.organisation_id,
+            labels,
+        )
+        .await?
+    {
+        ChangeOutcome::Done(_) => "done=labels",
         _ => "error=gone",
     };
     Ok(redirect(&format!("/{slug}/machines?{query}")))

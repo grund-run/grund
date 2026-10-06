@@ -561,6 +561,7 @@ fn form_field(spec_field: &str) -> Option<&'static str> {
         "resources" => "cpu",
         "command" => "command",
         "stop" => "stop",
+        "machines" | "placement" => "placement",
         _ => return None,
     })
 }
@@ -1144,8 +1145,20 @@ const APP_TABS: &[(&str, &str, &str, &str)] = &[
 ];
 
 const SETTINGS_FIELDS: &[&str] = &[
-    "copies", "exposure", "port", "check", "env", "memory", "cpu", "command", "stop", "variable",
-    "value", "file", "confirm",
+    "copies",
+    "exposure",
+    "port",
+    "check",
+    "env",
+    "memory",
+    "cpu",
+    "command",
+    "stop",
+    "variable",
+    "value",
+    "file",
+    "confirm",
+    "placement",
 ];
 
 const SETTINGS_PARTS: &[&str] = &[
@@ -1156,6 +1169,7 @@ const SETTINGS_PARTS: &[&str] = &[
     "check",
     "resources",
     "command",
+    "placement",
     "file",
     "delete",
 ];
@@ -1248,7 +1262,17 @@ fn setting_items(
         format!("{run} · stops with {signal}, killed after {grace} s")
     });
     let env: Vec<String> = spec.env.iter().map(|e| e.name.clone()).collect();
+    let placed = !settings.machines.is_empty()
+        || !settings.placement.is_default()
+        || settings.reschedule_after_seconds
+            != grund_domain::app::AppSettings::default().reschedule_after_seconds;
     let optional = [
+        (
+            "placement",
+            "Placement",
+            "server",
+            placed.then(|| placement_words(settings)),
+        ),
         ("check", "Health check", "ok", check),
         (
             "env",
@@ -1314,6 +1338,7 @@ fn setting_items(
 const SETTING_KEYS: &[&str] = &[
     "exposure",
     "copies",
+    "placement",
     "check",
     "resources",
     "env",
@@ -1326,6 +1351,30 @@ const SETTING_KEYS: &[&str] = &[
 ];
 
 const FILE_NAME: &str = "grund.yaml";
+
+fn placement_words(settings: &grund_domain::app::AppSettings) -> String {
+    let rules = &settings.placement;
+    let mut parts = vec![
+        grund_domain::app::placement::rules_words(settings)
+            .map_or("Any machine".to_string(), |words| capitalise(&words)),
+    ];
+    if let Some(key) = &rules.spread_by {
+        parts.push(format!("spread by {key}"));
+    }
+    if !rules.near.is_empty() {
+        parts.push(format!("near {}", rules.near.join(", ")));
+    }
+    if !rules.apart.is_empty() {
+        parts.push(format!("apart from {}", rules.apart.join(", ")));
+    }
+    parts.push(format!(
+        "replaced after {}",
+        grund_domain::app::reconcile::span_words(chrono::Duration::seconds(i64::from(
+            settings.reschedule_after_seconds
+        )))
+    ));
+    parts.join(" · ")
+}
 
 #[derive(Default)]
 struct Refused {
@@ -1475,6 +1524,20 @@ async fn app_view(
             messages
         })
         .unwrap_or_default();
+    let waiting: Vec<String> = waiting
+        .into_iter()
+        .enumerate()
+        .map(|(i, message)| match current {
+            Some(release) if i == 0 => {
+                let ready = ready_copies(view, i64::from(release), now);
+                format!(
+                    "{ready} of {wanted} {} running. {message}",
+                    if wanted == 1 { "copy" } else { "copies" }
+                )
+            }
+            _ => message,
+        })
+        .collect();
     let busy = view
         .row
         .rollout
@@ -1619,6 +1682,13 @@ async fn app_view(
             soon,
             settings => context! {
                 copies => wanted,
+                machines => view.row.settings.0.machines.join(", "),
+                labels => view.row.settings.0.placement.labels.iter().map(|(k, v)| (k.clone(), v.clone())).collect::<Vec<_>>(),
+                kind => view.row.settings.0.placement.kind.map_or("", |k| k.as_str()),
+                spread_by => view.row.settings.0.placement.spread_by.clone().unwrap_or_default(),
+                near => view.row.settings.0.placement.near.join(", "),
+                apart => view.row.settings.0.placement.apart.join(", "),
+                reschedule_after => view.row.settings.0.reschedule_after_seconds,
                 auto_rollback => if view.row.settings.0.auto_rollback { "on" } else { "off" },
                 number => newest.map(|r| r.number),
                 digest => newest.map(|r| r.image_digest.chars().take(19).collect::<String>()),
@@ -1877,6 +1947,106 @@ pub async fn configure(
         &membership,
         &name,
         "copies",
+        refusal,
+        None,
+    )
+    .await
+}
+
+/// `POST /{org}/apps/{app}/settings/placement`: which machines the copies
+/// run on and how they spread (grund-docs design/apps.md §5.6). No new
+/// release; copies that no longer match move, one at a time.
+pub async fn placement_settings(
+    AxumState(state): AxumState<State>,
+    browser: Browser,
+    uri: Uri,
+    Path((slug, name)): Path<(String, String)>,
+    Form(posted): Form<Vec<(String, String)>>,
+) -> PageResult {
+    let one = |key: &str| {
+        posted
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.trim().to_string())
+            .unwrap_or_default()
+    };
+    if !browser.form_is_genuine(&one("csrf")) {
+        return forged(&state, &browser);
+    }
+    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
+    if !manages(&membership) {
+        return Ok(redirect(&format!("/{slug}/apps/{name}?error=not-allowed")));
+    }
+    let apps = state.apps();
+    let view = match apps.get(membership.organisation_id, &name).await {
+        Ok(view) => view,
+        Err(AppsError::NotFound) => return Ok(redirect(&format!("/{slug}/apps?error=gone"))),
+        Err(error) => return Err(PageError::from(anyhow::anyhow!(error))),
+    };
+    let list = |key: &str| -> Vec<String> {
+        one(key)
+            .split([',', ' ', '\n'])
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .map(str::to_string)
+            .collect()
+    };
+    let keys = posted
+        .iter()
+        .filter(|(k, _)| k == "labels_key")
+        .map(|(_, v)| v);
+    let mut values = posted
+        .iter()
+        .filter(|(k, _)| k == "labels_value")
+        .map(|(_, v)| v.clone());
+    let mut input = view.row.settings.0.as_input();
+    input.machines = list("machines");
+    input.labels = keys
+        .map(|k| (k.trim().to_string(), values.next().unwrap_or_default()))
+        .filter(|(k, _)| !k.is_empty())
+        .collect();
+    input.kind = one("kind");
+    input.spread_by = one("spread_by");
+    input.near = list("near");
+    input.apart = list("apart");
+    let refusal = match one("reschedule_after").parse::<u32>() {
+        Ok(seconds) => {
+            input.reschedule_after_seconds = Some(seconds);
+            match apps
+                .configure(session.account_id, membership.organisation_id, &name, input)
+                .await
+            {
+                Ok(_) => {
+                    return Ok(redirect(&format!(
+                        "/{slug}/apps/{name}/settings?done=saved"
+                    )));
+                }
+                Err(AppsError::NotFound) => {
+                    return Ok(redirect(&format!("/{slug}/apps?error=gone")));
+                }
+                Err(AppsError::Spec(spec)) => Refusal::field(
+                    "placement",
+                    format!(
+                        "{}: {}.",
+                        spec.field.trim_start_matches("placement."),
+                        spec.problem
+                    ),
+                ),
+                Err(error) => refusal(&error),
+            }
+        }
+        Err(_) => Refusal::field(
+            "placement",
+            "Replace after is a whole number of seconds from 30 to 3600.",
+        ),
+    };
+    refuse_setting(
+        &state,
+        &browser,
+        &session,
+        &membership,
+        &name,
+        "placement",
         refusal,
         None,
     )
@@ -2411,7 +2581,14 @@ mod tests {
         assert_eq!(
             keys(&bare, "more"),
             [
-                "check", "env", "secrets", "domains", "volumes", "command", "file"
+                "placement",
+                "check",
+                "env",
+                "secrets",
+                "domains",
+                "volumes",
+                "command",
+                "file"
             ]
         );
 
@@ -2426,12 +2603,15 @@ mod tests {
             value: "info".into(),
         }];
         spec.stop.grace_seconds = 10;
+        let mut settings = settings;
+        settings.placement.spread_by = Some("zone".into());
         let set = setting_items(&spec, &settings, None, &["TOKEN".into()], &[]);
         assert_eq!(
             keys(&set, "configured"),
             [
                 "exposure",
                 "copies",
+                "placement",
                 "check",
                 "resources",
                 "env",
