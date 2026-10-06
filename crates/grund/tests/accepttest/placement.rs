@@ -321,3 +321,114 @@ async fn another_organisation_cannot_label_a_machine_or_take_it_out_of_service()
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn the_dashboard_labels_a_machine_takes_it_out_of_service_and_sets_an_apps_placement()
+-> anyhow::Result<()> {
+    let registry = FakeRegistry::start().await?;
+    let Some((given, when, then)) =
+        testcase_configured(&[("GRUND_INSECURE_REGISTRIES", &registry.host)]).await?
+    else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let org = owner.username.as_str();
+    let _desk = a_machine(&when, &then, org, "desk").await?;
+    let id = machine_ids(&when, &then, org).await?["desk"].clone();
+    let page = format!("/{org}/machines");
+    when.submitting(
+        &page,
+        &format!("/{org}/machines/{id}/labels"),
+        &[
+            ("labels_key", "zone"),
+            ("labels_value", "a"),
+            ("labels_key", ""),
+            ("labels_value", ""),
+        ],
+    )
+    .await?;
+    then.redirects_to(&format!("/{org}/machines?done=labels"))?;
+    when.submitting(
+        &page,
+        &format!("/{org}/machines/{id}/labels"),
+        &[("labels_key", "Zone"), ("labels_value", "a")],
+    )
+    .await?;
+    then.redirects_to(&format!("/{org}/machines?error=label-key#labels"))?;
+    when.submitting(
+        &page,
+        &format!("/{org}/machines/{id}/service"),
+        &[("in_service", "no")],
+    )
+    .await?;
+    then.redirects_to(&format!("/{org}/machines?done=out-of-service"))?;
+    when.visiting(&page).await?;
+    then.status(200)?
+        .body_contains("zone=a")?
+        .body_contains("Out of service · no copies")?;
+    let machine = machine_call(
+        &when,
+        &then,
+        "GetMachine",
+        json!({"organisation": org, "machineId": id}),
+    )
+    .await?;
+    anyhow::ensure!(
+        machine["machine"]["labels"]["zone"] == "a"
+            && machine["machine"]["outOfServiceSince"].is_string(),
+        "{machine}"
+    );
+
+    registry.publish("acme/hello", "1");
+    call(
+        &when,
+        &then,
+        "CreateApp",
+        json!({"organisation": org, "name": "hello", "settings": settings(1, json!({}))}),
+    )
+    .await?;
+    then.status(200)?;
+    call(&when, &then, "Deploy", json!({"organisation": org, "name": "hello", "spec": spec(&registry.image("acme/hello", "1"), json!([]))})).await?;
+    then.status(200)?;
+    let settings_page = format!("/{org}/apps/hello/settings?edit=placement");
+    when.submitting(
+        &settings_page,
+        &format!("/{org}/apps/hello/settings/placement"),
+        &[
+            ("machines", ""),
+            ("labels_key", "zone"),
+            ("labels_value", "a"),
+            ("kind", "own"),
+            ("spread_by", "zone"),
+            ("near", ""),
+            ("apart", ""),
+            ("reschedule_after", "60"),
+        ],
+    )
+    .await?;
+    then.redirects_to(&format!("/{org}/apps/hello/settings?done=saved"))?;
+    let app = until(
+        &when,
+        &then,
+        org,
+        "hello",
+        Duration::from_secs(10),
+        "the placement saved",
+        |a| a["settings"]["placement"]["spreadBy"] == "zone",
+    )
+    .await?;
+    anyhow::ensure!(
+        app["settings"]["placement"]["labels"]["zone"] == "a"
+            && app["settings"]["placement"]["kind"] == "MACHINE_KIND_OWN"
+            && app["settings"]["rescheduleAfterSeconds"] == 60,
+        "{app}"
+    );
+    when.submitting(
+        &settings_page,
+        &format!("/{org}/apps/hello/settings/placement"),
+        &[("spread_by", "Zone"), ("reschedule_after", "60")],
+    )
+    .await?;
+    then.status(422)?.body_contains("spread_by")?;
+    Ok(())
+}
