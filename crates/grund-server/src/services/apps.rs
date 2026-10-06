@@ -34,6 +34,7 @@ use crate::{
     registry::{Inspection, Login, Registry, ResolveError},
     services::{
         agents::{AgentsState, MachineCaller},
+        domains::DomainsState,
         entry::{EntryState, publishes},
         registry_credentials::RegistryCredentialsState,
     },
@@ -951,6 +952,10 @@ impl Apps {
             },
         )
         .await?;
+        self.state
+            .domains()
+            .unbind_app_in(&mut work, actor, row.app_id)
+            .await?;
         self.publish_machines(work.sql(), before).await?;
         work.commit().await?;
         self.state.wakes.documents_changed();

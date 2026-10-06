@@ -22,7 +22,8 @@ pub struct Pebble {
     pub http_port: u16,
     listen_port: u16,
     management_port: u16,
-    dns_port: u16,
+    pub dns_port: u16,
+    challtest_port: u16,
     work: PathBuf,
     bin: PathBuf,
     pebble: Option<Child>,
@@ -119,6 +120,7 @@ impl Pebble {
             listen_port,
             management_port,
             dns_port,
+            challtest_port: free_port(),
             work,
             bin,
             pebble: None,
@@ -144,7 +146,7 @@ impl Pebble {
                     .arg("-dnsserver")
                     .arg(format!("127.0.0.1:{}", self.dns_port))
                     .arg("-management")
-                    .arg(format!("127.0.0.1:{}", free_port()))
+                    .arg(format!("127.0.0.1:{}", self.challtest_port))
                     .stdout(Stdio::from(log.try_clone()?))
                     .stderr(Stdio::from(log))
                     .spawn()
@@ -179,6 +181,44 @@ impl Pebble {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         Ok(())
+    }
+
+    pub async fn set_txt(&self, host: &str, value: &str) -> anyhow::Result<()> {
+        self.challtest(
+            "set-txt",
+            serde_json::json!({"host": format!("{host}."), "value": value}),
+        )
+        .await
+    }
+
+    pub async fn clear_txt(&self, host: &str) -> anyhow::Result<()> {
+        self.challtest("clear-txt", serde_json::json!({"host": format!("{host}.")}))
+            .await
+    }
+
+    async fn challtest(&self, path: &str, body: serde_json::Value) -> anyhow::Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let origin =
+                super::client::Origin::parse(&format!("http://127.0.0.1:{}", self.challtest_port))?;
+            let bytes = body.to_string().into_bytes();
+            match super::client::send(
+                &origin,
+                "POST",
+                &format!("/{path}"),
+                &[("content-type", "application/json")],
+                Some(&bytes),
+            )
+            .await
+            {
+                Ok(response) if response.status == 200 => return Ok(()),
+                Ok(response) if Instant::now() > deadline => {
+                    anyhow::bail!("pebble-challtestsrv /{path}: {}", response.status)
+                }
+                Err(error) if Instant::now() > deadline => return Err(error),
+                _ => tokio::time::sleep(Duration::from_millis(100)).await,
+            }
+        }
     }
 
     pub fn stop(&mut self) {

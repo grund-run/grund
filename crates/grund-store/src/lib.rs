@@ -11,6 +11,7 @@ pub mod api_tokens;
 pub mod apps;
 pub mod certificates;
 pub mod doctor;
+pub mod domains;
 pub mod entry;
 pub mod machines;
 pub mod networks;

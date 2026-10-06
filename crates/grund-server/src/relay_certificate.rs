@@ -115,7 +115,7 @@ pub fn http_client(timeout: Option<Duration>) -> anyhow::Result<reqwest::Client>
         .context("build the HTTP client for the instance")
 }
 
-fn write_private(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
     let dir = path.parent().context("a file in a directory")?;
     std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
@@ -136,7 +136,7 @@ fn write_private(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn read_optional(path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
+pub(crate) fn read_optional(path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
     match std::fs::read(path) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -475,6 +475,19 @@ impl Instance {
         request: &Req,
     ) -> anyhow::Result<Resp> {
         let path = format!("/grund.certificates.v1.CertificateService/{procedure}");
+        let body = request.encode_to_vec();
+        let headers = self.key.headers(&path, &body);
+        unary(&self.http, &self.key.instance, &path, &headers, body).await
+    }
+
+    /// A call to the edge service (`grund.edge.v1.EdgeService`), signed by
+    /// the edge's key like every other.
+    pub async fn edge_call<Req: Message, Resp: Message>(
+        &self,
+        procedure: &str,
+        request: &Req,
+    ) -> anyhow::Result<Resp> {
+        let path = format!("/grund.edge.v1.EdgeService/{procedure}");
         let body = request.encode_to_vec();
         let headers = self.key.headers(&path, &body);
         unary(&self.http, &self.key.instance, &path, &headers, body).await

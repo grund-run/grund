@@ -23,13 +23,14 @@
 //! [`Requirement::SessionOrToken`]: the app procedures CI needs, and not
 //! DeleteApp. Everything else stays session-only: the account, members and
 //! invitations, renaming and deleting organisations, machines and their join
-//! tokens, and the management pool. A token acts only on its own
+//! tokens, the management pool, and custom domains. A token acts only on its own
 //! organisation; any other is `not_found`, as for a non-member.
 
 pub mod account;
 pub mod agent;
 pub mod app;
 pub mod certificates;
+pub mod domain;
 pub mod edge;
 pub mod enrollment;
 pub mod machine;
@@ -54,6 +55,7 @@ use grund_proto::grund::{
     agent::v1::{AGENT_SERVICE_SERVICE_NAME, MACHINE_ENROLLMENT_SERVICE_SERVICE_NAME},
     app::v1::APP_SERVICE_SERVICE_NAME,
     certificates::v1::CERTIFICATE_SERVICE_SERVICE_NAME,
+    domain::v1::DOMAIN_SERVICE_SERVICE_NAME,
     edge::v1::{EDGE_ENROLLMENT_SERVICE_SERVICE_NAME, EDGE_SERVICE_SERVICE_NAME},
     machine::v1::{MACHINE_SERVICE_SERVICE_NAME, MANAGEMENT_POOL_SERVICE_SERVICE_NAME},
     organisation::v1::ORGANISATION_SERVICE_SERVICE_NAME,
@@ -278,6 +280,14 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
     ("/grund.edge.v1.EdgeService/WatchRoutes", Requirement::Edge),
     ("/grund.edge.v1.EdgeService/ReportUsage", Requirement::Edge),
     (
+        "/grund.edge.v1.EdgeService/GetDomainCertificate",
+        Requirement::Edge,
+    ),
+    (
+        "/grund.edge.v1.EdgeService/GetHttpChallenge",
+        Requirement::Edge,
+    ),
+    (
         "/grund.certificates.v1.CertificateService/RequestCertificate",
         Requirement::Terminator,
     ),
@@ -342,6 +352,34 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
         Requirement::SessionOrToken,
     ),
     ("/grund.app.v1.AppService/DeleteApp", Requirement::Session),
+    (
+        "/grund.domain.v1.DomainService/ListDomains",
+        Requirement::Session,
+    ),
+    (
+        "/grund.domain.v1.DomainService/GetDomain",
+        Requirement::Session,
+    ),
+    (
+        "/grund.domain.v1.DomainService/AddDomain",
+        Requirement::Session,
+    ),
+    (
+        "/grund.domain.v1.DomainService/VerifyDomain",
+        Requirement::Session,
+    ),
+    (
+        "/grund.domain.v1.DomainService/BindDomain",
+        Requirement::Session,
+    ),
+    (
+        "/grund.domain.v1.DomainService/UnbindDomain",
+        Requirement::Session,
+    ),
+    (
+        "/grund.domain.v1.DomainService/RemoveDomain",
+        Requirement::Session,
+    ),
 ];
 
 /// The API routes, to merge into the page router.
@@ -379,6 +417,10 @@ pub fn router(state: State) -> axum::Router {
         .route_service(
             &format!("/{APP_SERVICE_SERVICE_NAME}/{{method}}"),
             app_service(state.clone()),
+        )
+        .route_service(
+            &format!("/{DOMAIN_SERVICE_SERVICE_NAME}/{{method}}"),
+            service.clone(),
         )
         .layer(middleware::from_fn_with_state(state.clone(), authenticate))
         .merge(
@@ -731,6 +773,7 @@ pub fn connect_router(state: State) -> connectrpc::Router {
     connectrpc::Router::new()
         .add_service(Arc::new(account::AccountApi::new(state.clone())))
         .add_service(Arc::new(organisation::OrganisationApi::new(state.clone())))
+        .add_service(Arc::new(domain::DomainApi::new(state.clone())))
         .add_service(Arc::new(machine::ManagementPoolApi::new(state.clone())))
         .add_service(Arc::new(machine::MachineApi::new(state.clone())))
         .add_service(Arc::new(enrollment::EnrollmentApi::new(state.clone())))
@@ -1405,6 +1448,75 @@ mod tests {
         ) -> ServiceResult<grund_proto::grund::edge::v1::ReportUsageResponse> {
             unreachable!()
         }
+        async fn get_domain_certificate(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, grund_proto::grund::edge::v1::GetDomainCertificateRequest>,
+        ) -> ServiceResult<grund_proto::grund::edge::v1::GetDomainCertificateResponse> {
+            unreachable!()
+        }
+        async fn get_http_challenge(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, grund_proto::grund::edge::v1::GetHttpChallengeRequest>,
+        ) -> ServiceResult<grund_proto::grund::edge::v1::GetHttpChallengeResponse> {
+            unreachable!()
+        }
+    }
+
+    struct UnusedDomains;
+
+    #[allow(refining_impl_trait)]
+    impl grund_proto::grund::domain::v1::DomainService for UnusedDomains {
+        async fn list_domains(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, grund_proto::grund::domain::v1::ListDomainsRequest>,
+        ) -> ServiceResult<grund_proto::grund::domain::v1::ListDomainsResponse> {
+            unreachable!()
+        }
+        async fn get_domain(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, grund_proto::grund::domain::v1::GetDomainRequest>,
+        ) -> ServiceResult<grund_proto::grund::domain::v1::GetDomainResponse> {
+            unreachable!()
+        }
+        async fn add_domain(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, grund_proto::grund::domain::v1::AddDomainRequest>,
+        ) -> ServiceResult<grund_proto::grund::domain::v1::AddDomainResponse> {
+            unreachable!()
+        }
+        async fn verify_domain(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, grund_proto::grund::domain::v1::VerifyDomainRequest>,
+        ) -> ServiceResult<grund_proto::grund::domain::v1::VerifyDomainResponse> {
+            unreachable!()
+        }
+        async fn bind_domain(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, grund_proto::grund::domain::v1::BindDomainRequest>,
+        ) -> ServiceResult<grund_proto::grund::domain::v1::BindDomainResponse> {
+            unreachable!()
+        }
+        async fn unbind_domain(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, grund_proto::grund::domain::v1::UnbindDomainRequest>,
+        ) -> ServiceResult<grund_proto::grund::domain::v1::UnbindDomainResponse> {
+            unreachable!()
+        }
+        async fn remove_domain(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, grund_proto::grund::domain::v1::RemoveDomainRequest>,
+        ) -> ServiceResult<grund_proto::grund::domain::v1::RemoveDomainResponse> {
+            unreachable!()
+        }
     }
 
     struct UnusedCertificates;
@@ -1635,7 +1747,8 @@ mod tests {
             .add_service(Arc::new(UnusedEdgeEnrollment))
             .add_service(Arc::new(UnusedCertificates))
             .add_service(Arc::new(UnusedAgent))
-            .add_service(Arc::new(UnusedApps));
+            .add_service(Arc::new(UnusedApps))
+            .add_service(Arc::new(UnusedDomains));
         let served: BTreeSet<String> = router
             .methods()
             .map(|m| format!("/{}", m.trim_start_matches('/')))

@@ -292,6 +292,24 @@ pub struct EntryArgs {
     /// their next document.
     #[arg(long, env = "GRUND_EDGES", value_delimiter = ',', value_parser = dns_name)]
     pub edges: Vec<String>,
+
+    /// Seconds a custom domain that was verified and then removed is held
+    /// before another organisation can verify it (app-domains.md §3,
+    /// "takeover protection"). Default 7 days, at most 90; the organisation
+    /// that removed it can take it back at once.
+    #[arg(
+        long,
+        env = "GRUND_DOMAIN_COOLDOWN",
+        default_value_t = 604_800,
+        value_parser = clap::value_parser!(u64).range(1..=7_776_000)
+    )]
+    pub domain_cooldown: u64,
+
+    /// The DNS server (address:port) asked for custom domains' TXT
+    /// verification records. Unset: the system's resolvers
+    /// (/etc/resolv.conf).
+    #[arg(long, env = "GRUND_DNS_RESOLVER")]
+    pub dns_resolver: Option<std::net::SocketAddr>,
 }
 
 /// A bare DNS name, lowercase, without a trailing dot.

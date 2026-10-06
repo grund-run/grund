@@ -12,6 +12,7 @@
 pub mod apps;
 pub mod assets;
 pub mod browser;
+pub mod domains;
 pub mod install;
 pub mod machines;
 pub mod orgs;
@@ -102,7 +103,11 @@ pub fn router(state: State) -> Router {
         .route("/{org}/settings/invitations/{invitation}/revoke", post(orgs::revoke_invitation))
         .route("/{org}/apps", get(apps::apps_page))
         .route("/{org}/deploy", get(apps::deploy_page).post(apps::create))
-        .route("/{org}/domains", get(apps::domains_page))
+        .route("/{org}/domains", get(domains::domains_page).post(domains::add))
+        .route("/{org}/domains/verify", post(domains::verify))
+        .route("/{org}/domains/bind", post(domains::bind))
+        .route("/{org}/domains/unbind", post(domains::unbind))
+        .route("/{org}/domains/remove", post(domains::remove))
         .route("/{org}/templates", get(apps::templates_page))
         .route("/{org}/apps/{app}", get(apps::app_page))
         .route("/{org}/apps/{app}/deployments", get(apps::deployments_page))

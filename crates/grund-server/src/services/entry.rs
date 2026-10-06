@@ -14,8 +14,10 @@
 //!   component, polling every 5 s).
 //! - **The route table**: per address, the machines with a running (not
 //!   draining) copy that were seen in the last 30 s (apps.md §9.2), their
-//!   keys and home relays, and whether the app is suspended. Its version is
-//!   a digest of its content, so an edge holding the newest table waits.
+//!   keys and home relays, and whether the app is suspended. Every custom
+//!   domain bound to an app that has an address gets the same route, marked
+//!   `custom_domain` (app-domains.md §3). Its version is a digest of its
+//!   content, so an edge holding the newest table waits.
 
 use std::{collections::BTreeMap, time::Duration};
 
@@ -179,6 +181,20 @@ impl Entry {
             .into_values()
             .filter(|r| !r.machines.is_empty() || published_any(&rows, r))
             .collect();
+        let bound = grund_store::domains::bound_names(&self.state.pool).await?;
+        let custom: Vec<edge::Route> = bound
+            .iter()
+            .filter_map(|domain| {
+                let app_id = domain.app_id.to_string();
+                let route = routes.iter().find(|r| r.app_id == app_id)?;
+                Some(edge::Route {
+                    name: domain.name.clone(),
+                    custom_domain: true,
+                    ..route.clone()
+                })
+            })
+            .collect();
+        routes.extend(custom);
         routes.sort_by(|a, b| a.name.cmp(&b.name));
         let relay_urls = self.relay_urls();
         Ok(edge::RouteTable {
@@ -227,15 +243,16 @@ impl Entry {
         Ok(counted)
     }
 
-    /// Whether `name` is an address the route table carries now: what an
-    /// edge may ask a certificate for.
+    /// Whether `name` is an app address the route table carries now: what
+    /// an edge may ask a certificate for by CSR. A custom domain is not:
+    /// its key is the instance's, handed over by GetDomainCertificate.
     pub async fn routes_name(&self, name: &str) -> anyhow::Result<bool> {
         Ok(self
             .route_table()
             .await?
             .routes
             .iter()
-            .any(|r| r.name == name))
+            .any(|r| r.name == name && !r.custom_domain))
     }
 }
 

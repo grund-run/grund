@@ -27,7 +27,7 @@ use crate::accepttest::{
 const APPS: &str = "/grund.app.v1.AppService";
 const MACHINES: &str = "/grund.machine.v1.MachineService";
 
-struct Agent {
+pub(super) struct Agent {
     dir: PathBuf,
     child: std::process::Child,
 }
@@ -116,18 +116,18 @@ fn simulated_address(replica_id: &str) -> Ipv4Addr {
     Ipv4Addr::new(127, digest[0].max(1), digest[1], digest[2].clamp(1, 254))
 }
 
-struct Stack {
-    pebble: Pebble,
+pub(super) struct Stack {
+    pub(super) pebble: Pebble,
     registry: FakeRegistry,
-    given: Given,
-    when: When,
-    then: Then,
+    pub(super) given: Given,
+    pub(super) when: When,
+    pub(super) then: Then,
     domain: String,
     edge_host: String,
-    edge_dir: PathBuf,
-    edge: Option<Running>,
+    pub(super) edge_dir: PathBuf,
+    pub(super) edge: Option<Running>,
     http_port: u16,
-    roots: Arc<rustls::RootCertStore>,
+    pub(super) roots: Arc<rustls::RootCertStore>,
 }
 
 fn dir(prefix: &str) -> PathBuf {
@@ -142,6 +142,10 @@ fn database_url(when: &When) -> String {
 }
 
 async fn a_stack() -> anyhow::Result<Option<Stack>> {
+    a_stack_with(&[]).await
+}
+
+pub(super) async fn a_stack_with(extra: &[(&str, &str)]) -> anyhow::Result<Option<Stack>> {
     if external_target().is_some() {
         return Ok(None);
     }
@@ -169,11 +173,17 @@ async fn a_stack() -> anyhow::Result<Option<Stack>> {
             format!("http://127.0.0.1:{relay_port}"),
         ),
     ]);
+    env.push((
+        "GRUND_DNS_RESOLVER".into(),
+        format!("127.0.0.1:{}", pebble.dns_port),
+    ));
+    env.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
     let pairs: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let Some((given, when, then)) = testcase_configured(&pairs).await? else {
         return Ok(None);
     };
     let roots = pebble.roots().await?;
+    let http_port = pebble.http_port;
     Ok(Some(Stack {
         pebble,
         registry,
@@ -184,7 +194,7 @@ async fn a_stack() -> anyhow::Result<Option<Stack>> {
         edge_host,
         edge_dir: dir("edge"),
         edge: None,
-        http_port: free_port(),
+        http_port,
         roots,
     }))
 }
@@ -201,7 +211,7 @@ impl Stack {
         )
     }
 
-    fn start_edge(&mut self) -> anyhow::Result<()> {
+    pub(super) fn start_edge(&mut self) -> anyhow::Result<()> {
         std::fs::create_dir_all(&self.edge_dir)?;
         let mut command = std::process::Command::new(crate::accepttest::fixtures::grund_binary());
         if !self.edge_dir.join("edge.key").exists() {
@@ -235,7 +245,7 @@ impl Stack {
         Ok(())
     }
 
-    fn edge_log(&self) -> String {
+    pub(super) fn edge_log(&self) -> String {
         std::fs::read_to_string(self.edge_dir.join("edge.log")).unwrap_or_default()
     }
 
@@ -249,7 +259,7 @@ impl Stack {
         self.then.json()
     }
 
-    async fn a_machine(&self, organisation: &str, name: &str) -> anyhow::Result<Agent> {
+    pub(super) async fn a_machine(&self, organisation: &str, name: &str) -> anyhow::Result<Agent> {
         self.when
             .calling(
                 &format!("{MACHINES}/CreateJoinToken"),
@@ -285,7 +295,7 @@ impl Stack {
         Ok(Agent { dir, child })
     }
 
-    async fn deploy(
+    pub(super) async fn deploy(
         &self,
         organisation: &str,
         app: &str,
@@ -323,14 +333,14 @@ impl Stack {
         Ok(())
     }
 
-    async fn app(&self, organisation: &str, app: &str) -> anyhow::Result<Value> {
+    pub(super) async fn app(&self, organisation: &str, app: &str) -> anyhow::Result<Value> {
         Ok(self
             .call("GetApp", json!({"organisation": organisation, "name": app}))
             .await?["app"]
             .clone())
     }
 
-    async fn until(
+    pub(super) async fn until(
         &self,
         organisation: &str,
         app: &str,
@@ -352,15 +362,15 @@ impl Stack {
         }
     }
 
-    fn name_of(&self, organisation: &str, app: &str) -> String {
+    pub(super) fn name_of(&self, organisation: &str, app: &str) -> String {
         format!("{app}-{organisation}.{}", self.domain)
     }
 
-    async fn connect(&self, name: &str) -> anyhow::Result<Conn> {
+    pub(super) async fn connect(&self, name: &str) -> anyhow::Result<Conn> {
         Conn::open(name, self.pebble.tls_port, self.roots.clone(), None).await
     }
 
-    async fn served(&self, name: &str, within: Duration) -> anyhow::Result<()> {
+    pub(super) async fn served(&self, name: &str, within: Duration) -> anyhow::Result<()> {
         let started = Instant::now();
         loop {
             let attempt = async {
@@ -424,14 +434,14 @@ fn write_remote_copies(agents: &[(&str, &Agent)], app: &str, replicas: &[(String
     }
 }
 
-struct Answer {
-    status: u16,
+pub(super) struct Answer {
+    pub(super) status: u16,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
 }
 
 impl Answer {
-    fn text(&self) -> String {
+    pub(super) fn text(&self) -> String {
         String::from_utf8_lossy(&self.body).into_owned()
     }
 
@@ -446,7 +456,7 @@ impl Answer {
 trait Io: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> Io for T {}
 
-struct Conn {
+pub(super) struct Conn {
     io: Box<dyn Io>,
     buffer: Vec<u8>,
     closed: bool,
@@ -548,7 +558,7 @@ impl Conn {
         })
     }
 
-    async fn get(
+    pub(super) async fn get(
         &mut self,
         host: &str,
         path: &str,

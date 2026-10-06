@@ -43,6 +43,10 @@ impl Projections {
                 grund_store::projections::APP_SUBSCRIPTION,
                 grund_store::projections::AppProjection,
             )
+            .subscribe_transactional(
+                grund_store::domains::DOMAIN_SUBSCRIPTION,
+                grund_store::domains::DomainProjection,
+            )
             .subscribe(
                 crate::sagas::DELETION_TRIGGER_SUBSCRIPTION,
                 crate::sagas::DeletionTrigger::new(&state.deletions),

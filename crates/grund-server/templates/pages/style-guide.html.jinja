@@ -185,6 +185,9 @@
   {% call cat.specimen("Command", '{{ ui.command(setup.install, id="setup-install", copy=true) }}', "A command to run, in a box, wrapping anywhere. copy puts a copy button in its corner, shown only with the script.") %}
     {{ ui.command("curl -fsSL https://grund.example/install | sh -s -- --code 7KQ2-9XWD", copy=true) }}
   {% endcall %}
+  {% call cat.specimen("DNS records", '{{ ui.dns_records(domain.records, "Records for " ~ domain.name) }}', "Records for someone to make at their DNS provider: type, name and value, the name and value with copy buttons (shown only with the script). A table; each row stacks below 900 px.") %}
+    {{ ui.dns_records([{"type": "TXT", "name": "_grund.shop.example.com", "value": "grund-verify-3kQ9xYv2LmN8pR4tW6zB1cD5fG7hJ0kL2nM4qS6uV8w"}, {"type": "CNAME", "name": "shop.example.com", "value": "storefront-nord-studio.example.run"}], "Records for shop.example.com") }}
+  {% endcall %}
   {% call cat.specimen("Code block", '{{ ui.code_block(file, id="grund-toml") }}', "A file or a licence, preformatted, wrapping long lines.") %}
     {{ ui.code_block("[apps.storefront]\nimage = \"nginx:1.27\"\n\n[[apps.storefront.ports]]\nname = \"http\"\nport = 80\npublic = true") }}
   {% endcall %}

@@ -4,6 +4,8 @@
   {% call ui.facts() %}
     {% call ui.fact("Endpoint", wide=true) %}
       {% if app.address %}{{ ui.endpoint("https://" ~ app.address, href="https://" ~ app.address) }}{{ ui.pill("Public HTTP", icon_name="globe") }}
+      {% for domain in app.domains %}{% if domain.serving %}{{ ui.endpoint("https://" ~ domain.name, href="https://" ~ domain.name) }}{% else %}{{ ui.hint(domain.line) }}{% endif %}{% endfor %}
+      {% if app.domains %}{{ ui.link_more(app.domains_href, "Custom domains") }}{% endif %}
       {% elif app.internal %}{{ ui.endpoint(app.internal) }}{{ ui.pill("Private", icon_name="lock") }}
       {% else %}{{ ui.hint("No port: nothing reaches it.") }}{% endif %}
     {% endcall %}

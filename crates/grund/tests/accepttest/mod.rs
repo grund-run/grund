@@ -6,6 +6,7 @@ mod apps;
 mod certificates;
 mod csrf;
 mod doctor;
+mod domains;
 mod health;
 mod insights;
 mod lifecycle;

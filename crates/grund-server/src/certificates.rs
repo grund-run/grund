@@ -66,6 +66,11 @@ use crate::{
 /// The subject of the instance's own domain certificate.
 pub const SUBJECT: &str = "instance";
 
+/// What every custom domain's subject starts with (`domain:<domain id>`):
+/// the organisation's certificate, its key made and sealed here and served
+/// by the edges, validated by HTTP-01 at the edges (traffic.md §5.3).
+pub const DOMAIN_SUBJECT_PREFIX: &str = "domain:";
+
 /// How long a replica holds a subject while it works on it. Longer than
 /// [`ATTEMPT_DEADLINE`], so a live holder is never overtaken.
 pub const LEASE: Duration = Duration::from_secs(600);
@@ -336,6 +341,7 @@ impl Certificates {
         };
         let ours = match claim.terminator.as_str() {
             "remote" => claim.csr.is_some(),
+            _ if claim.subject.starts_with(DOMAIN_SUBJECT_PREFIX) => true,
             _ => claim.subject == SUBJECT && self.acme(),
         };
         if !ours {
@@ -377,6 +383,11 @@ impl Certificates {
         .await?;
         let serving = match claim.terminator.as_str() {
             "remote" => claim
+                .chain_pem
+                .as_deref()
+                .and_then(|chain| leaf(chain).ok())
+                .map(|(_, _, not_after)| not_after.to_rfc3339()),
+            _ if claim.subject != SUBJECT => claim
                 .chain_pem
                 .as_deref()
                 .and_then(|chain| leaf(chain).ok())
@@ -500,7 +511,7 @@ impl Certificates {
             chain_pem: chain,
             sealed_key: match &keyed {
                 Keyed::Own(made) => {
-                    Some(self.seal(&certificate_aad(SUBJECT), made.key_pkcs8_der()))
+                    Some(self.seal(&certificate_aad(&claim.subject), made.key_pkcs8_der()))
                 }
                 Keyed::Remote(_) => None,
             },
@@ -532,7 +543,7 @@ impl Certificates {
             %renew_at,
             "https: certificate issued"
         );
-        if let Some(served) = served {
+        if let Some(served) = served.filter(|_| claim.subject == SUBJECT) {
             self.resolver.set(served);
         }
         Ok(())
@@ -887,6 +898,13 @@ impl Certificates {
         }
     }
 
+    /// Opens the key of a certificate this instance holds for `subject`
+    /// (a custom domain's), as its PKCS#8 DER; `None` when it was sealed
+    /// with another secret key or for another subject.
+    pub fn unseal_certificate_key(&self, subject: &str, sealed: &[u8]) -> Option<Vec<u8>> {
+        self.unseal(&certificate_aad(subject), sealed)
+    }
+
     fn seal(&self, aad: &str, plaintext: &[u8]) -> Vec<u8> {
         seal(&self.inner.secret.derive("tls/seal"), aad, plaintext)
     }
@@ -1085,7 +1103,8 @@ fn account_aad(directory: &str) -> String {
 
 const SEAL_VERSION: u8 = 1;
 
-fn seal(key: &[u8; 32], aad: &str, plaintext: &[u8]) -> Vec<u8> {
+/// Seals `plaintext` with ChaCha20-Poly1305 under `key`, bound to `aad`.
+pub fn seal(key: &[u8; 32], aad: &str, plaintext: &[u8]) -> Vec<u8> {
     use ring::aead::{Aad, CHACHA20_POLY1305, LessSafeKey, NONCE_LEN, Nonce, UnboundKey};
     let key = LessSafeKey::new(UnboundKey::new(&CHACHA20_POLY1305, key).expect("a 32-byte key"));
     let mut nonce = [0u8; NONCE_LEN];
@@ -1104,7 +1123,8 @@ fn seal(key: &[u8; 32], aad: &str, plaintext: &[u8]) -> Vec<u8> {
     sealed
 }
 
-fn unseal(key: &[u8; 32], aad: &str, sealed: &[u8]) -> Option<Vec<u8>> {
+/// Opens what [`seal`] sealed under `key` for `aad`.
+pub fn unseal(key: &[u8; 32], aad: &str, sealed: &[u8]) -> Option<Vec<u8>> {
     use ring::aead::{Aad, CHACHA20_POLY1305, LessSafeKey, NONCE_LEN, Nonce, UnboundKey};
     let (&version, rest) = sealed.split_first()?;
     if version != SEAL_VERSION || rest.len() < NONCE_LEN {

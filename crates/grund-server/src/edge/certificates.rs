@@ -20,6 +20,7 @@ use std::{
 use grund_proto::grund::certificates::v1::CertificateState;
 use grund_tls::{Answers, Names};
 
+use super::custom::Kept;
 use crate::relay_certificate::{Instance, Store};
 
 /// How often a name with nothing pending is looked at again.
@@ -35,6 +36,8 @@ pub struct EdgeCertificates {
     answers: Answers,
     data_dir: PathBuf,
     routes: super::routes::Routes,
+    kept: Kept,
+    delivered: std::sync::Mutex<HashMap<String, i64>>,
 }
 
 fn store_for(data_dir: &Path, name: &str) -> Store {
@@ -48,6 +51,7 @@ impl EdgeCertificates {
         answers: Answers,
         data_dir: &Path,
         routes: super::routes::Routes,
+        kept: Kept,
     ) -> Self {
         Self {
             instance,
@@ -55,7 +59,53 @@ impl EdgeCertificates {
             answers,
             data_dir: data_dir.to_path_buf(),
             routes,
+            kept,
+            delivered: Default::default(),
         }
+    }
+
+    fn custom(&self, name: &str) -> bool {
+        self.routes
+            .current()
+            .get(name)
+            .is_some_and(|route| route.custom_domain)
+    }
+
+    fn serve_delivered(
+        &self,
+        name: &str,
+        delivered: &super::custom::Delivered,
+    ) -> anyhow::Result<()> {
+        let served =
+            grund_tls::Served::from_pkcs8(delivered.chain_pem.as_bytes(), &delivered.key_pkcs8)?;
+        anyhow::ensure!(
+            served.names.iter().any(|n| n.eq_ignore_ascii_case(name)),
+            "the certificate for {name} does not name it"
+        );
+        self.names.resolver(name).set(served);
+        self.delivered
+            .lock()
+            .expect("delivered lock")
+            .insert(name.to_string(), delivered.version);
+        Ok(())
+    }
+
+    async fn reconcile_custom(&self, name: &str) -> anyhow::Result<Duration> {
+        let Some(delivered) = super::custom::fetch(&self.instance, name).await? else {
+            return Ok(ORDERING_RECHECK);
+        };
+        let known = self
+            .delivered
+            .lock()
+            .expect("delivered lock")
+            .get(name)
+            .copied();
+        if known != Some(delivered.version) {
+            self.serve_delivered(name, &delivered)?;
+            self.kept.keep(name, &delivered)?;
+            tracing::info!(%name, version = delivered.version, "edge: serving a custom domain's certificate from the instance");
+        }
+        Ok(ISSUED_RECHECK)
     }
 
     fn wanted(&self) -> BTreeSet<String> {
@@ -67,6 +117,20 @@ impl EdgeCertificates {
     /// Serves what is kept on disk for every name wanted now.
     pub fn load(&self) {
         for name in self.wanted() {
+            if self.names.get(&name).is_none() && self.custom(&name) {
+                match self.kept.load(&name) {
+                    Ok(Some(delivered)) => {
+                        if let Err(error) = self.serve_delivered(&name, &delivered) {
+                            tracing::warn!(%name, error = format!("{error:#}"), "edge: a kept custom domain's certificate does not load");
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        tracing::warn!(%name, error = format!("{error:#}"), "edge: a kept custom domain's certificate does not open")
+                    }
+                }
+                continue;
+            }
             if self.names.get(&name).is_none() {
                 match store_for(&self.data_dir, &name).load(&self.names.resolver(&name)) {
                     Ok(Some(_)) => {
@@ -82,6 +146,9 @@ impl EdgeCertificates {
     }
 
     async fn reconcile_name(&self, name: &str) -> anyhow::Result<Duration> {
+        if self.custom(name) {
+            return self.reconcile_custom(name).await;
+        }
         let names = vec![name.to_string()];
         let store = store_for(&self.data_dir, name);
         let certificate = match self.instance.get_for(&names).await? {
@@ -132,6 +199,15 @@ impl EdgeCertificates {
                 self.names.remove(&name);
                 self.answers.remove(&name);
                 due.remove(&name);
+                if self
+                    .delivered
+                    .lock()
+                    .expect("delivered lock")
+                    .remove(&name)
+                    .is_some()
+                {
+                    self.kept.forget(&name);
+                }
             }
         }
         self.load();

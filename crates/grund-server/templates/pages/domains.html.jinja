@@ -3,6 +3,8 @@
 {% block title %}Domains · {{ org.slug }} · grund{% endblock %}
 {% block content %}
 {{ ui.page_head("Domains", "Where " ~ org.slug ~ "'s apps answer on the internet.") }}
+{{ forms.form_ok(notice) }}
+{{ forms.form_error(error) }}
 {% call ui.section("addresses", "App addresses", count=addresses | length, first=true) %}
   {% if addresses %}
   {% call lists.rows() %}
@@ -16,7 +18,52 @@
   {% call ui.empty_state("No app has an address yet") %}An app gets one, <code>&lt;app&gt;-{{ org.slug }}.&lt;domain&gt;</code>, when a version publishes an HTTP port.{% endcall %}
   {% endif %}
 {% endcall %}
-{% call ui.section("custom", "Your own domains", tag="Coming soon") %}
-  {{ ui.empty_state("Custom domains are in development", "Pointing a domain you own at an app is not built yet. Until then, each app answers on its address above.") }}
+
+{% call ui.section("custom", "Your own domains", count=domains | length) %}
+  {% if not domains %}
+  {{ ui.empty_state("No domains of your own yet", "Add a domain you own, prove it with a TXT record, and bind it to an app. grund serves the app on it with its own certificate.") }}
+  {% endif %}
 {% endcall %}
+{% for domain in domains %}
+{% call ui.panel(domain.id, domain.name) %}
+  {% if domain.tone == "danger" %}{{ ui.callout("Not working yet", domain.sentence, icon_name="alert", tone="danger", danger=true) }}
+  {% else %}{{ ui.status_line(domain.sentence, domain.tone, id=domain.id ~ "-status") }}{% endif %}
+  {% if domain.state == "pending" %}
+  {{ ui.aside("Make this record at your DNS provider, then check it. It proves the domain is yours; only this organisation's value works.") }}
+  {{ ui.dns_records(domain.records, "Records for " ~ domain.name) }}
+  {% elif domain.records %}
+  {{ ui.aside(domain.records_aside) }}
+  {{ ui.dns_records(domain.records, "Records for " ~ domain.name) }}
+  {% endif %}
+  {% if org.manages %}
+  {% if domain.state == "verified" or domain.state == "bound" %}
+  {% if apps %}
+  {% call forms.form("/" ~ org.slug ~ "/domains/bind", csrf, layout="row") %}
+    {{ forms.hidden_field("name", domain.name) }}
+    {{ forms.select_field("app", "Serve this app on it" if domain.state == "verified" else "Move it to another app", apps, selected=domain.app, id=domain.id ~ "-app") }}
+    {{ ui.button("Bind" if domain.state == "verified" else "Move", kind="secondary") }}
+  {% endcall %}
+  {% else %}
+  {{ ui.hint("No app publishes an HTTP port yet. Deploy one with a public port, then bind this domain to it.") }}
+  {% endif %}
+  {% endif %}
+  {% call forms.actions() %}
+    {% if domain.state == "pending" %}{{ forms.post_button("/" ~ org.slug ~ "/domains/verify", csrf, "Check DNS now", hidden={"name": domain.name}) }}{% endif %}
+    {% if domain.state == "bound" %}{{ forms.post_button("/" ~ org.slug ~ "/domains/unbind", csrf, "Unbind", hidden={"name": domain.name}) }}{% endif %}
+    {{ forms.post_button("/" ~ org.slug ~ "/domains/remove", csrf, "Remove " ~ domain.name, kind="danger", hidden={"name": domain.name}) }}
+  {% endcall %}
+  {% endif %}
+{% endcall %}
+{% endfor %}
+
+{% if org.manages %}
+{% call ui.section("add", "Add a domain") %}
+  {% call forms.form("/" ~ org.slug ~ "/domains", csrf, layout="narrow", autocomplete="off") %}
+    {{ forms.form_error(form_error) }}
+    {{ forms.field("name", "Domain", value=name, autocomplete="off", error=name_error, hint="A name you own, such as shop.example.com. Not a wildcard.") }}
+    {{ ui.button("Add domain", icon_name="globe") }}
+  {% endcall %}
+  {{ ui.hint("An organisation holds at most " ~ max ~ " domains. A domain that is removed after it was verified waits " ~ cooldown ~ " before another organisation can add it.") }}
+{% endcall %}
+{% endif %}
 {% endblock %}

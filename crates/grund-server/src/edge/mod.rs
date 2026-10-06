@@ -11,12 +11,15 @@
 //! - Its route table is watched from the instance and kept on disk
 //!   ([`routes`], fail-static).
 //! - Its certificates are ordered by the instance from CSRs made here and
-//!   answered by TLS-ALPN-01 on its own 443 ([`certificates`]).
+//!   answered by TLS-ALPN-01 on its own 443 ([`certificates`]); a custom
+//!   domain's comes whole from the instance, validated by HTTP-01 on its
+//!   port 80 ([`custom`]).
 //! - Machines are reached over iroh, through the instance's relays when no
 //!   direct path punches, with iroh's default path timeouts ([`machines`]).
 //! - Entry bytes are metered by address and path and reported every minute.
 
 pub mod certificates;
+pub mod custom;
 pub mod machines;
 pub mod proxy;
 pub mod routes;
@@ -268,12 +271,14 @@ pub async fn run(command: EdgeCommand) -> anyhow::Result<()> {
         proxy_from: command.proxy_protocol_from.clone(),
         clients: Default::default(),
     });
+    let instance = crate::relay_certificate::Instance::new(key.clone())?;
     let certificates = certificates::EdgeCertificates::new(
-        crate::relay_certificate::Instance::new(key.clone())?,
+        instance.clone(),
         names,
         answers,
         &command.data_dir,
         routes.clone(),
+        custom::Kept::new(&command.data_dir, &key.seed()),
     );
     certificates.load();
     tokio::spawn(certificates.run());
@@ -294,10 +299,14 @@ pub async fn run(command: EdgeCommand) -> anyhow::Result<()> {
             }
         }
     });
+    let port80 = Arc::new(serve::Port80 {
+        routes: routes.clone(),
+        instance,
+    });
     tokio::spawn(async move {
         loop {
             if let Ok((tcp, _)) = http_listener.accept().await {
-                tokio::spawn(serve::http(tcp));
+                tokio::spawn(serve::http(port80.clone(), tcp));
             }
         }
     });

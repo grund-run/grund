@@ -1,0 +1,172 @@
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+package grund.domain.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// An organisation's custom domains (grund-docs website/design/app-domains.md
+// §3, design/traffic.md §3.2, §5.3): a name the organisation owns, proved
+// with a TXT record grund generates, then bound to one of its apps, which
+// grund's edges serve on it with a certificate grund orders.
+//
+// To serve app.example.com:
+//   1. AddDomain; the answer names the TXT record to make
+//      (_grund.app.example.com, holding the token).
+//   2. Make that record and a CNAME from app.example.com to the app's
+//      address (<app>-<organisation>.<app domain>).
+//   3. VerifyDomain: grund looks the record up now.
+//   4. BindDomain to the app. The certificate follows within minutes,
+//      validated by HTTP-01 through the edge.
+//
+// One organisation holds a name at a time, from verification until it
+// removes it. A name that was verified and then removed is held for a
+// cool-down (7 days by default) before another organisation can add it.
+//
+// Members get and list; owners and admins add, verify, bind, unbind and
+// remove. Dashboard sessions only: an API token is refused with
+// permission_denied (auth.md §6), because a domain is a claim on a name
+// on the internet, which a person makes. An organisation the caller is not
+// a member of, and a domain that is not the organisation's, are not_found
+// alike.
+//
+// Errors carry a stable reason in an ErrorReason detail: name_invalid,
+// name_reserved (the instance's own names), domain_exists, domain_taken
+// (another organisation holds it), domain_cooling_down, domain_limit,
+// domain_rate_limited, not_verified, verification_failed (the message says
+// what DNS answered), app_not_found, app_not_public (no public HTTP port),
+// app_domain_limit.
+service DomainService {
+  // By name.
+  rpc ListDomains(ListDomainsRequest) returns (ListDomainsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  rpc GetDomain(GetDomainRequest) returns (GetDomainResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // Owners and admins. At most 50 per organisation, and 20 added a day.
+  rpc AddDomain(AddDomainRequest) returns (AddDomainResponse);
+
+  // Owners and admins. Looks for the TXT record now. A verified domain
+  // answers as it is.
+  rpc VerifyDomain(VerifyDomainRequest) returns (VerifyDomainResponse);
+
+  // Owners and admins. Binds a verified domain to an app with a public
+  // HTTP port (the port its address serves); binding it to another app
+  // moves it. At most 10 per app.
+  rpc BindDomain(BindDomainRequest) returns (BindDomainResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+
+  // Owners and admins. The domain stays verified; its certificate goes.
+  rpc UnbindDomain(UnbindDomainRequest) returns (UnbindDomainResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+
+  // Owners and admins. Unbinds it first. The certificate is not revoked.
+  rpc RemoveDomain(RemoveDomainRequest) returns (RemoveDomainResponse);
+}
+
+enum DomainStatus {
+  DOMAIN_STATUS_UNSPECIFIED = 0;
+  // Added; its TXT record has not been found yet.
+  DOMAIN_STATUS_PENDING = 1;
+  // Proved, bound to no app.
+  DOMAIN_STATUS_VERIFIED = 2;
+  // Bound; its certificate is on its way (or the instance orders none).
+  DOMAIN_STATUS_BOUND = 3;
+  // Bound and served with a certificate.
+  DOMAIN_STATUS_CERTIFICATE_ISSUED = 4;
+  // The last verification check or certificate order failed: problem says
+  // why.
+  DOMAIN_STATUS_ERROR = 5;
+}
+
+message Domain {
+  // Lowercase, no trailing dot.
+  string name = 1;
+  DomainStatus status = 2;
+  // The TXT record that proves the domain: its name (_grund.<name>) and
+  // the value it must hold.
+  string verification_record_name = 3;
+  string verification_record_value = 4;
+  // The app it is bound to; empty when none.
+  string app = 5;
+  google.protobuf.Timestamp added_at = 6;
+  google.protobuf.Timestamp verified_at = 7;
+  google.protobuf.Timestamp bound_at = 8;
+  google.protobuf.Timestamp certificate_expires_at = 9;
+  // In words, when status is DOMAIN_STATUS_ERROR.
+  string problem = 10;
+}
+
+message ListDomainsRequest {
+  string organisation = 1;
+}
+
+message ListDomainsResponse {
+  repeated Domain domains = 1;
+}
+
+message GetDomainRequest {
+  string organisation = 1;
+  string name = 2;
+}
+
+message GetDomainResponse {
+  Domain domain = 1;
+}
+
+message AddDomainRequest {
+  string organisation = 1;
+  // app.example.com; case and a trailing dot are ignored. Not a wildcard.
+  string name = 2;
+}
+
+message AddDomainResponse {
+  Domain domain = 1;
+}
+
+message VerifyDomainRequest {
+  string organisation = 1;
+  string name = 2;
+}
+
+message VerifyDomainResponse {
+  Domain domain = 1;
+}
+
+message BindDomainRequest {
+  string organisation = 1;
+  string name = 2;
+  // The app's name.
+  string app = 3;
+}
+
+message BindDomainResponse {
+  Domain domain = 1;
+}
+
+message UnbindDomainRequest {
+  string organisation = 1;
+  string name = 2;
+}
+
+message UnbindDomainResponse {
+  Domain domain = 1;
+}
+
+message RemoveDomainRequest {
+  string organisation = 1;
+  string name = 2;
+}
+
+message RemoveDomainResponse {}
+
+// Attached as a detail to errors.
+message ErrorReason {
+  string reason = 1;
+}

@@ -46,6 +46,23 @@ service EdgeService {
   // path (traffic.md §6.4: the relay allowance applies to relayed bytes).
   // Counted by the instance at most once per report_id.
   rpc ReportUsage(ReportUsageRequest) returns (ReportUsageResponse);
+
+  // The certificate and private key of a custom domain the route table
+  // carries (Route.custom_domain), for the edge to serve (traffic.md
+  // §5.3: one key per custom domain, made and sealed by the instance and
+  // delivered to every edge node). not_found for any other name, and while
+  // none is issued.
+  rpc GetDomainCertificate(GetDomainCertificateRequest) returns (GetDomainCertificateResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // The HTTP-01 key authorization for a custom domain the route table
+  // carries, asked when the CA's validator fetches
+  // /.well-known/acme-challenge/<token> from the edge's port 80.
+  // not_found when no order waits on that token for that name.
+  rpc GetHttpChallenge(GetHttpChallengeRequest) returns (GetHttpChallengeResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
 }
 
 message EnrollEdgeRequest {
@@ -101,6 +118,10 @@ message Route {
   bool suspended = 3;
   // The machines with a running copy of the app.
   repeated RouteMachine machines = 4;
+  // A custom domain bound to the app (app-domains.md §3), not its address:
+  // its certificate comes from GetDomainCertificate, and port 80 answers
+  // its HTTP-01 challenges through GetHttpChallenge.
+  bool custom_domain = 5;
 }
 
 message RouteMachine {
@@ -128,6 +149,28 @@ message Usage {
 }
 
 message ReportUsageResponse {}
+
+message GetDomainCertificateRequest {
+  string name = 1;
+}
+
+message GetDomainCertificateResponse {
+  // The leaf first, then the intermediates.
+  string chain_pem = 1;
+  // PKCS#8 DER. Keep it no less carefully than the edge's own key.
+  bytes key_pkcs8 = 2;
+  // Grows with every issuance.
+  int64 version = 3;
+}
+
+message GetHttpChallengeRequest {
+  string name = 1;
+  string token = 2;
+}
+
+message GetHttpChallengeResponse {
+  string key_authorization = 1;
+}
 
 // Attached as a detail to EnrollEdge errors.
 message ErrorReason {

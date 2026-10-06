@@ -27,6 +27,9 @@ pub const MAX_TABLE_BYTES: usize = 16 * 1024 * 1024;
 pub struct Route {
     pub name: String,
     pub suspended: bool,
+    /// A custom domain bound to the app: its certificate is the instance's
+    /// ([`super::custom`]).
+    pub custom_domain: bool,
     /// The machines' endpoint ids, with the relays to dial each through:
     /// its home relay, or every relay of the table when it reported none.
     pub machines: Vec<(String, Vec<String>)>,
@@ -52,6 +55,7 @@ impl Table {
                     Arc::new(Route {
                         name,
                         suspended: route.suspended,
+                        custom_domain: route.custom_domain,
                         machines: route
                             .machines
                             .iter()

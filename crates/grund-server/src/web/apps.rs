@@ -2,8 +2,8 @@
 //! grid), `/{org}/deploy` for a new app, and each app's page with its
 //! copies, its rollout, its releases and the forms that deploy, scale, roll
 //! back and set secrets (grund-docs design/apps.md §8.5, §5.4, §9). Also
-//! `/{org}/domains`, the apps' addresses, and `/{org}/templates`, the
-//! premade apps Deploy app also offers (`grund_domain::app::templates`). Every member sees the pages; owners and
+//! `/{org}/templates`, the premade apps Deploy app also offers
+//! (`grund_domain::app::templates`). Every member sees the pages; owners and
 //! admins change. The handlers call the same service as
 //! `grund.app.v1.AppService`, so the pages and the API refuse the same
 //! things.
@@ -36,6 +36,7 @@ use serde::Deserialize;
 use crate::{
     services::{
         apps::{AppListing, AppView, AppsError, AppsState, Change, Launch},
+        domains::DomainsState,
         sessions::Session,
     },
     state::State,
@@ -785,37 +786,6 @@ async fn new_view(
     )
 }
 
-/// `/{org}/domains`: the address each app holds. Custom domains are not
-/// built; the page says so.
-pub async fn domains_page(
-    AxumState(state): AxumState<State>,
-    browser: Browser,
-    uri: Uri,
-    Path(slug): Path<String>,
-) -> PageResult {
-    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
-    let addresses: Vec<Value> = state
-        .apps()
-        .listings(membership.organisation_id, &membership.slug)
-        .await
-        .map_err(|e| PageError::from(anyhow::anyhow!(e)))?
-        .iter()
-        .filter_map(|l| {
-            l.address
-                .as_ref()
-                .map(|address| context! { name => l.view.row.name, address })
-        })
-        .collect();
-    let viewer = viewer_context(&state, &session, Some(&membership)).await?;
-    render(
-        &state,
-        &browser,
-        StatusCode::OK,
-        "pages/domains.html.jinja",
-        context! { viewer, addresses, csrf => browser.csrf_token(), section => "domains" },
-    )
-}
-
 /// `/{org}/templates`: the premade apps, the same list Deploy app offers.
 pub async fn templates_page(
     AxumState(state): AxumState<State>,
@@ -1434,6 +1404,21 @@ async fn app_view(
         "settings" => "pages/app-settings.html.jinja",
         _ => "pages/app-soon.html.jinja",
     };
+    let domains: Vec<Value> = state
+        .domains()
+        .of_app(view.row.app_id)
+        .await
+        .map_err(|e| PageError::from(anyhow::anyhow!(e)))?
+        .into_iter()
+        .map(|domain| {
+            let serving = domain.status == crate::services::domains::Status::Issued;
+            context! {
+                name => domain.name,
+                serving,
+                line => if serving { String::new() } else { format!("{}: waiting for its certificate", domain.name) },
+            }
+        })
+        .collect();
     let viewer = viewer_context(state, session, Some(membership)).await?;
     render(
         state,
@@ -1454,6 +1439,8 @@ async fn app_view(
                 icon => shown.get_attr("icon").ok(),
                 image => spec.map(|s| s.image.clone()),
                 address => listing.address,
+                domains,
+                domains_href => format!("/{slug}/domains#custom"),
                 internal => shown.get_attr("internal").ok(),
                 word => health.word, tone => health.tone, line => health.line, lede,
                 ready => health.ready,

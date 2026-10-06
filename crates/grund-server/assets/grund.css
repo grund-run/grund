@@ -1884,6 +1884,45 @@ a.endpoint-text:hover {
   flex: none;
 }
 
+.dns-records {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.dns-records th {
+  padding: 0 var(--space-4) var(--space-2) 0;
+  color: var(--text-2);
+  font-weight: 500;
+  text-align: left;
+}
+
+.dns-records td {
+  padding: var(--space-3) var(--space-4) var(--space-3) 0;
+  border-top: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.dns-records td:first-child {
+  width: 5rem;
+}
+
+.dns-records code {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.dns-cell {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.dns-cell .icon-btn {
+  flex: none;
+}
+
 .timeline {
   margin: 0;
   padding: 0;
@@ -2489,6 +2528,34 @@ a.endpoint-text:hover {
 
   .fact-wide {
     grid-column: 1 / -1;
+  }
+
+  .dns-records thead {
+    display: none;
+  }
+
+  .dns-records tr,
+  .dns-records td {
+    display: block;
+  }
+
+  .dns-records tr {
+    padding: var(--space-3) 0;
+    border-top: 1px solid var(--border);
+  }
+
+  .dns-records td,
+  .dns-records td:first-child {
+    width: auto;
+    padding: var(--space-1) 0;
+    border-top: 0;
+  }
+
+  .dns-records td::before {
+    content: attr(data-label);
+    display: block;
+    color: var(--text-2);
+    font-size: var(--text-xs);
   }
 
   .fact:nth-child(2),

@@ -9,6 +9,7 @@ repository.workspace = true
 license = "AGPL-3.0-only"
 
 [dependencies]
+hickory-resolver = { version = "0.26", default-features = false, features = ["system-config", "tokio"] }
 anyhow.workspace = true
 async-nats.workspace = true
 axum.workspace = true

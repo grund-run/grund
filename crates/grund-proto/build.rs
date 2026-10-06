@@ -6,6 +6,7 @@ fn main() {
             "../../proto/grund/app/v1/app.proto",
             "../../proto/grund/agent/v1/enrollment.proto",
             "../../proto/grund/certificates/v1/certificates.proto",
+            "../../proto/grund/domain/v1/domain.proto",
             "../../proto/grund/edge/v1/edge.proto",
             "../../proto/grund/machine/v1/machine.proto",
             "../../proto/grund/organisation/v1/organisation.proto",

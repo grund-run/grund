@@ -11,7 +11,9 @@
 //! a 503, both without a stream. The edge never parses HTTP it passes on.
 //!
 //! Per source address: at most 256 open connections and 50 new handshakes a
-//! second (§13). On 80: a 308 to https, path and query kept.
+//! second (§13). On 80: a 308 to https, path and query kept, except
+//! `/.well-known/acme-challenge/<token>` for a custom domain, answered with
+//! the key authorization the instance gives for it (§5.3).
 
 use std::{
     collections::HashMap,
@@ -352,35 +354,79 @@ async fn hand_over(
 /// Answers port 80: a 308 to the same address over https, path and query
 /// kept. HTTP-01 for custom domains is not built, so every
 /// `/.well-known/acme-challenge/` request is a 404.
-pub async fn http(tcp: TcpStream) {
-    let service = hyper::service::service_fn(|request: Request<Incoming>| async move {
-        let host = request
-            .headers()
-            .get(header::HOST)
-            .and_then(|h| h.to_str().ok())
-            .and_then(|h| h.parse::<hyper::http::uri::Authority>().ok())
-            .map(|a| a.host().to_ascii_lowercase());
-        let path = request
-            .uri()
-            .path_and_query()
-            .map(|p| p.as_str())
-            .unwrap_or("/");
-        let mut response = Response::new(Full::new(Bytes::new()));
-        match host {
-            _ if path.starts_with("/.well-known/acme-challenge/") => {
-                *response.status_mut() = StatusCode::NOT_FOUND;
-            }
-            Some(host) => {
-                *response.status_mut() = StatusCode::PERMANENT_REDIRECT;
-                if let Ok(location) =
-                    header::HeaderValue::from_str(&format!("https://{host}{path}"))
-                {
-                    response.headers_mut().insert(header::LOCATION, location);
-                }
-            }
-            None => *response.status_mut() = StatusCode::BAD_REQUEST,
+/// What port 80 needs to answer custom domains' HTTP-01 challenges.
+pub struct Port80 {
+    pub routes: Routes,
+    pub instance: crate::relay_certificate::Instance,
+}
+
+impl Port80 {
+    async fn challenge(&self, host: &str, token: &str) -> Option<String> {
+        let route = self.routes.current().get(host)?;
+        if !route.custom_domain {
+            return None;
         }
-        Ok::<_, std::convert::Infallible>(response)
+        match super::custom::http01(&self.instance, &route.name, token).await {
+            Ok(answer) => {
+                tracing::info!(name = %route.name, answered = answer.is_some(), "edge: an HTTP-01 challenge for a custom domain");
+                answer
+            }
+            Err(error) => {
+                tracing::warn!(name = %route.name, error = format!("{error:#}"), "edge: the instance did not answer for an HTTP-01 challenge");
+                None
+            }
+        }
+    }
+}
+
+pub async fn http(port80: Arc<Port80>, tcp: TcpStream) {
+    let service = hyper::service::service_fn(move |request: Request<Incoming>| {
+        let port80 = port80.clone();
+        async move {
+            let host = request
+                .headers()
+                .get(header::HOST)
+                .and_then(|h| h.to_str().ok())
+                .and_then(|h| h.parse::<hyper::http::uri::Authority>().ok())
+                .map(|a| a.host().to_ascii_lowercase());
+            let path = request
+                .uri()
+                .path_and_query()
+                .map(|p| p.as_str())
+                .unwrap_or("/");
+            let mut response = Response::new(Full::new(Bytes::new()));
+            match host {
+                _ if path.starts_with("/.well-known/acme-challenge/") => {
+                    let token = path.trim_start_matches("/.well-known/acme-challenge/");
+                    let answer = match &host {
+                        Some(host) if !token.is_empty() && !token.contains(['/', '?']) => {
+                            port80.challenge(host, token).await
+                        }
+                        _ => None,
+                    };
+                    match answer {
+                        Some(key_authorization) => {
+                            *response.body_mut() = Full::new(Bytes::from(key_authorization));
+                            response.headers_mut().insert(
+                                header::CONTENT_TYPE,
+                                header::HeaderValue::from_static("application/octet-stream"),
+                            );
+                        }
+                        None => *response.status_mut() = StatusCode::NOT_FOUND,
+                    }
+                }
+                Some(host) => {
+                    *response.status_mut() = StatusCode::PERMANENT_REDIRECT;
+                    if let Ok(location) =
+                        header::HeaderValue::from_str(&format!("https://{host}{path}"))
+                    {
+                        response.headers_mut().insert(header::LOCATION, location);
+                    }
+                }
+                None => *response.status_mut() = StatusCode::BAD_REQUEST,
+            }
+            Ok::<_, std::convert::Infallible>(response)
+        }
     });
     let _ = tokio::time::timeout(
         Duration::from_secs(30),

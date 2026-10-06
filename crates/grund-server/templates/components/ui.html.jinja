@@ -256,6 +256,26 @@
 <p class="endpoint">{{ icon("link") }}{% if href %}<a class="endpoint-text" href="{{ href }}" rel="noopener noreferrer" target="_blank">{{ text }}<span class="visually-hidden"> (opens in a new tab)</span></a>{% else %}<code class="endpoint-text">{{ text }}</code>{% endif %}{{ copy_button(text, "the address") }}</p>
 {%- endmacro %}
 
+{#- dns_records(records, label)
+    DNS records for someone to make at their DNS provider, one row each:
+    its type, its name and its value, the name and value with copy
+    buttons. A table, each row stacked below 900 px.
+    records: dicts of type, name and value
+    label:   the table's caption, for screen readers -#}
+{% macro dns_records(records, label) -%}
+<table class="dns-records">
+  <caption class="visually-hidden">{{ label }}</caption>
+  <thead><tr><th scope="col">Type</th><th scope="col">Name</th><th scope="col">Value</th></tr></thead>
+  <tbody>
+    {% for record in records %}<tr>
+      <td data-label="Type"><code>{{ record.type }}</code></td>
+      <td data-label="Name"><span class="dns-cell"><code>{{ record.name }}</code>{{ copy_button(record.name, "the " ~ record.type ~ " record's name") }}</span></td>
+      <td data-label="Value"><span class="dns-cell"><code>{{ record.value }}</code>{{ copy_button(record.value, "the " ~ record.type ~ " record's value") }}</span></td>
+    </tr>{% endfor %}
+  </tbody>
+</table>
+{%- endmacro %}
+
 {#- link_cards(): link_card()s side by side, stacked below 900 px. -#}
 {% macro link_cards() -%}
 <nav class="link-cards" aria-label="More">{{ caller() }}</nav>

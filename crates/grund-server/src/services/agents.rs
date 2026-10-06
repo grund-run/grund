@@ -356,6 +356,7 @@ impl Agents {
             .await?
             .unwrap_or_default();
         let mut addresses: std::collections::HashMap<Uuid, Option<String>> = Default::default();
+        let mut custom: std::collections::HashMap<Uuid, Vec<String>> = Default::default();
         let mut replicas: Vec<agent::Replica> = Vec::with_capacity(placed.len());
         for row in &placed {
             let mut replica = replica_message(row);
@@ -368,7 +369,18 @@ impl Agents {
                             .await?,
                     );
                 }
-                replica.hostnames = addresses[&row.app_id].iter().cloned().collect();
+                if let std::collections::hash_map::Entry::Vacant(slot) = custom.entry(row.app_id) {
+                    slot.insert(
+                        grund_store::domains::names_of_app(&mut *connection, row.app_id).await?,
+                    );
+                }
+                replica.hostnames = match &addresses[&row.app_id] {
+                    Some(address) => std::iter::once(address)
+                        .chain(custom[&row.app_id].iter())
+                        .cloned()
+                        .collect(),
+                    None => Vec::new(),
+                };
             }
             replicas.push(replica);
         }

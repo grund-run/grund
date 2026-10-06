@@ -1,6 +1,7 @@
 //! `grund.edge.v1` (grund-docs design/traffic.md §6): where a `grund edge`
 //! enrolls its key with a one-time token, watches its route table, and
-//! reports the entry bytes it carried. Enrollment is behind no credential
+//! reports the entry bytes it carried, and where it takes custom domains'
+//! certificates and HTTP-01 answers (traffic.md §5.3). Enrollment is behind no credential
 //! but its token; the rest behind [`super::authenticate_edge`], so the
 //! handlers act for the edge its key proved.
 
@@ -10,13 +11,16 @@ use connectrpc::{
 };
 use grund_proto::grund::edge::v1::{
     EdgeEnrollmentService, EdgeService, EnrollEdgeRequest, EnrollEdgeResponse, ErrorReason,
-    ReportUsageRequest, ReportUsageResponse, WatchRoutesRequest, WatchRoutesResponse,
+    GetDomainCertificateRequest, GetDomainCertificateResponse, GetHttpChallengeRequest,
+    GetHttpChallengeResponse, ReportUsageRequest, ReportUsageResponse, WatchRoutesRequest,
+    WatchRoutesResponse,
 };
 use uuid::Uuid;
 
 use crate::{
     api::ClientAddress,
     services::{
+        domains::DomainsState,
         entry::EntryState,
         relays::{EnrollOutcome, EnrollRequest, RelayCaller, RelaysState, Role},
     },
@@ -196,5 +200,63 @@ impl EdgeService for EdgeApi {
             .await
             .map_err(unavailable)?;
         Response::ok(ReportUsageResponse::default())
+    }
+
+    async fn get_domain_certificate(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, GetDomainCertificateRequest>,
+    ) -> ServiceResult<GetDomainCertificateResponse> {
+        let caller = edge(&ctx)?;
+        let name = request.name.to_ascii_lowercase();
+        let found = self
+            .state
+            .domains()
+            .certificate_for_edge(&name)
+            .await
+            .map_err(unavailable)?;
+        let Some((chain_pem, key_pkcs8, version)) = found else {
+            return Err(ConnectError::not_found(
+                "no certificate is issued for a custom domain of that name",
+            ));
+        };
+        tracing::info!(edge_id = %caller.relay_id, %name, version, "edge: handed a custom domain's certificate");
+        Response::ok(GetDomainCertificateResponse {
+            chain_pem,
+            key_pkcs8,
+            version,
+            ..Default::default()
+        })
+    }
+
+    async fn get_http_challenge(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, GetHttpChallengeRequest>,
+    ) -> ServiceResult<GetHttpChallengeResponse> {
+        edge(&ctx)?;
+        let name = request.name.to_ascii_lowercase();
+        let token = request.token;
+        if token.is_empty()
+            || token.len() > 128
+            || !token
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
+            return Err(ConnectError::not_found("no such challenge"));
+        }
+        let found = self
+            .state
+            .domains()
+            .http01(&name, token)
+            .await
+            .map_err(unavailable)?;
+        match found {
+            Some(key_authorization) => Response::ok(GetHttpChallengeResponse {
+                key_authorization,
+                ..Default::default()
+            }),
+            None => Err(ConnectError::not_found("no such challenge")),
+        }
     }
 }

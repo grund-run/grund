@@ -12,6 +12,7 @@
 use grund_domain::{
     account::{Account, AccountCommand, AccountError, AccountEvent},
     app::{App, AppCommand, AppError, AppEvent},
+    custom_domain::{Domain, DomainCommand, DomainError, DomainEvent},
     machine::{Machine, MachineCommand, MachineError, MachineEvent},
     organisation::{Organisation, OrganisationCommand, OrganisationError, OrganisationEvent},
 };
@@ -32,6 +33,8 @@ pub enum WorkError {
     Machine(#[from] MachineError),
     #[error(transparent)]
     App(#[from] AppError),
+    #[error(transparent)]
+    Domain(#[from] DomainError),
     #[error("event store: {0}")]
     Events(#[from] EventStoreError),
     #[error("database: {0}")]
@@ -56,6 +59,7 @@ enum Touched {
     Organisation(Uuid, Organisation, i64, i64),
     Machine(Uuid, Machine, i64, i64),
     App(Uuid, App, i64, i64),
+    Domain(Uuid, Domain, i64, i64),
 }
 
 /// A transaction spanning the event log, the read models and plain tables.
@@ -220,6 +224,41 @@ impl<'a> Work<'a> {
         Ok((events, found))
     }
 
+    /// As [`Work::account`], for a custom domain.
+    pub async fn domain(
+        &mut self,
+        domain_id: Uuid,
+        command: DomainCommand,
+    ) -> Result<Vec<DomainEvent>, WorkError> {
+        let mut root = self.load::<Domain>(domain_id).await?;
+        let base = root.version;
+        let events = mire::Command::handle(command, &root.state)?;
+        if events.is_empty() {
+            return Ok(events);
+        }
+        root.set_metadata(self.metadata.clone());
+        root.record_many(events.clone());
+        self.scope.save(&mut root).await?;
+        for (offset, event) in events.iter().enumerate() {
+            crate::domains::apply_domain(
+                domain_id,
+                base + 1 + offset as i64,
+                event,
+                self.scope.tx(),
+            )
+            .await?;
+        }
+        self.touched
+            .push(Touched::Domain(domain_id, root.state, base, root.version));
+        Ok(events)
+    }
+
+    /// The domain's state, under its stream lock, without recording
+    /// anything.
+    pub async fn load_domain(&mut self, domain_id: Uuid) -> Result<Domain, WorkError> {
+        Ok(self.load::<Domain>(domain_id).await?.state)
+    }
+
     /// The app's state, under its stream lock, without recording anything.
     pub async fn load_app(&mut self, app_id: Uuid) -> Result<App, WorkError> {
         Ok(self.load::<App>(app_id).await?.state)
@@ -266,6 +305,9 @@ impl<'a> Work<'a> {
                 }
                 Touched::App(id, state, before, after) => {
                     snapshot::<App>(store, id, state, before, after)
+                }
+                Touched::Domain(id, state, before, after) => {
+                    snapshot::<Domain>(store, id, state, before, after)
                 }
             }
         }
