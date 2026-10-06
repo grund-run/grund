@@ -126,16 +126,6 @@
 {% for value, text in options %}<option value="{{ value }}"{% if value == selected %} selected{% endif %}>{{ text }}</option>{% endfor %}
 {%- endmacro %}
 
-{#- textarea_field(name, label, value="", rows=4, hint="", error="")
-    A labelled box for several lines of prose. -#}
-{% macro textarea_field(name, label, value="", rows=4, hint="", error="") -%}
-<div class="field">
-  {{ label_of(name, label) }}
-  <textarea class="control" id="{{ name }}" name="{{ name }}" rows="{{ rows }}"{{ describe(name, error, hint) }}>{{ value }}</textarea>
-  {{- message(name, error, hint) }}
-</div>
-{%- endmacro %}
-
 {#- code_field(name, label, value="", filename="", rows=6, hint="",
                error="", required=false, download="")
     Lines a machine reads, edited as code: a file (grund.toml), a

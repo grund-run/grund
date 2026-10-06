@@ -140,6 +140,14 @@ a.is-hover {
   border-radius: 6px;
 }
 
+.choice:has(.choice-input:focus-visible),
+.choice.is-focus,
+.toggle-input:focus-visible + .toggle-track,
+.toggle.is-focus .toggle-track {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
 h1,
 h2,
 h3 {
@@ -321,12 +329,6 @@ code,
   width: 1.25rem;
   height: 1.25rem;
   color: var(--text-2);
-}
-
-a.nav-item:hover,
-.nav-item.is-hover {
-  background: var(--surface-hover);
-  color: var(--text);
 }
 
 .nav-item.is-active {
@@ -556,18 +558,24 @@ a.nav-item:hover,
   color: var(--text);
 }
 
-.btn-secondary:hover,
-.btn-secondary.is-hover {
-  background: var(--surface-hover);
-  color: var(--text);
-}
-
 .btn-ghost {
   background: none;
   color: var(--accent-text);
   padding-left: 0;
   padding-right: 0;
   min-height: 0;
+}
+
+a.nav-item:hover,
+.nav-item.is-hover,
+.btn-secondary:hover,
+.btn-secondary.is-hover,
+.icon-btn:hover,
+.icon-btn.is-hover,
+.choice:hover,
+.choice.is-hover {
+  background: var(--surface-hover);
+  color: var(--text);
 }
 
 .btn-danger {
@@ -835,11 +843,6 @@ a.nav-item:hover,
   cursor: not-allowed;
 }
 
-textarea.control {
-  min-height: 0;
-  resize: vertical;
-}
-
 .hint {
   color: var(--muted);
   font-size: var(--text-sm);
@@ -963,9 +966,6 @@ textarea.control {
 .org-switch-name {
   color: var(--text);
   font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .org-switch-role {
@@ -1039,6 +1039,19 @@ textarea.control {
 .form-row > .form-ok,
 .form-row > .hint {
   flex-basis: 100%;
+}
+
+.org-switch-name,
+.item-name,
+.item-sub,
+.address-text,
+.expander-summary,
+.fact-line,
+.endpoint-text,
+.sg-sample {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .visually-hidden {
@@ -1131,12 +1144,6 @@ textarea.control {
   list-style: none;
 }
 
-.icon-btn:hover,
-.icon-btn.is-hover {
-  background: var(--surface-hover);
-  color: var(--text);
-}
-
 .icon-btn-boxed {
   background: var(--control);
   border-color: var(--border-control);
@@ -1214,13 +1221,6 @@ textarea.control {
   font-size: var(--text-md);
 }
 
-.item-name,
-.item-sub,
-.address-text {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
 .items-grid {
   display: grid;
@@ -1411,14 +1411,6 @@ code.address-text {
   gap: var(--space-4);
 }
 
-.panel-danger {
-  border-color: var(--danger-surface);
-}
-
-.panel-danger .panel-title {
-  color: var(--danger);
-}
-
 .panel-title {
   font-size: var(--text-subtitle);
   letter-spacing: -0.02em;
@@ -1502,22 +1494,10 @@ legend.field-label {
   border-radius: var(--radius);
 }
 
-.choice:hover,
-.choice.is-hover {
-  background: var(--surface-hover);
-  color: var(--text);
-}
-
 .choice.is-chosen,
 .choice:has(.choice-input:checked) {
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent);
-}
-
-.choice:has(.choice-input:focus-visible),
-.choice.is-focus {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
 }
 
 .choice.is-disabled {
@@ -1725,12 +1705,6 @@ legend.field-label {
   background: var(--accent-ink);
 }
 
-.toggle-input:focus-visible + .toggle-track,
-.toggle.is-focus .toggle-track {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
-}
-
 .toggle-text {
   display: flex;
   flex-direction: column;
@@ -1877,9 +1851,6 @@ legend.field-label {
 .expander-summary {
   color: var(--text-2);
   font-size: var(--text-sm);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .expander-meta {
@@ -2007,9 +1978,6 @@ legend.field-label {
 .fact-line {
   color: var(--text-2);
   font-size: var(--text-sm);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .fact-line + .fact-line {
@@ -2045,9 +2013,6 @@ legend.field-label {
   color: inherit;
   font-family: var(--sans);
   font-size: inherit;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 a.endpoint-text:hover {
@@ -2352,11 +2317,6 @@ a.endpoint-text:hover {
   gap: var(--space-2);
 }
 
-.sg-sample {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
 .sg-text-2xs { font-size: var(--text-2xs); }
 .sg-text-xs { font-size: var(--text-xs); }

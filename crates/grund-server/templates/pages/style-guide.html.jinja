@@ -214,13 +214,11 @@
       {{ forms.field("sg-disabled", "Email (disabled)", type="email", value="ada@nord.studio", disabled=true) }}
     {% endcall %}
   {% endcall %}
-  {% call cat.specimen("Select, text box and switch", '{{ forms.select_field("role", "Role", [("member", "Member"), ("admin", "Admin")], role) }}
-{{ forms.textarea_field("note", "Note", value=note) }}
+  {% call cat.specimen("Select and switch", '{{ forms.select_field("role", "Role", [("member", "Member"), ("admin", "Admin")], role) }}
 {{ forms.toggle_field("auto_rollback", "Roll back a failed release on its own", checked=true, hint=hint) }}', "Every select has the same chevron and edge as a text field. A switch is one yes or no: a checkbox that sends name=on, so the handler reads a missing value as off.") %}
     {% call cat.column() %}
       {{ forms.select_field("sg-role", "Role", [("member", "Member"), ("admin", "Admin")], "admin") }}
       {{ forms.select_field("sg-role-focus", "Role (focus)", [("member", "Member"), ("admin", "Admin")], "member", state="focus") }}
-      {{ forms.textarea_field("sg-note", "Note", value="Moved to the new region.", rows=2) }}
       {{ forms.toggle_field("sg-rollback", "Roll back a failed release on its own", checked=true, hint="The release before keeps serving.") }}
       {{ forms.toggle_field("sg-rollback-off", "Off (focus)", hint="To debug a failing release in place.", state="focus") }}
     {% endcall %}
@@ -285,11 +283,6 @@
       {% endcall %}
     {% endcall %}
     {% call ui.panel("sg-facts-private", "Internal") %}{% call ui.facts() %}{% call ui.fact("Reachable at", wide=true) %}{{ ui.endpoint("db.grund.internal:5432") }}{{ ui.pill("Private", icon_name="lock") }}{% endcall %}{{ ui.fact("Status", "Failed", tone="danger", lines=["v3 is still serving"]) }}{% endcall %}{% endcall %}
-  {% endcall %}
-  {% call cat.specimen("Danger panel", '{% call ui.panel("danger", "Delete " ~ app.name, text, danger=true) %}…{% endcall %}', "For what cannot be undone: edged and titled in the danger colour. Ask for the thing's name before deleting it.") %}
-    {% call ui.panel("sg-danger", "Delete storefront", "Its copies stop and its name is free again. This cannot be undone.", danger=true) %}
-      {% call forms.form("#sg-choices", csrf, layout="row") %}{{ forms.field("sg-confirm", "Type storefront to confirm", required=false) }}{{ ui.button("Delete storefront", kind="danger", type="button") }}{% endcall %}
-    {% endcall %}
   {% endcall %}
   {% call cat.specimen("Choice field", '{{ forms.choice_field("exposure", "Exposure", exposures, "private", hint=hint) }}', "A choice of one as cards over radio buttons. Each option is a dict of value, title, text and icon or image; disabled and tag mark one not offered yet; state pins hover or focus (the style guide only); error replaces the hint. large widens the cards; fill names a field the script fills with the chosen value.") %}
     {{ forms.choice_field("sg-exposure", "Exposure", [{"value": "private", "title": "Private", "text": "Only accessible within grund", "icon": "lock"}, {"value": "public", "title": "Public HTTP", "text": "Via a example.run address", "icon": "globe"}], "private", hint="Public: https://<name>-nord-studio.example.run") }}

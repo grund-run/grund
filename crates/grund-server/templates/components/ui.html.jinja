@@ -173,15 +173,15 @@
 </section>
 {%- endmacro %}
 
-{#- panel(id, title, lede="", action=none, danger=false)
+{#- panel(id, title, lede="", action=none)
     A titled box holding one part of a page's work, such as a form; the
     {% call %} body is its content. id: the heading's id, which labels
-    it (and a link target, such as #danger).
+    it (and a link target). What cannot be undone goes in an expander of
+    kind "danger" instead.
     action: (href, label) for a secondary button at the right of the
-            title ("View deployment history →")
-    danger: edged in the danger colour, for what cannot be undone -#}
-{% macro panel(id, title, lede="", action=none, danger=false) -%}
-<section class="panel{% if danger %} panel-danger{% endif %}" aria-labelledby="{{ id }}">
+            title ("All releases →") -#}
+{% macro panel(id, title, lede="", action=none) -%}
+<section class="panel" aria-labelledby="{{ id }}">
   <div class="panel-head">
     <div><h2 class="panel-title" id="{{ id }}">{{ title }}</h2>{% if lede %}<p class="panel-lede">{{ lede }}</p>{% endif %}</div>
     {% if action %}{{ button(action.1, href=action.0, icon_name="arrow", kind="secondary", size="sm", icon_end=true) }}{% endif %}
