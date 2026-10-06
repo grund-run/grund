@@ -1,0 +1,36 @@
+{% extends "layout-app.html.jinja" %}
+{% set org = viewer.current %}
+{% block title %}Registries · {{ org.slug }} · grund{% endblock %}
+{% block content %}
+{{ ui.page_head("Organisation", status="Logins to the registries " ~ org.slug ~ "'s private images come from. grund uses one to resolve a tag when you deploy, and gives it to a machine only to pull an image of an app placed on it.") }}
+{{ ui.org_tabs(org, "registries") }}
+{{ forms.form_ok(notice) }}
+{{ forms.form_error(error) }}
+
+{% call ui.section("credentials", "Registries with a login", count=credentials | length) %}
+  {% if credentials %}
+  {% call lists.rows() %}
+    {% for credential in credentials %}
+    {% call(slot) lists.row(credential.host, "as " ~ credential.username ~ " · " ~ credential.updated, icon_name="lock", tone="violet") %}
+      {%- if slot == "end" and org.manages %}{{ forms.post_button("/" ~ org.slug ~ "/settings/registries/remove", csrf, "Remove", kind="danger", size="sm", hidden={"host": credential.host}) }}{% endif -%}
+    {% endcall %}
+    {% endfor %}
+  {% endcall %}
+  {% else %}
+  {{ ui.empty_state(text="No registry logins. Public images need none.") }}
+  {% endif %}
+{% endcall %}
+
+{% if org.manages %}
+{% call ui.section("set", "Add or replace a login") %}
+  {% call forms.form("/" ~ org.slug ~ "/settings/registries", csrf, layout="narrow", autocomplete="off") %}
+    {{ forms.form_error(form_error) }}
+    {{ forms.field("host", "Registry", value=host, autocomplete="off", error=host_error, hint="The host your image names start with: ghcr.io, registry.gitlab.com, or docker.io for Docker Hub.") }}
+    {{ forms.field("username", "Username", value=username, autocomplete="off", error=username_error) }}
+    {{ forms.field("password", "Password or access token", type="password", autocomplete="new-password", error=password_error, hint="Prefer a token that can only read packages. grund keeps it sealed and never shows it again; saving a registry again replaces it.") }}
+    {{ ui.button("Save login", icon_name="lock") }}
+  {% endcall %}
+  {{ ui.hint("An organisation holds logins for at most " ~ max ~ " registries.") }}
+{% endcall %}
+{% endif %}
+{% endblock %}

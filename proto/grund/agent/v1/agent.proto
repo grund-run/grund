@@ -42,6 +42,16 @@ service AgentService {
     option idempotency_level = NO_SIDE_EFFECTS;
   }
 
+  // The organisation's login to the registry a replica's image is pulled
+  // from, for a replica placed on the calling machine and still in its
+  // document; anything else is not_found, whether the replica exists or
+  // not. Unset credential: the organisation has none for that host, so the
+  // pull is anonymous. Asked before each pull, never kept in a document
+  // (apps.md §6.5).
+  rpc GetPullCredential(GetPullCredentialRequest) returns (GetPullCredentialResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
   // The one-time grund_join_ token a VM this machine was told to run boots
   // with. Only for a running VM placed on the calling machine that has not
   // registered yet; anything else is not_found. A token is a secret, so it
@@ -155,6 +165,23 @@ message GetReplicaSecretsRequest {
 message GetReplicaSecretsResponse {
   // Exactly the names and versions the replica's entry lists.
   repeated SecretValue secrets = 1;
+}
+
+message GetPullCredentialRequest {
+  string replica_id = 1;
+}
+
+message GetPullCredentialResponse {
+  RegistryCredential credential = 1;
+}
+
+// A login to one registry host, as image references name it (docker.io,
+// ghcr.io, registry.example.com:5000).
+message RegistryCredential {
+  string host = 1;
+  string username = 2;
+  // The password or access token.
+  string password = 3;
 }
 
 message SecretValue {

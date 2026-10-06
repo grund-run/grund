@@ -85,7 +85,7 @@ use crate::{
         },
         types::{
             Platform,
-            transfer::{ImageStore, OCIRegistry, UnpackConfiguration},
+            transfer::{ImageStore, OCIRegistry, RegistryResolver, UnpackConfiguration},
         },
         v1::types::{Process, Status},
     },
@@ -700,7 +700,7 @@ impl ContainerRuntime for Containerd {
         self.snapshot_exists(&config.chain_id()?).await
     }
 
-    async fn pull(&self, image: &ImageRef) -> anyhow::Result<()> {
+    async fn pull(&self, image: &ImageRef, authorization: Option<&str>) -> anyhow::Result<()> {
         if self.has_image(image).await? {
             return Ok(());
         }
@@ -712,6 +712,14 @@ impl ContainerRuntime for Containerd {
         };
         let source = OCIRegistry {
             reference: name.clone(),
+            resolver: authorization
+                .map(|authorization| RegistryResolver {
+                    headers: [("Authorization".to_string(), authorization.to_string())]
+                        .into_iter()
+                        .collect(),
+                    ..Default::default()
+                })
+                .into(),
             ..Default::default()
         };
         let destination = ImageStore {

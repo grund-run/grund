@@ -3,7 +3,7 @@
 # from this host, with no host changes. Builds the lab driver
 # (examples/lab.rs) as a static musl binary, boots a fresh Debian 13 machine
 # (2 vCPU, 2 GiB, 8 GiB), installs Docker in it first, runs scenario.sh as
-# root, and destroys the machine (KEEP=1 keeps it).
+# root (run, then private), and destroys the machine (KEEP=1 keeps it).
 #
 #   crates/grund-containers/lab/lab.sh
 #
@@ -33,3 +33,4 @@ lab put "$name" "$driver" "$here/scenario.sh" /tmp/
 lab ssh "$name" 'sudo mkdir -p /opt/grund-lab && sudo mv /tmp/lab /tmp/scenario.sh /opt/grund-lab/ && sudo chmod +x /opt/grund-lab/lab /opt/grund-lab/scenario.sh'
 lab ssh "$name" 'sudo /opt/grund-lab/scenario.sh docker'
 lab ssh "$name" 'sudo /opt/grund-lab/scenario.sh run'
+lab ssh "$name" 'sudo /opt/grund-lab/scenario.sh private'

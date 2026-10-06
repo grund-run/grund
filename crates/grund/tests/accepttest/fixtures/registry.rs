@@ -16,6 +16,8 @@ struct Shared {
     tags: HashMap<(String, String), Vec<u8>>,
     by_digest: HashMap<(String, String), Vec<u8>>,
     manifest_calls: usize,
+    private: HashMap<String, String>,
+    logins: usize,
 }
 
 pub struct FakeRegistry {
@@ -115,6 +117,21 @@ impl FakeRegistry {
         digest
     }
 
+    pub fn make_private(&self, repository: &str, username: &str, password: &str) {
+        use base64::Engine;
+        let login =
+            base64::engine::general_purpose::STANDARD.encode(format!("{username}:{password}"));
+        self.shared
+            .lock()
+            .unwrap()
+            .private
+            .insert(repository.to_string(), login);
+    }
+
+    pub fn logins(&self) -> usize {
+        self.shared.lock().unwrap().logins
+    }
+
     pub fn image(&self, repository: &str, tag: &str) -> String {
         format!("{}/{repository}:{tag}", self.host)
     }
@@ -146,20 +163,58 @@ async fn serve(
         .and_then(|line| line.split(' ').nth(1))
         .unwrap_or_default()
         .to_string();
-    let authorized = head.split("\r\n").skip(1).any(|line| {
-        line.split_once(':').is_some_and(|(k, v)| {
-            k.trim().eq_ignore_ascii_case("authorization") && v.trim() == format!("Bearer {TOKEN}")
-        })
-    });
+    let authorization = head
+        .split("\r\n")
+        .skip(1)
+        .filter_map(|line| line.split_once(':'))
+        .find(|(k, _)| k.trim().eq_ignore_ascii_case("authorization"))
+        .map(|(_, v)| v.trim().to_string())
+        .unwrap_or_default();
+    let private_login = |repository: &str| shared.lock().unwrap().private.get(repository).cloned();
+    let repository_of_path = |rest: &str| {
+        rest.split_once("/manifests/")
+            .or_else(|| rest.split_once("/blobs/"))
+            .map(|(repository, _)| repository.to_string())
+            .unwrap_or_default()
+    };
+    let authorized = |rest: &str| match private_login(&repository_of_path(rest)) {
+        Some(login) => authorization == format!("Bearer {TOKEN}-{login}"),
+        None => authorization.starts_with(&format!("Bearer {TOKEN}")),
+    };
     let (status, headers, body): (u16, Vec<(String, String)>, Vec<u8>) =
-        if path.starts_with("/token?") {
-            (
-                200,
-                vec![("content-type".into(), "application/json".into())],
-                serde_json::json!({"token": TOKEN}).to_string().into_bytes(),
-            )
+        if let Some(query) = path.strip_prefix("/token?") {
+            let scope = serde_urlencoded::from_str::<Vec<(String, String)>>(query)
+                .unwrap_or_default()
+                .into_iter()
+                .find(|(k, _)| k == "scope")
+                .map(|(_, v)| v)
+                .unwrap_or_default();
+            let repository = scope
+                .strip_prefix("repository:")
+                .and_then(|s| s.strip_suffix(":pull"))
+                .unwrap_or_default()
+                .to_string();
+            let presented = authorization.strip_prefix("Basic ").map(str::to_string);
+            match (private_login(&repository), presented) {
+                (Some(login), Some(presented)) if presented == login => {
+                    shared.lock().unwrap().logins += 1;
+                    (
+                        200,
+                        vec![("content-type".into(), "application/json".into())],
+                        serde_json::json!({"token": format!("{TOKEN}-{login}")})
+                            .to_string()
+                            .into_bytes(),
+                    )
+                }
+                (_, Some(_)) => (401, Vec::new(), b"{}".to_vec()),
+                (_, None) => (
+                    200,
+                    vec![("content-type".into(), "application/json".into())],
+                    serde_json::json!({"token": TOKEN}).to_string().into_bytes(),
+                ),
+            }
         } else if let Some(rest) = path.strip_prefix("/v2/") {
-            if !authorized {
+            if !authorized(rest) {
                 (
                     401,
                     vec![(

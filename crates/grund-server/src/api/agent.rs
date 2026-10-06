@@ -9,7 +9,8 @@ use connectrpc::{ConnectError, RequestContext, Response, ServiceRequest, Service
 use grund_proto::grund::agent::v1::{
     AgentService, GetDesiredStateRequest, GetDesiredStateResponse, GetMachineJoinTokenRequest,
     GetMachineJoinTokenResponse, GetMembershipRequest, GetMembershipResponse,
-    GetReplicaSecretsRequest, GetReplicaSecretsResponse, HeartbeatRequest, HeartbeatResponse,
+    GetPullCredentialRequest, GetPullCredentialResponse, GetReplicaSecretsRequest,
+    GetReplicaSecretsResponse, HeartbeatRequest, HeartbeatResponse, RegistryCredential,
     ReplicaObservedState, ReportStatusRequest, ReportStatusResponse, SecretValue,
     SignedDesiredState, SignedMembershipList, VmObservedState, WatchDesiredStateRequest,
     WatchDesiredStateResponse,
@@ -21,6 +22,7 @@ use crate::{
         agents::{AgentsState, HEARTBEAT_INTERVAL_SECONDS, MachineCaller, ReplicaReport},
         apps::AppsState,
         networks::{MembershipOutcome, NetworksState},
+        registry_credentials::RegistryCredentialsState,
     },
     state::State,
 };
@@ -164,6 +166,36 @@ impl AgentService for AgentApi {
                     ..Default::default()
                 })
                 .collect(),
+            ..Default::default()
+        })
+    }
+
+    async fn get_pull_credential(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, GetPullCredentialRequest>,
+    ) -> ServiceResult<GetPullCredentialResponse> {
+        let caller = machine(&ctx)?;
+        let not_found = || ConnectError::not_found("no such replica on this machine");
+        let replica_id = Uuid::parse_str(request.replica_id).map_err(|_| not_found())?;
+        let credential = self
+            .state
+            .registry_credentials()
+            .for_replica(&caller, replica_id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(not_found)?;
+        Response::ok(GetPullCredentialResponse {
+            credential: credential
+                .map(|c| {
+                    MessageField::from(RegistryCredential {
+                        host: c.host,
+                        username: c.username,
+                        password: c.password,
+                        ..Default::default()
+                    })
+                })
+                .unwrap_or_default(),
             ..Default::default()
         })
     }

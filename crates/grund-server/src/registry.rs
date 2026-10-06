@@ -6,10 +6,15 @@
 //! The OCI distribution API, read-only: `GET /v2/<repository>/manifests/<tag
 //! or digest>`, with the anonymous bearer token a registry hands out for a
 //! public image (Docker Hub, GHCR) when it answers 401 with a
-//! `WWW-Authenticate: Bearer` challenge. Registry credentials are not
-//! supported yet: a private image is refused with that reason. A registry is
-//! spoken to over HTTPS only, except the hosts `GRUND_INSECURE_REGISTRIES`
-//! names (for tests).
+//! `WWW-Authenticate: Bearer` challenge. With the organisation's registry
+//! credential for the host ([`Registry::with_credential`], apps.md §6.5),
+//! the token is asked for with that login (HTTP Basic, as `docker login`
+//! does), and a registry that challenges with `Basic` gets the login
+//! itself. The login goes only where the registry's own challenge points
+//! (its token service may be another host, as Docker Hub's is), and only
+//! over HTTPS. A private image without a credential is refused, naming
+//! where to set one. A registry is spoken to over HTTPS only, except the
+//! hosts `GRUND_INSECURE_REGISTRIES` names (for tests).
 //!
 //! [`Registry::inspect`] also reads the image's configuration for the ports
 //! it declares (`EXPOSE`), so the dashboard can fill in a port nobody typed:
@@ -58,9 +63,11 @@ pub enum ResolveError {
     #[error("{0} has no such image or tag")]
     NotFound(String),
     #[error(
-        "{0} asks for a login to pull this image; registry credentials are not supported yet, so use a public image"
+        "{0} asks for a login to pull this image; set a credential for {0} under Organisation, Registries"
     )]
     Unauthorized(String),
+    #[error("{0} refused the credential set for it, or it does not reach this image")]
+    CredentialRefused(String),
     #[error("{0} did not answer as a registry: {1}")]
     Unavailable(String, String),
     #[error("the manifest {0} sent does not match its digest")]
@@ -74,6 +81,30 @@ pub enum ResolveError {
 pub struct Registry {
     http: reqwest::Client,
     insecure: Vec<String>,
+    login: Option<Login>,
+}
+
+/// A login to one registry: a username and a password or access token.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Login {
+    pub username: String,
+    pub password: String,
+}
+
+impl std::fmt::Debug for Login {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Login")
+            .field("username", &self.username)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Whether a `WWW-Authenticate` header challenges for HTTP Basic.
+pub fn basic_challenge(header: &str) -> bool {
+    header
+        .trim()
+        .get(..6)
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("basic "))
 }
 
 #[derive(Deserialize)]
@@ -208,7 +239,27 @@ impl Registry {
             .user_agent(concat!("grund/", env!("CARGO_PKG_VERSION")))
             .build()
             .context("build the HTTP client for image registries")?;
-        Ok(Self { http, insecure })
+        Ok(Self {
+            http,
+            insecure,
+            login: None,
+        })
+    }
+
+    /// This resolver, logging in with `login` where the registry asks for
+    /// one. The login is for one registry host: resolve only references on
+    /// that host with it.
+    pub fn with_credential(mut self, login: Option<Login>) -> Self {
+        self.login = login;
+        self
+    }
+
+    fn unauthorized(&self, registry: &str) -> ResolveError {
+        if self.login.is_some() {
+            ResolveError::CredentialRefused(registry.to_string())
+        } else {
+            ResolveError::Unauthorized(registry.to_string())
+        }
     }
 
     fn base(&self, registry: &str) -> String {
@@ -236,8 +287,8 @@ impl Registry {
         };
         for attempt in 0..2 {
             let mut request = self.http.get(url).header("Accept", ACCEPT);
-            if let Some(token) = token.as_deref() {
-                request = request.bearer_auth(token);
+            if let Some(authorization) = token.as_deref() {
+                request = request.header(reqwest::header::AUTHORIZATION, authorization);
             }
             let response = request.send().await.map_err(|e| unavailable(&e))?;
             let status = response.status();
@@ -246,9 +297,22 @@ impl Registry {
                     .headers()
                     .get("www-authenticate")
                     .and_then(|v| v.to_str().ok())
-                    .and_then(bearer_challenge)
-                    .ok_or_else(|| ResolveError::Unauthorized(registry.to_string()))?;
-                *token = Some(self.token(registry, challenge, repository).await?);
+                    .map(str::to_string)
+                    .unwrap_or_default();
+                *token = Some(match (bearer_challenge(&challenge), &self.login) {
+                    (Some(bearer), _) => {
+                        format!("Bearer {}", self.token(registry, bearer, repository).await?)
+                    }
+                    (None, Some(login)) if basic_challenge(&challenge) => {
+                        if !url.starts_with("https://")
+                            && !self.insecure.iter().any(|h| h == registry)
+                        {
+                            return Err(unavailable(&"it is not HTTPS"));
+                        }
+                        basic(login)
+                    }
+                    _ => return Err(self.unauthorized(registry)),
+                });
                 continue;
             }
             if status == reqwest::StatusCode::NOT_FOUND {
@@ -257,7 +321,7 @@ impl Registry {
             if status == reqwest::StatusCode::UNAUTHORIZED
                 || status == reqwest::StatusCode::FORBIDDEN
             {
-                return Err(ResolveError::Unauthorized(registry.to_string()));
+                return Err(self.unauthorized(registry));
             }
             if !status.is_success() {
                 return Err(unavailable(&format!("HTTP {}", status.as_u16())));
@@ -266,7 +330,7 @@ impl Registry {
             let body = read_limited(response).await.map_err(|e| unavailable(&e))?;
             return Ok((headers, body));
         }
-        Err(ResolveError::Unauthorized(registry.to_string()))
+        Err(self.unauthorized(registry))
     }
 
     async fn token(
@@ -291,14 +355,13 @@ impl Registry {
         query.push(("scope".into(), format!("repository:{repository}:pull")));
         let query = serde_urlencoded::to_string(&query).map_err(|e| unavailable(&e))?;
         let separator = if realm.contains('?') { '&' } else { '?' };
-        let response = self
-            .http
-            .get(format!("{realm}{separator}{query}"))
-            .send()
-            .await
-            .map_err(|e| unavailable(&e))?;
+        let mut request = self.http.get(format!("{realm}{separator}{query}"));
+        if let Some(login) = &self.login {
+            request = request.basic_auth(&login.username, Some(&login.password));
+        }
+        let response = request.send().await.map_err(|e| unavailable(&e))?;
         if !response.status().is_success() {
-            return Err(ResolveError::Unauthorized(registry.to_string()));
+            return Err(self.unauthorized(registry));
         }
         let body = read_limited(response).await.map_err(|e| unavailable(&e))?;
         let token: Token = serde_json::from_slice(&body).map_err(|e| unavailable(&e))?;
@@ -308,7 +371,7 @@ impl Registry {
             token.token
         };
         if token.is_empty() {
-            return Err(ResolveError::Unauthorized(registry.to_string()));
+            return Err(self.unauthorized(registry));
         }
         Ok(token)
     }
@@ -483,6 +546,16 @@ impl Registry {
     }
 }
 
+/// The `Authorization` value of HTTP Basic for `login`.
+pub fn basic(login: &Login) -> String {
+    use base64::Engine;
+    format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD
+            .encode(format!("{}:{}", login.username, login.password))
+    )
+}
+
 async fn read_limited(mut response: reqwest::Response) -> anyhow::Result<Vec<u8>> {
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await? {
@@ -530,6 +603,26 @@ mod tests {
             vec![80, 8080]
         );
         assert!(exposed_tcp_ports([]).is_empty());
+    }
+
+    #[test]
+    fn a_basic_challenge_is_told_from_a_bearer_one() {
+        assert!(basic_challenge(r#"Basic realm="Registry Realm""#));
+        assert!(basic_challenge("basic realm=x"));
+        assert!(!basic_challenge(
+            r#"Bearer realm="https://auth.docker.io/token""#
+        ));
+        assert!(!basic_challenge(""));
+    }
+
+    #[test]
+    fn a_login_is_sent_as_http_basic_and_never_printed() {
+        let login = Login {
+            username: "acme".into(),
+            password: "s3cret:token".into(),
+        };
+        assert_eq!(basic(&login), "Basic YWNtZTpzM2NyZXQ6dG9rZW4=");
+        assert!(!format!("{login:?}").contains("s3cret"));
     }
 
     #[test]

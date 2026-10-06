@@ -252,6 +252,10 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
         Requirement::Machine,
     ),
     (
+        "/grund.agent.v1.AgentService/GetPullCredential",
+        Requirement::Machine,
+    ),
+    (
         "/grund.agent.v1.AgentService/GetMachineJoinToken",
         Requirement::Machine,
     ),
@@ -1237,6 +1241,13 @@ mod tests {
             _: RequestContext,
             _: ServiceRequest<'_, agent::GetReplicaSecretsRequest>,
         ) -> ServiceResult<agent::GetReplicaSecretsResponse> {
+            unreachable!()
+        }
+        async fn get_pull_credential(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, agent::GetPullCredentialRequest>,
+        ) -> ServiceResult<agent::GetPullCredentialResponse> {
             unreachable!()
         }
         async fn get_machine_join_token(

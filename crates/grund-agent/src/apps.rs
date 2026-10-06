@@ -61,8 +61,9 @@ use grund_net::{
     tun::Tun,
 };
 use grund_proto::grund::agent::v1::{
-    DesiredState, GetReplicaSecretsRequest, GetReplicaSecretsResponse, Replica, ReplicaObserved,
-    ReplicaObservedState, ReplicaState, replica_check,
+    DesiredState, GetPullCredentialRequest, GetPullCredentialResponse, GetReplicaSecretsRequest,
+    GetReplicaSecretsResponse, Replica, ReplicaObserved, ReplicaObservedState, ReplicaState,
+    replica_check,
 };
 use sha2::{Digest, Sha256};
 use tokio::{sync::Notify, task::JoinHandle};
@@ -562,6 +563,42 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
         Ok(values)
     }
 
+    async fn pull_credential(
+        &self,
+        replica: &Replica,
+    ) -> Option<crate::registry_login::Credential> {
+        let link = self.link.as_ref()?;
+        let answer: Result<GetPullCredentialResponse, _> = link
+            .call(
+                "GetPullCredential",
+                &GetPullCredentialRequest {
+                    replica_id: replica.replica_id.clone(),
+                    ..Default::default()
+                },
+            )
+            .await;
+        match answer {
+            Ok(answer) => {
+                answer
+                    .credential
+                    .into_option()
+                    .map(|c| crate::registry_login::Credential {
+                        host: c.host,
+                        username: c.username,
+                        password: c.password,
+                    })
+            }
+            Err(error) => {
+                tracing::warn!(
+                    replica = %replica.replica_id,
+                    error = %format!("{error:#}"),
+                    "could not ask for a registry credential; pulling without one"
+                );
+                None
+            }
+        }
+    }
+
     fn stop(&mut self, status: &ContainerStatus) {
         if self.stops.get(&status.id).is_some_and(|h| !h.is_finished()) {
             return;
@@ -1047,11 +1084,36 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
             Ok(false) | Err(_) => {
                 let runtime = self.runtime.clone();
                 let image = spec.image.clone();
-                tracing::info!(image = %image.reference, "pulling an image");
+                let credential = self.pull_credential(replica).await;
+                tracing::info!(
+                    image = %image.reference,
+                    with_login = credential.is_some(),
+                    "pulling an image"
+                );
                 self.pulls.insert(
                     digest,
                     tokio::spawn(async move {
-                        runtime.pull(&image).await.map_err(|e| format!("{e:#}"))
+                        let authorization = match &credential {
+                            Some(credential) => {
+                                let http =
+                                    crate::join::http_client().map_err(|e| format!("{e:#}"))?;
+                                crate::registry_login::authorization(
+                                    &http,
+                                    credential,
+                                    &image.reference,
+                                    &image.digest,
+                                )
+                                .await
+                                .map_err(|e| {
+                                    format!("could not log in to {}: {e:#}", credential.host)
+                                })?
+                            }
+                            None => None,
+                        };
+                        runtime
+                            .pull(&image, authorization.as_deref())
+                            .await
+                            .map_err(|e| format!("{e:#}"))
                     }),
                 );
                 return report(

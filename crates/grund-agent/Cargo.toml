@@ -32,6 +32,7 @@ ring = "0.17"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde.workspace = true
+serde_urlencoded = "0.7"
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true

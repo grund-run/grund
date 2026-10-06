@@ -43,6 +43,8 @@ sqlx.workspace = true
 # The machine tests play the machine's side of enrollment: an Ed25519 key,
 # the token's SHA-256, and protobuf JSON's base64 for bytes.
 base64.workspace = true
+# The fake registry reads its token service's query, as a registry does.
+serde_urlencoded = "0.7"
 ed25519-dalek = "2"
 hex.workspace = true
 sha2.workspace = true

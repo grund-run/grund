@@ -135,7 +135,14 @@ pub trait ContainerRuntime: Send + Sync {
 
     /// Fetches the image by digest from its registry and unpacks it, for
     /// this machine's architecture. Present already: nothing.
-    fn pull(&self, image: &ImageRef) -> impl Future<Output = anyhow::Result<()>> + Send;
+    /// `authorization`: the `Authorization` header to send the registry
+    /// with every request of this pull (a private image,
+    /// [`crate::registry_login`]); never kept.
+    fn pull(
+        &self,
+        image: &ImageRef,
+        authorization: Option<&str>,
+    ) -> impl Future<Output = anyhow::Result<()>> + Send;
 
     /// Makes container `id`'s own network namespace if it has none, and
     /// returns where it is bound, so the agent can give it its device on the
@@ -212,7 +219,7 @@ impl ContainerRuntime for NoContainers {
         Ok(false)
     }
 
-    async fn pull(&self, _image: &ImageRef) -> anyhow::Result<()> {
+    async fn pull(&self, _image: &ImageRef, _authorization: Option<&str>) -> anyhow::Result<()> {
         anyhow::bail!("this machine runs no containers")
     }
 

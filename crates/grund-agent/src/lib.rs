@@ -16,6 +16,7 @@ pub mod join;
 pub mod net;
 pub mod policy;
 pub mod probe;
+pub mod registry_login;
 pub mod resolved;
 pub mod runtime;
 pub mod secrets;

@@ -10,8 +10,8 @@ use crate::accepttest::{
 const APPS: &str = "/grund.app.v1.AppService";
 const MACHINES: &str = "/grund.machine.v1.MachineService";
 
-struct Agent {
-    dir: std::path::PathBuf,
+pub(super) struct Agent {
+    pub(super) dir: std::path::PathBuf,
     child: std::process::Child,
 }
 
@@ -59,7 +59,7 @@ fn data_dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("apps-{}", random_hex(6)))
 }
 
-async fn a_machine(
+pub(super) async fn a_machine(
     when: &When,
     then: &Then,
     organisation: &str,
@@ -117,7 +117,12 @@ async fn a_machine(
     Ok(Agent { dir, child })
 }
 
-async fn call(when: &When, then: &Then, procedure: &str, body: Value) -> anyhow::Result<Value> {
+pub(super) async fn call(
+    when: &When,
+    then: &Then,
+    procedure: &str,
+    body: Value,
+) -> anyhow::Result<Value> {
     when.calling(&format!("{APPS}/{procedure}"), &body.to_string())
         .await?;
     then.json()
@@ -135,7 +140,7 @@ async fn app(when: &When, then: &Then, organisation: &str, name: &str) -> anyhow
     Ok(answer["app"].clone())
 }
 
-async fn until(
+pub(super) async fn until(
     when: &When,
     then: &Then,
     organisation: &str,
@@ -158,7 +163,7 @@ async fn until(
     }
 }
 
-fn ready_on(app: &Value, release: u64) -> usize {
+pub(super) fn ready_on(app: &Value, release: u64) -> usize {
     app["replicas"]
         .as_array()
         .map(|replicas| {
@@ -174,12 +179,12 @@ fn ready_on(app: &Value, release: u64) -> usize {
         .unwrap_or(0)
 }
 
-fn live(app: &Value, release: u64) -> bool {
+pub(super) fn live(app: &Value, release: u64) -> bool {
     app["currentRelease"].as_u64() == Some(release)
         && app["rollout"]["state"] == "ROLLOUT_STATE_SUCCEEDED"
 }
 
-fn spec(image: &str, env: Value) -> Value {
+pub(super) fn spec(image: &str, env: Value) -> Value {
     json!({
         "image": image,
         "ports": [{"name": "http", "port": 80}],
@@ -190,7 +195,7 @@ fn spec(image: &str, env: Value) -> Value {
     })
 }
 
-fn quick(copies: u32) -> Value {
+pub(super) fn quick(copies: u32) -> Value {
     json!({
         "copies": copies,
         "rollout": {"minReadySeconds": 1, "readyDeadlineSeconds": 10, "drainSeconds": 1},
@@ -661,7 +666,7 @@ async fn a_second_organisation_cannot_see_or_touch_an_app() -> anyhow::Result<()
     Ok(())
 }
 
-fn reason(error: &Value) -> String {
+pub(super) fn reason(error: &Value) -> String {
     use base64::Engine;
     error["details"]
         .as_array()
@@ -676,7 +681,7 @@ fn reason(error: &Value) -> String {
         .unwrap_or_default()
 }
 
-fn uuid_like() -> String {
+pub(super) fn uuid_like() -> String {
     let hex = random_hex(16);
     format!(
         "{}-{}-{}-{}-{}",

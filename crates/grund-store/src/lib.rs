@@ -17,6 +17,7 @@ pub mod networks;
 pub mod organisations;
 pub mod outbox;
 pub mod projections;
+pub mod registry_credentials;
 pub mod relays;
 pub mod sessions;
 pub mod setup_links;

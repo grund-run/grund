@@ -19,7 +19,11 @@
 //! `GRUND_SIMULATE=unready` runs but fails its check (status 503),
 //! `GRUND_SIMULATE=nostart` is created but its process never starts, as
 //! with a missing entrypoint. Every create appends the id to `<dir>/creates`. An image
-//! whose reference contains `missing` cannot be pulled.
+//! whose reference contains `missing` cannot be pulled. A pull given an
+//! `Authorization` header (a private image) fetches the image's manifest
+//! from its registry with it, as a real pull would, and fails if the
+//! registry refuses; `<dir>/images/<digest>.authorized` then records that it
+//! did.
 //!
 //! While a container runs, it serves HTTP/1.1 like traefik/whoami, on its
 //! own loopback address ([`address_of`], in 127.0.0.0/8) and the port in its
@@ -405,13 +409,40 @@ impl ContainerRuntime for SimulatedContainers {
         Ok(self.dir.join("images").join(&image.digest).exists())
     }
 
-    async fn pull(&self, image: &ImageRef) -> anyhow::Result<()> {
+    async fn pull(&self, image: &ImageRef, authorization: Option<&str>) -> anyhow::Result<()> {
         anyhow::ensure!(
             !image.reference.contains("missing"),
             "the registry has no {}",
             image.reference
         );
         std::fs::create_dir_all(self.dir.join("images"))?;
+        if let Some(authorization) = authorization {
+            let reference = grund_domain::app::spec::ImageReference::parse(&image.reference)
+                .map_err(|e| anyhow::anyhow!("{}", e.problem))?;
+            let url = format!(
+                "{}/v2/{}/manifests/{}",
+                crate::registry_login::base(&reference.registry),
+                reference.repository,
+                image.digest
+            );
+            let status = reqwest::Client::new()
+                .get(&url)
+                .header("Authorization", authorization)
+                .send()
+                .await?
+                .status();
+            anyhow::ensure!(
+                status.is_success(),
+                "the registry refused the pull (HTTP {})",
+                status.as_u16()
+            );
+            std::fs::write(
+                self.dir
+                    .join("images")
+                    .join(format!("{}.authorized", image.digest)),
+                b"",
+            )?;
+        }
         std::fs::write(
             self.dir.join("images").join(&image.digest),
             &image.reference,

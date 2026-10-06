@@ -226,6 +226,7 @@ fn state_line(state: &TaskState) -> String {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    grund_tls::install_default();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut config = Config::default();
     if let Ok(dir) = std::env::var("GRUND_CONTAINERS_DATA_DIR") {
@@ -266,12 +267,40 @@ async fn main() -> anyhow::Result<()> {
         }
         "pull" => {
             let t = Instant::now();
-            let before = runtime.has_image(&image_ref()).await?;
-            runtime.pull(&image_ref()).await?;
+            let image = image_ref();
+            let before = runtime.has_image(&image).await?;
+            let authorization = match std::env::var("LAB_LOGIN") {
+                Ok(login) => {
+                    let (username, password) = login
+                        .split_once(':')
+                        .context("LAB_LOGIN is user:password")?;
+                    let host = match image.reference.split_once('/') {
+                        Some((first, _)) if first.contains(['.', ':']) || first == "localhost" => {
+                            first.to_string()
+                        }
+                        _ => "docker.io".to_string(),
+                    };
+                    let credential = grund_agent::registry_login::Credential {
+                        host,
+                        username: username.into(),
+                        password: password.into(),
+                    };
+                    grund_agent::registry_login::authorization(
+                        &grund_agent::join::http_client()?,
+                        &credential,
+                        &image.reference,
+                        &image.digest,
+                    )
+                    .await?
+                }
+                Err(_) => None,
+            };
+            runtime.pull(&image, authorization.as_deref()).await?;
             say(format!(
-                "pull_ms={} had_image_before={before} has_image_after={}",
+                "pull_ms={} had_image_before={before} has_image_after={} with_login={}",
                 ms(t),
-                runtime.has_image(&image_ref()).await?
+                runtime.has_image(&image).await?,
+                authorization.is_some()
             ));
         }
         "create" => {

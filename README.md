@@ -135,7 +135,7 @@ confirmed (see [.env.example](.env.example)). Without them nothing is queued.
   anyone create more, as grund's hosted service does.
 - Pages: `/signup`, `/signup/owner` (the setup link), `/verify`, `/login`, `/reset`, `/` (which opens your
   organisation), `/{org}`, `/{org}/members`, `/{org}/settings`,
-  `/{org}/settings/tokens`, `/orgs/new`,
+  `/{org}/settings/tokens`, `/{org}/settings/registries`, `/orgs/new`,
   `/invite`, `/settings/sessions`, and `/style-guide`, which renders every
   component with example data.
 - The API is ConnectRPC (`proto/`, generated at build time; Connect, gRPC and
@@ -207,6 +207,21 @@ What a token can do:
   admins see and revoke every token of the organisation, members their own.
   A revoked or expired token is `unauthenticated` from the next call.
 - An organisation holds at most 100 live tokens.
+
+### Private images
+
+Under Organisation, Registries, an owner or admin saves a login for a
+registry host (`ghcr.io`, `registry.gitlab.com`, `docker.io` for Docker
+Hub, `registry.example.com:5000`): a username and a password or, better, a
+token that can only read packages. Then every image on that host is
+resolved and pulled with it: grund uses it to turn the tag into a digest
+when you deploy, and a machine is handed it, over its signed control link,
+only to pull the image of one of your apps placed on it. The password is
+stored sealed, is never shown again, and is never written into a release,
+an event, a machine's desired state or a log. Saving a host again replaces
+its login; removing it makes pulls from that host anonymous again. An
+organisation holds logins for at most 20 hosts. Without a login, a private
+image is refused when you deploy, with a message that names the host.
 
 ## Layout
 

@@ -6,6 +6,11 @@
 #
 #   scenario.sh docker   install Docker (docker.io) and start one container in it
 #   scenario.sh run      the grund-containers scenario, beside Docker
+#   scenario.sh private  a private image: Docker runs registry:2 with htpasswd
+#                        on 127.0.0.1:5000 and holds a copy of whoami behind a
+#                        login; grund's containerd cannot pull it anonymously,
+#                        and pulls and runs it with the agent's registry login
+#                        (grund_agent::registry_login, apps.md §6.5)
 set -euo pipefail
 L=/opt/grund-lab/lab
 SOCK=/run/grund/containerd.sock
@@ -128,8 +133,48 @@ run_phase() {
   say "done"
 }
 
+private_phase() {
+  command -v docker >/dev/null || { say "private: needs Docker (scenario.sh docker)"; exit 1; }
+  local user=robot pass
+  pass="pw-$(head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  mkdir -p /root/registry-auth
+  docker run --rm --entrypoint htpasswd httpd:2.4-alpine -Bbn "$user" "$pass" > /root/registry-auth/htpasswd 2>/dev/null
+  docker rm -f grund-lab-registry >/dev/null 2>&1 || true
+  docker run -d --name grund-lab-registry -p 127.0.0.1:5000:5000 \
+    -v /root/registry-auth:/auth -e REGISTRY_AUTH=htpasswd \
+    -e REGISTRY_AUTH_HTPASSWD_REALM=lab -e REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd registry:2 >/dev/null
+  for _ in $(seq 50); do curl -s -o /dev/null http://127.0.0.1:5000/v2/ && break; sleep 0.2; done
+  say "registry:2 answers anonymous /v2/ with HTTP $(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5000/v2/) and $(curl -s -D - -o /dev/null http://127.0.0.1:5000/v2/ | grep -i '^www-authenticate' | tr -d '\r')"
+  docker pull -q "$WHOAMI" >/dev/null
+  docker tag "$WHOAMI" localhost:5000/private/whoami:1
+  echo "$pass" | docker login -u "$user" --password-stdin localhost:5000 >/dev/null 2>&1
+  local digest
+  digest="$(docker push localhost:5000/private/whoami:1 | awk '/digest: sha256:/ {print $3}')"
+  docker logout localhost:5000 >/dev/null 2>&1
+  say "pushed localhost:5000/private/whoami:1 as $digest"
+  export LAB_IMAGE=localhost:5000/private/whoami:1 LAB_DIGEST="$digest"
+
+  say "== pull anonymously (expected to fail: the registry asks for a login)"
+  if lab pull 2>&1 | tail -1; then say "UNEXPECTED: an anonymous pull of a private image succeeded"; exit 1; fi
+  say "== pull with a wrong login (expected to fail)"
+  if LAB_LOGIN="$user:wrong" lab pull 2>&1 | tail -1; then say "UNEXPECTED: a wrong login pulled"; exit 1; fi
+  say "== pull with the login"
+  LAB_LOGIN="$user:$pass" lab pull
+  lab create p
+  lab ready p 80 /
+  lab list
+  lab remove p SIGTERM 2
+  if grep -rqs -- "$pass" /var/lib/grund /run/grund 2>/dev/null; then
+    say "UNEXPECTED: the password is written under /var/lib/grund or /run/grund"; exit 1
+  fi
+  say "the password appears nowhere under /var/lib/grund or /run/grund"
+  docker rm -f grund-lab-registry >/dev/null
+  say "private done"
+}
+
 case "${1:-}" in
   docker) docker_phase ;;
   run) run_phase ;;
-  *) echo "usage: scenario.sh docker|run" >&2; exit 2 ;;
+  private) private_phase ;;
+  *) echo "usage: scenario.sh docker|run|private" >&2; exit 2 ;;
 esac

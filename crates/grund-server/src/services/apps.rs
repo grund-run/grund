@@ -31,10 +31,11 @@ use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::{
-    registry::{Inspection, Registry, ResolveError},
+    registry::{Inspection, Login, Registry, ResolveError},
     services::{
         agents::{AgentsState, MachineCaller},
         entry::{EntryState, publishes},
+        registry_credentials::RegistryCredentialsState,
     },
     state::State,
 };
@@ -256,10 +257,21 @@ pub fn machine_view(row: &machines::MachineRow, reserved: Option<(i64, i64)>) ->
 }
 
 impl Apps {
-    fn registry(&self) -> Result<Registry, AppsError> {
-        Ok(Registry::new(
-            self.state.config.insecure_registries.clone(),
-        )?)
+    async fn registry(
+        &self,
+        organisation_id: Uuid,
+        reference: &ImageReference,
+    ) -> Result<Registry, AppsError> {
+        let login = self
+            .state
+            .registry_credentials()
+            .for_organisation(organisation_id, &reference.registry)
+            .await?
+            .map(|c| Login {
+                username: c.username,
+                password: c.password,
+            });
+        Ok(Registry::new(self.state.config.insecure_registries.clone())?.with_credential(login))
     }
 
     async fn live(&self, organisation_id: Uuid, name: &str) -> Result<AppRow, AppsError> {
@@ -369,10 +381,16 @@ impl Apps {
         self.view(row).await
     }
 
-    /// What `image` names now, and the ports it declares.
-    pub async fn inspect(&self, image: &str) -> Result<Inspection, AppsError> {
+    /// What `image` names now, and the ports it declares, asked with the
+    /// organisation's registry credential.
+    pub async fn inspect(
+        &self,
+        organisation_id: Uuid,
+        image: &str,
+    ) -> Result<Inspection, AppsError> {
         let reference = ImageReference::parse(image)?;
-        self.registry()?
+        self.registry(organisation_id, &reference)
+            .await?
             .inspect(&reference)
             .await
             .map_err(|e| match e {
@@ -438,7 +456,7 @@ impl Apps {
         {
             return Err(AppsError::NameTaken);
         }
-        let inspection = self.inspect(&spec.image).await?;
+        let inspection = self.inspect(organisation_id, &spec.image).await?;
         if let Some(port) = detect {
             let Some(number) = inspection.exposed_ports.first() else {
                 return Err(AppsError::Spec(SpecError {
@@ -600,7 +618,8 @@ impl Apps {
         let note: String = note.chars().take(200).collect();
         let reference = ImageReference::parse(&spec.image)?;
         let resolved = self
-            .registry()?
+            .registry(organisation_id, &reference)
+            .await?
             .resolve(&reference)
             .await
             .map_err(|e| match e {
