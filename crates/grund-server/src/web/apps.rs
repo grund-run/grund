@@ -635,9 +635,10 @@ fn refusal(error: &AppsError) -> Refusal {
         AppsError::Spec(spec) => {
             let problem = capitalise(&spec.problem);
             let message = match (form_field(&spec.field), line_of(&spec.field)) {
-                (Some("env" | "secrets" | "command"), Some(line)) => {
-                    format!("Line {line}: {}.", spec.problem)
+                (Some("env" | "secrets"), Some(line)) => {
+                    format!("Row {line}: {}.", spec.problem)
                 }
+                (Some("command"), Some(line)) => format!("Line {line}: {}.", spec.problem),
                 _ => format!("{problem}."),
             };
             match form_field(&spec.field) {
@@ -732,7 +733,7 @@ async fn new_view(
         .fields
         .keys()
         .any(|field| ADVANCED_FIELDS.contains(field));
-    let secrets_dropped = !refused.banner.is_empty() && !new.secrets.trim().is_empty();
+    let secrets_dropped = !refused.banner.is_empty() && !new.secrets.is_empty();
     let errors: std::collections::BTreeMap<&str, &str> = FORM_FIELDS
         .iter()
         .map(|field| (*field, refused.fields.get(field).map_or("", String::as_str)))
@@ -804,8 +805,11 @@ pub async fn templates_page(
     .await
 }
 
-/// The Deploy app form, in either mode. `secrets` is never written back
-/// into the page.
+/// The Deploy app form, in either mode, and the parts of an app's
+/// Settings that make a release. Its environment and secrets post as rows
+/// (`env_key`/`env_value`, `secrets_key`/`secrets_value`), so it is read
+/// with [`NewForm::from_pairs`]. `secrets` is never written back into the
+/// page.
 #[derive(Deserialize, Default, serde::Serialize)]
 pub struct NewForm {
     #[serde(default, skip_serializing)]
@@ -824,10 +828,10 @@ pub struct NewForm {
     port: String,
     #[serde(default)]
     copies: String,
-    #[serde(default)]
-    env: String,
-    #[serde(default, skip_serializing)]
-    secrets: String,
+    #[serde(skip_deserializing)]
+    env: Vec<(String, String)>,
+    #[serde(skip)]
+    secrets: Vec<(String, String)>,
     #[serde(default)]
     check: String,
     #[serde(default)]
@@ -871,12 +875,11 @@ impl NewForm {
             .into(),
             port: main.map(|p| p.port.to_string()).unwrap_or_default(),
             copies: copies.to_string(),
-            env: lines(
-                spec.env
-                    .iter()
-                    .map(|e| format!("{}={}", e.name, e.value))
-                    .collect(),
-            ),
+            env: spec
+                .env
+                .iter()
+                .map(|e| (e.name.clone(), e.value.clone()))
+                .collect(),
             check: check.into(),
             check_path,
             memory: nonzero(spec.memory_mib),
@@ -886,6 +889,36 @@ impl NewForm {
             stop_grace: nonzero(spec.stop.grace_seconds),
             ..Self::default()
         }
+    }
+
+    fn from_pairs(posted: Vec<(String, String)>) -> Self {
+        let mut single = serde_json::Map::new();
+        let mut rows: std::collections::BTreeMap<&str, (Vec<String>, Vec<String>)> =
+            Default::default();
+        for (key, value) in posted {
+            match key.as_str() {
+                "env_key" => rows.entry("env").or_default().0.push(value),
+                "env_value" => rows.entry("env").or_default().1.push(value),
+                "secrets_key" => rows.entry("secrets").or_default().0.push(value),
+                "secrets_value" => rows.entry("secrets").or_default().1.push(value),
+                _ => {
+                    single.insert(key, serde_json::Value::String(value));
+                }
+            }
+        }
+        let mut form: NewForm =
+            serde_json::from_value(serde_json::Value::Object(single)).unwrap_or_default();
+        let mut take = |part: &str| {
+            let (keys, values) = rows.remove(part).unwrap_or_default();
+            let mut values = values.into_iter();
+            keys.into_iter()
+                .map(|key| (key, values.next().unwrap_or_default()))
+                .filter(|(key, value)| !(key.trim().is_empty() && value.is_empty()))
+                .collect::<Vec<_>>()
+        };
+        form.env = take("env");
+        form.secrets = take("secrets");
+        form
     }
 }
 
@@ -903,23 +936,14 @@ fn number<T: std::str::FromStr>(
     }
 }
 
-fn pairs(text: &str) -> Result<Vec<(String, String)>, String> {
-    let mut pairs = Vec::new();
-    for (i, line) in text.lines().enumerate() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        match line.split_once('=') {
-            Some((name, value)) => pairs.push((name.trim().to_string(), value.to_string())),
-            None => {
-                return Err(format!(
-                    "Line {}: write NAME=value; this line has no '='.",
-                    i + 1
-                ));
-            }
-        }
-    }
-    Ok(pairs)
+fn named(rows: &[(String, String)]) -> Result<Vec<(String, String)>, String> {
+    rows.iter()
+        .enumerate()
+        .map(|(i, (name, value))| match name.trim() {
+            "" => Err(format!("Row {}: give the value a name.", i + 1)),
+            name => Ok((name.to_string(), value.clone())),
+        })
+        .collect()
 }
 
 fn copies_of(form: &NewForm) -> Result<Option<u32>, Refusal> {
@@ -969,7 +993,7 @@ fn form_spec(
             Some(main)
         }
     };
-    let env = pairs(&form.env)
+    let env = named(&form.env)
         .map_err(|message| Refusal::field("env", message))?
         .into_iter()
         .map(|(name, value)| EnvVar { name, value })
@@ -1044,7 +1068,7 @@ fn custom_launch(form: &NewForm, public: bool) -> Result<Launch, Refusal> {
         },
         spec,
         detect_port,
-        secrets: pairs(&form.secrets).map_err(|message| Refusal::field("secrets", message))?,
+        secrets: named(&form.secrets).map_err(|message| Refusal::field("secrets", message))?,
     })
 }
 
@@ -1100,8 +1124,9 @@ pub async fn create(
     browser: Browser,
     uri: Uri,
     Path(slug): Path<String>,
-    Form(form): Form<NewForm>,
+    Form(posted): Form<Vec<(String, String)>>,
 ) -> PageResult {
+    let form = NewForm::from_pairs(posted);
     if !browser.form_is_genuine(&form.csrf) {
         return forged(&state, &browser);
     }
@@ -1544,8 +1569,9 @@ pub async fn change(
     browser: Browser,
     uri: Uri,
     Path((slug, name)): Path<(String, String)>,
-    Form(form): Form<NewForm>,
+    Form(posted): Form<Vec<(String, String)>>,
 ) -> PageResult {
+    let form = NewForm::from_pairs(posted);
     if !browser.form_is_genuine(&form.csrf) {
         return forged(&state, &browser);
     }
@@ -1602,7 +1628,7 @@ fn changed(form: &NewForm, base: &AppSpec, public: bool) -> Result<Change, Refus
         copies: copies_of(form)?,
         spec,
         detect_port,
-        secrets: pairs(&form.secrets).map_err(|message| Refusal::field("secrets", message))?,
+        secrets: named(&form.secrets).map_err(|message| Refusal::field("secrets", message))?,
         same_image: false,
     })
 }
@@ -1715,8 +1741,9 @@ pub async fn release_settings(
     browser: Browser,
     uri: Uri,
     Path((slug, name)): Path<(String, String)>,
-    Form(posted): Form<NewForm>,
+    Form(posted): Form<Vec<(String, String)>>,
 ) -> PageResult {
+    let posted = NewForm::from_pairs(posted);
     if !browser.form_is_genuine(&posted.csrf) {
         return forged(&state, &browser);
     }

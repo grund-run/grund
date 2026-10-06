@@ -1,7 +1,8 @@
 // grund's only script: small enhancements over pages that work without it.
 // Copy buttons, a sort select that applies itself, the app filter as you
 // type, menus that close on Escape or a click elsewhere, the − and + of a
-// number, and a choice that fills in a name.
+// number, a choice that fills in a name, and rows of names and values that
+// grow and shrink.
 (function () {
   "use strict";
   document.documentElement.classList.add("has-js");
@@ -20,12 +21,15 @@
         button.hidden = false;
         var label = button.getAttribute("aria-label");
         button.addEventListener("click", function () {
+          var text = button.querySelector("[data-copy-label]");
           navigator.clipboard.writeText(button.dataset.copy).then(function () {
             button.classList.add("is-done");
-            button.setAttribute("aria-label", "Copied");
+            if (text) text.textContent = "Copied";
+            else button.setAttribute("aria-label", "Copied");
             setTimeout(function () {
               button.classList.remove("is-done");
-              button.setAttribute("aria-label", label);
+              if (text) text.textContent = "Copy";
+              else button.setAttribute("aria-label", label);
             }, 1500);
           });
         });
@@ -81,6 +85,46 @@
           target.value = choice.value;
           target.dataset.filled = choice.value;
         }
+      });
+    });
+
+    document.querySelectorAll("[data-pairs]").forEach(function (pairs) {
+      var add = pairs.parentElement.querySelector(".pairs-add");
+      function number() {
+        Array.prototype.forEach.call(pairs.children, function (row, i) {
+          row.querySelectorAll("[aria-label]").forEach(function (control) {
+            control.setAttribute("aria-label", control.getAttribute("aria-label").replace(/\d+$/, String(i + 1)));
+          });
+        });
+      }
+      function wire(row) {
+        var remove = row.querySelector("[data-remove-pair]");
+        remove.hidden = false;
+        remove.addEventListener("click", function () {
+          var next = row.nextElementSibling || row.previousElementSibling;
+          if (pairs.children.length > 1) {
+            row.remove();
+          } else {
+            row.querySelectorAll("input").forEach(function (input) { input.value = ""; });
+          }
+          number();
+          if (next) next.querySelector("input").focus();
+        });
+      }
+      Array.prototype.forEach.call(pairs.children, wire);
+      if (!add) return;
+      add.hidden = false;
+      add.addEventListener("click", function () {
+        var last = pairs.lastElementChild;
+        var row = last.cloneNode(true);
+        row.querySelectorAll("input").forEach(function (input) {
+          input.value = "";
+          input.removeAttribute("aria-invalid");
+        });
+        pairs.appendChild(row);
+        wire(row);
+        number();
+        row.querySelector("input").focus();
       });
     });
 

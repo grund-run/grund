@@ -79,10 +79,13 @@
     icon_size: "sm" (18 px) or "" (22 px, for brand logos)
     extra:     more classes, such as js-hide (or is-hover and is-focus,
                which pin a state on the style guide)
-    icon_end:  the icon after the label ("Browse templates →") -#}
-{% macro button(label, href="", icon_name="", kind="primary", size="", type="submit", collapse=false, block=false, icon_size="sm", extra="", icon_end=false) -%}
+    icon_end:  the icon after the label ("Browse templates →")
+    hidden:    not shown until the script shows it (a button only the
+               script can work, such as "Add another")
+    download:  the link saves its target as this filename -#}
+{% macro button(label, href="", icon_name="", kind="primary", size="", type="submit", collapse=false, block=false, icon_size="sm", extra="", icon_end=false, hidden=false, download="") -%}
 {% set class = "btn btn-" ~ kind ~ (" btn-" ~ size if size else "") ~ (" btn-block" if block else "") ~ (" " ~ extra if extra else "") %}
-{% if href %}<a class="{{ class }}" href="{{ href }}">{% else %}<button class="{{ class }}" type="{{ type }}">{% endif -%}
+{% if href %}<a class="{{ class }}" href="{{ href }}"{% if download %} download="{{ download }}"{% endif %}>{% else %}<button class="{{ class }}" type="{{ type }}"{% if hidden %} hidden{% endif %}>{% endif -%}
 {% if icon_name and not icon_end %}{{ icon(icon_name, "icon-" ~ icon_size if icon_size else "") }}{% endif %}<span{% if collapse %} class="btn-label"{% endif %}>{{ label }}</span>
 {%- if icon_name and icon_end %}{{ icon(icon_name, "icon-" ~ icon_size if icon_size else "") }}{% endif %}
 {%- if href %}</a>{% else %}</button>{% endif %}
@@ -107,11 +110,14 @@
 <a class="icon-btn" href="{{ href }}"{% if external %} rel="noopener noreferrer" target="_blank"{% endif %} aria-label="{{ label }}">{{ icon(icon_name, "icon-sm") }}</a>
 {%- endmacro %}
 
-{#- copy_button(text, label)
+{#- copy_button(text, label, labelled=false)
     Copies text. Hidden until the script shows it, so it never appears
-    without a clipboard. label: what it copies, for its accessible name. -#}
-{% macro copy_button(text, label) -%}
-<button class="icon-btn copy" type="button" data-copy="{{ text }}" aria-label="Copy {{ label }}" title="Copy" hidden>{{ icon("copy", "icon-sm") }}</button>
+    without a clipboard. label: what it copies, for its accessible name.
+    labelled: a small secondary button saying "Copy" (beside Download)
+    rather than an icon alone. -#}
+{% macro copy_button(text, label, labelled=false) -%}
+{% if labelled %}<button class="btn btn-secondary btn-sm copy" type="button" data-copy="{{ text }}" hidden>{{ icon("copy", "icon-sm") }}<span data-copy-label>Copy</span></button>
+{%- else %}<button class="icon-btn copy" type="button" data-copy="{{ text }}" aria-label="Copy {{ label }}" title="Copy" hidden>{{ icon("copy", "icon-sm") }}</button>{% endif %}
 {%- endmacro %}
 
 {#- page_head(title, lede="", status="", back=none, image="", state=none)
@@ -330,17 +336,57 @@
 <p class="{{ kind }}"{% if filter_empty %} data-filter-empty{% endif %}{% if hidden %} hidden{% endif %}>{% if caller is defined %}{{ caller() }}{% else %}{{ text }}{% endif %}</p>
 {%- endmacro %}
 
-{#- command(text, id="", copy=false)
-    A command to run, in a box, wrapping anywhere. copy: a copy button in
-    its corner (shown only with the script). -#}
-{% macro command(text, id="", copy=false) -%}
-<p class="command{% if copy %} command-copy{% endif %}"{% if id %} id="{{ id }}"{% endif %}>{{ text }}{% if copy %}{{ copy_button(text, "the command") }}{% endif %}</p>
+{#- code(text, filename="", download="", id="", copy=true, wrap=false,
+         what="the text")
+    Text a person copies or saves, in the mono face, in a frame: a file
+    (grund.toml), a command, a token, a licence.
+    filename: a head with the file's name, a Copy button and, with
+              download (the file's URL), a Download link that saves it
+              under that name; without one, the copy button sits in the
+              corner
+    copy:     false for text too long to copy usefully (a licence)
+    wrap:     long lines wrap anywhere (a command, a token) instead of
+              scrolling sideways (a file keeps its lines)
+    what:     what the corner button copies, for its name ("the command") -#}
+{% macro code(text, filename="", download="", id="", copy=true, wrap=false, what="the text") -%}
+<div class="code{% if wrap %} code-wrap{% endif %}{% if copy and not filename %} code-corner{% endif %}"{% if id %} id="{{ id }}"{% endif %}>
+  {% if filename %}<div class="code-head"><span class="code-name">{{ icon("file", "icon-sm") }}{{ filename }}</span><span class="code-tools">{% if copy %}{{ copy_button(text, filename, labelled=true) }}{% endif %}{% if download %}{{ button("Download", href=download, icon_name="down", kind="secondary", size="sm", download=filename) }}{% endif %}</span></div>
+  {%- endif %}
+  <pre class="code-body mono">{{ text }}</pre>
+  {%- if copy and not filename %}{{ copy_button(text, what) }}{% endif %}
+</div>
 {%- endmacro %}
 
-{#- code_block(text, id="")
-    Preformatted text in the mono face: a file, a licence. -#}
-{% macro code_block(text, id="") -%}
-<pre class="mono"{% if id %} id="{{ id }}"{% endif %}>{{ text }}</pre>
+{#- expanders(): a box of expander()s, divided by lines; the {% call %}
+    body is the expanders. -#}
+{% macro expanders() -%}
+<div class="expanders">{{ caller() }}</div>
+{%- endmacro %}
+
+{#- expander(title, summary="", icon_name="", tone="", state=none,
+             meta=[], open=false, kind="", id="")
+    One thing in one line that opens to show more, as a details element,
+    so it opens without the script: a setting (its value in the summary,
+    its form inside), a release (its outcome, its details inside), a
+    form's optional part. The {% call %} body is what it opens to.
+    summary: one line, cut with an ellipsis when it does not fit
+    icon_name, tone: an icon before the title, toned
+    state:   (text, tone) for a pill() after the title ("Live")
+    meta:    short facts at the right ("2 hours ago"), hidden on a phone
+    open:    open (the one a refused form is in, or a link's target)
+    kind:    "add" (a thing not set yet: "Add a health check", in the
+             accent with a plus) or "danger" (delete)
+    id:      a link target; it must not be a field's name -#}
+{% macro expander(title, summary="", icon_name="", tone="", state=none, meta=[], open=false, kind="", id="") -%}
+<details class="expander{% if kind %} expander-{{ kind }}{% endif %}"{% if id %} id="{{ id }}"{% endif %}{% if open %} open{% endif %}>
+  <summary class="expander-head">
+    {% if kind == "add" %}{{ icon("plus", "icon-sm expander-icon") }}{% elif icon_name %}{{ icon(icon_name, "icon-sm expander-icon" ~ (" tone-" ~ tone if tone else "")) }}{% endif %}
+    <span class="expander-text"><span class="expander-title">{{ title }}{% if state %} {{ pill(state.0, state.1) }}{% endif %}</span>{% if summary %}<span class="expander-summary">{{ summary }}</span>{% endif %}</span>
+    {% if meta %}<span class="expander-meta">{% for fact in meta %}<span>{{ fact }}</span>{% endfor %}</span>{% endif %}
+    {{ icon("down", "icon-sm expander-chevron") }}
+  </summary>
+  <div class="expander-body">{{ caller() }}</div>
+</details>
 {%- endmacro %}
 
 {#- auth_head(title, lede="")

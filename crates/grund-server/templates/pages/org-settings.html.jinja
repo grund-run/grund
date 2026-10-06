@@ -32,25 +32,27 @@
 {% endcall %}
 
 {% if org.owner %}
-{% call ui.section("rename", "Rename") %}
-  {% call forms.form("/" ~ org.slug ~ "/settings/rename", csrf, layout="narrow") %}
-    {{ forms.field("slug", "New name", value=rename_value, autocomplete="off", error=rename_error, hint="3 to 32 letters, digits and single hyphens. The old name stays reserved for this organisation and redirects its members.") }}
-    {{ ui.button("Rename", kind="secondary") }}
+{% call ui.section("change", "Change") %}
+{% call ui.expanders() %}
+  {% call ui.expander("Name", org.slug ~ " · its addresses and links use it", icon_name="gear", open=rename_error != "", id="rename") %}
+    {% call forms.form("/" ~ org.slug ~ "/settings/rename", csrf) %}
+      {{ forms.field("slug", "New name", value=rename_value, autocomplete="off", error=rename_error, hint="3 to 32 letters, digits and single hyphens.", width="md") }}
+      {% call forms.actions("The old name stays reserved for " ~ org.slug ~ " and sends its members to the new one.") %}{{ ui.button("Rename") }}{% endcall %}
+    {% endcall %}
+  {% endcall %}
+  {% call ui.expander("Delete " ~ org.slug, "Ends every membership and invitation. Cannot be undone.", icon_name="trash", kind="danger", open=deleting or refusal != "" or delete_error != "", id="delete") %}
+    {% if deleting %}
+    {{ ui.callout("Deleting " ~ org.slug, "Waiting for billing to agree. If billing cannot be reached, grund keeps asking; nothing is deleted until it answers. This page refreshes itself.", icon_name="clock", tone="orange") }}
+    {% call forms.actions() %}{{ forms.post_button("/" ~ org.slug ~ "/settings/cancel-deletion", csrf, "Cancel the deletion") }}{% endcall %}
+    {% else %}
+    {% call forms.form("/" ~ org.slug ~ "/settings/delete", csrf) %}
+      {{ forms.banner(refusal) }}
+      {{ forms.field("confirm", "Type " ~ org.slug ~ " to confirm", autocomplete="off", error=delete_error, width="md") }}
+      {% call forms.actions("The name stays reserved.") %}{{ ui.button("Delete " ~ org.slug, kind="danger") }}{% endcall %}
+    {% endcall %}
+    {% endif %}
   {% endcall %}
 {% endcall %}
-
-{% call ui.section("delete", "Delete") %}
-  {% if deleting %}
-  {{ ui.callout("Deleting " ~ org.slug, "Waiting for billing to agree. If billing cannot be reached, grund keeps asking; nothing is deleted until it answers. This page refreshes itself.", icon_name="clock", tone="orange") }}
-  {{ forms.post_button("/" ~ org.slug ~ "/settings/cancel-deletion", csrf, "Cancel the deletion", layout="narrow") }}
-  {% else %}
-  {{ forms.banner(refusal) }}
-  {{ ui.status_line("Deleting ends every membership and invitation, and cannot be undone. The name stays reserved.", plain=true) }}
-  {% call forms.form("/" ~ org.slug ~ "/settings/delete", csrf, layout="narrow") %}
-    {{ forms.field("confirm", "Type " ~ org.slug ~ " to confirm", autocomplete="off", error=delete_error) }}
-    {{ ui.button("Delete " ~ org.slug, kind="danger") }}
-  {% endcall %}
-  {% endif %}
 {% endcall %}
 {% endif %}
 {% endblock %}

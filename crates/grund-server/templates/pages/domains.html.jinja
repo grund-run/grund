@@ -38,7 +38,7 @@
   {% if apps %}
   {% call forms.form("/" ~ org.slug ~ "/domains/bind", csrf, layout="row") %}
     {{ forms.hidden_field("name", domain.name) }}
-    {{ forms.select_field("app", "Serve this app on it" if domain.state == "verified" else "Move it to another app", apps, selected=domain.app, id=domain.id ~ "-app") }}
+    {{ forms.select_field("app", "Serve this app on it" if domain.state == "verified" else "Move it to another app", apps, selected=domain.app, id=domain.id ~ "-app", width="md") }}
     {{ ui.button("Bind" if domain.state == "verified" else "Move", kind="secondary") }}
   {% endcall %}
   {% else %}
@@ -55,13 +55,12 @@
 {% endfor %}
 
 {% if org.manages %}
-{% call ui.section("add", "Add a domain") %}
-  {% call forms.form("/" ~ org.slug ~ "/domains", csrf, layout="narrow", autocomplete="off") %}
-    {{ forms.banner(form_error) }}
-    {{ forms.field("name", "Domain", value=name, autocomplete="off", error=name_error, hint="A name you own, such as shop.example.com. Not a wildcard.") }}
-    {{ ui.button("Add domain", icon_name="globe") }}
+{% call ui.panel("add", "Add a domain", "An organisation holds at most " ~ max ~ " domains. A domain removed after it was verified waits " ~ cooldown ~ " before another organisation can add it.") %}
+  {% call forms.form("/" ~ org.slug ~ "/domains", csrf, layout="row", autocomplete="off") %}
+    {{ forms.banner(form_error, fields=[name_error]) }}
+    {{ forms.field("name", "Domain", value=name, autocomplete="off", error=name_error, hint="A name you own, such as shop.example.com. Not a wildcard.", mono=true) }}
+    {{ ui.button("Add domain") }}
   {% endcall %}
-  {{ ui.para("An organisation holds at most " ~ max ~ " domains. A domain that is removed after it was verified waits " ~ cooldown ~ " before another organisation can add it.") }}
 {% endcall %}
 {% endif %}
 {% endblock %}

@@ -19,12 +19,12 @@
 {% endcall %}
 
 {% if org.manages %}
-{% call ui.section("invite", "Invite someone") %}
+{% call ui.panel("invite", "Invite someone", "We mail them a link that works for 7 days.") %}
   {% call forms.form("/" ~ org.slug ~ "/settings/members/invite", csrf, layout="row") %}
     {{ forms.banner(invite_error) }}
-    {{ forms.field("email", "Email", type="email", value=email, autocomplete="off", hint="We mail them a link that works for 7 days.") }}
-    {{ forms.select_field("role", "Role", [("member", "Member"), ("admin", "Admin")], role, id="invite-role") }}
-    {{ ui.button("Send invitation", icon_name="mail") }}
+    {{ forms.field("email", "Email", type="email", value=email, autocomplete="off", placeholder="name@example.com") }}
+    {{ forms.select_field("role", "Role", [("member", "Member"), ("admin", "Admin")], role, id="invite-role", width="sm") }}
+    {{ ui.button("Send invitation") }}
   {% endcall %}
 {% endcall %}
 {% endif %}

@@ -162,12 +162,7 @@
   <form class="sort" method="get">
     {% for name, value in hidden | items %}{% if value %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endif %}{% endfor %}
     <label for="sort">Sort by</label>
-    <span class="select-wrap">
-      <select class="select" id="sort" name="sort" data-autosubmit>
-        {{ forms.options_of(sorts, sort) }}
-      </select>
-      {{ ui.icon("down", "icon-sm select-chevron") }}
-    </span>
+    {{ forms.select("sort", "sort", sorts, sort, autosubmit=true) }}
     {{ ui.button("Sort", kind="secondary", size="sm", extra="js-hide") }}
   </form>
   <div class="view-toggle" role="group" aria-label="View">

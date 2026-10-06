@@ -8,7 +8,7 @@
       {{ forms.stepper_field("copies", "Copies", settings.copies, max=20, error=errors.copies, hint="Number of app instances.") }}
       {{ forms.choice_field("auto_rollback", "When a release fails", rollback_choices, settings.auto_rollback) }}
     {% endcall %}
-    {% call forms.actions() %}{{ ui.button("Save", kind="secondary") }}{% endcall %}
+    {% call forms.actions("Saved at once. No new release.") %}{{ ui.button("Save") }}{% endcall %}
   {% endcall %}
 {% endcall %}
 
@@ -22,9 +22,9 @@
         {{ forms.select_field("check", "Ready check", checks, form.check) }}
         {{ forms.field("check_path", "Check path", value=form.check_path, required=false, error=errors.check, hint="For an HTTP check. Empty: /.") }}
       {% endcall %}
-      {{ forms.textarea_field("env", "Environment variables", value=form.env, error=errors.env, hint="NAME=value, one per line. Put passwords in a secret.", mono=true) }}
+      {{ forms.pairs_field("env", "Environment variables", form.env, error=errors.env, hint="Put passwords and keys in a secret.") }}
     {% endcall %}
-    {% call forms.actions() %}{{ ui.button("Save and release") }}{% endcall %}
+    {% call forms.actions("Saving makes a new release of the same image.", "layers") %}{{ ui.button("Save and release") }}{% endcall %}
   {% endcall %}
 {% endcall %}
 {% endif %}
@@ -54,7 +54,7 @@
 
 {% if file %}
 {% call ui.panel("file", "As a file", "The newest release as grund.toml, for your repository. Deploying the file through the API makes the same app.") %}
-  {{ ui.code_block(file, id="grund-toml") }}
+  {{ ui.code(file, filename="grund.toml", id="grund-toml") }}
 {% endcall %}
 {% endif %}
 

@@ -169,64 +169,82 @@
 
 {% call ui.section("sg-code", "Code") %}
   {% call cat.specimen("Inline code", "<code>grund.toml</code>", "In a sentence, a plain <code> sets a name, a path or a command in the mono face.") %}
-    <p>The latest version as <code>grund.toml</code>, for your repository.</p>
+    <p>The newest release as <code>grund.toml</code>, for your repository.</p>
   {% endcall %}
-  {% call cat.specimen("Command", '{{ ui.command(setup.install, id="setup-install", copy=true) }}', "A command to run, in a box, wrapping anywhere. copy puts a copy button in its corner, shown only with the script.") %}
-    {{ ui.command("curl -fsSL https://grund.example/install | sh -s -- --code 7KQ2-9XWD", copy=true) }}
+  {% call cat.specimen("A file", '{{ ui.code(file, filename="grund.toml", download=app.base ~ "/grund.toml") }}', "Anything grund offers as a file: its name in the head, Copy (with the script) and Download (a link, so it works without it), and the text in its own frame, its lines kept and scrolling sideways when long.") %}
+    {{ ui.code("[apps.storefront]\nimage = \"nginx:1.27\"\ncopies = 2\n\n[[apps.storefront.ports]]\nname = \"http\"\nport = 80\npublic = true", filename="grund.toml", download="#sg-code") }}
+  {% endcall %}
+  {% call cat.specimen("A command or a token", '{{ ui.code(setup.install, id="setup-install", wrap=true) }}', "Text to copy whole, wrapping anywhere, with a copy button in its corner (shown only with the script). copy=false for text too long to copy usefully, such as a licence.") %}
+    {{ ui.code("curl -fsSL https://grund.example/install | sh -s -- --code 7KQ2-9XWD", wrap=true) }}
   {% endcall %}
   {% call cat.specimen("DNS records", '{{ ui.dns_records(domain.records, "Records for " ~ domain.name) }}', "Records for someone to make at their DNS provider: type, name and value, the name and value with copy buttons (shown only with the script). A table; each row stacks below 900 px.") %}
     {{ ui.dns_records([{"type": "TXT", "name": "_grund.shop.example.com", "value": "grund-verify-3kQ9xYv2LmN8pR4tW6zB1cD5fG7hJ0kL2nM4qS6uV8w"}, {"type": "CNAME", "name": "shop.example.com", "value": "storefront-nord-studio.example.run"}], "Records for shop.example.com") }}
   {% endcall %}
-  {% call cat.specimen("Code block", '{{ ui.code_block(file, id="grund-toml") }}', "A file or a licence, preformatted, wrapping long lines.") %}
-    {{ ui.code_block("[apps.storefront]\nimage = \"nginx:1.27\"\n\n[[apps.storefront.ports]]\nname = \"http\"\nport = 80\npublic = true") }}
-  {% endcall %}
 {% endcall %}
 
 {% call ui.section("sg-forms", "Forms") %}
-  {% call cat.specimen("Stacked form", '{% call forms.form("/login", csrf) %}
-  {{ forms.banner(error) }}
-  {{ forms.field("login", "Email or username", autocomplete="username") }}
-  {{ ui.button("Sign in", block=true) }}
-{% endcall %}', "layout stack (signed-out pages, at the card width) or narrow (signed-in, at most 32 rem). The label sits above; the hint under it until an error replaces it.") %}
-    {% call cat.column() %}
-      {{ forms.field("sg-email", "Email", type="email", hint="We send a link to confirm it.", required=false) }}
-      {{ forms.field("sg-password", "Password", type="password", error="Use at least 12 characters.", required=false) }}
-      {{ ui.button("Create account", block=true, type="button") }}
-      {{ forms.or_divider() }}
-      {{ forms.providers([{"id": "github", "name": "GitHub", "icon": "github"}]) }}
-      {% call ui.foot() %}<p>Already have an account? <a href="#sg-forms">Sign in</a></p>{% endcall %}
+  {% call cat.specimen("The rule", '{% call ui.panel("set", "Add or replace a login", lede) %}
+  {% call forms.form(url, csrf) %}
+    {{ forms.banner(error, fields=[host_error]) }}
+    {{ forms.field("host", "Registry", error=host_error, hint=hint, width="md") }}
+    {% call forms.actions("Saving a registry that has a login replaces it.") %}{{ ui.button("Save login") }}{% endcall %}
+  {% endcall %}
+{% endcall %}', "A form on a signed-in page lives in a panel (or an expander): label, control, then one line, the hint or the error in its place. A refused form says so once at its top; banner(fields=…) does it when the handler only marked a field. It ends in actions(): what saving does on the left, the buttons on the right, the submit primary (danger when it destroys) and last. Short values take width sm, names md; the rest fill their column.") %}
+    {% call ui.panel("sg-rule", "Add or replace a login", "An organisation holds logins for at most 20 registries.") %}
+      {% call forms.form("#sg-forms", csrf) %}
+        {{ forms.banner(fields=["That is not a registry host."]) }}
+        {{ forms.field("sg-host", "Registry", value="not a host", error="That is not a registry host, such as ghcr.io.", width="md", mono=true) }}
+        {% call forms.grid() %}
+          {{ forms.field("sg-user", "Username", value="robot") }}
+          {{ forms.field("sg-secret", "Password or access token", type="password", hint="Stored sealed, never shown again.") }}
+        {% endcall %}
+        {% call forms.actions("Saving a registry that has a login replaces it.") %}{{ ui.button("Save login", type="button") }}{% endcall %}
+      {% endcall %}
     {% endcall %}
   {% endcall %}
-  {% call cat.specimen("Field states", '{{ forms.field("name", "Name", hint=hint) }}
+  {% call cat.specimen("Field states and widths", '{{ forms.field("name", "Name", hint=hint, width="md") }}
+{{ forms.field("port", "Port", type="number", required=false, width="sm") }}
 {{ forms.field("name", "Name", error=error) }}
-{{ forms.field("email", "Email", value=email, disabled=true, required=false) }}', "error sets aria-invalid and points aria-describedby at the message; disabled shows a known value that is not sent.") %}
+{{ forms.field("email", "Email", value=email, disabled=true) }}', "required=false marks the label Optional. error sets aria-invalid and points aria-describedby at the message; disabled shows a known value that is not sent. width: sm (11 rem) for a number, md (26 rem) for a name.") %}
     {% call cat.column() %}
-      {{ forms.field("sg-rest", "Name", hint="Letters a–z, digits and single hyphens.", required=false) }}
-      {{ forms.field("sg-focus", "Name (focus)", value="storefront", required=false, state="focus") }}
-      {{ forms.field("sg-error", "Name (error)", value="Store Front", error="Use letters a–z, digits and single hyphens.", required=false) }}
-      {{ forms.field("sg-disabled", "Email (disabled)", type="email", value="ada@nord.studio", required=false, disabled=true) }}
+      {{ forms.field("sg-rest", "Name", hint="Letters a–z, digits and single hyphens.", width="md") }}
+      {{ forms.field("sg-port", "Port", type="number", value="8080", required=false, hint="Found from the image when empty.", width="sm") }}
+      {{ forms.field("sg-focus", "Name (focus)", value="storefront", state="focus") }}
+      {{ forms.field("sg-error", "Name (error)", value="Store Front", error="Use letters a–z, digits and single hyphens.") }}
+      {{ forms.field("sg-disabled", "Email (disabled)", type="email", value="ada@nord.studio", disabled=true) }}
     {% endcall %}
   {% endcall %}
-  {% call cat.specimen("Select and text box", '{{ forms.select_field("role", "Role", [("member", "Member"), ("admin", "Admin")], role) }}
-{{ forms.textarea_field("env", "Settings", value=env, hint=hint) }}') %}
+  {% call cat.specimen("Select, text box and switch", '{{ forms.select_field("role", "Role", [("member", "Member"), ("admin", "Admin")], role) }}
+{{ forms.textarea_field("note", "Note", value=note) }}
+{{ forms.toggle_field("auto_rollback", "Roll back a failed release on its own", checked=true, hint=hint) }}', "Every select has the same chevron and edge as a text field. A switch is one yes or no: a checkbox that sends name=on, so the handler reads a missing value as off.") %}
     {% call cat.column() %}
       {{ forms.select_field("sg-role", "Role", [("member", "Member"), ("admin", "Admin")], "admin") }}
       {{ forms.select_field("sg-role-focus", "Role (focus)", [("member", "Member"), ("admin", "Admin")], "member", state="focus") }}
-      {{ forms.textarea_field("sg-env", "Settings", value="LOG_LEVEL=info", hint="NAME=value, one per line.") }}
+      {{ forms.textarea_field("sg-note", "Note", value="Moved to the new region.", rows=2) }}
+      {{ forms.toggle_field("sg-rollback", "Roll back a failed release on its own", checked=true, hint="The release before keeps serving.") }}
+      {{ forms.toggle_field("sg-rollback-off", "Off (focus)", hint="To debug a failing release in place.", state="focus") }}
     {% endcall %}
+  {% endcall %}
+  {% call cat.specimen("Names and values", '{{ forms.pairs_field("env", "Environment variables", app.env, error=errors.env, hint=hint) }}
+{{ forms.pairs_field("secrets", "Secrets", secret=true) }}', "A row for each pair and blank rows to add more; a row left empty is dropped. Rows post as env_key and env_value in order. With the script, Add another adds a row and each row can be removed. secret makes the values passwords, never written back.") %}
+    {{ forms.pairs_field("sg-env", "Environment variables", [("LOG_LEVEL", "info"), ("FEATURE_FLAGS", "search,beta")], hint="Put passwords and keys in a secret.", blank=1) }}
+    {{ forms.pairs_field("sg-secrets", "Secrets", [("DB_PASSWORD", "")], secret=true, error="Row 1: a secret's name is letters, digits and _.", blank=0) }}
+  {% endcall %}
+  {% call cat.specimen("Code as input", '{{ forms.code_field("file", "grund.toml", value=file, filename="grund.toml", rows=14, required=true) }}', "Lines a machine reads, edited in the same frame ui.code() shows them in: a whole file, or a command one argument per line.") %}
+    {{ forms.code_field("sg-file", "Your grund.toml", value="[apps.storefront]\nimage = \"nginx:1.27\"\ncopies = 2", filename="grund.toml", rows=4, required=true, hint="Applied as a new release, checked as the API checks it.") }}
   {% endcall %}
   {% call cat.specimen("Fields in a row", '{% call forms.form(url, csrf, layout="row") %}
-  {{ forms.field("email", "Email", type="email", hint=hint) }}
-  {{ forms.select_field("role", "Role", roles, role, id="invite-role") }}
-  {{ ui.button("Send invitation", icon_name="mail") }}
-{% endcall %}', "Short forms on signed-in pages: the fields side by side and the button after them; one column below 900 px.") %}
+  {{ forms.field("email", "Email", type="email") }}
+  {{ forms.select_field("role", "Role", roles, role, id="invite-role", width="sm") }}
+  {{ ui.button("Send invitation") }}
+{% endcall %}', "A form of one or two fields and its button: side by side, the button level with the boxes; each field takes the whole width below 900 px.") %}
     {% call forms.form("#sg-forms", csrf, layout="row") %}
-      {{ forms.field("sg-invite", "Email", type="email", hint="We mail them a link that works for 7 days.", required=false) }}
-      {{ forms.select_field("sg-invite-role", "Role", [("member", "Member"), ("admin", "Admin")], "member") }}
-      {{ ui.button("Send invitation", icon_name="mail", type="button") }}
+      {{ forms.field("sg-invite", "Email", type="email", placeholder="name@example.com") }}
+      {{ forms.select_field("sg-invite-role", "Role", [("member", "Member"), ("admin", "Admin")], "member", width="sm") }}
+      {{ ui.button("Send invitation", type="button") }}
     {% endcall %}
   {% endcall %}
-  {% call cat.specimen("Select in a row", '{{ forms.select_form(url, csrf, "role", "role-" ~ member.id, "Role of " ~ member.username, roles, member.role, "Change") }}', "One choice posted from a row, such as a member's role.") %}
+  {% call cat.specimen("Select in a row", '{{ forms.select_form(url, csrf, "role", "role-" ~ member.id, "Role of " ~ member.username, roles, member.role, "Change") }}', "One choice posted from a row, such as a member's role. With the script it applies on change and the button hides.") %}
     {{ forms.select_form("#sg-forms", csrf, "role", "sg-member-role", "Role of linus", [("member", "Member"), ("admin", "Admin"), ("owner", "Owner")], "admin", "Change") }}
   {% endcall %}
 {% endcall %}
@@ -238,12 +256,12 @@
   {% call cat.specimen("Panel and grid", '{% call ui.panel("custom", "Custom deployment", lede) %}
   {% call forms.grid() %}{{ forms.field(…) }}{{ forms.field(…) }}{% endcall %}
 {% endcall %}
-{% call forms.actions() %}{{ ui.button("Cancel", href=url, kind="secondary") }}{{ ui.button("Deploy app") }}{% endcall %}', "A titled box for one part of a page's work. grid() puts fields in two columns (one below 900 px), and a grid inside a grid splits a column. actions() ends a form, the primary last.") %}
+{% call forms.actions(note, "layers") %}{{ ui.button("Cancel", href=url, kind="secondary") }}{{ ui.button("Deploy app") }}{% endcall %}', "A titled box for one part of a page's work. grid() puts fields in two columns (one below 900 px), and a grid inside a grid splits a column. actions() ends a form: the note says what it does, the primary is last.") %}
     {% call ui.panel("sg-panel", "Custom deployment", "Paste any container image and deploy with sensible defaults.") %}
       {% call forms.grid() %}
         {{ forms.field("sg-app-name", "Name", value="storefront", hint="A unique name for your app.", required=false) }}
         {% call forms.grid() %}
-          {{ forms.field("sg-port", "Port", type="number", hint="Will be auto-detected for many images.", required=false) }}
+          {{ forms.field("sg-port-2", "Port", type="number", hint="Found from the image when empty.", required=false) }}
           {{ forms.stepper_field("sg-copies", "Copies", 2, max=20, hint="Number of app instances.") }}
         {% endcall %}
       {% endcall %}
@@ -289,10 +307,22 @@
   {% call cat.specimen("Stepper", '{{ forms.stepper_field("copies", "Copies", new.copies, max=20, hint="Number of app instances.") }}', "A whole number with − and +. The buttons show only with the script; without it the number is typed, with the browser's own arrows.") %}
     {% call cat.column() %}{{ forms.stepper_field("sg-copies-2", "Copies", 1, max=20, error="Copies is a whole number from 1 to 20.") }}{% endcall %}
   {% endcall %}
-  {% call cat.specimen("Disclosure", '{% call forms.disclosure("Advanced options", text, open=advanced) %}…{% endcall %}', "Part of a form folded away under a title and a line saying what is in it: a details element, so it opens without the script. Open it when one of its fields has an error.") %}
-    {% call forms.disclosure("Advanced options", "Environment variables, secrets, ready check, resources and more.") %}<p>Folded away.</p>{% endcall %}
-    {% call forms.disclosure("Advanced options (open)", "Its fields show.", open=true) %}
-      {{ forms.textarea_field("sg-env-2", "Environment variables", value="LOG_LEVEL=info", hint="NAME=value, one per line.", mono=true) }}
+  {% call cat.specimen("Expanders", '{% call ui.expanders() %}
+  {% call ui.expander("Exposure", "Public HTTP on port 80", icon_name="globe", meta=["Makes a release"]) %}…{% endcall %}
+  {% call ui.expander("Add a health check", "grund asks before a copy counts as ready", kind="add") %}…{% endcall %}
+  {% call ui.expander("Delete " ~ app.name, text, icon_name="trash", kind="danger") %}…{% endcall %}
+{% endcall %}', "Things in one line each that open to show more, as details elements, so they open without the script: a setting with its value as the summary and its form inside, a release, a form's optional part. kind add is a thing not set yet; danger is delete. state puts a pill after the title. Open the one a refused form is in.") %}
+    {% call ui.expanders() %}
+      {% call ui.expander("Exposure", "Public HTTP on port 80 · https://storefront-nord-studio.example.run", icon_name="globe", meta=["Makes a release"]) %}<p>Its form.</p>{% endcall %}
+      {% call ui.expander("v8", "Rolled back to v5 by ada from the dashboard", icon_name="layers", tone="ok", state=("Live", "ok"), meta=["2006897a", "2 hours ago"]) %}<p>Its details.</p>{% endcall %}
+      {% call ui.expander("Copies (open)", "2 copies · rolls back a failed release on its own", icon_name="copy", open=true) %}
+        {% call forms.form("#sg-choices", csrf) %}
+          {{ forms.stepper_field("sg-copies-3", "Copies", 2, max=20) }}
+          {% call forms.actions("Saved at once. No new release.") %}{{ ui.button("Save", type="button") }}{% endcall %}
+        {% endcall %}
+      {% endcall %}
+      {% call ui.expander("Add a health check", "grund asks before a copy counts as ready", kind="add") %}<p>Its form.</p>{% endcall %}
+      {% call ui.expander("Delete storefront", "Its copies stop and its name is free again.", icon_name="trash", kind="danger") %}<p>Its form.</p>{% endcall %}
     {% endcall %}
   {% endcall %}
 {% endcall %}

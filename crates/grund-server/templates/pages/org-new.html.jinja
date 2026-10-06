@@ -2,8 +2,10 @@
 {% block title %}New organisation · grund{% endblock %}
 {% block content %}
 {{ ui.page_head("New organisation", status="An organisation owns applications, machines and domains, and pays for them. You will be its owner, and can invite others.") }}
-{% call forms.form("/orgs/new", csrf, layout="narrow") %}
-  {{ forms.field("slug", "Name", value=slug, autocomplete="off", error=error, hint="3 to 32 letters, digits and single hyphens. It appears in addresses and cannot be changed yet.", autofocus=true) }}
-  {{ ui.button("Create organisation", icon_name="plus") }}
+{% call ui.panel("new", "Name it") %}
+{% call forms.form("/orgs/new", csrf) %}
+  {{ forms.field("slug", "Name", value=slug, autocomplete="off", error=error, hint="3 to 32 letters, digits and single hyphens. It appears in addresses.", autofocus=true, width="md") }}
+  {% call forms.actions() %}{{ ui.button("Create organisation") }}{% endcall %}
+{% endcall %}
 {% endcall %}
 {% endblock %}

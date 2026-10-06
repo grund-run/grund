@@ -1052,8 +1052,12 @@ async fn the_deploy_page_finds_the_port_an_image_declares_and_its_copy_gets_read
             ("exposure", "private"),
             ("port", ""),
             ("copies", "1"),
-            ("env", "GREETING=hej\n"),
-            ("secrets", "API_TOKEN=s3cr3t-value"),
+            ("env_key", "GREETING"),
+            ("env_value", "hej"),
+            ("env_key", ""),
+            ("env_value", ""),
+            ("secrets_key", "API_TOKEN"),
+            ("secrets_value", "s3cr3t-value"),
             ("check", "http"),
             ("check_path", "/"),
             ("memory", "128"),
@@ -1116,19 +1120,23 @@ async fn the_deploy_page_refuses_what_the_api_would_and_makes_nothing() -> anyho
     let web = registry.image("acme/web", "1");
     let bare = registry.image("acme/bare", "1");
     let unknown = registry.image("acme/web", "nope");
-    let custom = |name: &'static str, image: String, secrets: &'static str| {
+    let custom = |name: &'static str, image: String, secret: &'static str| {
         vec![
             ("mode", "custom".to_string()),
             ("name", name.to_string()),
             ("image", image),
             ("exposure", "public".to_string()),
             ("copies", "1".to_string()),
-            ("secrets", secrets.to_string()),
+            (
+                "secrets_key",
+                if secret.is_empty() { "" } else { "TOKEN" }.to_string(),
+            ),
+            ("secrets_value", secret.to_string()),
         ]
     };
     for (fields, expected) in [
         (
-            custom("Bad Name", web.clone(), "TOKEN=topsecret"),
+            custom("Bad Name", web.clone(), "topsecret"),
             "Use only letters a–z, digits and single hyphens between them.",
         ),
         (
@@ -1153,9 +1161,12 @@ async fn the_deploy_page_refuses_what_the_api_would_and_makes_nothing() -> anyho
                 ("mode", "custom".to_string()),
                 ("name", "envs".to_string()),
                 ("image", web.clone()),
-                ("env", "OK=1\nnot a setting".to_string()),
+                ("env_key", "OK".to_string()),
+                ("env_value", "1".to_string()),
+                ("env_key", "".to_string()),
+                ("env_value", "not a setting".to_string()),
             ],
-            "Line 2: write NAME=value",
+            "Row 2: give the value a name.",
         ),
         (
             vec![
@@ -1189,7 +1200,8 @@ async fn the_deploy_page_refuses_what_the_api_would_and_makes_nothing() -> anyho
             ("mode", "custom"),
             ("name", "Bad Name"),
             ("image", &web),
-            ("secrets", "TOKEN=topsecret"),
+            ("secrets_key", "TOKEN"),
+            ("secrets_value", "topsecret"),
         ],
     )
     .await?;
@@ -1336,7 +1348,8 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
             ("exposure", "public"),
             ("port", "80"),
             ("copies", "1"),
-            ("secrets", "API_KEY=s3cr3t-value"),
+            ("secrets_key", "API_KEY"),
+            ("secrets_value", "s3cr3t-value"),
         ],
     )
     .await?;
@@ -1355,8 +1368,10 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
             ("copies", "1"),
             ("check", "http"),
             ("check_path", "/"),
-            ("env", "GREETING=hej"),
-            ("secrets", "API_KEY=s3cr3t-value"),
+            ("env_key", "GREETING"),
+            ("env_value", "hej"),
+            ("secrets_key", "API_KEY"),
+            ("secrets_value", "s3cr3t-value"),
         ],
     )
     .await?;
@@ -1372,7 +1387,8 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
             ("port", "80"),
             ("check", "http"),
             ("check_path", "/"),
-            ("env", "GREETING=hallo"),
+            ("env_key", "GREETING"),
+            ("env_value", "hallo"),
         ],
     )
     .await?;
@@ -1422,7 +1438,8 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
     }
     when.visiting(&settings).await?;
     then.status(200)?
-        .body_contains("GREETING=hallo")?
+        .body_contains("value=\"GREETING\"")?
+        .body_contains("value=\"hallo\"")?
         .body_contains("not read by the app")?
         .body_lacks("s3cr3t-value")?;
 
