@@ -1,6 +1,5 @@
 {% extends "pages/app.html.jinja" %}
 {% block tab %}
-{% if crowded %}{{ ui.hint("All copies run on " ~ crowded ~ ". If it goes down, so does " ~ app.name ~ ". Add a machine to spread them.") }}{% endif %}
 {% call ui.section("copies", "Copies", count=replicas | length, first=true) %}
   {% if replicas %}
   {% call lists.rows() %}
@@ -11,6 +10,7 @@
   {% else %}
   {{ ui.empty_state(text="No copies run yet.") }}
   {% endif %}
+  {% if crowded %}{{ ui.hint("All copies run on " ~ crowded ~ ". If it goes down, so does " ~ app.name ~ ". Add a machine to spread them.") }}{% endif %}
 {% endcall %}
 
 {% call ui.section("versions", "Releases", count=releases | length) %}

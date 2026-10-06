@@ -1796,7 +1796,7 @@ fieldset.field {
 
 .facts {
   display: grid;
-  grid-template-columns: minmax(0, 2fr) repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 2.4fr) repeat(3, minmax(0, 1fr));
   margin: 0;
 }
 
@@ -1805,7 +1805,7 @@ fieldset.field {
   flex-direction: column;
   gap: var(--space-2);
   min-width: 0;
-  padding: 0 var(--space-8);
+  padding: 0 var(--space-6);
   border-left: 1px solid var(--border-strong);
 }
 
@@ -1859,7 +1859,7 @@ fieldset.field {
   max-width: 100%;
   margin-top: var(--space-1);
   color: var(--text);
-  font-size: var(--text-2xl);
+  font-size: var(--text-xl);
   font-weight: 500;
 }
 
