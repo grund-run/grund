@@ -2378,6 +2378,16 @@ a.endpoint-text:hover {
     grid-template-columns: 3rem minmax(0, 1fr) 1.5rem;
   }
 
+  .row-plain {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .row-plain .row-end {
+    grid-row: auto;
+    grid-column: auto;
+    justify-self: start;
+  }
+
   .row-status {
     grid-column: 2;
     grid-row: 2;
