@@ -1529,7 +1529,9 @@ async fn app_view(
         .into_iter()
         .enumerate()
         .map(|(i, message)| match current {
-            Some(release) if i == 0 => {
+            Some(release)
+                if i == 0 && ready_copies(view, i64::from(release), now) < wanted as usize =>
+            {
                 let ready = ready_copies(view, i64::from(release), now);
                 format!(
                     "{ready} of {wanted} {} running. {message}",

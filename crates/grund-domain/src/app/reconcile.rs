@@ -516,6 +516,12 @@ fn converge(pass: &mut Pass<'_>, lost_slots: &BTreeSet<u32>, new_id: &mut dyn Fn
                         pass.place(slot, &target, PlaceReason::Move, None, new_id)
                 {
                     pass.wait(slot, unplaceable, &target);
+                    let on = pass
+                        .machine(newest.machine_id)
+                        .map_or(String::new(), |m| m.name.clone());
+                    if let Some(waiting) = pass.waiting.last_mut() {
+                        waiting.message = format!("A copy on {on} must move. {}", waiting.message);
+                    }
                 }
                 continue;
             }
@@ -1741,7 +1747,7 @@ mod tests {
         assert_eq!(world.copies_on(), vec![(1, 1), (2, 1)]);
         assert_eq!(
             world.waiting[0].message,
-            "Waiting for a machine with 700 MiB of memory and 0.1 CPU free."
+            "A copy on web-1 must move. Waiting for a machine with 700 MiB of memory and 0.1 CPU free."
         );
     }
 
@@ -1778,7 +1784,7 @@ mod tests {
         assert_eq!(world.waiting[0].reason, Unplaceable::NoMatchingMachine);
         assert_eq!(
             world.waiting[0].message,
-            "Waiting for a machine labelled disk=nvme."
+            "A copy on web-1 must move. Waiting for a machine labelled disk=nvme."
         );
     }
 

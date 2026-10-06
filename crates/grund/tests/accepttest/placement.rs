@@ -260,7 +260,8 @@ async fn copies_leave_a_machine_whose_label_no_longer_matches_and_the_app_says_w
     )
     .await?;
     anyhow::ensure!(
-        waiting["waiting"][0]["message"] == "Waiting for a machine labelled disk=nvme.",
+        waiting["waiting"][0]["message"]
+            == "A copy on one must move. Waiting for a machine labelled disk=nvme.",
         "{waiting}"
     );
     anyhow::ensure!(
@@ -272,7 +273,8 @@ async fn copies_leave_a_machine_whose_label_no_longer_matches_and_the_app_says_w
     then.status(200)?.body_contains("Labelled disk=nvme")?;
     when.visiting(&format!("/{org}/apps/hello")).await?;
     then.status(200)?
-        .body_contains("2 of 2 copies running. Waiting for a machine labelled disk=nvme.")?;
+        .body_contains("A copy on one must move. Waiting for a machine labelled disk=nvme.")?
+        .body_lacks("2 of 2 copies running")?;
     Ok(())
 }
 
