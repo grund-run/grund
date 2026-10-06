@@ -12,7 +12,7 @@
       {%- else %}{{ ui.status(member.role | capitalize) }}{% endif %}
     {%- elif slot == "end" %}
       {%- if member.manageable %}{{ forms.post_button(remove, csrf, "Remove", kind="danger", size="sm") }}
-      {%- elif member.is_self %}{{ forms.post_button(remove, csrf, "Leave", kind="ghost", size="sm") }}{% endif %}
+      {%- elif member.is_self %}{{ forms.post_button(remove, csrf, "Leave", size="sm") }}{% endif %}
     {%- endif -%}
   {% endcall %}
   {% endfor %}

@@ -1012,6 +1012,10 @@ textarea.control {
   gap: var(--space-2);
 }
 
+.row-form .select-wrap {
+  min-width: 8rem;
+}
+
 .form-row {
   flex-direction: row;
   flex-wrap: wrap;
@@ -1039,6 +1043,8 @@ textarea.control {
 
 .visually-hidden {
   position: absolute;
+  top: 0;
+  left: 0;
   width: 1px;
   height: 1px;
   overflow: hidden;
@@ -2039,7 +2045,9 @@ legend.field-label {
   color: inherit;
   font-family: var(--sans);
   font-size: inherit;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 a.endpoint-text:hover {
@@ -2579,7 +2587,7 @@ a.endpoint-text:hover {
   }
 
   .row {
-    grid-template-columns: 3rem minmax(0, 1fr) 1.5rem;
+    grid-template-columns: 3rem minmax(0, 1fr);
   }
 
   .row-plain {
@@ -2597,9 +2605,18 @@ a.endpoint-text:hover {
     grid-row: 2;
   }
 
-  .row-end {
-    grid-row: 1 / span 2;
-    grid-column: 3;
+  .row-end,
+  .row > .row-form {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .row > span:empty {
+    display: none;
+  }
+
+  .pair {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 2.375rem;
   }
 
   .items-list .item {

@@ -61,10 +61,13 @@
 {%- endmacro %}
 
 {#- status(text, tone="ok")
-    A toned check and a word: how a thing is ("Serving", "Offline").
-    tone: ok, blue, orange, violet or muted -#}
+    A toned mark and a word: how a thing is ("Serving", "Offline"). The
+    mark follows the tone, so it reads without colour: a check (ok,
+    violet), an alert (orange, danger), a clock (blue, busy) or a dash
+    (muted, idle or gone).
+    tone: ok, blue, orange, violet, danger or muted -#}
 {% macro status(text, tone="ok") -%}
-<span class="row-status">{{ icon("ok", "tone-" ~ tone) }}{{ text }}</span>
+<span class="row-status">{{ icon({"orange": "alert", "danger": "alert", "blue": "clock", "muted": "minus"}[tone] | default("ok"), "tone-" ~ tone) }}{{ text }}</span>
 {%- endmacro %}
 
 {#- button(label, href="", icon_name="", kind="primary", size="",
@@ -242,11 +245,11 @@
 {%- endmacro %}
 
 {#- endpoint(text, href="")
-    Where to reach a thing, large, with a copy button: a link when href
-    is set (a public address, opening in a new tab), else code (an
-    internal name). -#}
+    Where to reach a thing, large, on one line (cut with an ellipsis, the
+    whole in its title and its copy button): a link when href is set (a
+    public address, opening in a new tab), else code (an internal name). -#}
 {% macro endpoint(text, href="") -%}
-<p class="endpoint">{{ icon("link") }}{% if href %}<a class="endpoint-text" href="{{ href }}" rel="noopener noreferrer" target="_blank">{{ text }}<span class="visually-hidden"> (opens in a new tab)</span></a>{% else %}<code class="endpoint-text">{{ text }}</code>{% endif %}{{ copy_button(text, "the address") }}</p>
+<p class="endpoint">{{ icon("link") }}{% if href %}<a class="endpoint-text" href="{{ href }}" title="{{ text }}" rel="noopener noreferrer" target="_blank">{{ text }}<span class="visually-hidden"> (opens in a new tab)</span></a>{% else %}<code class="endpoint-text" title="{{ text }}">{{ text }}</code>{% endif %}{{ copy_button(text, "the address") }}</p>
 {%- endmacro %}
 
 {#- dns_records(records, label)
@@ -338,7 +341,7 @@
     what:     what the corner button copies, for its name ("the command") -#}
 {% macro code(text, filename="", download="", id="", copy=true, wrap=false, what="the text") -%}
 <div class="code{% if wrap %} code-wrap{% endif %}{% if copy and not filename %} code-corner{% endif %}"{% if id %} id="{{ id }}"{% endif %}>
-  {% if filename %}<div class="code-head"><span class="code-name">{{ icon("file", "icon-sm") }}{{ filename }}</span><span class="code-tools">{% if copy %}{{ copy_button(text, filename, labelled=true) }}{% endif %}{% if download %}{{ button("Download", href=download, icon_name="down", kind="secondary", size="sm", download=filename) }}{% endif %}</span></div>
+  {% if filename %}<div class="code-head"><span class="code-name">{{ icon("file", "icon-sm") }}{{ filename }}</span><span class="code-tools">{% if copy %}{{ copy_button(text, filename, labelled=true) }}{% endif %}{% if download %}{{ button("Download", href=download, icon_name="download", kind="secondary", size="sm", download=filename) }}{% endif %}</span></div>
   {%- endif %}
   <pre class="code-body mono">{{ text }}</pre>
   {%- if copy and not filename %}{{ copy_button(text, what) }}{% endif %}

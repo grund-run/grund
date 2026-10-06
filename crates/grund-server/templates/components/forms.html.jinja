@@ -147,7 +147,7 @@
 <div class="field">
   {{ label_of(name, label, not required) }}
   <div class="code{% if error %} is-invalid{% endif %}">
-    {% if filename %}<div class="code-head"><span class="code-name">{{ ui.icon("file", "icon-sm") }}{{ filename }}</span>{% if download %}<span class="code-tools">{{ ui.copy_button(value, filename, labelled=true) }}{{ ui.button("Download", href=download, icon_name="down", kind="secondary", size="sm", download=filename) }}</span>{% endif %}</div>{% endif %}
+    {% if filename %}<div class="code-head"><span class="code-name">{{ ui.icon("file", "icon-sm") }}{{ filename }}</span>{% if download %}<span class="code-tools">{{ ui.copy_button(value, filename, labelled=true) }}{{ ui.button("Download", href=download, icon_name="download", kind="secondary", size="sm", download=filename) }}</span>{% endif %}</div>{% endif %}
     <textarea class="code-input mono" id="{{ name }}" name="{{ name }}" rows="{{ rows }}" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off"{{ describe(name, error, hint) }}>{{ value }}</textarea>
   </div>
   {{- message(name, error, hint) }}

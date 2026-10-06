@@ -1,10 +1,11 @@
 {#- The Organisation pages: one head and the tabs. Each tab extends this,
-    sets title, lede (the line under the head) and tab (its key), and
+    sets title, lede (the line under the tabs) and tab (its key), and
     fills block tab. -#}
 {% extends "layout-app.html.jinja" %}
 {% block content %}
-{{ ui.page_head("Organisation", status=lede) }}
+{{ ui.page_head("Organisation", "Who is in " ~ org.slug ~ ", how CI and machines get in, and the instance it lives on.") }}
 {{ ui.tabs("Organisation", [("general", "/" ~ org.slug ~ "/settings", "General"), ("members", "/" ~ org.slug ~ "/settings/members", "Members"), ("tokens", "/" ~ org.slug ~ "/settings/tokens", "API tokens"), ("registries", "/" ~ org.slug ~ "/settings/registries", "Registries"), ("about", "/" ~ org.slug ~ "/settings/about", "About")], tab) }}
 {{ forms.banner(error, ok=notice) }}
+{{ ui.para(lede, "note") }}
 {% block tab %}{% endblock %}
 {% endblock %}

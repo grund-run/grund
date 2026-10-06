@@ -21,7 +21,7 @@
   {% for machine in machines %}
   {% set tags = (["grund machine"] if machine.leased else []) + (["Runs VMs"] if machine.kvm else []) %}
   {% set seen = "Connected" if machine.connected else ("Last seen " ~ machine.last_seen if machine.last_seen else "Not connected yet") %}
-  {% call(slot) lists.row(machine.name, seen ~ (" · " ~ machine.hostname if machine.hostname else ""), icon_name="server", tone="ok" if machine.connected else "muted", tags=tags, status="Connected" if machine.connected else "Offline", status_tone="ok" if machine.connected else "muted") %}
+  {% call(slot) lists.row(machine.name, (machine.hostname or "") if machine.connected else seen ~ (" · " ~ machine.hostname if machine.hostname else ""), icon_name="server", tone="ok" if machine.connected else "muted", tags=tags, status="Connected" if machine.connected else "Offline", status_tone="ok" if machine.connected else "muted") %}
     {%- if slot == "end" and org.manages and not machine.leased %}{{ forms.post_button("/" ~ org.slug ~ "/machines/" ~ machine.id ~ "/remove", csrf, "Remove", kind="danger", size="sm") }}{% endif -%}
   {% endcall %}
   {% endfor %}
