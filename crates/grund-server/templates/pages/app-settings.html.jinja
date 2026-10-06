@@ -1,70 +1,142 @@
+{#- An app's Settings: one line per setting, opened to change it and saved
+    on its own. A setting that changes what runs makes a new release of
+    the image the newest release runs; Copies and Delete do not. -#}
 {% extends "pages/app.html.jinja" %}
 {% block tab %}
-{% if org.manages %}
-{% call ui.panel("scale", "Copies and rollback", "How many copies run, and what grund does when a release fails. Saved at once; no new release.") %}
-  {% call forms.form(app.base ~ "/settings/copies", csrf, layout="") %}
-    {{ forms.banner(banners.copies) }}
-    {% call forms.grid() %}
-      {{ forms.stepper_field("copies", "Copies", settings.copies, max=20, error=errors.copies, hint="Number of app instances.") }}
-      {{ forms.choice_field("auto_rollback", "When a release fails", rollback_choices, settings.auto_rollback) }}
+{% if not items %}
+{{ ui.empty_state("No settings yet", app.name ~ " has no release, so it has nothing to set. Deploy one first.") }}
+{% else %}
+{% set release_note = "Saving makes release v" ~ next ~ " of the image v" ~ settings.number ~ " runs." %}
+{% call ui.para(kind="note") %}Each setting saves on its own. Those marked <strong>New release</strong> roll out a new release of the same image; the others apply at once.{% endcall %}
+{% call ui.expanders() %}
+  {% call ui.expander("Exposure", items.exposure, icon_name="globe" if form.exposure == "public" else "lock", meta=["New release"], open=open == "exposure", id="exposure") %}
+    {% if org.manages %}
+    {% call forms.form(app.base ~ "/settings/release", csrf, autocomplete="off") %}
+      {{ forms.hidden_field("part", "exposure") }}
+      {{ forms.banner(banners.exposure) }}
+      {{ forms.choice_field("exposure", "Who reaches it", exposures, form.exposure, error=errors.exposure, hint=public_hint) }}
+      {{ forms.field("port", "Port", type="number", value=form.port, required=false, error=errors.port, hint="The port it listens on. Empty: none, for an app nothing calls.", width="sm") }}
+      {% call forms.actions(release_note, "layers") %}{{ ui.button("Save and release") }}{% endcall %}
     {% endcall %}
-    {% call forms.actions("Saved at once. No new release.") %}{{ ui.button("Save") }}{% endcall %}
+    {% else %}{{ ui.para("Owners and admins change this.") }}{% endif %}
   {% endcall %}
-{% endcall %}
 
-{% call ui.panel("release", "Exposure, port and checks", "Saving makes a new release of the image v" ~ settings.number ~ " runs (" ~ settings.digest ~ "), so nothing else changes.") %}
-  {% call forms.form(app.base ~ "/settings/release", csrf, layout="", autocomplete="off") %}
-    {{ forms.banner(banners.release) }}
-    {% call forms.grid() %}
-      {{ forms.choice_field("exposure", "Exposure", exposures, form.exposure, error=errors.exposure, hint=public_hint) }}
-      {% call forms.grid() %}
-        {{ forms.field("port", "Port", type="number", value=form.port, required=false, error=errors.port, hint="The port it listens on. Empty: none, for an app nothing calls.") }}
-        {{ forms.select_field("check", "Ready check", checks, form.check) }}
-        {{ forms.field("check_path", "Check path", value=form.check_path, required=false, error=errors.check, hint="For an HTTP check. Empty: /.") }}
-      {% endcall %}
+  {% call ui.expander("Copies", items.copies, icon_name="copy", open=open == "copies", id="scale") %}
+    {% if org.manages %}
+    {% call forms.form(app.base ~ "/settings/copies", csrf) %}
+      {{ forms.banner(banners.copies) }}
+      {{ forms.stepper_field("copies", "Copies", settings.copies, max=20, error=errors.copies, hint="How many run at once, each on a machine of its own when it can.") }}
+      {{ forms.toggle_field("auto_rollback", "Roll back a failed release on its own", checked=settings.auto_rollback == "on", hint="The release before keeps serving. Off leaves a failing release in place, to debug it.") }}
+      {% call forms.actions("Applies at once. No new release.") %}{{ ui.button("Save") }}{% endcall %}
+    {% endcall %}
+    {% else %}{{ ui.para("Owners and admins change this.") }}{% endif %}
+  {% endcall %}
+
+  {% call ui.expander("Environment variables" if items.env else "Add environment variables", items.env or "Settings the app reads, shown here in the clear.", icon_name="list", meta=["New release"], open=open == "env", kind="" if items.env else "add", id="variables") %}
+    {% if org.manages %}
+    {% call forms.form(app.base ~ "/settings/release", csrf, autocomplete="off") %}
+      {{ forms.hidden_field("part", "env") }}
+      {{ forms.banner(banners.env) }}
       {{ forms.pairs_field("env", "Environment variables", form.env, error=errors.env, hint="Put passwords and keys in a secret.") }}
+      {% call forms.actions(release_note, "layers") %}{{ ui.button("Save and release") }}{% endcall %}
     {% endcall %}
-    {% call forms.actions("Saving makes a new release of the same image.", "layers") %}{{ ui.button("Save and release") }}{% endcall %}
+    {% else %}{{ ui.para("Owners and admins change these.") }}{% endif %}
   {% endcall %}
-{% endcall %}
-{% endif %}
 
-{% call ui.panel("secrets", "Secrets", "Values the app reads as variables. Stored sealed and never shown again.") %}
-  {% if secrets %}
-  {% call lists.rows() %}
-    {% for secret in secrets %}
-    {% call(slot) lists.row(secret.variable or secret.name, secret.sub, icon_name="key", tone="muted") %}
-      {%- if slot == "end" and org.manages and secret.variable %}{{ forms.post_button(app.base ~ "/secrets/remove", csrf, "Remove", kind="danger", size="sm", hidden={"variable": secret.variable}) }}{% endif -%}
+  {% call ui.expander("Secrets" if secrets else "Add a secret", items.secrets or ("Stored values no release reads" if secrets else "Values the app reads as variables, stored sealed and never shown again."), icon_name="key", meta=["New release"], open=open == "secrets", kind="" if secrets else "add", id="secrets") %}
+    {% if secrets %}
+    {% call lists.rows() %}
+      {% for secret in secrets %}
+      {% call(slot) lists.row(secret.variable or secret.name, secret.sub, icon_name="key", tone="muted") %}
+        {%- if slot == "end" and org.manages and secret.variable %}{{ forms.post_button(app.base ~ "/secrets/remove", csrf, "Remove", kind="danger", size="sm", hidden={"variable": secret.variable}) }}{% endif -%}
+      {% endcall %}
+      {% endfor %}
     {% endcall %}
-    {% endfor %}
+    {% endif %}
+    {% if org.manages %}
+    {% call forms.form(app.base ~ "/secrets", csrf, layout="row", autocomplete="off") %}
+      {{ forms.banner(banners.secrets, fields=[errors.variable, errors.value]) }}
+      {{ forms.field("variable", "Variable", value=variable, error=errors.variable, autocomplete="off", hint="Such as API_KEY. An existing one gets a new value.", mono=true) }}
+      {{ forms.field("value", "Value", type="password", autocomplete="new-password", error=errors.value, hint="Never shown again, nor in a release or a log.") }}
+      {{ ui.button("Store and release") }}
+    {% endcall %}
+    {{ ui.para("Storing or removing a secret makes release v" ~ next ~ " of the same image, so the copies get it.") }}
+    {% endif %}
   {% endcall %}
-  {% else %}
-  {{ ui.empty_state(text="No secrets.") }}
-  {% endif %}
+
+  {% call ui.expander("Health check" if items.check else "Add a health check", items.check or "Without one, a copy counts as ready once its process has run for a moment.", icon_name="ok", meta=["New release"], open=open == "check", kind="" if items.check else "add", id="health") %}
+    {% if org.manages %}
+    {% call forms.form(app.base ~ "/settings/release", csrf, autocomplete="off") %}
+      {{ forms.hidden_field("part", "check") }}
+      {{ forms.banner(banners.check) }}
+      {% call forms.grid() %}
+        {{ forms.select_field("check", "Ready check", checks, form.check, hint="What grund asks, on the app's port, before a copy counts as ready.") }}
+        {{ forms.field("check_path", "Path", value=form.check_path, required=false, error=errors.check, hint="For an HTTP check. Empty: /.", mono=true) }}
+      {% endcall %}
+      {% call forms.actions(release_note, "layers") %}{{ ui.button("Save and release") }}{% endcall %}
+    {% endcall %}
+    {% else %}{{ ui.para("Owners and admins change this.") }}{% endif %}
+  {% endcall %}
+
+  {% call ui.expander("Resources", items.resources, icon_name="bars", meta=["New release"], open=open == "resources", id="resources") %}
+    {% if org.manages %}
+    {% call forms.form(app.base ~ "/settings/release", csrf, autocomplete="off") %}
+      {{ forms.hidden_field("part", "resources") }}
+      {{ forms.banner(banners.resources) }}
+      {% call forms.grid() %}
+        {{ forms.field("memory", "Memory (MiB)", type="number", value=form.memory, required=false, error=errors.memory, hint="Per copy. Empty: 512.", width="sm") }}
+        {{ forms.field("cpu", "CPU (thousandths)", type="number", value=form.cpu, required=false, error=errors.cpu, hint="Per copy; 1000 is one CPU. Empty: 1000.", width="sm") }}
+      {% endcall %}
+      {% call forms.actions(release_note, "layers") %}{{ ui.button("Save and release") }}{% endcall %}
+    {% endcall %}
+    {% else %}{{ ui.para("Owners and admins change this.") }}{% endif %}
+  {% endcall %}
+
+  {% call ui.expander("Command and stop" if items.custom_command else "Set a command", items.command ~ " · " ~ items.stop, icon_name="code", meta=["New release"], open=open == "command", kind="" if items.custom_command else "add", id="command-and-stop") %}
+    {% if org.manages %}
+    {% call forms.form(app.base ~ "/settings/release", csrf, autocomplete="off") %}
+      {{ forms.hidden_field("part", "command") }}
+      {{ forms.banner(banners.command) }}
+      {{ forms.code_field("command", "Command", value=form.command, error=errors.command, rows=3, hint="One argument per line. It replaces the image's entrypoint and command; empty runs the image's own.") }}
+      {% call forms.grid() %}
+        {{ forms.select_field("stop_signal", "Stop signal", signals, form.stop_signal or "SIGTERM", width="sm") }}
+        {{ forms.field("stop_grace", "Grace (seconds)", type="number", value=form.stop_grace, required=false, error=errors.stop, hint="From the signal to a kill. Empty: 30.", width="sm") }}
+      {% endcall %}
+      {% call forms.actions(release_note, "layers") %}{{ ui.button("Save and release") }}{% endcall %}
+    {% endcall %}
+    {% else %}{{ ui.para("Owners and admins change this.") }}{% endif %}
+  {% endcall %}
+
+  {% call ui.expander("Custom domains" if app.domains else "Add a custom domain", (app.domains | map(attribute="summary") | join(", ")) if app.domains else ("A name of your own for " ~ app.name ~ ", with its own certificate." if app.address else "Only an app with Public HTTP exposure can have one."), icon_name="globe", kind="" if app.domains else "add", id="domains") %}
+    {% if app.domains %}
+    {% call lists.rows() %}
+      {% for domain in app.domains %}{{ lists.row(domain.name, domain.state_words, plain=true) }}{% endfor %}
+    {% endcall %}
+    {% endif %}
+    {% call ui.para() %}Domains are proved and bound to an app on <a href="{{ app.domains_href }}">Domains</a>, where grund gives you the records to make.{% endcall %}
+  {% endcall %}
+
+  {% call ui.expander("grund.toml", "Every setting above as one file, to keep in your repository or to change several at once.", icon_name="file", meta=["New release"], open=open == "file", id="as-file") %}
+    {% if org.manages %}
+    {% call forms.form(app.base ~ "/settings/file", csrf, autocomplete="off") %}
+      {{ forms.banner(banners.file) }}
+      {{ forms.code_field("file", "grund.toml", value=file, filename="grund.toml", rows=file_rows, error=errors.file, required=true, download=file_href, hint="Applied the way the API applies one: the same checks, and the image's tag resolved again. Secrets are named here; their values stay sealed.") }}
+      {% call forms.actions("Applying makes release v" ~ next ~ " from the file.", "layers") %}{{ ui.button("Apply as a release") }}{% endcall %}
+    {% endcall %}
+    {% else %}
+    {{ ui.code(file, filename="grund.toml", download=file_href) }}
+    {% endif %}
+  {% endcall %}
+
   {% if org.manages %}
-  {% call forms.form(app.base ~ "/secrets", csrf, layout="row", autocomplete="off") %}
-    {{ forms.banner(banners.secrets) }}
-    {{ forms.field("variable", "Variable", value=form.variable, error=errors.variable, autocomplete="off", hint="Such as API_KEY. An existing one gets a new value.") }}
-    {{ forms.field("value", "Value", type="password", autocomplete="new-password", error=errors.value, hint="Never shown again, and never in a release or a log.") }}
-    {{ ui.button("Store and release", kind="secondary") }}
+  {% call ui.expander("Delete " ~ app.name, "Its copies stop and its name is free again. Cannot be undone.", icon_name="trash", kind="danger", open=open == "delete", id="danger") %}
+    {% call forms.form(app.base ~ "/delete", csrf, autocomplete="off") %}
+      {{ forms.banner(banners.delete) }}
+      {{ forms.field("confirm", "Type " ~ app.name ~ " to confirm", error=errors.confirm, autocomplete="off", width="md") }}
+      {% call forms.actions("Its releases stay in the history.") %}{{ ui.button("Delete " ~ app.name, kind="danger") }}{% endcall %}
+    {% endcall %}
   {% endcall %}
-  {{ ui.para("Storing or removing one makes a new release of the same image, so the copies get it.") }}
   {% endif %}
-{% endcall %}
-
-{% if file %}
-{% call ui.panel("file", "As a file", "The newest release as grund.toml, for your repository. Deploying the file through the API makes the same app.") %}
-  {{ ui.code(file, filename="grund.toml", id="grund-toml") }}
-{% endcall %}
-{% endif %}
-
-{% if org.manages %}
-{% call ui.panel("danger", "Delete " ~ app.name, "Its copies stop and its name is free again. Its releases stay in the history. This cannot be undone.", danger=true) %}
-  {% call forms.form(app.base ~ "/delete", csrf, layout="row", autocomplete="off") %}
-    {{ forms.banner(banners.delete) }}
-    {{ forms.field("confirm", "Type " ~ app.name ~ " to confirm", error=errors.confirm, autocomplete="off") }}
-    {{ ui.button("Delete " ~ app.name, kind="danger") }}
-  {% endcall %}
 {% endcall %}
 {% endif %}
 {% endblock %}

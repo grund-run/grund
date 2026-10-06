@@ -137,6 +137,8 @@ pub fn router(state: State) -> Router {
         .route("/{org}/apps/{app}/secrets/remove", post(apps::remove_secret))
         .route("/{org}/apps/{app}/releases/{number}/rollback", post(apps::rollback))
         .route("/{org}/apps/{app}/delete", post(apps::delete))
+        .route("/{org}/apps/{app}/grund.toml", get(apps::file))
+        .route("/{org}/apps/{app}/settings/file", post(apps::apply_file))
         .route("/{org}/machines", get(machines::machines_page))
         .route("/{org}/machines/add", post(machines::add))
         .route("/{org}/machines/vms", post(machines::run_vm))

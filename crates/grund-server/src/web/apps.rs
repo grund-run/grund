@@ -11,10 +11,11 @@
 use axum::{
     Form,
     extract::{Path, Query, State as AxumState},
-    http::{StatusCode, Uri},
-    response::Response,
+    http::{StatusCode, Uri, header},
+    response::{IntoResponse, Response},
 };
 use chrono::{DateTime, Utc};
+use grund_domain::app::ReleaseSource;
 use grund_domain::{
     app::{
         spec::{
@@ -35,7 +36,7 @@ use serde::Deserialize;
 
 use crate::{
     services::{
-        apps::{AppListing, AppView, AppsError, AppsState, Change, Launch},
+        apps::{AppListing, AppView, AppsError, AppsState, Change, DeployInput, Launch},
         domains::DomainsState,
         sessions::Session,
     },
@@ -471,6 +472,9 @@ fn notice_words(done: &str) -> &'static str {
     match done {
         "created" => "App made. Its first version is rolling out.",
         "deployed" => "New release made. It rolls out behind its ready check.",
+        "released-file" => {
+            "grund.toml applied as a new release. It rolls out behind its ready check."
+        }
         "released" => {
             "Settings saved as a new release of the same image. It rolls out behind its ready check."
         }
@@ -866,6 +870,8 @@ pub struct NewForm {
     stop_signal: String,
     #[serde(default)]
     stop_grace: String,
+    #[serde(default, skip_serializing)]
+    part: String,
 }
 
 fn nonzero(n: impl Into<u64>) -> String {
@@ -1220,8 +1226,116 @@ const APP_TABS: &[(&str, &str, &str, &str)] = &[
 ];
 
 const SETTINGS_FIELDS: &[&str] = &[
-    "copies", "exposure", "port", "check", "env", "variable", "value", "confirm",
+    "copies", "exposure", "port", "check", "env", "memory", "cpu", "command", "stop", "variable",
+    "value", "file", "confirm",
 ];
+
+const SETTINGS_PARTS: &[&str] = &[
+    "copies",
+    "exposure",
+    "env",
+    "secrets",
+    "check",
+    "resources",
+    "command",
+    "file",
+    "delete",
+];
+
+fn part_of(field: &str) -> &'static str {
+    match field {
+        "exposure" | "port" => "exposure",
+        "env" => "env",
+        "check" => "check",
+        "memory" | "cpu" => "resources",
+        "command" | "stop" => "command",
+        _ => "",
+    }
+}
+
+fn mib(n: u64) -> String {
+    if n >= 1024 && n.is_multiple_of(1024) {
+        format!("{} GiB", n / 1024)
+    } else {
+        format!("{n} MiB")
+    }
+}
+
+fn cpus(millis: u32) -> String {
+    match millis {
+        1000 => "1 CPU".into(),
+        m if m.is_multiple_of(1000) => format!("{} CPUs", m / 1000),
+        m => format!("{:.2} CPU", f64::from(m) / 1000.0),
+    }
+}
+
+fn names(items: &[String]) -> String {
+    let shown: Vec<&str> = items.iter().take(4).map(String::as_str).collect();
+    let more = items.len().saturating_sub(shown.len());
+    let list = shown.join(", ");
+    match (items.len(), more) {
+        (0, _) => String::new(),
+        (n, 0) => format!("{n}: {list}"),
+        (n, more) => format!("{n}: {list} and {more} more"),
+    }
+}
+
+fn summaries(
+    spec: &AppSpec,
+    settings: &grund_domain::app::AppSettings,
+    address: Option<&str>,
+) -> Value {
+    let main = spec.ports.iter().find(|p| p.public).or(spec.ports.first());
+    let exposure = match (main, address) {
+        (Some(port), Some(address)) if port.public => {
+            format!("Public HTTP on port {} · https://{address}", port.port)
+        }
+        (Some(port), _) if port.public => format!("Public HTTP on port {}", port.port),
+        (Some(port), _) => format!("Private on port {}", port.port),
+        (None, _) => "No port: nothing reaches it".into(),
+    };
+    let check = match spec.check.as_ref().map(|c| &c.kind) {
+        Some(CheckKind::Http { path }) => format!("An HTTP request to {path} must answer"),
+        Some(CheckKind::Tcp) => "A TCP connection must open".into(),
+        None => String::new(),
+    };
+    let memory = if spec.memory_mib == 0 {
+        512
+    } else {
+        spec.memory_mib
+    };
+    let cpu = if spec.cpu_millis == 0 {
+        1000
+    } else {
+        spec.cpu_millis
+    };
+    let defaults = spec.memory_mib == 0 && spec.cpu_millis == 0;
+    let signal = if spec.stop.signal.is_empty() {
+        "SIGTERM"
+    } else {
+        spec.stop.signal.as_str()
+    };
+    let grace = if spec.stop.grace_seconds == 0 {
+        30
+    } else {
+        spec.stop.grace_seconds
+    };
+    context! {
+        exposure,
+        copies => format!(
+            "{} · {}",
+            copies(settings.copies as usize),
+            if settings.auto_rollback { "a failed release rolls back on its own" } else { "a failed release is left as it is" }
+        ),
+        env => names(&spec.env.iter().map(|e| e.name.clone()).collect::<Vec<_>>()),
+        secrets => names(&spec.secrets.iter().map(|s| s.env.clone()).collect::<Vec<_>>()),
+        check,
+        resources => format!("{} and {} per copy{}", mib(memory), cpus(cpu), if defaults { ", the defaults" } else { "" }),
+        command => if spec.command.is_empty() { "The image's own".to_string() } else { spec.command.join(" ") },
+        stop => format!("Stops with {signal}, killed after {grace} s"),
+        custom_command => !spec.command.is_empty() || !spec.stop.signal.is_empty() || spec.stop.grace_seconds != 0,
+    }
+}
 
 #[derive(Default)]
 struct Refused {
@@ -1229,6 +1343,7 @@ struct Refused {
     refusal: Refusal,
     form: Option<NewForm>,
     variable: String,
+    file: Option<String>,
 }
 
 macro_rules! app_page {
@@ -1425,20 +1540,24 @@ async fn app_view(
         .iter()
         .map(|f| (*f, refused.refusal.fields.get(f).map_or("", String::as_str)))
         .collect();
-    let banners: std::collections::BTreeMap<&str, &str> =
-        ["copies", "release", "secrets", "delete"]
-            .into_iter()
-            .map(|part| {
-                (
-                    part,
-                    if part == refused.part {
-                        refused.refusal.banner.as_str()
-                    } else {
-                        ""
-                    },
-                )
-            })
-            .collect();
+    let banners: std::collections::BTreeMap<&str, &str> = SETTINGS_PARTS
+        .iter()
+        .copied()
+        .map(|part| {
+            (
+                part,
+                if part == refused.part {
+                    refused.refusal.banner.as_str()
+                } else {
+                    ""
+                },
+            )
+        })
+        .collect();
+    let file = refused
+        .file
+        .clone()
+        .or_else(|| newest.map(|r| render_toml(&view.row.name, &r.spec.0, &view.row.settings.0)));
     let soon = match tab {
         "logs" => context! {
             title => "Logs are coming",
@@ -1464,9 +1583,11 @@ async fn app_view(
         .map(|domain| {
             let serving = domain.status == crate::services::domains::Status::Issued;
             context! {
+                summary => if serving { domain.name.clone() } else { format!("{} (certificate on its way)", domain.name) },
+                state_words => if serving { "Serving with its own certificate" } else { "Bound; its certificate is on its way once its DNS points here" },
+                line => if serving { String::new() } else { format!("{}: waiting for its certificate", domain.name) },
                 name => domain.name,
                 serving,
-                line => if serving { String::new() } else { format!("{}: waiting for its certificate", domain.name) },
             }
         })
         .collect();
@@ -1519,7 +1640,13 @@ async fn app_view(
             form => Value::from_serialize(&form),
             variable => refused.variable,
             secrets, errors, banners,
-            file => newest.map(|r| render_toml(&view.row.name, &r.spec.0, &view.row.settings.0)),
+            file_rows => file.as_ref().map_or(0, |f| f.lines().count() + 1),
+            file,
+            file_href => format!("{base}/grund.toml"),
+            signals => STOP_SIGNALS.iter().map(|s| (*s, *s)).collect::<Vec<_>>(),
+            items => spec.map(|spec| summaries(spec, &view.row.settings.0, listing.address.as_deref())),
+            next => newest.map(|r| r.number + 1),
+            open => refused.part,
             notice, error,
             topbar_action => (format!("/{slug}/apps/{}/deploy", view.row.name), "Deploy change"),
         },
@@ -1684,6 +1811,7 @@ async fn refuse_setting(
             refusal,
             form,
             variable: String::new(),
+            file: None,
         },
     )
     .await
@@ -1725,7 +1853,7 @@ pub async fn configure(
         Ok(copies) => match view.row.settings.0.with_copies(copies) {
             Ok(settings) => {
                 let mut input = settings.as_input();
-                input.auto_rollback = Some(form.auto_rollback != "off");
+                input.auto_rollback = Some(form.auto_rollback == "on");
                 match apps
                     .configure(session.account_id, membership.organisation_id, &name, input)
                     .await
@@ -1779,13 +1907,41 @@ pub async fn release_settings(
         return Ok(redirect(&format!("/{slug}/apps/{name}?error=not-allowed")));
     }
     let (spec, copies) = newest_or_return!(&state, &membership, &name);
-    let form = NewForm {
-        exposure: posted.exposure,
-        port: posted.port,
-        check: posted.check,
-        check_path: posted.check_path,
-        env: posted.env,
-        ..NewForm::from_spec(&spec, copies)
+    let part = match posted.part.as_str() {
+        "exposure" => "exposure",
+        "env" => "env",
+        "check" => "check",
+        "resources" => "resources",
+        "command" => "command",
+        _ => "exposure",
+    };
+    let now = NewForm::from_spec(&spec, copies);
+    let form = match part {
+        "env" => NewForm {
+            env: posted.env,
+            ..now
+        },
+        "check" => NewForm {
+            check: posted.check,
+            check_path: posted.check_path,
+            ..now
+        },
+        "resources" => NewForm {
+            memory: posted.memory,
+            cpu: posted.cpu,
+            ..now
+        },
+        "command" => NewForm {
+            command: posted.command,
+            stop_signal: posted.stop_signal,
+            stop_grace: posted.stop_grace,
+            ..now
+        },
+        _ => NewForm {
+            exposure: posted.exposure,
+            port: posted.port,
+            ..now
+        },
     };
     let public = form.exposure == "public";
     let made = if public && state.config.entry.app_domain.is_none() {
@@ -1823,17 +1979,133 @@ pub async fn release_settings(
         },
         Err(refusal) => refusal,
     };
+    let part = refusal
+        .fields
+        .keys()
+        .map(|field| part_of(field))
+        .find(|p| !p.is_empty())
+        .unwrap_or(part);
     refuse_setting(
         &state,
         &browser,
         &session,
         &membership,
         &name,
-        "release",
-        refusal,
+        part,
+        Refusal {
+            banner: "Nothing was released. Check the field marked below.".into(),
+            ..refusal
+        },
         Some(form),
     )
     .await
+}
+
+#[derive(Deserialize)]
+pub struct FileForm {
+    #[serde(default)]
+    csrf: String,
+    #[serde(default)]
+    file: String,
+}
+
+/// `POST /{org}/apps/{app}/settings/file`: the app's `grund.toml`, edited
+/// on the page, deployed as the API deploys one: the same parsing and
+/// checks, the image resolved again, a release from grund.toml.
+pub async fn apply_file(
+    AxumState(state): AxumState<State>,
+    browser: Browser,
+    uri: Uri,
+    Path((slug, name)): Path<(String, String)>,
+    Form(form): Form<FileForm>,
+) -> PageResult {
+    if !browser.form_is_genuine(&form.csrf) {
+        return forged(&state, &browser);
+    }
+    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
+    if !manages(&membership) {
+        return Ok(redirect(&format!("/{slug}/apps/{name}?error=not-allowed")));
+    }
+    let refusal = match state
+        .apps()
+        .deploy(
+            session.account_id,
+            membership.organisation_id,
+            &name,
+            DeployInput::File(form.file.clone()),
+            ReleaseSource::File,
+            "",
+        )
+        .await
+    {
+        Ok(_) => {
+            return Ok(redirect(&format!(
+                "/{slug}/apps/{name}/settings?done=released-file"
+            )));
+        }
+        Err(AppsError::NotFound) => return Ok(redirect(&format!("/{slug}/apps?error=gone"))),
+        Err(AppsError::Spec(spec)) => {
+            Refusal::field("file", format!("{}: {}.", spec.field, spec.problem))
+        }
+        Err(AppsError::ImageUnresolved(message) | AppsError::ImageUnsupported(message)) => {
+            Refusal::field("file", format!("image: {message}."))
+        }
+        Err(error) => Refusal::banner(sentence(&error)),
+    };
+    app_view(
+        &state,
+        &browser,
+        &session,
+        &membership,
+        &name,
+        "settings",
+        (String::new(), String::new()),
+        Refused {
+            part: "file",
+            refusal: Refusal {
+                banner: "Nothing was released. Check the file.".into(),
+                ..refusal
+            },
+            form: None,
+            variable: String::new(),
+            file: Some(form.file),
+        },
+    )
+    .await
+}
+
+/// `GET /{org}/apps/{app}/grund.toml`: the newest release as a file to
+/// save, for any member.
+pub async fn file(
+    AxumState(state): AxumState<State>,
+    Member { membership, .. }: Member,
+    Path((_, name)): Path<(String, String)>,
+) -> Result<Response, PageError> {
+    let apps = state.apps();
+    let view = match apps.get(membership.organisation_id, &name).await {
+        Ok(view) => view,
+        Err(AppsError::NotFound) => return Ok(StatusCode::NOT_FOUND.into_response()),
+        Err(error) => return Err(PageError::from(anyhow::anyhow!(error))),
+    };
+    let releases = apps
+        .releases(membership.organisation_id, &name)
+        .await
+        .map_err(|e| PageError::from(anyhow::anyhow!(e)))?;
+    let Some(newest) = releases.first() else {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    };
+    Ok((
+        [
+            (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\"grund.toml\"",
+            ),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        render_toml(&view.row.name, &newest.spec.0, &view.row.settings.0),
+    )
+        .into_response())
 }
 
 #[derive(Deserialize)]
@@ -1915,6 +2187,7 @@ pub async fn set_secret(
             refusal,
             form: None,
             variable,
+            file: None,
         },
     )
     .await
@@ -2150,6 +2423,34 @@ mod tests {
         .expect("a spec");
         assert_eq!(spec.ports, vec![port("client", 4222, false)]);
         assert_eq!(detect, Some(port("monitor", 8222, true)));
+    }
+
+    #[test]
+    fn posted_rows_pair_up_in_order_and_a_row_left_empty_is_dropped() {
+        let posted = [
+            ("csrf", "t"),
+            ("name", "api"),
+            ("env_key", "A"),
+            ("env_value", "1"),
+            ("env_key", ""),
+            ("env_value", ""),
+            ("env_key", "B"),
+            ("env_value", "x=y"),
+            ("secrets_key", "TOKEN"),
+            ("secrets_value", "s3cr3t"),
+        ]
+        .map(|(k, v)| (k.to_string(), v.to_string()));
+        let form = NewForm::from_pairs(posted.to_vec());
+        assert_eq!(form.name, "api");
+        assert_eq!(
+            form.env,
+            vec![("A".into(), "1".into()), ("B".into(), "x=y".into())]
+        );
+        assert_eq!(form.secrets, vec![("TOKEN".into(), "s3cr3t".into())]);
+        assert_eq!(
+            named(&[(String::new(), "orphan".into())]),
+            Err("Row 1: give the value a name.".into())
+        );
     }
 
     #[test]

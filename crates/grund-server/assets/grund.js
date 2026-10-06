@@ -2,7 +2,7 @@
 // Copy buttons, a sort select that applies itself, the app filter as you
 // type, menus that close on Escape or a click elsewhere, the − and + of a
 // number, a choice that fills in a name, and rows of names and values that
-// grow and shrink.
+// grow and shrink, and the setting a link points at, opened.
 (function () {
   "use strict";
   document.documentElement.classList.add("has-js");
@@ -127,6 +127,13 @@
         row.querySelector("input").focus();
       });
     });
+
+    function openTarget() {
+      var target = location.hash && document.getElementById(decodeURIComponent(location.hash.slice(1)));
+      if (target && target.tagName === "DETAILS") target.open = true;
+    }
+    openTarget();
+    window.addEventListener("hashchange", openTarget);
 
     var menus = Array.prototype.slice.call(document.querySelectorAll("details.menu"));
     document.addEventListener("click", function (event) {

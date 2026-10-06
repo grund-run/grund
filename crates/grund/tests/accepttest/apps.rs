@@ -1323,7 +1323,7 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
         ("/deployments", "Releases"),
         ("/logs", "Logs are coming"),
         ("/metrics", "Metrics are coming"),
-        ("/settings", "Copies and rollback"),
+        ("/settings", "Each setting saves on its own."),
         ("/deploy", "Your change"),
     ] {
         when.visiting(&format!("{page}{tab}")).await?;
@@ -1383,12 +1383,10 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
         &settings,
         &format!("{page}/settings/release"),
         &[
-            ("exposure", "public"),
-            ("port", "80"),
-            ("check", "http"),
-            ("check_path", "/"),
+            ("part", "env"),
             ("env_key", "GREETING"),
             ("env_value", "hallo"),
+            ("exposure", "private"),
         ],
     )
     .await?;
@@ -1397,11 +1395,17 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
     when.submitting(
         &settings,
         &format!("{page}/settings/release"),
-        &[("exposure", "public"), ("port", "99999")],
+        &[
+            ("part", "exposure"),
+            ("exposure", "public"),
+            ("port", "99999"),
+        ],
     )
     .await?;
     then.status(422)?
-        .body_contains("A port is a number from 1 to 65535.")?;
+        .body_contains("Nothing was released. Check the field marked below.")?
+        .body_contains("A port is a number from 1 to 65535.")?
+        .body_contains("id=\"exposure\" open")?;
     when.submitting(
         &settings,
         &format!("{page}/secrets/remove"),
@@ -1443,6 +1447,47 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
         .body_contains("not read by the app")?
         .body_lacks("s3cr3t-value")?;
 
+    let toml = format!("{page}/grund.toml");
+    when.visiting(&toml).await?;
+    then.status(200)?
+        .header("content-type", "text/plain; charset=utf-8")?
+        .header("content-disposition", "attachment; filename=\"grund.toml\"")?
+        .body_contains("[apps.hello]")?
+        .body_contains("GREETING = \"hallo\"")?;
+    let file = then.body()?;
+    when.submitting(
+        &settings,
+        &format!("{page}/settings/file"),
+        &[("file", &format!("{file}\ncopies = 99\n"))],
+    )
+    .await?;
+    then.status(422)?
+        .body_contains("Nothing was released. Check the file.")?
+        .body_contains("id=\"as-file\" open")?;
+    when.submitting(
+        &settings,
+        &format!("{page}/settings/file"),
+        &[(
+            "file",
+            &file.replace("GREETING = \"hallo\"", "GREETING = \"moin\""),
+        )],
+    )
+    .await?;
+    then.status(303)?
+        .redirects_to(&format!("{page}/settings?done=released-file"))?;
+    let releases = call(
+        &when,
+        &then,
+        "ListReleases",
+        json!({"organisation": org, "name": "hello"}),
+    )
+    .await?;
+    let newest = &releases["releases"][0];
+    anyhow::ensure!(
+        newest["source"] == "RELEASE_SOURCE_FILE" && newest["spec"]["env"][0]["value"] == "moin",
+        "the file made the newest release: {newest:#}"
+    );
+
     let deployments = format!("{page}/deployments");
     when.submitting(&deployments, &format!("{page}/releases/1/rollback"), &[])
         .await?;
@@ -1450,7 +1495,7 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
         .redirects_to(&format!("{page}/deployments?done=rolled-back"))?;
     when.visiting(&deployments).await?;
     then.status(200)?
-        .body_contains("id=\"v5\"")?
+        .body_contains("id=\"v6\"")?
         .body_contains(&format!("Rolled back to v1 by {org}"))?;
 
     when.submitting(
@@ -1476,6 +1521,7 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
         "/metrics",
         "/settings",
         "/deploy",
+        "/grund.toml",
     ] {
         outsider_when.visiting(&format!("{page}{tab}")).await?;
         outsider_then

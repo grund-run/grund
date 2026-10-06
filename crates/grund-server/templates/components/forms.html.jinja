@@ -137,15 +137,17 @@
 {%- endmacro %}
 
 {#- code_field(name, label, value="", filename="", rows=6, hint="",
-               error="", required=false)
+               error="", required=false, download="")
     Lines a machine reads, edited as code: a file (grund.toml), a
     command one argument per line. In the mono face, in the same frame
-    as ui.code() with the filename in its head, unchecked for spelling. -#}
-{% macro code_field(name, label, value="", filename="", rows=6, hint="", error="", required=false) -%}
+    as ui.code() with the filename in its head, unchecked for spelling.
+    download: the saved file's URL; the head then offers Copy (what was
+              saved) and Download, as ui.code() does -#}
+{% macro code_field(name, label, value="", filename="", rows=6, hint="", error="", required=false, download="") -%}
 <div class="field">
   {{ label_of(name, label, not required) }}
   <div class="code{% if error %} is-invalid{% endif %}">
-    {% if filename %}<p class="code-head"><span class="code-name">{{ ui.icon("file", "icon-sm") }}{{ filename }}</span></p>{% endif %}
+    {% if filename %}<div class="code-head"><span class="code-name">{{ ui.icon("file", "icon-sm") }}{{ filename }}</span>{% if download %}<span class="code-tools">{{ ui.copy_button(value, filename, labelled=true) }}{{ ui.button("Download", href=download, icon_name="down", kind="secondary", size="sm", download=filename) }}</span>{% endif %}</div>{% endif %}
     <textarea class="code-input mono" id="{{ name }}" name="{{ name }}" rows="{{ rows }}" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off"{{ describe(name, error, hint) }}>{{ value }}</textarea>
   </div>
   {{- message(name, error, hint) }}
