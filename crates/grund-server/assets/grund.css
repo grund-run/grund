@@ -2171,8 +2171,11 @@ a.endpoint-text:hover {
   white-space: nowrap;
 }
 
-.panel:not(:first-child),
-.panel + /* ------------------------------------------------------------ style guide
+.panel:not(:first-child) {
+  margin-top: var(--space-6);
+}
+
+/* ------------------------------------------------------------ style guide
  * The catalogue's own layout (components/catalogue.html.jinja). No
  * product page uses these. */
 
