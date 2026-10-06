@@ -1998,6 +1998,13 @@ legend.field-label {
   font-weight: 600;
 }
 
+.fact-after {
+  flex-shrink: 100;
+  color: var(--text-2);
+  font-size: var(--text-md);
+  font-weight: 400;
+}
+
 .fact-value .icon {
   color: var(--text-2);
 }

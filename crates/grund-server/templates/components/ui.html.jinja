@@ -225,7 +225,8 @@
 <dl class="facts">{{ caller() }}</dl>
 {%- endmacro %}
 
-{#- fact(label, value="", icon_name="", tone="", lines=[], wide=false)
+{#- fact(label, value="", icon_name="", tone="", lines=[], wide=false,
+         after="")
     One fact: a small label, the value large, and quieter lines under it.
     icon_name: an icon before the value
     tone:      a large dot of that colour before the value instead (a
@@ -234,14 +235,15 @@
                text, or (text, title) for one cut short whose whole is
                its title
     wide:      takes the most room (an address)
+    after:     quieter words after the value on its line ("· kjuulh")
     The value stays on one line, cut with an ellipsis, the whole in its
     title.
     Called with {% call %}, the body replaces the value and its lines. -#}
-{% macro fact(label, value="", icon_name="", tone="", lines=[], wide=false) -%}
+{% macro fact(label, value="", icon_name="", tone="", lines=[], wide=false, after="") -%}
 <div class="fact{% if wide %} fact-wide{% endif %}">
   <dt class="fact-label">{{ label }}</dt>
   {% if caller is defined %}<dd class="fact-body">{{ caller() }}</dd>{% else %}
-  <dd class="fact-value">{% if icon_name %}{{ icon(icon_name) }}{% elif tone %}<span class="dot dot-lg tone-{{ tone }}" aria-hidden="true"></span>{% endif %}<span title="{{ value }}">{{ value }}</span></dd>
+  <dd class="fact-value">{% if icon_name %}{{ icon(icon_name) }}{% elif tone %}<span class="dot dot-lg tone-{{ tone }}" aria-hidden="true"></span>{% endif %}<span title="{{ value }}">{{ value }}</span>{% if after %}<span class="fact-after" title="{{ after }}">{{ after }}</span>{% endif %}</dd>
   {% for line in lines %}{% if line is string %}<dd class="fact-line">{{ line }}</dd>{% else %}<dd class="fact-line" title="{{ line[1] }}">{{ line[0] }}</dd>{% endif %}{% endfor %}
   {% endif %}
 </div>

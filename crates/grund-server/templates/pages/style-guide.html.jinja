@@ -266,15 +266,15 @@
     {% call ui.fact("Reachable at", wide=true) %}{{ ui.endpoint(address, href=address) }}{% endcall %}
     {{ ui.fact("Status", "Live", tone="ok") }}
     {{ ui.fact("Running", "v8", icon_name="layers", lines=[(image ~ " · " ~ digest, reference)]) }}
-    {{ ui.fact("Last change", ago ~ " · " ~ who, icon_name="clock") }}
+    {{ ui.fact("Last change", ago, icon_name="clock", after="· " ~ who) }}
   {% endcall %}
-{% endcall %}', "action puts one secondary button at the right of a panel's title. facts() is fact()s divided by lines: a wide one on a row of its own, the rest three across (two below 900 px): a label, the value large with an icon or a state's dot, and at most a quieter line, each on one line, cut with an ellipsis, the whole in its title. Each fact says one thing once (Kasper, 2026-10-06: the version appears once). endpoint() is an address with a copy button: a link when public, code when internal.") %}
+{% endcall %}', "action puts one secondary button at the right of a panel's title. facts() is fact()s divided by lines: a wide one on a row of its own, the rest three across (two below 900 px): a label, the value large with an icon or a state's dot (after: quieter words on its line, \"· kjuulh\"), and at most a quieter line, each on one line, cut with an ellipsis, the whole in its title. Each fact says one thing once (Kasper, 2026-10-06: the version appears once). endpoint() is an address with a copy button: a link when public, code when internal.") %}
     {% call ui.panel("sg-facts", "Application status", action=("#sg-choices", "All releases")) %}
       {% call ui.facts() %}
         {% call ui.fact("Reachable at", wide=true) %}{{ ui.endpoint("https://storefront-nord-studio.example.run", href="#sg-choices") }}{% endcall %}
         {{ ui.fact("Status", "Live", tone="ok") }}
         {{ ui.fact("Running", "v8", icon_name="layers", lines=[("nginx:1.27 · 2006897a0a1c", "nginx:1.27@sha256:2006897a0a1c0ea48ca45992e0450bc26ccab5307375b41c84dfc4f2475937ab")]) }}
-        {{ ui.fact("Last change", "2 hours ago · a-rather-long-account-name", icon_name="clock") }}
+        {{ ui.fact("Last change", "2 hours ago", icon_name="clock", after="· a-rather-long-account-name") }}
       {% endcall %}
     {% endcall %}
     {% call ui.panel("sg-facts-private", "Internal") %}{% call ui.facts() %}{% call ui.fact("Reachable at", wide=true) %}{{ ui.endpoint("db.grund.internal:5432") }}{% endcall %}{{ ui.fact("Status", "Failed", tone="danger") }}{% endcall %}{% endcall %}

@@ -1480,9 +1480,10 @@ async fn app_view(
         .and_then(|number| releases.iter().find(|r| r.number == number))
         .map(|r| {
             let image = r.spec.0.image.split('@').next().unwrap_or_default();
+            let short = image.trim_start_matches("docker.io/").trim_start_matches("library/");
             context! {
                 version => format!("v{}", r.number),
-                line => format!("{image} · {}", r.image_digest.trim_start_matches("sha256:").chars().take(12).collect::<String>()),
+                line => format!("{short} · {}", r.image_digest.trim_start_matches("sha256:").chars().take(12).collect::<String>()),
                 reference => format!("{image}@{}", r.image_digest),
             }
         });

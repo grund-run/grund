@@ -11,7 +11,7 @@
     {{ ui.fact("Status", app.word, tone=app.tone) }}
     {% if running %}{{ ui.fact("Running", running.version, icon_name="layers", lines=[(running.line, running.reference)]) }}
     {% else %}{{ ui.fact("Running", "Nothing", icon_name="layers") }}{% endif %}
-    {{ ui.fact("Last change", (latest.ago ~ " · " ~ latest.by) if latest else "None", icon_name="clock") }}
+    {{ ui.fact("Last change", latest.ago if latest else "None", icon_name="clock", after=("· " ~ latest.by) if latest else "") }}
   {% endcall %}
 {% endcall %}
 
