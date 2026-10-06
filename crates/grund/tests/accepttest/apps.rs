@@ -108,7 +108,7 @@ pub(super) async fn a_machine(
         ])
         .arg(&dir)
         .arg("--policy")
-        .arg(dir.join("policy.toml"))
+        .arg(dir.join("policy.yaml"))
         .env_clear()
         .env("RUST_LOG", "grund_agent=info")
         .stdout(log.try_clone()?)

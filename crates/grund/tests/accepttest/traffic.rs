@@ -89,7 +89,7 @@ fn spawn_agent(dir: &Path) -> anyhow::Result<std::process::Child> {
             ])
             .arg(dir)
             .arg("--policy")
-            .arg(dir.join("policy.toml"))
+            .arg(dir.join("policy.yaml"))
             .arg("--gate-remote-copies")
             .arg(dir.join("remote-copies.json"))
             .env_clear()
