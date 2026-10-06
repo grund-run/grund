@@ -101,8 +101,13 @@ impl EdgeCertificates {
             .get(name)
             .copied();
         if known != Some(delivered.version) {
+            let kept = self.kept.keep(name, &delivered);
             self.serve_delivered(name, &delivered)?;
-            self.kept.keep(name, &delivered)?;
+            if let Err(error) = kept {
+                self.delivered.lock().expect("delivered lock").remove(name);
+                tracing::warn!(%name, error = format!("{error:#}"), "edge: serving a custom domain's certificate it could not keep on disk; keeping it again on the next pass");
+                return Ok(ORDERING_RECHECK);
+            }
             tracing::info!(%name, version = delivered.version, "edge: serving a custom domain's certificate from the instance");
         }
         Ok(ISSUED_RECHECK)
