@@ -149,6 +149,9 @@ message Capabilities {
   // no limit beyond the machine.
   uint64 max_replica_memory_mib = 11;
   uint32 max_replica_cpu_millis = 12;
+  // The size of the filesystem the agent keeps its data on, in GiB; 0:
+  // not reported (agents before it, or unreadable).
+  uint64 disk_gib = 13;
 }
 
 message HeartbeatResponse {

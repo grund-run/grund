@@ -1196,6 +1196,12 @@ async fn a_device_stays_connected_and_runs_a_vm_that_joins_the_same_organisation
         listed["machines"][0]["capabilities"]["kvm"] == true,
         "{listed}"
     );
+    let reported = |value: &Value| value.as_str().is_some_and(|gib| gib != "0");
+    anyhow::ensure!(
+        reported(&listed["machines"][0]["facts"]["diskGib"])
+            && reported(&listed["machines"][0]["capabilities"]["diskGib"]),
+        "the agent reports its disk at join and in its heartbeat: {listed}"
+    );
 
     let run = format!(
         r#"{{"organisation": "{}", "onMachineId": "{device_id}", "name": "vm1", "vcpus": 1, "memoryMib": 512, "diskGib": 2, "image": {IMAGE}}}"#,

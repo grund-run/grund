@@ -201,7 +201,7 @@ fn disk(data_dir: &std::path::Path) -> Check {
         .ancestors()
         .find(|p| p.exists())
         .unwrap_or(std::path::Path::new("/"));
-    let Some(free) = free_bytes(path) else {
+    let Some((_, free)) = join::disk_space(path) else {
         return Check::skip(
             "disk",
             format!("cannot read the free space of {}", path.display()),
@@ -218,17 +218,6 @@ fn disk(data_dir: &std::path::Path) -> Check {
     } else {
         Check::ok("disk", detail)
     }
-}
-
-fn free_bytes(path: &std::path::Path) -> Option<u64> {
-    use std::os::unix::ffi::OsStrExt;
-    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
-    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-    if unsafe { libc::statvfs(path.as_ptr(), stat.as_mut_ptr()) } != 0 {
-        return None;
-    }
-    let stat = unsafe { stat.assume_init() };
-    Some(stat.f_bavail.saturating_mul(stat.f_frsize))
 }
 
 async fn instance(args: &MachineArgs, own: &str, report: &mut Report) {

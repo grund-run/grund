@@ -810,6 +810,7 @@ async fn round<R: VmRuntime, C: ContainerRuntime>(
                     apps_unavailable_reason: apps_reason,
                     max_replica_memory_mib: policy.max_replica_memory_mib,
                     max_replica_cpu_millis: policy.max_replica_cpu_millis,
+                    disk_gib: join::disk_gib(data_dir).max(0) as u64,
                     ..Default::default()
                 }),
                 ..Default::default()

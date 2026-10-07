@@ -153,6 +153,7 @@ pub async fn run(args: &JoinArgs) -> anyhow::Result<()> {
     let key = machine_key(&args.data_dir)?;
     let mut facts = facts();
     facts.fleet_machine_id = source.fleet_machine_id.clone();
+    facts.disk_gib = disk_gib(&args.data_dir);
     let request = enrollment_request(
         &origin,
         &source.token,
@@ -516,6 +517,30 @@ fn write_new(path: &Path, contents: &str) -> anyhow::Result<()> {
         .with_context(|| format!("write {}", path.display()))
 }
 
+/// The space of the filesystem holding `path` (or its nearest existing
+/// ancestor), in bytes: (total, free to unprivileged users). `None` when
+/// it cannot be read.
+pub fn disk_space(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = path.ancestors().find(|p| p.exists())?;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    if unsafe { libc::statvfs(path.as_ptr(), stat.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    let stat = unsafe { stat.assume_init() };
+    Some((
+        stat.f_blocks.saturating_mul(stat.f_frsize),
+        stat.f_bavail.saturating_mul(stat.f_frsize),
+    ))
+}
+
+/// The size of the filesystem the agent keeps its data on, in whole GiB;
+/// 0 when it cannot be read. Reported at join and in every heartbeat.
+pub fn disk_gib(data_dir: &Path) -> i64 {
+    disk_space(data_dir).map_or(0, |(total, _)| (total >> 30) as i64)
+}
+
 /// What the machine says about itself. Informational: the instance
 /// authorizes nothing from it.
 pub fn facts() -> MachineFacts {
@@ -566,6 +591,14 @@ mod tests {
     use ed25519_dalek::{Signature, Verifier};
 
     use super::*;
+
+    #[test]
+    fn the_disk_reported_is_the_whole_filesystem_under_the_data_dir_even_before_it_exists() {
+        let missing = std::env::temp_dir().join("grund-no-such-dir").join("data");
+        let (total, free) = disk_space(&missing).expect("the temp dir's filesystem is readable");
+        assert!(total > 0 && free <= total);
+        assert_eq!(disk_gib(&missing), (total >> 30) as i64);
+    }
 
     #[test]
     fn an_origin_is_https_or_loopback_http_and_never_a_path() {

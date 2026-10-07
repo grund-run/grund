@@ -85,6 +85,7 @@ impl AgentService for AgentApi {
                     "apps_unavailable_reason": c.apps_unavailable_reason.chars().take(200).collect::<String>(),
                     "max_replica_memory_mib": c.max_replica_memory_mib,
                     "max_replica_cpu_millis": c.max_replica_cpu_millis,
+                    "disk_gib": c.disk_gib,
                 })
             });
         let generation = self

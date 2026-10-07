@@ -234,6 +234,7 @@ fn capabilities(value: &serde_json::Value) -> agent::Capabilities {
             .to_string(),
         max_replica_memory_mib: value["max_replica_memory_mib"].as_u64().unwrap_or(0),
         max_replica_cpu_millis: value["max_replica_cpu_millis"].as_u64().unwrap_or(0) as u32,
+        disk_gib: value["disk_gib"].as_u64().unwrap_or(0),
         ..Default::default()
     }
 }
