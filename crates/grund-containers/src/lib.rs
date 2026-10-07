@@ -97,6 +97,23 @@ use crate::{
 
 /// The only containerd namespace grund uses.
 pub const NAMESPACE: &str = "grund";
+
+/// Writes everything the filesystem holding `dir` has in memory to its disk
+/// (syncfs), so an image unpacked there survives the machine losing power.
+/// containerd does not sync the files it unpacks; after a power cut ext4
+/// may keep their names and sizes and lose their contents, and a copy then
+/// fails at every start with "exec format error" (seen 2026-10-07 on a
+/// hosted machine whose host was powered off less than a minute after the pull).
+pub fn durable(dir: &std::path::Path) -> anyhow::Result<()> {
+    let file = std::fs::File::open(dir).with_context(|| format!("open {}", dir.display()))?;
+    let fd = std::os::fd::AsRawFd::as_raw_fd(&file);
+    if unsafe { libc::syncfs(fd) } != 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("syncfs {}", dir.display()));
+    }
+    Ok(())
+}
+
 /// The snapshotter images are unpacked onto.
 pub const SNAPSHOTTER: &str = "overlayfs";
 /// containerd's runtime for every container.
@@ -746,6 +763,10 @@ impl ContainerRuntime for Containerd {
             self.has_image(image).await?,
             "pulled {name}, but its content or unpacked layers are not all there"
         );
+        let root = self.config.runtime_root();
+        tokio::task::spawn_blocking(move || durable(&root))
+            .await
+            .context("make the pulled image durable")??;
         Ok(())
     }
 
@@ -936,6 +957,16 @@ mod tests {
     use buffa_types::google::protobuf::Timestamp;
 
     use super::*;
+
+    #[test]
+    fn an_unpacked_image_is_synced_to_disk_and_a_missing_root_says_so() {
+        let dir = std::env::temp_dir().join(format!("grund-durable-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a directory");
+        durable(&dir).expect("syncfs on an existing directory");
+        std::fs::remove_dir_all(&dir).expect("removed");
+        let error = durable(&dir).expect_err("a missing directory");
+        assert!(format!("{error:#}").contains("open"), "{error:#}");
+    }
 
     #[test]
     fn stop_signals_map_to_their_linux_numbers() {
