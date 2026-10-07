@@ -6,9 +6,7 @@
 {% block title %}Style guide · grund{% endblock %}
 {% block content %}
 {{ images.sprite(icons) }}
-{% call ui.page_head("Style guide") %}
-{{ ui.button("Primary action", href="#sg-buttons", icon_name="plus") }}
-{% endcall %}
+{{ ui.page_head("Style guide") }}
 {% call ui.para() %}The macros live in <code>templates/components/</code>: <code>ui</code> (basics and page parts), <code>forms</code>, <code>lists</code>, <code>shell</code> and <code>images</code>, each parameter documented above its macro. A page under <code>pages/</code> calls them and writes no class of its own; the build fails otherwise.{% endcall %}
 {{ cat.contents([("sg-tokens", "Tokens"), ("sg-icons", "Icons"), ("sg-buttons", "Buttons and links"), ("sg-heads", "Page and section heads"), ("sg-status", "Status and tags"), ("sg-messages", "Callouts and messages"), ("sg-empty", "Empty states and notes"), ("sg-code", "Code"), ("sg-forms", "Forms"), ("sg-choices", "Panels, facts, choices and steppers"), ("sg-rows", "Rows, links and timelines"), ("sg-items", "Apps, menus and list tools"), ("sg-shell", "Shell")]) }}
 
@@ -91,19 +89,17 @@
 {% endcall %}
 
 {% call ui.section("sg-heads", "Page and section heads") %}
-  {% call cat.specimen("Page head", '{% call ui.page_head("Apps") %}
-  {{ ui.button("Deploy app", href=url, icon_name="plus") }}
-{% endcall %}
-{{ ui.page_head(app.name, back=(url, "Back to apps")) }}', "Every page starts with it: the title, and at the right the page's tools or its one primary button. No line of prose under it. back puts a link above the title on detail pages.") %}
-    {% call ui.page_head("Apps") %}{{ ui.button("Deploy app", href="#sg-heads", icon_name="plus") }}{% endcall %}
+  {% call cat.specimen("Page head", '{{ ui.page_head("Apps") }}
+{{ ui.page_head(app.name, back=(url, "Back to apps")) }}', "Every page starts with it: the title, and at the right the page's tools (list tools, a kebab). No primary button: the top bar's Deploy app is the only one outside a form. No line of prose under it. back puts a link above the title on detail pages.") %}
+    {{ ui.page_head("Apps") }}
     {{ ui.page_head("storefront", back=("#sg-heads", "Back to apps")) }}
   {% endcall %}
   {% call cat.specimen("A thing's head", '{% call ui.page_head(app.name, reference=app.image, back=(url, "Back to apps"), image=app.icon, state=(app.word, app.tone)) %}
-  {{ ui.button("Deploy change", href=url) }}{{ lists.app_menu(org, app) }}
+  {{ lists.app_menu(org, app) }}
 {% endcall %}
-{{ ui.tabs(app.name, tabs, tab) }}', "A page about one thing (an app): its image icon large, a pill with its state beside the name, the image it runs (a digest cut to 12 hex, the whole in its title and its copy button), its primary action and its kebab. The name gives way; the buttons keep their width. Tabs with an icon each split it into pages.") %}
-    {% call ui.page_head("storefront", reference="nginx:1.27", back=("#sg-heads", "Back to apps"), image="nginx", state=("Live", "ok")) %}{{ ui.button("Deploy change", href="#sg-heads") }}{{ lists.app_menu(org, apps[0]) }}{% endcall %}
-    {% call ui.page_head("customer-billing-reconciler", reference="ghcr.io/nord-studio/customer-billing-reconciler:2026.10.06-3f9c0a1@sha256:200689790a0a0ea48ca45992e0450bc26ccab5307375b41c84dfc4f2475937ab", back=("#sg-heads", "Back to apps"), image="image", state=("Degraded", "orange")) %}{{ ui.button("Deploy change", href="#sg-heads") }}{{ lists.app_menu(org, apps[0]) }}{% endcall %}
+{{ ui.tabs(app.name, tabs, tab) }}', "A page about one thing (an app): its image icon large, a pill with its state beside the name, the image it runs (a digest cut to 12 hex, the whole in its title and its copy button), and its kebab. The name gives way; the kebab keeps its width. Tabs with an icon each split it into pages.") %}
+    {% call ui.page_head("storefront", reference="nginx:1.27", back=("#sg-heads", "Back to apps"), image="nginx", state=("Live", "ok")) %}{{ lists.app_menu(org, apps[0]) }}{% endcall %}
+    {% call ui.page_head("customer-billing-reconciler", reference="ghcr.io/nord-studio/customer-billing-reconciler:2026.10.06-3f9c0a1@sha256:200689790a0a0ea48ca45992e0450bc26ccab5307375b41c84dfc4f2475937ab", back=("#sg-heads", "Back to apps"), image="image", state=("Degraded", "orange")) %}{{ lists.app_menu(org, apps[0]) }}{% endcall %}
     {{ ui.tabs("storefront", [("overview", "#sg-heads", "Overview", "home"), ("deployments", "#sg-heads", "Deployments", "layers"), ("logs", "#sg-heads", "Logs", "file"), ("metrics", "#sg-heads", "Metrics", "bars"), ("settings", "#sg-heads", "Settings", "gear")], "overview") }}
   {% endcall %}
   {% call cat.specimen("Section", '{% call ui.section("versions", "Versions", count=3, more=(url, "View all")) %}
@@ -150,8 +146,8 @@
     {{ ui.empty_state("No apps yet", "Owners and admins deploy them.") }}
     {{ ui.empty_state(text="No versions yet.") }}
   {% endcall %}
-  {% call cat.specimen("Add card", '{{ ui.add_card(url, "Deploy a new app") }}', "The dashed card under a list that makes one more.") %}
-    {{ ui.add_card("#sg-empty", "Deploy a new app") }}
+  {% call cat.specimen("Add card", '{{ ui.add_card(url, "Deploy your first app") }}', "The dashed card in place of an empty list, for those who can make the first one.") %}
+    {{ ui.add_card("#sg-empty", "Deploy your first app") }}
   {% endcall %}
   {% call cat.specimen("Paragraphs", '{{ ui.para("2 of 7 apps match “re”.", "note") }}
 {{ ui.para("All copies run on homelab-1.") }}
@@ -367,8 +363,7 @@
     {{ lists.list_tools([("name", "Name"), ("deployed", "Last deployed"), ("created", "Newest")], "name", "#sg-items", "#sg-items", "list") }}
     {% call lists.items() %}{% for app in apps %}{{ lists.app_row(org, app) }}{% endfor %}{% endcall %}
   {% endcall %}
-  {% call cat.specimen("Apps as a grid", '{% call lists.items("grid") %}…{% endcall %}
-{{ ui.add_card(url, "Deploy a new app") }}', "The same rows as cards.") %}
+  {% call cat.specimen("Apps as a grid", '{% call lists.items("grid") %}…{% endcall %}', "The same rows as cards.") %}
     {% call lists.items("grid") %}{% for app in apps[:3] %}{{ lists.app_row(org, app) }}{% endfor %}{% endcall %}
   {% endcall %}
   {% call cat.specimen("Menu", '{% call lists.menu("Actions for " ~ app.name) %}

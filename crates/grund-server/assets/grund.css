@@ -2547,12 +2547,12 @@ a.endpoint-text:hover {
     padding-top: var(--space-7);
   }
 
-  .page-head {
+  .page-head:has(.list-tools) {
     flex-direction: column;
     gap: var(--space-5);
   }
 
-  .page-tools {
+  .page-head:has(.list-tools) .page-tools {
     align-self: stretch;
   }
 

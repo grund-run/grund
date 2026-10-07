@@ -856,7 +856,7 @@ async fn an_app_made_on_the_dashboard_shows_its_copies_ready_and_its_versions() 
     let page = format!("/{org}/apps");
     when.visiting(&page).await?;
     then.status(200)?
-        .body_contains("Deploy a new app")?
+        .body_contains("Deploy your first app")?
         .body_contains(&format!("href=\"&#x2f;{org}&#x2f;deploy\""))?;
     when.submitting(
         &format!("/{org}/deploy"),
@@ -986,7 +986,10 @@ async fn the_apps_list_shows_each_image_with_its_icon_and_where_to_reach_it_and_
         .body_contains(&format!(
             "href=\"&#x2f;{org}&#x2f;apps&#x2f;shop&#x2f;settings?edit=delete\""
         ))?
-        .body_contains("Deploy a new app")?;
+        .body_contains(&format!(
+            "href=\"&#x2f;{org}&#x2f;apps&#x2f;shop&#x2f;settings?edit=image\""
+        ))?
+        .body_lacks("Deploy your first app")?;
     let body = then.body()?;
     let (db, shop) = (body.find(">db<"), body.find(">shop<"));
     anyhow::ensure!(
@@ -1319,11 +1322,16 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
         .body_contains(&format!("by <strong>{org}</strong> from the dashboard"))?
         .body_lacks("View logs")?
         .body_contains("<span class=\"btn-label\">Deploy app</span>")?
-        .body_lacks("<span class=\"btn-label\">Deploy change</span>")?
-        .body_contains("<span>Deploy change</span>")?
+        .body_lacks("Deploy change")?
+        .body_contains("</svg>Update image</a>")?
         .body_contains(&format!(
-            "href=\"&#x2f;{org}&#x2f;apps&#x2f;hello&#x2f;deploy\""
+            "href=\"&#x2f;{org}&#x2f;apps&#x2f;hello&#x2f;settings?edit=image\""
         ))?;
+    let body = then.body()?;
+    anyhow::ensure!(
+        body.matches("btn-primary").count() == 1,
+        "the top bar's Deploy app is the page's only primary button"
+    );
 
     for (tab, words) in [
         ("", "Latest activity"),
@@ -1331,7 +1339,7 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
         ("/logs", "Logs are coming"),
         ("/metrics", "Metrics are coming"),
         ("/settings", "Configured"),
-        ("/deploy", "Your change"),
+        ("/settings?edit=image", "The tag is resolved now."),
     ] {
         when.visiting(&format!("{page}{tab}")).await?;
         then.status(200)
@@ -1342,50 +1350,49 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
             .and_then(|t| t.body_lacks(" onclick="))
             .map_err(|error| error.context(format!("{page}{tab}")))?;
     }
-    then.body_contains("value=\"80\"")?
-        .body_contains("An app keeps its name.")?;
+    then.body_contains("id=\"version\">Image</h2>")?;
+    when.visiting(&format!("{page}/deploy")).await?;
+    then.status(404)?;
 
-    let change = format!("{page}/deploy");
+    let settings = format!("{page}/settings");
+    when.visiting(&settings).await?;
+    then.status(200)?.body_contains(&format!(
+        "acme&#x2f;hello:1 · {}",
+        &first.trim_start_matches("sha256:")[..12]
+    ))?;
     when.submitting(
-        &change,
-        &change,
-        &[
-            ("mode", "custom"),
-            ("image", &registry.image("acme/hello", "nope")),
-            ("exposure", "public"),
-            ("port", "80"),
-            ("copies", "1"),
-            ("secrets_key", "API_KEY"),
-            ("secrets_value", "s3cr3t-value"),
-        ],
+        &settings,
+        &format!("{page}/settings/release"),
+        &[("part", "image"), ("image", "nope")],
     )
     .await?;
     then.status(422)?
-        .body_contains("Nothing was deployed.")?
-        .body_contains("Enter them again")?
-        .body_lacks("s3cr3t-value")?;
+        .body_contains("Nothing was released. Check the field marked below.")?
+        .body_contains("id=\"version\">Image</h2>")?
+        .body_contains("aria-invalid=\"true\"")?
+        .body_contains("value=\"nope\"")?;
     when.submitting(
-        &change,
-        &change,
-        &[
-            ("mode", "custom"),
-            ("image", &registry.image("acme/hello", "2")),
-            ("exposure", "public"),
-            ("port", "80"),
-            ("copies", "1"),
-            ("check", "http"),
-            ("check_path", "/"),
-            ("env_key", "GREETING"),
-            ("env_value", "hej"),
-            ("secrets_key", "API_KEY"),
-            ("secrets_value", "s3cr3t-value"),
-        ],
+        &settings,
+        &format!("{page}/settings/release"),
+        &[("part", "image"), ("image", "2")],
     )
     .await?;
     then.status(303)?
-        .redirects_to(&format!("{page}?done=deployed"))?;
+        .redirects_to(&format!("{page}/settings?done=released"))?;
+    when.visiting(&settings).await?;
+    then.status(200)?.body_contains(&format!(
+        "acme&#x2f;hello:2 · {}",
+        &second.trim_start_matches("sha256:")[..12]
+    ))?;
+    when.submitting(
+        &settings,
+        &format!("{page}/secrets"),
+        &[("variable", "API_KEY"), ("value", "s3cr3t-value")],
+    )
+    .await?;
+    then.status(303)?
+        .redirects_to(&format!("{page}/settings?done=secret"))?;
 
-    let settings = format!("{page}/settings");
     when.submitting(
         &settings,
         &format!("{page}/settings/release"),
@@ -1440,9 +1447,9 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
             .unwrap_or_default()
             .to_string()
     };
-    anyhow::ensure!(releases.len() == 4, "v1 to v4: {releases:#?}");
+    anyhow::ensure!(releases.len() == 5, "v1 to v5: {releases:#?}");
     anyhow::ensure!(digest_of(1) == first, "v1 is the first image");
-    for number in [2, 3, 4] {
+    for number in [2, 3, 4, 5] {
         anyhow::ensure!(
             digest_of(number) == second,
             "a change of settings keeps v2's image: v{number} {releases:#?}"
@@ -1536,7 +1543,7 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
         .redirects_to(&format!("{page}/deployments?done=rolled-back"))?;
     when.visiting(&deployments).await?;
     then.status(200)?
-        .body_contains("id=\"v6\"")?
+        .body_contains("id=\"v7\"")?
         .body_contains(&format!("Rolled back to v1 by {org}"))?;
 
     when.submitting(
@@ -1561,7 +1568,6 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
         "/logs",
         "/metrics",
         "/settings",
-        "/deploy",
         "/grund.yaml",
     ] {
         outsider_when.visiting(&format!("{page}{tab}")).await?;

@@ -391,7 +391,6 @@ pub struct ListQuery {
 fn notice_words(done: &str) -> &'static str {
     match done {
         "created" => "App made. Its first release is rolling out.",
-        "deployed" => "New release made. It is rolling out.",
         "released-file" => "grund.yaml applied as a new release. It is rolling out.",
         "released" => "Saved as a new release. It is rolling out.",
         "saved" => "Saved.",
@@ -509,7 +508,6 @@ pub async fn deploy_page(
         &membership,
         form,
         Refusal::default(),
-        None,
     )
     .await
 }
@@ -644,11 +642,6 @@ pub fn template_context(template: &templates::Template) -> Value {
     }
 }
 
-struct Changing {
-    name: String,
-    secrets: Vec<String>,
-}
-
 async fn new_view(
     state: &State,
     browser: &Browser,
@@ -656,7 +649,6 @@ async fn new_view(
     membership: &Membership,
     new: NewForm,
     refused: Refusal,
-    change: Option<Changing>,
 ) -> PageResult {
     let slug = &membership.slug;
     let choices: Vec<Value> = templates::CATALOGUE
@@ -707,15 +699,13 @@ async fn new_view(
             new_error => refused.banner.clone(), errors,
             advanced, secrets_dropped,
             exposures => exposures(state.config.entry.app_domain.as_deref()),
-            public_hint => state.config.entry.app_domain.as_deref().map(|domain| format!("Public: https://{}-{slug}.{domain}", change.as_ref().map_or("<name>", |c| c.name.as_str()))).unwrap_or_default(),
-            change => change.as_ref().map(|c| context! { name => c.name, base => format!("/{slug}/apps/{}", c.name) }),
-            secrets_kept => change.as_ref().map(|c| c.secrets.join(", ")).unwrap_or_default(),
+            public_hint => state.config.entry.app_domain.as_deref().map(|domain| format!("Public: https://<name>-{slug}.{domain}")).unwrap_or_default(),
             templates => choices, image_keys => template_icons(),
             signals => STOP_SIGNALS.iter().map(|s| (*s, *s)).collect::<Vec<_>>(),
             checks => [("", "None"), ("http", "HTTP request"), ("tcp", "TCP connection")],
             other_mode => mode_href(if premade { "custom" } else { "premade" }),
             templates_href => format!("/{slug}/templates"),
-            action => change.as_ref().map_or(format!("/{slug}/deploy"), |c| format!("/{slug}/apps/{}/deploy", c.name)),
+            action => format!("/{slug}/deploy"),
         },
     )
     .await
@@ -1115,7 +1105,7 @@ pub async fn create(
         }
         Err(refused) => refused,
     };
-    new_view(&state, &browser, &session, &membership, form, refused, None).await
+    new_view(&state, &browser, &session, &membership, form, refused).await
 }
 
 fn urlencode(text: &str) -> String {
@@ -1145,6 +1135,7 @@ const APP_TABS: &[(&str, &str, &str, &str)] = &[
 ];
 
 const SETTINGS_FIELDS: &[&str] = &[
+    "image",
     "copies",
     "exposure",
     "port",
@@ -1162,6 +1153,7 @@ const SETTINGS_FIELDS: &[&str] = &[
 ];
 
 const SETTINGS_PARTS: &[&str] = &[
+    "image",
     "copies",
     "exposure",
     "env",
@@ -1176,6 +1168,7 @@ const SETTINGS_PARTS: &[&str] = &[
 
 fn part_of(field: &str) -> &'static str {
     match field {
+        "image" => "image",
         "exposure" | "port" => "exposure",
         "env" => "env",
         "check" => "check",
@@ -1212,8 +1205,36 @@ fn names(items: &[String]) -> String {
     }
 }
 
+fn image_line(image: &str, digest: &str) -> String {
+    let image = image.split('@').next().unwrap_or_default();
+    let short = image
+        .trim_start_matches("docker.io/")
+        .trim_start_matches("library/");
+    let hex: String = digest
+        .trim_start_matches("sha256:")
+        .chars()
+        .take(12)
+        .collect();
+    format!("{short} · {hex}")
+}
+
+fn image_named(now: &str, given: &str) -> String {
+    let given = given.trim();
+    if given.is_empty() || given.contains(['/', ':', '@']) {
+        return given.to_string();
+    }
+    let name = now.split('@').next().unwrap_or_default();
+    let last = name.rfind('/').map_or(0, |i| i + 1);
+    let repository = match name[last..].rfind(':') {
+        Some(colon) => &name[..last + colon],
+        None => name,
+    };
+    format!("{repository}:{given}")
+}
+
 fn setting_items(
     spec: &AppSpec,
+    image: &str,
     settings: &grund_domain::app::AppSettings,
     address: Option<&str>,
     secrets: &[String],
@@ -1299,6 +1320,7 @@ fn setting_items(
         context! { key, title, icon, value }
     };
     let mut configured = vec![
+        item("image", "Image", "layers", Some(image.to_string())),
         item(
             "exposure",
             "Exposure",
@@ -1336,6 +1358,7 @@ fn setting_items(
 }
 
 const SETTING_KEYS: &[&str] = &[
+    "image",
     "exposure",
     "copies",
     "placement",
@@ -1479,12 +1502,10 @@ async fn app_view(
     let running = current
         .and_then(|number| releases.iter().find(|r| r.number == number))
         .map(|r| {
-            let image = r.spec.0.image.split('@').next().unwrap_or_default();
-            let short = image.trim_start_matches("docker.io/").trim_start_matches("library/");
             context! {
                 version => format!("v{}", r.number),
-                line => format!("{short} · {}", r.image_digest.trim_start_matches("sha256:").chars().take(12).collect::<String>()),
-                reference => format!("{image}@{}", r.image_digest),
+                line => image_line(&r.spec.0.image, &r.image_digest),
+                reference => format!("{}@{}", r.spec.0.image.split('@').next().unwrap_or_default(), r.image_digest),
             }
         });
     let replicas: Vec<Value> = view
@@ -1693,8 +1714,6 @@ async fn app_view(
                 apart => view.row.settings.0.placement.apart.join(", "),
                 reschedule_after => view.row.settings.0.reschedule_after_seconds,
                 auto_rollback => if view.row.settings.0.auto_rollback { "on" } else { "off" },
-                number => newest.map(|r| r.number),
-                digest => newest.map(|r| r.image_digest.chars().take(19).collect::<String>()),
             },
             rollback_choices => vec![
                 context! { value => "on", title => "Roll back on its own", text => "The release before keeps serving" },
@@ -1710,7 +1729,7 @@ async fn app_view(
             file,
             file_href => format!("{base}/grund.yaml"),
             signals => STOP_SIGNALS.iter().map(|s| (*s, *s)).collect::<Vec<_>>(),
-            items => spec.map(|spec| setting_items(spec, &view.row.settings.0, listing.address.as_deref(), &secret_names, &domain_names)),
+            items => newest.map(|r| setting_items(&r.spec.0, &image_line(&r.spec.0.image, &r.image_digest), &view.row.settings.0, listing.address.as_deref(), &secret_names, &domain_names)),
             next => newest.map(|r| r.number + 1),
             edit => if refused.part.is_empty() { SETTING_KEYS.iter().find(|k| **k == refused.edit).copied().unwrap_or_default() } else { refused.part },
             file_name => FILE_NAME,
@@ -1749,108 +1768,6 @@ macro_rules! newest_or_return {
             Err(response) => return Ok(response),
         }
     };
-}
-
-/// `/{org}/apps/{app}/deploy`: Deploy app's form, filled in with what the
-/// app runs now, to make its next release.
-pub async fn change_page(
-    AxumState(state): AxumState<State>,
-    Member {
-        browser,
-        session,
-        membership,
-    }: Member,
-    Path((slug, name)): Path<(String, String)>,
-) -> PageResult {
-    if !manages(&membership) {
-        return Ok(redirect(&format!("/{slug}/apps/{name}?error=not-allowed")));
-    }
-    let (spec, copies) = newest_or_return!(&state, &membership, &name);
-    let changing = Changing {
-        name: name.clone(),
-        secrets: spec.secrets.iter().map(|s| s.env.clone()).collect(),
-    };
-    new_view(
-        &state,
-        &browser,
-        &session,
-        &membership,
-        NewForm::from_spec(&spec, copies),
-        Refusal::default(),
-        Some(changing),
-    )
-    .await
-}
-
-/// `POST /{org}/apps/{app}/deploy`: the next release, from Deploy change.
-/// A refusal comes back as the form with 422, and nothing is made.
-pub async fn change(
-    AxumState(state): AxumState<State>,
-    browser: Browser,
-    uri: Uri,
-    Path((slug, name)): Path<(String, String)>,
-    Form(posted): Form<Vec<(String, String)>>,
-) -> PageResult {
-    let form = NewForm::from_pairs(posted);
-    if !browser.form_is_genuine(&form.csrf) {
-        return forged(&state, &browser);
-    }
-    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
-    if !manages(&membership) {
-        return Ok(redirect(&format!("/{slug}/apps/{name}?error=not-allowed")));
-    }
-    let (spec, _) = newest_or_return!(&state, &membership, &name);
-    let changing = Changing {
-        name: name.clone(),
-        secrets: spec.secrets.iter().map(|s| s.env.clone()).collect(),
-    };
-    let public = form.exposure == "public";
-    let made = if public && state.config.entry.app_domain.is_none() {
-        Err(Refusal::field(
-            "exposure",
-            "This instance gives apps no public address. Choose Private.",
-        ))
-    } else {
-        changed(&form, &spec, public)
-    };
-    let refused = match made {
-        Ok(change) => match state
-            .apps()
-            .change(
-                session.account_id,
-                membership.organisation_id,
-                &name,
-                change,
-            )
-            .await
-        {
-            Ok(_) => return Ok(redirect(&format!("/{slug}/apps/{name}?done=deployed"))),
-            Err(AppsError::NotFound) => return Ok(redirect(&format!("/{slug}/apps?error=gone"))),
-            Err(error) => refusal(&error),
-        },
-        Err(refused) => refused,
-    };
-    new_view(
-        &state,
-        &browser,
-        &session,
-        &membership,
-        form,
-        refused,
-        Some(changing),
-    )
-    .await
-}
-
-fn changed(form: &NewForm, base: &AppSpec, public: bool) -> Result<Change, Refusal> {
-    let (spec, detect_port) = form_spec(form, Some(base), public)?;
-    Ok(Change {
-        copies: copies_of(form)?,
-        spec,
-        detect_port,
-        secrets: named(&form.secrets).map_err(|message| Refusal::field("secrets", message))?,
-        same_image: false,
-    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2056,8 +1973,10 @@ pub async fn placement_settings(
     .await
 }
 
-/// `POST /{org}/apps/{app}/settings/release`: exposure, port, ready check
-/// and environment, as a new release of the image the newest one runs.
+/// `POST /{org}/apps/{app}/settings/release`: one Settings item (`part`)
+/// as a new release. Every part but `image` releases the image digest the
+/// newest release runs; `image` takes a tag, or a whole reference, and
+/// resolves it now.
 pub async fn release_settings(
     AxumState(state): AxumState<State>,
     browser: Browser,
@@ -2074,7 +1993,9 @@ pub async fn release_settings(
         return Ok(redirect(&format!("/{slug}/apps/{name}?error=not-allowed")));
     }
     let (spec, copies) = newest_or_return!(&state, &membership, &name);
+    let typed = posted.image.clone();
     let part = match posted.part.as_str() {
+        "image" => "image",
         "exposure" => "exposure",
         "env" => "env",
         "check" => "check",
@@ -2084,6 +2005,10 @@ pub async fn release_settings(
     };
     let now = NewForm::from_spec(&spec, copies);
     let form = match part {
+        "image" => NewForm {
+            image: image_named(&spec.image, &posted.image),
+            ..now
+        },
         "env" => NewForm {
             env: posted.env,
             ..now
@@ -2122,7 +2047,7 @@ pub async fn release_settings(
             spec,
             detect_port: None,
             secrets: Vec::new(),
-            same_image: true,
+            same_image: part != "image",
         })
     };
     let refusal = match made {
@@ -2163,7 +2088,13 @@ pub async fn release_settings(
             banner: "Nothing was released. Check the field marked below.".into(),
             ..refusal
         },
-        Some(form),
+        Some(match part {
+            "image" => NewForm {
+                image: typed,
+                ..form
+            },
+            _ => form,
+        }),
     )
     .await
 }
@@ -2576,10 +2507,17 @@ mod tests {
             stop: StopSpec::default(),
         };
         let settings = grund_domain::app::AppSettings::default();
-        let bare = setting_items(&spec, &settings, None, &[], &[]);
+        let bare = setting_items(
+            &spec,
+            "whoami:v1.11.0 · 0123456789ab",
+            &settings,
+            None,
+            &[],
+            &[],
+        );
         assert_eq!(
             keys(&bare, "configured"),
-            ["exposure", "copies", "resources"]
+            ["image", "exposure", "copies", "resources"]
         );
         assert_eq!(
             keys(&bare, "more"),
@@ -2608,10 +2546,18 @@ mod tests {
         spec.stop.grace_seconds = 10;
         let mut settings = settings;
         settings.placement.spread_by = Some("zone".into());
-        let set = setting_items(&spec, &settings, None, &["TOKEN".into()], &[]);
+        let set = setting_items(
+            &spec,
+            "whoami:v1.11.0 · 0123456789ab",
+            &settings,
+            None,
+            &["TOKEN".into()],
+            &[],
+        );
         assert_eq!(
             keys(&set, "configured"),
             [
+                "image",
                 "exposure",
                 "copies",
                 "placement",
@@ -2623,6 +2569,50 @@ mod tests {
             ]
         );
         assert_eq!(keys(&set, "more"), ["domains", "volumes", "file"]);
+    }
+
+    #[test]
+    fn a_tag_alone_replaces_the_tag_of_the_image_the_app_runs_and_a_whole_reference_is_taken_as_it_is()
+     {
+        for (now, given, named) in [
+            (
+                "traefik/whoami:v1.10.3",
+                "v1.11.0",
+                "traefik/whoami:v1.11.0",
+            ),
+            ("nginx", "1.27", "nginx:1.27"),
+            (
+                "localhost:5000/acme/shop:1",
+                " 2 ",
+                "localhost:5000/acme/shop:2",
+            ),
+            (
+                "ghcr.io/acme/shop:1@sha256:0123",
+                "2",
+                "ghcr.io/acme/shop:2",
+            ),
+            ("traefik/whoami:v1.10.3", "nginx:1.27", "nginx:1.27"),
+            ("traefik/whoami:v1.10.3", "acme/shop", "acme/shop"),
+            (
+                "traefik/whoami:v1.10.3",
+                "traefik/whoami@sha256:00",
+                "traefik/whoami@sha256:00",
+            ),
+            ("traefik/whoami:v1.10.3", "  ", ""),
+        ] {
+            assert_eq!(image_named(now, given), named, "{now} + {given}");
+        }
+    }
+
+    #[test]
+    fn an_image_reads_as_its_short_name_and_twelve_hex_of_its_digest() {
+        assert_eq!(
+            image_line(
+                "docker.io/library/nginx:1.27@sha256:aa",
+                "sha256:200689790a0a0ea48ca45992e0450bc26ccab5307375b41c84dfc4f2475937ab"
+            ),
+            "nginx:1.27 · 200689790a0a"
+        );
     }
 
     #[test]

@@ -125,10 +125,6 @@ pub fn router(state: State) -> Router {
         .route("/{org}/apps/{app}/logs", get(apps::logs_page))
         .route("/{org}/apps/{app}/metrics", get(apps::metrics_page))
         .route("/{org}/apps/{app}/settings", get(apps::settings_page))
-        .route(
-            "/{org}/apps/{app}/deploy",
-            get(apps::change_page).post(apps::change),
-        )
         .route("/{org}/apps/{app}/settings/copies", post(apps::configure))
         .route(
             "/{org}/apps/{app}/settings/placement",

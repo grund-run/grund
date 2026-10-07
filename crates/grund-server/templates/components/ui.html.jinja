@@ -73,7 +73,8 @@
            type="submit", collapse=false, block=false, icon_size="sm",
            extra="", icon_end=false)
     A link when href is set, else a <button type=type>.
-    kind:      primary (one per page), secondary, danger or ghost
+    kind:      primary (the top bar's Deploy app, and a form's submit),
+               secondary, danger or ghost
     size:      "" or "sm"
     collapse:  below 520 px only the icon shows (the label stays for
                screen readers)
@@ -131,9 +132,10 @@
     back:      (href, label) for a link above the title, on detail pages
     image:     an image icon key, drawn large before the title (an app)
     state:     (text, tone) for a pill() beside the title ("Live")
-    Called with {% call %}, the body goes at the right (list tools, or the
-    page's primary button); it keeps its width and the title's column
-    gives way. -#}
+    Called with {% call %}, the body goes at the right (list tools, or a
+    thing's kebab); it keeps its width and the title's column gives way.
+    No primary button goes here: the top bar's Deploy app is the only
+    one outside a form. -#}
 {% macro page_head(title, reference="", back=none, image="", state=none) -%}
 {% if back %}<a class="back" href="{{ back.0 }}">{{ icon("arrow", "icon-sm back-icon") }}{{ back.1 }}</a>{% endif %}
 <div class="page-head">
@@ -307,7 +309,8 @@
 {%- endmacro %}
 
 {#- add_card(href, title)
-    The dashed card under a list that leads to making one more. -#}
+    The dashed card in place of an empty list, leading to making the
+    first one. -#}
 {% macro add_card(href, title) -%}
 <a class="empty empty-action" href="{{ href }}">
   <span class="icon-btn icon-btn-boxed" aria-hidden="true">{{ icon("plus", "icon-sm") }}</span>

@@ -14,9 +14,8 @@
 {% elif list.q %}
 {{ ui.para("No app matches that.", "note") }}
 {% endif %}
-{% if org.manages %}
-{{ ui.add_card("/" ~ org.slug ~ "/deploy", "Deploy a new app") }}
-{% elif not apps and not list.q %}
-{{ ui.empty_state("No apps yet", "Owners and admins deploy them.") }}
+{% if not apps and not list.q %}
+{% if org.manages %}{{ ui.add_card("/" ~ org.slug ~ "/deploy", "Deploy your first app") }}
+{% else %}{{ ui.empty_state("No apps yet", "Owners and admins deploy them.") }}{% endif %}
 {% endif %}
 {% endblock %}

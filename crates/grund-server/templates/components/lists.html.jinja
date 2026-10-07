@@ -75,8 +75,8 @@
 {%- endmacro %}
 
 {#- app_menu(org, app)
-    An app's kebab: open it, its pages, and for owners and admins Deploy
-    change, Scale and Delete. org, app: as for app_row. -#}
+    An app's kebab: open it, its pages, and for owners and admins Update
+    image, Scale and Delete. org, app: as for app_row. -#}
 {% macro app_menu(org, app) -%}
 {% set base = "/" ~ org.slug ~ "/apps/" ~ app.name %}
 {% call menu("Actions for " ~ app.name) %}
@@ -84,7 +84,7 @@
   {{ menu_item(base, "home", "Overview") }}
   {{ menu_item(base ~ "/deployments", "layers", "Deployments") }}
   {% if org.manages %}
-  {{ menu_item(base ~ "/deploy", "arrow", "Deploy change") }}
+  {{ menu_item(base ~ "/settings?edit=image", "layers", "Update image") }}
   {{ menu_item(base ~ "/settings?edit=copies", "bars", "Scale") }}
   {{ menu_item(base ~ "/settings?edit=delete", "trash", "Delete…", danger=true) }}
   {% endif %}

@@ -1,8 +1,9 @@
 {#- An app's Settings: what is set (Configured), what can be added (Add
     more) and Delete, each a link to its own form at ?edit=<key>
     (web::apps::setting_items, SETTING_KEYS). A setting that changes what
-    runs makes a new release of the image the newest release runs; Copies
-    and Delete do not. -#}
+    runs makes a new release of the image digest the newest release runs,
+    except Image, which resolves its tag again; Copies, Placement and
+    Delete make none. -#}
 {% extends "pages/app.html.jinja" %}
 {% block tab %}
 {% set here = app.base ~ "/settings" %}
@@ -12,6 +13,18 @@
 {% call ui.section("settings", "Settings", first=true) %}
 {% if not items %}
 {{ ui.empty_state("No release yet", "Deploy one to set anything.") }}
+
+{% elif edit == "image" %}
+{% call ui.panel("version", "Image") %}
+  {% if org.manages %}
+  {% call forms.form(here ~ "/release", csrf, autocomplete="off") %}
+    {{ forms.hidden_field("part", "image") }}
+    {{ forms.banner(banners.image) }}
+    {{ forms.field("image", "Image", value=form.image, error=errors.image, autocomplete="off", mono=true, hint="A tag, such as v1.11.0, or a whole reference. The tag is resolved now.") }}
+    {% call forms.actions(release_note, "layers") %}{{ cancel }}{{ ui.button("Save and release") }}{% endcall %}
+  {% endcall %}
+  {% else %}{{ readonly }}{% endif %}
+{% endcall %}
 
 {% elif edit == "exposure" %}
 {% call ui.panel("exposure", "Exposure") %}

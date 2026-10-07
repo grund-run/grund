@@ -1,15 +1,11 @@
 {% extends "layout-app.html.jinja" %}
 {% import "components/images.html.jinja" as images %}
-{% set title = ("Deploy change · " ~ change.name) if change else "Deploy app" %}
+{% set title = "Deploy app" %}
 {% block content %}
 {{ images.sprite(image_keys) }}
-{% if change %}
-{{ ui.page_head("Deploy change", back=(change.base, "Back to " ~ change.name)) }}
-{% else %}
 {{ ui.page_head("Deploy app", back=("/" ~ org.slug ~ "/apps", "Back to apps")) }}
-{% endif %}
 {% if org.manages %}
-{% if not change %}{{ ui.choice_links("Deployment mode", modes, mode) }}{% endif %}
+{{ ui.choice_links("Deployment mode", modes, mode) }}
 {% call forms.form(action, csrf, autocomplete="off") %}
   {{ forms.hidden_field("mode", mode) }}
   {% if mode == "premade" %}
@@ -23,11 +19,10 @@
     {% endcall %}
   {% endcall %}
   {% else %}
-  {% call ui.panel("custom", "Your change" if change else "Custom deployment") %}
+  {% call ui.panel("custom", "Custom deployment") %}
     {{ forms.banner(new_error) }}
     {% call forms.grid() %}
-      {% if change %}{{ forms.field("name", "Name", value=change.name, disabled=true, hint="An app keeps its name.") }}
-      {% else %}{{ forms.field("name", "Name", value=new.name, error=errors.name, hint="Lowercase letters, digits and -.") }}{% endif %}
+      {{ forms.field("name", "Name", value=new.name, error=errors.name, hint="Lowercase letters, digits and -.") }}
       {{ forms.field("image", "Image", value=new.image, error=errors.image, hint="Such as nats:2.10 or ghcr.io/org/app:latest. The tag is resolved now.") }}
       {{ forms.choice_field("exposure", "Exposure", exposures, new.exposure or "private", error=errors.exposure, hint=public_hint) }}
       {% call forms.grid() %}
@@ -38,7 +33,7 @@
     {% call ui.expanders() %}
     {% call ui.expander("Advanced options", "Environment variables, secrets, ready check, resources and command.", icon_name="gear", open=advanced) %}
       {{ forms.pairs_field("env", "Environment variables", new.env, error=errors.env, hint="Shown in the clear.") }}
-      {{ forms.pairs_field("secrets", "Secrets", error=errors.secrets, secret=true, hint=("Enter them again: a refused form never shows a secret. " if secrets_dropped else "") ~ ("New values only; " ~ secrets_kept ~ " keep theirs. " if secrets_kept else "") ~ "Never shown again.") }}
+      {{ forms.pairs_field("secrets", "Secrets", error=errors.secrets, secret=true, hint=("Enter them again: a refused form never shows a secret. " if secrets_dropped else "") ~ "Never shown again.") }}
       {% call forms.grid() %}
         {{ forms.select_field("check", "Ready check", checks, new.check) }}
         {{ forms.field("check_path", "Check path", value=new.check_path, required=false, error=errors.check, hint="For an HTTP check. Empty: /.", mono=true) }}
@@ -53,7 +48,7 @@
     {% endcall %}
   {% endcall %}
   {% endif %}
-  {% call forms.actions("Deploying makes a new release." if change else "Deploying makes the app and its first release.", "layers") %}{{ ui.button("Cancel", href=change.base if change else "/" ~ org.slug ~ "/apps", kind="secondary") }}{{ ui.button("Deploy change" if change else "Deploy app") }}{% endcall %}
+  {% call forms.actions("Deploying makes the app and its first release.", "layers") %}{{ ui.button("Cancel", href="/" ~ org.slug ~ "/apps", kind="secondary") }}{{ ui.button("Deploy app") }}{% endcall %}
 {% endcall %}
 {% else %}
 {{ ui.empty_state("Your role does not deploy apps", "Owners and admins deploy them.") }}

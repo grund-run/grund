@@ -130,8 +130,8 @@ pub struct Launch {
     pub secrets: Vec<(String, String)>,
 }
 
-/// The next release of an app as the dashboard's Deploy change and Settings
-/// ask for it, made by [`Apps::change`].
+/// The next release of an app as the dashboard's Settings ask for it, made
+/// by [`Apps::change`].
 #[derive(Debug, Clone)]
 pub struct Change {
     /// The copies to run from this release on; `None` keeps them.
@@ -622,8 +622,7 @@ impl Apps {
             if newest.spec.0.image != spec.image {
                 return Err(AppsError::Spec(SpecError {
                     field: "image".into(),
-                    problem: "a change of settings keeps the image; deploy a change for another"
-                        .into(),
+                    problem: "a change of settings keeps the image; change it under Image".into(),
                 }));
             }
             if let Some(port) = detect {
