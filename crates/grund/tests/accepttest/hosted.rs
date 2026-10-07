@@ -247,7 +247,7 @@ async fn the_operator_leases_ends_and_revokes_on_the_pool_page_which_no_one_else
     lessee_then
         .status(200)?
         .body_contains("web-1")?
-        .body_contains("grund machine")?;
+        .body_contains(">Hosted<")?;
 
     when.submitting(
         &format!("/{operator}/pool"),

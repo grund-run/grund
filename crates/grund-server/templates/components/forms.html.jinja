@@ -333,6 +333,26 @@
 </form>
 {%- endmacro %}
 
+{#- search(action, label, q="", id="search", hidden={}, filter=false)
+    A GET form sending q to action, with the search icon inside the
+    field: the top bar's app search, and a list's own search at the end
+    of its tabs (Machines).
+    label:  the field's accessible name; its placeholder is label ~ "…"
+    id:     the field's id; one page has the top bar's "search", so a
+            list's own search takes another
+    hidden: other query values the form keeps (the list's tab, sort,
+            view); an empty one is left out
+    filter: the script filters the page's [data-filterable] list as
+            you type -#}
+{% macro search(action, label, q="", id="search", hidden={}, filter=false) -%}
+<form class="search" role="search" method="get" action="{{ action }}">
+  <label class="visually-hidden" for="{{ id }}">{{ label }}</label>
+  {{ ui.icon("search", "icon-sm search-icon") }}
+  <input id="{{ id }}" name="q" type="search" placeholder="{{ label }}…" autocomplete="off" value="{{ q }}"{% if filter %} data-filter{% endif %}>
+  {% for name, value in hidden | items %}{% if value %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endif %}{% endfor %}
+</form>
+{%- endmacro %}
+
 {#- banner(error="", ok="", fields=[])
     A form's or a page's banner: ok says it worked, error what went
     wrong, each only when it is not empty (ok first). A page passes the

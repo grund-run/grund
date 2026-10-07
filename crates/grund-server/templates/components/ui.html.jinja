@@ -40,13 +40,15 @@
 <span class="tag">{{ text }}</span>
 {%- endmacro %}
 
-{#- pill(text, tone="")
+{#- pill(text, tone="", plain=false)
     A rounded label saying how a thing is, larger than a tag: "Live"
     beside an app's name.
-    tone: a dot of that colour before the text (ok, blue, orange,
-          danger, muted) -#}
-{% macro pill(text, tone="") -%}
-<span class="pill">{% if tone %}<span class="dot tone-{{ tone }}" aria-hidden="true"></span>{% endif %}{{ text }}</span>
+    tone:  a dot of that colour before the text (ok, blue, orange,
+           danger, muted)
+    plain: the dot and the word alone, small, with no box: how a thing in
+           a list is, under its name ("Connected") -#}
+{% macro pill(text, tone="", plain=false) -%}
+<span class="pill{% if plain %} pill-plain{% endif %}">{% if tone %}<span class="dot tone-{{ tone }}" aria-hidden="true"></span>{% endif %}{{ text }}</span>
 {%- endmacro %}
 
 {#- image_icon(key, size="")
@@ -73,7 +75,7 @@
            type="submit", collapse=false, block=false, icon_size="sm",
            extra="", icon_end=false)
     A link when href is set, else a <button type=type>.
-    kind:      primary (the top bar's Deploy app, and a form's submit),
+    kind:      primary (the top bar's action, and a form's submit),
                secondary, danger or ghost
     size:      "" or "sm"
     collapse:  below 520 px only the icon shows (the label stays for
@@ -134,8 +136,8 @@
     state:     (text, tone) for a pill() beside the title ("Live")
     Called with {% call %}, the body goes at the right (list tools, or a
     thing's kebab); it keeps its width and the title's column gives way.
-    No primary button goes here: the top bar's Deploy app is the only
-    one outside a form. -#}
+    No primary button goes here: the top bar's action
+    (shell.topbar_action) is the only one outside a form. -#}
 {% macro page_head(title, reference="", back=none, image="", state=none) -%}
 {% if back %}<a class="back" href="{{ back.0 }}">{{ icon("arrow", "icon-sm back-icon") }}{{ back.1 }}</a>{% endif %}
 <div class="page-head">
@@ -208,17 +210,25 @@
 </nav>
 {%- endmacro %}
 
-{#- tabs(label, tabs, active)
+{#- tabs(label, tabs, active, counts={}, filter=false)
     Splits one thing into pages, as links, so they work without the
-    script: an organisation's settings, an app's Overview and Settings.
-    label: the nav's accessible name
-    tabs:  (key, href, text) triples, or (key, href, text, icon_name)
-    active: the current key -#}
-{% macro tabs(label, tabs, active) -%}
+    script: an organisation's settings, an app's Overview and Settings,
+    the Machines list's All and Disconnected.
+    label:  the nav's accessible name
+    tabs:   (key, href, text) triples, or (key, href, text, icon_name)
+    active: the current key
+    counts: a number after a tab's text, in a small box, by key
+    filter: the tabs filter the page's list (lists.items) by its rows'
+            data-tab; the script then switches them in place
+    Called with {% call %}, the body sits at the right end of the tabs'
+    line (the list's search, forms.search). -#}
+{% macro tabs(label, tabs, active, counts={}, filter=false) -%}
+{% if caller is defined %}<div class="tabs-bar">{% endif %}
 <nav class="tabs" aria-label="{{ label }}">
-  {% for tab in tabs %}<a class="tab{% if active == tab[0] %} is-active{% endif %}" href="{{ tab[1] }}"{% if active == tab[0] %} aria-current="page"{% endif %}>{% if tab | length > 3 %}{{ icon(tab[3], "icon-sm") }}{% endif %}{{ tab[2] }}</a>
+  {% for tab in tabs %}<a class="tab{% if active == tab[0] %} is-active{% endif %}" href="{{ tab[1] }}"{% if active == tab[0] %} aria-current="page"{% endif %}{% if filter %} data-tab="{{ tab[0] }}"{% endif %}>{% if tab | length > 3 %}{{ icon(tab[3], "icon-sm") }}{% endif %}{{ tab[2] }}{% if tab[0] in counts %}<span class="tab-count">{{ counts[tab[0]] }}</span>{% endif %}</a>
   {% endfor %}
 </nav>
+{%- if caller is defined %}<div class="tabs-tools">{{ caller() }}</div></div>{% endif %}
 {%- endmacro %}
 
 {#- facts(): a row of fact()s divided by lines, a column below 900 px;
@@ -293,19 +303,35 @@
 </div>
 {%- endmacro %}
 
+{#- icon_fact(icon_name, text)
+    A small fact with its icon before it, on one line: what a thing has
+    ("16 vCPU", "64 GB RAM"). Several sit side by side in a row's meta
+    column; stats() is a list of them. -#}
+{% macro icon_fact(icon_name, text) -%}
+<span class="icon-fact">{{ icon(icon_name, "icon-sm") }}{{ text }}</span>
+{%- endmacro %}
+
 {#- stats(facts): small print at the foot, (icon_name, text) pairs. -#}
 {% macro stats(facts) -%}
 <ul class="stats">
-  {% for icon_name, text in facts %}<li>{{ icon(icon_name, "icon-sm") }}{{ text }}</li>
+  {% for icon_name, text in facts %}<li>{{ icon_fact(icon_name, text) }}</li>
   {% endfor %}
 </ul>
 {%- endmacro %}
 
-{#- empty_state(title="", text="")
+{#- empty_state(title="", text="", icon_name="", filter_empty="",
+                hidden=false)
     A dashed box: what is missing, and one sentence on how it appears.
-    Called with {% call %}, the body replaces text (for a link or code). -#}
-{% macro empty_state(title="", text="") -%}
-<div class="empty">{% if title %}<strong>{{ title }}</strong>{% endif %}{% if caller is defined %}{{ caller() }}{% else %}{{ text }}{% endif %}</div>
+    Called with {% call %}, the body replaces text (for a link or code).
+    icon_name:    no box: the icon large over the title, all centred, in
+                  place of a whole list ("Add your first machine"); the
+                  body is its button and links
+    filter_empty: the script shows it when its tabs or search leave the
+                  list empty: "match" for a search, "tab" for a tab
+    hidden:       not shown (until the script shows it) -#}
+{% macro empty_state(title="", text="", icon_name="", filter_empty="", hidden=false) -%}
+<div class="empty{% if icon_name %} empty-hero{% endif %}"{% if filter_empty %} data-filter-empty="{{ filter_empty }}"{% endif %}{% if hidden %} hidden{% endif %}>
+  {%- if icon_name %}{{ icon(icon_name, "icon-lg") }}{% endif %}{% if title %}<strong>{{ title }}</strong>{% endif %}{% if caller is defined %}{% if icon_name %}<div class="empty-actions">{{ caller() }}</div>{% else %}{{ caller() }}{% endif %}{% else %}{{ text }}{% endif %}</div>
 {%- endmacro %}
 
 {#- add_card(href, title)

@@ -1,6 +1,6 @@
 // grund's only script: small enhancements over pages that work without it.
 // Copy buttons, a sort select that applies itself, the app filter as you
-// type, menus that close on Escape or a click elsewhere, the − and + of a
+// type, tabs that filter a list in place, menus that close on Escape or a click elsewhere, the − and + of a
 // number, a choice that fills in a name, rows of names and values that
 // grow and shrink, chips filtered as you type, sliders kept in step with
 // their numbers, presets that fill them, and the setting a link points
@@ -46,20 +46,58 @@
 
     var filter = document.querySelector("input[data-filter]");
     var list = document.querySelector("[data-filterable]");
-    if (filter && list) {
+    if (list) {
       var items = Array.prototype.slice.call(list.querySelectorAll("[data-name]"));
-      var none = document.querySelector("[data-filter-empty]");
-      filter.addEventListener("input", function () {
-        var query = filter.value.trim().toLowerCase();
+      var empties = Array.prototype.slice.call(document.querySelectorAll("[data-filter-empty]"));
+      var tabs = Array.prototype.slice.call(document.querySelectorAll("a[data-tab]")).filter(function (link) {
+        return link.pathname === location.pathname;
+      });
+      var current = tabs.filter(function (link) { return link.classList.contains("is-active"); })[0];
+      var tab = current ? current.dataset.tab : "";
+      var apply = function () {
+        var query = filter ? filter.value.trim().toLowerCase() : "";
         var shown = 0;
         items.forEach(function (item) {
-          var match = !query ||
+          var match = (!query ||
             item.dataset.name.indexOf(query) !== -1 ||
-            (item.dataset.image || "").toLowerCase().indexOf(query) !== -1;
+            (item.dataset.image || "").toLowerCase().indexOf(query) !== -1) &&
+            (!tab || item.dataset.tab === tab);
           item.hidden = !match;
           if (match) shown++;
         });
-        if (none) none.hidden = shown !== 0;
+        var why = query ? "match" : "tab";
+        empties.forEach(function (empty) {
+          empty.hidden = shown !== 0 || (empty.dataset.filterEmpty || "match") !== why;
+        });
+      };
+      if (filter) filter.addEventListener("input", apply);
+      tabs.forEach(function (link) {
+        link.addEventListener("click", function (event) {
+          event.preventDefault();
+          tab = link.dataset.tab;
+          tabs.forEach(function (other) {
+            var on = other === link;
+            other.classList.toggle("is-active", on);
+            if (on) other.setAttribute("aria-current", "page");
+            else other.removeAttribute("aria-current");
+          });
+          if (filter) {
+            var kept = filter.form.querySelector("input[name=tab]");
+            if (!kept && tab) {
+              kept = document.createElement("input");
+              kept.type = "hidden";
+              kept.name = "tab";
+              filter.form.appendChild(kept);
+            }
+            if (kept) kept.value = tab;
+            if (kept && !tab) kept.remove();
+          }
+          var url = new URL(link.href);
+          if (filter && filter.value.trim()) url.searchParams.set("q", filter.value.trim());
+          else url.searchParams.delete("q");
+          history.replaceState(null, "", url.pathname + url.search);
+          apply();
+        });
       });
     }
 

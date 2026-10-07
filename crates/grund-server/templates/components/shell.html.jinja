@@ -1,6 +1,6 @@
 {#- The signed-in app shell's parts. layout-app.html.jinja puts them
     together; a page never calls them itself. Classes are grund.css's shell
-    vocabulary (.sidebar, .nav, .nav-item, .org-switch, .topbar, .search). -#}
+    vocabulary (.sidebar, .nav, .nav-item, .org-switch, .topbar). -#}
 {% import "components/ui.html.jinja" as ui %}
 {% import "components/forms.html.jinja" as forms %}
 {% import "components/lists.html.jinja" as lists %}
@@ -26,7 +26,7 @@
   <ul class="nav">
     {{ nav_item("/" ~ org.slug, "home", "Overview", section == "overview") }}
     {{ nav_item("/" ~ org.slug ~ "/apps", "grid", "Apps", section in ["apps", "deploy"]) }}
-    {{ nav_item("/" ~ org.slug ~ "/machines", "server", "Machines", section == "machines") }}
+    {{ nav_item("/" ~ org.slug ~ "/machines", "server", "Machines", section in ["machines", "machine-add"]) }}
     {{ nav_item("/" ~ org.slug ~ "/domains", "globe", "Domains", section == "domains") }}
     {{ nav_item("/" ~ org.slug ~ "/templates", "template", "Templates", section == "templates") }}
     {{ nav_item("/" ~ org.slug ~ "/settings", "users", "Organisation", section in ["org-settings", "members"]) }}
@@ -76,20 +76,18 @@
 {% macro account_menu(viewer, csrf) -%}
 <details class="account menu">
   <summary class="avatar" aria-label="{{ viewer.username }}: account menu">{{ viewer.initials }}</summary>
-  <div class="menu-list menu-list-up">
-    <p class="menu-title">{{ viewer.username }}</p>
-    {% if viewer.email %}<p class="menu-text">{{ viewer.email }}</p>{% endif %}
-    <form method="post" action="/logout">
-      {{ forms.csrf_field(csrf) }}
-      <button class="menu-item" type="submit">{{ ui.icon("logout", "icon-sm") }}Sign out</button>
-    </form>
-  </div>
+  <ul class="menu-list menu-list-up">
+    <li><p class="menu-title">{{ viewer.username }}</p></li>
+    {% if viewer.email %}<li><p class="menu-text">{{ viewer.email }}</p></li>{% endif %}
+    {{ lists.menu_post("/logout", csrf, "logout", "Sign out") }}
+  </ul>
 </details>
 {%- endmacro %}
 
 {#- topbar(viewer, section, list=none)
-    On organisation pages: the app search and the Deploy app button (for
-    owners and admins, not on the deploy page itself).
+    On organisation pages: the app search, except on a section with a
+    search of its own (Machines) or none to make (Add machine), and the
+    section's action (topbar_action).
     list:   the Apps page's query (q, sort, view), so the search keeps the
             order and the view and filters the list as you type; none
             elsewhere. -#}
@@ -97,26 +95,22 @@
 {% set org = viewer.current %}
 <header class="topbar">
   {% if org %}
-  {{ search("/" ~ org.slug ~ "/apps", "Search apps", list) }}
-  {% if org.manages and section != "deploy" %}
-  <span class="topbar-end">{{ ui.button("Deploy app", href="/" ~ org.slug ~ "/deploy", icon_name="plus", collapse=true) }}</span>
-  {% endif %}
+  {% if section not in ["machines", "machine-add"] %}{{ forms.search("/" ~ org.slug ~ "/apps", "Search apps", q=list.q if list else "", hidden={"sort": list.sort, "view": list.view} if list else {}, filter=list is not none) }}{% endif %}
+  {{ topbar_action(org, section) }}
   {% else %}
   <p class="topbar-title">{{ viewer.username }}</p>
   {% endif %}
 </header>
 {%- endmacro %}
 
-{#- search(action, label, list=none)
-    A GET form sending q to action.
-    label: the field's accessible name; its placeholder is label ~ "…"
-    list:  as for topbar: kept as hidden fields, and data-filter turns on
-           the script's filtering of the page's [data-filterable] list. -#}
-{% macro search(action, label, list=none) -%}
-<form class="search" role="search" method="get" action="{{ action }}">
-  <label class="visually-hidden" for="search">{{ label }}</label>
-  {{ ui.icon("search", "icon-sm search-icon") }}
-  <input id="search" name="q" type="search" placeholder="{{ label }}…" autocomplete="off" value="{{ list.q if list else '' }}"{% if list %} data-filter{% endif %}>
-  {% if list %}<input type="hidden" name="sort" value="{{ list.sort }}"><input type="hidden" name="view" value="{{ list.view }}">{% endif %}
-</form>
+{#- topbar_action(org, section, state="")
+    The screen's one primary button, for owners and admins, following
+    the section: Add machine on Machines, Deploy app everywhere else.
+    None on the page the action opens (Deploy app, Add machine), where
+    that page's form has the primary button.
+    state: "hover" or "focus" pins that look (the style guide only) -#}
+{% macro topbar_action(org, section, state="") -%}
+{% set actions = {"machines": ("Add machine", "/machines/add"), "deploy": none, "machine-add": none} %}
+{% set action = actions[section] if section in actions else ("Deploy app", "/deploy") %}
+{% if org.manages and action %}<span class="topbar-end">{{ ui.button(action.0, href="/" ~ org.slug ~ action.1, icon_name="plus", collapse=true, extra="is-" ~ state if state else "") }}</span>{% endif %}
 {%- endmacro %}

@@ -354,7 +354,15 @@ async fn the_dashboard_labels_a_machine_takes_it_out_of_service_and_sets_an_apps
         &[("labels_key", "Zone"), ("labels_value", "a")],
     )
     .await?;
-    then.redirects_to(&format!("/{org}/machines?error=label-key#labels"))?;
+    then.redirects_to(&format!(
+        "/{org}/machines?labels={id}&error=label-key#labels"
+    ))?;
+    when.visiting(&format!("{page}?labels={id}&error=label-key"))
+        .await?;
+    then.status(200)?
+        .body_contains("Labels of desk")?
+        .body_contains("A label key is 1 to 63")?
+        .body_contains(r#"value="zone""#)?;
     when.submitting(
         &page,
         &format!("/{org}/machines/{id}/service"),
@@ -365,7 +373,8 @@ async fn the_dashboard_labels_a_machine_takes_it_out_of_service_and_sets_an_apps
     when.visiting(&page).await?;
     then.status(200)?
         .body_contains("zone=a")?
-        .body_contains("Out of service · no copies")?;
+        .body_contains("Out of service")?
+        .body_contains(">no copies<")?;
     let machine = machine_call(
         &when,
         &then,

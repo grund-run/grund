@@ -1108,6 +1108,8 @@ pub fn sprite_icons() -> Vec<&'static str> {
         .collect()
 }
 
+const DISCONNECTED_TAB: &str = "disconnected";
+
 pub async fn style_guide(AxumState(state): AxumState<State>, browser: Browser) -> PageResult {
     let viewer = context! {
         username => "example", initials => "EX", email => "", registered_on => "",
@@ -1147,6 +1149,19 @@ pub async fn style_guide(AxumState(state): AxumState<State>, browser: Browser) -
     .map(|(name, image, address, internal)| {
         context! { name, image, address, internal, icon => crate::web::apps::image_icon(image) }
     });
+    let machines = [
+        ("homelab-1", "Connected", "ok", "", false, vec!["zone=a"], "", 16, "64 GB", Some("1.2 TB")),
+        ("web-1", "Connected", "ok", "", true, vec![], "", 4, "8 GB", Some("80 GB")),
+        ("closet", "Disconnected", "orange", DISCONNECTED_TAB, false, vec!["zone=b", "gpu=yes"], "last seen 6 Oct 2026 22:14 UTC", 8, "31 GB", None),
+        ("spare", "Out of service", "muted", "", false, vec![], "2 copies", 2, "3.8 GB", Some("120 GB")),
+    ]
+    .map(|(name, status, tone, tab, leased, labels, detail, vcpus, memory, disk)| {
+        let facts = [("cpu", format!("{vcpus} vCPU")), ("memory", format!("{memory} RAM")), ("disk", disk.unwrap_or_default().to_string())];
+        context! {
+            id => name, name, status, tone, tab, leased, labels, detail, facts,
+            search => name, shown => true, kvm => false, hosts_vms => false, out_of_service => status == "Out of service",
+        }
+    });
     let mut icons: Vec<&str> = KNOWN_IMAGE_ICONS.to_vec();
     icons.push("docker");
     render(
@@ -1156,7 +1171,7 @@ pub async fn style_guide(AxumState(state): AxumState<State>, browser: Browser) -
         "pages/style-guide.html.jinja",
         context! {
             viewer, csrf => browser.csrf_token(), section => "", swatches => SWATCHES,
-            apps, icons, gallery => KNOWN_IMAGE_ICONS, sprite_icons => sprite_icons(),
+            apps, machines, icons, gallery => KNOWN_IMAGE_ICONS, sprite_icons => sprite_icons(),
         },
     )
 }

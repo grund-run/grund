@@ -110,6 +110,11 @@
   {% call cat.specimen("Tabs", '{{ ui.tabs("Organisation", [("general", url, "General"), ("members", url, "Members")], "members") }}', "Split one sidebar section into pages, so the sidebar keeps one item per area.") %}
     {{ ui.tabs("Example", [("general", "#sg-heads", "General"), ("members", "#sg-heads", "Members"), ("billing", "#sg-heads", "Billing")], "members") }}
   {% endcall %}
+  {% call cat.specimen("Tabs with a count and a search", '{% call ui.tabs("Machines", tabs, tab, counts={"disconnected": disconnected}, filter=true) %}
+  {{ forms.search(url, "Search machines", q=q, id="machine-search", hidden={"tab": tab}, filter=true) }}
+{% endcall %}', "A list split by tabs that are links (?tab=), a count in a small box after a tab, and the list's own search at the end of the line, a GET form (?q=). filter: the script switches the tabs and filters as you type, in place. On a phone the search goes under the tabs.") %}
+    {% call ui.tabs("Machines", [("", "#sg-heads", "All machines"), ("disconnected", "#sg-heads", "Disconnected")], "", counts={"disconnected": 1}) %}{{ forms.search("#sg-heads", "Search machines", id="sg-machine-search") }}{% endcall %}
+  {% endcall %}
 {% endcall %}
 
 {% call ui.section("sg-status", "Status and tags") %}
@@ -121,6 +126,12 @@
   {% endcall %}
   {% call cat.specimen("Pills", '{{ ui.pill("Live", "ok") }}', "Larger than a tag: a thing's state beside its name, as a dot of its tone (ok live, blue rolling out, orange degraded, danger failed, muted stopped).") %}
     {% call cat.demos() %}{{ ui.pill("Live", "ok") }}{{ ui.pill("Rolling out", "blue") }}{{ ui.pill("Degraded", "orange") }}{{ ui.pill("Failed", "danger") }}{{ ui.pill("Stopped", "muted") }}{% endcall %}
+  {% endcall %}
+  {% call cat.specimen("Plain pills", '{{ ui.pill("Connected", "ok", plain=true) }}', "The dot and the word alone, small: how a thing in a list is, under its name.") %}
+    {% call cat.demos() %}{{ ui.pill("Connected", "ok", plain=true) }}{{ ui.pill("Joining", "blue", plain=true) }}{{ ui.pill("Disconnected", "orange", plain=true) }}{{ ui.pill("Out of service", "muted", plain=true) }}{% endcall %}
+  {% endcall %}
+  {% call cat.specimen("Facts with an icon", '{{ ui.icon_fact("cpu", "16 vCPU") }}', "What a thing has, small, its icon before it, on one line; side by side in a row's right column.") %}
+    {% call cat.demos() %}{{ ui.icon_fact("cpu", "16 vCPU") }}{{ ui.icon_fact("memory", "64 GB RAM") }}{{ ui.icon_fact("disk", "1.2 TB") }}{% endcall %}
   {% endcall %}
   {% call cat.specimen("Tags", '{{ ui.tag("You") }}', "Tiny, rounded and muted: You, Runs VMs, Needs storage.") %}
     {% call cat.demos() %}{{ ui.tag("Needs storage") }}{{ ui.tag("You") }}{% endcall %}
@@ -145,6 +156,17 @@
 {{ ui.empty_state(text="No versions yet.") }}', "A dashed box: what is missing, and how it will appear. With {% call %}, the body holds a link or code.") %}
     {{ ui.empty_state("No apps yet", "Owners and admins deploy them.") }}
     {{ ui.empty_state(text="No versions yet.") }}
+  {% endcall %}
+  {% call cat.specimen("Empty list", '{% call ui.empty_state("Add your first machine", icon_name="server") %}
+  {{ ui.button("Add machine", href=url, icon_name="plus", kind="secondary") }}
+  {{ ui.external(docs, "Learn more") }}
+{% endcall %}
+{{ ui.empty_state("No machines match", icon_name="search", filter_empty="match", hidden=true) }}', "In place of a whole list: the icon, what is missing, and what to do. Secondary, since the top bar holds the primary button. filter_empty: the one the script shows when a search (match) or a tab (tab) leaves the list empty.") %}
+    {% call ui.empty_state("Add your first machine", icon_name="server") %}
+      {{ ui.button("Add machine", href="#sg-empty", icon_name="plus", kind="secondary") }}
+      {{ ui.external("https://git.kjuulh.io/grund/grund#self-hosting", "Learn more") }}
+    {% endcall %}
+    {{ ui.empty_state("No machines match", icon_name="search") }}
   {% endcall %}
   {% call cat.specimen("Add card", '{{ ui.add_card(url, "Deploy your first app") }}', "The dashed card in place of an empty list, for those who can make the first one.") %}
     {{ ui.add_card("#sg-empty", "Deploy your first app") }}
@@ -399,6 +421,9 @@
   {% call cat.specimen("Apps as a grid", '{% call lists.items("grid") %}…{% endcall %}', "The same rows as cards.") %}
     {% call lists.items("grid") %}{% for app in apps[:3] %}{{ lists.app_row(org, app) }}{% endfor %}{% endcall %}
   {% endcall %}
+  {% call cat.specimen("Machines", '{% call lists.items() %}{% for machine in machines %}{{ lists.machine_row(org, machine, csrf) }}{% endfor %}{% endcall %}', "machine_row: the server icon, the name with its kind (Hosted) and labels as tags (three, then +N), a plain pill and one more fact under it, the icon facts it reported at the right (disk only once its agent reports it), and machine_menu, whose actions post at once through menu_post.") %}
+    {% call lists.items() %}{% for machine in machines %}{{ lists.machine_row(org, machine, csrf) }}{% endfor %}{% endcall %}
+  {% endcall %}
   {% call cat.specimen("Menu", '{% call lists.menu("Actions for " ~ app.name) %}
   {{ lists.menu_item(url, "grid", "Details") }}
   {{ lists.menu_item(url, "trash", "Delete…", danger=true) }}
@@ -425,6 +450,13 @@
         {{ shell.nav_item("#sg-shell", "grid", "Apps (current)", true) }}
         {{ shell.nav_item("#sg-shell", "server", "Machines (hover)", state="hover") }}
       {% endcall %}
+    {% endcall %}
+  {% endcall %}
+  {% call cat.specimen("Top bar action", '{{ shell.topbar_action(org, section) }}', "The screen's one primary button, by section: Add machine on Machines, none on the page an action opens (Deploy app, Add machine), Deploy app everywhere else. Only for owners and admins.") %}
+    {% call cat.demos() %}
+      {% call cat.labelled("machines") %}{{ shell.topbar_action(org, "machines") }}{% endcall %}
+      {% call cat.labelled("apps") %}{{ shell.topbar_action(org, "apps") }}{% endcall %}
+      {% call cat.labelled("hover") %}{{ shell.topbar_action(org, "apps", state="hover") }}{% endcall %}
     {% endcall %}
   {% endcall %}
 {% endcall %}

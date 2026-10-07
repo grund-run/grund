@@ -52,6 +52,8 @@ const ORG_PAGES: &[&str] = &[
     "/domains",
     "/templates",
     "/machines",
+    "/machines?tab=disconnected&q=x",
+    "/machines/add",
     "/settings",
     "/settings/members",
     "/settings/tokens",
@@ -76,7 +78,7 @@ async fn every_signed_in_page_renders_in_the_shell_with_nothing_the_csp_forbids(
             .and_then(|t| t.carries_the_security_headers())
             .and_then(|t| t.header("cache-control", "no-store"))
             .and_then(|t| t.body_contains("class=\"shell\""))
-            .and_then(|t| t.body_contains("action=\"/logout\""))
+            .and_then(|t| t.body_contains("Sign out</button>"))
             .and_then(|t| t.body_lacks(" style="))
             .and_then(|t| t.body_lacks("<style"))
             .and_then(|t| t.body_lacks(" onclick="))
@@ -84,14 +86,23 @@ async fn every_signed_in_page_renders_in_the_shell_with_nothing_the_csp_forbids(
         let body = then.body()?;
         only_the_script_file(&body).map_err(|error| error.context(path.clone()))?;
         if path.starts_with(&format!("/{org}")) {
+            let own_search = path.contains("/machines");
             anyhow::ensure!(
-                body.contains("placeholder=\"Search apps…\""),
-                "{path} has the search"
+                body.contains("placeholder=\"Search apps…\"") != own_search,
+                "{path} has the app search unless it has its own"
             );
+            let action = match path.split('?').next().unwrap_or_default() {
+                p if p.ends_with("/deploy") || p.ends_with("/machines/add") => None,
+                p if p.ends_with("/machines") => Some("Add machine"),
+                _ => Some("Deploy app"),
+            };
+            let buttons = body.matches("<span class=\"btn-label\">").count();
             anyhow::ensure!(
-                path.contains("/deploy")
-                    || body.contains("<span class=\"btn-label\">Deploy app</span>"),
-                "{path} has the deploy button"
+                action.map_or(buttons == 0, |action| {
+                    buttons == 1
+                        && body.contains(&format!("<span class=\"btn-label\">{action}</span>"))
+                }),
+                "{path} has its section's one top bar action, {action:?}"
             );
         }
         let start = body.find("/static/grund.js?v=");

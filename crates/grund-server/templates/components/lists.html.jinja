@@ -91,6 +91,48 @@
 {% endcall %}
 {%- endmacro %}
 
+{#- machine_row(org, machine, csrf)
+    One machine in the Machines list: the server icon, its name with its
+    kind ("Hosted": a grund machine it leases) and labels as tags, how it
+    is under the name (a dot and a word, and one more fact: when it was
+    last seen, its copies while out of service), what it has at the
+    right (icon_fact()s, each in its own column across the list; one it
+    never reported leaves its place empty), and its menu for owners and
+    admins. The search
+    matches data-name; the tabs data-tab.
+    org:     the current organisation (slug, manages)
+    machine: web::machines::machine_context (id, name, leased, kvm,
+             hosts_vms, labels, status, tone, detail, facts, search, tab,
+             shown)
+    csrf:    for the menu's forms -#}
+{% macro machine_row(org, machine, csrf) -%}
+{% set labels = machine.labels[:3] + (["+" ~ (machine.labels | length - 3)] if machine.labels | length > 3 else []) %}
+<li class="item" data-name="{{ machine.search }}" data-tab="{{ machine.tab }}"{% if not machine.shown %} hidden{% endif %}>
+  <span class="item-icon" aria-hidden="true">{{ ui.icon("server", "icon-lg") }}</span>
+  <div class="item-text">
+    <div class="item-head"><p class="item-name">{{ machine.name }}</p>{% if machine.leased %}{{ ui.tag("Hosted") }}{% endif %}{% if machine.kvm %}{{ ui.tag("Runs VMs") }}{% endif %}{% for label in labels %}{{ ui.tag(label) }}{% endfor %}</div>
+    <p class="item-sub item-sub-wrap">{{ ui.pill(machine.status, machine.tone, plain=true) }}{% if machine.detail %}<span class="item-detail">{{ machine.detail }}</span>{% endif %}</p>
+  </div>
+  <div class="item-meta item-facts">{% for icon_name, text in machine.facts %}{% if text %}{{ ui.icon_fact(icon_name, text) }}{% else %}<span></span>{% endif %}{% endfor %}</div>
+  {% if org.manages %}{{ machine_menu(org, machine, csrf) }}{% else %}<span></span>{% endif %}
+</li>
+{%- endmacro %}
+
+{#- machine_menu(org, machine, csrf)
+    A machine's kebab: its labels, a virtual machine on it (when it is
+    connected and can host one), out of service or back, and Remove (not
+    for a hosted machine, which goes back when its lease ends). -#}
+{% macro machine_menu(org, machine, csrf) -%}
+{% set base = "/" ~ org.slug ~ "/machines" %}
+{% call menu("Actions for " ~ machine.name) %}
+  {{ menu_item(base ~ "?labels=" ~ machine.id ~ "#labels", "tag", "Labels") }}
+  {% if machine.hosts_vms %}{{ menu_item(base ~ "?run=" ~ machine.id ~ "#run", "box", "Run a virtual machine") }}{% endif %}
+  {% if machine.out_of_service %}{{ menu_post(base ~ "/" ~ machine.id ~ "/service", csrf, "ok", "Put back in service", hidden={"in_service": "yes"}) }}
+  {%- else %}{{ menu_post(base ~ "/" ~ machine.id ~ "/service", csrf, "minus", "Take out of service", hidden={"in_service": "no"}) }}{% endif %}
+  {% if not machine.leased %}{{ menu_post(base ~ "/" ~ machine.id ~ "/remove", csrf, "trash", "Remove", danger=true) }}{% endif %}
+{% endcall %}
+{%- endmacro %}
+
 {#- template_row(template, href="")
     One premade app in a list or grid: its image icon, its title over
     what it is, and a Deploy button, or a tag when it is not offered yet.
@@ -180,6 +222,15 @@
     state: "hover" pins the hover look (the style guide only). -#}
 {% macro menu_item(href, icon_name, label, danger=false, external=false, state="") -%}
 <li><a class="menu-item{% if danger %} menu-item-danger{% endif %}{% if state %} is-{{ state }}{% endif %}" href="{{ href }}"{% if external %} rel="noopener noreferrer" target="_blank"{% endif %}>{{ ui.icon(icon_name, "icon-sm") }}{{ label }}</a></li>
+{%- endmacro %}
+
+{#- menu_post(action, csrf, icon_name, label, danger=false, hidden={})
+    An entry of a menu that does its action at once: a POST form with
+    the CSRF token and hidden values, its button looking like
+    menu_item(). For actions that need no confirmation (out of service,
+    Remove a machine). -#}
+{% macro menu_post(action, csrf, icon_name, label, danger=false, hidden={}) -%}
+<li><form method="post" action="{{ action }}">{{ forms.csrf_field(csrf) }}{% for name, value in hidden | items %}{{ forms.hidden_field(name, value) }}{% endfor %}<button class="menu-item{% if danger %} menu-item-danger{% endif %}" type="submit">{{ ui.icon(icon_name, "icon-sm") }}{{ label }}</button></form></li>
 {%- endmacro %}
 
 {#- list_tools(sorts, sort, list_href, grid_href, view, hidden={})

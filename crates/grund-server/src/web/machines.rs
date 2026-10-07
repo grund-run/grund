@@ -12,7 +12,10 @@ use axum::{
     http::{StatusCode, Uri},
 };
 use chrono::Utc;
-use grund_domain::{machine::Authority, machine::TokenKind, organisation::Role};
+use grund_domain::{
+    machine::{Authority, TOKEN_TTL, TokenKind},
+    organisation::Role,
+};
 use grund_store::{agents::VmRow, machines::MachineRow, organisations::Membership};
 use minijinja::{Value, context};
 use serde::Deserialize;
@@ -28,7 +31,7 @@ use crate::{
     web::{
         browser::Browser,
         orgs::Member,
-        pages::{Notice, PageResult, forged, redirect, signed_in},
+        pages::{PageResult, forged, redirect, signed_in},
     },
 };
 
@@ -36,11 +39,30 @@ fn manages(membership: &Membership) -> bool {
     Role::parse(&membership.role).is_some_and(|role| role.manages_members())
 }
 
+/// The query of `/{org}/machines`: a notice, the tab (`disconnected`), the
+/// search and the machine whose labels are open, so every part works
+/// without the script.
+#[derive(Deserialize, Default)]
+pub struct MachinesQuery {
+    #[serde(default)]
+    done: String,
+    #[serde(default)]
+    error: String,
+    #[serde(default)]
+    tab: String,
+    #[serde(default)]
+    q: String,
+    #[serde(default)]
+    labels: String,
+    #[serde(default)]
+    run: String,
+}
+
 /// `/{org}/machines`.
 pub async fn machines_page(
     AxumState(state): AxumState<State>,
     member: Member,
-    Query(query): Query<Notice>,
+    Query(query): Query<MachinesQuery>,
 ) -> PageResult {
     let notice = match query.done.as_str() {
         "removed" => "Machine removed. Its key no longer works here.",
@@ -71,24 +93,98 @@ pub async fn machines_page(
         MachinesForm {
             notice,
             error,
+            tab: if query.tab == DISCONNECTED {
+                DISCONNECTED
+            } else {
+                ""
+            },
+            q: query.q.trim().to_lowercase(),
+            labels: query.labels,
+            run: RunForm {
+                host: query.run,
+                ..Default::default()
+            },
             ..Default::default()
         },
     )
     .await
 }
 
+const DISCONNECTED: &str = "disconnected";
+
 #[derive(Default)]
 struct MachinesForm<'a> {
     notice: &'a str,
     error: &'a str,
-    setup: Option<Value>,
-    add_error: String,
-    name: String,
+    tab: &'a str,
+    q: String,
+    labels: String,
     run_error: String,
     run: RunForm,
 }
 
-fn machine_context(row: &MachineRow, copies: i64, now: chrono::DateTime<Utc>) -> Value {
+fn machine_status(row: &MachineRow, now: chrono::DateTime<Utc>) -> (&'static str, &'static str) {
+    if row.cordoned_at.is_some() {
+        ("Out of service", "muted")
+    } else if connected(row.last_seen_at, now) {
+        ("Connected", "ok")
+    } else if row.last_seen_at.is_none() {
+        ("Joining", "blue")
+    } else {
+        ("Disconnected", "orange")
+    }
+}
+
+fn human_size(mib: u64) -> String {
+    let one = |value: f64, places: usize| {
+        let text = format!("{value:.places$}");
+        text.strip_suffix(".0").unwrap_or(&text).to_string()
+    };
+    let gib = mib as f64 / 1024.0;
+    if mib < 1024 {
+        format!("{mib} MB")
+    } else if gib < 1024.0 {
+        format!("{} GB", one(gib, usize::from(gib < 10.0)))
+    } else {
+        format!("{} TB", one(gib / 1024.0, 1))
+    }
+}
+
+fn machine_facts(
+    capabilities: Option<&serde_json::Value>,
+    joined_facts: &serde_json::Value,
+) -> [(&'static str, String); 3] {
+    let reported = |key: &str| {
+        capabilities
+            .and_then(|c| c[key].as_u64())
+            .filter(|n| *n > 0)
+    };
+    let joined = |key: &str| joined_facts[key].as_u64().filter(|n| *n > 0);
+    let vcpus = reported("cpu_millis")
+        .or_else(|| joined("cpus").map(|cpus| cpus * 1000))
+        .map(|millis| {
+            let text = format!("{:.1}", millis as f64 / 1000.0);
+            format!("{} vCPU", text.strip_suffix(".0").unwrap_or(&text))
+        });
+    let memory = reported("memory_mib")
+        .or_else(|| joined("memory_mib"))
+        .map(|mib| format!("{} RAM", human_size(mib)));
+    let disk = reported("disk_gib")
+        .or_else(|| joined("disk_gib"))
+        .map(|gib| human_size(gib * 1024));
+    [
+        ("cpu", vcpus.unwrap_or_default()),
+        ("memory", memory.unwrap_or_default()),
+        ("disk", disk.unwrap_or_default()),
+    ]
+}
+
+fn machine_context(
+    row: &MachineRow,
+    copies: i64,
+    now: chrono::DateTime<Utc>,
+    form: &MachinesForm<'_>,
+) -> Value {
     let capabilities = row.capabilities.as_ref().map(|c| &c.0);
     let labels: Vec<String> = row
         .labels
@@ -96,27 +192,38 @@ fn machine_context(row: &MachineRow, copies: i64, now: chrono::DateTime<Utc>) ->
         .iter()
         .map(|(k, v)| format!("{k}={v}"))
         .collect();
-    let pairs: Vec<(String, String)> = row
-        .labels
-        .0
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-    let copies_words = match copies {
-        0 => "no copies".to_string(),
-        1 => "1 copy".to_string(),
-        n => format!("{n} copies"),
+    let name = row.pool_name.clone().unwrap_or_else(|| row.name.clone());
+    let (status, tone) = machine_status(row, now);
+    let tab = if status == "Disconnected" {
+        DISCONNECTED
+    } else {
+        ""
+    };
+    let search = std::iter::once(name.to_lowercase())
+        .chain(labels.iter().map(|label| label.to_lowercase()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let shown = (form.tab.is_empty() || form.tab == tab) && search.contains(&form.q);
+    let detail = match status {
+        "Out of service" => match copies {
+            0 => "no copies".to_string(),
+            1 => "1 copy".to_string(),
+            n => format!("{n} copies"),
+        },
+        "Disconnected" => row
+            .last_seen_at
+            .map(|at| format!("last seen {}", at.format("%-d %b %Y %H:%M UTC")))
+            .unwrap_or_default(),
+        _ => String::new(),
     };
     context! {
-        labels, pairs, copies_words,
-        out_of_service => row.cordoned_at.is_some(),
+        labels, status, tone, tab, search, shown, detail, name,
         id => row.machine_id.to_string(),
-        name => row.pool_name.clone().unwrap_or_else(|| row.name.clone()),
+        out_of_service => row.cordoned_at.is_some(),
         leased => row.pool == "management",
-        connected => connected(row.last_seen_at, now),
-        last_seen => row.last_seen_at.map(|at| at.format("%-d %b %Y %H:%M UTC").to_string()),
+        facts => machine_facts(capabilities, &row.facts.0),
         kvm => capabilities.and_then(|c| c["kvm"].as_bool()).unwrap_or(false),
-        hostname => row.facts.0["hostname"].as_str().unwrap_or_default().to_string(),
+        hosts_vms => cannot_host(row).is_none() && connected(row.last_seen_at, now),
     }
 }
 
@@ -172,9 +279,56 @@ async fn machines_view(
                 .iter()
                 .find(|(id, _)| *id == row.machine_id)
                 .map_or(0, |(_, n)| *n);
-            machine_context(row, n, now)
+            machine_context(row, n, now, &form)
         })
         .collect();
+    let disconnected = rows
+        .iter()
+        .filter(|row| machine_status(row, now).0 == "Disconnected")
+        .count();
+    let shown = machines
+        .iter()
+        .filter(|machine| machine.get_attr("shown").is_ok_and(|shown| shown.is_true()))
+        .count();
+    let editing = rows
+        .iter()
+        .find(|row| row.machine_id.to_string() == form.labels)
+        .map(|row| {
+            let pairs: Vec<(String, String)> = row
+                .labels
+                .0
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            context! {
+                pairs,
+                id => row.machine_id.to_string(),
+                name => row.pool_name.clone().unwrap_or_else(|| row.name.clone()),
+            }
+        });
+    let base = format!("/{}/machines", membership.slug);
+    let href = |tab: &str| {
+        let pairs: Vec<(&str, &str)> = [("tab", tab), ("q", form.q.as_str())]
+            .into_iter()
+            .filter(|(_, value)| !value.is_empty())
+            .collect();
+        match serde_urlencoded::to_string(pairs).unwrap_or_default() {
+            query if query.is_empty() => base.clone(),
+            query => format!("{base}?{query}"),
+        }
+    };
+    let operator = state.machines().operator().await? == Some(membership.organisation_id);
+    let mut tabs = vec![
+        ("", href(""), "All machines"),
+        (DISCONNECTED, href(DISCONNECTED), "Disconnected"),
+    ];
+    if operator {
+        tabs.push((
+            "pool",
+            format!("/{}/pool", membership.slug),
+            "Management pool",
+        ));
+    }
     let hosts: Vec<(String, String)> = rows
         .iter()
         .filter(|row| cannot_host(row).is_none() && connected(row.last_seen_at, now))
@@ -193,7 +347,8 @@ async fn machines_view(
         .map(vm_context)
         .collect();
     let mut run = form.run;
-    if run.is_fresh() {
+    let run_open = !form.run_error.is_empty() || hosts.iter().any(|(id, _)| *id == run.host);
+    if run.is_fresh() || (run_open && form.run_error.is_empty()) {
         let defaults = &state.config.machine_defaults;
         let or_empty = |value: &Option<String>| value.clone().unwrap_or_default();
         run.kernel_url = or_empty(&defaults.vm_kernel_url);
@@ -212,14 +367,30 @@ async fn machines_view(
         context! {
             label_keys => rows.iter().flat_map(|r| r.labels.0.keys().cloned()).collect::<std::collections::BTreeSet<_>>(),
             label_values => rows.iter().flat_map(|r| r.labels.0.values().cloned()).collect::<std::collections::BTreeSet<_>>(),
-            machines, hosts, vms,
-            operator => state.machines().operator().await? == Some(membership.organisation_id),
+            machines, hosts, vms, editing, disconnected, shown, tabs, operator, run_open,
+            tab => form.tab, q => form.q,
             notice => form.notice, error => form.error,
-            setup => form.setup, add_error => form.add_error, name => form.name,
             run_error => form.run_error, run => Value::from_serialize(&run),
         },
     )
     .await
+}
+
+/// `/{org}/machines/add`: the form that makes a setup code. A role that
+/// cannot add machines is sent back to the list, as its POST would be.
+pub async fn add_page(AxumState(state): AxumState<State>, member: Member) -> PageResult {
+    if !manages(&member.membership) {
+        let slug = &member.membership.slug;
+        return Ok(redirect(&format!("/{slug}/machines?error=not-allowed")));
+    }
+    member
+        .render(
+            &state,
+            "pages/machine-add.html.jinja",
+            "machine-add",
+            context! { setup => None::<Value>, add_error => "", name => "", minutes => TOKEN_TTL.num_minutes() },
+        )
+        .await
 }
 
 #[derive(Deserialize)]
@@ -231,7 +402,8 @@ pub struct AddForm {
 }
 
 /// `POST /{org}/machines/add`: a one-time setup code, shown on the page it
-/// answers with and nowhere else.
+/// answers with and nowhere else. A refused name answers 422 with the
+/// form again.
 pub async fn add(
     AxumState(state): AxumState<State>,
     browser: Browser,
@@ -257,14 +429,14 @@ pub async fn add(
             session.account_id,
         )
         .await?;
-    let mut page = MachinesForm {
-        name: form.name.clone(),
-        ..Default::default()
-    };
-    let status = match outcome {
+    let mut name = form.name.clone();
+    let mut setup = None;
+    let add_error = match outcome {
         MintOutcome::Minted(minted) => {
             let origin = state.config.public_origin().serialized;
-            let minutes = (minted.expires_at - Utc::now()).num_minutes().max(1);
+            let minutes = ((minted.expires_at - Utc::now()).num_seconds() + 59)
+                .div_euclid(60)
+                .max(1);
             let defaults = &state.config.machine_defaults;
             let install = match &defaults.agent_install_url {
                 Some(url) => Some(format!(
@@ -278,29 +450,38 @@ pub async fn add(
                 )),
                 None => None,
             };
-            page.setup = Some(context! {
+            setup = Some(context! {
                 install,
                 command => format!("grund join --url {origin} {}", minted.token),
                 minutes,
             });
-            page.name = String::new();
-            StatusCode::OK
+            name = String::new();
+            String::new()
         }
-        MintOutcome::Invalid(message) => {
-            page.add_error = message;
-            StatusCode::OK
-        }
+        MintOutcome::Invalid(message) => message,
         MintOutcome::TooMany => {
-            page.add_error =
-                "This organisation has 20 unused setup codes. Wait for some to expire.".into();
-            StatusCode::OK
+            "This organisation has 20 unused setup codes. Wait for some to expire.".into()
         }
         MintOutcome::NotReturning | MintOutcome::NotFound => {
-            page.add_error = "grund could not make a setup code. Try again.".into();
-            StatusCode::OK
+            "grund could not make a setup code. Try again.".into()
         }
     };
-    let mut response = machines_view(&state, &browser, &session, &membership, status, page).await?;
+    let status = if add_error.is_empty() {
+        StatusCode::OK
+    } else {
+        StatusCode::UNPROCESSABLE_ENTITY
+    };
+    let mut response = signed_in(
+        &state,
+        &browser,
+        &session,
+        Some(&membership),
+        status,
+        "pages/machine-add.html.jinja",
+        "machine-add",
+        context! { setup, add_error, name, minutes => TOKEN_TTL.num_minutes() },
+    )
+    .await?;
     response.headers_mut().insert(
         axum::http::header::CACHE_CONTROL,
         axum::http::HeaderValue::from_static("no-store"),
@@ -445,7 +626,9 @@ pub async fn labels(
                 grund_domain::labels::LabelError::Value => "label-value",
                 grund_domain::labels::LabelError::TooMany => "label-many",
             };
-            return Ok(redirect(&format!("/{slug}/machines?error={code}#labels")));
+            return Ok(redirect(&format!(
+                "/{slug}/machines?labels={machine_id}&error={code}#labels"
+            )));
         }
     };
     let machines = state.machines();
@@ -634,4 +817,37 @@ pub async fn stop_vm(
         _ => "error=gone",
     };
     Ok(redirect(&format!("/{slug}/machines?{query}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn sizes_read_in_the_largest_unit_with_a_decimal_only_below_ten() {
+        assert_eq!(human_size(512), "512 MB");
+        assert_eq!(human_size(7_782), "7.6 GB");
+        assert_eq!(human_size(65_536), "64 GB");
+        assert_eq!(human_size(64_200), "63 GB");
+        assert_eq!(human_size(1_258_291), "1.2 TB");
+        assert_eq!(human_size(2 * 1024 * 1024), "2 TB");
+    }
+
+    #[test]
+    fn the_heartbeat_wins_over_the_join_and_a_size_never_reported_is_left_empty() {
+        let joined = json!({"cpus": 4, "memory_mib": 8192, "disk_gib": 0});
+        assert_eq!(
+            machine_facts(None, &joined).map(|(_, text)| text),
+            ["4 vCPU", "8 GB RAM", ""]
+        );
+        let beat = json!({"cpu_millis": 15_500, "memory_mib": 65_536, "disk_gib": 1_200});
+        assert_eq!(
+            machine_facts(Some(&beat), &joined).map(|(_, text)| text),
+            ["15.5 vCPU", "64 GB RAM", "1.2 TB"]
+        );
+        let old_agent = json!({"cpu_millis": 2_000, "memory_mib": 4096});
+        assert_eq!(machine_facts(Some(&old_agent), &json!({}))[2].1, "");
+    }
 }

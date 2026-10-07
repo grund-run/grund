@@ -144,7 +144,10 @@ pub fn router(state: State) -> Router {
         .route("/{org}/apps/{app}/grund.yaml", get(apps::file))
         .route("/{org}/apps/{app}/settings/file", post(apps::apply_file))
         .route("/{org}/machines", get(machines::machines_page))
-        .route("/{org}/machines/add", post(machines::add))
+        .route(
+            "/{org}/machines/add",
+            get(machines::add_page).post(machines::add),
+        )
         .route("/{org}/machines/vms", post(machines::run_vm))
         .route("/{org}/machines/vms/{vm}/stop", post(machines::stop_vm))
         .route("/{org}/machines/{machine}/remove", post(machines::remove))

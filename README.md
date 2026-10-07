@@ -54,7 +54,7 @@ minutes. To run a published image instead, set `GRUND_IMAGE` and
 `GRUND_PULL_POLICY=missing` in `.env`. Every setting is documented in
 [.env.example](.env.example).
 
-To add a machine, use "Add a machine" on the Machines page. The command it
+To add a machine, use "Add machine" on the Machines page. The command it
 gives installs grund and its agent on a Linux machine (root, systemd,
 x86_64) and connects it. This instance serves the installer and its own
 binary at `/install`. On the machine running compose, the command works as

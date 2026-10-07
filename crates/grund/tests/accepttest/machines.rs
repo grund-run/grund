@@ -1388,9 +1388,13 @@ async fn the_machines_page_adds_a_device_shows_it_connected_and_runs_a_vm_on_it(
 
     when.visiting(&page).await?;
     then.status(200)?
-        .body_contains("No machines yet.")?
+        .body_contains("Add your first machine")?
+        .body_contains("<span class=\"btn-label\">Add machine</span>")?
+        .body_lacks("Virtual machines")?;
+    when.visiting(&format!("{page}/add")).await?;
+    then.status(200)?
         .body_contains("Get a setup code")?
-        .body_contains("That needs a connected machine with KVM.")?;
+        .body_lacks("<span class=\"btn-label\">")?;
 
     when.submitting(&page, &format!("{page}/add"), &[("name", "desk")])
         .await?;
@@ -1421,15 +1425,18 @@ async fn the_machines_page_adds_a_device_shows_it_connected_and_runs_a_vm_on_it(
     when.visiting(&page).await?;
     then.status(200)?
         .body_contains("desk")?
-        .body_contains("Not connected yet")?;
+        .body_contains("Joining")?;
 
     grund_agent_once(&device).await;
     when.visiting(&page).await?;
     then.status(200)?
         .body_contains("Runs VMs")?
-        .body_contains(&format!(
-            r#"name="host" value="{device_id}" checked><span>desk</span>"#
-        ))?;
+        .body_contains(&format!("?run={device_id}#run"))?
+        .body_lacks("Virtual machines")?;
+    when.visiting(&format!("{page}?run={device_id}")).await?;
+    then.status(200)?.body_contains(&format!(
+        r#"name="host" value="{device_id}" checked><span>desk</span>"#
+    ))?;
 
     let sha = |c: char| c.to_string().repeat(64);
     let (kernel_sha, rootfs_sha) = (sha('1'), sha('2'));
@@ -1523,6 +1530,8 @@ async fn a_member_sees_the_machines_page_but_cannot_add_or_remove() -> anyhow::R
         .status(200)?
         .body_contains("Machines")?
         .body_lacks("Get a setup code")?;
+    guest_when.visiting(&format!("{page}/add")).await?;
+    guest_then.redirects_to(&format!("{page}?error=not-allowed"))?;
     guest_when
         .submitting(&page, &format!("{page}/add"), &[("name", "sneak")])
         .await?;
@@ -1876,7 +1885,11 @@ async fn the_machines_page_offers_the_configured_installer_and_vm_image() -> any
         String::from_utf8_lossy(&joined.stderr)
     );
     grund_agent_once(&device).await;
-    when.visiting(&page).await?;
+    let device_id = record(&device)?["machine_id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    when.visiting(&format!("{page}?run={device_id}")).await?;
     then.status(200)?
         .body_contains(&format!("value=\"{kernel_sha}\""))?
         .body_contains(&format!("value=\"{rootfs_sha}\""))?;

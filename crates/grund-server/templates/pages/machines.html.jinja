@@ -1,85 +1,25 @@
 {% extends "layout-app.html.jinja" %}
 {% set title = "Machines" %}
 {% block content %}
-{% if operator %}{% call ui.page_head("Machines") %}{{ ui.button("Management pool", href="/" ~ org.slug ~ "/pool", kind="secondary", icon_name="server") }}{% endcall %}{% else %}{{ ui.page_head("Machines") }}{% endif %}
+{% set base = "/" ~ org.slug ~ "/machines" %}
+{{ ui.page_head("Machines") }}
 {{ forms.banner(error, ok=notice) }}
 
-{% if setup %}
-{% call ui.section("setup", "Set up your machine", stack=true) %}
-  {% if setup.install %}
-  <p>On the machine, run this within {{ setup.minutes }} minutes. The code works once and is not shown again.</p>
-  {{ ui.code(setup.install, id="setup-install", wrap=true, what="the command") }}
-  {% call ui.para(kind="aside") %}With grund installed: <code>{{ setup.command }}</code>, then keep <code>grund agent</code> running.{% endcall %}
-  {% else %}
-  <p>On the machine, run this within {{ setup.minutes }} minutes, then keep <code>grund agent</code> running. The code works once and is not shown again.</p>
-  {{ ui.code(setup.command, id="setup-command", wrap=true, what="the command") }}
-  {% endif %}
-{% endcall %}
-{% endif %}
-
-{% call lists.rows() %}
-  {% for machine in machines %}
-  {% set tags = (["grund machine"] if machine.leased else []) + (["Runs VMs"] if machine.kvm else []) + machine.labels %}
-  {% set seen = "Connected" if machine.connected else ("Last seen " ~ machine.last_seen if machine.last_seen else "Not connected yet") %}
-  {% set sub = (machine.hostname or "") if machine.connected else seen ~ (" · " ~ machine.hostname if machine.hostname else "") %}
-  {% if machine.out_of_service %}{% set sub = "Out of service · " ~ machine.copies_words ~ (" · " ~ sub if sub else "") %}{% endif %}
-  {% set status = "Out of service" if machine.out_of_service else ("Connected" if machine.connected else "Offline") %}
-  {% call(slot) lists.row(machine.name, sub, icon_name="server", tone="ok" if machine.connected and not machine.out_of_service else "muted", tags=tags, status=status, status_tone="orange" if machine.out_of_service else ("ok" if machine.connected else "muted")) %}
-    {%- if slot == "end" and org.manages -%}
-    {%- if machine.out_of_service %}{{ forms.post_button("/" ~ org.slug ~ "/machines/" ~ machine.id ~ "/service", csrf, "Put back in service", size="sm", hidden={"in_service": "yes"}) }}{% else %}{{ forms.post_button("/" ~ org.slug ~ "/machines/" ~ machine.id ~ "/service", csrf, "Take out of service", size="sm", hidden={"in_service": "no"}) }}{% endif %}
-    {%- if not machine.leased %}{{ forms.post_button("/" ~ org.slug ~ "/machines/" ~ machine.id ~ "/remove", csrf, "Remove", kind="danger", size="sm") }}{% endif -%}
-    {%- endif -%}
-  {% endcall %}
-  {% endfor %}
-{% endcall %}
-{% if not machines %}{{ ui.empty_state(text="No machines yet.") }}{% endif %}
-
-{% if org.manages and machines %}
-{% call ui.section("labels", "Labels") %}
-  {% call ui.expanders() %}
-  {% for machine in machines %}
-  {% call ui.expander(machine.name, summary=(machine.labels | join(", ")) or "No labels", icon_name="server") %}
-    {% call forms.form("/" ~ org.slug ~ "/machines/" ~ machine.id ~ "/labels", csrf) %}
-      {{ forms.pairs_field("labels", "Labels", pairs=machine.pairs, blank=1, key_label="Key", value_label="Value", key_suggestions=label_keys, value_suggestions=label_values) }}
-      {% call forms.actions("Copies on a machine that no longer matches their app move to one that does.") %}{{ ui.button("Save labels") }}{% endcall %}
-    {% endcall %}
-  {% endcall %}
-  {% endfor %}
+{% if editing and org.manages %}
+{% call ui.panel("labels", "Labels of " ~ editing.name) %}
+  {% call forms.form(base ~ "/" ~ editing.id ~ "/labels", csrf) %}
+    {{ forms.pairs_field("labels", "Labels", pairs=editing.pairs, blank=1, key_label="Key", value_label="Value", key_suggestions=label_keys, value_suggestions=label_values) }}
+    {% call forms.actions("Copies on a machine that no longer matches their app move to one that does.") %}{{ ui.button("Save labels") }}{{ ui.button("Cancel", href=base, kind="secondary") }}{% endcall %}
   {% endcall %}
 {% endcall %}
 {% endif %}
 
-{% if org.manages %}
-{% call ui.panel("add", "Add a machine") %}
-  {% call forms.form("/" ~ org.slug ~ "/machines/add", csrf, layout="row") %}
-    {{ forms.banner(add_error) }}
-    {{ forms.field("name", "Name", value=name, autocomplete="off", required=false, hint="Empty: its hostname.") }}
-    {{ ui.button("Get a setup code") }}
-  {% endcall %}
-{% endcall %}
-{% endif %}
-
-{% call ui.section("vms", "Virtual machines", count=vms | length) %}
-  {% if vms %}
-  {% call lists.rows() %}
-    {% for vm in vms %}
-    {% call(slot) lists.row(vm.name, "on " ~ vm.host ~ " · " ~ vm.vcpus ~ " vCPU, " ~ vm.memory_mib ~ " MiB, " ~ vm.disk_gib ~ " GiB" ~ (" · " ~ vm.reason if vm.reason else ""), icon_name="grid", tone="violet", status=vm.observed, status_tone=vm.tone) %}
-      {%- if slot == "end" and org.manages and vm.running %}{{ forms.post_button("/" ~ org.slug ~ "/machines/vms/" ~ vm.id ~ "/stop", csrf, "Stop", size="sm") }}{% endif -%}
-    {% endcall %}
-    {% endfor %}
-  {% endcall %}
-  {% else %}
-  {{ ui.empty_state(text="No virtual machines yet.") }}
-  {% endif %}
-{% endcall %}
-
-{% if org.manages %}
-{% if hosts %}
+{% if run_open and org.manages %}
 {% call ui.panel("run", "Run a virtual machine") %}
-  {% call forms.form("/" ~ org.slug ~ "/machines/vms", csrf) %}
+  {% call forms.form(base ~ "/vms", csrf) %}
     {{ forms.banner(run_error) }}
     {% call forms.grid() %}
-    {{ forms.chips_field("host", "On", hosts, (hosts | first)[0], multiple=false, search="Search machines") }}
+    {{ forms.chips_field("host", "On", hosts, run.host, multiple=false, search="Search machines") }}
     {{ forms.field("vm_name", "Name", value=run.vm_name, autocomplete="off") }}
     {% endcall %}
     {% call forms.grid() %}
@@ -93,13 +33,34 @@
     {{ forms.field("rootfs_url", "Root filesystem URL", value=run.rootfs_url, autocomplete="off", mono=true) }}
     {{ forms.field("rootfs_sha256", "Root filesystem SHA-256", value=run.rootfs_sha256, autocomplete="off", mono=true) }}
     {% endcall %}
-    {% call forms.actions("grund fetches both files and checks them against their SHA-256.") %}{{ ui.button("Run it") }}{% endcall %}
+    {% call forms.actions("grund fetches both files and checks them against their SHA-256.") %}{{ ui.button("Run it") }}{{ ui.button("Cancel", href=base, kind="secondary") }}{% endcall %}
   {% endcall %}
 {% endcall %}
+{% endif %}
+
+{% if machines or operator %}
+{% call ui.tabs("Machines", tabs, tab, counts={"disconnected": disconnected}, filter=true) %}{{ forms.search(base, "Search machines", q=q, id="machine-search", hidden={"tab": tab}, filter=true) }}{% endcall %}
+{% endif %}
+{% if machines %}
+{% call lists.items() %}{% for machine in machines %}{{ lists.machine_row(org, machine, csrf) }}{% endfor %}{% endcall %}
+{{ ui.empty_state("No machines match", icon_name="search", filter_empty="match", hidden=shown or not q) }}
+{{ ui.empty_state("No disconnected machines", icon_name="server", filter_empty="tab", hidden=shown or q or not tab) }}
 {% else %}
-{% call ui.section("run", "Run a virtual machine") %}
-  {{ ui.empty_state(text="That needs a connected machine with KVM.") }}
+{% call ui.empty_state("Add your first machine", icon_name="server") %}
+  {% if org.manages %}{{ ui.button("Add machine", href=base ~ "/add", icon_name="plus", kind="secondary") }}{% endif %}
+  {{ ui.external("https://git.kjuulh.io/grund/grund#self-hosting", "Learn more") }}
 {% endcall %}
 {% endif %}
+
+{% if vms %}
+{% call ui.section("vms", "Virtual machines", count=vms | length) %}
+  {% call lists.rows() %}
+    {% for vm in vms %}
+    {% call(slot) lists.row(vm.name, "on " ~ vm.host ~ " · " ~ vm.vcpus ~ " vCPU, " ~ vm.memory_mib ~ " MiB, " ~ vm.disk_gib ~ " GiB" ~ (" · " ~ vm.reason if vm.reason else ""), icon_name="grid", tone="violet", status=vm.observed, status_tone=vm.tone) %}
+      {%- if slot == "end" and org.manages and vm.running %}{{ forms.post_button(base ~ "/vms/" ~ vm.id ~ "/stop", csrf, "Stop", size="sm") }}{% endif -%}
+    {% endcall %}
+    {% endfor %}
+  {% endcall %}
+{% endcall %}
 {% endif %}
 {% endblock %}
