@@ -218,7 +218,9 @@ async fn the_operator_leases_ends_and_revokes_on_the_pool_page_which_no_one_else
     then.status(200)?
         .body_contains("gm-p")?
         .body_contains("Available")?
-        .body_contains("Lease it")?;
+        .body_contains("Lease it")?
+        .body_lacks("Search apps")?
+        .body_lacks(">Add machine<")?;
 
     let (lessee, lessee_when, lessee_then) = given.testcase.another_browser();
     let tenant = lessee.a_signed_in_account().await?;

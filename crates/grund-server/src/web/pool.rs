@@ -136,7 +136,7 @@ pub async fn pool_page(
         provider => state.capacity().enabled(),
     };
     member
-        .render(&state, "pages/pool.html.jinja", "machines", page)
+        .render(&state, "pages/pool.html.jinja", "pool", page)
         .await
 }
 
