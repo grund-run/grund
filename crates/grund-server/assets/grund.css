@@ -91,7 +91,7 @@
   --radius-sm: 8px;
   --sidebar: 250px;
   --topbar: 92px;
-  --content: 1240px;
+  --content: 1168px;
   --gutter: clamp(1rem, 3.2vw, 3rem);
 
   --sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -379,7 +379,7 @@ code,
   align-items: center;
   gap: var(--space-6);
   height: var(--topbar);
-  padding: 0 var(--gutter);
+  padding: 0 max(var(--gutter), (100% - var(--content)) / 2);
   border-bottom: 1px solid var(--border);
 }
 
@@ -434,6 +434,7 @@ code,
 .content {
   width: 100%;
   max-width: calc(var(--content) + 2 * var(--gutter));
+  margin-inline: auto;
   padding: var(--space-8) var(--gutter) var(--space-16);
 }
 
