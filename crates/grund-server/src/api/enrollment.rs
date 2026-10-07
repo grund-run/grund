@@ -20,7 +20,7 @@ use crate::{
             EnrollOutcome, EnrollRequest, HEARTBEAT_INTERVAL_SECONDS, MachinesState,
             public_key_message,
         },
-        networks::{NetworkView, NetworksState},
+        networks::{NetworksState, network_message},
     },
     state::State,
 };
@@ -34,21 +34,6 @@ impl EnrollmentApi {
     pub fn new(state: State) -> Self {
         Self { state }
     }
-}
-
-fn network_message(
-    network: &NetworkView,
-    machine_id: uuid::Uuid,
-    relay_urls: Vec<String>,
-) -> Option<agent::Network> {
-    Some(agent::Network {
-        network_id: network.network_id.to_string(),
-        key: MessageField::from(public_key_message(&network.key)),
-        prefix: network.prefix.to_string(),
-        slot: u32::from(*network.slots.get(&machine_id)?),
-        relay_urls,
-        ..Default::default()
-    })
 }
 
 fn refusal(error: ConnectError, reason: &str) -> ConnectError {

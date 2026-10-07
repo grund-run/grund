@@ -185,15 +185,24 @@ impl Agents {
             .map_or(0, |d| d.generation))
     }
 
-    /// The machine's document, if newer than `since`.
+    /// The machine's document, if newer than `since` and of the organisation
+    /// whose pool the machine is in now: a machine whose lease ended, or that
+    /// another organisation leased since, is never handed the old lessee's.
     pub async fn desired_state(
         &self,
         caller: &MachineCaller,
         since: u64,
     ) -> anyhow::Result<Option<DocumentRow>> {
+        let Some(organisation_id) = caller.organisation_id else {
+            return Ok(None);
+        };
         Ok(agents::document(&self.state.pool, caller.machine_id)
             .await?
-            .filter(|document| document.generation as u64 > since))
+            .filter(|document| document.generation as u64 > since)
+            .filter(|document| {
+                agent::DesiredState::decode_from_slice(&document.payload)
+                    .is_ok_and(|state| state.organisation_id == organisation_id.to_string())
+            }))
     }
 
     /// The machine's document once it is newer than `since`: at once if it

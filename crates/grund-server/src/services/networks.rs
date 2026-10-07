@@ -89,6 +89,24 @@ pub enum MembershipOutcome {
     NotFound,
 }
 
+/// `network` as a member is told of it at registration or in a lease grant:
+/// its key, its prefix, `machine_id`'s slot and the relays. `None` when the
+/// machine holds no slot in it.
+pub fn network_message(
+    network: &NetworkView,
+    machine_id: Uuid,
+    relay_urls: Vec<String>,
+) -> Option<grund_proto::grund::agent::v1::Network> {
+    Some(grund_proto::grund::agent::v1::Network {
+        network_id: network.network_id.to_string(),
+        key: buffa::MessageField::from(crate::services::machines::public_key_message(&network.key)),
+        prefix: network.prefix.to_string(),
+        slot: u32::from(*network.slots.get(&machine_id)?),
+        relay_urls,
+        ..Default::default()
+    })
+}
+
 /// Private network flows.
 #[derive(Clone)]
 pub struct Networks {

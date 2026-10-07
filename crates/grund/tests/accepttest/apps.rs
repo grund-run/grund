@@ -23,12 +23,16 @@ impl Drop for Agent {
 }
 
 impl Agent {
+    pub(super) fn has_exited(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(Some(_)))
+    }
+
     fn kill(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
 
-    fn containers(&self) -> Vec<Value> {
+    pub(super) fn containers(&self) -> Vec<Value> {
         let Ok(entries) = std::fs::read_dir(self.dir.join("simulated-containers/containers"))
         else {
             return Vec::new();
@@ -55,7 +59,7 @@ impl Agent {
     }
 }
 
-fn data_dir() -> std::path::PathBuf {
+pub(super) fn data_dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("apps-{}", random_hex(6)))
 }
 
@@ -96,7 +100,14 @@ pub(super) async fn a_machine(
         "{}",
         String::from_utf8_lossy(&joined.stderr)
     );
-    let log = std::fs::File::create(dir.join("agent.log"))?;
+    a_running_agent(dir)
+}
+
+pub(super) fn a_running_agent(dir: std::path::PathBuf) -> anyhow::Result<Agent> {
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("agent.log"))?;
     let child = std::process::Command::new(crate::accepttest::fixtures::grund_binary())
         .args([
             "agent",
@@ -128,7 +139,12 @@ pub(super) async fn call(
     then.json()
 }
 
-async fn app(when: &When, then: &Then, organisation: &str, name: &str) -> anyhow::Result<Value> {
+pub(super) async fn app(
+    when: &When,
+    then: &Then,
+    organisation: &str,
+    name: &str,
+) -> anyhow::Result<Value> {
     let answer = call(
         when,
         then,

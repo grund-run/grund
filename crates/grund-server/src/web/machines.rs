@@ -213,6 +213,7 @@ async fn machines_view(
             label_keys => rows.iter().flat_map(|r| r.labels.0.keys().cloned()).collect::<std::collections::BTreeSet<_>>(),
             label_values => rows.iter().flat_map(|r| r.labels.0.values().cloned()).collect::<std::collections::BTreeSet<_>>(),
             machines, hosts, vms,
+            operator => state.machines().operator().await? == Some(membership.organisation_id),
             notice => form.notice, error => form.error,
             setup => form.setup, add_error => form.add_error, name => form.name,
             run_error => form.run_error, run => Value::from_serialize(&run),

@@ -193,8 +193,9 @@ pub fn verify(
     Ok(state)
 }
 
+/// The control link to the instance: every call signed by the machine key.
 #[derive(Clone)]
-pub(crate) struct Link {
+pub struct Link {
     http: reqwest::Client,
     origin: String,
     machine_id: String,
@@ -202,7 +203,8 @@ pub(crate) struct Link {
 }
 
 impl Link {
-    pub(crate) async fn call<Req: Message, Resp: Message>(
+    /// Calls `procedure` of `grund.agent.v1.AgentService`, signed.
+    pub async fn call<Req: Message, Resp: Message>(
         &self,
         procedure: &str,
         request: &Req,
@@ -250,17 +252,25 @@ pub async fn run<R: VmRuntime, C: ContainerRuntime + 'static>(
     containers: C,
 ) -> anyhow::Result<()> {
     grund_tls::install_default();
-    let record = join::read_record(&args.data_dir)?
+    let registered = join::read_record(&args.data_dir)?
         .context("this machine is not registered; run grund join first")?;
     let key = join::machine_key(&args.data_dir)?;
-    let trust = trust_key(&record);
     let policy = Policy::load(&args.policy)?;
     let link = Link {
         http: join::http_client()?,
-        origin: record.instance_url.clone(),
-        machine_id: record.machine_id.clone(),
+        origin: registered.instance_url.clone(),
+        machine_id: registered.machine_id.clone(),
         key,
     };
+    let lease = if registered.pool == "management" {
+        crate::lease::at_start(&link, &registered, &args.data_dir).await?
+    } else {
+        None
+    };
+    let record = lease
+        .as_ref()
+        .map_or_else(|| registered.clone(), |lease| lease.applied_to(&registered));
+    let trust = trust_key(&record);
     let applied = std::sync::Arc::new(tokio::sync::Mutex::new(read_applied(&args.data_dir)?));
     let shared = std::sync::Arc::new(Shared::default());
     *shared.desired.lock().expect("shared lock") = current(&*applied.lock().await);
@@ -375,6 +385,9 @@ pub async fn run<R: VmRuntime, C: ContainerRuntime + 'static>(
         shared: &shared,
         gate: &gate,
     };
+    let lease_changed = crate::lease::changed(link.clone(), registered.clone(), lease.clone());
+    tokio::pin!(lease_changed);
+    let leased = registered.pool == "management" && !args.once;
     loop {
         let interval = match round(&context).await {
             Ok(seconds) => args.interval.unwrap_or(seconds.max(1) as u64),
@@ -393,6 +406,9 @@ pub async fn run<R: VmRuntime, C: ContainerRuntime + 'static>(
             _ = tokio::time::sleep(Duration::from_secs(interval)) => {}
             _ = shared.changed.notified() => {
                 tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            _ = &mut lease_changed, if leased => {
+                bail!("this machine's lease changed; starting again under the new one");
             }
         }
     }

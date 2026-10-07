@@ -28,6 +28,7 @@ pub mod machines;
 pub mod orgs;
 pub mod pages;
 pub mod placement;
+pub mod pool;
 pub mod registries;
 pub mod resources;
 pub mod tokens;
@@ -149,6 +150,12 @@ pub fn router(state: State) -> Router {
         .route("/{org}/machines/{machine}/remove", post(machines::remove))
         .route("/{org}/machines/{machine}/service", post(machines::service))
         .route("/{org}/machines/{machine}/labels", post(machines::labels))
+        .route("/{org}/pool", get(pool::pool_page))
+        .route("/{org}/pool/provision", post(pool::provision))
+        .route("/{org}/pool/{machine}/lease", post(pool::lease))
+        .route("/{org}/pool/{machine}/end", post(pool::end_lease))
+        .route("/{org}/pool/{machine}/rebuild", post(pool::rebuild))
+        .route("/{org}/pool/{machine}/revoke", post(pool::revoke))
         .route("/{org}/settings/tokens", get(tokens::tokens_page).post(tokens::create))
         .route("/{org}/settings/tokens/{token}/revoke", post(tokens::revoke))
         .route("/{org}/settings/registries", get(registries::registries_page).post(registries::set))

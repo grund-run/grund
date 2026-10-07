@@ -7,13 +7,13 @@ use buffa::MessageField;
 use buffa_types::google::protobuf::Timestamp;
 use connectrpc::{ConnectError, RequestContext, Response, ServiceRequest, ServiceResult};
 use grund_proto::grund::agent::v1::{
-    AgentService, GetDesiredStateRequest, GetDesiredStateResponse, GetMachineJoinTokenRequest,
-    GetMachineJoinTokenResponse, GetMembershipRequest, GetMembershipResponse,
-    GetPullCredentialRequest, GetPullCredentialResponse, GetReplicaSecretsRequest,
-    GetReplicaSecretsResponse, HeartbeatRequest, HeartbeatResponse, RegistryCredential,
-    ReplicaObservedState, ReportStatusRequest, ReportStatusResponse, SecretValue,
-    SignedDesiredState, SignedMembershipList, VmObservedState, WatchDesiredStateRequest,
-    WatchDesiredStateResponse,
+    AgentService, GetDesiredStateRequest, GetDesiredStateResponse, GetLeaseRequest,
+    GetLeaseResponse, GetMachineJoinTokenRequest, GetMachineJoinTokenResponse,
+    GetMembershipRequest, GetMembershipResponse, GetPullCredentialRequest,
+    GetPullCredentialResponse, GetReplicaSecretsRequest, GetReplicaSecretsResponse,
+    HeartbeatRequest, HeartbeatResponse, RegistryCredential, ReplicaObservedState,
+    ReportStatusRequest, ReportStatusResponse, SecretValue, SignedDesiredState, SignedLeaseGrant,
+    SignedMembershipList, VmObservedState, WatchDesiredStateRequest, WatchDesiredStateResponse,
 };
 use uuid::Uuid;
 
@@ -21,6 +21,7 @@ use crate::{
     services::{
         agents::{AgentsState, HEARTBEAT_INTERVAL_SECONDS, MachineCaller, ReplicaReport},
         apps::AppsState,
+        machines::MachinesState,
         networks::{MembershipOutcome, NetworksState},
         registry_credentials::RegistryCredentialsState,
     },
@@ -286,6 +287,35 @@ impl AgentService for AgentApi {
             .await
             .map_err(internal)?;
         Response::ok(ReportStatusResponse::default())
+    }
+
+    async fn get_lease(
+        &self,
+        ctx: RequestContext,
+        _: ServiceRequest<'_, GetLeaseRequest>,
+    ) -> ServiceResult<GetLeaseResponse> {
+        let caller = machine(&ctx)?;
+        let machines = self.state.machines();
+        let Some(row) = machines
+            .pool_machine(caller.machine_id)
+            .await
+            .map_err(internal)?
+        else {
+            return Response::ok(GetLeaseResponse::default());
+        };
+        let grant = machines.lease_grant(&row).await.map_err(internal)?;
+        Response::ok(GetLeaseResponse {
+            grant: grant
+                .map(|grant| SignedLeaseGrant {
+                    key_id: grant.key_id.to_string(),
+                    payload: grant.payload,
+                    signature: grant.signature.to_vec(),
+                    ..Default::default()
+                })
+                .map(MessageField::from)
+                .unwrap_or_default(),
+            ..Default::default()
+        })
     }
 
     async fn get_membership(

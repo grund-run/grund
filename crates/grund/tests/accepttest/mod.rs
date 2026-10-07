@@ -8,6 +8,7 @@ mod csrf;
 mod doctor;
 mod domains;
 mod health;
+mod hosted;
 mod insights;
 mod lifecycle;
 mod login;

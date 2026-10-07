@@ -76,8 +76,8 @@ message EnrollMachineResponse {
   // control link exists.
   repeated string data_channel_urls = 8;
   // The organisation's private network, for the organisation pool only; the
-  // machine pins its key. A management machine joins a network through a
-  // lease (not built).
+  // machine pins its key. A management machine joins its lessee's network
+  // through its lease grant (AgentService.GetLease).
   Network network = 9;
 }
 
@@ -131,6 +131,11 @@ message LeaseGrant {
   string organisation_id = 3;
   PublicKey organisation_key = 4;
   int64 issued_at_unix = 5;
+  // The organisation's private network and the machine's place in it, as
+  // registration gives it to a machine of the organisation's own pool; the
+  // machine pins its key from here. Unset in a grant signed before the
+  // network existed.
+  Network network = 6;
 }
 
 // signature = Ed25519(management key, "grund-lease-grant-v1\n" || payload),

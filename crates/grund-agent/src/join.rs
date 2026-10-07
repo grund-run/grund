@@ -24,8 +24,8 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use buffa::Message;
 use ed25519_dalek::{Signer, SigningKey};
 use grund_proto::grund::agent::v1::{
-    EnrollMachineRequest, EnrollMachineResponse, ErrorReason, KeyPurpose, MachineFacts, Pool,
-    PublicKey,
+    EnrollMachineRequest, EnrollMachineResponse, ErrorReason, KeyPurpose, MachineFacts, Network,
+    Pool, PublicKey,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -372,7 +372,9 @@ fn jitter() -> Duration {
     Duration::from_millis(u64::from(byte[0]) * 4)
 }
 
-fn pinned(key: Option<&PublicKey>) -> anyhow::Result<PinnedKey> {
+/// A key of the instance as the machine pins it, from an answer that must
+/// carry one.
+pub fn pinned(key: Option<&PublicKey>) -> anyhow::Result<PinnedKey> {
     let key = key.context("the instance answered without a key to pin")?;
     anyhow::ensure!(key.public_key.len() == 32, "a pinned key is 32 bytes");
     Ok(PinnedKey {
@@ -386,6 +388,24 @@ fn pinned(key: Option<&PublicKey>) -> anyhow::Result<PinnedKey> {
             _ => bail!("the instance answered a key with no purpose"),
         }
         .to_string(),
+    })
+}
+
+/// A private network as the machine keeps it, from registration or a lease
+/// grant: its key must be a network key and the slot a real one.
+pub fn network_record(network: &Network) -> anyhow::Result<NetworkRecord> {
+    let key = pinned(network.key.as_option())?;
+    anyhow::ensure!(key.purpose == "network", "a network's key is a network key");
+    anyhow::ensure!(
+        (1..=u32::from(u16::MAX)).contains(&network.slot),
+        "a network slot is between 1 and 65535"
+    );
+    Ok(NetworkRecord {
+        network_id: network.network_id.to_string(),
+        key,
+        prefix: network.prefix.to_string(),
+        slot: network.slot as u16,
+        relay_urls: network.relay_urls.iter().map(|u| u.to_string()).collect(),
     })
 }
 
@@ -409,21 +429,7 @@ pub fn record(origin: &str, response: &EnrollMachineResponse) -> anyhow::Result<
         network: response
             .network
             .as_option()
-            .map(|network| -> anyhow::Result<NetworkRecord> {
-                let key = pinned(network.key.as_option())?;
-                anyhow::ensure!(key.purpose == "network", "a network's key is a network key");
-                anyhow::ensure!(
-                    (1..=u32::from(u16::MAX)).contains(&network.slot),
-                    "a network slot is between 1 and 65535"
-                );
-                Ok(NetworkRecord {
-                    network_id: network.network_id.to_string(),
-                    key,
-                    prefix: network.prefix.to_string(),
-                    slot: network.slot as u16,
-                    relay_urls: network.relay_urls.iter().map(|u| u.to_string()).collect(),
-                })
-            })
+            .map(network_record)
             .transpose()?,
     })
 }
@@ -481,11 +487,20 @@ pub fn read_record(data_dir: &Path) -> anyhow::Result<Option<Record>> {
 }
 
 fn write_record(data_dir: &Path, record: &Record) -> anyhow::Result<()> {
+    replace_file(
+        data_dir,
+        RECORD_FILE,
+        &serde_json::to_string_pretty(record)?,
+    )
+}
+
+/// Writes `name` in `data_dir` whole or not at all, owner-only.
+pub fn replace_file(data_dir: &Path, name: &str, contents: &str) -> anyhow::Result<()> {
     ensure_dir(data_dir)?;
-    let path = data_dir.join(RECORD_FILE);
-    let temporary = data_dir.join(format!(".{RECORD_FILE}.{}", std::process::id()));
+    let path = data_dir.join(name);
+    let temporary = data_dir.join(format!(".{name}.{}", std::process::id()));
     let _ = std::fs::remove_file(&temporary);
-    write_new(&temporary, &serde_json::to_string_pretty(record)?)?;
+    write_new(&temporary, contents)?;
     std::fs::rename(&temporary, &path).with_context(|| format!("write {}", path.display()))
 }
 

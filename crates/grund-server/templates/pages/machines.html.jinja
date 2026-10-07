@@ -1,7 +1,7 @@
 {% extends "layout-app.html.jinja" %}
 {% set title = "Machines" %}
 {% block content %}
-{{ ui.page_head("Machines") }}
+{% if operator %}{% call ui.page_head("Machines") %}{{ ui.button("Management pool", href="/" ~ org.slug ~ "/pool", kind="secondary", icon_name="server") }}{% endcall %}{% else %}{{ ui.page_head("Machines") }}{% endif %}
 {{ forms.banner(error, ok=notice) }}
 
 {% if setup %}

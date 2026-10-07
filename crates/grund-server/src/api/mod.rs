@@ -278,6 +278,10 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
         Requirement::Machine,
     ),
     (
+        "/grund.agent.v1.AgentService/GetLease",
+        Requirement::Machine,
+    ),
+    (
         "/grund.relay.v1.RelayEnrollmentService/EnrollRelay",
         Requirement::Token,
     ),
@@ -1334,6 +1338,13 @@ mod tests {
             _: RequestContext,
             _: ServiceRequest<'_, agent::GetMembershipRequest>,
         ) -> ServiceResult<agent::GetMembershipResponse> {
+            unreachable!()
+        }
+        async fn get_lease(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, agent::GetLeaseRequest>,
+        ) -> ServiceResult<agent::GetLeaseResponse> {
             unreachable!()
         }
     }

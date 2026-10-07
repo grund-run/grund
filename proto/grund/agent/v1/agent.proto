@@ -5,6 +5,7 @@ syntax = "proto3";
 package grund.agent.v1;
 
 import "google/protobuf/timestamp.proto";
+import "grund/agent/v1/enrollment.proto";
 
 // The control link: how a registered machine's agent talks to its instance
 // (grund-docs design/machines.md §7b). Until it moves onto iroh, it is HTTPS,
@@ -69,6 +70,23 @@ service AgentService {
   rpc GetMembership(GetMembershipRequest) returns (GetMembershipResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
   }
+
+  // The lease a machine of the management pool is on: the grant the
+  // management key signs (the key the machine pinned at registration),
+  // naming the organisation whose documents it may accept from now on and
+  // that organisation's private network. Unset when the machine is on no
+  // lease: available, returning, or of an organisation's own pool. A
+  // machine that held a grant and is answered none, or another lease, drops
+  // everything of the old lessee's (grund-docs design/machines.md §5.3).
+  rpc GetLease(GetLeaseRequest) returns (GetLeaseResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+}
+
+message GetLeaseRequest {}
+
+message GetLeaseResponse {
+  SignedLeaseGrant grant = 1;
 }
 
 message GetMembershipRequest {

@@ -31,6 +31,7 @@ use crate::{
     services::{
         capacity::{CapacityError, CapacityState},
         limits::LimitsState,
+        networks::NetworksState,
     },
     state::State,
 };
@@ -563,35 +564,72 @@ impl Machines {
             return Ok(outcome);
         }
         let keys = self.keys();
-        let management = keys
-            .ensure(work.sql(), KeyPurpose::Management, None)
+        keys.ensure(work.sql(), KeyPurpose::Management, None)
             .await?;
-        let organisation_key = keys
-            .ensure(work.sql(), KeyPurpose::Organisation, Some(organisation_id))
+        keys.ensure(work.sql(), KeyPurpose::Organisation, Some(organisation_id))
             .await?;
-        let payload = agent::LeaseGrant {
-            lease_id: lease_id.to_string(),
-            machine_id: machine_id.to_string(),
-            organisation_id: organisation_id.to_string(),
-            organisation_key: buffa::MessageField::from(public_key_message(&organisation_key)),
-            issued_at_unix: now.timestamp(),
-            ..Default::default()
-        }
-        .encode_to_vec();
-        let signature = keys.sign(management.key_id, prefix::LEASE_GRANT, &payload);
         work.commit().await?;
         let row = self
             .pool_machine(machine_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("a leased machine has a row"))?;
-        Ok(ChangeOutcome::Leased(
-            row,
-            SignedGrant {
-                key_id: management.key_id,
-                payload,
-                signature,
-            },
-        ))
+        let grant = self
+            .lease_grant(&row)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("a leased machine has a grant"))?;
+        Ok(ChangeOutcome::Leased(row, grant))
+    }
+
+    /// The grant for the lease `row` is on, signed now by the management
+    /// key: the lessee, its organisation key and its private network with
+    /// the machine's slot (reconciled first, so a machine just leased has
+    /// one). `None` when the machine is on no lease.
+    pub async fn lease_grant(&self, row: &MachineRow) -> anyhow::Result<Option<SignedGrant>> {
+        let (Some(lease_id), Some(organisation_id), Some(leased_at)) =
+            (row.lease_id, row.lessee_organisation_id, row.leased_at)
+        else {
+            return Ok(None);
+        };
+        if row.pool != "management" || row.state != "leased" {
+            return Ok(None);
+        }
+        let network = self.state.networks().reconcile(organisation_id).await?;
+        let keys = self.keys();
+        let (management, organisation_key) = {
+            let mut connection = self.state.pool.acquire().await?;
+            (
+                keys.ensure(&mut connection, KeyPurpose::Management, None)
+                    .await?,
+                keys.ensure(
+                    &mut connection,
+                    KeyPurpose::Organisation,
+                    Some(organisation_id),
+                )
+                .await?,
+            )
+        };
+        let payload = agent::LeaseGrant {
+            lease_id: lease_id.to_string(),
+            machine_id: row.machine_id.to_string(),
+            organisation_id: organisation_id.to_string(),
+            organisation_key: buffa::MessageField::from(public_key_message(&organisation_key)),
+            issued_at_unix: leased_at.timestamp(),
+            network: crate::services::networks::network_message(
+                &network,
+                row.machine_id,
+                self.state.config.relay.urls(),
+            )
+            .map(buffa::MessageField::from)
+            .unwrap_or_default(),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let signature = keys.sign(management.key_id, prefix::LEASE_GRANT, &payload);
+        Ok(Some(SignedGrant {
+            key_id: management.key_id,
+            payload,
+            signature,
+        }))
     }
 
     /// Asks the capacity provider for a new machine for the management pool:
