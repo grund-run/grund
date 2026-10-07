@@ -72,6 +72,13 @@ kjuulh: "kubernetes-app": {
 					GRUND_VM_KERNEL_SHA256:  "9204218e8bcca6ac23848d74f45df2eb19d7f31e8277840a7d145a0df8b078d2"
 					GRUND_VM_ROOTFS_URL:     "https://git.kjuulh.io/api/packages/grund/generic/grund/main-a91694bfd5665209973a250dc4c3cf41652ced6b/grund-guest.ext4"
 					GRUND_VM_ROOTFS_SHA256:  "da6278094d71efd66f1c2b8eac27ef9a1e658bdf0f9b896b9f1465c0f956a332"
+					// The management pool (grund-docs design/machines.md §7a): its
+					// machines come from the capacity provider in the same
+					// namespace, in-cluster over plain http, and its operator
+					// organisation is grundcore-ops, named by id because sign-up is
+					// open.
+					GRUND_CAPACITY_URL:          "http://grund-fleet:8480"
+					GRUND_OPERATOR_ORGANISATION: "01a117a9-e780-72af-b063-fc46f89d9d73"
 				}
 				// grund-secrets is applied by the cluster's operators, not by
 				// forest. Dev's smtp_url is the namespace's shared development
@@ -84,6 +91,9 @@ kjuulh: "kubernetes-app": {
 					// grund-secrets cannot remove it. Shared with the insights and
 					// website deployments in dev.
 					{name: "GRUND_INSIGHTS_TOKEN", secret: "grund-insights-ingest", key: "token"},
+					// The capacity provider's Secret: the one token it accepts
+					// from grund, and nothing else.
+					{name: "GRUND_CAPACITY_TOKEN", secret: "fleet-secrets", key: "grund_token"},
 				]
 			}
 		}
