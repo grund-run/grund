@@ -590,6 +590,12 @@ impl VmRuntime for Firecracker {
     }
 }
 
+/// How Firecracker treats the guest's flushes of its root disk: Writeback
+/// turns each into an fsync of the disk file, so what the guest made
+/// durable survives the host losing power. Firecracker's default, Unsafe,
+/// drops them.
+pub const ROOT_DISK_CACHE: &str = "Writeback";
+
 struct GuestNetwork {
     kernel_ip: String,
     tap: String,
@@ -614,7 +620,8 @@ fn boot_sequence(
         (
             "/drives/rootfs",
             json!({ "drive_id": "rootfs", "path_on_host": "rootfs.ext4",
-                    "is_root_device": true, "is_read_only": false }),
+                    "is_root_device": true, "is_read_only": false,
+                    "cache_type": ROOT_DISK_CACHE }),
         ),
         (
             "/machine-config",
@@ -763,6 +770,38 @@ impl Drop for FileLock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_root_disk_honours_the_guests_flushes() {
+        let spec = VmSpec {
+            id: "vm-1".into(),
+            vcpus: 1,
+            memory_mib: 256,
+            disk_gib: 1,
+            image: grund_agent::vm::VmImage {
+                kernel: image::Artifact {
+                    url: "https://a".into(),
+                    sha256: "ab".repeat(32),
+                },
+                rootfs: image::Artifact {
+                    url: "https://a".into(),
+                    sha256: "cd".repeat(32),
+                },
+            },
+            mmds: json!({}),
+        };
+        let network = GuestNetwork {
+            kernel_ip: String::new(),
+            tap: "tap0".into(),
+            mac: None,
+        };
+        let sequence = boot_sequence(&spec, Path::new("vmlinux"), network);
+        let (_, drive) = sequence
+            .iter()
+            .find(|(path, _)| *path == "/drives/rootfs")
+            .expect("a root drive");
+        assert_eq!(drive["cache_type"], "Writeback");
+    }
 
     #[test]
     fn a_vm_id_is_a_dns_label() {
