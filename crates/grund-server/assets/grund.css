@@ -141,6 +141,7 @@ a.is-hover {
 }
 
 .choice:has(.choice-input:focus-visible),
+.chip:has(.chip-input:focus-visible),
 .choice.is-focus {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
@@ -579,6 +580,7 @@ a.nav-item:hover,
 .icon-btn.is-hover,
 .choice:hover,
 .choice.is-hover,
+.chip:hover,
 .expander-head:hover,
 .link:hover,
 .link.is-hover,
@@ -1204,10 +1206,13 @@ a.nav-item:hover,
   border-top: 1px solid var(--border);
 }
 
-.item[hidden] {
+.range-slider[hidden],
+.item[hidden],
+.chip[hidden] {
   display: none;
 }
 
+.unit .control,
 .item-text,
 .item-meta {
   min-width: 0;
@@ -1584,7 +1589,8 @@ legend.field-label {
   background: var(--bg-raised);
 }
 
-.choice-input {
+.choice-input,
+.chip-input {
   position: absolute;
   top: 0;
   left: 0;
@@ -1770,6 +1776,7 @@ legend.field-label {
   gap: var(--space-1);
 }
 
+.range-slider,
 .pairs {
   display: flex;
   flex-direction: column;
@@ -1789,6 +1796,145 @@ legend.field-label {
 
 .pairs-add {
   align-self: flex-start;
+}
+
+.unit-text {
+  display: flex;
+  align-items: center;
+  padding: 0 var(--space-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-2);
+}
+
+.range-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.range-name {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 10rem;
+}
+
+.range-head .unit {
+  width: 13rem;
+}
+
+.range-input {
+  --fill: 0%;
+  appearance: none;
+  width: 100%;
+  height: 0.375rem;
+  margin: var(--space-2) 0;
+  border-radius: 999px;
+  background: linear-gradient(to right, var(--accent) var(--fill), var(--border-strong) var(--fill));
+  cursor: pointer;
+}
+
+.range-input::-webkit-slider-thumb {
+  appearance: none;
+  width: 1.25rem;
+  height: 1.25rem;
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.range-input::-moz-range-thumb {
+  width: 1.25rem;
+  height: 1.25rem;
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.range-ticks {
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.25rem;
+  padding: 0 var(--space-3);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-control);
+  border-radius: 999px;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.chip:has(.chip-input:checked) {
+  background: var(--active);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+.chip:has(.chip-input:checked)::before {
+  content: "✓";
+  margin-right: var(--space-2);
+}
+
+.chips-search {
+  min-height: 2.5rem;
+  padding: var(--space-2) var(--space-3);
+}
+
+.choices:has(.choice-nest) {
+  align-items: start;
+}
+
+.choice-nest {
+  flex-direction: column;
+  align-items: stretch;
+  cursor: default;
+}
+
+.choice-main {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  cursor: pointer;
+}
+
+.choice-more {
+  display: none;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.choice:has(.choice-input:checked) .choice-more {
+  display: block;
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-5) var(--space-6);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.group-title {
+  margin: 0;
+  font-size: var(--text-base);
+  font-weight: 600;
 }
 
 .code {
@@ -1819,6 +1965,7 @@ legend.field-label {
   font-size: var(--text-sm);
 }
 
+.unit,
 .code-tools {
   display: flex;
   gap: var(--space-2);
@@ -2173,6 +2320,7 @@ a.endpoint-text:hover {
   font-size: var(--text-sm);
 }
 
+.range-ticks .is-on,
 .event-sub strong {
   color: var(--text);
   font-weight: 600;

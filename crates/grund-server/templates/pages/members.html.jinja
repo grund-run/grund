@@ -22,7 +22,7 @@
   {% call forms.form("/" ~ org.slug ~ "/settings/members/invite", csrf, layout="row") %}
     {{ forms.banner(invite_error) }}
     {{ forms.field("email", "Email", type="email", value=email, autocomplete="off", placeholder="name@example.com", hint="They get a link that works for 7 days.") }}
-    {{ forms.select_field("role", "Role", [("member", "Member"), ("admin", "Admin")], role, id="invite-role", width="sm") }}
+    {{ forms.chips_field("role", "Role", [("member", "Member"), ("admin", "Admin")], role or "member", multiple=false) }}
     {{ ui.button("Send invitation") }}
   {% endcall %}
 {% endcall %}

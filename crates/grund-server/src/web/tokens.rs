@@ -95,7 +95,9 @@ async fn tokens_view(
             }
         })
         .collect();
-    let lifetimes: Vec<(String, String)> = LIFETIMES_DAYS
+    let mut lifetimes: Vec<u32> = LIFETIMES_DAYS.to_vec();
+    lifetimes.sort_unstable();
+    let lifetimes: Vec<(String, String)> = lifetimes
         .iter()
         .map(|d| (d.to_string(), format!("{d} days")))
         .collect();

@@ -1421,7 +1421,9 @@ async fn the_machines_page_adds_a_device_shows_it_connected_and_runs_a_vm_on_it(
     when.visiting(&page).await?;
     then.status(200)?
         .body_contains("Runs VMs")?
-        .body_contains(&format!("<option value=\"{device_id}\">desk</option>"))?;
+        .body_contains(&format!(
+            r#"name="host" value="{device_id}" checked><span>desk</span>"#
+        ))?;
 
     let sha = |c: char| c.to_string().repeat(64);
     let (kernel_sha, rootfs_sha) = (sha('1'), sha('2'));

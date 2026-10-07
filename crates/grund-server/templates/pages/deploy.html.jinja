@@ -35,11 +35,11 @@
       {{ forms.pairs_field("env", "Environment variables", new.env, error=errors.env, hint="Shown in the clear.") }}
       {{ forms.pairs_field("secrets", "Secrets", error=errors.secrets, secret=true, hint=("Enter them again: a refused form never shows a secret. " if secrets_dropped else "") ~ "Never shown again.") }}
       {% call forms.grid() %}
-        {{ forms.select_field("check", "Ready check", checks, new.check) }}
+        {{ forms.chips_field("check", "Ready check", checks, new.check, multiple=false) }}
         {{ forms.field("check_path", "Check path", value=new.check_path, required=false, error=errors.check, hint="For an HTTP check. Empty: /.", mono=true) }}
-        {{ forms.field("memory", "Memory (MiB)", type="number", value=new.memory, required=false, error=errors.memory, hint="Per copy. Empty: 512.", width="sm") }}
-        {{ forms.field("cpu", "CPU (thousandths)", type="number", value=new.cpu, required=false, error=errors.cpu, hint="Per copy; 1000 is one CPU. Empty: 1000.", width="sm") }}
-        {{ forms.select_field("stop_signal", "Stop signal", signals, new.stop_signal or "SIGTERM", width="sm") }}
+        {{ forms.field("memory", "Memory", type="number", value=new.memory, required=false, error=errors.memory, hint="Per copy. Empty: 512.", unit="MiB", min=16, max=262144, suggestions=memory_steps) }}
+        {{ forms.field("cpu", "CPU", type="number", value=new.cpu, required=false, error=errors.cpu, hint="Per copy. Empty: 1.", unit="vCPU", min=0.01, max=64, step="any", suggestions=cpu_steps) }}
+        {{ forms.chips_field("stop_signal", "Stop signal", signals, new.stop_signal or "SIGTERM", multiple=false) }}
         {{ forms.field("stop_grace", "Grace (seconds)", type="number", value=new.stop_grace, required=false, error=errors.stop, hint="From the signal to a kill. Empty: 30.", width="sm") }}
       {% endcall %}
       {{ forms.code_field("command", "Command", value=new.command, error=errors.command, rows=3, hint="One argument per line. Empty: the image's own.") }}

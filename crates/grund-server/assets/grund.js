@@ -1,8 +1,10 @@
 // grund's only script: small enhancements over pages that work without it.
 // Copy buttons, a sort select that applies itself, the app filter as you
 // type, menus that close on Escape or a click elsewhere, the − and + of a
-// number, a choice that fills in a name, and rows of names and values that
-// grow and shrink, and the setting a link points at, opened.
+// number, a choice that fills in a name, rows of names and values that
+// grow and shrink, chips filtered as you type, sliders kept in step with
+// their numbers, presets that fill them, and the setting a link points
+// at, opened.
 (function () {
   "use strict";
   document.documentElement.classList.add("has-js");
@@ -125,6 +127,92 @@
         wire(row);
         number();
         row.querySelector("input").focus();
+      });
+    });
+
+    document.querySelectorAll("input[data-chip-search]").forEach(function (search) {
+      var chips = Array.prototype.slice.call(search.parentElement.querySelectorAll(".chip"));
+      if (chips.length < 8) return;
+      search.hidden = false;
+      search.addEventListener("keydown", function (event) {
+        if (event.key === "Enter") event.preventDefault();
+      });
+      search.addEventListener("input", function () {
+        var query = search.value.trim().toLowerCase();
+        chips.forEach(function (chip) {
+          var input = chip.querySelector("input");
+          chip.hidden = !!query && !input.checked && chip.textContent.toLowerCase().indexOf(query) === -1;
+        });
+      });
+    });
+
+    document.querySelectorAll("[data-range]").forEach(function (slider) {
+      var input = document.getElementById(slider.dataset.range);
+      var range = slider.querySelector("input");
+      var ticks = slider.querySelectorAll(".range-ticks span");
+      var steps = range.dataset.steps.split(" ").map(Number);
+      if (!input) return;
+      slider.hidden = false;
+      function nearest() {
+        var value = Number(input.value);
+        var best = 0;
+        steps.forEach(function (step, i) {
+          if (Math.abs(step - value) < Math.abs(steps[best] - value)) best = i;
+        });
+        return best;
+      }
+      function mark() {
+        range.style.setProperty("--fill", (100 * Number(range.value) / Math.max(1, steps.length - 1)) + "%");
+        var at = Number(input.value) === steps[range.value] ? Number(range.value) : -1;
+        ticks.forEach(function (tick, i) { tick.classList.toggle("is-on", i === at); });
+      }
+      function follow() {
+        range.value = String(nearest());
+        mark();
+      }
+      follow();
+      input.addEventListener("input", follow);
+      range.addEventListener("input", function () {
+        input.value = String(steps[range.value]);
+        mark();
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+    });
+
+    document.querySelectorAll("fieldset").forEach(function (group) {
+      var options = Array.prototype.slice.call(group.querySelectorAll("input[data-sets]"));
+      if (!options.length) return;
+      function sets(option) {
+        return option.dataset.sets.split(" ").filter(Boolean).map(function (pair) {
+          var at = pair.indexOf("=");
+          return { field: document.getElementById(pair.slice(0, at)), value: pair.slice(at + 1) };
+        }).filter(function (set) { return set.field; });
+      }
+      var fields = [];
+      options.forEach(function (option) {
+        sets(option).forEach(function (set) {
+          if (fields.indexOf(set.field) === -1) fields.push(set.field);
+        });
+        option.addEventListener("change", function () {
+          if (!option.checked) return;
+          sets(option).forEach(function (set) {
+            set.field.value = set.value;
+            set.field.dispatchEvent(new Event("input", { bubbles: true }));
+          });
+        });
+      });
+      function choose() {
+        var match = options.filter(function (option) {
+          var all = sets(option);
+          return all.length && all.every(function (set) { return Number(set.field.value) === Number(set.value); });
+        })[0] || options.filter(function (option) { return !option.dataset.sets; })[0];
+        if (match) match.checked = true;
+      }
+      fields.forEach(function (field) {
+        field.addEventListener("input", function (event) {
+          if (event.isTrusted) choose();
+        });
+        field.addEventListener("change", choose);
       });
     });
 

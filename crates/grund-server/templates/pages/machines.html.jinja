@@ -40,7 +40,7 @@
   {% for machine in machines %}
   {% call ui.expander(machine.name, summary=(machine.labels | join(", ")) or "No labels", icon_name="server") %}
     {% call forms.form("/" ~ org.slug ~ "/machines/" ~ machine.id ~ "/labels", csrf) %}
-      {{ forms.pairs_field("labels", "Labels", pairs=machine.pairs, blank=1, key_label="Key", value_label="Value") }}
+      {{ forms.pairs_field("labels", "Labels", pairs=machine.pairs, blank=1, key_label="Key", value_label="Value", key_suggestions=label_keys, value_suggestions=label_values) }}
       {% call forms.actions("Copies on a machine that no longer matches their app move to one that does.") %}{{ ui.button("Save labels") }}{% endcall %}
     {% endcall %}
   {% endcall %}
@@ -79,7 +79,7 @@
   {% call forms.form("/" ~ org.slug ~ "/machines/vms", csrf) %}
     {{ forms.banner(run_error) }}
     {% call forms.grid() %}
-    {{ forms.select_field("host", "On", hosts) }}
+    {{ forms.chips_field("host", "On", hosts, (hosts | first)[0], multiple=false, search="Search machines") }}
     {{ forms.field("vm_name", "Name", value=run.vm_name, autocomplete="off") }}
     {% endcall %}
     {% call forms.grid() %}

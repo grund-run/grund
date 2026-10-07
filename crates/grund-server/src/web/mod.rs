@@ -27,7 +27,9 @@ pub mod install;
 pub mod machines;
 pub mod orgs;
 pub mod pages;
+pub mod placement;
 pub mod registries;
+pub mod resources;
 pub mod tokens;
 
 use axum::{
@@ -128,7 +130,7 @@ pub fn router(state: State) -> Router {
         .route("/{org}/apps/{app}/settings/copies", post(apps::configure))
         .route(
             "/{org}/apps/{app}/settings/placement",
-            post(apps::placement_settings),
+            post(placement::save),
         )
         .route(
             "/{org}/apps/{app}/settings/release",

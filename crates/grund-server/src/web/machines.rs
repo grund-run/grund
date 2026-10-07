@@ -210,6 +210,8 @@ async fn machines_view(
         "pages/machines.html.jinja",
         "machines",
         context! {
+            label_keys => rows.iter().flat_map(|r| r.labels.0.keys().cloned()).collect::<std::collections::BTreeSet<_>>(),
+            label_values => rows.iter().flat_map(|r| r.labels.0.values().cloned()).collect::<std::collections::BTreeSet<_>>(),
             machines, hosts, vms,
             notice => form.notice, error => form.error,
             setup => form.setup, add_error => form.add_error, name => form.name,

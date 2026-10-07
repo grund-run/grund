@@ -38,7 +38,7 @@
   {% if apps %}
   {% call forms.form("/" ~ org.slug ~ "/domains/bind", csrf, layout="row") %}
     {{ forms.hidden_field("name", domain.name) }}
-    {{ forms.select_field("app", "Serve this app on it" if domain.state == "verified" else "Move it to another app", apps, selected=domain.app, id=domain.id ~ "-app", width="md") }}
+    {{ forms.chips_field("app", "Serve this app on it" if domain.state == "verified" else "Move it to another app", apps, domain.app or (apps | first)[0], multiple=false, search="Search apps") }}
     {{ ui.button("Bind" if domain.state == "verified" else "Move", kind="secondary") }}
   {% endcall %}
   {% else %}

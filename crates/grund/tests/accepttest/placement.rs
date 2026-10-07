@@ -391,17 +391,23 @@ async fn the_dashboard_labels_a_machine_takes_it_out_of_service_and_sets_an_apps
     call(&when, &then, "Deploy", json!({"organisation": org, "name": "hello", "spec": spec(&registry.image("acme/hello", "1"), json!([]))})).await?;
     then.status(200)?;
     let settings_page = format!("/{org}/apps/hello/settings?edit=placement");
+    when.visiting(&settings_page).await?;
+    then.status(200)?
+        .body_contains(r#"name="machines" value="desk""#)?
+        .body_contains(r#"name="label" value="zone=a""#)?
+        .body_contains(r#"<option value="zone">"#)?;
     when.submitting(
         &settings_page,
         &format!("/{org}/apps/hello/settings/placement"),
         &[
-            ("machines", ""),
-            ("labels_key", "zone"),
-            ("labels_value", "a"),
+            ("mode", "labels"),
+            ("machines", "desk"),
+            ("label", "zone=a"),
+            ("labels_key", ""),
+            ("labels_value", ""),
             ("kind", "own"),
+            ("spread", "label"),
             ("spread_by", "zone"),
-            ("near", ""),
-            ("apart", ""),
             ("reschedule_after", "60"),
         ],
     )
@@ -420,15 +426,84 @@ async fn the_dashboard_labels_a_machine_takes_it_out_of_service_and_sets_an_apps
     anyhow::ensure!(
         app["settings"]["placement"]["labels"]["zone"] == "a"
             && app["settings"]["placement"]["kind"] == "MACHINE_KIND_OWN"
-            && app["settings"]["rescheduleAfterSeconds"] == 60,
-        "{app}"
+            && app["settings"]["rescheduleAfterSeconds"] == 60
+            && app["settings"]["machines"]
+                .as_array()
+                .is_none_or(Vec::is_empty),
+        "only the chosen card's values are saved: {app}"
     );
+    when.visiting(&format!("/{org}/apps/hello/settings"))
+        .await?;
+    then.status(200)?
+        .body_contains("Labelled zone=a, of your own · spread by zone · replaced after 60 s")?;
     when.submitting(
         &settings_page,
         &format!("/{org}/apps/hello/settings/placement"),
-        &[("spread_by", "Zone"), ("reschedule_after", "60")],
+        &[("mode", "anywhere"), ("spread", "label"), ("spread_by", "")],
     )
     .await?;
-    then.status(422)?.body_contains("spread_by")?;
+    then.status(422)?
+        .body_contains("Enter a label key, such as zone.")?
+        .body_contains(r#"name="spread" value="label" checked"#)?;
+    when.submitting(
+        &settings_page,
+        &format!("/{org}/apps/hello/settings/placement"),
+        &[
+            ("spread", "label"),
+            ("spread_by", "Zone"),
+            ("reschedule_after", "60"),
+        ],
+    )
+    .await?;
+    then.status(422)?.body_contains("A label key is 1 to 63")?;
+    when.submitting(
+        &page,
+        &format!("/{org}/machines/{id}/service"),
+        &[("in_service", "yes")],
+    )
+    .await?;
+    let resources_page = format!("/{org}/apps/hello/settings?edit=resources");
+    when.visiting(&resources_page).await?;
+    then.status(200)?
+        .body_contains(r#"name="preset" value="medium""#)?;
+    when.submitting(
+        &resources_page,
+        &format!("/{org}/apps/hello/settings/release"),
+        &[
+            ("part", "resources"),
+            ("shown_preset", "custom"),
+            ("preset", "low"),
+            ("memory", "999"),
+            ("cpu", "3"),
+        ],
+    )
+    .await?;
+    then.redirects_to(&format!("/{org}/apps/hello/settings?done=released"))?;
+    let releases = call(
+        &when,
+        &then,
+        "ListReleases",
+        json!({"organisation": org, "name": "hello"}),
+    )
+    .await?;
+    let resources = &releases["releases"][0]["spec"]["resources"];
+    anyhow::ensure!(
+        resources["memoryMib"] == "128" && resources["cpuMillis"] == 250,
+        "a preset chosen on the page wins over the numbers: {releases}"
+    );
+    when.submitting(
+        &resources_page,
+        &format!("/{org}/apps/hello/settings/release"),
+        &[
+            ("part", "resources"),
+            ("shown_preset", "low"),
+            ("preset", "low"),
+            ("memory", "200000"),
+            ("cpu", "0.5"),
+        ],
+    )
+    .await?;
+    then.status(422)?
+        .body_contains("The largest machine here gives one copy at most")?;
     Ok(())
 }

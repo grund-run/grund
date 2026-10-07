@@ -205,11 +205,8 @@
       {{ forms.field("sg-disabled", "Email (disabled)", type="email", value="ada@nord.studio", disabled=true) }}
     {% endcall %}
   {% endcall %}
-  {% call cat.specimen("Select and switch", '{{ forms.select_field("role", "Role", [("member", "Member"), ("admin", "Admin")], role) }}
-{{ forms.toggle_field("auto_rollback", "Roll back a failed release on its own", checked=true, hint=hint) }}', "Every select has the same chevron and edge as a text field. A switch is one yes or no: a checkbox that sends name=on, so the handler reads a missing value as off.") %}
+  {% call cat.specimen("Switch", '{{ forms.toggle_field("auto_rollback", "Roll back a failed release on its own", checked=true, hint=hint) }}', "A switch is one yes or no: a checkbox that sends name=on, so the handler reads a missing value as off.") %}
     {% call cat.column() %}
-      {{ forms.select_field("sg-role", "Role", [("member", "Member"), ("admin", "Admin")], "admin") }}
-      {{ forms.select_field("sg-role-focus", "Role (focus)", [("member", "Member"), ("admin", "Admin")], "member", state="focus") }}
       {{ forms.toggle_field("sg-rollback", "Roll back a failed release on its own", checked=true, hint="The release before keeps serving.") }}
       {{ forms.toggle_field("sg-rollback-off", "Off (focus)", hint="To debug a failing release in place.", state="focus") }}
     {% endcall %}
@@ -224,12 +221,12 @@
   {% endcall %}
   {% call cat.specimen("Fields in a row", '{% call forms.form(url, csrf, layout="row") %}
   {{ forms.field("email", "Email", type="email") }}
-  {{ forms.select_field("role", "Role", roles, role, id="invite-role", width="sm") }}
+  {{ forms.chips_field("role", "Role", roles, role, multiple=false) }}
   {{ ui.button("Send invitation") }}
 {% endcall %}', "A form of one or two fields and its button: side by side, the button level with the boxes; each field takes the whole width below 900 px.") %}
     {% call forms.form("#sg-forms", csrf, layout="row") %}
       {{ forms.field("sg-invite", "Email", type="email", placeholder="name@example.com") }}
-      {{ forms.select_field("sg-invite-role", "Role", [("member", "Member"), ("admin", "Admin")], "member", width="sm") }}
+      {{ forms.chips_field("sg-invite-role", "Role", [("member", "Member"), ("admin", "Admin")], "member", multiple=false) }}
       {{ ui.button("Send invitation", type="button") }}
     {% endcall %}
   {% endcall %}
@@ -282,6 +279,42 @@
   {% endcall %}
   {% call cat.specimen("Stepper", '{{ forms.stepper_field("copies", "Copies", new.copies, max=20) }}', "A whole number with − and +. The buttons show only with the script; without it the number is typed, with the browser's own arrows.") %}
     {% call cat.column() %}{{ forms.stepper_field("sg-copies-2", "Copies", 1, max=20, error="Copies is a whole number from 1 to 20.") }}{% endcall %}
+  {% endcall %}
+  {% call cat.specimen("Chips", '{{ forms.chips_field("machines", "Machines", machines, chosen, search="Search machines", empty="No machines yet.") }}
+{{ forms.chips_field("days", "Expires after", lifetimes, days, multiple=false) }}', "A choice among values that exist (machines, apps, labels) or a short fixed set (a role, a lifetime), every option in sight: checkboxes, or radio buttons drawn as buttons with multiple=false. Without the script it is the same list; with it, search filters the chips as you type once there are eight or more. empty says what to do when there is nothing to choose.") %}
+    {% call cat.column() %}
+      {{ forms.chips_field("sg-machines", "Machines", [("edge-1", "edge-1"), ("edge-2", "edge-2"), ("web-1", "web-1"), ("web-2", "web-2"), ("web-3", "web-3"), ("db-1", "db-1"), ("db-2", "db-2"), ("batch-1", "batch-1"), ("lab", "lab")], ["web-1", "db-1"], search="Search machines") }}
+      {{ forms.chips_field("sg-days", "Expires after", [("30", "30 days"), ("90", "90 days"), ("365", "365 days")], "90", multiple=false) }}
+      {{ forms.chips_field("sg-near", "Prefer near apps", [("db", "db")], [], error="db is also in apart; name it in one of them.") }}
+      {{ forms.chips_field("sg-none", "Labels", [], [], empty="No machine has a label yet. Set them on Machines.") }}
+    {% endcall %}
+  {% endcall %}
+  {% call cat.specimen("Suggestions and units", '{{ forms.field("spread_by", "Label key", suggestions=label_keys, mono=true) }}
+{{ forms.field("reschedule_after", "Replace after unreachable for", type="number", unit="seconds", min=30, max=3600, hint="30 to 3600. Empty: 120.", width="md") }}', "suggestions offers what exists as you type (a datalist: the label keys set on machines, the ports the image listens on); any other value can still be typed. unit sits after a number's box, and min and max bound it; the hint says the bounds and the default.") %}
+    {% call cat.column() %}
+      {{ forms.field("sg-spread-by", "Label key", value="zone", mono=true, suggestions=["disk", "gpu", "zone"]) }}
+      {{ forms.field("sg-reschedule", "Replace after unreachable for", type="number", value="120", required=false, unit="seconds", min=30, max=3600, hint="30 to 3600. Empty: 120.", width="md") }}
+    {% endcall %}
+  {% endcall %}
+  {% call cat.specimen("Group, and a choice with fields inside", '{% call forms.group("spread-copies", "Spread copies") %}
+  {% call(value) forms.choice_field("spread", "", spreads, spread) %}
+    {%- if value == "label" %}{{ forms.field("spread_by", "Label key", suggestions=label_keys) }}{% endif -%}
+  {% endcall %}
+{% endcall %}', "group() boxes related fields under a heading in a long form; optional=true marks it. choice_field called with call(value) asks for each option\'s own fields, shown inside its card while it is chosen (CSS :has, no script); the handler reads only the chosen card\'s.") %}
+    {% call forms.group("sg-spread", "Spread copies") %}
+      {% call(value) forms.choice_field("sg-spread-choice", "", [{"value": "machines", "title": "Spread across machines", "text": "Copies go to different machines first."}, {"value": "label", "title": "Spread across label", "text": "Copies go to different values of a label first, such as zones."}], "label") %}
+        {%- if value == "label" %}{{ forms.field("sg-spread-key", "Label key", value="zone", mono=true, suggestions=["zone", "rack"]) }}{% endif -%}
+      {% endcall %}
+    {% endcall %}
+    {% call forms.group("sg-affinity", "Affinity", optional=true) %}
+      {{ forms.chips_field("sg-near-2", "Prefer near apps", [("db", "db"), ("cache", "cache")], ["db"]) }}
+    {% endcall %}
+  {% endcall %}
+  {% call cat.specimen("Number and slider, and presets", '{{ forms.range_field("memory", "Memory", memory, memory_steps, "MiB", icon_name="memory", hint="Per copy", min=16, max=most, step=1) }}
+{{ forms.choice_field("preset", "", presets, preset) }}', "A number with its unit and a slider that snaps to the usual values, kept in step by the script; without it the slider is hidden and the box suggests the same values. Steps are (value, label) pairs that stop at what the largest machine can give. A choice_field whose options carry sets ({\"memory\": 512, \"cpu\": \"1\"}) is a preset row: choosing one fills those fields, and changing them chooses the preset they match, or the option without sets.") %}
+    {{ forms.range_field("sg-memory", "Memory", "512", [(64, "64"), (128, "128"), (256, "256"), (512, "512"), (1024, "1 GB"), (2048, "2 GB")], "MiB", icon_name="memory", hint="Per copy", min=16, max=2048, step=1) }}
+    {{ forms.range_field("sg-cpu", "CPU", "0.3", [("0.1", "0.1"), ("0.25", "0.25"), ("0.5", "0.5"), ("1", "1")], "vCPU", icon_name="cpu", hint="Per copy", error="The largest machine here gives one copy at most 1 vCPU.", min=0.01, max=1) }}
+    {{ forms.choice_field("sg-preset", "", [{"value": "low", "title": "Low", "text": "128 MiB · 0.25 vCPU", "sets": {"sg-memory": 128, "sg-cpu": "0.25"}}, {"value": "medium", "title": "Medium", "text": "512 MiB · 1 vCPU", "sets": {"sg-memory": 512, "sg-cpu": "1"}}, {"value": "custom", "title": "Custom", "text": "The values above", "icon": "sliders"}], "custom") }}
   {% endcall %}
   {% call cat.specimen("Expanders", '{% call ui.expanders() %}
   {% call ui.expander("v8", summary, icon_name="layers", state=("Live", "ok"), meta=[digest, ago]) %}…{% endcall %}

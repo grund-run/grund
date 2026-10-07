@@ -29,7 +29,7 @@
   {% call forms.form("/" ~ org.slug ~ "/settings/tokens", csrf, layout="row", autocomplete="off") %}
     {{ forms.banner(create_error) }}
     {{ forms.field("name", "Name", value=name, autocomplete="off", hint="Up to 64 characters.") }}
-    {{ forms.select_field("days", "Expires after", lifetimes, days, id="token-days", width="sm") }}
+    {{ forms.chips_field("days", "Expires after", lifetimes, days, multiple=false) }}
     {{ ui.button("Make a token") }}
   {% endcall %}
 {% endcall %}

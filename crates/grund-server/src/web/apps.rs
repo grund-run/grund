@@ -38,6 +38,7 @@ use crate::{
     services::{
         apps::{AppListing, AppView, AppsError, AppsState, Change, DeployInput, Launch},
         domains::DomainsState,
+        machines::MachinesState,
         sessions::Session,
     },
     state::State,
@@ -48,7 +49,7 @@ use crate::{
     },
 };
 
-fn manages(membership: &Membership) -> bool {
+pub(super) fn manages(membership: &Membership) -> bool {
     Role::parse(&membership.role).is_some_and(|role| role.manages_members())
 }
 
@@ -513,12 +514,16 @@ pub async fn deploy_page(
 }
 
 #[derive(Default)]
-struct Refusal {
-    banner: String,
-    fields: std::collections::BTreeMap<&'static str, String>,
+pub(super) struct Refusal {
+    pub(super) banner: String,
+    pub(super) fields: std::collections::BTreeMap<&'static str, String>,
 }
 
 impl Refusal {
+    pub(super) fn add(&mut self, field: &'static str, message: impl Into<String>) {
+        self.fields.entry(field).or_insert_with(|| message.into());
+    }
+
     fn field(field: &'static str, message: impl Into<String>) -> Self {
         let mut fields = std::collections::BTreeMap::new();
         fields.insert(field, message.into());
@@ -569,7 +574,7 @@ fn line_of(spec_field: &str) -> Option<usize> {
     index.parse::<usize>().ok().map(|i| i + 1)
 }
 
-fn refusal(error: &AppsError) -> Refusal {
+pub(super) fn refusal(error: &AppsError) -> Refusal {
     match error {
         AppsError::Spec(spec) => {
             let problem = capitalise(&spec.problem);
@@ -702,6 +707,8 @@ async fn new_view(
             public_hint => state.config.entry.app_domain.as_deref().map(|domain| format!("Public: https://<name>-{slug}.{domain}")).unwrap_or_default(),
             templates => choices, image_keys => template_icons(),
             signals => STOP_SIGNALS.iter().map(|s| (*s, *s)).collect::<Vec<_>>(),
+            memory_steps => super::resources::MEMORY_STEPS,
+            cpu_steps => super::resources::CPU_STEPS.iter().map(|c| super::resources::vcpus(*c)).collect::<Vec<_>>(),
             checks => [("", "None"), ("http", "HTTP request"), ("tcp", "TCP connection")],
             other_mode => mode_href(if premade { "custom" } else { "premade" }),
             templates_href => format!("/{slug}/templates"),
@@ -772,6 +779,10 @@ pub struct NewForm {
     #[serde(default)]
     cpu: String,
     #[serde(default)]
+    preset: String,
+    #[serde(default)]
+    shown_preset: String,
+    #[serde(default)]
     command: String,
     #[serde(default)]
     stop_signal: String,
@@ -816,7 +827,10 @@ impl NewForm {
             check: check.into(),
             check_path,
             memory: nonzero(spec.memory_mib),
-            cpu: nonzero(spec.cpu_millis),
+            cpu: match spec.cpu_millis {
+                0 => String::new(),
+                millis => super::resources::vcpus(millis),
+            },
             command: lines(spec.command.clone()),
             stop_signal: spec.stop.signal.clone(),
             stop_grace: nonzero(spec.stop.grace_seconds),
@@ -956,11 +970,13 @@ fn form_spec(
         "memory",
         "Memory is a whole number of MiB, from 16 to 262144.",
     )?;
-    let cpu_millis = number(
-        &form.cpu,
-        "cpu",
-        "CPU is a whole number of thousandths of a CPU, from 10 to 64000.",
-    )?;
+    let cpu_millis =
+        match form.cpu.trim() {
+            "" => None,
+            text => Some(super::resources::millis_of(text).ok_or_else(|| {
+                Refusal::field("cpu", "CPU is a number of vCPUs, from 0.01 to 64.")
+            })?),
+        };
     let grace_seconds = number(
         &form.stop_grace,
         "stop",
@@ -1135,21 +1151,8 @@ const APP_TABS: &[(&str, &str, &str, &str)] = &[
 ];
 
 const SETTINGS_FIELDS: &[&str] = &[
-    "image",
-    "copies",
-    "exposure",
-    "port",
-    "check",
-    "env",
-    "memory",
-    "cpu",
-    "command",
-    "stop",
-    "variable",
-    "value",
-    "file",
-    "confirm",
-    "placement",
+    "image", "copies", "exposure", "port", "check", "env", "memory", "cpu", "command", "stop",
+    "variable", "value", "file", "confirm",
 ];
 
 const SETTINGS_PARTS: &[&str] = &[
@@ -1379,7 +1382,7 @@ fn placement_words(settings: &grund_domain::app::AppSettings) -> String {
     let rules = &settings.placement;
     let mut parts = vec![
         grund_domain::app::placement::rules_words(settings)
-            .map_or("Any machine".to_string(), |words| capitalise(&words)),
+            .map_or("Anywhere".to_string(), |words| capitalise(&words)),
     ];
     if let Some(key) = &rules.spread_by {
         parts.push(format!("spread by {key}"));
@@ -1390,23 +1393,42 @@ fn placement_words(settings: &grund_domain::app::AppSettings) -> String {
     if !rules.apart.is_empty() {
         parts.push(format!("apart from {}", rules.apart.join(", ")));
     }
-    parts.push(format!(
-        "replaced after {}",
-        grund_domain::app::reconcile::span_words(chrono::Duration::seconds(i64::from(
-            settings.reschedule_after_seconds
-        )))
-    ));
+    if settings.reschedule_after_seconds
+        != grund_domain::app::AppSettings::default().reschedule_after_seconds
+    {
+        parts.push(format!(
+            "replaced after {}",
+            grund_domain::app::reconcile::span_words(chrono::Duration::seconds(i64::from(
+                settings.reschedule_after_seconds
+            )))
+        ));
+    }
     parts.join(" · ")
 }
 
+async fn resource_ceiling(
+    state: &State,
+    membership: &Membership,
+) -> Result<Option<(u64, u32)>, PageError> {
+    let machines: Vec<_> = state
+        .machines()
+        .organisation_machines(membership.organisation_id)
+        .await?
+        .iter()
+        .map(|row| crate::services::apps::machine_view(row, None))
+        .collect();
+    Ok(super::resources::ceiling(&machines))
+}
+
 #[derive(Default)]
-struct Refused {
-    part: &'static str,
-    edit: String,
-    refusal: Refusal,
-    form: Option<NewForm>,
-    variable: String,
-    file: Option<String>,
+pub(super) struct Refused {
+    pub(super) part: &'static str,
+    pub(super) edit: String,
+    pub(super) refusal: Refusal,
+    pub(super) form: Option<NewForm>,
+    pub(super) variable: String,
+    pub(super) file: Option<String>,
+    pub(super) placement: Option<super::placement::PlacementForm>,
 }
 
 macro_rules! app_page {
@@ -1471,7 +1493,7 @@ app_page!(
 );
 
 #[allow(clippy::too_many_arguments)]
-async fn app_view(
+pub(super) async fn app_view(
     state: &State,
     browser: &Browser,
     session: &Session,
@@ -1611,8 +1633,58 @@ async fn app_view(
     );
     let errors: std::collections::BTreeMap<&str, &str> = SETTINGS_FIELDS
         .iter()
+        .chain(super::placement::FIELDS)
         .map(|f| (*f, refused.refusal.fields.get(f).map_or("", String::as_str)))
         .collect();
+    let edit = if refused.part.is_empty() {
+        SETTING_KEYS
+            .iter()
+            .find(|k| **k == refused.edit)
+            .copied()
+            .unwrap_or_default()
+    } else {
+        refused.part
+    };
+    let ports: Vec<u16> = match newest {
+        Some(r) if tab == "settings" && edit == "exposure" => {
+            let reference = format!(
+                "{}@{}",
+                r.spec.0.image.split('@').next().unwrap_or_default(),
+                r.image_digest
+            );
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                apps.inspect(membership.organisation_id, &reference),
+            )
+            .await
+            {
+                Ok(Ok(inspection)) => inspection.exposed_ports,
+                _ => Vec::new(),
+            }
+        }
+        _ => Vec::new(),
+    };
+    let resources = if tab == "settings" && edit == "resources" {
+        Some(super::resources::view(
+            &form.memory,
+            &form.cpu,
+            resource_ceiling(state, membership).await?,
+        ))
+    } else {
+        None
+    };
+    let placement = if tab == "settings" && edit == "placement" {
+        let form = refused
+            .placement
+            .clone()
+            .unwrap_or_else(|| super::placement::PlacementForm::of(&view.row.settings.0));
+        Some(
+            super::placement::context_for(state, membership, &view.row.name, &form, &errors)
+                .await?,
+        )
+    } else {
+        None
+    };
     let banners: std::collections::BTreeMap<&str, &str> = SETTINGS_PARTS
         .iter()
         .copied()
@@ -1706,13 +1778,6 @@ async fn app_view(
             soon,
             settings => context! {
                 copies => wanted,
-                machines => view.row.settings.0.machines.join(", "),
-                labels => view.row.settings.0.placement.labels.iter().map(|(k, v)| (k.clone(), v.clone())).collect::<Vec<_>>(),
-                kind => view.row.settings.0.placement.kind.map_or("", |k| k.as_str()),
-                spread_by => view.row.settings.0.placement.spread_by.clone().unwrap_or_default(),
-                near => view.row.settings.0.placement.near.join(", "),
-                apart => view.row.settings.0.placement.apart.join(", "),
-                reschedule_after => view.row.settings.0.reschedule_after_seconds,
                 auto_rollback => if view.row.settings.0.auto_rollback { "on" } else { "off" },
             },
             rollback_choices => vec![
@@ -1731,7 +1796,7 @@ async fn app_view(
             signals => STOP_SIGNALS.iter().map(|s| (*s, *s)).collect::<Vec<_>>(),
             items => newest.map(|r| setting_items(&r.spec.0, &image_line(&r.spec.0.image, &r.image_digest), &view.row.settings.0, listing.address.as_deref(), &secret_names, &domain_names)),
             next => newest.map(|r| r.number + 1),
-            edit => if refused.part.is_empty() { SETTING_KEYS.iter().find(|k| **k == refused.edit).copied().unwrap_or_default() } else { refused.part },
+            edit, place => placement, resources, ports,
             file_name => FILE_NAME,
             notice, error,
         },
@@ -1796,6 +1861,7 @@ async fn refuse_setting(
             variable: String::new(),
             file: None,
             edit: String::new(),
+            placement: None,
         },
     )
     .await
@@ -1873,106 +1939,6 @@ pub async fn configure(
     .await
 }
 
-/// `POST /{org}/apps/{app}/settings/placement`: which machines the copies
-/// run on and how they spread (grund-docs design/apps.md §5.6). No new
-/// release; copies that no longer match move, one at a time.
-pub async fn placement_settings(
-    AxumState(state): AxumState<State>,
-    browser: Browser,
-    uri: Uri,
-    Path((slug, name)): Path<(String, String)>,
-    Form(posted): Form<Vec<(String, String)>>,
-) -> PageResult {
-    let one = |key: &str| {
-        posted
-            .iter()
-            .find(|(k, _)| k == key)
-            .map(|(_, v)| v.trim().to_string())
-            .unwrap_or_default()
-    };
-    if !browser.form_is_genuine(&one("csrf")) {
-        return forged(&state, &browser);
-    }
-    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
-    if !manages(&membership) {
-        return Ok(redirect(&format!("/{slug}/apps/{name}?error=not-allowed")));
-    }
-    let apps = state.apps();
-    let view = match apps.get(membership.organisation_id, &name).await {
-        Ok(view) => view,
-        Err(AppsError::NotFound) => return Ok(redirect(&format!("/{slug}/apps?error=gone"))),
-        Err(error) => return Err(PageError::from(anyhow::anyhow!(error))),
-    };
-    let list = |key: &str| -> Vec<String> {
-        one(key)
-            .split([',', ' ', '\n'])
-            .map(str::trim)
-            .filter(|n| !n.is_empty())
-            .map(str::to_string)
-            .collect()
-    };
-    let keys = posted
-        .iter()
-        .filter(|(k, _)| k == "labels_key")
-        .map(|(_, v)| v);
-    let mut values = posted
-        .iter()
-        .filter(|(k, _)| k == "labels_value")
-        .map(|(_, v)| v.clone());
-    let mut input = view.row.settings.0.as_input();
-    input.machines = list("machines");
-    input.labels = keys
-        .map(|k| (k.trim().to_string(), values.next().unwrap_or_default()))
-        .filter(|(k, _)| !k.is_empty())
-        .collect();
-    input.kind = one("kind");
-    input.spread_by = one("spread_by");
-    input.near = list("near");
-    input.apart = list("apart");
-    let refusal = match one("reschedule_after").parse::<u32>() {
-        Ok(seconds) => {
-            input.reschedule_after_seconds = Some(seconds);
-            match apps
-                .configure(session.account_id, membership.organisation_id, &name, input)
-                .await
-            {
-                Ok(_) => {
-                    return Ok(redirect(&format!(
-                        "/{slug}/apps/{name}/settings?done=saved"
-                    )));
-                }
-                Err(AppsError::NotFound) => {
-                    return Ok(redirect(&format!("/{slug}/apps?error=gone")));
-                }
-                Err(AppsError::Spec(spec)) => Refusal::field(
-                    "placement",
-                    format!(
-                        "{}: {}.",
-                        spec.field.trim_start_matches("placement."),
-                        spec.problem
-                    ),
-                ),
-                Err(error) => refusal(&error),
-            }
-        }
-        Err(_) => Refusal::field(
-            "placement",
-            "Replace after is a whole number of seconds from 30 to 3600.",
-        ),
-    };
-    refuse_setting(
-        &state,
-        &browser,
-        &session,
-        &membership,
-        &name,
-        "placement",
-        refusal,
-        None,
-    )
-    .await
-}
-
 /// `POST /{org}/apps/{app}/settings/release`: one Settings item (`part`)
 /// as a new release. Every part but `image` releases the image digest the
 /// newest release runs; `image` takes a tag, or a whole reference, and
@@ -2018,11 +1984,15 @@ pub async fn release_settings(
             check_path: posted.check_path,
             ..now
         },
-        "resources" => NewForm {
-            memory: posted.memory,
-            cpu: posted.cpu,
-            ..now
-        },
+        "resources" => {
+            let (memory, cpu) = super::resources::chosen(
+                &posted.preset,
+                &posted.shown_preset,
+                &posted.memory,
+                &posted.cpu,
+            );
+            NewForm { memory, cpu, ..now }
+        }
         "command" => NewForm {
             command: posted.command,
             stop_signal: posted.stop_signal,
@@ -2049,6 +2019,33 @@ pub async fn release_settings(
             secrets: Vec::new(),
             same_image: part != "image",
         })
+    };
+    let made = match made {
+        Ok(change) if part == "resources" => {
+            let memory = match change.spec.memory_mib {
+                0 => super::resources::DEFAULT_MEMORY_MIB,
+                m => m,
+            };
+            let cpu = match change.spec.cpu_millis {
+                0 => super::resources::DEFAULT_CPU_MILLIS,
+                c => c,
+            };
+            match resource_ceiling(&state, &membership).await? {
+                Some((most, _)) if memory > most => Err(Refusal::field(
+                    "memory",
+                    format!("The largest machine here gives one copy at most {most} MiB."),
+                )),
+                Some((_, most)) if cpu > most => Err(Refusal::field(
+                    "cpu",
+                    format!(
+                        "The largest machine here gives one copy at most {} vCPU.",
+                        super::resources::vcpus(most)
+                    ),
+                )),
+                _ => Ok(change),
+            }
+        }
+        other => other,
     };
     let refusal = match made {
         Ok(change) => match state
@@ -2168,6 +2165,7 @@ pub async fn apply_file(
             variable: String::new(),
             file: Some(form.file),
             edit: String::new(),
+            placement: None,
         },
     )
     .await
@@ -2297,6 +2295,7 @@ pub async fn set_secret(
             variable,
             file: None,
             edit: String::new(),
+            placement: None,
         },
     )
     .await

@@ -1069,7 +1069,7 @@ async fn the_deploy_page_finds_the_port_an_image_declares_and_its_copy_gets_read
             ("check", "http"),
             ("check_path", "/"),
             ("memory", "128"),
-            ("cpu", "100"),
+            ("cpu", "0.1"),
             ("stop_signal", "SIGTERM"),
             ("stop_grace", "1"),
         ],
