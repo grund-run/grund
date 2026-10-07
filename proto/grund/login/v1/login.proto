@@ -1,0 +1,81 @@
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+package grund.login.v1;
+
+// Signing the CLI in through a browser (grund-docs design/cli.md §2), in
+// the shape of the OAuth device authorization grant (RFC 8628).
+//
+//   1. The CLI calls StartDeviceLogin and shows the user code and the
+//      verification address.
+//   2. The person opens the address in a browser where they are signed in,
+//      checks that the code, host and client are theirs, and approves. Only
+//      a dashboard session approves; a token cannot.
+//   3. The CLI polls PollDeviceLogin every `interval_seconds` until it is
+//      approved, denied or expired. The first answer after approval carries
+//      the CLI session's secret, once.
+//
+// A login lives 10 minutes and is used once. The CLI session it makes is a
+// session of the account, listed beside its browser sessions and revoked the
+// same way. These calls take no credential; they are rate-limited per
+// client address.
+//
+// Errors carry a stable reason in an ErrorReason detail: login_not_found,
+// slow_down, rate_limited.
+service DeviceLoginService {
+  rpc StartDeviceLogin(StartDeviceLoginRequest) returns (StartDeviceLoginResponse);
+
+  rpc PollDeviceLogin(PollDeviceLoginRequest) returns (PollDeviceLoginResponse);
+}
+
+message StartDeviceLoginRequest {
+  // What is asking, shown to the person: "grund 0.1.0 (abc1234)". At most
+  // 100 characters.
+  string client = 1;
+  // The computer it runs on, shown to the person. At most 100 characters.
+  string host = 2;
+}
+
+message StartDeviceLoginResponse {
+  // The CLI's secret for polling. Never shown to the person.
+  string device_code = 1;
+  // Eight letters, shown as XXXX-XXXX, for the person to compare.
+  string user_code = 2;
+  // Where the person approves: <instance>/device.
+  string verification_uri = 3;
+  // The same, with the code filled in.
+  string verification_uri_complete = 4;
+  uint32 expires_in_seconds = 5;
+  uint32 interval_seconds = 6;
+}
+
+message PollDeviceLoginRequest {
+  string device_code = 1;
+}
+
+enum DeviceLoginState {
+  DEVICE_LOGIN_STATE_UNSPECIFIED = 0;
+  // Not approved yet: poll again after the interval.
+  DEVICE_LOGIN_STATE_PENDING = 1;
+  // Approved: this answer carries the session's secret, and the login is
+  // used up.
+  DEVICE_LOGIN_STATE_APPROVED = 2;
+  DEVICE_LOGIN_STATE_DENIED = 3;
+  // Expired, or already used.
+  DEVICE_LOGIN_STATE_EXPIRED = 4;
+}
+
+message PollDeviceLoginResponse {
+  DeviceLoginState state = 1;
+  // For approved: grund_cli_ and 43 base62 characters, presented as
+  // `Authorization: Bearer`. Shown once.
+  string session_token = 2;
+  // For approved: the account's username.
+  string username = 3;
+}
+
+// Attached to errors as a detail: the stable reason a client can act on.
+message ErrorReason {
+  string reason = 1;
+}

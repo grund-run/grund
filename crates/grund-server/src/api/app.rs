@@ -581,10 +581,9 @@ impl AppService for AppApi {
                 ));
             }
         };
-        let release = self
-            .state
-            .apps()
-            .deploy(
+        let apps = self.state.apps();
+        let release = if request.dry_run {
+            apps.preview_deploy(
                 caller.account_id,
                 membership.organisation_id,
                 &request.name,
@@ -593,7 +592,18 @@ impl AppService for AppApi {
                 &request.note,
             )
             .await
-            .map_err(failed)?;
+        } else {
+            apps.deploy(
+                caller.account_id,
+                membership.organisation_id,
+                &request.name,
+                input,
+                ReleaseSource::Api,
+                &request.note,
+            )
+            .await
+        }
+        .map_err(failed)?;
         Response::ok(DeployResponse {
             release: MessageField::from(release_message(&release)),
             ..Default::default()

@@ -1106,6 +1106,24 @@ impl MachinesState for State {
     }
 }
 
+/// The command that installs grund on a machine and joins it with `token`,
+/// as root, from the installer the instance names: GRUND_AGENT_INSTALL_URL,
+/// or its own `/install` when it serves it. `None` when it names none.
+pub fn install_command(config: &crate::config::ServeConfig, token: &str) -> Option<String> {
+    let origin = config.public_origin().serialized;
+    let defaults = &config.machine_defaults;
+    match &defaults.agent_install_url {
+        Some(url) => Some(format!(
+            "curl -fsSL {url} | sudo sh -s -- --url {origin} --code {token}"
+        )),
+        None if defaults.serve_installer => Some(format!(
+            "curl -fsSL {origin}/install | sudo sh -s -- --url {origin} --code {token} \
+             --from-instance"
+        )),
+        None => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ed25519_dalek::{Signer, SigningKey};

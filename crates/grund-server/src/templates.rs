@@ -35,6 +35,7 @@ pub const TEMPLATES: &[(&str, &str)] = embedded![
     "pages/error.html.jinja",
     "pages/home.html.jinja",
     "pages/sessions.html.jinja",
+    "pages/device.html.jinja",
     "pages/licenses.html.jinja",
     "pages/style-guide.html.jinja",
     "pages/members.html.jinja",

@@ -1,5 +1,8 @@
-//! Dashboard sessions: an opaque token in the
-//! cookie, only its SHA-256 in PostgreSQL, rotated at every sign-in.
+//! Sessions: an opaque token, only its SHA-256 in PostgreSQL. A browser
+//! session's token is the dashboard's cookie, rotated at every sign-in. A
+//! CLI session's (`grund login`, design/cli.md §2) is `grund_cli_` plus 43
+//! base62 characters, presented as `Authorization: Bearer`. Each kind is
+//! found only the way it is presented.
 
 use std::time::Duration;
 
@@ -7,6 +10,18 @@ use grund_store::sessions::{self, LiveSession, NewSession, SessionView};
 use uuid::Uuid;
 
 use crate::{crypto, state::State};
+
+/// What every CLI session token starts with, so secret scanners can find a
+/// leaked one.
+pub const CLI_PREFIX: &str = "grund_cli_";
+
+/// Whether `text` has a CLI session token's shape, before anything is
+/// looked up.
+pub fn well_formed_cli(text: &str) -> bool {
+    text.strip_prefix(CLI_PREFIX).is_some_and(|rest| {
+        rest.len() == crypto::BASE62_32_BYTES && rest.bytes().all(|b| b.is_ascii_alphanumeric())
+    })
+}
 
 /// A signed-in request's session.
 #[derive(Debug, Clone)]
@@ -56,6 +71,7 @@ impl Sessions {
                 max_age: self.max_age,
                 user_agent: &client.user_agent,
                 client_address: &client.address,
+                kind: "browser",
             },
         )
         .await?;
@@ -69,13 +85,59 @@ impl Sessions {
         ))
     }
 
-    /// The live session a cookie token names, noting the activity.
+    /// Mints a CLI session for `account_id` inside `connection`'s
+    /// transaction (a device login's poll) and returns its token, shown
+    /// once.
+    pub async fn start_cli(
+        &self,
+        connection: &mut sqlx::PgConnection,
+        account_id: Uuid,
+        client: &Client,
+    ) -> Result<(String, Session), sqlx::Error> {
+        let token = format!("{CLI_PREFIX}{}", crypto::random_base62());
+        let session_id = Uuid::now_v7();
+        sessions::insert(
+            connection,
+            NewSession {
+                session_id,
+                token_digest: &crypto::digest(&token),
+                account_id,
+                max_age: self.max_age,
+                user_agent: &client.user_agent,
+                client_address: &client.address,
+                kind: "cli",
+            },
+        )
+        .await?;
+        Ok((
+            token,
+            Session {
+                session_id,
+                account_id,
+            },
+        ))
+    }
+
+    /// The live browser session a cookie token names, noting the activity.
     pub async fn authenticate(&self, token: &str) -> Result<Option<Session>, sqlx::Error> {
+        self.find(token, "browser").await
+    }
+
+    /// The live CLI session a bearer token names, noting the activity. A
+    /// malformed token is refused without a query.
+    pub async fn authenticate_cli(&self, token: &str) -> Result<Option<Session>, sqlx::Error> {
+        if !well_formed_cli(token) {
+            return Ok(None);
+        }
+        self.find(token, "cli").await
+    }
+
+    async fn find(&self, token: &str, kind: &str) -> Result<Option<Session>, sqlx::Error> {
         let Some(LiveSession {
             session_id,
             account_id,
             ..
-        }) = sessions::find(&self.pool, &crypto::digest(token), self.idle).await?
+        }) = sessions::find(&self.pool, &crypto::digest(token), self.idle, kind).await?
         else {
             return Ok(None);
         };

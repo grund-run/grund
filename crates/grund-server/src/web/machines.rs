@@ -437,19 +437,7 @@ pub async fn add(
             let minutes = ((minted.expires_at - Utc::now()).num_seconds() + 59)
                 .div_euclid(60)
                 .max(1);
-            let defaults = &state.config.machine_defaults;
-            let install = match &defaults.agent_install_url {
-                Some(url) => Some(format!(
-                    "curl -fsSL {url} | sudo sh -s -- --url {origin} --code {}",
-                    minted.token
-                )),
-                None if defaults.serve_installer => Some(format!(
-                    "curl -fsSL {origin}/install | sudo sh -s -- --url {origin} --code {} \
-                     --from-instance",
-                    minted.token
-                )),
-                None => None,
-            };
+            let install = crate::services::machines::install_command(&state.config, &minted.token);
             setup = Some(context! {
                 install,
                 command => format!("grund join --url {origin} {}", minted.token),

@@ -1801,6 +1801,7 @@ dependencies = [
  "ed25519-dalek 2.2.0",
  "getrandom 0.3.4",
  "grund-agent",
+ "grund-cli",
  "grund-containers",
  "grund-ee",
  "grund-net",
@@ -1860,6 +1861,27 @@ dependencies = [
  "tracing",
  "webpki-roots 1.0.9",
  "zbus",
+]
+
+[[package]]
+name = "grund-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "buffa",
+ "buffa-descriptor",
+ "clap",
+ "grund-domain",
+ "grund-proto",
+ "grund-tls",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "webpki-roots 1.0.9",
 ]
 
 [[package]]

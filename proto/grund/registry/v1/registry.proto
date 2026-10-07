@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+package grund.registry.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// An organisation's logins to private container registries (grund-docs
+// design/apps.md §6.5): grund resolves an image with the login for its
+// host, and each machine asks for it before a pull. A password is sealed
+// and never shown again.
+//
+// Members list; owners and admins set and remove. An organisation the
+// caller is not a member of is not_found.
+//
+// Errors carry a stable reason in an ErrorReason detail: host_invalid,
+// username_invalid, password_invalid, registry_limit.
+service RegistryService {
+  // By host.
+  rpc ListRegistryLogins(ListRegistryLoginsRequest) returns (ListRegistryLoginsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // Sets the login for a host, replacing the one before.
+  rpc SetRegistryLogin(SetRegistryLoginRequest) returns (SetRegistryLoginResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+
+  // not_found when the organisation has no login for the host.
+  rpc RemoveRegistryLogin(RemoveRegistryLoginRequest) returns (RemoveRegistryLoginResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+}
+
+message RegistryLogin {
+  // As image references name it: ghcr.io, docker.io, registry.example.com:5000.
+  string host = 1;
+  string username = 2;
+  // Counts every set for the host.
+  uint32 version = 3;
+  // The account that set it, by name.
+  string updated_by = 4;
+  google.protobuf.Timestamp updated_at = 5;
+}
+
+message ListRegistryLoginsRequest {
+  // The organisation's slug.
+  string organisation = 1;
+}
+
+message ListRegistryLoginsResponse {
+  repeated RegistryLogin logins = 1;
+}
+
+message SetRegistryLoginRequest {
+  string organisation = 1;
+  // A host, with an optional port; a scheme or path is refused.
+  string host = 2;
+  // At most 256 characters.
+  string username = 3;
+  // The password or access token. At most 8192 bytes.
+  string password = 4;
+}
+
+message SetRegistryLoginResponse {
+  RegistryLogin login = 1;
+}
+
+message RemoveRegistryLoginRequest {
+  string organisation = 1;
+  string host = 2;
+}
+
+message RemoveRegistryLoginResponse {}
+
+// Attached to errors as a detail: the stable reason a client can act on.
+message ErrorReason {
+  string reason = 1;
+}

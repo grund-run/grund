@@ -1,0 +1,111 @@
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+package grund.token.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// An organisation's personal access tokens (grund-docs design/auth.md §6):
+// what CI, scripts and agents present as `Authorization: Bearer
+// grund_pat_…`. A token acts as the account that made it, with that
+// account's role in the organisation at the time of each call, within the
+// token's organisation only.
+//
+// Any member makes tokens and lists and revokes their own; owners and
+// admins list and revoke every token of the organisation. Making, listing
+// and revoking need a person's session (the dashboard or `grund login`): a
+// token never makes or revokes tokens. GetCurrentToken is for a token only,
+// so a client can learn which organisation and scope it holds.
+//
+// Errors carry a stable reason in an ErrorReason detail: name_invalid,
+// lifetime_invalid, token_limit, not_a_token.
+service TokenService {
+  // The tokens the caller sees, newest first.
+  rpc ListTokens(ListTokensRequest) returns (ListTokensResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // A new token. Its secret is in the answer and never shown again.
+  rpc CreateToken(CreateTokenRequest) returns (CreateTokenResponse);
+
+  // Revokes a token at once. not_found when the caller has no such token
+  // to revoke.
+  rpc RevokeToken(RevokeTokenRequest) returns (RevokeTokenResponse);
+
+  // The token the call presents. failed_precondition (not_a_token) for a
+  // session.
+  rpc GetCurrentToken(GetCurrentTokenRequest) returns (GetCurrentTokenResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+}
+
+// What a token may call (auth.md §6).
+enum TokenScope {
+  // Read as deploy.
+  TOKEN_SCOPE_UNSPECIFIED = 0;
+  // The app procedures CI needs, without DeleteApp. The default.
+  TOKEN_SCOPE_DEPLOY = 1;
+  // Every organisation procedure its maker's role allows, in its own
+  // organisation: apps (with DeleteApp), machines, domains, members,
+  // invitations and registry logins. Never the account, sessions,
+  // creating, renaming or deleting organisations, or tokens.
+  TOKEN_SCOPE_FULL = 2;
+}
+
+message Token {
+  string token_id = 1;
+  string name = 2;
+  TokenScope scope = 3;
+  // The account that made it, by name.
+  string created_by = 4;
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp expires_at = 6;
+  // Written at most once a minute.
+  google.protobuf.Timestamp last_used_at = 7;
+}
+
+message ListTokensRequest {
+  // The organisation's slug.
+  string organisation = 1;
+}
+
+message ListTokensResponse {
+  repeated Token tokens = 1;
+}
+
+message CreateTokenRequest {
+  string organisation = 1;
+  // 1 to 64 characters, such as the CI job that uses it.
+  string name = 2;
+  // 7, 30, 90 or 365. 0 means 30.
+  uint32 lifetime_days = 3;
+  // Unspecified means deploy.
+  TokenScope scope = 4;
+}
+
+message CreateTokenResponse {
+  Token token = 1;
+  // grund_pat_ and 43 base62 characters. Shown once.
+  string secret = 2;
+}
+
+message RevokeTokenRequest {
+  string organisation = 1;
+  string token_id = 2;
+}
+
+message RevokeTokenResponse {}
+
+message GetCurrentTokenRequest {}
+
+message GetCurrentTokenResponse {
+  Token token = 1;
+  // The slug of the token's organisation.
+  string organisation = 2;
+}
+
+// Attached to errors as a detail: the stable reason a client can act on.
+message ErrorReason {
+  string reason = 1;
+}

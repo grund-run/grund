@@ -1,8 +1,10 @@
 //! `grund.domain.v1.DomainService`: an organisation's custom domains
 //! (grund-docs website/design/app-domains.md §3). Members get and list;
-//! owners and admins add, verify, bind, unbind and remove. Dashboard
-//! sessions only (auth.md §6). An organisation the caller is not a member
-//! of, and a domain that is not the organisation's, are not_found alike.
+//! owners and admins add, verify, bind, unbind and remove. A person's
+//! session, or a token of scope full in its own organisation (auth.md §6).
+//! An organisation the caller is not a member of, an organisation a token
+//! is not for, and a domain that is not the organisation's, are not_found
+//! alike.
 
 use buffa::MessageField;
 use buffa_types::google::protobuf::Timestamp;
@@ -19,7 +21,7 @@ use grund_proto::grund::domain::v1::{
 use grund_store::organisations::Membership;
 
 use crate::{
-    api::caller,
+    api::principal,
     services::{
         OrganisationsState,
         domains::{DomainView, DomainsError, DomainsState, Status},
@@ -42,13 +44,14 @@ impl DomainApi {
         ctx: &RequestContext,
         slug: &str,
     ) -> Result<(uuid::Uuid, Membership), ConnectError> {
-        let caller = caller(ctx)?;
+        let caller = principal(ctx)?;
         let membership = self
             .state
             .organisations()
             .membership(slug, caller.account_id)
             .await
             .map_err(|e| failed(DomainsError::Internal(e)))?
+            .filter(|m| caller.reaches(m.organisation_id))
             .ok_or_else(|| ConnectError::not_found("no such organisation"))?;
         Ok((caller.account_id, membership))
     }

@@ -22,7 +22,7 @@ impl Sweeper {
         Self { state }
     }
 
-    async fn pass(&self) -> Result<(u64, u64, u64, u64, u64), sqlx::Error> {
+    async fn pass(&self) -> Result<(u64, u64, u64, u64, u64, u64), sqlx::Error> {
         let pool = &self.state.pool;
         Ok((
             grund_store::sessions::sweep(pool).await?,
@@ -30,6 +30,7 @@ impl Sweeper {
             grund_store::throttle::sweep(pool).await?,
             grund_store::social::sweep(pool).await?,
             grund_store::api_tokens::sweep(pool).await?,
+            grund_store::device_logins::sweep(pool).await?,
         ))
     }
 }
@@ -46,8 +47,16 @@ impl Component for Sweeper {
             tokio::select! {
                 () = cancellation.cancelled() => return Ok(()),
                 _ = tick.tick() => match self.pass().await {
-                    Ok((sessions, tokens, windows, flows, api_tokens)) => {
-                        tracing::debug!(sessions, tokens, windows, flows, api_tokens, "sweep done");
+                    Ok((sessions, tokens, windows, flows, api_tokens, device_logins)) => {
+                        tracing::debug!(
+                            sessions,
+                            tokens,
+                            windows,
+                            flows,
+                            api_tokens,
+                            device_logins,
+                            "sweep done"
+                        );
                     }
                     Err(error) => tracing::warn!(error = %error, "sweep failed; retrying next tick"),
                 },

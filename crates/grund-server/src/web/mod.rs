@@ -22,6 +22,7 @@ pub mod about;
 pub mod apps;
 pub mod assets;
 pub mod browser;
+pub mod device;
 pub mod domains;
 pub mod install;
 pub mod machines;
@@ -102,6 +103,7 @@ pub fn router(state: State) -> Router {
         .route("/reset/sent", get(pages::reset_sent))
         .route("/reset/confirm", get(pages::reset_confirm_form).post(pages::reset_confirm))
         .route("/settings/sessions", get(pages::sessions_page))
+        .route("/device", get(device::device_page).post(device::decide))
         .route("/settings/sessions/revoke-others", post(pages::revoke_other_sessions))
         .route("/settings/sessions/{id}/revoke", post(pages::revoke_session))
         .route("/licenses", get(pages::licenses))

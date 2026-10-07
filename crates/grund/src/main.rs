@@ -18,7 +18,14 @@
 //! - `edge`: the entry edge, which terminates TLS for app addresses and
 //!   hands each connection to a machine's gate;
 //! - `edges`: mint enrollment tokens for edges, revoke and list them;
-//! - `apps`: suspend an app's address, or lift its suspension.
+//! - `operator apps`: suspend an app's address, or lift its suspension
+//!   (`grund apps suspend|lift` still works, hidden).
+//!
+//! The rest are the client commands of `grund-cli` (grund-docs
+//! design/cli.md): `login`, `whoami`, `orgs`, `apps`, `machines`, `domains`,
+//! `members`, `invitations`, `tokens`, `registries`, and the CLI's
+//! self-description, `describe`, `schema`, `skill` and `mcp`. They are what
+//! the dashboard does, over the same API.
 //!
 //! The agent is part of this binary, so there is one artifact to build, sign
 //! and ship.
@@ -30,7 +37,7 @@
 
 mod probe;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Parser)]
@@ -97,8 +104,48 @@ enum Command {
         about = "Mint a one-time enrollment token for a grund edge, revoke an edge, or list them"
     )]
     Edges(grund_server::relays_command::EdgesCommand),
+    #[command(
+        about = "Operator commands run against the instance's database: suspend an app's address"
+    )]
+    Operator(OperatorCommand),
+    #[command(flatten)]
+    Client(grund_cli::Command),
+}
+
+#[derive(clap::Args)]
+struct OperatorCommand {
+    #[command(subcommand)]
+    action: OperatorAction,
+}
+
+#[derive(Subcommand)]
+enum OperatorAction {
     #[command(about = "Suspend an app's address, or lift its suspension")]
     Apps(grund_server::apps_command::AppsCommand),
+}
+
+fn operator_alias(mut args: Vec<String>) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut skip_value = false;
+    for (i, arg) in args.iter().enumerate().skip(1) {
+        if skip_value {
+            skip_value = false;
+        } else if arg == "--log" || arg == "--log-format" {
+            skip_value = true;
+        } else if !arg.starts_with('-') {
+            words.push(i);
+            if words.len() == 2 {
+                break;
+            }
+        }
+    }
+    if let [noun, verb] = words[..]
+        && args[noun] == "apps"
+        && matches!(args[verb].as_str(), "suspend" | "lift")
+    {
+        args.insert(noun, "operator".into());
+    }
+    args
 }
 
 #[derive(clap::Args)]
@@ -254,7 +301,18 @@ async fn agent<R: grund_agent::vm::VmRuntime>(
 async fn main() -> anyhow::Result<()> {
     grund_server::health::set_revision(env!("GRUND_BUILD_REVISION"));
     grund_tls::install_default();
-    let cli = Cli::parse();
+    let args = operator_alias(std::env::args().collect());
+    let cli = match Cli::try_parse_from(&args) {
+        Ok(cli) => cli,
+        Err(error) => match grund_cli::usage_error(&error, &args) {
+            Some(status) => std::process::exit(status),
+            None => error.exit(),
+        },
+    };
+    if let Command::Client(command) = cli.command {
+        let status = grund_cli::run(command, Cli::command(), env!("GRUND_BUILD_REVISION")).await;
+        std::process::exit(status);
+    }
     let to_stderr = matches!(cli.command, Command::Doctor(_) | Command::SetupLink(_));
     init_tracing(&cli, to_stderr);
     match cli.command {
@@ -276,7 +334,10 @@ async fn main() -> anyhow::Result<()> {
         Command::Relays(command) => grund_server::relays_command::run(command).await,
         Command::Edge(command) => grund_server::edge::run(command).await,
         Command::Edges(command) => grund_server::relays_command::run_edges(command).await,
-        Command::Apps(command) => grund_server::apps_command::run(command).await,
+        Command::Operator(OperatorCommand {
+            action: OperatorAction::Apps(command),
+        }) => grund_server::apps_command::run(command).await,
+        Command::Client(_) => unreachable!("client commands returned above"),
         Command::Agent(command) => match command.vm_runtime.as_str() {
             "simulated" => {
                 let dir = command.agent.data_dir.join("simulated-vms");
@@ -311,13 +372,92 @@ fn init_tracing(cli: &Cli, to_stderr: bool) {
 
 #[cfg(test)]
 mod tests {
-    use clap::CommandFactory;
-
     use super::*;
 
     #[test]
     fn the_command_definition_is_internally_consistent() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn every_procedure_a_person_or_a_token_can_call_has_a_cli_command_or_a_reason() {
+        use grund_server::api::{AUTHORIZATION, Requirement};
+        let reachable: Vec<&str> = AUTHORIZATION
+            .iter()
+            .filter(|(_, r)| {
+                matches!(
+                    r,
+                    Requirement::Session
+                        | Requirement::SessionOrToken
+                        | Requirement::SessionOrFullToken
+                        | Requirement::Public
+                )
+            })
+            .map(|(p, _)| p.trim_start_matches('/'))
+            .collect();
+        for rpc in &reachable {
+            let called = grund_cli::meta::uses(rpc);
+            let excused = grund_cli::meta::NOT_IN_CLI.iter().any(|(p, _)| p == rpc);
+            assert!(
+                called != excused,
+                "{rpc}: give it a CLI command, or a reason in meta::NOT_IN_CLI (not both)"
+            );
+        }
+        for (rpc, why) in grund_cli::meta::NOT_IN_CLI {
+            assert!(
+                reachable.contains(rpc),
+                "meta::NOT_IN_CLI names {rpc}, which no one can call"
+            );
+            assert!(!why.is_empty(), "{rpc}");
+        }
+        for leaf in grund_cli::meta::LEAVES {
+            for rpc in leaf.rpcs {
+                assert!(
+                    reachable.contains(rpc),
+                    "grund {} calls {rpc}, which is not in api::AUTHORIZATION",
+                    leaf.path
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn describe_json_is_the_one_in_the_repository() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../schema/cli.json");
+        let document = grund_cli::describe::document(&Cli::command(), &[]);
+        let text = format!("{}\n", serde_json::to_string_pretty(&document).unwrap());
+        if std::env::var_os("GRUND_WRITE_SCHEMA").is_some() {
+            std::fs::write(path, &text).unwrap();
+        }
+        let stored = std::fs::read_to_string(path).unwrap_or_default();
+        assert!(
+            stored == text,
+            "schema/cli.json is not what grund describe --json prints; regenerate it with \
+             GRUND_WRITE_SCHEMA=1 cargo test -p grund describe_json"
+        );
+    }
+
+    #[test]
+    fn the_old_operator_spelling_still_reaches_the_operator_command() {
+        let args = |line: &str| line.split(' ').map(str::to_string).collect::<Vec<_>>();
+        assert_eq!(
+            operator_alias(args("grund apps suspend acme/shop --reason x")),
+            args("grund operator apps suspend acme/shop --reason x")
+        );
+        assert_eq!(
+            operator_alias(args("grund --log warn apps lift acme/shop")),
+            args("grund --log warn operator apps lift acme/shop")
+        );
+        assert_eq!(
+            operator_alias(args("grund apps list")),
+            args("grund apps list")
+        );
+        assert!(
+            Cli::try_parse_from(operator_alias(args(
+                "grund apps suspend acme/shop --reason x"
+            )))
+            .is_ok()
+        );
     }
 
     #[test]

@@ -15,6 +15,8 @@ pub struct NewSession<'a> {
     pub max_age: Duration,
     pub user_agent: &'a str,
     pub client_address: &'a str,
+    /// `browser` (the dashboard's cookie) or `cli` (`grund login`'s bearer).
+    pub kind: &'a str,
 }
 
 /// Stores a session.
@@ -24,8 +26,8 @@ pub async fn insert(
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO grund_sessions \
-           (session_id, token_digest, account_id, expires_at, user_agent, client_address) \
-         VALUES ($1, $2, $3, clock_timestamp() + make_interval(secs => $4), $5, $6)",
+           (session_id, token_digest, account_id, expires_at, user_agent, client_address, kind) \
+         VALUES ($1, $2, $3, clock_timestamp() + make_interval(secs => $4), $5, $6, $7)",
     )
     .bind(session.session_id)
     .bind(&session.token_digest[..])
@@ -33,6 +35,7 @@ pub async fn insert(
     .bind(session.max_age.as_secs_f64())
     .bind(truncate(session.user_agent, 256))
     .bind(truncate(session.client_address, 64))
+    .bind(session.kind)
     .execute(connection)
     .await?;
     Ok(())
@@ -50,20 +53,22 @@ pub struct LiveSession {
     pub last_seen_at: DateTime<Utc>,
 }
 
-/// The live session a token names: not revoked, not past its absolute
-/// expiry, and seen within `idle`.
+/// The live session of `kind` a token names: not revoked, not past its
+/// absolute expiry, and seen within `idle`.
 pub async fn find(
     executor: impl PgExecutor<'_>,
     token_digest: &[u8; 32],
     idle: Duration,
+    kind: &str,
 ) -> Result<Option<LiveSession>, sqlx::Error> {
     sqlx::query_as::<_, LiveSession>(
         "SELECT session_id, account_id, last_seen_at FROM grund_sessions \
          WHERE token_digest = $1 AND revoked_at IS NULL AND expires_at > clock_timestamp() \
-           AND last_seen_at > clock_timestamp() - make_interval(secs => $2)",
+           AND last_seen_at > clock_timestamp() - make_interval(secs => $2) AND kind = $3",
     )
     .bind(&token_digest[..])
     .bind(idle.as_secs_f64())
+    .bind(kind)
     .fetch_optional(executor)
     .await
 }

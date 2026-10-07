@@ -8,9 +8,12 @@
 //!           └► handler: acts on the caller only
 //! ```
 //!
-//! A caller is the dashboard, same-origin, with its session cookie, or CI
-//! and scripts with a personal access token (`Authorization: Bearer
-//! grund_pat_…`, grund-docs design/auth.md §6). A cookie-authenticated call
+//! A caller is the dashboard, same-origin, with its session cookie; the CLI
+//! with a session from `grund login` (`Authorization: Bearer grund_cli_…`,
+//! grund-docs design/cli.md §2), which acts as the person exactly as their
+//! dashboard session does; or CI, scripts and agents with a personal access
+//! token (`Authorization: Bearer grund_pat_…`, design/auth.md §6). A
+//! cookie-authenticated call
 //! whose `Origin` or `Sec-Fetch-Site` names another site is refused: a
 //! cross-site page cannot make a browser send Connect's content types without
 //! a CORS preflight, which grund never grants, and this check does not rely
@@ -19,12 +22,15 @@
 //! without a preflight either. A call that presents an `Authorization`
 //! header is judged by the token alone, never by a cookie beside it.
 //!
-//! A token may call only the procedures [`AUTHORIZATION`] marks
-//! [`Requirement::SessionOrToken`]: the app procedures CI needs, and not
-//! DeleteApp. Everything else stays session-only: the account, members and
-//! invitations, renaming and deleting organisations, machines and their join
-//! tokens, the management pool, and custom domains. A token acts only on its own
-//! organisation; any other is `not_found`, as for a non-member.
+//! A token of scope `deploy` may call only the procedures [`AUTHORIZATION`]
+//! marks [`Requirement::SessionOrToken`]: the app procedures CI needs, and
+//! not DeleteApp. A token of scope `full` also calls those marked
+//! [`Requirement::SessionOrFullToken`]: DeleteApp, machines, custom domains,
+//! members, invitations and registry logins. Everything else stays
+//! session-only: the account and its sessions, creating, renaming and
+//! deleting organisations, tokens, and the management pool. A token acts
+//! only on its own organisation; any other is `not_found`, as for a
+//! non-member.
 
 pub mod account;
 pub mod agent;
@@ -33,10 +39,13 @@ pub mod certificates;
 pub mod domain;
 pub mod edge;
 pub mod enrollment;
+pub mod login;
 pub mod machine;
 pub mod organisation;
+pub mod registry;
 pub mod relay_access;
 pub mod relay_enrollment;
+pub mod token;
 
 use std::{sync::Arc, time::Duration};
 
@@ -57,9 +66,12 @@ use grund_proto::grund::{
     certificates::v1::CERTIFICATE_SERVICE_SERVICE_NAME,
     domain::v1::DOMAIN_SERVICE_SERVICE_NAME,
     edge::v1::{EDGE_ENROLLMENT_SERVICE_SERVICE_NAME, EDGE_SERVICE_SERVICE_NAME},
+    login::v1::DEVICE_LOGIN_SERVICE_SERVICE_NAME,
     machine::v1::{MACHINE_SERVICE_SERVICE_NAME, MANAGEMENT_POOL_SERVICE_SERVICE_NAME},
     organisation::v1::ORGANISATION_SERVICE_SERVICE_NAME,
+    registry::v1::REGISTRY_SERVICE_SERVICE_NAME,
     relay::v1::RELAY_ENROLLMENT_SERVICE_SERVICE_NAME,
+    token::v1::TOKEN_SERVICE_SERVICE_NAME,
 };
 use uuid::Uuid;
 
@@ -67,7 +79,7 @@ use crate::{
     services::{
         agents::AgentsState,
         sessions::SessionsState,
-        tokens::{TokenCaller, TokensState},
+        tokens::{TokenCaller, TokenScope, TokensState},
     },
     state::State,
     web::browser::{CookieJar, client_address, cookie, same_origin},
@@ -92,12 +104,20 @@ pub struct ClientAddress(pub String);
 /// What a procedure requires of its caller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Requirement {
-    /// Any signed-in person, acting on their own account. A token is
-    /// refused.
+    /// Any signed-in person, acting on their own account: a dashboard
+    /// session, or a CLI session from `grund login`. A token is refused.
     Session,
-    /// A signed-in person, or a personal access token acting as the account
-    /// that made it, within the token's organisation only.
+    /// A signed-in person, or a personal access token of any scope acting
+    /// as the account that made it, within the token's organisation only.
     SessionOrToken,
+    /// A signed-in person, or a personal access token of scope `full`
+    /// acting as the account that made it, within the token's organisation
+    /// only. A `deploy` token is refused with permission_denied.
+    SessionOrFullToken,
+    /// No credential at all: the handler rate-limits by client address
+    /// (the device login of `grund login`). Served on routes without the
+    /// session and same-origin checks.
+    Public,
     /// No session: a one-time token in the request is the credential, checked
     /// by the handler (machine enrollment). Served on routes without the
     /// session and same-origin checks.
@@ -135,7 +155,7 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
     ),
     (
         "/grund.organisation.v1.OrganisationService/GetOrganisation",
-        Requirement::Session,
+        Requirement::SessionOrFullToken,
     ),
     (
         "/grund.organisation.v1.OrganisationService/CreateOrganisation",
@@ -151,27 +171,27 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
     ),
     (
         "/grund.organisation.v1.OrganisationService/ListMembers",
-        Requirement::Session,
+        Requirement::SessionOrFullToken,
     ),
     (
         "/grund.organisation.v1.OrganisationService/ChangeMemberRole",
-        Requirement::Session,
+        Requirement::SessionOrFullToken,
     ),
     (
         "/grund.organisation.v1.OrganisationService/RemoveMember",
-        Requirement::Session,
+        Requirement::SessionOrFullToken,
     ),
     (
         "/grund.organisation.v1.OrganisationService/ListInvitations",
-        Requirement::Session,
+        Requirement::SessionOrFullToken,
     ),
     (
         "/grund.organisation.v1.OrganisationService/InviteMember",
-        Requirement::Session,
+        Requirement::SessionOrFullToken,
     ),
     (
         "/grund.organisation.v1.OrganisationService/RevokeInvitation",
-        Requirement::Session,
+        Requirement::SessionOrFullToken,
     ),
     (
         "/grund.agent.v1.MachineEnrollmentService/EnrollMachine",
@@ -215,35 +235,35 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
     ),
     (
         "/grund.machine.v1.MachineService/CreateJoinToken",
-        Requirement::Session,
+        Requirement::SessionOrFullToken,
     ),
     (
         "/grund.machine.v1.MachineService/ListMachines",
-        Requirement::Session,
+        Requirement::SessionOrFullToken,
     ),
     (
         "/grund.machine.v1.MachineService/GetMachine",
-        Requirement::Session,
+        Requirement::SessionOrFullToken,
     ),
     (
         "/grund.machine.v1.MachineService/RevokeMachine",
-        Requirement::Session,
+        Requirement::SessionOrFullToken,
     ),
     (
         "/grund.machine.v1.MachineService/DeclareMachinePorts",
-        Requirement::Session,
+        Requirement::SessionOrFullToken,
     ),
     (
         "/grund.machine.v1.MachineService/SetMachineLabels",
-        Requirement::Session,
+        Requirement::SessionOrFullToken,
     ),
     (
         "/grund.machine.v1.MachineService/SetMachineInService",
-        Requirement::Session,
+        Requirement::SessionOrFullToken,
     ),
     (
         "/grund.machine.v1.MachineService/GetOrganisationKey",
-        Requirement::Session,
+        Requirement::SessionOrFullToken,
     ),
     (
         "/grund.agent.v1.AgentService/Heartbeat",
@@ -317,15 +337,15 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
     ),
     (
         "/grund.machine.v1.MachineService/RunVm",
-        Requirement::Session,
+        Requirement::SessionOrFullToken,
     ),
     (
         "/grund.machine.v1.MachineService/StopVm",
-        Requirement::Session,
+        Requirement::SessionOrFullToken,
     ),
     (
         "/grund.machine.v1.MachineService/ListVms",
-        Requirement::Session,
+        Requirement::SessionOrFullToken,
     ),
     (
         "/grund.app.v1.AppService/CreateApp",
@@ -363,34 +383,73 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
         "/grund.app.v1.AppService/SetSecret",
         Requirement::SessionOrToken,
     ),
-    ("/grund.app.v1.AppService/DeleteApp", Requirement::Session),
+    (
+        "/grund.app.v1.AppService/DeleteApp",
+        Requirement::SessionOrFullToken,
+    ),
     (
         "/grund.domain.v1.DomainService/ListDomains",
-        Requirement::Session,
+        Requirement::SessionOrFullToken,
     ),
     (
         "/grund.domain.v1.DomainService/GetDomain",
-        Requirement::Session,
+        Requirement::SessionOrFullToken,
     ),
     (
         "/grund.domain.v1.DomainService/AddDomain",
-        Requirement::Session,
+        Requirement::SessionOrFullToken,
     ),
     (
         "/grund.domain.v1.DomainService/VerifyDomain",
-        Requirement::Session,
+        Requirement::SessionOrFullToken,
     ),
     (
         "/grund.domain.v1.DomainService/BindDomain",
-        Requirement::Session,
+        Requirement::SessionOrFullToken,
     ),
     (
         "/grund.domain.v1.DomainService/UnbindDomain",
-        Requirement::Session,
+        Requirement::SessionOrFullToken,
     ),
     (
         "/grund.domain.v1.DomainService/RemoveDomain",
+        Requirement::SessionOrFullToken,
+    ),
+    (
+        "/grund.token.v1.TokenService/ListTokens",
         Requirement::Session,
+    ),
+    (
+        "/grund.token.v1.TokenService/CreateToken",
+        Requirement::Session,
+    ),
+    (
+        "/grund.token.v1.TokenService/RevokeToken",
+        Requirement::Session,
+    ),
+    (
+        "/grund.token.v1.TokenService/GetCurrentToken",
+        Requirement::SessionOrToken,
+    ),
+    (
+        "/grund.registry.v1.RegistryService/ListRegistryLogins",
+        Requirement::SessionOrFullToken,
+    ),
+    (
+        "/grund.registry.v1.RegistryService/SetRegistryLogin",
+        Requirement::SessionOrFullToken,
+    ),
+    (
+        "/grund.registry.v1.RegistryService/RemoveRegistryLogin",
+        Requirement::SessionOrFullToken,
+    ),
+    (
+        "/grund.login.v1.DeviceLoginService/StartDeviceLogin",
+        Requirement::Public,
+    ),
+    (
+        "/grund.login.v1.DeviceLoginService/PollDeviceLogin",
+        Requirement::Public,
     ),
 ];
 
@@ -434,6 +493,14 @@ pub fn router(state: State) -> axum::Router {
             &format!("/{DOMAIN_SERVICE_SERVICE_NAME}/{{method}}"),
             service.clone(),
         )
+        .route_service(
+            &format!("/{TOKEN_SERVICE_SERVICE_NAME}/{{method}}"),
+            service.clone(),
+        )
+        .route_service(
+            &format!("/{REGISTRY_SERVICE_SERVICE_NAME}/{{method}}"),
+            registry_service(state.clone()),
+        )
         .layer(middleware::from_fn_with_state(state.clone(), authenticate))
         .merge(
             axum::Router::new()
@@ -447,6 +514,10 @@ pub fn router(state: State) -> axum::Router {
                 )
                 .route_service(
                     &format!("/{EDGE_ENROLLMENT_SERVICE_SERVICE_NAME}/{{method}}"),
+                    service.clone(),
+                )
+                .route_service(
+                    &format!("/{DEVICE_LOGIN_SERVICE_SERVICE_NAME}/{{method}}"),
                     service.clone(),
                 )
                 .layer(middleware::from_fn_with_state(state.clone(), stamp_address)),
@@ -485,6 +556,29 @@ pub fn router(state: State) -> axum::Router {
                 )),
         )
         .merge(relay_access::router(state))
+}
+
+/// The largest registry request: a password is up to 8 KiB.
+pub const MAX_REGISTRY_REQUEST_BYTES: usize = 32 * 1024;
+
+/// The registry service, on a Connect service of its own: a login's
+/// password is larger than any other session call's message.
+pub fn registry_service(state: State) -> ConnectRpcService {
+    ConnectRpcService::new(
+        connectrpc::Router::new().add_service(Arc::new(registry::RegistryApi::new(state))),
+    )
+    .with_limits(
+        Limits::default()
+            .with_max_request_body_size(MAX_REGISTRY_REQUEST_BYTES)
+            .with_max_message_size(MAX_REGISTRY_REQUEST_BYTES),
+    )
+    .with_deadline_policy(
+        DeadlinePolicy::new()
+            .with_min(Duration::from_millis(5))
+            .with_max(Duration::from_secs(30))
+            .with_default_timeout(Duration::from_secs(10)),
+    )
+    .with_interceptor(Authorize)
 }
 
 /// The largest app request: a deploy with its env and a grund.yaml.
@@ -793,6 +887,8 @@ pub fn connect_router(state: State) -> connectrpc::Router {
             state.clone(),
         )))
         .add_service(Arc::new(edge::EdgeEnrollmentApi::new(state.clone())))
+        .add_service(Arc::new(login::LoginApi::new(state.clone())))
+        .add_service(Arc::new(token::TokenApi::new(state.clone())))
         .add_service(Arc::new(agent::AgentApi::new(state)))
 }
 
@@ -821,6 +917,27 @@ pub async fn authenticate(
             .unwrap_or_default()
             .trim()
             .to_string();
+        if token.starts_with(crate::services::sessions::CLI_PREFIX) {
+            let session = match state.sessions().authenticate_cli(&token).await {
+                Ok(Some(session)) => session,
+                Ok(None) => {
+                    return refuse(ConnectError::unauthenticated(
+                        "the session is unknown, revoked or expired; run grund login",
+                    ));
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, "session lookup failed for an API call");
+                    return refuse(ConnectError::unavailable(
+                        "grund is temporarily unavailable",
+                    ));
+                }
+            };
+            request.extensions_mut().insert(Caller {
+                account_id: session.account_id,
+                session_id: session.session_id,
+            });
+            return finish(next.run(request).await);
+        }
         let caller = match state.tokens().authenticate(&token).await {
             Ok(Some(caller)) => caller,
             Ok(None) => {
@@ -893,9 +1010,11 @@ pub fn authorized(ctx: &connectrpc::RequestContext) -> Result<(), ConnectError> 
     let extensions = ctx.extensions();
     match requirement {
         Some(Requirement::Session) if extensions.get::<Caller>().is_some() => Ok(()),
-        Some(Requirement::Session) if extensions.get::<TokenCaller>().is_some() => Err(
-            ConnectError::permission_denied("an API token cannot call this; use the dashboard"),
-        ),
+        Some(Requirement::Session) if extensions.get::<TokenCaller>().is_some() => {
+            Err(ConnectError::permission_denied(
+                "an API token cannot call this; sign in with the dashboard or grund login",
+            ))
+        }
         Some(Requirement::Session) => Err(ConnectError::unauthenticated("sign in first")),
         Some(Requirement::SessionOrToken)
             if extensions.get::<Caller>().is_some()
@@ -904,7 +1023,15 @@ pub fn authorized(ctx: &connectrpc::RequestContext) -> Result<(), ConnectError> 
             Ok(())
         }
         Some(Requirement::SessionOrToken) => Err(ConnectError::unauthenticated("sign in first")),
-        Some(Requirement::Token) => Ok(()),
+        Some(Requirement::SessionOrFullToken) if extensions.get::<Caller>().is_some() => Ok(()),
+        Some(Requirement::SessionOrFullToken) => match extensions.get::<TokenCaller>() {
+            Some(token) if token.scope == TokenScope::Full => Ok(()),
+            Some(_) => Err(ConnectError::permission_denied(
+                "a deploy token cannot call this; make a token of scope full, or sign in",
+            )),
+            None => Err(ConnectError::unauthenticated("sign in first")),
+        },
+        Some(Requirement::Token | Requirement::Public) => Ok(()),
         Some(Requirement::Machine)
             if extensions
                 .get::<crate::services::agents::MachineCaller>()
@@ -972,6 +1099,15 @@ pub struct Principal {
     pub account_id: Uuid,
     /// `Some` for a token: every other organisation is `not_found` to it.
     pub organisation_id: Option<Uuid>,
+}
+
+impl From<Caller> for Principal {
+    fn from(caller: Caller) -> Self {
+        Principal {
+            account_id: caller.account_id,
+            organisation_id: None,
+        }
+    }
 }
 
 impl Principal {
@@ -1552,6 +1688,87 @@ mod tests {
         }
     }
 
+    struct UnusedTokens;
+
+    #[allow(refining_impl_trait)]
+    impl grund_proto::grund::token::v1::TokenService for UnusedTokens {
+        async fn list_tokens(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, grund_proto::grund::token::v1::ListTokensRequest>,
+        ) -> ServiceResult<grund_proto::grund::token::v1::ListTokensResponse> {
+            unreachable!()
+        }
+        async fn create_token(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, grund_proto::grund::token::v1::CreateTokenRequest>,
+        ) -> ServiceResult<grund_proto::grund::token::v1::CreateTokenResponse> {
+            unreachable!()
+        }
+        async fn revoke_token(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, grund_proto::grund::token::v1::RevokeTokenRequest>,
+        ) -> ServiceResult<grund_proto::grund::token::v1::RevokeTokenResponse> {
+            unreachable!()
+        }
+        async fn get_current_token(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, grund_proto::grund::token::v1::GetCurrentTokenRequest>,
+        ) -> ServiceResult<grund_proto::grund::token::v1::GetCurrentTokenResponse> {
+            unreachable!()
+        }
+    }
+
+    struct UnusedRegistries;
+
+    #[allow(refining_impl_trait)]
+    impl grund_proto::grund::registry::v1::RegistryService for UnusedRegistries {
+        async fn list_registry_logins(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, grund_proto::grund::registry::v1::ListRegistryLoginsRequest>,
+        ) -> ServiceResult<grund_proto::grund::registry::v1::ListRegistryLoginsResponse> {
+            unreachable!()
+        }
+        async fn set_registry_login(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, grund_proto::grund::registry::v1::SetRegistryLoginRequest>,
+        ) -> ServiceResult<grund_proto::grund::registry::v1::SetRegistryLoginResponse> {
+            unreachable!()
+        }
+        async fn remove_registry_login(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, grund_proto::grund::registry::v1::RemoveRegistryLoginRequest>,
+        ) -> ServiceResult<grund_proto::grund::registry::v1::RemoveRegistryLoginResponse> {
+            unreachable!()
+        }
+    }
+
+    struct UnusedLogins;
+
+    #[allow(refining_impl_trait)]
+    impl grund_proto::grund::login::v1::DeviceLoginService for UnusedLogins {
+        async fn start_device_login(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, grund_proto::grund::login::v1::StartDeviceLoginRequest>,
+        ) -> ServiceResult<grund_proto::grund::login::v1::StartDeviceLoginResponse> {
+            unreachable!()
+        }
+        async fn poll_device_login(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, grund_proto::grund::login::v1::PollDeviceLoginRequest>,
+        ) -> ServiceResult<grund_proto::grund::login::v1::PollDeviceLoginResponse> {
+            unreachable!()
+        }
+    }
+
     struct UnusedCertificates;
 
     #[allow(refining_impl_trait)]
@@ -1603,11 +1820,16 @@ mod tests {
                         organisation_id: None,
                     });
                 }
-                "token" => {
+                "token" | "full_token" => {
                     extensions.insert(TokenCaller {
                         account_id: Uuid::now_v7(),
                         token_id: Uuid::now_v7(),
                         organisation_id: Uuid::now_v7(),
+                        scope: if *caller == "token" {
+                            TokenScope::Deploy
+                        } else {
+                            TokenScope::Full
+                        },
                     });
                 }
                 "edge" => {
@@ -1649,7 +1871,7 @@ mod tests {
     }
 
     #[test]
-    fn a_token_reaches_the_app_procedures_ci_needs_and_nothing_else() {
+    fn a_token_reaches_the_app_procedures_ci_needs_and_its_own_description_and_nothing_else() {
         let for_tokens: BTreeSet<&str> = AUTHORIZATION
             .iter()
             .filter(|(_, r)| *r == Requirement::SessionOrToken)
@@ -1668,6 +1890,7 @@ mod tests {
         ]
         .into_iter()
         .map(|m| format!("/grund.app.v1.AppService/{m}").leak() as &str)
+        .chain(["/grund.token.v1.TokenService/GetCurrentToken"])
         .collect();
         assert_eq!(for_tokens, expected);
         for path in &for_tokens {
@@ -1686,21 +1909,26 @@ mod tests {
             .map(|(p, _)| *p)
             .collect();
         for required in [
-            "/grund.app.v1.AppService/DeleteApp",
             "/grund.account.v1.AccountService/GetViewer",
-            "/grund.organisation.v1.OrganisationService/InviteMember",
+            "/grund.account.v1.AccountService/RevokeSession",
+            "/grund.organisation.v1.OrganisationService/CreateOrganisation",
+            "/grund.organisation.v1.OrganisationService/RenameOrganisation",
             "/grund.organisation.v1.OrganisationService/DeleteOrganisation",
-            "/grund.machine.v1.MachineService/CreateJoinToken",
+            "/grund.token.v1.TokenService/CreateToken",
+            "/grund.token.v1.TokenService/RevokeToken",
+            "/grund.machine.v1.ManagementPoolService/LeaseMachine",
         ] {
             assert!(session_only.contains(&required), "{required}");
         }
         for path in session_only {
-            let error = authorized(&context(path, &["token"])).unwrap_err();
-            assert_eq!(
-                error.code,
-                connectrpc::ErrorCode::PermissionDenied,
-                "{path}"
-            );
+            for token in ["token", "full_token"] {
+                let error = authorized(&context(path, &[token])).unwrap_err();
+                assert_eq!(
+                    error.code,
+                    connectrpc::ErrorCode::PermissionDenied,
+                    "{path} {token}"
+                );
+            }
             authorized(&context(path, &["session"])).unwrap();
         }
         for (path, requirement) in AUTHORIZATION {
@@ -1711,6 +1939,63 @@ mod tests {
                 let error = authorized(&context(path, &["token"])).unwrap_err();
                 assert_eq!(error.code, connectrpc::ErrorCode::Unauthenticated, "{path}");
             }
+        }
+    }
+
+    #[test]
+    fn a_full_token_reaches_the_organisation_procedures_and_a_deploy_token_does_not() {
+        let for_full: BTreeSet<&str> = AUTHORIZATION
+            .iter()
+            .filter(|(_, r)| *r == Requirement::SessionOrFullToken)
+            .map(|(p, _)| *p)
+            .collect();
+        for required in [
+            "/grund.app.v1.AppService/DeleteApp",
+            "/grund.organisation.v1.OrganisationService/InviteMember",
+            "/grund.organisation.v1.OrganisationService/ListMembers",
+            "/grund.machine.v1.MachineService/CreateJoinToken",
+            "/grund.machine.v1.MachineService/SetMachineInService",
+            "/grund.domain.v1.DomainService/BindDomain",
+            "/grund.registry.v1.RegistryService/SetRegistryLogin",
+        ] {
+            assert!(for_full.contains(required), "{required}");
+        }
+        for path in &for_full {
+            assert!(
+                !path.contains("TokenService")
+                    && !path.contains("AccountService")
+                    && !path.contains("ManagementPoolService"),
+                "{path}"
+            );
+            authorized(&context(path, &["full_token"])).unwrap();
+            authorized(&context(path, &["session"])).unwrap();
+            let error = authorized(&context(path, &["token"])).unwrap_err();
+            assert_eq!(
+                error.code,
+                connectrpc::ErrorCode::PermissionDenied,
+                "{path}"
+            );
+            let error = authorized(&context(path, &[])).unwrap_err();
+            assert_eq!(error.code, connectrpc::ErrorCode::Unauthenticated, "{path}");
+        }
+    }
+
+    #[test]
+    fn the_device_login_takes_no_credential_and_nothing_else_is_public() {
+        let public: Vec<&str> = AUTHORIZATION
+            .iter()
+            .filter(|(_, r)| *r == Requirement::Public)
+            .map(|(p, _)| *p)
+            .collect();
+        assert_eq!(
+            public,
+            [
+                "/grund.login.v1.DeviceLoginService/StartDeviceLogin",
+                "/grund.login.v1.DeviceLoginService/PollDeviceLogin",
+            ]
+        );
+        for path in public {
+            authorized(&context(path, &[])).unwrap();
         }
     }
 
@@ -1781,7 +2066,10 @@ mod tests {
             .add_service(Arc::new(UnusedCertificates))
             .add_service(Arc::new(UnusedAgent))
             .add_service(Arc::new(UnusedApps))
-            .add_service(Arc::new(UnusedDomains));
+            .add_service(Arc::new(UnusedDomains))
+            .add_service(Arc::new(UnusedTokens))
+            .add_service(Arc::new(UnusedRegistries))
+            .add_service(Arc::new(UnusedLogins));
         let served: BTreeSet<String> = router
             .methods()
             .map(|m| format!("/{}", m.trim_start_matches('/')))

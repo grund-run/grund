@@ -110,7 +110,9 @@ What compose deliberately does not do:
 One binary, `grund`, with subcommands: `serve` (the control plane),
 `migrate`, `init` (generate the instance's secrets), `setup-link` (the
 owner's one-time link, run with `serve`'s settings), `doctor` and `probe`
-(a health check for the scratch image).
+(a health check for the scratch image), `join` and `agent` (a machine),
+`relay(s)` and `edge(s)`, and `operator apps suspend|lift`. The same binary
+is the client for people, scripts and coding agents: see "The CLI" below.
 
 `grund doctor instance` (in compose: `docker compose exec grund /grund
 doctor instance`) and `grund doctor machine` (on a machine, as root) check
@@ -144,8 +146,10 @@ confirmed (see [.env.example](.env.example)). Without them nothing is queued.
   `grund.organisation.v1.OrganisationService` lists, creates, renames and
   deletes organisations and manages their members and invitations, with the
   same rules as the pages. It takes the dashboard's session cookie, from this
-  origin only, or a personal access token for the app procedures CI needs
-  (see "Deploy from CI" below).
+  origin only, a `grund login` session (`Authorization: Bearer
+  grund_cli_…`), or a personal access token (see "Deploy from CI" below).
+  `grund.token.v1`, `grund.registry.v1` and `grund.login.v1` (the CLI's
+  device login, approved on `/device`) are in `proto/` beside the rest.
 - Organisations can be renamed (the old name redirects members and stays
   reserved) and deleted by their owners. A deletion is a mire saga: billing
   answers first, and while it cannot be reached grund keeps asking.
@@ -159,16 +163,68 @@ curl -s -X POST -H 'Content-Type: application/json' -d '{}' \
 # {"code":"unauthenticated","message":"sign in first"}
 ```
 
+## The CLI
+
+`grund` does everything the dashboard does, over the same API:
+
+```bash
+grund login grund.example.com          # approve in the browser; a session, revocable on Sessions
+grund apps deploy -f grund.yaml --wait # every app the file declares; makes missing apps
+grund apps status shop --json          # health, copies ready of wanted, the rollout
+grund apps set shop image ghcr.io/acme/shop:2.1 --dry-run
+grund apps set shop copies 3
+grund apps rollback shop 4 --wait
+grund machines add web-2               # prints the command to run on the new machine
+grund domains add shop.example.com
+grund tokens create --name ci --scope deploy --json
+```
+
+- Nouns: `login`, `logout`, `whoami`, `orgs`, `apps`, `machines`,
+  `domains`, `members`, `invitations`, `tokens`, `registries`.
+- `--json` (or `-o json`, or `GRUND_OUTPUT=json`) on every command prints one
+  JSON document: the protobuf JSON of the API's answer, or of a
+  `grund.cli.v1` message (`proto/grund/cli/v1/cli.proto`). A failure prints
+  `{"error": {"code", "message", "hint", "field", "reason"}}` on stderr and
+  exits 1 failed, 2 usage or confirmation needed, 3 not signed in, 4
+  permission denied, 5 not found, 6 conflict, 7 invalid, 8 unavailable, 9
+  rollout failed.
+- Nothing asks without a terminal: destructive commands need `--yes` then.
+  Every command that changes the instance takes `--dry-run` (but `domains
+  verify`, which only looks the record up now); one that makes a release is
+  checked by the instance as a deploy is, image resolved, and nothing is
+  written.
+- `GRUND_INSTANCE` and `GRUND_TOKEN` (a personal access token) for CI and
+  agents; otherwise `grund login` writes `~/.config/grund/credentials.yaml`
+  (mode 0600; a file others can read is refused). `--org`/`GRUND_ORG`, else
+  `grund orgs use`, else the token's organisation, else your only one.
+- For agents: `grund describe --json` is the whole command tree with types,
+  defaults, examples, output schemas and error codes, generated from the
+  code; [schema/cli.json](schema/cli.json) is this commit's. `grund schema
+  output <command>` gives one output's JSON Schema. `grund skill install`
+  writes a SKILL.md for Claude Code (`grund skill print` for others), and
+  `grund mcp` serves the commands as MCP tools over stdio (`claude mcp add
+  grund -- grund mcp`).
+- CI publishes the binary for Linux x86_64 only (an instance that serves
+  its installer has it at `/install/grund-linux-x86_64`). There is no macOS
+  or aarch64 build yet.
+
 ## Deploy from CI
 
-grund has no deploy command: CI calls the API with a personal access
-token.
+CI runs the CLI with a personal access token:
 
-1. Create the app once, in the dashboard or with `CreateApp`.
-2. Under Organisation, API tokens, make a token. It is shown once: keep it
-   in your CI's secrets, here as `GRUND_TOKEN`. It starts with `grund_pat_`
-   so secret scanners can find a leaked one. grund stores only its SHA-256.
-3. Each build calls `Deploy` with the image it just pushed:
+```bash
+GRUND_INSTANCE=https://grund.example.com GRUND_TOKEN=$GRUND_TOKEN \
+  grund apps deploy shop -f grund.yaml --note "$CI_COMMIT_SHA" --wait --json
+```
+
+1. Under Organisation, API tokens (or `grund tokens create`), make a token.
+   It is shown once: keep it in your CI's secrets, here as `GRUND_TOKEN`. It
+   starts with `grund_pat_` so secret scanners can find a leaked one. grund
+   stores only its SHA-256.
+2. Each build deploys the image it just pushed, from the repository's
+   `grund.yaml` or from flags (`--image`, `--port`, `--env`).
+
+The CLI is a client of the API; without it, `Deploy` takes the same:
 
 ```bash
 curl --fail-with-body -sS https://grund.example.com/grund.app.v1.AppService/Deploy \
@@ -245,10 +301,12 @@ What a token can do:
   other organisation is `not_found`. It never does more than that account's
   role allows today, so a member's token can read apps but not deploy, and
   leaving the organisation leaves the token powerless.
-- It may call `CreateApp`, `GetApp`, `ListApps`, `Deploy`, `ListReleases`,
-  `Rollback`, `Scale`, `ConfigureApp` and `SetSecret`. Everything else,
-  `DeleteApp` included, needs the dashboard: a token gets
-  `permission_denied`.
+- Its scope is chosen when it is made. `deploy` (the default) may call
+  `CreateApp`, `GetApp`, `ListApps`, `Deploy`, `ListReleases`, `Rollback`,
+  `Scale`, `ConfigureApp` and `SetSecret`. `full` may also delete apps and
+  manage machines, custom domains, members, invitations and registry
+  logins. Neither reaches the account, sessions, tokens, or creating,
+  renaming and deleting organisations: those get `permission_denied`.
 - It expires after 7, 30, 90 or 365 days, chosen when it is made. Owners and
   admins see and revoke every token of the organisation, members their own.
   A revoked or expired token is `unauthenticated` from the next call.

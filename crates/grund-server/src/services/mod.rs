@@ -8,6 +8,7 @@ pub mod agents;
 pub mod apps;
 pub mod billing;
 pub mod capacity;
+pub mod device_logins;
 pub mod domains;
 pub mod entitlements;
 pub mod entry;
@@ -27,6 +28,7 @@ pub mod terminators;
 pub mod tokens;
 
 pub use accounts::AccountsState;
+pub use device_logins::DeviceLoginsState;
 pub use domains::DomainsState;
 pub use entitlements::EntitlementsState;
 pub use limits::LimitsState;

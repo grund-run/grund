@@ -369,20 +369,21 @@ async fn an_account_cannot_revoke_another_accounts_session(pool: PgPool) {
             max_age: Duration::from_secs(3600),
             user_agent: "test",
             client_address: "",
+            kind: "browser",
         },
     )
     .await
     .unwrap();
     assert!(!sessions::revoke(&pool, intruder, session_id).await.unwrap());
     assert!(
-        sessions::find(&pool, &[3u8; 32], Duration::from_secs(3600))
+        sessions::find(&pool, &[3u8; 32], Duration::from_secs(3600), "browser")
             .await
             .unwrap()
             .is_some()
     );
     assert!(sessions::revoke(&pool, owner, session_id).await.unwrap());
     assert!(
-        sessions::find(&pool, &[3u8; 32], Duration::from_secs(3600))
+        sessions::find(&pool, &[3u8; 32], Duration::from_secs(3600), "browser")
             .await
             .unwrap()
             .is_none()

@@ -6,7 +6,7 @@
 {% call ui.section("new-token", "Your new token: " ~ minted.name, stack=true) %}
   <p>Copy it now: it is not shown again. It works until {{ minted.expires }}.</p>
   {{ ui.code(minted.token, id="new-token-value", wrap=true, what="the token") }}
-  <p>To deploy from CI, with the token in <code>GRUND_TOKEN</code>:</p>
+  <p>To deploy from CI with the grund CLI:</p>
   {{ ui.code(minted.example, id="new-token-example", wrap=true, what="the command") }}
 {% endcall %}
 {% endif %}
@@ -15,7 +15,7 @@
   {% if tokens %}
   {% call lists.rows() %}
     {% for token in tokens %}
-    {% call(slot) lists.row(token.name, "by " ~ token.by ~ " · made " ~ token.created ~ " · expires " ~ token.expires ~ " · " ~ token.used, icon_name="key", tone="violet", tags=["Yours"] if token.mine and org.manages else []) %}
+    {% call(slot) lists.row(token.name, "by " ~ token.by ~ " · made " ~ token.created ~ " · expires " ~ token.expires ~ " · " ~ token.used, icon_name="key", tone="violet", tags=[token.scope, "Yours"] if token.mine and org.manages else [token.scope]) %}
       {%- if slot == "end" %}{{ forms.post_button("/" ~ org.slug ~ "/settings/tokens/" ~ token.id ~ "/revoke", csrf, "Revoke", kind="danger", size="sm") }}{% endif -%}
     {% endcall %}
     {% endfor %}
@@ -30,6 +30,7 @@
     {{ forms.banner(create_error) }}
     {{ forms.field("name", "Name", value=name, autocomplete="off", hint="Up to 64 characters.") }}
     {{ forms.chips_field("days", "Expires after", lifetimes, days, multiple=false) }}
+    {{ forms.chips_field("scope", "Can", scopes, scope, multiple=false) }}
     {{ ui.button("Make a token") }}
   {% endcall %}
 {% endcall %}

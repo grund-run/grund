@@ -1,0 +1,171 @@
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+package grund.cli.v1;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+import "grund/app/v1/app.proto";
+import "grund/organisation/v1/organisation.proto";
+import "grund/token/v1/token.proto";
+
+// What the `grund` CLI prints with --output json where no API response
+// says it already (grund-docs design/cli.md §3). No service: these are the
+// CLI's own output shapes, kept here so their JSON Schemas are generated
+// from the same descriptors as the API's, and checked for breaking changes
+// the same way.
+
+// What a failed command prints on stderr with --output json.
+message ErrorOutput {
+  Error error = 1;
+}
+
+message Error {
+  // Stable: usage, confirmation_required, organisation_required,
+  // not_signed_in, unauthenticated, permission_denied, not_found, conflict,
+  // invalid, unavailable, rollout_failed, failed. `grund describe` lists
+  // each with its exit code.
+  string code = 1;
+  string message = 2;
+  // What to do about it, when the CLI knows.
+  string hint = 3;
+  // The flag, argument or grund.yaml path the error is about.
+  string field = 4;
+  // The API's stable reason (ErrorReason), such as name_taken.
+  string reason = 5;
+  // The procedure that refused, such as grund.app.v1.AppService/Deploy.
+  string rpc = 6;
+}
+
+// `grund whoami`.
+message Whoami {
+  // The instance's origin.
+  string instance = 1;
+  // session (from `grund login`) or token (a personal access token).
+  string credential = 2;
+  // From GRUND_TOKEN, the credentials file, or nothing.
+  string credential_source = 3;
+  // For a session.
+  string username = 4;
+  string email = 5;
+  // The organisation commands act on without --org; empty when none is
+  // chosen and there is more than one.
+  string organisation = 6;
+  // For a session: every organisation the account is in.
+  repeated grund.organisation.v1.Organisation organisations = 7;
+  // For a token.
+  grund.token.v1.Token token = 8;
+}
+
+// `grund login`.
+message LoginResult {
+  string instance = 1;
+  string username = 2;
+  // session or token.
+  string credential = 3;
+  // Where the credential was written.
+  string credentials_file = 4;
+  // The organisation chosen as the default, if one was.
+  string organisation = 5;
+}
+
+// `grund orgs list`.
+message OrganisationList {
+  repeated grund.organisation.v1.Organisation organisations = 1;
+  // The default organisation's slug.
+  string current = 2;
+}
+
+// One field a change would make, for --dry-run.
+message Change {
+  // A JSON pointer into the shape being changed, such as /spec/image.
+  string path = 1;
+  // Absent: the field is new.
+  google.protobuf.Value before = 2;
+  // Absent: the field goes.
+  google.protobuf.Value after = 3;
+}
+
+// What a mutating command would send, with --dry-run. Nothing is changed.
+message DryRun {
+  bool dry_run = 1;
+  // Each procedure the command would call, in order.
+  repeated Call calls = 2;
+  // Against the current state, when the command can know it.
+  repeated Change changes = 3;
+  // For a change that makes a release: the release the instance would
+  // make, checked as a deploy is (Deploy with dry_run).
+  grund.app.v1.Release release = 4;
+}
+
+message Call {
+  // Such as grund.app.v1.AppService/Scale.
+  string rpc = 1;
+  // The request in protobuf JSON. Secret values are replaced by "<redacted>".
+  google.protobuf.Struct request = 2;
+}
+
+// `grund apps deploy`: one entry per app.
+message DeployResult {
+  repeated AppDeploy apps = 1;
+}
+
+message AppDeploy {
+  string app = 1;
+  // The app did not exist and was created first.
+  bool created = 2;
+  // The release made, or for --dry-run the release that would be made
+  // (number and digest as resolved now; nothing is written).
+  grund.app.v1.Release release = 3;
+  bool dry_run = 4;
+  // For --dry-run: what differs from the newest release.
+  repeated Change changes = 5;
+  // With --wait: how its rollout ended.
+  grund.app.v1.RolloutStatus rollout = 6;
+  // For --dry-run: each procedure it would call, in order.
+  repeated Call calls = 7;
+}
+
+// `grund apps secrets list`.
+message SecretList {
+  repeated grund.app.v1.SecretInfo secrets = 1;
+}
+
+// `grund machines add`.
+message MachineAdded {
+  // grund_join_…: used once, valid until expires_at. Shown once.
+  string token = 1;
+  google.protobuf.Timestamp expires_at = 2;
+  // Installs grund and joins, run as root on the machine; empty when the
+  // instance names no installer.
+  string install_command = 3;
+  // Joins a machine that has grund already.
+  string join_command = 4;
+}
+
+// `grund apps status`.
+message AppStatus {
+  string app = 1;
+  // One of: no_release, rolling_out, live, degraded (live with fewer ready
+  // copies than wanted), failed, halted.
+  string health = 2;
+  // The release that is live; 0 for none.
+  uint32 current_release = 3;
+  uint32 copies_wanted = 4;
+  uint32 copies_ready = 5;
+  grund.app.v1.RolloutStatus rollout = 6;
+  repeated grund.app.v1.Waiting waiting = 7;
+  repeated grund.app.v1.Replica replicas = 8;
+}
+
+// `grund skill install`.
+message SkillInstalled {
+  string path = 1;
+}
+
+// A command whose API answer is empty.
+message Done {
+  // What was done, in words.
+  string message = 1;
+}

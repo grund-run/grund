@@ -21,6 +21,7 @@ anyhow.workspace = true
 grund-ee = { workspace = true, optional = true }
 clap.workspace = true
 grund-agent.workspace = true
+grund-cli.workspace = true
 grund-containers.workspace = true
 grund-server.workspace = true
 grund-tls.workspace = true

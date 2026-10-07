@@ -14,6 +14,8 @@ pub struct NewToken<'a> {
     pub account_id: Uuid,
     pub name: &'a str,
     pub lifetime_days: u32,
+    /// `deploy` or `full` (design/auth.md §6).
+    pub scope: &'a str,
 }
 
 /// Stores a token unless the organisation already has `max_live` live ones,
@@ -31,8 +33,8 @@ pub async fn insert(
         .await?;
     sqlx::query_scalar::<_, DateTime<Utc>>(
         "INSERT INTO grund_api_tokens \
-           (organisation_id, token_id, token_digest, account_id, name, expires_at) \
-         SELECT $1, $2, $3, $4, $5, clock_timestamp() + make_interval(days => $6) \
+           (organisation_id, token_id, token_digest, account_id, name, expires_at, scope) \
+         SELECT $1, $2, $3, $4, $5, clock_timestamp() + make_interval(days => $6), $8 \
          WHERE (SELECT count(*) FROM grund_api_tokens \
                 WHERE organisation_id = $1 AND revoked_at IS NULL \
                   AND expires_at > clock_timestamp()) < $7 \
@@ -45,6 +47,7 @@ pub async fn insert(
     .bind(token.name)
     .bind(token.lifetime_days as i32)
     .bind(max_live)
+    .bind(token.scope)
     .fetch_optional(connection)
     .await
 }
@@ -55,6 +58,7 @@ pub struct LiveToken {
     pub organisation_id: Uuid,
     pub token_id: Uuid,
     pub account_id: Uuid,
+    pub scope: String,
 }
 
 /// The live token a digest names: not revoked and not expired. Notes its
@@ -65,14 +69,14 @@ pub async fn authenticate(
 ) -> Result<Option<LiveToken>, sqlx::Error> {
     sqlx::query_as::<_, LiveToken>(
         "WITH live AS ( \
-           SELECT organisation_id, token_id, account_id, last_used_at FROM grund_api_tokens \
+           SELECT organisation_id, token_id, account_id, scope, last_used_at FROM grund_api_tokens \
            WHERE token_digest = $1 AND revoked_at IS NULL AND expires_at > clock_timestamp()), \
          touched AS ( \
            UPDATE grund_api_tokens t SET last_used_at = clock_timestamp() FROM live \
            WHERE t.organisation_id = live.organisation_id AND t.token_id = live.token_id \
              AND (live.last_used_at IS NULL \
                   OR live.last_used_at < clock_timestamp() - interval '1 minute')) \
-         SELECT organisation_id, token_id, account_id FROM live",
+         SELECT organisation_id, token_id, account_id, scope FROM live",
     )
     .bind(&token_digest[..])
     .fetch_optional(executor)
@@ -89,6 +93,7 @@ pub struct TokenView {
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     pub last_used_at: Option<DateTime<Utc>>,
+    pub scope: String,
 }
 
 /// The organisation's live tokens, newest first; only `account_id`'s when it
@@ -100,7 +105,7 @@ pub async fn list(
 ) -> Result<Vec<TokenView>, sqlx::Error> {
     sqlx::query_as::<_, TokenView>(
         "SELECT t.token_id, t.name, t.account_id, a.username, t.created_at, t.expires_at, \
-                t.last_used_at \
+                t.last_used_at, t.scope \
          FROM grund_api_tokens t LEFT JOIN grund_accounts a ON a.account_id = t.account_id \
          WHERE t.organisation_id = $1 AND t.revoked_at IS NULL \
            AND t.expires_at > clock_timestamp() \
@@ -133,6 +138,25 @@ pub async fn revoke(
     .execute(executor)
     .await?;
     Ok(result.rows_affected() == 1)
+}
+
+/// One live token of the organisation, by id.
+pub async fn get(
+    executor: impl PgExecutor<'_>,
+    organisation_id: Uuid,
+    token_id: Uuid,
+) -> Result<Option<TokenView>, sqlx::Error> {
+    sqlx::query_as::<_, TokenView>(
+        "SELECT t.token_id, t.name, t.account_id, a.username, t.created_at, t.expires_at, \
+                t.last_used_at, t.scope \
+         FROM grund_api_tokens t LEFT JOIN grund_accounts a ON a.account_id = t.account_id \
+         WHERE t.organisation_id = $1 AND t.token_id = $2 AND t.revoked_at IS NULL \
+           AND t.expires_at > clock_timestamp()",
+    )
+    .bind(organisation_id)
+    .bind(token_id)
+    .fetch_optional(executor)
+    .await
 }
 
 /// Deletes tokens that ended more than a day ago. Bounded per pass.

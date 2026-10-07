@@ -965,6 +965,9 @@ pub async fn revoke_other_sessions(
 
 /// A short, human name for a browser from its User-Agent.
 pub fn describe_user_agent(user_agent: &str) -> String {
+    if user_agent.starts_with("grund ") {
+        return user_agent.chars().take(80).collect();
+    }
     let browser = [
         ("Edg/", "Edge"),
         ("Firefox/", "Firefox"),

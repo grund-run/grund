@@ -17,7 +17,10 @@ use uuid::Uuid;
 use crate::{
     services::{
         sessions::Session,
-        tokens::{CreateRefusal, LIFETIMES_DAYS, MAX_LIVE_PER_ORGANISATION, Minted, TokensState},
+        tokens::{
+            CreateRefusal, LIFETIMES_DAYS, MAX_LIVE_PER_ORGANISATION, Minted, TokenScope,
+            TokensState,
+        },
     },
     state::State,
     web::{
@@ -63,6 +66,7 @@ struct TokensForm<'a> {
     create_error: String,
     name: String,
     days: u32,
+    scope: String,
     minted: Option<Minted>,
 }
 
@@ -91,6 +95,7 @@ async fn tokens_view(
                 mine => t.account_id == session.account_id,
                 created => t.created_at.format("%-d %b %Y").to_string(),
                 expires => t.expires_at.format("%-d %b %Y").to_string(),
+                scope => if TokenScope::parse(&t.scope) == TokenScope::Full { "Full" } else { "Deploy" },
                 used,
             }
         })
@@ -106,13 +111,25 @@ async fn tokens_view(
     } else {
         form.days
     };
+    let scopes = vec![
+        (
+            "deploy".to_string(),
+            "Deploy: create, deploy and change apps".to_string(),
+        ),
+        (
+            "full".to_string(),
+            "Full: everything your role allows here".to_string(),
+        ),
+    ];
+    let scope = if form.scope == "full" {
+        "full"
+    } else {
+        "deploy"
+    };
     let origin = state.config.public_origin().serialized;
     let minted = form.minted.map(|m| {
         let example = format!(
-            "curl -sS -H \"Authorization: Bearer $GRUND_TOKEN\" -H 'Content-Type: application/json' \
-             -d '{{\"organisation\":\"{slug}\",\"name\":\"APP\",\"spec\":{{\"image\":\"IMAGE\"}}}}' \
-             {origin}/grund.app.v1.AppService/Deploy",
-            slug = membership.slug,
+            "GRUND_INSTANCE={origin} GRUND_TOKEN=<the token> grund apps deploy APP -f grund.yaml --json"
         );
         context! {
             token => m.token,
@@ -130,8 +147,9 @@ async fn tokens_view(
         "pages/tokens.html.jinja",
         "org-settings",
         context! {
-            tokens, lifetimes, minted,
+            tokens, lifetimes, minted, scopes,
             days => days.to_string(),
+            scope,
             name => form.name,
             max_live => MAX_LIVE_PER_ORGANISATION,
             notice => form.notice, error => form.error,
@@ -149,6 +167,8 @@ pub struct CreateForm {
     name: String,
     #[serde(default)]
     days: String,
+    #[serde(default)]
+    scope: String,
 }
 
 /// `POST /{org}/settings/tokens`: makes a token and answers with the page
@@ -165,9 +185,13 @@ pub async fn create(
     }
     let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
     let days = form.days.trim().parse::<u32>().unwrap_or(0);
+    let scope = match form.scope.as_str() {
+        "full" => TokenScope::Full,
+        _ => TokenScope::Deploy,
+    };
     let outcome = state
         .tokens()
-        .create(session.account_id, &membership, &form.name, days)
+        .create(session.account_id, &membership, &form.name, days, scope)
         .await?;
     let (status, form) = match outcome {
         Ok(minted) => (
@@ -184,6 +208,7 @@ pub async fn create(
                 create_error: problem,
                 name: form.name,
                 days,
+                scope: form.scope,
                 ..Default::default()
             },
         ),
@@ -195,6 +220,7 @@ pub async fn create(
                 ),
                 name: form.name,
                 days,
+                scope: form.scope,
                 ..Default::default()
             },
         ),

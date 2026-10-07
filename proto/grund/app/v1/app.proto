@@ -408,6 +408,9 @@ message DeployRequest {
   // Where the deploy came from, for the release list: a commit, a CI run.
   // At most 200 bytes. Shown, never trusted.
   string note = 5;
+  // Checks everything a deploy checks, resolving the image as a deploy
+  // would, and answers the release it would make, writing nothing.
+  bool dry_run = 6;
 }
 
 message DeployResponse {

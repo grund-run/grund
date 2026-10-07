@@ -34,7 +34,7 @@ use grund_store::{agents::VmRow, machines::MachineRow, organisations::Membership
 use uuid::Uuid;
 
 use crate::{
-    api::{Caller, caller},
+    api::{Caller, Principal, caller, principal},
     services::{
         OrganisationsState,
         agents::{AgentsState, VmOutcome, VmRequest},
@@ -623,7 +623,7 @@ impl MachineApi {
 
     async fn member(
         &self,
-        caller: &Caller,
+        caller: &Principal,
         slug: &str,
         needed: Access,
     ) -> Result<Membership, ConnectError> {
@@ -633,6 +633,7 @@ impl MachineApi {
             .membership(slug, caller.account_id)
             .await
             .map_err(internal)?
+            .filter(|m| caller.reaches(m.organisation_id))
             .ok_or_else(|| ConnectError::not_found("no such organisation"))?;
         if needed == Access::Manage && !matches!(membership.role.as_str(), "owner" | "admin") {
             return Err(ConnectError::permission_denied(
@@ -663,7 +664,7 @@ impl MachineService for MachineApi {
         ctx: RequestContext,
         request: ServiceRequest<'_, CreateJoinTokenRequest>,
     ) -> ServiceResult<CreateJoinTokenResponse> {
-        let caller = caller(&ctx)?;
+        let caller = principal(&ctx)?;
         let membership = self
             .member(&caller, request.organisation, Access::Manage)
             .await?;
@@ -682,6 +683,11 @@ impl MachineService for MachineApi {
                 .map_err(internal)?,
         )?;
         Response::ok(CreateJoinTokenResponse {
+            install_command: crate::services::machines::install_command(
+                &self.state.config,
+                &minted.token,
+            )
+            .unwrap_or_default(),
             token: minted.token,
             expires_at: timestamp(minted.expires_at),
             ..Default::default()
@@ -693,7 +699,7 @@ impl MachineService for MachineApi {
         ctx: RequestContext,
         request: ServiceRequest<'_, ListMachinesRequest>,
     ) -> ServiceResult<ListMachinesResponse> {
-        let caller = caller(&ctx)?;
+        let caller = principal(&ctx)?;
         let membership = self
             .member(&caller, request.organisation, Access::Read)
             .await?;
@@ -717,7 +723,7 @@ impl MachineService for MachineApi {
         ctx: RequestContext,
         request: ServiceRequest<'_, GetMachineRequest>,
     ) -> ServiceResult<GetMachineResponse> {
-        let caller = caller(&ctx)?;
+        let caller = principal(&ctx)?;
         let membership = self
             .member(&caller, request.organisation, Access::Read)
             .await?;
@@ -733,7 +739,7 @@ impl MachineService for MachineApi {
         ctx: RequestContext,
         request: ServiceRequest<'_, RevokeMachineRequest>,
     ) -> ServiceResult<RevokeMachineResponse> {
-        let caller = caller(&ctx)?;
+        let caller = principal(&ctx)?;
         let membership = self
             .member(&caller, request.organisation, Access::Manage)
             .await?;
@@ -760,7 +766,7 @@ impl MachineService for MachineApi {
         ctx: RequestContext,
         request: ServiceRequest<'_, DeclareMachinePortsRequest>,
     ) -> ServiceResult<DeclareMachinePortsResponse> {
-        let caller = caller(&ctx)?;
+        let caller = principal(&ctx)?;
         let membership = self
             .member(&caller, request.organisation, Access::Manage)
             .await?;
@@ -796,7 +802,7 @@ impl MachineService for MachineApi {
         ctx: RequestContext,
         request: ServiceRequest<'_, SetMachineLabelsRequest>,
     ) -> ServiceResult<SetMachineLabelsResponse> {
-        let caller = caller(&ctx)?;
+        let caller = principal(&ctx)?;
         let membership = self
             .member(&caller, request.organisation, Access::Manage)
             .await?;
@@ -833,7 +839,7 @@ impl MachineService for MachineApi {
         ctx: RequestContext,
         request: ServiceRequest<'_, SetMachineInServiceRequest>,
     ) -> ServiceResult<SetMachineInServiceResponse> {
-        let caller = caller(&ctx)?;
+        let caller = principal(&ctx)?;
         let membership = self
             .member(&caller, request.organisation, Access::Manage)
             .await?;
@@ -868,7 +874,7 @@ impl MachineService for MachineApi {
         ctx: RequestContext,
         request: ServiceRequest<'_, GetOrganisationKeyRequest>,
     ) -> ServiceResult<GetOrganisationKeyResponse> {
-        let caller = caller(&ctx)?;
+        let caller = principal(&ctx)?;
         let membership = self
             .member(&caller, request.organisation, Access::Read)
             .await?;
@@ -889,7 +895,7 @@ impl MachineService for MachineApi {
         ctx: RequestContext,
         request: ServiceRequest<'_, RunVmRequest>,
     ) -> ServiceResult<RunVmResponse> {
-        let caller = caller(&ctx)?;
+        let caller = principal(&ctx)?;
         let membership = self
             .member(&caller, request.organisation, Access::Manage)
             .await?;
@@ -929,7 +935,7 @@ impl MachineService for MachineApi {
         ctx: RequestContext,
         request: ServiceRequest<'_, StopVmRequest>,
     ) -> ServiceResult<StopVmResponse> {
-        let caller = caller(&ctx)?;
+        let caller = principal(&ctx)?;
         let membership = self
             .member(&caller, request.organisation, Access::Manage)
             .await?;
@@ -953,7 +959,7 @@ impl MachineService for MachineApi {
         ctx: RequestContext,
         request: ServiceRequest<'_, ListVmsRequest>,
     ) -> ServiceResult<ListVmsResponse> {
-        let caller = caller(&ctx)?;
+        let caller = principal(&ctx)?;
         let membership = self
             .member(&caller, request.organisation, Access::Read)
             .await?;

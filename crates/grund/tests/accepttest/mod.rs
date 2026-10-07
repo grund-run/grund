@@ -4,6 +4,7 @@ mod fixtures;
 mod api;
 mod apps;
 mod certificates;
+mod cli;
 mod csrf;
 mod doctor;
 mod domains;

@@ -6,7 +6,9 @@
 //! organisation and acts as the account that made it, with that account's
 //! role there at the time of each call, so it can never do more than its
 //! maker could. Which procedures a token may call at all is the
-//! authorization table's (`api::AUTHORIZATION`).
+//! authorization table's (`api::AUTHORIZATION`), by the token's scope:
+//! `deploy` (the default) or `full` (Kasper may overrule `full`; auth.md
+//! §6).
 
 use chrono::{DateTime, Utc};
 use grund_domain::organisation::Role;
@@ -30,20 +32,51 @@ pub const MAX_LIVE_PER_ORGANISATION: i64 = 100;
 /// The longest name a token may have, in characters.
 pub const MAX_NAME_CHARS: usize = 64;
 
+/// What a token may call (design/auth.md §6; `api::AUTHORIZATION`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenScope {
+    /// The app procedures CI needs, without DeleteApp. The default.
+    Deploy,
+    /// Every organisation procedure its maker's role allows, in its own
+    /// organisation.
+    Full,
+}
+
+impl TokenScope {
+    /// The stored name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TokenScope::Deploy => "deploy",
+            TokenScope::Full => "full",
+        }
+    }
+
+    /// A stored name; anything else reads as the narrower `deploy`.
+    pub fn parse(text: &str) -> Self {
+        match text {
+            "full" => TokenScope::Full,
+            _ => TokenScope::Deploy,
+        }
+    }
+}
+
 /// Who a token-authenticated API call is from: the account that made the
-/// token, limited to the token's organisation.
+/// token, limited to the token's organisation and scope.
 #[derive(Debug, Clone, Copy)]
 pub struct TokenCaller {
     pub account_id: Uuid,
     pub token_id: Uuid,
     pub organisation_id: Uuid,
+    pub scope: TokenScope,
 }
 
 /// A token just made: its secret, shown once and never again.
 #[derive(Debug)]
 pub struct Minted {
     pub token: String,
+    pub token_id: Uuid,
     pub name: String,
+    pub scope: TokenScope,
     pub expires_at: DateTime<Utc>,
 }
 
@@ -95,6 +128,7 @@ impl Tokens {
         membership: &Membership,
         name: &str,
         lifetime_days: u32,
+        scope: TokenScope,
     ) -> anyhow::Result<Result<Minted, CreateRefusal>> {
         let name = match valid_name(name) {
             Ok(name) => name,
@@ -117,6 +151,7 @@ impl Tokens {
                 account_id,
                 name: &name,
                 lifetime_days,
+                scope: scope.as_str(),
             },
             MAX_LIVE_PER_ORGANISATION,
         )
@@ -130,11 +165,14 @@ impl Tokens {
             token = %token_id,
             account = %account_id,
             lifetime_days,
+            scope = scope.as_str(),
             "API token created"
         );
         Ok(Ok(Minted {
             token,
+            token_id,
             name,
+            scope,
             expires_at,
         }))
     }
@@ -151,6 +189,7 @@ impl Tokens {
                 account_id: live.account_id,
                 token_id: live.token_id,
                 organisation_id: live.organisation_id,
+                scope: TokenScope::parse(&live.scope),
             }))
     }
 
@@ -163,6 +202,15 @@ impl Tokens {
     ) -> anyhow::Result<Vec<TokenView>> {
         let only = (!manages(membership)).then_some(account_id);
         Ok(api_tokens::list(&self.pool, membership.organisation_id, only).await?)
+    }
+
+    /// One live token of the organisation, by id.
+    pub async fn get(
+        &self,
+        organisation_id: Uuid,
+        token_id: Uuid,
+    ) -> anyhow::Result<Option<TokenView>> {
+        Ok(api_tokens::get(&self.pool, organisation_id, token_id).await?)
     }
 
     /// Revokes a token: any of the organisation's for owners and admins,

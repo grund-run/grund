@@ -741,6 +741,53 @@ impl Apps {
             .ok_or(AppsError::ReleaseNotFound)
     }
 
+    async fn preview_release(
+        &self,
+        actor: Uuid,
+        app_id: Uuid,
+        release: AppCommand,
+        settings: Option<AppSettings>,
+    ) -> Result<ReleaseRow, AppsError> {
+        let mut work = Work::begin(&self.state.events, Uuid::now_v7(), &actor.to_string()).await?;
+        if let Some(settings) = settings {
+            work.app(
+                app_id,
+                AppCommand::Configure {
+                    actor,
+                    settings,
+                    at: Utc::now(),
+                },
+            )
+            .await?;
+        }
+        let events = work.app(app_id, release).await?;
+        drop(work);
+        let release = events
+            .into_iter()
+            .find_map(|e| match e {
+                AppEvent::ReleaseCreated { release } => Some(release),
+                _ => None,
+            })
+            .context("a release was made")?;
+        Ok(ReleaseRow {
+            app_id,
+            number: release.number as i32,
+            spec: sqlx::types::Json(release.spec),
+            image_digest: release.image_digest,
+            platforms: sqlx::types::Json(release.platforms),
+            secret_versions: sqlx::types::Json(release.secret_versions),
+            source: release.source.as_str().to_string(),
+            rollback_of: release.rollback_of.map(|n| n as i32),
+            note: release.note,
+            created_by: release.created_by,
+            created_by_name: None,
+            created_at: release.created_at,
+            outcome: None,
+            reason: None,
+            ended_at: None,
+        })
+    }
+
     /// Makes the next release from `input` and rolls it out.
     pub async fn deploy(
         &self,
@@ -750,6 +797,37 @@ impl Apps {
         input: DeployInput,
         source: ReleaseSource,
         note: &str,
+    ) -> Result<ReleaseRow, AppsError> {
+        self.deploy_or_preview(actor, organisation_id, name, input, source, note, false)
+            .await
+    }
+
+    /// The release [`Apps::deploy`] would make from `input`, after every
+    /// check it makes (the image resolved at its registry, the app's own
+    /// rules), with nothing written: its unit of work is never committed.
+    pub async fn preview_deploy(
+        &self,
+        actor: Uuid,
+        organisation_id: Uuid,
+        name: &str,
+        input: DeployInput,
+        source: ReleaseSource,
+        note: &str,
+    ) -> Result<ReleaseRow, AppsError> {
+        self.deploy_or_preview(actor, organisation_id, name, input, source, note, true)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn deploy_or_preview(
+        &self,
+        actor: Uuid,
+        organisation_id: Uuid,
+        name: &str,
+        input: DeployInput,
+        source: ReleaseSource,
+        note: &str,
+        preview: bool,
     ) -> Result<ReleaseRow, AppsError> {
         let row = self.live(organisation_id, name).await?;
         let (spec, settings, source) = match input {
@@ -791,24 +869,25 @@ impl Apps {
                 other => AppsError::ImageUnresolved(other.to_string()),
             })?;
         let secret_versions = self.secret_versions(row.app_id, &spec).await?;
-        self.record_release(
+        let command = AppCommand::Release {
             actor,
-            row.app_id,
-            AppCommand::Release {
-                actor,
-                spec,
-                image_digest: resolved.digest,
-                platforms: resolved.platforms,
-                secret_versions,
-                source,
-                rollback_of: None,
-                note,
-                rollout_id: Uuid::now_v7(),
-                at: Utc::now(),
-            },
-            settings,
-        )
-        .await
+            spec,
+            image_digest: resolved.digest,
+            platforms: resolved.platforms,
+            secret_versions,
+            source,
+            rollback_of: None,
+            note,
+            rollout_id: Uuid::now_v7(),
+            at: Utc::now(),
+        };
+        if preview {
+            return self
+                .preview_release(actor, row.app_id, command, settings)
+                .await;
+        }
+        self.record_release(actor, row.app_id, command, settings)
+            .await
     }
 
     /// A new release copying `number`'s contents, with the secrets' newest

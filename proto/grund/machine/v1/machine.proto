@@ -335,6 +335,11 @@ message CreateJoinTokenRequest {
 message CreateJoinTokenResponse {
   string token = 1;
   google.protobuf.Timestamp expires_at = 2;
+  // The command to run on the machine, as root, that installs grund and
+  // joins it with this token, as the dashboard's Add machine shows it.
+  // Empty when the instance names no installer (GRUND_AGENT_INSTALL_URL,
+  // GRUND_SERVE_INSTALLER).
+  string install_command = 3;
 }
 
 message ListMachinesRequest {

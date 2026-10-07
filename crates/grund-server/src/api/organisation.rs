@@ -19,7 +19,7 @@ use grund_store::organisations::Membership;
 use uuid::Uuid;
 
 use crate::{
-    api::{Caller, caller},
+    api::{Principal, caller, principal},
     services::{
         accounts::{AccountsState, RequestMeta},
         organisations::{
@@ -44,11 +44,12 @@ impl OrganisationApi {
         self.state.organisations()
     }
 
-    async fn member(&self, caller: &Caller, slug: &str) -> Result<Membership, ConnectError> {
+    async fn member(&self, caller: &Principal, slug: &str) -> Result<Membership, ConnectError> {
         self.organisations()
             .membership(slug, caller.account_id)
             .await
             .map_err(internal)?
+            .filter(|m| caller.reaches(m.organisation_id))
             .ok_or_else(|| ConnectError::not_found("no such organisation"))
     }
 }
@@ -144,7 +145,7 @@ impl OrganisationService for OrganisationApi {
         ctx: RequestContext,
         request: ServiceRequest<'_, GetOrganisationRequest>,
     ) -> ServiceResult<GetOrganisationResponse> {
-        let caller = caller(&ctx)?;
+        let caller = principal(&ctx)?;
         let membership = self.member(&caller, request.slug).await?;
         Response::ok(GetOrganisationResponse {
             organisation: MessageField::from(organisation(&membership)),
@@ -172,7 +173,7 @@ impl OrganisationService for OrganisationApi {
                 ));
             }
         };
-        let membership = self.member(&caller, &slug).await?;
+        let membership = self.member(&caller.into(), &slug).await?;
         Response::ok(CreateOrganisationResponse {
             organisation: MessageField::from(organisation(&membership)),
             ..Default::default()
@@ -185,7 +186,7 @@ impl OrganisationService for OrganisationApi {
         request: ServiceRequest<'_, RenameOrganisationRequest>,
     ) -> ServiceResult<RenameOrganisationResponse> {
         let caller = caller(&ctx)?;
-        let membership = self.member(&caller, request.slug).await?;
+        let membership = self.member(&caller.into(), request.slug).await?;
         let slug = match self
             .organisations()
             .rename(caller.account_id, &membership, request.new_slug, &meta())
@@ -200,7 +201,7 @@ impl OrganisationService for OrganisationApi {
                 ));
             }
         };
-        let membership = self.member(&caller, &slug).await?;
+        let membership = self.member(&caller.into(), &slug).await?;
         Response::ok(RenameOrganisationResponse {
             organisation: MessageField::from(organisation(&membership)),
             ..Default::default()
@@ -213,7 +214,7 @@ impl OrganisationService for OrganisationApi {
         request: ServiceRequest<'_, DeleteOrganisationRequest>,
     ) -> ServiceResult<DeleteOrganisationResponse> {
         let caller = caller(&ctx)?;
-        let membership = self.member(&caller, request.slug).await?;
+        let membership = self.member(&caller.into(), request.slug).await?;
         match self
             .organisations()
             .request_deletion(
@@ -243,7 +244,7 @@ impl OrganisationService for OrganisationApi {
         ctx: RequestContext,
         request: ServiceRequest<'_, ListMembersRequest>,
     ) -> ServiceResult<ListMembersResponse> {
-        let caller = caller(&ctx)?;
+        let caller = principal(&ctx)?;
         let membership = self.member(&caller, request.slug).await?;
         let members = self
             .organisations()
@@ -271,7 +272,7 @@ impl OrganisationService for OrganisationApi {
         ctx: RequestContext,
         request: ServiceRequest<'_, ChangeMemberRoleRequest>,
     ) -> ServiceResult<ChangeMemberRoleResponse> {
-        let caller = caller(&ctx)?;
+        let caller = principal(&ctx)?;
         let membership = self.member(&caller, request.slug).await?;
         let account_id = uuid(request.account_id, "account_id")?;
         let new_role = role_name(request.role)?;
@@ -295,7 +296,7 @@ impl OrganisationService for OrganisationApi {
         ctx: RequestContext,
         request: ServiceRequest<'_, RemoveMemberRequest>,
     ) -> ServiceResult<RemoveMemberResponse> {
-        let caller = caller(&ctx)?;
+        let caller = principal(&ctx)?;
         let membership = self.member(&caller, request.slug).await?;
         let account_id = uuid(request.account_id, "account_id")?;
         let outcome = self
@@ -317,7 +318,7 @@ impl OrganisationService for OrganisationApi {
         ctx: RequestContext,
         request: ServiceRequest<'_, ListInvitationsRequest>,
     ) -> ServiceResult<ListInvitationsResponse> {
-        let caller = caller(&ctx)?;
+        let caller = principal(&ctx)?;
         let membership = self.member(&caller, request.slug).await?;
         let pending = self
             .organisations()
@@ -345,7 +346,7 @@ impl OrganisationService for OrganisationApi {
         ctx: RequestContext,
         request: ServiceRequest<'_, InviteMemberRequest>,
     ) -> ServiceResult<InviteMemberResponse> {
-        let caller = caller(&ctx)?;
+        let caller = principal(&ctx)?;
         let membership = self.member(&caller, request.slug).await?;
         let invited_role = role_name(request.role)?;
         let actor_name = self
@@ -391,7 +392,7 @@ impl OrganisationService for OrganisationApi {
         ctx: RequestContext,
         request: ServiceRequest<'_, RevokeInvitationRequest>,
     ) -> ServiceResult<RevokeInvitationResponse> {
-        let caller = caller(&ctx)?;
+        let caller = principal(&ctx)?;
         let membership = self.member(&caller, request.slug).await?;
         let invitation_id = uuid(request.invitation_id, "invitation_id")?;
         let outcome = self
