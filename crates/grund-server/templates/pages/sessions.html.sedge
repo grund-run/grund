@@ -1,0 +1,23 @@
+use crate::templates::compiled::components::{PageHead, Form, Button, Banner, Rows, Row, Status};
+props crate::web::pages::SessionsPage<'_> { csrf, sessions, notice };
+
+<PageHead title="Sessions">
+  {if sessions.len() > 1 {
+    <Form action="/settings/sessions/revoke-others" csrf={csrf} layout={Some("")}>
+      <Button label="Sign out everywhere else" kind="secondary" />
+    </Form>
+  }}
+</PageHead>
+<Banner text={notice} tone="ok" />
+<Rows>
+  {for session in sessions.iter() {
+    <Row name={session.device.as_str()} sub={format!("{}signed in {}, last seen {}", if session.address.is_empty() { String::new() } else { format!("{} · ", session.address) },session.created,session.last_seen).as_str()} icon_name="monitor" tone="violet" status_tone="ok" status_active={Some(session.current)} end_active={Some(!session.current)}>
+      <:status>{if session.current { <Status text="This device" tone="ok" /> }}</:status>
+      <:end>{if !session.current {
+        <Form action="/settings/sessions/{session.id}/revoke" csrf={csrf} layout={Some("")}>
+          <Button label="Sign out" kind="danger" size="sm" />
+        </Form>
+      }}</:end>
+    </Row>
+  }}
+</Rows>

@@ -30,9 +30,12 @@ cargo test --workspace --locked
 echo "  ok   fmt, comment policy, clippy and tests"
 
 echo "static binary ($rust_image, as CI builds it)"
+# Forward the host's job limit into Alpine; Docker does not inherit it and a
+# release build otherwise exceeds the development machine's memory.
 docker run --rm -v "$PWD":/src -w /src \
   -v grund-cargo:/usr/local/cargo/registry \
   -e CARGO_TARGET_DIR=/src/target/musl -e OWNER="$(id -u):$(id -g)" \
+  -e CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}" \
   "$rust_image" sh -c 'apk add --no-cache -q musl-dev binutils protobuf-dev ca-certificates \
     && cargo build --locked --release -p grund; status=$?; chown -R "$OWNER" target/musl; [ $status -eq 0 ] \
     && ! readelf -d target/musl/release/grund | grep -q NEEDED \

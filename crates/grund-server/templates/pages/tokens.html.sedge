@@ -1,0 +1,40 @@
+use crate::templates::compiled::components::{OrganisationTabs, Rows, Row, Panel, Form, Field, Button, Banner, PostButton, Code, EmptyState};
+props crate::web::tokens::TokensPage<'_> { viewer, csrf, tokens, lifetimes, minted, scopes, days, scope, name, notice, error, create_error };
+
+{if let Some(org) = &viewer.current {
+  <OrganisationTabs slug={&org.slug} active="tokens" />
+  <Banner text={error} ok={Some(notice)} />
+  {if let Some(minted) = minted {
+    <section class="section section-stack" aria-labelledby="new-token"><div class="section-head"><h2 class="section-title" id="new-token">Your new token: {&minted.name}</h2></div>
+      <p>Copy it now: it is not shown again. It works until {&minted.expires}.</p>
+      <Code text={&minted.token} id="new-token-value" wrap what="the token" copy />
+      <p>To deploy from CI with the grund CLI:</p>
+      <Code text={&minted.example} id="new-token-example" wrap what="the command" copy />
+    </section>
+  }}
+  <section class="section" aria-labelledby="tokens"><div class="section-head"><h2 class="section-title" id="tokens">{if org.manages { Live tokens } else { Your live tokens }}<span class="count">{tokens.len()}</span></h2></div>
+    {if tokens.is_empty() { <EmptyState text="No live tokens." /> } else {
+      <Rows>{for token in tokens {
+        {let mine_tags = [token.scope, "Yours"];}
+        {let other_tags = [token.scope];}
+        {let tags = if token.mine && org.manages { &mine_tags[..] } else { &other_tags[..] };}
+        <Row name={&token.name} sub="by {token.by} · made {token.created} · expires {token.expires} · {token.used}" icon_name="key" tone="violet" tags={tags} status_tone="ok">
+          <:end><PostButton action="/{org.slug}/settings/tokens/{token.id}/revoke" csrf={csrf} label="Revoke" kind="danger" size="sm" /></:end>
+        </Row>
+      }}</Rows>
+    }}
+  </section>
+  <Panel id="create" title="Make a token">
+    <Form action="/{org.slug}/settings/tokens" csrf={csrf} layout={Some("row")} autocomplete={Some("off")}>
+      <Banner text={create_error} />
+      <Field name="name" label="Name" value={name} required autocomplete="off" hint="Up to 64 characters." />
+      <fieldset class="field"><legend class="field-label">Expires after</legend><div class="chips">
+        {for (value, label) in lifetimes { <label class="chip"><input class="chip-input" type="radio" name="days" value={value} checked={value == days}><span>{label}</span></label> }}
+      </div></fieldset>
+      <fieldset class="field"><legend class="field-label">Can</legend><div class="chips">
+        {for (value, label) in scopes.iter() { <label class="chip"><input class="chip-input" type="radio" name="scope" value={value} checked={value == scope}><span>{label}</span></label> }}
+      </div></fieldset>
+      <Button label="Make a token" kind="primary" />
+    </Form>
+  </Panel>
+}}

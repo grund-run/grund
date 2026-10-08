@@ -10,7 +10,6 @@ use axum::{
     http::{StatusCode, Uri},
 };
 use grund_store::organisations::Membership;
-use minijinja::{Value, context};
 use serde::Deserialize;
 
 use crate::{
@@ -22,9 +21,29 @@ use crate::{
     web::{
         browser::Browser,
         orgs::Member,
-        pages::{Notice, PageResult, forged, redirect, signed_in},
+        pages::{Notice, PageResult, forged, redirect},
     },
 };
+
+pub struct RegistryRow {
+    pub host: String,
+    pub username: String,
+    pub updated: String,
+}
+
+pub struct RegistriesPage<'a> {
+    pub viewer: &'a super::pages::TypedViewer,
+    pub csrf: &'a str,
+    pub credentials: Vec<RegistryRow>,
+    pub notice: &'a str,
+    pub error: &'a str,
+    pub form_error: String,
+    pub host_error: String,
+    pub username_error: String,
+    pub password_error: String,
+    pub host: String,
+    pub username: String,
+}
 
 /// `GET /{org}/settings/registries`.
 pub async fn registries_page(
@@ -77,40 +96,48 @@ async fn registries_view(
     status: StatusCode,
     form: RegistriesForm<'_>,
 ) -> PageResult {
-    let credentials: Vec<Value> = state
+    let credentials: Vec<RegistryRow> = state
         .registry_credentials()
         .list(membership.organisation_id)
         .await?
         .into_iter()
-        .map(|c| {
-            context! {
-                host => c.host,
-                username => c.username,
-                updated => format!(
-                    "set {}{}",
-                    c.updated_at.format("%-d %b %Y"),
-                    c.updated_by.map(|by| format!(" by {by}")).unwrap_or_default()
-                ),
-            }
+        .map(|c| RegistryRow {
+            host: c.host,
+            username: c.username,
+            updated: format!(
+                "set {}{}",
+                c.updated_at.format("%-d %b %Y"),
+                c.updated_by
+                    .map(|by| format!(" by {by}"))
+                    .unwrap_or_default()
+            ),
         })
         .collect();
-    signed_in(
+    super::pages::signed_in_typed(
         state,
         browser,
         session,
         Some(membership),
         status,
-        "pages/registries.html.jinja",
+        "Registries",
         "org-settings",
-        context! {
-            credentials,
-            max => MAX_PER_ORGANISATION,
-            notice => form.notice, error => form.error,
-            form_error => form.form_error,
-            host_error => form.host_error,
-            username_error => form.username_error,
-            password_error => form.password_error,
-            host => form.host, username => form.username,
+        None,
+        None,
+        None,
+        |viewer, csrf| {
+            crate::templates::compiled::pages::registries::render(&RegistriesPage {
+                viewer,
+                csrf,
+                credentials,
+                notice: form.notice,
+                error: form.error,
+                form_error: form.form_error,
+                host_error: form.host_error,
+                username_error: form.username_error,
+                password_error: form.password_error,
+                host: form.host,
+                username: form.username,
+            })
         },
     )
     .await

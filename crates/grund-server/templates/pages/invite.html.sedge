@@ -1,0 +1,33 @@
+use crate::templates::compiled::layouts::Auth;
+use crate::templates::compiled::components::{AuthHead, Form, Banner, Field, Button, Foot};
+props crate::web::pages::InvitePage<'_> { mode, token, errors, username, return_to, organisation, invited_by, role, email, signed_in_as, csrf };
+{let subtitle = format!("{invited_by} invited {email} to {organisation} as {} {role}.", if *role == "admin" { "an" } else { "a" });}
+
+<Auth title="Join {organisation}">
+  <AuthHead title="Join {organisation}" subtitle={&subtitle} />
+  {if *mode == "join" {
+    <Form action="/invite" csrf={csrf}>
+      <input type="hidden" name="token" value={token}>
+      <Button label="Join {organisation}" kind="primary" block />
+    </Form>
+    <Foot><p>Signed in as {signed_in_as.unwrap_or_default()}.</p></Foot>
+  } else if *mode == "other-account" {
+    {let other_account = format!("You are signed in as {}, whose address is not {email}. Sign out, then open the link again.", signed_in_as.unwrap_or_default());}
+    <Banner text={&other_account} />
+    <Form action="/logout" csrf={csrf}>
+      <Button label="Sign out" kind="secondary" block />
+    </Form>
+  } else if *mode == "sign-in" {
+    <p class="auth-lede">{email} has an account. Sign in to join.</p>
+    <Button label="Sign in to join" kind="primary" href="/login?{return_to}" block />
+  } else {
+    <p class="auth-lede">Create an account to join.</p>
+    <Form action="/invite" csrf={csrf}>
+      <input type="hidden" name="token" value={token}>
+      <Field name="invited-email" label="Email" kind="email" value={email} disabled />
+      <Field name="username" label="Username" value={username} error={errors.username.as_deref().unwrap_or("")} required autocomplete="username" hint="3 to 32 letters, digits and single hyphens. It is public." autofocus />
+      <Field name="password" label="Password" kind="password" error={errors.password.as_deref().unwrap_or("")} required autocomplete="new-password" hint="At least 12 characters." />
+      <Button label="Create account and join" kind="primary" block />
+    </Form>
+  }}
+</Auth>

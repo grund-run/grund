@@ -1,0 +1,182 @@
+use crate::templates::compiled::components::{Section, Panel, EmptyState, Form, HiddenField, Banner, Field, FieldError, Grid, Group, ChoiceField, ChoiceCard, ChipsField, StepperField, ToggleField, RangeField, PairsField, CodeField, Actions, Button, Rows, Row, PostButton, Para, Code, Links, Link, Tiles, Tile, Expanders, Expander};
+use crate::templates::FormState;
+use crate::web::apps::SettingsEdit;
+
+component SettingsForm(id: &str, title: &str, action: &str, cancel: &str, part: &str, note: &str, save: &str = "Save and release", kind: &str = "primary", icon: &str = "layers", autocomplete: Option<&str>, fields: Option<&[&str]>, form: &FormState<'_>, manages: bool, before: Option<Html>, children: Html) {
+  <Panel id={id} title={title}>
+    {if let Some(before) = before { {before} }}
+    {if *manages {
+      <Form action={action} form={Some(form)} autocomplete={*autocomplete}>
+        {if matches!(*part, "image" | "exposure" | "check" | "resources" | "env" | "command") { <HiddenField name="part" value={part} /> }}
+        <Banner part={Some(part)} form={Some(form)} fields={*fields} />
+        {children}
+        <Actions note={note} note_icon={icon}>
+          <Button label="Cancel" href={cancel} kind="secondary" />
+          <Button label={save} kind={kind} />
+        </Actions>
+      </Form>
+    } else { <Para kind="hint">Owners and admins change this.</Para> }}
+  </Panel>
+}
+
+props crate::web::apps::AppSettingsPage<'_> { app, items, edit, next, manages, form, options };
+{let here = format!("{}/settings", app.base);}
+{let release_note = format!("Saving makes release v{}.", next.unwrap_or(0));}
+
+<Section id="settings" title="Settings" first={Some(true)}>
+  {if items.is_none() {
+    <EmptyState title="No release yet" text="Deploy one to set anything." />
+  } else {
+    {match edit {
+      SettingsEdit::Image { image } => {
+        <SettingsForm id="version" title="Image" action="{here}/release" cancel={&here} part="image" note={&release_note} autocomplete={Some("off")} form={&form} manages={*manages}>
+          <Field name="image" label="Image" value={image} hint="A tag, such as v1.11.0, or a whole reference. The tag is resolved now." autocomplete="off" required mono form={Some(&form)} />
+        </SettingsForm>
+      },
+      SettingsEdit::Exposure { exposure, port, choices, hint, port_hint, .. } => {
+        <SettingsForm id="exposure" title="Exposure" action="{here}/release" cancel={&here} part="exposure" note={&release_note} autocomplete={Some("off")} form={&form} manages={*manages}>
+          <ChoiceField name="exposure" label="Who reaches it" hint={hint} error={form.error("exposure").unwrap_or("")}>
+            {for choice in choices { <ChoiceCard name="exposure" value={choice.value} title={choice.title} text={&choice.text} icon={choice.icon} tag={choice.tag.unwrap_or("")} disabled={choice.disabled} selected={exposure == choice.value} /> }}
+          </ChoiceField>
+          <Field name="port" label="Port" kind="number" value={port} hint={port_hint} width={Some("md")} min={Some("1")} max={Some("65535")} suggestions={Some(&options.ports)} form={Some(&form)} />
+        </SettingsForm>
+      },
+      SettingsEdit::Copies { copies, auto_rollback } => {
+        <SettingsForm id="scale" title="Copies" action="{here}/copies" cancel={&here} part="copies" note="Saving applies at once, without a release." icon="" form={&form} manages={*manages} save="Save">
+          <StepperField name="copies" label="Copies" value={copies} min="1" max="20" error={form.error("copies").unwrap_or("")} />
+          <ToggleField name="auto_rollback" label="Roll back a failed release on its own" checked={*auto_rollback} hint="Off: a failed release stays in place." />
+        </SettingsForm>
+      },
+      SettingsEdit::Placement(place) => {
+        <SettingsForm id="placement" title="Placement" action="{here}/placement" cancel={&here} part="placement" fields={Some(&[form.error("placement").unwrap_or("")])} note="Saving applies at once, without a release. Copies that no longer match move one at a time." icon="" form={&form} manages={*manages} save="Save">
+          {if let Some(problem) = form.error("placement").filter(|problem| !problem.is_empty()) { <FieldError text={problem} /> }}
+          <Group id="placement-mode" title="Placement mode">
+            <ChoiceField name="mode">
+              {for choice in &place.modes {
+                {if choice.value == "machines" {
+                  <ChoiceCard name="mode" value={choice.value} title={choice.title} text={choice.text} icon={choice.icon.unwrap_or("")} tag={choice.tag.unwrap_or("")} selected={place.mode == choice.value}>
+                    <ChipsField name="machines" label="Machines" options={&options.machines} selected_many={&options.chosen_machines} multiple error={form.error("machines").unwrap_or("")} search="Search machines" empty="No machines yet." />
+                  </ChoiceCard>
+                } else if choice.value == "labels" {
+                  <ChoiceCard name="mode" value={choice.value} title={choice.title} text={choice.text} icon={choice.icon.unwrap_or("")} tag={choice.tag.unwrap_or("")} selected={place.mode == choice.value}>
+                    <ChipsField name="label" label="Labels" options={&options.labels} selected_many={&options.chosen_labels} multiple error={form.error("label").unwrap_or("")} search="Search labels" empty="No machine has a label yet. Set them on Machines." />
+                  </ChoiceCard>
+                } else {
+                  <ChoiceCard name="mode" value={choice.value} title={choice.title} text={choice.text} icon={choice.icon.unwrap_or("")} tag={choice.tag.unwrap_or("")} selected={place.mode == choice.value} />
+                }}
+              }}
+            </ChoiceField>
+          </Group>
+          <Group id="spread-copies" title="Spread copies">
+            <ChoiceField name="spread">
+              {for choice in &place.spreads {
+                {if choice.value == "label" {
+                  <ChoiceCard name="spread" value={choice.value} title={choice.title} text={choice.text} selected={place.spread == choice.value}>
+                    <Field name="spread_by" label="Label key" value={&place.spread_by} autocomplete="off" required mono placeholder={Some("zone")} suggestions={Some(&options.label_keys)} form={Some(&form)} />
+                  </ChoiceCard>
+                } else { <ChoiceCard name="spread" value={choice.value} title={choice.title} text={choice.text} selected={place.spread == choice.value} /> }}
+              }}
+            </ChoiceField>
+          </Group>
+          <Group id="affinity" title="Affinity" optional><Grid>
+            <ChipsField name="near" label="Prefer near apps" options={&options.apps} selected_many={&options.near} multiple error={form.error("near").unwrap_or("")} search="Search apps" empty="No other apps yet." />
+            <ChipsField name="apart" label="Keep apart from apps" options={&options.apps} selected_many={&options.apart} multiple error={form.error("apart").unwrap_or("")} search="Search apps" empty="No other apps yet." />
+          </Grid></Group>
+          <Group id="failure-handling" title="Failure handling">
+            <Field name="reschedule_after" label="Replace after unreachable for" kind="number" value={&place.reschedule_after} hint="30 to 3600. Empty: 120." unit={Some("seconds")} min={Some("30")} max={Some("3600")} width={Some("md")} form={Some(&form)} />
+          </Group>
+          <Expanders><Expander title="Advanced filters" summary={&place.advanced} icon_name="sliders" open={place.advanced_open}>
+            <ChipsField name="kind" label="Kind" options={&place.kinds} selected={&place.kind} error={form.error("kind").unwrap_or("")} />
+            <PairsField name="labels" label="Labels a machine must also carry" pairs={&options.typed_labels} blank={1} error={form.error("labels").unwrap_or("")} key_label="Key" value_label="Value" key_suggestions={&options.label_keys} value_suggestions={&options.label_values} />
+          </Expander></Expanders>
+        </SettingsForm>
+      },
+      SettingsEdit::Check { check, path } => {
+        <SettingsForm id="health" title="Health check" action="{here}/release" cancel={&here} part="check" note={&release_note} autocomplete={Some("off")} form={&form} manages={*manages}>
+          <Grid>
+            <ChipsField name="check" label="Ready check" options={&[("", "None"), ("http", "HTTP request"), ("tcp", "TCP connection")]} selected={check} />
+            <Field name="check_path" label="Path" value={path} error={form.error("check").unwrap_or("")} hint="For an HTTP check. Empty: /." mono form={Some(&form)} />
+          </Grid>
+        </SettingsForm>
+      },
+      SettingsEdit::Resources(resources) => {
+        <SettingsForm id="resources" title="Resources" action="{here}/release" cancel={&here} part="resources" fields={Some(&[form.error("memory").unwrap_or(""), form.error("cpu").unwrap_or("")])} note={&release_note} autocomplete={Some("off")} form={&form} manages={*manages}>
+          <HiddenField name="shown_preset" value={resources.preset} />
+          <RangeField name="memory" label="Memory" value={&resources.memory} steps={&options.memory_steps} unit="MiB" icon_name="memory" hint="Per copy" error={form.error("memory").unwrap_or("")} min={&options.memory_min} max={&options.memory_max} step="1" />
+          <RangeField name="cpu" label="CPU" value={&resources.cpu} steps={&options.cpu_steps} unit="vCPU" icon_name="cpu" hint="Per copy" error={form.error("cpu").unwrap_or("")} min={&resources.cpu_min} max={&resources.cpu_max} step="any" />
+          <Group id="resource-preset" title="Resource preset">
+            <ChoiceField name="preset">
+              {for preset in &resources.presets {
+                {let sets = preset.sets.as_ref().map_or(String::new(), |(memory, cpu)| format!("cpu={cpu} memory={memory}"));}
+                <ChoiceCard name="preset" value={preset.value} title={preset.title} text={&preset.text} icon={preset.icon.unwrap_or("")} sets={&sets} has_presets selected={resources.preset == preset.value} />
+              }}
+            </ChoiceField>
+          </Group>
+        </SettingsForm>
+      },
+      SettingsEdit::Env { .. } => {
+        <SettingsForm id="variables" title="Environment variables" action="{here}/release" cancel={&here} part="env" note={&release_note} autocomplete={Some("off")} form={&form} manages={*manages}>
+          <PairsField name="env" label="Environment variables" pairs={&options.env} blank={2} error={form.error("env").unwrap_or("")} hint="Shown in the clear." key_label="Name" value_label="Value" />
+        </SettingsForm>
+      },
+      SettingsEdit::Secrets { rows, variable } => {
+        {let note = format!("Saving or removing one makes release v{}.", next.unwrap_or(0));}
+        <SettingsForm id="secrets" title="Secrets" action="{app.base}/secrets" cancel={&here} part="secrets" fields={Some(&[form.error("variable").unwrap_or(""), form.error("value").unwrap_or("")])} note={&note} autocomplete={Some("off")} form={&form} manages={*manages}>
+          <:before>{if !rows.is_empty() { <Rows>{for secret in rows {
+            <Row name={if secret.variable.is_empty() { &secret.name } else { &secret.variable }} sub={&secret.sub} icon_name="key" tone="muted" end_active={Some(*manages && !secret.variable.is_empty())}>
+              <:end><PostButton action="{app.base}/secrets/remove" csrf={form.csrf} label="Remove" kind="danger" size="sm" hidden={&[("variable", secret.variable.as_str())]} /></:end>
+            </Row>
+          }}</Rows> }}</:before>
+          <Grid>
+            <Field name="variable" label="Variable" value={variable} hint="An existing one gets the new value." autocomplete="off" required mono form={Some(&form)} />
+            <Field name="value" label="Value" kind="password" hint="Never shown again." autocomplete="new-password" required form={Some(&form)} />
+          </Grid>
+        </SettingsForm>
+      },
+      SettingsEdit::Domains => {
+        <Panel id="domains" title="Custom domain">
+          {if !app.domains.is_empty() { <Rows>{for domain in &app.domains { <Row name={&domain.name} sub={domain.state_words} plain /> }}</Rows> }}
+          {if app.address.is_some() {
+            <Para kind="hint">Domains are added and bound on <a href={&app.domains_href}>Domains</a>.</Para>
+          } else { <Para kind="hint">Only an app with Public HTTP exposure can have one.</Para> }}
+        </Panel>
+      },
+      SettingsEdit::Volumes => { <Panel id="volumes" title="Volumes / storage"><Para kind="hint">Volumes are not available yet.</Para></Panel> },
+      SettingsEdit::Command { command, stop_signal, stop_grace, signals } => {
+        <SettingsForm id="command-and-stop" title="Command override" action="{here}/release" cancel={&here} part="command" note={&release_note} autocomplete={Some("off")} form={&form} manages={*manages}>
+          <CodeField name="command" label="Command" value={command} error={form.error("command").unwrap_or("")} hint="One argument per line. Empty: the image's own." rows={3} />
+          <Grid>
+            <ChipsField name="stop_signal" label="Stop signal" options={signals} selected={if stop_signal.is_empty() { "SIGTERM" } else { stop_signal }} />
+            <Field name="stop_grace" label="Grace (seconds)" kind="number" value={stop_grace} error={form.error("stop").unwrap_or("")} hint="From the signal to a kill. Empty: 30." width={Some("sm")} form={Some(&form)} />
+          </Grid>
+        </SettingsForm>
+      },
+      SettingsEdit::File { content, rows, href } => {
+        {if *manages {
+          {let note = format!("Applying makes release v{}.", next.unwrap_or(0));}
+          <SettingsForm id="as-file" title="grund.yaml" action="{here}/file" cancel={&here} part="file" note={&note} save="Apply" autocomplete={Some("off")} form={&form} manages={*manages}>
+            <CodeField name="file" label="grund.yaml" value={content.as_deref().unwrap_or("")} filename="grund.yaml" rows={*rows} error={form.error("file").unwrap_or("")} required download={href} hint="Secret values are not in the file." />
+          </SettingsForm>
+        } else {
+          <Panel id="as-file" title="grund.yaml"><Code text={content.as_deref().unwrap_or("")} filename="grund.yaml" download={href} copy /></Panel>
+        }}
+      },
+      SettingsEdit::Delete => {
+        <SettingsForm id="danger" title="Delete {app.name}" action="{app.base}/delete" cancel={&here} part="delete" note="Cannot be undone." save="Delete {app.name}" kind="danger" icon="" autocomplete={Some("off")} form={&form} manages={*manages}>
+          <Field name="confirm" label="Type {app.name} to confirm" autocomplete="off" required width={Some("md")} form={Some(&form)} />
+        </SettingsForm>
+      },
+      SettingsEdit::List => {
+        {if let Some(items) = items {
+          <Panel id="configured" title="Configured"><Links>{for item in &items.configured {
+            <Link href="{here}?edit={item.key}" title={item.title} value={item.value.as_deref().unwrap_or("")} icon_name={item.icon} action={if *manages { "Edit" } else { "View" }} />
+          }}</Links></Panel>
+          <Panel id="more" title="Add more"><Tiles>{for item in &items.more {
+            <Tile href="{here}?edit={item.key}" title={item.title} />
+          }}</Tiles></Panel>
+          {if *manages { <Links><Link href="{here}?edit=delete" title="Delete {app.name}" icon_name="trash" danger /></Links> }}
+        }}
+      }
+    }}
+  }}
+</Section>

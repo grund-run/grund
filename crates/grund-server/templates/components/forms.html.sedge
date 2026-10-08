@@ -1,0 +1,265 @@
+use crate::templates::{compiled::components::{Button, ButtonAdvanced, CopyButton, Icon, ImageIcon, Tag, Para}, FormState};
+
+component CsrfField(token: &str) {
+  <input type="hidden" name="csrf" value={token}>
+}
+component HiddenField(name: &str, value: &str) {
+  <input type="hidden" name={name} value={value}>
+}
+component Form(action: &str, csrf: &str, children: Html, layout: Option<&str>, method: Option<&str>, autocomplete: Option<&str>, form: Option<&FormState<'a>>) {
+  {let csrf = if csrf.is_empty() { form.map_or("", |state| state.csrf) } else { csrf };}
+  <form class={match layout.unwrap_or("stack") { "" => None, "row" => Some("form form-row"), _ => Some("form") }} method={method.unwrap_or("post")} action={action} novalidate autocomplete={autocomplete.filter(|s| !s.is_empty())}>
+    {if !csrf.is_empty() { <CsrfField token={csrf} /> }}
+    {children}
+  </form>
+}
+component PostButton(action: &str, csrf: &str, label: &str, kind: &str, size: &str, block: bool, layout: &str, hidden: &[(&str, &str)]) {
+  <Form action={action} csrf={csrf} layout={Some(*layout)}>
+    {for (name, value) in hidden.iter() { <HiddenField name={name} value={value} /> }}
+    <Button label={label} kind={kind} size={size} block={*block} />
+  </Form>
+}
+component Message(id: &str, error: &str, hint: &str) {
+  {if !error.is_empty() {
+    <p class="field-error" id="{id}-error"><Icon name="alert" class="icon-sm" /><span>{error}</span></p>
+  } else if !hint.is_empty() {
+    <p class="hint" id="{id}-hint">{hint}</p>
+  }}
+}
+component LabelOf(id: &str, text: &str, optional: bool) {
+  <label class="field-label" for={id}>{text}{if *optional { {" "}<span class="field-optional">Optional</span> }}</label>
+}
+component Datalist(id: &str, values: &[&str]) {
+  <datalist id={id}>{for value in values.iter() { <option value={value}></option> }}</datalist>
+}
+component DatalistStrings(id: &str, values: &[String]) {
+  <datalist id={id}>{for value in values.iter() { <option value={value}></option> }}</datalist>
+}
+component DatalistNumbers(id: &str, values: &[u64]) {
+  <datalist id={id}>{for value in values.iter() { <option value={value}></option> }}</datalist>
+}
+component FieldControl(name: &str, id: &str, kind: &str, value: &str, autocomplete: &str, error: &str, hint: &str, required: bool, autofocus: bool, disabled: bool, state: &str, placeholder: Option<&str>, mono: bool, has_suggestions: bool, min: Option<&str>, max: Option<&str>, step: Option<&str>) {
+  <input class={match (*mono, *state) { (true, "focus") => "control mono is-focus", (false, "focus") => "control is-focus", (true, _) => "control mono", _ => "control" }} id={id} name={name} type={kind}
+    value={(!value.is_empty()).then_some(value)} placeholder={placeholder.filter(|s| !s.is_empty())}
+    autocomplete={(!autocomplete.is_empty()).then_some(autocomplete)} required={*required && !*disabled}
+    autofocus={autofocus} disabled={disabled} inputmode={(*kind == "number").then_some("numeric")}
+    min={min} max={max} step={step}
+    list={has_suggestions.then(|| format!("{id}-suggestions"))}
+    aria-invalid={(!error.is_empty()).then_some("true")}
+    aria-describedby={if !error.is_empty() { Some(format!("{id}-error")) } else if !hint.is_empty() { Some(format!("{id}-hint")) } else { None }}>
+}
+component Field(name: &str, label: &str, kind: &str = "text", value: &str, autocomplete: &str, error: &str, hint: &str, required: bool, autofocus: bool, disabled: bool, id: Option<&str>, state: Option<&str>, width: Option<&str>, placeholder: Option<&str>, mono: bool, suggestions: Option<&[&str]>, suggestions_strings: Option<&[String]>, suggestions_numbers: Option<&[u64]>, unit: Option<&str>, min: Option<&str>, max: Option<&str>, step: Option<&str>, form: Option<&FormState<'a>>) {
+  {let id = id.filter(|s| !s.is_empty()).unwrap_or(name);}
+  {let width = width.unwrap_or("");}
+  {let state = state.unwrap_or("");}
+  {let unit = unit.unwrap_or("");}
+  {let error = if error.is_empty() { form.and_then(|state| state.error(name)).unwrap_or("") } else { error };}
+  {let has_suggestions = suggestions.is_some_and(|values| !values.is_empty()) || suggestions_strings.is_some_and(|values| !values.is_empty()) || suggestions_numbers.is_some_and(|values| !values.is_empty());}
+  {let control = <FieldControl name={name} id={id} kind={kind} value={value} autocomplete={autocomplete} error={error} hint={hint} required={*required} autofocus={*autofocus} disabled={*disabled} state={state} placeholder={*placeholder} mono={*mono} has_suggestions={has_suggestions} min={*min} max={*max} step={*step} />;}
+  <div class={match width { "sm" => "field field-sm", "md" => "field field-md", _ => "field" }}>
+    <LabelOf id={id} text={label} optional={!*required && !*disabled} />
+    {if unit.is_empty() {
+      {control}
+    } else {
+      <div class="unit">{control}<span class="unit-text">{unit}</span></div>
+    }}
+    {if let Some(values) = suggestions.filter(|v| !v.is_empty()) {
+      <Datalist id={format!("{id}-suggestions")} values={values} />
+    }}
+    {if let Some(values) = suggestions_strings.filter(|v| !v.is_empty()) {
+      <DatalistStrings id={format!("{id}-suggestions")} values={values} />
+    }}
+    {if let Some(values) = suggestions_numbers.filter(|v| !v.is_empty()) {
+      <DatalistNumbers id={format!("{id}-suggestions")} values={values} />
+    }}
+    <Message id={id} error={error} hint={hint} />
+  </div>
+}
+component ChipsField(name: &str, label: &str, options: &[(&str, &str)], selected: &str, selected_many: &[&str], multiple: bool, hint: &str, error: &str, optional: bool, search: &str, empty: &str) {
+  <fieldset class="field" aria-describedby={if !error.is_empty() { Some(format!("{name}-error")) } else if !hint.is_empty() { Some(format!("{name}-hint")) } else { None }}>
+    <legend class="field-label">{label}{if *optional { {" "}<span class="field-optional">Optional</span> }}</legend>
+    {if !search.is_empty() && !options.is_empty() {
+      <input class="control chips-search" type="search" placeholder={search} aria-label={search} autocomplete="off" data-chip-search hidden>
+    }}
+    {if !options.is_empty() {
+      <div class="chips">
+        {for (value, text) in options.iter() {
+          <label class="chip"><input class="chip-input" type={if *multiple { "checkbox" } else { "radio" }} name={name} value={value}
+            checked={if *multiple { selected_many.contains(value) } else { *value == *selected }}
+            aria-invalid={(!error.is_empty()).then_some("true")}><span>{text}</span></label>
+        }}
+      </div>
+    } else if !empty.is_empty() {
+      <Para text={empty} kind="hint" />
+    }}
+    <Message id={name} error={error} hint={hint} />
+  </fieldset>
+}
+component OptionsOf(options: &[(&str, &str)], selected: &str) {
+  {for (value, text) in options.iter() { <option value={value} selected={*value == *selected}>{text}</option> }}
+}
+component Select(name: &str, id: &str, options: &[(&str, &str)], selected: &str, state: &str, describe_by: &str, autosubmit: bool, invalid: Option<bool>) {
+  <span class="select-wrap">
+    <select class={if *state == "focus" { "control select is-focus" } else { "control select" }} id={id} name={name} data-autosubmit={crate::templates::BareDataAttr(*autosubmit)} aria-invalid={invalid.filter(|invalid| *invalid).map(|_| "true")} aria-describedby={(!describe_by.is_empty()).then_some(describe_by)}>
+      <OptionsOf options={options} selected={selected} />
+    </select>
+    <Icon name="down" class="icon-sm select-chevron" />
+  </span>
+}
+component CodeField(name: &str, label: &str, value: &str, filename: &str, rows: usize, hint: &str, error: &str, required: bool, download: &str) {
+  <div class="field">
+    <LabelOf id={name} text={label} optional={!required} />
+    <div class={if error.is_empty() { "code" } else { "code is-invalid" }}>
+      {if !filename.is_empty() {
+        <div class="code-head"><span class="code-name"><Icon name="file" class="icon-sm" />{filename}</span>
+          {if !download.is_empty() {
+            <span class="code-tools"><CopyButton text={value} label={filename} labelled />
+              <ButtonAdvanced label="Download" href={download} icon_name="download" kind="secondary" size="sm" button_type="submit" icon_size="sm" download={filename} />
+            </span>
+          }}
+        </div>
+      }}
+      <textarea class="code-input mono" id={name} name={name} rows={rows} spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off"
+        aria-invalid={(!error.is_empty()).then_some("true")}
+        aria-describedby={if !error.is_empty() { Some(format!("{name}-error")) } else if !hint.is_empty() { Some(format!("{name}-hint")) } else { None }}>{value}</textarea>
+    </div>
+    <Message id={name} error={error} hint={hint} />
+  </div>
+}
+component PairsField(name: &str, label: &str, pairs: &[(&str, &str)], pairs_owned: &[(String, String)], hint: &str, error: &str, secret: bool, blank: usize, key_label: &str, value_label: &str, key_suggestions: &[&str], value_suggestions: &[&str]) {
+  <fieldset class="field" aria-describedby={if !error.is_empty() { Some(format!("{name}-error")) } else if !hint.is_empty() { Some(format!("{name}-hint")) } else { None }}>
+    <legend class="field-label">{label} <span class="field-optional">Optional</span></legend>
+    {let key_placeholder = if key_suggestions.is_empty() { None } else { Some(key_label.to_lowercase()) };}
+    <div class="pairs" data-pairs>
+      {for index in 0..(pairs.len() + pairs_owned.len() + blank) {
+        {let key = pairs.get(index).map(|pair| pair.0).or_else(|| pairs_owned.get(index).map(|pair| pair.0.as_str())).unwrap_or("");}
+        {let value = pairs.get(index).map(|pair| pair.1).or_else(|| pairs_owned.get(index).map(|pair| pair.1.as_str())).unwrap_or("");}
+        <div class="pair">
+          <input class="control mono" name="{name}_key" value={key} placeholder={key_placeholder.as_deref().unwrap_or("NAME")} aria-label="{key_label} {index + 1}" autocomplete="off" spellcheck="false" list={(!key_suggestions.is_empty()).then(|| format!("{name}-keys"))} aria-invalid={(!error.is_empty()).then_some("true")}>
+          <input class="control mono" name="{name}_value" type={secret.then_some("password")} value={if *secret { None } else { Some(value) }} autocomplete={if *secret { "new-password" } else { "off" }} placeholder={if *secret { "value, stored sealed" } else { "value" }} aria-label="{value_label} {index + 1}" spellcheck="false" list={(!value_suggestions.is_empty()).then(|| format!("{name}-values"))}>
+          <button class="icon-btn" type="button" data-remove-pair aria-label="Remove row {index + 1}" hidden><Icon name="trash" class="icon-sm" /></button>
+        </div>
+      }}
+    </div>
+    {if !key_suggestions.is_empty() { <Datalist id={format!("{name}-keys")} values={key_suggestions} /> }}
+    {if !value_suggestions.is_empty() { <Datalist id={format!("{name}-values")} values={value_suggestions} /> }}
+    <ButtonAdvanced label="Add another" icon_name="plus" kind="ghost" size="sm" button_type="button" icon_size="sm" extra="pairs-add" hidden />
+    <Message id={name} error={error} hint={hint} />
+  </fieldset>
+}
+component ToggleField(name: &str, label: &str, checked: bool, hint: &str, state: &str) {
+  <label class="toggle">
+    <input class={if *state == "focus" { "toggle-input is-focus" } else { "toggle-input" }} type="checkbox" role="switch" id={name} name={name} value="on" checked={checked} aria-describedby={(!hint.is_empty()).then(|| format!("{name}-hint"))}>
+    <span class="toggle-text"><span class="field-label">{label}</span>{if !hint.is_empty() { <span class="hint" id="{name}-hint">{hint}</span> }}</span>
+  </label>
+}
+component Grid(children: Html) {
+  <div class="form-grid">{children}</div>
+}
+component ChoiceField(name: &str, label: &str, error: &str, hint: &str, large: bool, children: Html) {
+  <fieldset class="field" aria-describedby={if !error.is_empty() { Some(format!("{name}-error")) } else if !hint.is_empty() { Some(format!("{name}-hint")) } else { None }}>
+    {if !label.is_empty() { <legend class="field-label">{label}</legend> }}
+    <div class={if *large { "choices choices-wide" } else { "choices" }}>{children}</div>
+    <Message id={name} error={error} hint={hint} />
+  </fieldset>
+}
+component ChoiceCard(name: &str, value: &str, title: &str, text: &str, icon: &str, image: &str, disabled: bool, tag: &str, state: &str, fill: &str, sets: &str, has_presets: bool, selected: bool, children: Option<Html>) {
+  {let card_class = match (*disabled, *state, children.is_some()) {
+    (true, "focus", true) => "choice choice-nest is-disabled is-focus",
+    (true, "focus", false) => "choice is-disabled is-focus",
+    (true, "hover", true) => "choice choice-nest is-disabled is-hover",
+    (true, "hover", false) => "choice is-disabled is-hover",
+    (true, _, true) => "choice choice-nest is-disabled",
+    (true, _, false) => "choice is-disabled",
+    (false, "focus", true) => "choice choice-nest is-focus",
+    (false, "focus", false) => "choice is-focus",
+    (false, "hover", true) => "choice choice-nest is-hover",
+    (false, "hover", false) => "choice is-hover",
+    (false, _, true) => "choice choice-nest",
+    _ => "choice",
+  };}
+  {if let Some(more) = children {
+    <div class={card_class}><label class="choice-main">
+      <input class="choice-input" type="radio" name={name} value={value} checked={selected} disabled={disabled} data-fill={(!fill.is_empty()).then_some(fill)} data-sets={has_presets.then_some(sets)}>
+      {if !image.is_empty() { <ImageIcon key={image} /> } else if !icon.is_empty() { <Icon name={icon} class="choice-icon" /> }}
+      <span class="choice-text"><span class="choice-title">{title}{if !tag.is_empty() { {" "}<Tag text={tag} /> }}</span>{if !text.is_empty() { <span class="choice-sub">{text}</span> }}</span>
+    </label><div class="choice-more">{more}</div></div>
+  } else {
+    <label class={card_class}>
+      <input class="choice-input" type="radio" name={name} value={value} checked={selected} disabled={disabled} data-fill={(!fill.is_empty()).then_some(fill)} data-sets={has_presets.then_some(sets)}>
+      {if !image.is_empty() { <ImageIcon key={image} /> } else if !icon.is_empty() { <Icon name={icon} class="choice-icon" /> }}
+      <span class="choice-text"><span class="choice-title">{title}{if !tag.is_empty() { {" "}<Tag text={tag} /> }}</span>{if !text.is_empty() { <span class="choice-sub">{text}</span> }}</span>
+    </label>
+  }}
+}
+component RangeField(name: &str, label: &str, value: &str, steps: &[(&str, &str)], unit: &str, icon_name: &str, hint: &str, error: &str, min: &str, max: &str, step: &str) {
+  <div class="group range">
+    <div class="range-head">
+      {if !icon_name.is_empty() { <span class="icon-tile" aria-hidden="true"><Icon name={icon_name} /></span> }}
+      <span class="range-name"><LabelOf id={name} text={label} />{if !hint.is_empty() { <span class="hint" id="{name}-hint">{hint}</span> }}</span>
+      <span class="unit"><input class="control" id={name} name={name} type="number" inputmode="decimal" step={step} value={value} min={(!min.is_empty()).then_some(min)} max={(!max.is_empty()).then_some(max)} list="{name}-steps" aria-invalid={(!error.is_empty()).then_some("true")} aria-describedby={if !error.is_empty() { Some(format!("{name}-error")) } else if !hint.is_empty() { Some(format!("{name}-hint")) } else { None }}><span class="unit-text">{unit}</span></span>
+    </div>
+    <datalist id="{name}-steps">{for (value, _) in steps.iter() { <option value={value}></option> }}</datalist>
+    <div class="range-slider" data-range={name} hidden>
+      <input class="range-input" type="range" min="0" max={steps.len() as isize - 1} step="1" value="0" aria-label={label} data-steps={steps.iter().fold(String::new(), |mut text, (value, _)| { if !text.is_empty() { text.push(' '); } text.push_str(value); text })}>
+      <div class="range-ticks" aria-hidden="true">{for (_, text) in steps.iter() { <span>{text}</span> }}</div>
+    </div>
+    {if !error.is_empty() { <Message id={name} error={error} /> }}
+  </div>
+}
+component Group(id: &str, title: &str, optional: bool, children: Html) {
+  <div class="group" role="group" aria-labelledby={id}>
+    <h3 class="group-title" id={id}>{title}{if *optional { {" "}<span class="field-optional">Optional</span> }}</h3>
+    {children}
+  </div>
+}
+component StepperField(name: &str, label: &str, value: &str, min: &str, max: &str, hint: &str, error: &str) {
+  <div class="field field-sm">
+    <LabelOf id={name} text={label} />
+    <div class="stepper">
+      <button class="stepper-btn" type="button" data-step="-1" data-for={name} aria-label="One fewer" hidden><Icon name="minus" class="icon-sm" /></button>
+      <input class="control" id={name} name={name} type="number" inputmode="numeric" min={min} max={max} value={value} aria-invalid={(!error.is_empty()).then_some("true")} aria-describedby={if !error.is_empty() { Some(format!("{name}-error")) } else if !hint.is_empty() { Some(format!("{name}-hint")) } else { None }}>
+      <button class="stepper-btn" type="button" data-step="1" data-for={name} aria-label="One more" hidden><Icon name="plus" class="icon-sm" /></button>
+    </div>
+    <Message id={name} error={error} hint={hint} />
+  </div>
+}
+component Actions(note: &str, note_icon: &str, children: Html) {
+  <div class="form-actions">{if !note.is_empty() { <p class="form-note">{if !note_icon.is_empty() { <Icon name={note_icon} class="icon-sm" /> }}<span>{note}</span></p> }}{children}</div>
+}
+component SelectForm(action: &str, csrf: &str, name: &str, id: &str, label: &str, options: &[(&str, &str)], selected: &str, button: &str) {
+  <form class="row-form" method="post" action={action}>
+    <CsrfField token={csrf} />
+    <label class="visually-hidden" for={id}>{label}</label>
+    <Select name={name} id={id} options={options} selected={selected} autosubmit />
+    <ButtonAdvanced label={button} kind="secondary" size="sm" button_type="submit" icon_size="sm" extra="js-hide" />
+  </form>
+}
+component Search(action: &str, label: &str, q: &str, id: &str, hidden: &[(&str, &str)], filter: bool) {
+  <form class="search" role="search" method="get" action={action}>
+    <label class="visually-hidden" for={id}>{label}</label>
+    <Icon name="search" class="icon-sm search-icon" />
+    <input id={id} name="q" type="search" placeholder="{label}…" autocomplete="off" value={q} data-filter={crate::templates::BareDataAttr(*filter)}>
+    {for (name, value) in hidden.iter() { {if !value.is_empty() { <HiddenField name={name} value={value} /> }} }}
+  </form>
+}
+component Banner(text: &str, tone: &str = "error", fields: Option<&[&str]>, ok: Option<&str>, part: Option<&str>, form: Option<&FormState<'a>>) {
+  {let text = if text.is_empty() { form.and_then(|state| part.and_then(|part| state.banner(part))).unwrap_or("") } else { text };}
+  {let ok_text = if *tone == "ok" { text } else { ok.unwrap_or("") };}
+  {let error = if !text.is_empty() && *tone != "ok" { text } else if fields.is_some_and(|errors| errors.iter().any(|err| !err.is_empty())) { "Nothing was saved. Check the field marked below." } else { "" };}
+  {if !ok_text.is_empty() { <div class="form-ok" role="status"><Icon name="ok" class="icon-sm" /><span>{ok_text}</span></div> }}
+  {if !error.is_empty() { <div class="form-error" role="alert"><Icon name="alert" class="icon-sm" /><span>{error}</span></div> }}
+}
+component FieldError(text: &str) {
+  <span class="field-error">{text}</span>
+}
+component OrDivider() {
+  <p class="or">or</p>
+}
+component Providers(providers: &[(&str, &str, &str)]) {
+  <div class="providers">
+    {for (id, name, icon) in providers.iter() {
+      <a class="btn btn-secondary btn-block" href="/auth/{id}/start"><Icon name={icon} /><span>Continue with {name}</span></a>
+    }}
+  </div>
+}

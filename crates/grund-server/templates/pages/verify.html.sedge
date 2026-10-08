@@ -1,0 +1,16 @@
+use crate::templates::compiled::layouts::Auth;
+use crate::templates::compiled::components::{AuthHead, Form, Button, Foot, Icon};
+props crate::web::pages::VerifyPage<'_> { csrf, token, valid };
+
+<Auth title="Confirm your email">
+  {if *valid {
+    <AuthHead title="Confirm your email" />
+    <Form action="/verify" csrf={csrf}>
+      <input type="hidden" name="token" value={token}>
+      <Button label="Confirm email" kind="primary" block />
+    </Form>
+  } else {
+    <AuthHead title="This link has expired" subtitle="Sign in with your password to get a new link." />
+    <Foot><p><a class="link-more" href="/login">Sign in<Icon name="arrow" class="icon-sm" /></a></p></Foot>
+  }}
+</Auth>

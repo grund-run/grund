@@ -9,7 +9,6 @@ use axum::{
 };
 use grund_domain::organisation::Role;
 use grund_store::organisations::Membership;
-use minijinja::{Value, context};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -57,14 +56,7 @@ pub struct Failed(pub std::sync::Arc<anyhow::Error>);
 /// What a page handler answers: the page, or why it could not be served.
 pub type PageResult = Result<Response, PageError>;
 
-pub fn render(
-    state: &State,
-    browser: &Browser,
-    status: StatusCode,
-    template: &str,
-    ctx: Value,
-) -> PageResult {
-    let html = state.templates.render(template, ctx)?;
+pub fn render_typed(browser: &Browser, status: StatusCode, html: String) -> PageResult {
     let mut response = (status, axum::response::Html(html)).into_response();
     let headers = response.headers_mut();
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -72,6 +64,132 @@ pub fn render(
         headers.append(header::SET_COOKIE, cookie);
     }
     Ok(response)
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct TypedOrg {
+    pub slug: String,
+    pub role: String,
+    pub kind: String,
+    pub manages: bool,
+    pub owner: bool,
+    pub since: String,
+    pub current: bool,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct TypedViewer {
+    pub username: String,
+    pub email: String,
+    pub initials: String,
+    pub orgs: Vec<TypedOrg>,
+    pub current: Option<TypedOrg>,
+    pub can_create: bool,
+    pub registered_on: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct AppSearch {
+    pub q: String,
+    pub sort: String,
+    pub view: String,
+}
+
+pub struct LoginPage<'a> {
+    pub csrf: &'a str,
+    pub login: &'a str,
+    pub error: &'a str,
+    pub notice: &'a str,
+    pub return_to: &'a str,
+    pub providers: &'a [crate::extension::LoginProvider],
+    pub signup_enabled: bool,
+}
+
+pub struct SignupPage<'a> {
+    pub csrf: &'a str,
+    pub username: &'a str,
+    pub email: &'a str,
+    pub errors: &'a FieldErrors,
+    pub error: &'a str,
+}
+
+pub struct SignupOwnerPage<'a> {
+    pub csrf: &'a str,
+    pub token: &'a str,
+    pub username: &'a str,
+    pub email: &'a str,
+    pub errors: &'a FieldErrors,
+}
+
+pub struct MessagePage<'a> {
+    pub title: &'a str,
+    pub text: &'a str,
+    pub link_href: &'a str,
+    pub link_text: &'a str,
+}
+
+pub struct VerifyPage<'a> {
+    pub csrf: &'a str,
+    pub token: &'a str,
+    pub valid: bool,
+}
+
+pub struct ResetPage<'a> {
+    pub csrf: &'a str,
+    pub email: &'a str,
+    pub error: &'a str,
+}
+
+pub struct ResetConfirmPage<'a> {
+    pub csrf: &'a str,
+    pub token: &'a str,
+    pub valid: bool,
+    pub error: &'a str,
+    pub password_error: &'a str,
+}
+
+pub struct SessionRow {
+    pub id: String,
+    pub device: String,
+    pub address: String,
+    pub created: String,
+    pub last_seen: String,
+    pub current: bool,
+}
+
+pub struct SessionsPage<'a> {
+    pub csrf: &'a str,
+    pub sessions: &'a [SessionRow],
+    pub notice: &'a str,
+}
+
+pub struct NoOrganisationPage {
+    pub can_create: bool,
+}
+
+pub struct ErrorPage<'a> {
+    pub title: &'a str,
+    pub text: &'a str,
+    pub request_id: &'a str,
+}
+
+pub struct InvitePage<'a> {
+    pub mode: &'a str,
+    pub token: &'a str,
+    pub errors: &'a FieldErrors,
+    pub username: &'a str,
+    pub return_to: &'a str,
+    pub organisation: &'a str,
+    pub invited_by: &'a str,
+    pub role: &'a str,
+    pub email: &'a str,
+    pub signed_in_as: Option<&'a str>,
+    pub csrf: &'a str,
+}
+
+pub struct LicensesPage<'a> {
+    pub inter: &'a str,
+    pub mono: &'a str,
 }
 
 pub fn redirect(to: &str) -> Response {
@@ -98,7 +216,7 @@ pub fn with_referrer_same_origin(mut response: Response) -> Response {
 }
 
 pub fn message(
-    state: &State,
+    _state: &State,
     browser: &Browser,
     status: StatusCode,
     title: &str,
@@ -106,12 +224,15 @@ pub fn message(
     link: Option<(&str, &str)>,
 ) -> PageResult {
     let (link_href, link_text) = link.unwrap_or_default();
-    render(
-        state,
+    render_typed(
         browser,
         status,
-        "pages/message.html.jinja",
-        context! { title, text, link_href, link_text },
+        crate::templates::compiled::pages::message::render(&MessagePage {
+            title,
+            text,
+            link_href,
+            link_text,
+        }),
     )
 }
 
@@ -124,17 +245,6 @@ pub fn forged(state: &State, browser: &Browser) -> PageResult {
         "This form has expired. Reload the page and try again.",
         Some(("/", "Go to grund")),
     )
-}
-
-/// The sign-in providers the page offers: whatever the extensions offer,
-/// each having checked the instance's entitlements.
-pub fn offered_providers(state: &State) -> Vec<Value> {
-    state
-        .extensions
-        .iter()
-        .flat_map(|extension| extension.login_providers(state))
-        .map(|p| context! { id => p.id, name => p.name, icon => p.icon })
-        .collect()
 }
 
 /// A path to return to after sign-in: same-origin paths only.
@@ -161,11 +271,11 @@ pub fn require_session(browser: &Browser, uri: &Uri) -> Result<Session, Box<Resp
 /// organisations for the switcher, and the organisation the page is about
 /// (`current`). Account pages pass `None`, and the layout uses the
 /// organisation `/` would open.
-pub async fn viewer_context(
+pub async fn typed_viewer_context(
     state: &State,
     session: &Session,
     current: Option<&Membership>,
-) -> Result<Value, PageError> {
+) -> Result<TypedViewer, PageError> {
     let viewer = state
         .accounts()
         .viewer(session.account_id)
@@ -186,68 +296,79 @@ pub async fn viewer_context(
         .filter_map(|part| part.chars().next())
         .take(2)
         .collect();
-    let orgs: Vec<Value> = memberships
+    let orgs = memberships
         .iter()
         .map(|m| {
-            context! {
-                slug => m.slug,
-                role => m.role,
-                current => current.as_ref().is_some_and(|c| c.organisation_id == m.organisation_id),
+            let role = Role::parse(&m.role).unwrap_or(Role::Member);
+            TypedOrg {
+                slug: m.slug.clone(),
+                role: m.role.clone(),
+                kind: m.kind.clone(),
+                manages: role.manages_members(),
+                owner: role == Role::Owner,
+                since: m.created_at.format("%-d %B %Y").to_string(),
+                current: current
+                    .as_ref()
+                    .is_some_and(|c| c.organisation_id == m.organisation_id),
             }
         })
         .collect();
     let current = current.map(|c| {
         let role = Role::parse(&c.role).unwrap_or(Role::Member);
-        context! {
-            slug => c.slug,
-            role => c.role,
-            kind => c.kind,
-            manages => role.manages_members(),
-            owner => role == Role::Owner,
-            since => c.created_at.format("%-d %B %Y").to_string(),
+        TypedOrg {
+            slug: c.slug,
+            role: c.role,
+            kind: c.kind,
+            manages: role.manages_members(),
+            owner: role == Role::Owner,
+            since: c.created_at.format("%-d %B %Y").to_string(),
+            current: true,
         }
     });
-    Ok(context! {
-        username => viewer.username,
-        email => viewer.email,
+    Ok(TypedViewer {
+        username: viewer.username,
+        email: viewer.email,
         initials,
         orgs,
         current,
-        can_create => organisations.can_create(),
-        registered_on => viewer.registered_at.format("%-d %B %Y").to_string(),
+        can_create: organisations.can_create(),
+        registered_on: viewer.registered_at.format("%-d %B %Y").to_string(),
     })
 }
 
-/// Renders a page in the signed-in layout: `page` plus what the layout
-/// reads on every page. `viewer` is built for `membership`'s organisation
-/// (or the one `/` would open), `section` marks the sidebar's item, and
-/// `notice` and `error` are empty unless `page` gives them.
+/// Renders a signed-in page in the typed app layout, using the viewer for
+/// `membership` (or the organisation `/` would open) and the browser's CSRF token.
 #[allow(clippy::too_many_arguments)]
-pub async fn signed_in(
+pub async fn signed_in_typed(
     state: &State,
     browser: &Browser,
     session: &Session,
     membership: Option<&Membership>,
     status: StatusCode,
-    template: &str,
+    title: &str,
     section: &str,
-    page: Value,
+    list: Option<&AppSearch>,
+    refresh: Option<u16>,
+    title_org: Option<bool>,
+    render: impl FnOnce(&TypedViewer, &str) -> String,
 ) -> PageResult {
-    let viewer = viewer_context(state, session, membership).await?;
-    render(
-        state,
-        browser,
-        status,
-        template,
-        context! {
-            viewer, section, csrf => browser.csrf_token(),
-            ..with_layout_defaults(page)
-        },
-    )
-}
+    use sedge_rt::Render;
 
-fn with_layout_defaults(page: Value) -> Value {
-    minijinja::value::merge_maps([context! { notice => "", error => "" }, page])
+    let viewer = typed_viewer_context(state, session, membership).await?;
+    let csrf = browser.csrf_token();
+    let content = render(&viewer, &csrf);
+    let html = crate::templates::compiled::layouts::App {
+        title,
+        viewer: &viewer,
+        section,
+        csrf: &csrf,
+        list,
+        refresh,
+        title_org,
+        children: &|out| out.push_str(&content),
+    }
+    .render_to_string();
+    render_typed(browser, status, html)
 }
 
 /// The `?done=` and `?error=` a form's redirect leaves for the page it
@@ -293,20 +414,24 @@ fn login_page(
     notice: Option<&str>,
     return_to: Option<String>,
 ) -> PageResult {
-    render(
-        state,
+    let csrf = browser.csrf_token();
+    let providers: Vec<_> = state
+        .extensions
+        .iter()
+        .flat_map(|extension| extension.login_providers(state))
+        .collect();
+    render_typed(
         browser,
         status,
-        "pages/login.html.jinja",
-        context! {
-            csrf => browser.csrf_token(),
+        crate::templates::compiled::pages::login::render(&LoginPage {
+            csrf: &csrf,
             login,
-            error => error.unwrap_or_default(),
-            notice => notice.unwrap_or_default(),
-            return_to => return_to.unwrap_or_default(),
-            providers => offered_providers(state),
-            signup_enabled => state.config.signup_enabled,
-        },
+            error: error.unwrap_or_default(),
+            notice: notice.unwrap_or_default(),
+            return_to: return_to.as_deref().unwrap_or_default(),
+            providers: &providers,
+            signup_enabled: state.config.signup_enabled,
+        }),
     )
 }
 
@@ -490,25 +615,24 @@ fn no_owner(state: &State, browser: &Browser) -> PageResult {
 }
 
 fn signup_page(
-    state: &State,
+    _state: &State,
     browser: &Browser,
     status: StatusCode,
     form: &SignupForm,
     errors: &FieldErrors,
     error: &str,
 ) -> PageResult {
-    render(
-        state,
+    let csrf = browser.csrf_token();
+    render_typed(
         browser,
         status,
-        "pages/signup.html.jinja",
-        context! {
-            csrf => browser.csrf_token(),
-            username => form.username,
-            email => form.email,
-            errors => Value::from_serialize(errors),
+        crate::templates::compiled::pages::signup::render(&SignupPage {
+            csrf: &csrf,
+            username: &form.username,
+            email: &form.email,
+            errors,
             error,
-        },
+        }),
     )
 }
 
@@ -585,25 +709,24 @@ pub async fn owner_form(
 }
 
 fn owner_page(
-    state: &State,
+    _state: &State,
     browser: &Browser,
     status: StatusCode,
     token: &str,
     form: &SignupForm,
     errors: &FieldErrors,
 ) -> PageResult {
-    let response = render(
-        state,
+    let csrf = browser.csrf_token();
+    let response = render_typed(
         browser,
         status,
-        "pages/signup-owner.html.jinja",
-        context! {
-            csrf => browser.csrf_token(),
+        crate::templates::compiled::pages::signup_owner::render(&SignupOwnerPage {
+            csrf: &csrf,
             token,
-            username => form.username,
-            email => form.email,
-            errors => Value::from_serialize(errors),
-        },
+            username: &form.username,
+            email: &form.email,
+            errors,
+        }),
     )?;
     Ok(with_referrer_same_origin(response))
 }
@@ -691,14 +814,15 @@ pub async fn verify_form(
 ) -> PageResult {
     let valid =
         !query.token.is_empty() && state.accounts().verification_is_valid(&query.token).await?;
-    let response = render(
-        &state,
+    let csrf = browser.csrf_token();
+    let response = render_typed(
         &browser,
         StatusCode::OK,
-        "pages/verify.html.jinja",
-        context! {
-            csrf => browser.csrf_token(), token => query.token, valid,
-        },
+        crate::templates::compiled::pages::verify::render(&VerifyPage {
+            csrf: &csrf,
+            token: &query.token,
+            valid,
+        }),
     )?;
     Ok(with_referrer_same_origin(response))
 }
@@ -736,26 +860,36 @@ pub async fn verify(
             None,
         );
     }
-    render(
-        &state,
-        &browser,
-        StatusCode::GONE,
-        "pages/verify.html.jinja",
-        context! {
-            csrf => browser.csrf_token(), token => "", valid => false,
-        },
+    verify_page(&browser, StatusCode::GONE, "", false)
+}
+
+fn verify_page(browser: &Browser, status: StatusCode, token: &str, valid: bool) -> PageResult {
+    let csrf = browser.csrf_token();
+    render_typed(
+        browser,
+        status,
+        crate::templates::compiled::pages::verify::render(&VerifyPage {
+            csrf: &csrf,
+            token,
+            valid,
+        }),
     )
 }
 
-pub async fn reset_form(AxumState(state): AxumState<State>, browser: Browser) -> PageResult {
-    render(
-        &state,
-        &browser,
-        StatusCode::OK,
-        "pages/reset.html.jinja",
-        context! {
-            csrf => browser.csrf_token(), email => "", error => "",
-        },
+pub async fn reset_form(AxumState(_state): AxumState<State>, browser: Browser) -> PageResult {
+    reset_page(&browser, StatusCode::OK, "", "")
+}
+
+fn reset_page(browser: &Browser, status: StatusCode, email: &str, error: &str) -> PageResult {
+    let csrf = browser.csrf_token();
+    render_typed(
+        browser,
+        status,
+        crate::templates::compiled::pages::reset::render(&ResetPage {
+            csrf: &csrf,
+            email,
+            error,
+        }),
     )
 }
 
@@ -787,15 +921,7 @@ pub async fn reset(
             "Too many requests from your network. Try again later.".into(),
         ),
     };
-    render(
-        &state,
-        &browser,
-        status,
-        "pages/reset.html.jinja",
-        context! {
-            csrf => browser.csrf_token(), email => form.email, error,
-        },
-    )
+    reset_page(&browser, status, &form.email, &error)
 }
 
 pub async fn reset_sent(AxumState(state): AxumState<State>, browser: Browser) -> PageResult {
@@ -815,16 +941,29 @@ pub async fn reset_confirm_form(
     Query(query): Query<TokenQuery>,
 ) -> PageResult {
     let valid = !query.token.is_empty() && state.accounts().reset_is_valid(&query.token).await?;
-    let response = render(
-        &state,
-        &browser,
-        StatusCode::OK,
-        "pages/reset-confirm.html.jinja",
-        context! {
-            csrf => browser.csrf_token(), token => query.token, valid, error => "", password_error => "",
-        },
-    )?;
+    let response = reset_confirmation(&browser, StatusCode::OK, &query.token, valid, "")?;
     Ok(with_referrer_same_origin(response))
+}
+
+fn reset_confirmation(
+    browser: &Browser,
+    status: StatusCode,
+    token: &str,
+    valid: bool,
+    password_error: &str,
+) -> PageResult {
+    let csrf = browser.csrf_token();
+    render_typed(
+        browser,
+        status,
+        crate::templates::compiled::pages::reset_confirm::render(&ResetConfirmPage {
+            csrf: &csrf,
+            token,
+            valid,
+            error: "",
+            password_error,
+        }),
+    )
 }
 
 pub async fn reset_confirm(
@@ -856,21 +995,13 @@ pub async fn reset_confirm(
                 .append(header::SET_COOKIE, jar.set(jar.session_name(), "", 0));
             Ok(response)
         }
-        ResetOutcome::Expired => render(
-            &state,
-            &browser,
-            StatusCode::GONE,
-            "pages/reset-confirm.html.jinja",
-            context! {
-                csrf => browser.csrf_token(), token => "", valid => false, error => "", password_error => "",
-            },
-        ),
-        ResetOutcome::Invalid(message) => render(
-            &state,
+        ResetOutcome::Expired => reset_confirmation(&browser, StatusCode::GONE, "", false, ""),
+        ResetOutcome::Invalid(message) => reset_confirmation(
             &browser,
             StatusCode::UNPROCESSABLE_ENTITY,
-            "pages/reset-confirm.html.jinja",
-            context! { csrf => browser.csrf_token(), token => form.token, valid => true, error => "", password_error => message },
+            &form.token,
+            true,
+            &message,
         ),
     }
 }
@@ -885,20 +1016,18 @@ pub async fn sessions_page(
         Ok(session) => session,
         Err(redirect) => return Ok(*redirect),
     };
-    let sessions: Vec<Value> = state
+    let sessions: Vec<SessionRow> = state
         .sessions()
         .list(session.account_id)
         .await?
         .into_iter()
-        .map(|s| {
-            context! {
-                id => s.session_id.to_string(),
-                device => describe_user_agent(&s.user_agent),
-                address => s.client_address,
-                created => s.created_at.format("%-d %b %Y, %H:%M UTC").to_string(),
-                last_seen => s.last_seen_at.format("%-d %b %Y, %H:%M UTC").to_string(),
-                current => s.session_id == session.session_id,
-            }
+        .map(|s| SessionRow {
+            id: s.session_id.to_string(),
+            device: describe_user_agent(&s.user_agent),
+            address: s.client_address,
+            created: s.created_at.format("%-d %b %Y, %H:%M UTC").to_string(),
+            last_seen: s.last_seen_at.format("%-d %b %Y, %H:%M UTC").to_string(),
+            current: s.session_id == session.session_id,
         })
         .collect();
     let notice = match query.done.as_str() {
@@ -906,15 +1035,24 @@ pub async fn sessions_page(
         "others" => "Every other device is signed out.",
         _ => "",
     };
-    signed_in(
+    signed_in_typed(
         &state,
         &browser,
         &session,
         None,
         StatusCode::OK,
-        "pages/sessions.html.jinja",
+        "Sessions",
         "settings",
-        context! { sessions, notice },
+        None,
+        None,
+        None,
+        |_, csrf| {
+            crate::templates::compiled::pages::sessions::render(&SessionsPage {
+                csrf,
+                sessions: &sessions,
+                notice,
+            })
+        },
     )
     .await
 }
@@ -999,15 +1137,15 @@ pub fn describe_user_agent(user_agent: &str) -> String {
 }
 
 /// The 404 page: the same for "does not exist" and "not yours to see".
-pub fn not_found_page(state: &State, browser: &Browser) -> PageResult {
-    render(
-        state,
+pub fn not_found_page(_state: &State, browser: &Browser) -> PageResult {
+    render_typed(
         browser,
         StatusCode::NOT_FOUND,
-        "pages/error.html.jinja",
-        context! {
-            title => "Not found", text => "There is nothing here, or it is not yours to see.", request_id => "",
-        },
+        crate::templates::compiled::pages::error::render(&ErrorPage {
+            title: "Not found",
+            text: "There is nothing here, or it is not yours to see.",
+            request_id: "",
+        }),
     )
 }
 
@@ -1017,19 +1155,14 @@ pub async fn not_found(AxumState(state): AxumState<State>, browser: Browser) -> 
 
 /// Renders the generic error page for a failed handler, logging the cause
 /// with the request id. The page never shows the cause.
-pub fn internal_error(state: &State, request_id: Uuid, error: &anyhow::Error) -> Response {
+pub fn internal_error(_state: &State, request_id: Uuid, error: &anyhow::Error) -> Response {
     tracing::error!(%request_id, error = format!("{error:#}"), "request failed");
-    let html = state
-        .templates
-        .render(
-            "pages/error.html.jinja",
-            context! {
-                title => "Something went wrong",
-                text => "grund could not finish that. Try again in a moment.",
-                request_id => request_id.to_string(),
-            },
-        )
-        .unwrap_or_else(|_| "Something went wrong.".to_string());
+    let request_id = request_id.to_string();
+    let html = crate::templates::compiled::pages::error::render(&ErrorPage {
+        title: "Something went wrong",
+        text: "grund could not finish that. Try again in a moment.",
+        request_id: &request_id,
+    });
     let mut response = (
         StatusCode::INTERNAL_SERVER_ERROR,
         axum::response::Html(html),
@@ -1041,16 +1174,14 @@ pub fn internal_error(state: &State, request_id: Uuid, error: &anyhow::Error) ->
     response
 }
 
-pub async fn licenses(AxumState(state): AxumState<State>, browser: Browser) -> PageResult {
-    render(
-        &state,
+pub async fn licenses(AxumState(_state): AxumState<State>, browser: Browser) -> PageResult {
+    render_typed(
         &browser,
         StatusCode::OK,
-        "pages/licenses.html.jinja",
-        context! {
-            inter => crate::web::assets::INTER_LICENSE,
-            mono => crate::web::assets::MONO_LICENSE,
-        },
+        crate::templates::compiled::pages::licenses::render(&LicensesPage {
+            inter: crate::web::assets::INTER_LICENSE,
+            mono: crate::web::assets::MONO_LICENSE,
+        }),
     )
 }
 
@@ -1096,14 +1227,12 @@ const KNOWN_IMAGE_ICONS: &[&str] = &[
     "rabbitmq",
 ];
 
-/// The name of every icon in the sprite (`components/icons.html.jinja`), in
-/// its order, so the style guide shows them all without a second list.
+/// The name of every icon in the sprite, in display order.
 pub fn sprite_icons() -> Vec<&'static str> {
-    let source = crate::templates::TEMPLATES
-        .iter()
-        .find(|(name, _)| *name == "components/icons.html.jinja")
-        .map(|(_, source)| *source)
-        .unwrap_or_default();
+    let source = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/templates/components/icons.html.sedge"
+    ));
     source
         .split("<symbol id=\"i-")
         .skip(1)
@@ -1112,18 +1241,53 @@ pub fn sprite_icons() -> Vec<&'static str> {
 }
 
 const DISCONNECTED_TAB: &str = "disconnected";
+pub struct StyleGuidePage {
+    pub viewer: TypedViewer,
+    pub csrf: String,
+    pub swatches: &'static [(&'static str, &'static str)],
+    pub sprite_icons: Vec<&'static str>,
+    pub gallery: &'static [&'static str],
+    pub icons: Vec<&'static str>,
+    pub apps: Vec<crate::web::apps::ListingView>,
+    pub machines: Vec<crate::web::machines::MachineItem<'static>>,
+}
 
-pub async fn style_guide(AxumState(state): AxumState<State>, browser: Browser) -> PageResult {
-    let viewer = context! {
-        username => "example", initials => "EX", email => "", registered_on => "",
-        current => context! {
-            slug => "nord-studio", role => "owner", kind => "shared", manages => true, owner => true, since => "",
-        },
-        orgs => vec![
-            context! { slug => "nord-studio", role => "owner", current => true },
-            context! { slug => "example", role => "owner", current => false },
+fn style_guide_fixture(csrf: String) -> StyleGuidePage {
+    let viewer = TypedViewer {
+        username: "example".into(),
+        initials: "EX".into(),
+        email: String::new(),
+        registered_on: String::new(),
+        current: Some(TypedOrg {
+            slug: "nord-studio".into(),
+            role: "owner".into(),
+            kind: "shared".into(),
+            manages: true,
+            owner: true,
+            since: String::new(),
+            current: true,
+        }),
+        orgs: vec![
+            TypedOrg {
+                slug: "nord-studio".into(),
+                role: "owner".into(),
+                kind: String::new(),
+                manages: true,
+                owner: true,
+                since: String::new(),
+                current: true,
+            },
+            TypedOrg {
+                slug: "example".into(),
+                role: "owner".into(),
+                kind: String::new(),
+                manages: true,
+                owner: true,
+                since: String::new(),
+                current: false,
+            },
         ],
-        can_create => true,
+        can_create: true,
     };
     let apps = [
         (
@@ -1149,51 +1313,121 @@ pub async fn style_guide(AxumState(state): AxumState<State>, browser: Browser) -
             None,
         ),
     ]
-    .map(|(name, image, address, internal)| {
-        context! { name, image, address, internal, icon => crate::web::apps::image_icon(image) }
-    });
+    .into_iter()
+    .map(
+        |(name, image, address, internal)| crate::web::apps::ListingView {
+            name: name.into(),
+            tone: "muted",
+            copies: 0,
+            icon: crate::web::apps::image_icon(image),
+            image: image.into(),
+            address: address.map(str::to_owned),
+            internal: internal.map(str::to_owned),
+        },
+    )
+    .collect();
     let machines = [
-        ("homelab-1", "Connected", "ok", "", false, vec!["zone=a"], "", 16, "64 GB", Some("1.2 TB")),
-        ("web-1", "Connected", "ok", "", true, vec![], "", 4, "8 GB", Some("80 GB")),
-        ("closet", "Disconnected", "orange", DISCONNECTED_TAB, false, vec!["zone=b", "gpu=yes"], "last seen 6 Oct 2026 22:14 UTC", 8, "31 GB", None),
-        ("spare", "Out of service", "muted", "", false, vec![], "2 copies", 2, "3.8 GB", Some("120 GB")),
+        (
+            "homelab-1",
+            "Connected",
+            "ok",
+            "",
+            false,
+            vec!["zone=a"],
+            "",
+            16,
+            "64 GB",
+            Some("1.2 TB"),
+        ),
+        (
+            "web-1",
+            "Connected",
+            "ok",
+            "",
+            true,
+            vec![],
+            "",
+            4,
+            "8 GB",
+            Some("80 GB"),
+        ),
+        (
+            "closet",
+            "Disconnected",
+            "orange",
+            DISCONNECTED_TAB,
+            false,
+            vec!["zone=b", "gpu=yes"],
+            "last seen 6 Oct 2026 22:14 UTC",
+            8,
+            "31 GB",
+            None,
+        ),
+        (
+            "spare",
+            "Out of service",
+            "muted",
+            "",
+            false,
+            vec![],
+            "2 copies",
+            2,
+            "3.8 GB",
+            Some("120 GB"),
+        ),
     ]
-    .map(|(name, status, tone, tab, leased, labels, detail, vcpus, memory, disk)| {
-        let facts = [("cpu", format!("{vcpus} vCPU")), ("memory", format!("{memory} RAM")), ("disk", disk.unwrap_or_default().to_string())];
-        context! {
-            id => name, name, status, tone, tab, leased, labels, detail, facts,
-            search => name, shown => true, kvm => false, hosts_vms => false, out_of_service => status == "Out of service",
-        }
-    });
-    let mut icons: Vec<&str> = KNOWN_IMAGE_ICONS.to_vec();
+    .into_iter()
+    .map(
+        |(name, status, tone, tab, leased, labels, detail, vcpus, memory, disk)| {
+            crate::web::machines::MachineItem {
+                id: name.into(),
+                name,
+                labels: labels.into_iter().map(str::to_owned).collect(),
+                status,
+                tone,
+                tab,
+                search: name.into(),
+                shown: true,
+                detail: detail.into(),
+                out_of_service: status == "Out of service",
+                leased,
+                facts: [
+                    ("cpu", format!("{vcpus} vCPU")),
+                    ("memory", format!("{memory} RAM")),
+                    ("disk", disk.unwrap_or_default().into()),
+                ],
+                kvm: false,
+                hosts_vms: false,
+            }
+        },
+    )
+    .collect();
+    let mut icons = KNOWN_IMAGE_ICONS.to_vec();
     icons.push("docker");
-    render(
-        &state,
+    StyleGuidePage {
+        viewer,
+        csrf,
+        swatches: SWATCHES,
+        sprite_icons: sprite_icons(),
+        gallery: KNOWN_IMAGE_ICONS,
+        icons,
+        apps,
+        machines,
+    }
+}
+
+pub async fn style_guide(AxumState(_state): AxumState<State>, browser: Browser) -> PageResult {
+    let page = style_guide_fixture(browser.csrf_token());
+    render_typed(
         &browser,
         StatusCode::OK,
-        "pages/style-guide.html.jinja",
-        context! {
-            viewer, csrf => browser.csrf_token(), section => "", swatches => SWATCHES,
-            apps, machines, icons, gallery => KNOWN_IMAGE_ICONS, sprite_icons => sprite_icons(),
-        },
+        crate::templates::compiled::pages::style_guide::render(&page),
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_page_notice_or_error_wins_over_the_layout_default() {
-        let env = minijinja::Environment::new();
-        let render = |page| {
-            env.render_str("[{{ notice }}][{{ error }}]", with_layout_defaults(page))
-                .expect("renders")
-        };
-        assert_eq!(render(context! { notice => "Saved." }), "[Saved.][]");
-        assert_eq!(render(context! { error => "Too short." }), "[][Too short.]");
-        assert_eq!(render(context! {}), "[][]");
-    }
 
     #[test]
     fn only_same_origin_paths_are_returned_to() {

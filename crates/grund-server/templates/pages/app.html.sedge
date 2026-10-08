@@ -1,0 +1,15 @@
+use crate::templates::compiled::components::{ImageSprite, PageHead, AppMenu, Banner, Icon};
+props crate::web::apps::AppShellPage { slug, tab, tabs, app, waiting, notice, error, manages };
+{let back = format!("/{slug}/apps");}
+
+<ImageSprite icons={&[app.icon]} />
+<PageHead title={&app.name} reference={app.image.as_deref()} back={Some((&back, "Back to apps"))} image={Some(app.icon)} state={Some((app.word, app.tone))}>
+  <AppMenu slug={slug} manages={*manages} name={&app.name} address={app.address.as_deref()} />
+</PageHead>
+<nav class="tabs" aria-label={&app.name}>
+  {for item in tabs {
+    <a class={if item.key == tab.as_str() { "tab is-active" } else { "tab" }} href={&item.href} aria-current={if item.key == tab.as_str() { Some("page") } else { None }}><Icon name={item.icon} class="icon-sm" />{item.label}</a>
+  }}
+</nav>
+<Banner text={error} tone="error" ok={Some(notice)} />
+{for message in waiting { <Banner text={message} tone="error" /> }}

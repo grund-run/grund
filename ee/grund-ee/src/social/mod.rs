@@ -63,28 +63,12 @@ pub fn http_client() -> anyhow::Result<reqwest::Client> {
         .context("build the HTTP client for sign-in providers")
 }
 
-/// The templates this extension adds.
-pub const TEMPLATES: &[(&str, &str)] = &[
-    (
-        "pages/social-username.html.jinja",
-        include_str!("../../templates/pages/social-username.html.jinja"),
-    ),
-    (
-        "pages/social-link.html.jinja",
-        include_str!("../../templates/pages/social-link.html.jinja"),
-    ),
-];
-
 /// Wraps the extension so its routes can reach it.
 pub struct Registered(pub Arc<SocialLogin>);
 
 impl Extension for Registered {
     fn name(&self) -> &'static str {
         "social-login"
-    }
-
-    fn templates(&self) -> &'static [(&'static str, &'static str)] {
-        TEMPLATES
     }
 
     fn routes(&self) -> axum::Router<State> {
@@ -112,19 +96,5 @@ impl Extension for Registered {
                 icon: p.icon,
             })
             .collect()
-    }
-}
-
-#[cfg(test)]
-mod template_tests {
-    use super::TEMPLATES;
-
-    #[test]
-    fn these_pages_call_the_catalogue_and_render_in_the_core_environment() {
-        for (name, source) in TEMPLATES {
-            let offences = grund_server::templates::raw_component_markup(source);
-            assert!(offences.is_empty(), "{name}: {offences:?}");
-        }
-        grund_server::templates::Templates::new(TEMPLATES).expect("templates parse");
     }
 }

@@ -873,7 +873,7 @@ async fn an_app_made_on_the_dashboard_shows_its_copies_ready_and_its_versions() 
     when.visiting(&page).await?;
     then.status(200)?
         .body_contains("Deploy your first app")?
-        .body_contains(&format!("href=\"&#x2f;{org}&#x2f;deploy\""))?;
+        .body_contains(&format!("href=\"/{org}/deploy\""))?;
     when.submitting(
         &format!("/{org}/deploy"),
         &format!("/{org}/deploy"),
@@ -989,22 +989,16 @@ async fn the_apps_list_shows_each_image_with_its_icon_and_where_to_reach_it_and_
     let page = format!("/{org}/apps");
     when.visiting(&page).await?;
     then.status(200)?
-        .body_contains(&format!("https:&#x2f;&#x2f;shop-{org}.apps.accept.test"))?
+        .body_contains(&format!("https://shop-{org}.apps.accept.test"))?
         .body_contains("db.grund.internal:80")?
         .body_contains("data-copy=\"db.grund.internal:80\"")?
         .body_contains("postgres:16</p>")?
-        .body_contains("<use href=\"#img-postgres\"/>")?
+        .body_contains("href=\"#img-postgres\"")?
         .body_contains("id=\"img-postgres\"")?
         .body_lacks("id=\"img-redis\"")?
-        .body_contains(&format!(
-            "href=\"&#x2f;{org}&#x2f;apps&#x2f;shop&#x2f;deployments\""
-        ))?
-        .body_contains(&format!(
-            "href=\"&#x2f;{org}&#x2f;apps&#x2f;shop&#x2f;settings?edit=delete\""
-        ))?
-        .body_contains(&format!(
-            "href=\"&#x2f;{org}&#x2f;apps&#x2f;shop&#x2f;settings?edit=image\""
-        ))?
+        .body_contains(&format!("href=\"/{org}/apps/shop/deployments\""))?
+        .body_contains(&format!("href=\"/{org}/apps/shop/settings?edit=delete\""))?
+        .body_contains(&format!("href=\"/{org}/apps/shop/settings?edit=image\""))?
         .body_lacks("Deploy your first app")?;
     let body = then.body()?;
     let (db, shop) = (body.find(">db<"), body.find(">shop<"));
@@ -1023,26 +1017,26 @@ async fn the_apps_list_shows_each_image_with_its_icon_and_where_to_reach_it_and_
 
     when.visiting(&format!("/{org}/domains")).await?;
     then.status(200)?
-        .body_contains(&format!("https:&#x2f;&#x2f;shop-{org}.apps.accept.test"))?
+        .body_contains(&format!("https://shop-{org}.apps.accept.test"))?
         .body_lacks(">db<")?
         .body_contains("No domains of your own yet")?
         .body_contains("Add a domain")?;
 
     when.visiting(&format!("/{org}")).await?;
     then.status(200)?
-        .body_contains(&format!("https:&#x2f;&#x2f;shop-{org}.apps.accept.test"))?
+        .body_contains(&format!("https://shop-{org}.apps.accept.test"))?
         .body_contains("db.grund.internal:80")?;
 
     when.visiting(&format!("/{org}/apps/shop")).await?;
     then.status(200)?
         .carries_the_security_headers()?
         .body_contains("class=\"shell\"")?
-        .body_contains(&format!("https:&#x2f;&#x2f;shop-{org}.apps.accept.test"))?
+        .body_contains(&format!("https://shop-{org}.apps.accept.test"))?
         .body_lacks(" style=")?;
     when.visiting(&format!("/{org}/apps/db")).await?;
     then.status(200)?
         .body_contains("db.grund.internal:80")?
-        .body_lacks(&format!("https:&#x2f;&#x2f;db-{org}"))?;
+        .body_lacks(&format!("https://db-{org}"))?;
     Ok(())
 }
 
@@ -1268,12 +1262,12 @@ async fn the_deploy_page_refuses_what_the_api_would_and_makes_nothing() -> anyho
     );
     when.visiting(&format!("/{org}/apps")).await?;
     then.status(200)?
-        .body_contains(&format!("https:&#x2f;&#x2f;taken-{org}.apps.accept.test"))?;
+        .body_contains(&format!("https://taken-{org}.apps.accept.test"))?;
 
     when.visiting(&format!("/{org}/templates")).await?;
     then.status(200)?
         .body_contains("Needs storage")?
-        .body_contains(&format!("href=\"&#x2f;{org}&#x2f;deploy?template=nats\""))?;
+        .body_contains(&format!("href=\"/{org}/deploy?template=nats\""))?;
     when.visiting(&format!("{deploy}?template=whoami")).await?;
     then.status(200)?
         .body_contains("value=\"whoami\" checked")?
@@ -1330,7 +1324,7 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
     then.body_contains(">Live</span>")?
-        .body_contains(&format!("https:&#x2f;&#x2f;hello-{org}.apps.accept.test"))?
+        .body_contains(&format!("https://hello-{org}.apps.accept.test"))?
         .body_contains("Reachable at")?
         .body_contains(">v1</span>")?
         .body_contains(&format!(">· {org}</span>"))?
@@ -1340,9 +1334,7 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
         .body_contains("<span class=\"btn-label\">Deploy app</span>")?
         .body_lacks("Deploy change")?
         .body_contains("</svg>Update image</a>")?
-        .body_contains(&format!(
-            "href=\"&#x2f;{org}&#x2f;apps&#x2f;hello&#x2f;settings?edit=image\""
-        ))?;
+        .body_contains(&format!("href=\"/{org}/apps/hello/settings?edit=image\""))?;
     let body = then.body()?;
     anyhow::ensure!(
         body.matches("btn-primary").count() == 1,
@@ -1373,7 +1365,7 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
     let settings = format!("{page}/settings");
     when.visiting(&settings).await?;
     then.status(200)?.body_contains(&format!(
-        "acme&#x2f;hello:1 · {}",
+        "acme/hello:1 · {}",
         &first.trim_start_matches("sha256:")[..12]
     ))?;
     when.submitting(
@@ -1397,7 +1389,7 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
         .redirects_to(&format!("{page}/settings?done=released"))?;
     when.visiting(&settings).await?;
     then.status(200)?.body_contains(&format!(
-        "acme&#x2f;hello:2 · {}",
+        "acme/hello:2 · {}",
         &second.trim_start_matches("sha256:")[..12]
     ))?;
     when.submitting(
@@ -1476,9 +1468,8 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
         .body_contains("1: GREETING")?
         .body_lacks("API_KEY")?
         .body_contains(&format!(
-            "<a class=\"tile\" href=\"&#x2f;{org}&#x2f;apps&#x2f;hello&#x2f;settings?edit=secrets\">"
-        ))?
-        .body_contains("Volumes &#x2f; storage")?;
+            "<a class=\"tile\" href=\"/{org}/apps/hello/settings?edit=secrets\">"
+        ))?;
     when.visiting(&format!("{settings}?edit=env")).await?;
     then.status(200)?
         .body_contains("value=\"GREETING\"")?
@@ -1596,7 +1587,7 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
     then.status(200)?
         .body_contains("?edit=check\">")?
         .body_lacks(&format!(
-            "<a class=\"tile\" href=\"&#x2f;{org}&#x2f;apps&#x2f;hello&#x2f;settings?edit=check\">"
+            "<a class=\"tile\" href=\"/{org}/apps/hello/settings?edit=check\">"
         ))?;
     when.submitting(
         &settings,
@@ -1608,7 +1599,7 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
         .redirects_to(&format!("{page}/settings?done=released"))?;
     when.visiting(&settings).await?;
     then.status(200)?.body_contains(&format!(
-        "<a class=\"tile\" href=\"&#x2f;{org}&#x2f;apps&#x2f;hello&#x2f;settings?edit=check\">"
+        "<a class=\"tile\" href=\"/{org}/apps/hello/settings?edit=check\">"
     ))?;
 
     when.submitting(&settings, &format!("{page}/delete"), &[("confirm", "hell")])

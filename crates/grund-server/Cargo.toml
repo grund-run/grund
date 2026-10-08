@@ -43,12 +43,12 @@ lettre = { version = "0.11", default-features = false, features = ["builder", "h
 libc = "0.2"
 mire.workspace = true
 mire-sagas.workspace = true
-minijinja = { version = "2.24", features = ["json"] }
 nostatus.workspace = true
 notmad.workspace = true
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+sedge-rt = { git = "https://git.kjuulh.io/kjuulh/sedge.git", rev = "a4307b9cfacff525f18cffd2fac420ec9f6f7f88" }
 serde.workspace = true
 serde_json.workspace = true
 serde_urlencoded = "0.7"
@@ -66,6 +66,9 @@ tracing.workspace = true
 uuid.workspace = true
 webpki-roots = "1"
 x509-parser = { version = "0.18", features = ["verify"] }
+
+[build-dependencies]
+sedge-gen = { git = "https://git.kjuulh.io/kjuulh/sedge.git", rev = "a4307b9cfacff525f18cffd2fac420ec9f6f7f88" }
 
 [dev-dependencies]
 argon2 = "0.5"

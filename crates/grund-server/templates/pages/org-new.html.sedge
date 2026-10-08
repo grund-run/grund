@@ -1,0 +1,10 @@
+use crate::templates::compiled::components::{PageHead, Panel, Form, Field, Button, Actions};
+props crate::web::orgs::NewOrganisationPage<'_> { csrf, slug, error };
+
+<PageHead title="New organisation" />
+<Panel id="new" title="Name it">
+  <Form action="/orgs/new" csrf={csrf}>
+    <Field name="slug" label="Name" value={slug} error={error} required autocomplete="off" hint="3 to 32 letters, digits and single hyphens. It appears in addresses." autofocus width={Some("md")} />
+    <Actions><Button label="Create organisation" kind="primary" /></Actions>
+  </Form>
+</Panel>

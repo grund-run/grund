@@ -1,0 +1,24 @@
+use crate::templates::compiled::components::{PageHead, Panel, Banner, Button, Code, Para, Field};
+props crate::web::machines::MachineAddPage<'_> { slug, csrf, setup, add_error, name, minutes };
+{let back = format!("/{slug}/machines");}
+
+<PageHead title="Add machine" back={Some((back.as_str(), "Machines"))} />
+{if let Some(setup) = setup {
+  <Panel id="setup" title="Run this on the machine">
+    <Code text={setup.install.as_deref().unwrap_or(&setup.command)} id="setup-command" copy wrap what="the command" />
+    <p>Expires in {setup.minutes} minutes. The code works once and is not shown again.</p>
+    {if setup.install.is_some() {
+      <Para kind="aside">With grund installed: <code>{setup.command}</code>, then keep <code>grund agent</code> running.</Para>
+    } else {
+      <Para kind="aside">Then keep <code>grund agent</code> running.</Para>
+    }}
+  </Panel>
+} else {
+  <Panel id="add" title="New machine">
+    <form class="form" method="post" action="/{slug}/machines/add" novalidate><input type="hidden" name="csrf" value={csrf}>
+      {if !add_error.is_empty() { <Banner text="Nothing was saved. Check the field marked below." /> }}
+      <Field name="name" label="Name" value={name} autocomplete="off" error={add_error} hint="Empty: its hostname." />
+      <div class="form-actions"><p class="form-note"><span>Makes a setup code that works once, for {minutes} minutes.</span></p><Button label="Get a setup code" kind="primary" /></div>
+    </form>
+  </Panel>
+}}

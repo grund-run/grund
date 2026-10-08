@@ -17,8 +17,8 @@ use grund_domain::{
     organisation::Role,
 };
 use grund_store::{agents::VmRow, machines::MachineRow, organisations::Membership};
-use minijinja::{Value, context};
 use serde::Deserialize;
+use std::collections::BTreeSet;
 use uuid::Uuid;
 
 use crate::{
@@ -31,9 +31,83 @@ use crate::{
     web::{
         browser::Browser,
         orgs::Member,
-        pages::{PageResult, forged, redirect, signed_in},
+        pages::{PageResult, forged, redirect, signed_in_typed},
     },
 };
+
+pub struct MachineItem<'a> {
+    pub id: String,
+    pub name: &'a str,
+    pub labels: Vec<String>,
+    pub status: &'static str,
+    pub tone: &'static str,
+    pub tab: &'static str,
+    pub search: String,
+    pub shown: bool,
+    pub detail: String,
+    pub out_of_service: bool,
+    pub leased: bool,
+    pub facts: [(&'static str, String); 3],
+    pub kvm: bool,
+    pub hosts_vms: bool,
+}
+
+pub struct VmItem<'a> {
+    pub id: String,
+    pub name: &'a str,
+    pub host: &'a str,
+    pub vcpus: i32,
+    pub memory_mib: i32,
+    pub disk_gib: i32,
+    pub observed: String,
+    pub tone: &'static str,
+    pub reason: Option<&'a str>,
+    pub running: bool,
+}
+
+pub struct EditingMachine<'a> {
+    pub id: String,
+    pub name: &'a str,
+    pub pairs: Vec<(&'a str, &'a str)>,
+}
+
+pub struct MachinesPage<'a> {
+    pub csrf: &'a str,
+    pub slug: &'a str,
+    pub manages: bool,
+    pub machines: Vec<MachineItem<'a>>,
+    pub hosts: Vec<(String, &'a str)>,
+    pub vms: Vec<VmItem<'a>>,
+    pub editing: Option<EditingMachine<'a>>,
+    pub disconnected: usize,
+    pub shown: usize,
+    pub tabs: Vec<(&'static str, String, &'static str)>,
+    pub operator: bool,
+    pub run_open: bool,
+    pub tab: &'a str,
+    pub q: String,
+    pub notice: &'a str,
+    pub error: &'a str,
+    pub run_error: String,
+    pub run: RunForm,
+    pub label_keys: BTreeSet<&'a str>,
+    pub label_values: BTreeSet<&'a str>,
+}
+
+pub struct MachineSetup {
+    pub install: Option<String>,
+    pub command: String,
+    pub minutes: i64,
+}
+
+pub struct MachineAddPage<'a> {
+    pub slug: &'a str,
+    pub csrf: &'a str,
+    pub setup: Option<MachineSetup>,
+    pub add_error: String,
+    pub name: String,
+    pub minutes: i64,
+}
 
 fn manages(membership: &Membership) -> bool {
     Role::parse(&membership.role).is_some_and(|role| role.manages_members())
@@ -179,12 +253,12 @@ fn machine_facts(
     ]
 }
 
-fn machine_context(
-    row: &MachineRow,
+fn machine_context<'a>(
+    row: &'a MachineRow,
     copies: i64,
     now: chrono::DateTime<Utc>,
     form: &MachinesForm<'_>,
-) -> Value {
+) -> MachineItem<'a> {
     let capabilities = row.capabilities.as_ref().map(|c| &c.0);
     let labels: Vec<String> = row
         .labels
@@ -192,7 +266,7 @@ fn machine_context(
         .iter()
         .map(|(k, v)| format!("{k}={v}"))
         .collect();
-    let name = row.pool_name.clone().unwrap_or_else(|| row.name.clone());
+    let name = row.pool_name.as_deref().unwrap_or(&row.name);
     let (status, tone) = machine_status(row, now);
     let tab = if status == "Disconnected" {
         DISCONNECTED
@@ -216,35 +290,44 @@ fn machine_context(
             .unwrap_or_default(),
         _ => String::new(),
     };
-    context! {
-        labels, status, tone, tab, search, shown, detail, name,
-        id => row.machine_id.to_string(),
-        out_of_service => row.cordoned_at.is_some(),
-        leased => row.pool == "management",
-        facts => machine_facts(capabilities, &row.facts.0),
-        kvm => capabilities.and_then(|c| c["kvm"].as_bool()).unwrap_or(false),
-        hosts_vms => cannot_host(row).is_none() && connected(row.last_seen_at, now),
+    MachineItem {
+        labels,
+        status,
+        tone,
+        tab,
+        search,
+        shown,
+        detail,
+        name,
+        id: row.machine_id.to_string(),
+        out_of_service: row.cordoned_at.is_some(),
+        leased: row.pool == "management",
+        facts: machine_facts(capabilities, &row.facts.0),
+        kvm: capabilities
+            .and_then(|c| c["kvm"].as_bool())
+            .unwrap_or(false),
+        hosts_vms: cannot_host(row).is_none() && connected(row.last_seen_at, now),
     }
 }
 
-fn vm_context(row: &VmRow) -> Value {
+fn vm_context(row: &VmRow) -> VmItem<'_> {
     let observed = row.observed_state.as_deref().unwrap_or("waiting");
     let tone = match observed {
         "running" => "ok",
         "failed" | "exited" => "orange",
         _ => "muted",
     };
-    context! {
-        id => row.vm_id.to_string(),
-        name => row.name,
-        host => row.host_name.clone().unwrap_or_else(|| "a removed machine".into()),
-        vcpus => row.vcpus,
-        memory_mib => row.memory_mib,
-        disk_gib => row.disk_gib,
-        observed => capitalise(observed),
+    VmItem {
+        id: row.vm_id.to_string(),
+        name: &row.name,
+        host: row.host_name.as_deref().unwrap_or("a removed machine"),
+        vcpus: row.vcpus,
+        memory_mib: row.memory_mib,
+        disk_gib: row.disk_gib,
+        observed: capitalise(observed),
         tone,
-        reason => row.observed_reason,
-        running => row.state == "running",
+        reason: row.observed_reason.as_deref(),
+        running: row.state == "running",
     }
 }
 
@@ -272,7 +355,7 @@ async fn machines_view(
     let copies = grund_store::apps::copies_per_machine(&state.pool, membership.organisation_id)
         .await
         .map_err(anyhow::Error::from)?;
-    let machines: Vec<Value> = rows
+    let machines: Vec<MachineItem<'_>> = rows
         .iter()
         .map(|row| {
             let n = copies
@@ -286,24 +369,21 @@ async fn machines_view(
         .iter()
         .filter(|row| machine_status(row, now).0 == "Disconnected")
         .count();
-    let shown = machines
-        .iter()
-        .filter(|machine| machine.get_attr("shown").is_ok_and(|shown| shown.is_true()))
-        .count();
+    let shown = machines.iter().filter(|machine| machine.shown).count();
     let editing = rows
         .iter()
         .find(|row| row.machine_id.to_string() == form.labels)
         .map(|row| {
-            let pairs: Vec<(String, String)> = row
+            let pairs = row
                 .labels
                 .0
                 .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
+                .map(|(k, v)| (k.as_str(), v.as_str()))
                 .collect();
-            context! {
+            EditingMachine {
                 pairs,
-                id => row.machine_id.to_string(),
-                name => row.pool_name.clone().unwrap_or_else(|| row.name.clone()),
+                id: row.machine_id.to_string(),
+                name: row.pool_name.as_deref().unwrap_or(&row.name),
             }
         });
     let base = format!("/{}/machines", membership.slug);
@@ -329,23 +409,18 @@ async fn machines_view(
             "Management pool",
         ));
     }
-    let hosts: Vec<(String, String)> = rows
+    let hosts: Vec<(String, &str)> = rows
         .iter()
         .filter(|row| cannot_host(row).is_none() && connected(row.last_seen_at, now))
         .map(|row| {
             (
                 row.machine_id.to_string(),
-                row.pool_name.clone().unwrap_or_else(|| row.name.clone()),
+                row.pool_name.as_deref().unwrap_or(&row.name),
             )
         })
         .collect();
-    let vms: Vec<Value> = state
-        .agents()
-        .vms(membership.organisation_id)
-        .await?
-        .iter()
-        .map(vm_context)
-        .collect();
+    let vm_rows = state.agents().vms(membership.organisation_id).await?;
+    let vms: Vec<VmItem<'_>> = vm_rows.iter().map(vm_context).collect();
     let mut run = form.run;
     let run_open = !form.run_error.is_empty() || hosts.iter().any(|(id, _)| *id == run.host);
     if run.is_fresh() || (run_open && form.run_error.is_empty()) {
@@ -356,21 +431,46 @@ async fn machines_view(
         run.rootfs_url = or_empty(&defaults.vm_rootfs_url);
         run.rootfs_sha256 = or_empty(&defaults.vm_rootfs_sha256);
     }
-    signed_in(
+    signed_in_typed(
         state,
         browser,
         session,
         Some(membership),
         status,
-        "pages/machines.html.jinja",
+        "Machines",
         "machines",
-        context! {
-            label_keys => rows.iter().flat_map(|r| r.labels.0.keys().cloned()).collect::<std::collections::BTreeSet<_>>(),
-            label_values => rows.iter().flat_map(|r| r.labels.0.values().cloned()).collect::<std::collections::BTreeSet<_>>(),
-            machines, hosts, vms, editing, disconnected, shown, tabs, operator, run_open,
-            tab => form.tab, q => form.q,
-            notice => form.notice, error => form.error,
-            run_error => form.run_error, run => Value::from_serialize(&run),
+        None,
+        None,
+        None,
+        |_, csrf| {
+            crate::templates::compiled::pages::machines::render(&MachinesPage {
+                csrf,
+                slug: &membership.slug,
+                manages: manages(membership),
+                label_keys: rows
+                    .iter()
+                    .flat_map(|r| r.labels.0.keys().map(String::as_str))
+                    .collect(),
+                label_values: rows
+                    .iter()
+                    .flat_map(|r| r.labels.0.values().map(String::as_str))
+                    .collect(),
+                machines,
+                hosts,
+                vms,
+                editing,
+                disconnected,
+                shown,
+                tabs,
+                operator,
+                run_open,
+                tab: form.tab,
+                q: form.q,
+                notice: form.notice,
+                error: form.error,
+                run_error: form.run_error,
+                run,
+            })
         },
     )
     .await
@@ -383,14 +483,29 @@ pub async fn add_page(AxumState(state): AxumState<State>, member: Member) -> Pag
         let slug = &member.membership.slug;
         return Ok(redirect(&format!("/{slug}/machines?error=not-allowed")));
     }
-    member
-        .render(
-            &state,
-            "pages/machine-add.html.jinja",
-            "machine-add",
-            context! { setup => None::<Value>, add_error => "", name => "", minutes => TOKEN_TTL.num_minutes() },
-        )
-        .await
+    signed_in_typed(
+        &state,
+        &member.browser,
+        &member.session,
+        Some(&member.membership),
+        StatusCode::OK,
+        "Add machine",
+        "machine-add",
+        None,
+        None,
+        None,
+        |_, csrf| {
+            crate::templates::compiled::pages::machine_add::render(&MachineAddPage {
+                slug: &member.membership.slug,
+                csrf,
+                setup: None,
+                add_error: String::new(),
+                name: String::new(),
+                minutes: TOKEN_TTL.num_minutes(),
+            })
+        },
+    )
+    .await
 }
 
 #[derive(Deserialize)]
@@ -429,7 +544,7 @@ pub async fn add(
             session.account_id,
         )
         .await?;
-    let mut name = form.name.clone();
+    let name = form.name.clone();
     let mut setup = None;
     let add_error = match outcome {
         MintOutcome::Minted(minted) => {
@@ -438,12 +553,11 @@ pub async fn add(
                 .div_euclid(60)
                 .max(1);
             let install = crate::services::machines::install_command(&state.config, &minted.token);
-            setup = Some(context! {
+            setup = Some(MachineSetup {
                 install,
-                command => format!("grund join --url {origin} {}", minted.token),
+                command: format!("grund join --url {origin} {}", minted.token),
                 minutes,
             });
-            name = String::new();
             String::new()
         }
         MintOutcome::Invalid(message) => message,
@@ -459,15 +573,27 @@ pub async fn add(
     } else {
         StatusCode::UNPROCESSABLE_ENTITY
     };
-    let mut response = signed_in(
+    let mut response = signed_in_typed(
         &state,
         &browser,
         &session,
         Some(&membership),
         status,
-        "pages/machine-add.html.jinja",
+        "Add machine",
         "machine-add",
-        context! { setup, add_error, name, minutes => TOKEN_TTL.num_minutes() },
+        None,
+        None,
+        None,
+        |_, csrf| {
+            crate::templates::compiled::pages::machine_add::render(&MachineAddPage {
+                slug: &membership.slug,
+                csrf,
+                setup,
+                add_error,
+                name,
+                minutes: TOKEN_TTL.num_minutes(),
+            })
+        },
     )
     .await?;
     response.headers_mut().insert(
@@ -642,28 +768,28 @@ pub async fn labels(
     Ok(redirect(&format!("/{slug}/machines?{query}")))
 }
 
-#[derive(Deserialize, Default, serde::Serialize)]
+#[derive(Deserialize, Default)]
 pub struct RunForm {
-    #[serde(default, skip_serializing)]
+    #[serde(default)]
     csrf: String,
     #[serde(default)]
-    host: String,
+    pub host: String,
     #[serde(default)]
-    vm_name: String,
+    pub vm_name: String,
     #[serde(default)]
-    vcpus: String,
+    pub vcpus: String,
     #[serde(default)]
-    memory_mib: String,
+    pub memory_mib: String,
     #[serde(default)]
-    disk_gib: String,
+    pub disk_gib: String,
     #[serde(default)]
-    kernel_url: String,
+    pub kernel_url: String,
     #[serde(default)]
-    kernel_sha256: String,
+    pub kernel_sha256: String,
     #[serde(default)]
-    rootfs_url: String,
+    pub rootfs_url: String,
     #[serde(default)]
-    rootfs_sha256: String,
+    pub rootfs_sha256: String,
 }
 
 impl RunForm {

@@ -1,0 +1,12 @@
+use grund_server::templates::compiled::layouts::Auth;
+use grund_server::templates::compiled::components::{AuthHead, Banner, Button, Field, Form};
+props crate::social::pages::SocialUsernamePage { csrf, username, error };
+
+<Auth title="Choose a username">
+  <AuthHead title="Choose a username" subtitle="" />
+  <Form action="/auth/complete" csrf={csrf} layout={None} method={None} autocomplete={None} form={None}>
+    <Banner text={error} tone="error" fields={None} ok={None} part={None} form={None} />
+    <Field name="username" label="Username" kind="text" value={username} error="" required={true} autocomplete="username" hint="3 to 32 letters, digits and single hyphens. It is public." autofocus={true} disabled={false} id={None} state={None} width={None} placeholder={None} unit={None} min={None} max={None} step={None} mono={false} suggestions={None} suggestions_strings={None} suggestions_numbers={None} form={None} />
+    <Button label="Create account" kind="primary" href="" icon_name="" block={true} size="" />
+  </Form>
+</Auth>

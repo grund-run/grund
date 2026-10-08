@@ -1,0 +1,11 @@
+use crate::templates::compiled::layouts::Auth;
+use crate::templates::compiled::components::{AuthHead, Foot, Icon};
+props crate::web::pages::ErrorPage<'_> { title, text, request_id };
+
+<Auth title={title}>
+  <AuthHead title={title} subtitle={text} />
+  <Foot>
+    <p><a class="link-more" href="/">Go to grund<Icon name="arrow" class="icon-sm" /></a></p>
+    {if !request_id.is_empty() { <p class="hint">Reference: <code>{request_id}</code></p> }}
+  </Foot>
+</Auth>

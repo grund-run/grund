@@ -1,5 +1,0 @@
-{% extends "layout-auth.html.jinja" %}
-{% block card %}
-{{ ui.auth_head(title, text) }}
-{% if link_href %}{% call ui.foot() %}<p>{{ ui.link_more(link_href, link_text) }}</p>{% endcall %}{% endif %}
-{% endblock %}

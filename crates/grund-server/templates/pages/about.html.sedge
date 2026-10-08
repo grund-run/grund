@@ -1,0 +1,13 @@
+use crate::templates::compiled::components::{OrganisationTabs, Rows, Row};
+props crate::web::about::AboutPage<'_> { viewer, revision, address, app_addresses, single };
+
+{if let Some(org) = &viewer.current {
+  <OrganisationTabs slug={&org.slug} active="about" />
+  <Rows>
+    <Row name="Version" sub={revision} tone="ok" status_tone="ok" plain />
+    <Row name="Address" sub={address} tone="ok" status_tone="ok" plain />
+    <Row name="App addresses" sub={app_addresses} tone="ok" status_tone="ok" plain />
+    <Row name="Organisations" sub={if *single { "One, which everyone joins by invitation" } else { "One per account, and more on request" }} tone="ok" status_tone="ok" plain />
+  </Rows>
+  <p class="hint">grund is free software under the AGPL-3.0. The fonts' licenses are on <a href="/licenses">Licenses</a>.</p>
+}}

@@ -9,6 +9,7 @@
 //! `grund.machine.v1.ManagementPoolService`, so the page and the API refuse
 //! the same things.
 
+use crate::templates::compiled::pages::pool;
 use axum::{
     Form,
     extract::{Path, Query, State as AxumState},
@@ -16,7 +17,6 @@ use axum::{
 };
 use chrono::Utc;
 use grund_store::{machines::MachineRow, organisations::Membership};
-use minijinja::{Value, context};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -33,6 +33,25 @@ use crate::{
         pages::{Notice, PageResult, forged, not_found_page, redirect},
     },
 };
+pub struct PoolMachine {
+    pub id: String,
+    pub name: String,
+    pub state: String,
+    pub status: &'static str,
+    pub tone: &'static str,
+    pub sub: String,
+    pub from_provider: bool,
+}
+
+pub struct PoolPage<'a> {
+    pub csrf: &'a str,
+    pub slug: &'a str,
+    pub manages: bool,
+    pub machines: Vec<PoolMachine>,
+    pub notice: &'static str,
+    pub error: &'static str,
+    pub provider: bool,
+}
 
 async fn is_operator(state: &State, membership: &Membership) -> anyhow::Result<bool> {
     Ok(state.machines().operator().await? == Some(membership.organisation_id))
@@ -42,7 +61,7 @@ fn manages(membership: &Membership) -> bool {
     matches!(membership.role.as_str(), "owner" | "admin")
 }
 
-fn pool_context(row: &MachineRow, now: chrono::DateTime<Utc>) -> Value {
+fn pool_context(row: MachineRow, now: chrono::DateTime<Utc>) -> PoolMachine {
     let (status, tone) = match row.state.as_str() {
         "available" => ("Available", "ok"),
         "leased" => ("Leased", "violet"),
@@ -57,29 +76,27 @@ fn pool_context(row: &MachineRow, now: chrono::DateTime<Utc>) -> Value {
                 format!("Last seen {}", at.format("%-d %b %Y %H:%M UTC"))
             })
     };
-    let lease = row.lessee_slug.as_ref().map(|slug| {
-        format!(
-            "Leased to {slug} as {}",
-            row.lease_name.as_deref().unwrap_or(&row.name)
+    use std::fmt::Write as _;
+    let mut sub = seen;
+    if let Some(slug) = row.lessee_slug.as_deref() {
+        write!(
+            sub,
+            " · Leased to {slug} as {}",
+            row.lease_name.as_deref().unwrap_or(&row.name),
         )
-    });
-    let sub = [
-        Some(seen),
-        lease,
-        row.provider_machine_id
-            .as_ref()
-            .map(|id| format!("Provider id {id}")),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>()
-    .join(" · ");
-    context! {
-        id => row.machine_id.to_string(),
-        name => row.name,
-        state => row.state,
-        status, tone, sub,
-        from_provider => row.provider_machine_id.is_some(),
+        .expect("writing into a String");
+    }
+    if let Some(id) = row.provider_machine_id.as_deref() {
+        write!(sub, " · Provider id {id}").expect("writing into a String");
+    }
+    PoolMachine {
+        id: row.machine_id.to_string(),
+        name: row.name,
+        state: row.state,
+        status,
+        tone,
+        sub,
+        from_provider: row.provider_machine_id.is_some(),
     }
 }
 
@@ -123,21 +140,38 @@ pub async fn pool_page(
         _ => "",
     };
     let now = Utc::now();
-    let machines: Vec<Value> = state
+    let machines: Vec<PoolMachine> = state
         .machines()
         .pool(None)
         .await?
-        .iter()
+        .into_iter()
         .filter(|row| row.state != "revoked")
         .map(|row| pool_context(row, now))
         .collect();
-    let page = context! {
-        machines, notice, error,
-        provider => state.capacity().enabled(),
-    };
-    member
-        .render(&state, "pages/pool.html.jinja", "pool", page)
-        .await
+    crate::web::pages::signed_in_typed(
+        &state,
+        &member.browser,
+        &member.session,
+        Some(&member.membership),
+        axum::http::StatusCode::OK,
+        "Management pool",
+        "pool",
+        None,
+        None,
+        None,
+        |_, csrf| {
+            pool::render(&PoolPage {
+                csrf,
+                slug: &member.membership.slug,
+                manages: manages(&member.membership),
+                machines,
+                notice,
+                error,
+                provider: state.capacity().enabled(),
+            })
+        },
+    )
+    .await
 }
 
 #[derive(Deserialize)]

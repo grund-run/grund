@@ -2464,7 +2464,7 @@ a.endpoint-text:hover {
 }
 
 /* ------------------------------------------------------------ style guide
- * The catalogue's own layout (components/catalogue.html.jinja). No
+ * The catalogue's own layout (templates/components/catalogue.html.sedge). No
  * product page uses these. */
 
 .sg-contents {

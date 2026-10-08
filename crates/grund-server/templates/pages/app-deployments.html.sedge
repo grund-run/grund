@@ -1,0 +1,40 @@
+use crate::templates::compiled::components::{Section, Rows, Row, EmptyState, Para, Expanders, Expander, CopyButton, Actions, PostButton};
+props crate::web::apps::AppDeploymentsPage<'_> { app, replicas, crowded, releases, manages, csrf };
+
+<Section id="copies" title="Copies" count={Some(replicas.len())} first={Some(true)}>
+  {if replicas.is_empty() {
+    <EmptyState text="No copies run yet." />
+  } else {
+    <Rows>{for replica in replicas.iter() {
+      <Row name="Copy {replica.slot} of {replica.of} · v{replica.release}" sub="on {replica.machine} · since {replica.placed}" icon_name="server" tone={replica.tone} status_text={Some(replica.words.as_str())} status_tone={replica.tone} />
+    }}</Rows>
+  }}
+  {if let Some(machine) = crowded { <Para kind="hint">All copies run on {machine}.</Para> }}
+</Section>
+<Section id="versions" title="Releases" count={Some(releases.len())}>
+  {if releases.is_empty() {
+    <EmptyState text="No releases yet." />
+  } else {
+    <Expanders>{for release in releases.iter() {
+      {let summary = format!("{} by {}{}{}", release.verb, release.by, if release.source.is_empty() { String::new() } else { format!(" {}", release.source) }, if release.note.is_empty() { String::new() } else { format!(" · {}", release.note) });}
+      <Expander title="v{release.number}" summary={&summary} icon_name="layers" tone={release.tone} state={Some((release.outcome, release.tone))} meta={&[release.short_digest.as_str(), release.ago.as_str()]} id="v{release.number}">
+      {let short_image = crate::templates::short_image(&release.image);}
+      {let made = format!("{} · {} by {}{}", release.at, release.verb, release.by, if release.source.is_empty() { String::new() } else { format!(" {}", release.source) });}
+        <Rows>
+          <Row name="Image" sub={&short_image} plain />
+          <Row name="Digest" sub={&release.digest} plain>
+            <:end><CopyButton text={&release.digest} label="the digest" labelled={false} /></:end>
+          </Row>
+          <Row name="Made" sub={&made} plain />
+          {if !release.note.is_empty() { <Row name="Note" sub={&release.note} plain /> }}
+          {if let Some(reason) = &release.reason { <Row name="What happened" sub={reason} plain /> }}
+        </Rows>
+        {if *manages && !release.live {
+          <Actions note="Makes a new release with v{release.number}'s image and settings, and the secrets' newest values.">
+            <PostButton action="{app.base}/releases/{release.number}/rollback" csrf={csrf} label={release.again} kind="secondary" size="sm" />
+          </Actions>
+        }}
+      </Expander>
+    }}</Expanders>
+  }}
+</Section>

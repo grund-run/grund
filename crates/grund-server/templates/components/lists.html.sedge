@@ -1,0 +1,153 @@
+use crate::templates::compiled::components::{CopyButton, External, Icon, IconFact, ImageIcon, Mark, Pill, Status, Tag};
+
+component Rows(children: Html) {
+  <ul class="rows">{children}</ul>
+}
+
+component Row(name: &str, sub: &str, icon_name: &str, tone: &str, letter: &str, href: &str, tags: &[&str], detail: &str, status_text: Option<&str>, status_tone: &str, plain: bool, status: Option<Html>, end: Option<Html>, status_active: Option<bool>, end_active: Option<bool>) {
+  <li class={if *plain { "row row-plain" } else { "row" }}>
+    {if !*plain {
+      <span class="row-icon">{if !letter.is_empty() { <Mark name={letter} size="lg" /> } else { <Icon name={icon_name} class="icon-lg tone-{tone}" /> }}</span>
+    }}
+    <div><p class="row-name">{if !href.is_empty() { <a href={href}>{name}</a> } else { {name} }}{for text in tags.iter() { {" "}<span class="tag">{text}</span> }}</p><p class="row-sub">{sub}{if !detail.is_empty() { <br>{detail} }}</p></div>
+    {if !*plain {
+      {if let Some(text) = status_text { <Status text={text} tone={status_tone} /> } else if status_active.unwrap_or(true) { {if let Some(status) = status { {status} } else { <span></span> }} } else { <span></span> }}
+    }}
+    {if end_active.unwrap_or(true) { {if let Some(end) = end { <div class="row-end">{end}</div> } else { <span></span> }} } else { <span></span> }}
+  </li>
+}
+
+component Items(view: &str, children: Html) {
+  <ul class="items items-{view}" data-filterable>{children}</ul>
+}
+
+component AppAddress(app: &crate::web::apps::ListingView) {
+  {if let Some(address) = &app.address {
+    {let href = format!("https://{address}");}
+    <External href={href} label={href} />
+  } else if let Some(internal) = &app.internal {
+    <span class="address"><code class="address-text">{internal}</code><CopyButton text={internal} label={internal} /></span>
+  }}
+}
+
+component AppRow(slug: &str, manages: bool, app: &crate::web::apps::ListingView) {
+  <li class="item" data-name={app.name} data-image={app.image}>
+    <ImageIcon key={app.icon} />
+    <div class="item-text">
+      <a class="item-name" href="/{slug}/apps/{app.name}">{app.name}</a>
+      <p class="item-sub" title={if app.image.is_empty() { None } else { Some(app.image.as_str()) }}>{if app.image.is_empty() { No version yet } else { {crate::templates::short_image(&app.image)} }}</p>
+    </div>
+    <div class="item-meta"><AppAddress app={app} /></div>
+    <AppMenu slug={slug} manages={*manages} name={app.name} address={app.address.as_deref()} />
+  </li>
+}
+
+component AppMenu(slug: &str, manages: bool, name: &str, address: Option<&str>) {
+  {let base = format!("/{slug}/apps/{name}");}
+  <Menu label={format!("Actions for {name}")} icon_name="more">
+    {if let Some(address) = address { <MenuItem href={format!("https://{address}")} icon_name="external" label="Open" external /> }}
+    <MenuItem href={base} icon_name="home" label="Overview" />
+    <MenuItem href={format!("{base}/deployments")} icon_name="layers" label="Deployments" />
+    {if *manages {
+      <MenuItem href={format!("{base}/settings?edit=image")} icon_name="layers" label="Update image" />
+      <MenuItem href={format!("{base}/settings?edit=copies")} icon_name="bars" label="Scale" />
+      <MenuItem href={format!("{base}/settings?edit=delete")} icon_name="trash" label="Delete…" danger />
+    }}
+  </Menu>
+}
+
+component MachineRow(slug: &str, manages: bool, machine: &crate::web::machines::MachineItem<'_>, csrf: &str) {
+  <li class="item" data-name={machine.search} data-tab={machine.tab} hidden={!machine.shown}>
+    <span class="item-icon" aria-hidden="true"><Icon name="server" class="icon-lg" /></span>
+    <div class="item-text">
+      <div class="item-head"><p class="item-name">{machine.name}</p>{if machine.leased { <Tag text="Hosted" /> }}{if machine.kvm { <Tag text="Runs VMs" /> }}{for label in machine.labels.iter().take(3) { <Tag text={label} /> }}{if machine.labels.len() > 3 { <Tag text={format!("+{}", machine.labels.len() - 3)} /> }}</div>
+      <p class="item-sub item-sub-wrap"><Pill text={machine.status} tone={machine.tone} plain />{if !machine.detail.is_empty() { <span class="item-detail">{machine.detail}</span> }}</p>
+    </div>
+    <div class="item-meta item-facts">{for (icon_name, text) in &machine.facts { {if !text.is_empty() { <IconFact icon_name={icon_name} text={text} /> } else { <span></span> }} }}</div>
+    {if *manages { <MachineMenu slug={slug} machine={machine} csrf={csrf} /> } else { <span></span> }}
+  </li>
+}
+
+component MachineMenu(slug: &str, machine: &crate::web::machines::MachineItem<'_>, csrf: &str) {
+  {let base = format!("/{slug}/machines");}
+  <Menu label={format!("Actions for {}", machine.name)} icon_name="more">
+    <MenuItem href={format!("{base}?labels={}#labels", machine.id)} icon_name="tag" label="Labels" />
+    {if machine.hosts_vms { <MenuItem href={format!("{base}?run={}#run", machine.id)} icon_name="box" label="Run a virtual machine" /> }}
+    {if machine.out_of_service {
+      <MenuPost action={format!("{base}/{}/service", machine.id)} csrf={csrf} icon_name="ok" label="Put back in service" hidden={&[("in_service", "yes")]} />
+    } else {
+      <MenuPost action={format!("{base}/{}/service", machine.id)} csrf={csrf} icon_name="minus" label="Take out of service" hidden={&[("in_service", "no")]} />
+    }}
+    {if !machine.leased { <MenuPost action={format!("{base}/{}/remove", machine.id)} csrf={csrf} icon_name="trash" label="Remove" danger /> }}
+  </Menu>
+}
+
+component TemplateRow(template: &crate::web::apps::TemplateView, href: &str) {
+  <li class="item" data-name={template.key}>
+    <ImageIcon key={template.icon} />
+    <div class="item-text"><p class="item-name">{template.title}</p><p class="item-sub item-sub-wrap">{template.summary}</p></div>
+    <div class="item-meta">{if let Some(soon) = template.soon { <Tag text={soon} /> } else if !href.is_empty() { <a class="btn btn-secondary btn-sm" href={href}><span>Deploy</span></a> }}</div>
+    <span></span>
+  </li>
+}
+
+component Links(children: Html) {
+  <ul class="links">{children}</ul>
+}
+
+component Link(href: &str, title: &str, value: &str, icon_name: &str, action: &str, danger: bool, state: &str) {
+  <li><a class="link{if *danger { " link-danger" } else { "" }}{if !state.is_empty() { " is-" } else { "" }}{state}" href={href}>
+    {if !icon_name.is_empty() { <Icon name={icon_name} class="link-icon" /> }}<span class="link-title">{title}</span><span class="link-value">{value}</span>
+    {if !action.is_empty() { <span class="link-action">{action}</span> }}<Icon name="chevron" class="icon-sm link-chevron" />
+  </a></li>
+}
+
+component Tiles(children: Html) {
+  <ul class="tiles">{children}</ul>
+}
+
+component Tile(href: &str, title: &str, state: &str) {
+  <li><a class="tile{if !state.is_empty() { " is-" } else { "" }}{state}" href={href}><span class="tile-plus" aria-hidden="true"><Icon name="plus" class="icon-sm" /></span>{title}</a></li>
+}
+
+component Timeline(children: Html) {
+  <ol class="timeline">{children}</ol>
+}
+
+component Event(title: &str, when: &str, at: &str, iso: &str, meta: &str, state: &str, children: Html) {
+  <li class="event{if !state.is_empty() { " event-" } else { "" }}{state}">
+    <span class="event-mark" aria-hidden="true">{if *state == "ok" { <Icon name="ok" class="icon-sm" /> } else if *state == "failed" { <Icon name="alert" class="icon-sm" /> }}</span>
+    <div class="event-text"><p class="event-title">{title}</p><p class="event-sub">{children}</p></div>
+    <p class="event-meta">{if !when.is_empty() { <time datetime={iso} title={at}>{when}</time> }}{if !meta.is_empty() { <span>{meta}</span> }}</p>
+  </li>
+}
+
+component Menu(label: &str, icon_name: &str, open: bool, children: Html) {
+  <details class="menu" open={open}>
+    <summary class="icon-btn icon-btn-boxed" aria-label={label}><Icon name={icon_name} class="icon-sm" /></summary>
+    <ul class="menu-list">{children}</ul>
+  </details>
+}
+
+component MenuItem(href: &str, icon_name: &str, label: &str, danger: bool, external: bool, state: &str) {
+  <li><a class="menu-item{if *danger { " menu-item-danger" } else { "" }}{if !state.is_empty() { " is-" } else { "" }}{state}" href={href} rel={if *external { Some("noopener noreferrer") } else { None }} target={if *external { Some("_blank") } else { None }}><Icon name={icon_name} class="icon-sm" />{label}</a></li>
+}
+
+component MenuPost(action: &str, csrf: &str, icon_name: &str, label: &str, danger: bool, hidden: &[(&str, &str)]) {
+  <li><form method="post" action={action}><input type="hidden" name="csrf" value={csrf}>{for (name, value) in hidden.iter() { <input type="hidden" name={name} value={value}> }}<button class={if *danger { "menu-item menu-item-danger" } else { "menu-item" }} type="submit"><Icon name={icon_name} class="icon-sm" />{label}</button></form></li>
+}
+
+component ListTools(sorts: &[(&str, &str)], sort: &str, list_href: &str, grid_href: &str, view: &str, hidden: &[(&str, &str)]) {
+  <div class="list-tools">
+    <form class="sort" method="get">
+      {for (name, value) in hidden.iter() { {if !value.is_empty() { <input type="hidden" name={name} value={value}> }} }}
+      <label for="sort">Sort by</label>
+      <span class="select-wrap"><select class="control select" id="sort" name="sort" data-autosubmit>{for (value, label) in sorts.iter() { <option value={value} selected={*sort == *value}>{label}</option> }}</select><Icon name="down" class="icon-sm select-chevron" /></span>
+      <button class="btn btn-secondary btn-sm js-hide" type="submit"><span>Sort</span></button>
+    </form>
+    <div class="view-toggle" role="group" aria-label="View">
+      <a class={if *view == "grid" { "icon-btn is-active" } else { "icon-btn" }} href={grid_href} aria-label="Grid view" aria-current={if *view == "grid" { Some("true") } else { None }}><Icon name="grid" class="icon-sm" /></a>
+      <a class={if *view == "list" { "icon-btn is-active" } else { "icon-btn" }} href={list_href} aria-label="List view" aria-current={if *view == "list" { Some("true") } else { None }}><Icon name="list" class="icon-sm" /></a>
+    </div>
+  </div>
+}

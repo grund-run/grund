@@ -1,0 +1,62 @@
+use crate::templates::compiled::components::{PageHead, Banner, Panel, Button, Icon, CopyButton, EmptyState, Callout, StatusLine, Para, Field};
+props crate::web::domains::DomainsPage<'_> { csrf, slug, manages, addresses, domains, notice, error, form_error, name_error, name };
+
+<PageHead title="Domains" />
+{if !notice.is_empty() { <Banner text={notice} tone="ok" /> }}
+{if !error.is_empty() { <Banner text={error} /> }}
+<section aria-labelledby="addresses"><div class="section-head"><h2 class="section-title" id="addresses">App addresses<span class="count">{addresses.len()}</span></h2></div>
+  {if addresses.is_empty() {
+    <EmptyState title="No app has an address yet">An app gets <code>&lt;app&gt;-{slug}.&lt;domain&gt;</code> when it publishes an HTTP port.</EmptyState>
+  } else {
+    <ul class="rows">{for app in addresses {
+      <li class="row"><span class="row-icon"><Icon name="globe" class="icon-lg tone-ok" /></span><div><p class="row-name"><a href="/{slug}/apps/{app.name}">{app.name}</a></p><p class="row-sub">https://{app.address}</p></div><span></span><div class="row-end"><a class="icon-btn" href="https://{app.address}" rel="noopener noreferrer" target="_blank" aria-label="Open https://{app.address} in a new tab"><Icon name="external" class="icon-sm" /></a></div></li>
+    }}</ul>
+  }}
+</section>
+<section class="section" aria-labelledby="custom"><div class="section-head"><h2 class="section-title" id="custom">Your own domains<span class="count">{domains.len()}</span></h2></div>
+  {if domains.is_empty() { <EmptyState title="No domains of your own yet" /> }}
+</section>
+{for domain in domains {
+  <Panel id={domain.id.as_str()} title={domain.name}>
+    {if domain.tone == "danger" {
+      <Callout title="Not working yet" text={domain.sentence.as_ref()} icon_name="alert" tone="danger" danger />
+    } else {
+      <StatusLine text={domain.sentence.as_ref()} tone={domain.tone} id="{domain.id}-status" />
+    }}
+    {if domain.state == "pending" {
+      <Para kind="aside">Make this record at your DNS provider, then check it.</Para>
+    } else if domain.record.is_some() {
+      <Para text={domain.records_aside.as_deref().unwrap_or("")} kind="aside" />
+    }}
+    {if let Some(record) = &domain.record {
+      <table class="dns-records"><caption class="visually-hidden">Records for {domain.name}</caption><thead><tr><th scope="col">Type</th><th scope="col">Name</th><th scope="col">Value</th></tr></thead><tbody>
+        <tr><td data-label="Type"><code>{record.kind}</code></td><td data-label="Name"><span class="dns-cell"><code>{record.name}</code><CopyButton text={record.name} label="the {record.kind} record's name" /></span></td><td data-label="Value"><span class="dns-cell"><code>{record.value}</code><CopyButton text={record.value} label="the {record.kind} record's value" /></span></td></tr>
+      </tbody></table>
+    }}
+    {if *manages {
+      {if domain.state == "verified" || domain.state == "bound" {
+        {if !addresses.is_empty() {
+          <form class="form form-row" method="post" action="/{slug}/domains/bind" novalidate><input type="hidden" name="csrf" value={csrf}><input type="hidden" name="name" value={domain.name}>
+            <fieldset class="field"><legend class="field-label">{if domain.state == "verified" { Serve this app on it } else { Move it to another app }}</legend><input class="control chips-search" type="search" placeholder="Search apps" aria-label="Search apps" autocomplete="off" data-chip-search hidden><div class="chips">
+              {for app in addresses { <label class="chip"><input class="chip-input" type="radio" name="app" value={app.name} checked={if domain.app.is_empty() { addresses.first().is_some_and(|first| first.name == app.name) } else { domain.app == app.name }}><span>{app.name}</span></label> }}
+            </div></fieldset><Button label={if domain.state == "verified" { "Bind" } else { "Move" }} kind="secondary" />
+          </form>
+        } else { <Para kind="hint">No app has a public HTTP port to bind it to.</Para> }}
+      }}
+      <div class="form-actions">
+        {if domain.state == "pending" { <form method="post" action="/{slug}/domains/verify" novalidate><input type="hidden" name="csrf" value={csrf}><input type="hidden" name="name" value={domain.name}><Button label="Check DNS now" kind="secondary" /></form> }}
+        {if domain.state == "bound" { <form method="post" action="/{slug}/domains/unbind" novalidate><input type="hidden" name="csrf" value={csrf}><input type="hidden" name="name" value={domain.name}><Button label="Unbind" kind="secondary" /></form> }}
+        <form method="post" action="/{slug}/domains/remove" novalidate><input type="hidden" name="csrf" value={csrf}><input type="hidden" name="name" value={domain.name}><button class="btn btn-danger" type="submit"><span>Remove {domain.name}</span></button></form>
+      </div>
+    }}
+  </Panel>
+}}
+{if *manages {
+  <Panel id="add" title="Add a domain">
+    <form class="form form-row" method="post" action="/{slug}/domains" novalidate autocomplete="off"><input type="hidden" name="csrf" value={csrf}>
+      <Banner text={form_error.as_str()} fields={Some(&[name_error.as_str()])} />
+      <Field name="name" label="Domain" value={name.as_str()} autocomplete="off" error={name_error.as_str()} hint="Such as shop.example.com. No wildcards." required mono />
+      <Button label="Add domain" kind="primary" />
+    </form>
+  </Panel>
+}}

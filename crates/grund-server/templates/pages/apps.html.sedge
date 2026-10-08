@@ -1,0 +1,21 @@
+use crate::templates::compiled::components::{ImageSprite, PageHead, ListTools, Banner, Para, Items, AppRow, EmptyState, AddCard};
+props crate::web::apps::AppsPage { slug, list_href, grid_href, all_href, icons, apps, total, list, sorts, notice, error, manages };
+
+<ImageSprite icons={icons} />
+<PageHead title="Apps">
+  <ListTools sorts={sorts} sort={&list.sort} list_href={list_href} grid_href={grid_href} view={&list.view} hidden={&[("q", list.q.as_str()), ("view", list.view.as_str())]} />
+</PageHead>
+<Banner text={error} ok={Some(notice)} />
+{if !list.q.is_empty() {
+  <Para kind="note">{apps.len()} of {total} app{if *total != 1 { s }} match “{list.q}”. <a href={all_href}>Show all</a></Para>
+}}
+{if !apps.is_empty() {
+  <Items view={&list.view}>{for app in apps { <AppRow slug={slug} manages={*manages} app={app} /> }}</Items>
+  <Para kind="note" hidden filter_empty>No app matches that.</Para>
+} else if !list.q.is_empty() {
+  <Para kind="note">No app matches that.</Para>
+} else if *manages {
+  <AddCard href="/{slug}/deploy" title="Deploy your first app" />
+} else {
+  <EmptyState title="No apps yet" text="Owners and admins deploy them." />
+}}

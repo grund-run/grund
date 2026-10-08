@@ -1,0 +1,87 @@
+use crate::templates::compiled::components::{Brand, Icon, Mark, MenuItem, CsrfField, HiddenField};
+use crate::web::pages::{AppSearch, TypedOrg, TypedViewer};
+component NavItem(href: &str, icon_name: &str, label: &str, active: bool, state: &str) {
+<li><a class="nav-item{if *active { " is-active" } else { "" }}{if !state.is_empty() { " is-" } else { "" }}{state}" href={href} aria-current={if *active { Some("page") } else { None }}><Icon name={icon_name} />{label}</a></li>
+}
+component OrgNavItem(slug: &str, suffix: &str, icon_name: &str, label: &str, active: bool) {
+<li><a class="nav-item{if *active { " is-active" } else { "" }}" href="/{slug}{suffix}" aria-current={if *active { Some("page") } else { None }}><Icon name={icon_name} />{label}</a></li>
+}
+component Nav(children: Html) {
+<ul class="nav">{children}</ul>
+}
+component OrgSwitcher(org: &TypedOrg, orgs: &[TypedOrg], can_create: bool) {
+{let role = match org.role.as_str() { "owner" => "Owner", "admin" => "Admin", "member" => "Member", other => other };}
+<details class="org-switch menu">
+  <summary class="org-switch-current">
+    <Mark name={org.slug.as_str()} />
+    <span class="org-switch-text"><span class="org-switch-name">{org.slug}</span><span class="org-switch-role">{role}</span></span>
+    <Icon name="down" class="icon-sm org-switch-chevron" />
+  </summary>
+  <ul class="menu-list menu-list-full">
+    {for other in orgs.iter() {
+      <li><a class={if other.current { "menu-item is-current" } else { "menu-item" }} href="/{other.slug}" aria-current={if other.current { Some("true") } else { None }}><Mark name={other.slug.as_str()} />{other.slug}</a></li>
+    }}
+    {if *can_create { <MenuItem href="/orgs/new" icon_name="plus" label="New organisation" /> }}
+  </ul>
+</details>
+}
+component AccountMenu(viewer: &TypedViewer, csrf: &str) {
+<details class="account menu">
+  <summary class="avatar" aria-label="{viewer.username}: account menu">{viewer.initials}</summary>
+  <ul class="menu-list menu-list-up">
+    <li><p class="menu-title">{viewer.username}</p></li>
+    {if !viewer.email.is_empty() { <li><p class="menu-text">{viewer.email}</p></li> }}
+    <li><form method="post" action="/logout"><CsrfField token={csrf} /><button class="menu-item" type="submit"><Icon name="logout" class="icon-sm" />Sign out</button></form></li>
+  </ul>
+</details>
+}
+component Sidebar(viewer: &TypedViewer, section: &str, csrf: &str) {
+<nav class="sidebar" aria-label="Main">
+  <Brand href="/" />
+  {if let Some(org) = &viewer.current {
+    <OrgSwitcher org={org} orgs={viewer.orgs.as_slice()} can_create={viewer.can_create} />
+    <ul class="nav">
+      <OrgNavItem slug={org.slug.as_str()} icon_name="home" label="Overview" active={*section == "overview"} />
+      <OrgNavItem slug={org.slug.as_str()} suffix="/apps" icon_name="grid" label="Apps" active={*section == "apps" || *section == "deploy"} />
+      <OrgNavItem slug={org.slug.as_str()} suffix="/machines" icon_name="server" label="Machines" active={*section == "machines" || *section == "machine-add" || *section == "pool"} />
+      <OrgNavItem slug={org.slug.as_str()} suffix="/domains" icon_name="globe" label="Domains" active={*section == "domains"} />
+      <OrgNavItem slug={org.slug.as_str()} suffix="/templates" icon_name="template" label="Templates" active={*section == "templates"} />
+      <OrgNavItem slug={org.slug.as_str()} suffix="/settings" icon_name="users" label="Organisation" active={*section == "org-settings" || *section == "members"} />
+    </ul>
+  } else {
+    <ul class="nav">
+      {if viewer.can_create { <NavItem href="/orgs/new" icon_name="plus" label="New organisation" active={*section == "new-organisation"} /> }}
+    </ul>
+  }}
+  <ul class="nav nav-foot">
+    <NavItem href="https://git.kjuulh.io/grund/grund" icon_name="book" label="Docs & community" />
+    <NavItem href="/settings/sessions" icon_name="user" label="Account" active={*section == "settings"} />
+  </ul>
+  <AccountMenu viewer={viewer} csrf={csrf} />
+</nav>
+}
+component TopbarAction(org: &TypedOrg, section: &str, state: &str) {
+{if org.manages && *section != "deploy" && *section != "machine-add" && *section != "pool" {
+  <span class="topbar-end"><a class="btn btn-primary{if !state.is_empty() { " is-" } else { "" }}{state}" href="/{org.slug}{if *section == "machines" { "/machines/add" } else { "/deploy" }}"><Icon name="plus" class="icon-sm" /><span class="btn-label">{if *section == "machines" { Add machine } else { Deploy app }}</span></a></span>
+}}
+}
+component Topbar(viewer: &TypedViewer, section: &str, list: Option<&AppSearch>) {
+<header class="topbar">
+  {if let Some(org) = &viewer.current {
+    {if *section != "machines" && *section != "machine-add" && *section != "pool" {
+      <form class="search" role="search" method="get" action="/{org.slug}/apps">
+        <label class="visually-hidden" for="search">Search apps</label>
+        <Icon name="search" class="icon-sm search-icon" />
+        <input id="search" name="q" type="search" placeholder="Search apps…" autocomplete="off" value={list.map_or("", |list| list.q.as_str())} data-filter={crate::templates::BareDataAttr(list.is_some())}>
+        {if let Some(list) = list {
+          {if !list.sort.is_empty() { <HiddenField name="sort" value={list.sort.as_str()} /> }}
+          {if !list.view.is_empty() { <HiddenField name="view" value={list.view.as_str()} /> }}
+        }}
+      </form>
+    }}
+    <TopbarAction org={org} section={section} />
+  } else {
+    <p class="topbar-title">{viewer.username}</p>
+  }}
+</header>
+}

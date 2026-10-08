@@ -1,6 +1,6 @@
 //! The seam between grund's open core and features built outside it (the
-//! commercial `ee/` directory). An extension adds routes, templates and
-//! sign-in providers; it never replaces anything the core does. Whether a
+//! commercial `ee/` directory). An extension adds routes and sign-in
+//! providers; it never replaces anything the core does. Whether a
 //! commercial extension may act is still decided by
 //! [`crate::services::entitlements::Entitlements`], which every such
 //! extension asks before serving.
@@ -21,12 +21,6 @@ pub struct LoginProvider {
 pub trait Extension: Send + Sync + 'static {
     /// Its name, for logs.
     fn name(&self) -> &'static str;
-
-    /// Templates to add to the environment, by name. They may extend the
-    /// core's layouts.
-    fn templates(&self) -> &'static [(&'static str, &'static str)] {
-        &[]
-    }
 
     /// Routes to merge into the page router, under the same middleware as
     /// the core's pages.

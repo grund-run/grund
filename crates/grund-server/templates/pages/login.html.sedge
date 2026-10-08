@@ -1,0 +1,27 @@
+use crate::templates::compiled::layouts::Auth;
+use crate::templates::compiled::components::{AuthHead, Form, Banner, Field, Button, Foot, Icon, HiddenField, OrDivider};
+props crate::web::pages::LoginPage<'_> { csrf, login, error, notice, return_to, providers, signup_enabled };
+
+<Auth title="Sign in">
+  <AuthHead title="Sign in" />
+  <Form action="/login" csrf={csrf}>
+    {if !return_to.is_empty() { <HiddenField name="return_to" value={return_to} /> }}
+    <Banner text={notice} tone="ok" />
+    <Banner text={error} />
+    <Field name="login" label="Email or username" value={login} required autocomplete="username" autofocus={login.is_empty()} />
+    <Field name="password" label="Password" kind="password" required autocomplete="current-password" autofocus={!login.is_empty()} />
+    <Button label="Sign in" kind="primary" block />
+  </Form>
+  {if !providers.is_empty() {
+    <OrDivider />
+    <div class="providers">
+      {for provider in providers.iter() {
+        <a class="btn btn-secondary btn-block" href="/auth/{provider.id}/start"><Icon name={provider.icon} /><span>Continue with {provider.name}</span></a>
+      }}
+    </div>
+  }}
+  <Foot>
+    <p><a href="/reset">Forgot your password?</a></p>
+    {if *signup_enabled { <p>New to grund? <a href="/signup">Create an account</a></p> }}
+  </Foot>
+</Auth>

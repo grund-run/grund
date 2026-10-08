@@ -1,0 +1,22 @@
+use crate::templates::compiled::components::{IconSprite, SkipLink};
+component Base(title: &str, organisation: &str, scripts: bool, refresh: Option<u16>, head: Option<Html>, children: Html) {
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>{if !title.is_empty() { {title}{" · "} }}{if !organisation.is_empty() { {organisation}{" · "} }}grund</title>
+  <link rel="stylesheet" href={crate::templates::compiled_css_href()}>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  {if *scripts { <script src={crate::templates::compiled_js_href()} defer></script> }}
+  {if let Some(seconds) = refresh { <meta http-equiv="refresh" content={seconds}> }}
+  {head}
+</head>
+<body>
+  <SkipLink />
+  <IconSprite />
+  {children}
+</body>
+</html>
+}

@@ -1,0 +1,46 @@
+use crate::templates::compiled::components::{OrganisationTabs, Rows, Row, Section, Form, Field, Button, Banner, PostButton, Expander, Expanders, Actions, Callout, Para, LinkMore, FieldError};
+props crate::web::orgs::SettingsPage<'_> { viewer, csrf, owners, billing, rename_value, deleting, refusal, notice, rename_error, delete_error };
+
+{if let Some(org) = &viewer.current {
+  <OrganisationTabs slug={&org.slug} active="general" />
+  {if !notice.is_empty() { <Banner text={notice} tone="ok" /> }}
+  <Rows>
+    <Row name="Name" sub={&org.slug} tone="ok" status_tone="ok" plain end_active={Some(!org.owner)}><:end>{if !org.owner { <Para kind="hint">Owners can rename it.</Para> }}</:end></Row>
+    <Row name="Created" sub={&org.since} tone="ok" status_tone="ok" plain />
+    <Row name="Your role" sub={&org.role} tone="ok" status_tone="ok" plain />
+  </Rows>
+  <Section id="billing" title="Billing"><Rows>
+    {if billing.state == "unavailable" {
+      <Row name="Plan" sub="Billing is unavailable right now" tone="ok" status_tone="ok" plain><:end><Para kind="hint">Try again in a few minutes.</Para></:end></Row>
+    } else {
+      <Row name="Plan" sub={&billing.plan} tone="ok" status_tone="ok" plain end_active={Some(billing.state == "free" || billing.past_due)}>
+        <:end>{if billing.state == "free" { <Para kind="hint">Nothing is charged.</Para> } else if billing.past_due { <FieldError text={if org.owner { "A payment failed. Update the payment details." } else { "A payment failed. An owner needs to update the payment details." }} /> }}</:end>
+      </Row>
+    }}
+    <Row name="Managed by" sub={&owners.join(", ")} tone="ok" status_tone="ok" plain>
+      <:end>{if let Some(url) = billing.manage_url.as_deref().filter(|_| org.owner) { <LinkMore href={url} label="Manage billing" /> } else { <Para kind="hint">Owners manage billing.</Para> }}</:end>
+    </Row>
+  </Rows></Section>
+  {if org.owner {
+    <Section id="change" title="Change"><Expanders>
+      <Expander title="Name" summary={&org.slug} icon_name="gear" open={!rename_error.is_empty()} id="rename">
+        <Form action="/{org.slug}/settings/rename" csrf={csrf}>
+          <Field name="slug" label="New name" value={rename_value} error={rename_error} required autocomplete="off" hint="3 to 32 letters, digits and single hyphens." width={Some("md")} />
+          <Actions note="The old name stays reserved and redirects to the new one."><Button label="Rename" kind="primary" /></Actions>
+        </Form>
+      </Expander>
+      <Expander title="Delete {org.slug}" summary="Cannot be undone." icon_name="trash" open={*deleting || !refusal.is_empty() || !delete_error.is_empty()} kind="danger" id="delete">
+        {if *deleting {
+          <Callout title="Deleting {org.slug}" text="Waiting for billing. Nothing is deleted until it answers." icon_name="clock" tone="orange" />
+          <Actions><PostButton action="/{org.slug}/settings/cancel-deletion" csrf={csrf} label="Cancel the deletion" kind="secondary" /></Actions>
+        } else {
+          <Form action="/{org.slug}/settings/delete" csrf={csrf}>
+            {if !refusal.is_empty() { <Banner text={refusal} /> }}
+            <Field name="confirm" label="Type {org.slug} to confirm" error={delete_error} required autocomplete="off" width={Some("md")} />
+            <Actions note="The name stays reserved."><Button label="Delete {org.slug}" kind="danger" /></Actions>
+          </Form>
+        }}
+      </Expander>
+    </Expanders></Section>
+  }}
+}}

@@ -1,0 +1,24 @@
+use crate::templates::compiled::components::{ImageSprite, PageHead, Section, Items, AppRow, AddCard, EmptyState, Rows, Row, Stats};
+use crate::web::orgs::role_title;
+props crate::web::orgs::HomePage<'_> { viewer, members, icons, apps, app_count };
+
+{if let Some(org) = &viewer.current {
+  {let apps_href = format!("/{}/apps", org.slug);}
+  {let members_href = format!("/{}/settings/members", org.slug);}
+  {let member_since = format!("Member since {}", viewer.registered_on);}
+  <ImageSprite icons={icons} />
+  <PageHead title="Overview" />
+  <Section id="apps" title="Apps" count={Some(*app_count)} more={if *app_count > 0 { Some((apps_href.as_str(),"View all")) } else { None }} first={Some(true)}>
+    {if !apps.is_empty() {
+      <Items view="list">{for app in apps { <AppRow slug={&org.slug} manages={org.manages} app={app} /> }}</Items>
+    } else if org.manages {
+      <AddCard href="/{org.slug}/deploy" title="Deploy your first app" />
+    } else {
+      <EmptyState title="No apps yet" text="Owners and admins deploy them." />
+    }}
+  </Section>
+  <Section id="org" title="Organisation" more={Some((members_href.as_str(),"Members"))}>
+    <Rows><Row name={&format!("{} member{}",members,if *members == 1 { "" } else { "s" })} icon_name="users" tone="blue" sub={members_href.as_str()} status_text={Some(role_title(&org.role))} status_tone="ok" /></Rows>
+  </Section>
+  <Stats facts={&[("mail",viewer.email.as_str()),("clock",member_since.as_str())]} />
+}}

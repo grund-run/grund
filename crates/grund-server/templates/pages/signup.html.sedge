@@ -1,0 +1,15 @@
+use crate::templates::compiled::layouts::Auth;
+use crate::templates::compiled::components::{AuthHead, Form, Banner, Field, Button, Foot};
+props crate::web::pages::SignupPage<'_> { csrf, username, email, errors, error };
+
+<Auth title="Create an account">
+  <AuthHead title="Create an account" />
+  <Form action="/signup" csrf={csrf}>
+    <Banner text={error} />
+    <Field name="username" label="Username" value={username} error={errors.username.as_deref().unwrap_or("")} required autocomplete="username" hint="3 to 32 letters, digits and single hyphens. It is public." autofocus />
+    <Field name="email" label="Email" kind="email" value={email} error={errors.email.as_deref().unwrap_or("")} required autocomplete="email" hint="We send a link to confirm it." />
+    <Field name="password" label="Password" kind="password" error={errors.password.as_deref().unwrap_or("")} required autocomplete="new-password" hint="At least 12 characters." />
+    <Button label="Create account" kind="primary" block />
+  </Form>
+  <Foot><p>Already have an account? <a href="/login">Sign in</a></p></Foot>
+</Auth>

@@ -1,0 +1,74 @@
+use crate::templates::FormState;
+use crate::templates::compiled::components::{ImageSprite, PageHead, ChoiceField, ChoiceCard, Form, HiddenField, Banner, Grid, Field, StepperField, PairsField, ChipsField, Expanders, Expander, CodeField, Actions, Button, Para, EmptyState, Icon};
+props crate::web::apps::DeployPage { slug, manages, mode, modes, new, new_error, errors, advanced, secrets_dropped, exposures, public_hint, templates, image_keys, signals, memory_steps, cpu_steps, checks, action, csrf };
+{let back = format!("/{slug}/apps");}
+{let form_state = FormState { csrf, errors, banners: &std::collections::BTreeMap::new() };}
+
+<ImageSprite icons={image_keys} />
+<PageHead title="Deploy app" back={Some((back.as_str(), "Back to apps"))} />
+{if *manages {
+  <nav class="choices choices-lg" aria-label="Deployment mode">
+    {for choice in modes {
+      <a class={if choice.key == *mode { "choice is-chosen" } else { "choice" }} href={&choice.href} aria-current={if choice.key == *mode { Some("true") } else { None }}>
+        <span class="icon-tile" aria-hidden="true"><Icon name={choice.icon} /></span>
+        <span class="choice-text"><span class="choice-title">{choice.title}</span><span class="choice-line">{choice.text}</span>{if !choice.sub.is_empty() { <span class="choice-sub">{choice.sub}</span> }}</span>
+        <span class="choice-dot" aria-hidden="true"></span>
+      </a>
+    }}
+  </nav>
+  <Form action={action} form={Some(&form_state)} autocomplete={Some("off")}>
+    <HiddenField name="mode" value={mode} />
+    {if *mode == "premade" {
+      <section class="panel" aria-labelledby="premade"><div class="panel-head"><h2 class="panel-title" id="premade">Premade app</h2></div>
+        <Banner text={new_error} />
+        <ChoiceField name="template" label="App" error={form_state.error("template").unwrap_or("")} large>
+          {for choice in templates {
+            <ChoiceCard name="template" value={choice.value} title={choice.title} text={choice.text} image={choice.image} tag={choice.tag.unwrap_or("")} fill="name" disabled={choice.disabled} selected={new.template == choice.value} />
+          }}
+        </ChoiceField>
+        <Grid>
+          <Field name="name" label="Name" value={&new.name} form={Some(&form_state)} hint="Lowercase letters, digits and -." required />
+          <StepperField name="copies" label="Copies" value={if new.copies.is_empty() { "1" } else { &new.copies }} min="1" max="20" error={form_state.error("copies").unwrap_or("")} />
+          <ChoiceField name="exposure" label="Exposure" error={form_state.error("exposure").unwrap_or("")} hint={public_hint}>
+            {for choice in exposures { <ChoiceCard name="exposure" value={choice.value} title={choice.title} text={&choice.text} icon={choice.icon} tag={choice.tag.unwrap_or("")} disabled={choice.disabled} selected={new.exposure == choice.value || (new.exposure.is_empty() && choice.value == "private")} /> }}
+          </ChoiceField>
+        </Grid>
+      </section>
+    } else {
+      <section class="panel" aria-labelledby="custom"><div class="panel-head"><h2 class="panel-title" id="custom">Custom deployment</h2></div>
+        <Banner text={new_error} />
+        <Grid>
+          <Field name="name" label="Name" value={&new.name} form={Some(&form_state)} hint="Lowercase letters, digits and -." required />
+          <Field name="image" label="Image" value={&new.image} form={Some(&form_state)} hint="Such as nats:2.10 or ghcr.io/org/app:latest. The tag is resolved now." required />
+          <ChoiceField name="exposure" label="Exposure" error={form_state.error("exposure").unwrap_or("")} hint={public_hint}>
+            {for choice in exposures { <ChoiceCard name="exposure" value={choice.value} title={choice.title} text={&choice.text} icon={choice.icon} tag={choice.tag.unwrap_or("")} disabled={choice.disabled} selected={new.exposure == choice.value || (new.exposure.is_empty() && choice.value == "private")} /> }}
+          </ChoiceField>
+          <Grid>
+            <Field name="port" label="Port" kind="number" value={&new.port} form={Some(&form_state)} hint="Empty: from the image." />
+            <StepperField name="copies" label="Copies" value={if new.copies.is_empty() { "1" } else { &new.copies }} min="1" max="20" error={form_state.error("copies").unwrap_or("")} />
+          </Grid>
+        </Grid>
+        <Expanders><Expander title="Advanced options" summary="Environment variables, secrets, ready check, resources and command." icon_name="gear" open={*advanced}>
+          <PairsField name="env" label="Environment variables" pairs_owned={&new.env} blank={2} error={form_state.error("env").unwrap_or("")} hint="Shown in the clear." key_label="Name" value_label="Value" />
+          <PairsField name="secrets" label="Secrets" blank={2} secret error={form_state.error("secrets").unwrap_or("")} hint={if *secrets_dropped { "Enter them again: a refused form never shows a secret. Never shown again." } else { "Never shown again." }} key_label="Name" value_label="Value" />
+          <Grid>
+            <ChipsField name="check" label="Ready check" options={checks} selected={&new.check} />
+            <Field name="check_path" label="Check path" value={&new.check_path} error={form_state.error("check").unwrap_or("")} hint="For an HTTP check. Empty: /." mono />
+            <Field name="memory" label="Memory" kind="number" value={&new.memory} form={Some(&form_state)} hint="Per copy. Empty: 512." unit={Some("MiB")} min={Some("16")} max={Some("262144")} suggestions_numbers={Some(memory_steps)} />
+            <Field name="cpu" label="CPU" kind="number" value={&new.cpu} form={Some(&form_state)} hint="Per copy. Empty: 1." unit={Some("vCPU")} min={Some("0.01")} max={Some("64")} step={Some("any")} suggestions_strings={Some(cpu_steps)} />
+            <ChipsField name="stop_signal" label="Stop signal" options={signals} selected={if new.stop_signal.is_empty() { "SIGTERM" } else { &new.stop_signal }} />
+            <Field name="stop_grace" label="Grace (seconds)" kind="number" value={&new.stop_grace} form={Some(&form_state)} hint="From the signal to a kill. Empty: 30." width={Some("sm")} />
+          </Grid>
+          <CodeField name="command" label="Command" value={&new.command} error={form_state.error("command").unwrap_or("")} hint="One argument per line. Empty: the image's own." rows={3} />
+          <Para kind="hint">Volumes are not available yet: a replaced copy keeps nothing on disk.</Para>
+        </Expander></Expanders>
+      </section>
+    }}
+    <Actions note="Deploying makes the app and its first release." note_icon="layers">
+      <Button label="Cancel" href="/{slug}/apps" kind="secondary" />
+      <Button label="Deploy app" kind="primary" />
+    </Actions>
+  </Form>
+} else {
+  <EmptyState title="Your role does not deploy apps" text="Owners and admins deploy them." />
+}}

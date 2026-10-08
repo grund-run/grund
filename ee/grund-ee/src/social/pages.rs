@@ -8,7 +8,6 @@ use axum::{
     http::{HeaderValue, StatusCode, header},
     response::Response,
 };
-use minijinja::context;
 use serde::Deserialize;
 
 use std::sync::Arc;
@@ -20,9 +19,11 @@ use grund_server::{
     state::State,
     web::{
         browser::{Browser, CookieJar, cookie},
-        pages::{PageError, forged, message, redirect, render},
+        pages::{PageError, forged, message, redirect, render_typed},
     },
 };
+
+use crate::templates;
 
 use super::{
     SocialLogin,
@@ -30,6 +31,19 @@ use super::{
 };
 
 type PageResult = Result<Response, PageError>;
+
+pub struct SocialUsernamePage {
+    pub csrf: String,
+    pub username: String,
+    pub error: String,
+}
+
+pub struct SocialLinkPage {
+    pub csrf: String,
+    pub provider: String,
+    pub email: String,
+    pub error: &'static str,
+}
 
 fn flow_cookie_name(jar: &CookieJar) -> &'static str {
     if jar.session_name().starts_with("__Host-") {
@@ -196,15 +210,14 @@ pub async fn complete_form(
     let Some(pending) = pending else {
         return Ok(redirect("/login"));
     };
-    render(
-        &state,
+    render_typed(
         &browser,
         StatusCode::OK,
-        "pages/social-username.html.jinja",
-        context! {
-            csrf => browser.csrf_token(), provider => provider_name(&ee, &state, &pending.provider), email => pending.email,
-            username => pending.suggested_name.unwrap_or_default(), error => "",
-        },
+        templates::pages::social_username::render(&SocialUsernamePage {
+            csrf: browser.csrf_token(),
+            username: pending.suggested_name.unwrap_or_default(),
+            error: String::new(),
+        }),
     )
 }
 
@@ -240,18 +253,17 @@ pub async fn complete(
     {
         CompleteOutcome::SignIn(account_id) => signed_in(&state, &browser, account_id).await,
         CompleteOutcome::Invalid(error) => {
-            let Some(pending) = pending else {
+            if pending.is_none() {
                 return Ok(redirect("/login"));
-            };
-            render(
-                &state,
+            }
+            render_typed(
                 &browser,
                 StatusCode::UNPROCESSABLE_ENTITY,
-                "pages/social-username.html.jinja",
-                context! {
-                    csrf => browser.csrf_token(), provider => provider_name(&ee, &state, &pending.provider), email => pending.email,
-                    username => form.username, error,
-                },
+                templates::pages::social_username::render(&SocialUsernamePage {
+                    csrf: browser.csrf_token(),
+                    username: form.username,
+                    error,
+                }),
             )
         }
         CompleteOutcome::Expired => message(
@@ -281,14 +293,15 @@ pub async fn link_form(
     let Some(pending) = pending else {
         return Ok(redirect("/login"));
     };
-    render(
-        &state,
+    render_typed(
         &browser,
         StatusCode::OK,
-        "pages/social-link.html.jinja",
-        context! {
-            csrf => browser.csrf_token(), provider => provider_name(&ee, &state, &pending.provider), email => pending.email, error => "",
-        },
+        templates::pages::social_link::render(&SocialLinkPage {
+            csrf: browser.csrf_token(),
+            provider: provider_name(&ee, &state, &pending.provider),
+            email: pending.email,
+            error: "",
+        }),
     )
 }
 
@@ -339,13 +352,42 @@ pub async fn link(
     let Some(pending) = pending else {
         return Ok(redirect("/login"));
     };
-    render(
-        &state,
+    render_typed(
         &browser,
         StatusCode::OK,
-        "pages/social-link.html.jinja",
-        context! {
-            csrf => browser.csrf_token(), provider => provider_name(&ee, &state, &pending.provider), email => pending.email, error,
-        },
+        templates::pages::social_link::render(&SocialLinkPage {
+            csrf: browser.csrf_token(),
+            provider: provider_name(&ee, &state, &pending.provider),
+            email: pending.email,
+            error,
+        }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SocialLinkPage, SocialUsernamePage};
+    use crate::templates::pages::{social_link, social_username};
+
+    #[test]
+    fn social_forms_escape_untrusted_identity() {
+        let link = social_link::render(&SocialLinkPage {
+            csrf: "signed-token".into(),
+            provider: "<script>alert(1)</script>".into(),
+            email: "<img src=x onerror=alert(1)>".into(),
+            error: "That password is not right.",
+        });
+        assert!(link.contains("&lt;script&gt;"));
+        assert!(link.contains("&lt;img"));
+        assert!(!link.contains("<script>alert(1)</script>"));
+        assert!(!link.contains("<img src=x onerror=alert(1)>"));
+
+        let username = social_username::render(&SocialUsernamePage {
+            csrf: "signed-token".into(),
+            username: "\"><script>alert(1)</script>".into(),
+            error: "That username is taken.".into(),
+        });
+        assert!(username.contains("&quot;&gt;&lt;script&gt;"));
+        assert!(!username.contains("<script>alert(1)</script>"));
+    }
 }

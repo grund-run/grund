@@ -3,12 +3,12 @@
 //! asked, and approves or denies with the browser session; a token or a
 //! CLI session cannot reach it.
 
+use crate::templates::compiled::pages::device;
 use axum::{
     Form,
     extract::{Query, State as AxumState},
     http::{StatusCode, Uri},
 };
-use minijinja::context;
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -20,9 +20,29 @@ use crate::{
     state::State,
     web::{
         browser::Browser,
-        pages::{PageResult, forged, require_session, signed_in},
+        pages::{PageResult, forged, require_session, signed_in_typed},
     },
 };
+
+pub struct DeviceLogin {
+    pub id: String,
+    pub code: String,
+    pub client: String,
+    pub host: String,
+    pub address: Option<String>,
+    pub created: String,
+}
+
+pub struct DevicePage<'a> {
+    pub csrf: &'a str,
+    pub login: Option<DeviceLogin>,
+    pub username: String,
+    pub code_error: String,
+    pub code: String,
+    pub done: bool,
+    pub notice: &'static str,
+    pub error: &'static str,
+}
 
 #[derive(Deserialize)]
 pub struct DeviceQuery {
@@ -51,13 +71,16 @@ async fn device_view(
     if !view.done && !view.code.trim().is_empty() {
         match state.device_logins().pending(&view.code).await? {
             Some(pending) => {
-                login = Some(context! {
-                    id => pending.login_id.to_string(),
-                    code => display_user_code(&pending.user_code),
-                    client => pending.client,
-                    host => pending.host,
-                    address => pending.client_address,
-                    created => pending.created_at.format("%-d %b %Y, %H:%M:%S UTC").to_string(),
+                login = Some(DeviceLogin {
+                    id: pending.login_id.to_string(),
+                    code: display_user_code(&pending.user_code),
+                    client: pending.client,
+                    host: pending.host,
+                    address: (!pending.client_address.is_empty()).then_some(pending.client_address),
+                    created: pending
+                        .created_at
+                        .format("%-d %b %Y, %H:%M:%S UTC")
+                        .to_string(),
                 });
             }
             None if normalize_user_code(&view.code).is_none() => {
@@ -75,20 +98,28 @@ async fn device_view(
         .await?
         .map(|v| v.username)
         .unwrap_or_default();
-    signed_in(
+    signed_in_typed(
         state,
         browser,
         session,
         None,
         status,
-        "pages/device.html.jinja",
+        "Sign in the grund CLI",
         "settings",
-        context! {
-            login, username, code_error,
-            code => view.code,
-            done => view.done,
-            notice => view.notice,
-            error => view.error,
+        None,
+        None,
+        None,
+        |_, csrf| {
+            device::render(&DevicePage {
+                csrf,
+                login,
+                username,
+                code_error,
+                code: view.code,
+                done: view.done,
+                notice: view.notice,
+                error: view.error,
+            })
         },
     )
     .await
@@ -171,4 +202,33 @@ pub async fn decide(
         StatusCode::CONFLICT
     };
     device_view(&state, &browser, &session, status, view).await
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+
+    #[test]
+    fn device_host_cannot_inject_markup_into_approval_page() {
+        let page = DevicePage {
+            csrf: "csrf-token",
+            login: Some(DeviceLogin {
+                id: "123".into(),
+                code: "BCDF-GHJK".into(),
+                client: "grund CLI".into(),
+                host: "</script><img src=x onerror=1>".into(),
+                address: None,
+                created: "8 Oct 2026, 12:30:00 UTC".into(),
+            }),
+            username: "Alice".into(),
+            code_error: String::new(),
+            code: String::new(),
+            done: false,
+            notice: "",
+            error: "",
+        };
+        let html = device::render(&page);
+        assert!(html.contains("&lt;/script&gt;&lt;img src=x onerror=1&gt;"));
+        assert!(!html.contains("</script><img"));
+    }
 }

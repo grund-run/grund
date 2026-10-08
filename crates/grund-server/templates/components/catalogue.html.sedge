@@ -1,0 +1,67 @@
+use crate::templates::compiled::components::Icon;
+
+component Specimen(title: &str, code: &str, note: &str, children: Html) {
+<div class="sg-specimen">
+  <div class="sg-head"><p class="sg-title">{title}</p>{if !note.is_empty() { <p class="sg-note">{note}</p> }}</div>
+  <div class="sg-demo">{children}</div>
+  <div class="code"><pre class="code-body mono"><code>{code}</code></pre></div>
+</div>
+}
+
+component Demos(children: Html) {
+<div class="sg-row">{children}</div>
+}
+
+component Column(children: Html) {
+<div class="sg-column">{children}</div>
+}
+
+component Labelled(label: &str, children: Html) {
+<div class="sg-labelled">{children}<span class="sg-label">{label}</span></div>
+}
+
+component Swatches(swatches: &[(&str, &str)]) {
+<ul class="sg-swatches">
+  {for (name, use_) in swatches.iter() { <li class="sg-swatch"><span class="sg-chip sg-{name}"></span><code>--{name}</code><span class="sg-label">{use_}</span></li> }}
+</ul>
+}
+
+component TypeScale(steps: &[(&str, &str, &str)]) {
+<ul class="sg-scale">
+  {for (name, size, use_) in steps.iter() { <li><span class="sg-sample sg-text-{name}">Deploy any image</span><code>--text-{name}</code><span class="sg-label">{size} · {use_}</span></li> }}
+</ul>
+}
+
+component SpaceScale(steps: &[(u8, &str)]) {
+<ul class="sg-scale">
+  {for (n, size) in steps.iter() { <li><span class="sg-bar sg-space-{n}"></span><code>--space-{n}</code><span class="sg-label">{size}</span></li> }}
+</ul>
+}
+
+component Radii() {
+<ul class="sg-scale sg-scale-row">
+  <li><span class="sg-box sg-radius-sm"></span><code>--radius-sm</code><span class="sg-label">8 px · buttons, inputs, menus</span></li>
+  <li><span class="sg-box sg-radius"></span><code>--radius</code><span class="sg-label">12 px · boxes, cards, callouts</span></li>
+  <li><span class="sg-box sg-radius-lg"></span><code>--radius-lg</code><span class="sg-label">16 px · large panels</span></li>
+</ul>
+}
+
+component Borders() {
+<ul class="sg-scale sg-scale-row">
+  <li><span class="sg-box sg-edge-control"></span><code>--border-control</code><span class="sg-label">the edge of what you operate: inputs, selects, the search, secondary buttons, the kebab, the switcher, the view toggle. 3:1 or more against what is around it (WCAG 1.4.11)</span></li>
+  <li><span class="sg-box sg-edge-strong"></span><code>--border-strong</code><span class="sg-label">menus, tags, dashed empty states</span></li>
+  <li><span class="sg-box sg-edge"></span><code>--border</code><span class="sg-label">dividers between rows, boxes of rows</span></li>
+</ul>
+}
+
+component IconGrid(names: &[&str]) {
+<ul class="sg-icons">
+  {for name in names.iter() { <li><Icon name={name} /><code>{name}</code></li> }}
+</ul>
+}
+
+component Contents(parts: &[(&str, &str)]) {
+<nav class="sg-contents" aria-label="Catalogue">
+  {for (id, title) in parts.iter() { <a href="#{id}">{title}</a> }}
+</nav>
+}

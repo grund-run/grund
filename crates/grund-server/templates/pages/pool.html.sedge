@@ -1,0 +1,48 @@
+use crate::templates::compiled::components::{PageHead, Banner, Rows, Panel, Button, Icon, Field, EmptyState};
+props crate::web::pool::PoolPage<'_> { csrf, slug, manages, machines, notice, error, provider };
+{let back = format!("/{slug}/machines");}
+
+<PageHead title="Management pool" back={Some((back.as_str(), "Machines"))} />
+{if !notice.is_empty() { <Banner text={notice} tone="ok" /> }}
+{if !error.is_empty() { <Banner text={error} /> }}
+<Rows>
+  {for machine in machines {
+    <li class="row"><span class="row-icon"><Icon name="server" class="icon-lg tone-{machine.tone}" /></span>
+      <div><p class="row-name">{machine.name}{if machine.from_provider { {" "}<span class="tag">From the provider</span> }}</p><p class="row-sub">{machine.sub}</p></div>
+      <span class="row-status"><Icon name={match machine.tone { "orange" | "danger" => "alert", "blue" => "clock", "muted" => "minus", _ => "ok" }} class="tone-{machine.tone}" />{machine.status}</span>
+      {if *manages {
+        <div class="row-end">
+          {if machine.state == "leased" { <form method="post" action="/{slug}/pool/{machine.id}/end" novalidate><input type="hidden" name="csrf" value={csrf}><Button label="End lease" kind="secondary" size="sm" /></form> }}
+          {if machine.state == "returning" && machine.from_provider { <form method="post" action="/{slug}/pool/{machine.id}/rebuild" novalidate><input type="hidden" name="csrf" value={csrf}><Button label="Wipe again" kind="secondary" size="sm" /></form> }}
+          <form method="post" action="/{slug}/pool/{machine.id}/revoke" novalidate><input type="hidden" name="csrf" value={csrf}><Button label="Revoke" kind="danger" size="sm" /></form>
+        </div>
+      } else { <span></span> }}
+    </li>
+  }}
+</Rows>
+{if machines.is_empty() { <EmptyState text="No machines in the pool." /> }}
+{if *manages {
+  {if machines.iter().any(|m| m.state == "available") {
+    <section class="section" aria-labelledby="lease"><div class="section-head"><h2 class="section-title" id="lease">Lease a machine</h2></div><div class="expanders">
+    {for machine in machines.iter().filter(|m| m.state == "available") {
+      <details class="expander"><summary class="expander-head"><Icon name="server" class="icon-sm expander-icon" /><span class="expander-text"><span class="expander-title">{machine.name}</span><span class="expander-summary">Available</span></span><Icon name="down" class="icon-sm expander-chevron" /></summary><div class="expander-body">
+        <form class="form" method="post" action="/{slug}/pool/{machine.id}/lease" novalidate><input type="hidden" name="csrf" value={csrf}>
+          <div class="form-grid">
+            <Field name="organisation" label="Organisation" autocomplete="off" hint="Its name, as in its address." required />
+            <Field name="name" label="Name there" autocomplete="off" hint="Empty: {machine.name}." />
+          </div>
+          <div class="form-actions"><p class="form-note"><span>The organisation can place apps on it at once.</span></p><Button label="Lease it" kind="primary" /></div>
+        </form>
+      </div></details>
+    }}
+    </div></section>
+  }}
+  {if *provider {
+    <Panel id="provision" title="Add a machine">
+      <form class="form form-row" method="post" action="/{slug}/pool/provision" novalidate><input type="hidden" name="csrf" value={csrf}>
+        <Field name="name" label="Name" autocomplete="off" hint="Empty: the provider's." />
+        <Button label="Add from the provider" kind="primary" />
+      </form>
+    </Panel>
+  }}
+}}

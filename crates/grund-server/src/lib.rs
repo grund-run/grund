@@ -90,12 +90,7 @@ pub async fn serve(
     mire_sagas::migrate(&events).await?;
     let nats = connect_nats(&config).await?;
 
-    let extra: Vec<(&'static str, &'static str)> = extensions
-        .iter()
-        .flat_map(|e| e.templates().iter().copied())
-        .collect();
-    let templates = templates::Templates::new(&extra)?;
-    let mailer = services::mail::Mailer::new(&config, templates.clone())?;
+    let mailer = services::mail::Mailer::new(&config)?;
     let reporter = services::insights::Reporter::new(&config.insights)?;
     let secret = std::sync::Arc::new(secret);
     let certificates = certificates::Certificates::new(&config, pool.clone(), secret.clone());
@@ -123,7 +118,6 @@ pub async fn serve(
         certificates,
         health,
         passwords: services::passwords::Passwords::new()?,
-        templates,
         entitlements: std::sync::Arc::new(entitlements),
         billing: services::billing::Billing::new(&config_billing)?,
         capacity,

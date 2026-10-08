@@ -1,0 +1,8 @@
+use crate::templates::compiled::{layouts::Auth, components::{AuthHead, Section, Code}};
+props crate::web::pages::LicensesPage<'_> { inter, mono };
+
+<Auth title="Licenses">
+  <AuthHead title="Licenses" subtitle="grund's pages use these fonts, under the SIL Open Font License 1.1." />
+  <Section id="inter" title="Inter"><Code text={inter} copy={false} wrap /></Section>
+  <Section id="jetbrains-mono" title="JetBrains Mono"><Code text={mono} copy={false} wrap /></Section>
+</Auth>

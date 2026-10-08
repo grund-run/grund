@@ -1,0 +1,40 @@
+use crate::templates::compiled::components::{Panel, Facts, Fact, Endpoint, Para, Timeline, Event, EmptyState};
+props crate::web::apps::AppOverviewPage<'_> { app, running, releases };
+{let releases_href = format!("{}/deployments", app.base);}
+
+<Panel id="status" title="Application status">
+  <Facts>
+    <Fact label="Reachable at" wide>
+      {if let Some(address) = &app.address {
+        <Endpoint text={format!("https://{address}")} href={format!("https://{address}")} />
+        {for domain in &app.domains { {if domain.serving { <Endpoint text={format!("https://{}", domain.name)} href={format!("https://{}", domain.name)} /> }} }}
+      } else if let Some(internal) = &app.internal {
+        <Endpoint text={internal} href="" />
+      } else {
+        <Para kind="hint">Nowhere: it has no port.</Para>
+      }}
+    </Fact>
+    <Fact label="Status" value={app.word} tone={app.tone} />
+    {if let Some(running) = running {
+      <Fact label="Running" value={&running.version} icon_name="layers" lines={&[(running.line.as_str(), running.reference.as_str())]} />
+    } else {
+      <Fact label="Running" value="Nothing" icon_name="layers" />
+    }}
+    {if let Some(latest) = releases.first() {
+      <Fact label="Last change" value={&latest.ago} icon_name="clock" after={format!("· {}", latest.by)} />
+    } else {
+      <Fact label="Last change" value="None" icon_name="clock" />
+    }}
+  </Facts>
+</Panel>
+<Panel id="activity" title="Latest activity" action={Some((&releases_href, "All releases"))}>
+  {if releases.is_empty() {
+    <EmptyState text="No deployments yet." />
+  } else {
+    <Timeline>
+      {for release in releases.iter().take(3) {
+        <Event title={&release.event} when={&release.ago} at={&release.at} iso={&release.iso} meta={release.outcome} state={release.state}>by <strong>{release.by}</strong> {release.source}{if let Some(reason) = &release.reason { · {reason} }}</Event>
+      }}
+    </Timeline>
+  }}
+</Panel>

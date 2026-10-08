@@ -1,8 +1,7 @@
 use crate::accepttest::fixtures::testcase_with_mail;
 
 fn revoke_action(html: &str) -> Option<String> {
-    html.replace("&#x2f;", "/")
-        .split("action=\"")
+    html.split("action=\"")
         .skip(1)
         .filter_map(|rest| rest.split('"').next())
         .find(|action| action.starts_with("/settings/sessions/") && action.ends_with("/revoke"))

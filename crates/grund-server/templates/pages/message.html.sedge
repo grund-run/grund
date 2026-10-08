@@ -1,0 +1,10 @@
+use crate::templates::compiled::layouts::Auth;
+use crate::templates::compiled::components::{AuthHead, Foot, Icon};
+props crate::web::pages::MessagePage<'_> { title, text, link_href, link_text };
+
+<Auth title={title}>
+  <AuthHead title={title} subtitle={text} />
+  {if !link_href.is_empty() {
+    <Foot><p><a class="link-more" href={link_href}>{link_text}<Icon name="arrow" class="icon-sm" /></a></p></Foot>
+  }}
+</Auth>

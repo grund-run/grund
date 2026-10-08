@@ -1,0 +1,7 @@
+use crate::templates::compiled::components::{PageHead, Button, EmptyState};
+props crate::web::pages::NoOrganisationPage { can_create };
+
+<PageHead title="No organisation yet">
+  {if *can_create { <Button label="New organisation" kind="primary" href="/orgs/new" icon_name="plus" /> }}
+</PageHead>
+<EmptyState text={if *can_create { "Create one, or ask to be invited to one." } else { "Ask this grund's admin to invite you." }} />

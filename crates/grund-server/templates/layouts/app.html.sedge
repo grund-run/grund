@@ -1,0 +1,16 @@
+use crate::templates::compiled::layouts::Base;
+use crate::templates::compiled::components::{Sidebar, Topbar};
+use crate::web::pages::{AppSearch, TypedViewer};
+component App(title: &str, viewer: &TypedViewer, section: &str, csrf: &str, list: Option<&AppSearch>, refresh: Option<u16>, title_org: Option<bool>, children: Html) {
+<Base title={title} organisation={if title_org.unwrap_or(true) { viewer.current.as_ref().map_or("", |org| org.slug.as_str()) } else { "" }} scripts refresh={*refresh}>
+  <div class="shell">
+    <Sidebar viewer={viewer} section={section} csrf={csrf} />
+    <div class="main">
+      <Topbar viewer={viewer} section={section} list={*list} />
+      <main class="content" id="main">
+        {children}
+      </main>
+    </div>
+  </div>
+</Base>
+}

@@ -16,7 +16,6 @@ use axum::{
 };
 use grund_domain::app::{AppSettings, spec::SettingsInput};
 use grund_store::organisations::Membership;
-use minijinja::{Value, context};
 
 use crate::{
     services::{
@@ -179,6 +178,39 @@ fn options(values: &[String]) -> Vec<(String, String)> {
     values.iter().map(|v| (v.clone(), v.clone())).collect()
 }
 
+#[cfg_attr(test, derive(serde::Serialize))]
+pub struct PlacementChoice {
+    pub value: &'static str,
+    pub title: &'static str,
+    pub tag: Option<&'static str>,
+    pub icon: Option<&'static str>,
+    pub text: &'static str,
+}
+
+#[cfg_attr(test, derive(serde::Serialize))]
+pub struct PlacementView {
+    pub mode: String,
+    pub modes: Vec<PlacementChoice>,
+    pub machines: Vec<(String, String)>,
+    pub chosen_machines: Vec<String>,
+    pub labels: Vec<(String, String)>,
+    pub chosen_labels: Vec<String>,
+    pub typed_labels: Vec<(String, String)>,
+    pub label_keys: Vec<String>,
+    pub label_values: Vec<String>,
+    pub spread: String,
+    pub spreads: Vec<PlacementChoice>,
+    pub spread_by: String,
+    pub apps: Vec<(String, String)>,
+    pub near: Vec<String>,
+    pub apart: Vec<String>,
+    pub kind: String,
+    pub kinds: Vec<(&'static str, &'static str)>,
+    pub reschedule_after: String,
+    pub advanced: String,
+    pub advanced_open: bool,
+}
+
 /// What the Placement form shows: the cards chosen, the chips on offer
 /// (the organisation's machines, the labels set on them, its other apps)
 /// with the chosen ones checked, and what the field suggests.
@@ -188,7 +220,7 @@ pub fn view(
     apps: &[String],
     app: &str,
     errors: &BTreeMap<&str, &str>,
-) -> Value {
+) -> PlacementView {
     let input = &form.input;
     let set_on_machines: Vec<(String, String)> = machines
         .iter()
@@ -257,34 +289,75 @@ pub fn view(
     let open = !advanced.is_empty()
         || !errors.get("labels").unwrap_or(&"").is_empty()
         || !errors.get("kind").unwrap_or(&"").is_empty();
-    context! {
-        mode,
-        modes => vec![
-            context! { value => "anywhere", title => "Anywhere", tag => "Recommended", icon => "globe", text => "Any machine that fits." },
-            context! { value => "machines", title => "Specific machines", icon => "server", text => "Run only on selected machines." },
-            context! { value => "labels", title => "By labels", icon => "tag", text => "Run on machines with matching labels." },
+    PlacementView {
+        mode: mode.to_string(),
+        modes: vec![
+            PlacementChoice {
+                value: "anywhere",
+                title: "Anywhere",
+                tag: Some("Recommended"),
+                icon: Some("globe"),
+                text: "Any machine that fits.",
+            },
+            PlacementChoice {
+                value: "machines",
+                title: "Specific machines",
+                tag: None,
+                icon: Some("server"),
+                text: "Run only on selected machines.",
+            },
+            PlacementChoice {
+                value: "labels",
+                title: "By labels",
+                tag: None,
+                icon: Some("tag"),
+                text: "Run on machines with matching labels.",
+            },
         ],
-        machines => options(&machine_names),
-        chosen_machines => if mode == "machines" { input.machines.clone() } else { Vec::new() },
-        labels => options(&sorted(known.iter().cloned().chain(picked.iter().cloned()))),
-        chosen_labels => picked,
-        typed_labels => typed,
-        label_keys => sorted(set_on_machines.iter().map(|(k, _)| k.clone())),
-        label_values => sorted(set_on_machines.iter().map(|(_, v)| v.clone())),
-        spread,
-        spreads => vec![
-            context! { value => "machines", title => "Spread across machines", text => "Copies go to different machines first." },
-            context! { value => "label", title => "Spread across label", text => "Copies go to different values of a label first, such as zones." },
+        machines: options(&machine_names),
+        chosen_machines: if mode == "machines" {
+            input.machines.clone()
+        } else {
+            Vec::new()
+        },
+        labels: options(&sorted(known.iter().cloned().chain(picked.iter().cloned()))),
+        chosen_labels: picked,
+        typed_labels: typed,
+        label_keys: sorted(set_on_machines.iter().map(|(k, _)| k.clone())),
+        label_values: sorted(set_on_machines.iter().map(|(_, v)| v.clone())),
+        spread: spread.to_string(),
+        spreads: vec![
+            PlacementChoice {
+                value: "machines",
+                title: "Spread across machines",
+                tag: None,
+                icon: None,
+                text: "Copies go to different machines first.",
+            },
+            PlacementChoice {
+                value: "label",
+                title: "Spread across label",
+                tag: None,
+                icon: None,
+                text: "Copies go to different values of a label first, such as zones.",
+            },
         ],
-        spread_by => input.spread_by,
-        apps => options(&app_names),
-        near => input.near,
-        apart => input.apart,
-        kind,
-        kinds => [("", "Any"), ("own", "Your own"), ("hosted", "Hosted by grund")],
-        reschedule_after => input.reschedule_after_seconds.map(|s| s.to_string()).unwrap_or_default(),
-        advanced => summary,
-        advanced_open => open,
+        spread_by: input.spread_by.clone(),
+        apps: options(&app_names),
+        near: input.near.clone(),
+        apart: input.apart.clone(),
+        kind: kind.to_string(),
+        kinds: vec![
+            ("", "Any"),
+            ("own", "Your own"),
+            ("hosted", "Hosted by grund"),
+        ],
+        reschedule_after: input
+            .reschedule_after_seconds
+            .map(|s| s.to_string())
+            .unwrap_or_default(),
+        advanced: summary,
+        advanced_open: open,
     }
 }
 
@@ -296,7 +369,7 @@ pub async fn context_for(
     app: &str,
     form: &PlacementForm,
     errors: &BTreeMap<&str, &str>,
-) -> Result<Value, PageError> {
+) -> Result<PlacementView, PageError> {
     let machines: Vec<(String, BTreeMap<String, String>)> = state
         .machines()
         .organisation_machines(membership.organisation_id)
@@ -493,7 +566,7 @@ mod tests {
         ]
     }
 
-    fn shown(settings: AppSettings) -> Value {
+    fn shown(settings: AppSettings) -> PlacementView {
         view(
             &PlacementForm::of(&settings),
             &machines(),
@@ -506,18 +579,15 @@ mod tests {
     #[test]
     fn the_saved_settings_choose_the_card_and_offer_what_exists() {
         let page = shown(AppSettings::default());
-        assert_eq!(page.get_attr("mode").unwrap().as_str(), Some("anywhere"));
-        assert_eq!(page.get_attr("spread").unwrap().as_str(), Some("machines"));
-        assert_eq!(page.get_attr("apps").unwrap().len(), Some(1));
-        assert_eq!(page.get_attr("labels").unwrap().len(), Some(2));
+        assert_eq!(page.mode, "anywhere");
+        assert_eq!(page.spread, "machines");
+        assert_eq!(page.apps.len(), 1);
+        assert_eq!(page.labels.len(), 2);
         let settings = AppSettings {
             machines: vec!["web-2".into()],
             ..AppSettings::default()
         };
-        assert_eq!(
-            shown(settings).get_attr("mode").unwrap().as_str(),
-            Some("machines")
-        );
+        assert_eq!(shown(settings).mode, "machines");
     }
 
     #[test]
@@ -526,9 +596,9 @@ mod tests {
         settings.placement.labels =
             BTreeMap::from([("zone".into(), "a".into()), ("disk".into(), "nvme".into())]);
         let page = shown(settings);
-        assert_eq!(page.get_attr("mode").unwrap().as_str(), Some("labels"));
-        assert_eq!(page.get_attr("chosen_labels").unwrap().len(), Some(1));
-        assert_eq!(page.get_attr("typed_labels").unwrap().len(), Some(1));
-        assert!(page.get_attr("advanced_open").unwrap().is_true());
+        assert_eq!(page.mode, "labels");
+        assert_eq!(page.chosen_labels.len(), 1);
+        assert_eq!(page.typed_labels.len(), 1);
+        assert!(page.advanced_open);
     }
 }

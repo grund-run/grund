@@ -15,7 +15,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use clap::Parser;
 use ed25519_dalek::{Signer, SigningKey};
 use grund_ee::social::{
-    Registered, SocialLogin, TEMPLATES,
+    Registered, SocialLogin,
     flows::{Protocol, Provider},
 };
 use grund_server::{
@@ -27,7 +27,6 @@ use grund_server::{
         passwords::Passwords,
     },
     state::State,
-    templates::Templates,
 };
 use http_body_util::BodyExt;
 use sqlx::PgPool;
@@ -142,7 +141,6 @@ async fn state(pool: PgPool, issuer: &str) -> State {
         certificates,
         health: nostatus::StatusState::empty(),
         passwords: Passwords::new().unwrap(),
-        templates: Templates::new(TEMPLATES).unwrap(),
         entitlements: Arc::new(entitlements),
         billing: grund_server::services::billing::Billing::Free,
         capacity: grund_server::services::capacity::Capacity::None,

@@ -1,0 +1,14 @@
+use crate::templates::compiled::layouts::Auth;
+use crate::templates::compiled::components::{AuthHead, Form, Field, Button};
+props crate::web::pages::SignupOwnerPage<'_> { csrf, token, username, email, errors };
+
+<Auth title="Create the owner">
+  <AuthHead title="Create the owner" subtitle="This account owns this grund. Others join by invitation." />
+  <Form action="/signup/owner" csrf={csrf}>
+    <input type="hidden" name="token" value={token}>
+    <Field name="username" label="Username" value={username} error={errors.username.as_deref().unwrap_or("")} required autocomplete="username" hint="3 to 32 letters, digits and single hyphens. It is public, and names the organisation." autofocus />
+    <Field name="email" label="Email" kind="email" value={email} error={errors.email.as_deref().unwrap_or("")} required autocomplete="email" hint="Where password resets go. No mail is sent to confirm it." />
+    <Field name="password" label="Password" kind="password" error={errors.password.as_deref().unwrap_or("")} required autocomplete="new-password" hint="At least 12 characters." />
+    <Button label="Create the owner" kind="primary" block />
+  </Form>
+</Auth>

@@ -6,7 +6,7 @@
 //!           ─► request context (request id; failed pages rendered and logged)
 //!           ─► /health/live, /health/ready, /static/*
 //!           ─► /install, /install/* (only with GRUND_SERVE_INSTALLER)
-//!           └► pages (server-rendered minijinja)
+//!           └► pages (server-rendered sedge)
 //! ```
 
 macro_rules! member_or_return {
@@ -42,7 +42,6 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use minijinja::context;
 use tower_http::{
     catch_panic::CatchPanicLayer, limit::RequestBodyLimitLayer, set_header::SetResponseHeaderLayer,
     timeout::TimeoutLayer, trace::TraceLayer,
@@ -230,18 +229,13 @@ pub async fn request_context(
     response
 }
 
-fn bad_form(state: &State, status: StatusCode, request_id: Uuid) -> Response {
-    let html = state
-        .templates
-        .render(
-            "pages/error.html.jinja",
-            context! {
-                title => "That form could not be read",
-                text => "Go back, reload the page and try again.",
-                request_id => request_id.to_string(),
-            },
-        )
-        .unwrap_or_default();
+fn bad_form(_state: &State, status: StatusCode, request_id: Uuid) -> Response {
+    let request_id = request_id.to_string();
+    let html = crate::templates::compiled::pages::error::render(&pages::ErrorPage {
+        title: "That form could not be read",
+        text: "Go back, reload the page and try again.",
+        request_id: &request_id,
+    });
     let mut response = (status, axum::response::Html(html)).into_response();
     response
         .headers_mut()

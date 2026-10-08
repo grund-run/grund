@@ -1,0 +1,14 @@
+use grund_server::templates::compiled::layouts::Auth;
+use grund_server::templates::compiled::components::{AuthHead, Banner, Button, Field, Foot, Form};
+props crate::social::pages::SocialLinkPage { csrf, provider, email, error };
+
+{let title = format!("Connect {provider}");}
+<Auth title={title.as_str()}>
+  <AuthHead title={title.as_str()} subtitle={&format!("An account with {email} exists. Enter its password to connect {provider}.")} />
+  <Form action="/auth/link" csrf={csrf} layout={None} method={None} autocomplete={None} form={None}>
+    <Banner text={error} tone="error" fields={None} ok={None} part={None} form={None} />
+    <Field name="password" label="Password" kind="password" value="" error="" required={true} autocomplete="current-password" hint="" autofocus={true} disabled={false} id={None} state={None} width={None} placeholder={None} unit={None} min={None} max={None} step={None} mono={false} suggestions={None} suggestions_strings={None} suggestions_numbers={None} form={None} />
+    <Button label="Connect and sign in" kind="primary" href="" icon_name="" block={true} size="" />
+  </Form>
+  <Foot><p>No password on that account? <a href="/reset">Set one first</a>.</p></Foot>
+</Auth>

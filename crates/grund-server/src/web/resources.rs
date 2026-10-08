@@ -5,7 +5,29 @@
 //! (grund-docs design/apps.md §5.2).
 
 use grund_domain::app::placement::MachineView;
-use minijinja::{Value, context};
+
+#[cfg_attr(test, derive(serde::Serialize))]
+pub struct ResourcePreset {
+    pub value: &'static str,
+    pub title: &'static str,
+    pub text: String,
+    pub sets: Option<(u64, String)>,
+    pub icon: Option<&'static str>,
+}
+
+#[cfg_attr(test, derive(serde::Serialize))]
+pub struct ResourceView {
+    pub memory: String,
+    pub cpu: String,
+    pub preset: &'static str,
+    pub presets: Vec<ResourcePreset>,
+    pub memory_steps: Vec<(u64, String)>,
+    pub cpu_steps: Vec<(String, String)>,
+    pub memory_max: u64,
+    pub cpu_max: String,
+    pub memory_min: u64,
+    pub cpu_min: String,
+}
 
 /// The memory slider's stops, in MiB.
 pub const MEMORY_STEPS: &[u64] = &[64, 128, 256, 512, 1024, 2048, 4096, 8192];
@@ -100,7 +122,7 @@ pub fn chosen(preset: &str, shown: &str, memory: &str, cpu: &str) -> (String, St
 
 /// What the Resources form shows for these values (MiB and vCPUs as
 /// text; empty is the default) under the machines' ceiling.
-pub fn view(memory: &str, cpu: &str, ceiling: Option<(u64, u32)>) -> Value {
+pub fn view(memory: &str, cpu: &str, ceiling: Option<(u64, u32)>) -> ResourceView {
     let memory_max = ceiling.map_or(MODEL_MEMORY_MIB.1, |(m, _)| {
         m.clamp(MODEL_MEMORY_MIB.0, MODEL_MEMORY_MIB.1)
     });
@@ -131,23 +153,35 @@ pub fn view(memory: &str, cpu: &str, ceiling: Option<(u64, u32)>) -> Value {
         (Ok(m), Some(c)) => preset_of(m, c),
         _ => "custom",
     };
-    let mut presets: Vec<Value> = PRESETS
+    let mut presets: Vec<ResourcePreset> = PRESETS
         .iter()
         .filter(|(_, _, m, c)| *m <= memory_max && *c <= cpu_max)
-        .map(|(key, title, m, c)| {
-            context! {
-                value => key, title,
-                text => format!("{} MiB · {} vCPU", m, vcpus(*c)),
-                sets => context! { memory => m, cpu => vcpus(*c) },
-            }
+        .map(|(key, title, m, c)| ResourcePreset {
+            value: key,
+            title,
+            text: format!("{} MiB · {} vCPU", m, vcpus(*c)),
+            sets: Some((*m, vcpus(*c))),
+            icon: None,
         })
         .collect();
-    presets.push(context! { value => "custom", title => "Custom", icon => "sliders", text => "The values above" });
-    context! {
-        memory, cpu, preset, presets,
-        memory_steps, cpu_steps,
-        memory_max, cpu_max => vcpus(cpu_max),
-        memory_min => MODEL_MEMORY_MIB.0, cpu_min => vcpus(MODEL_CPU_MILLIS.0),
+    presets.push(ResourcePreset {
+        value: "custom",
+        title: "Custom",
+        text: "The values above".into(),
+        sets: None,
+        icon: Some("sliders"),
+    });
+    ResourceView {
+        memory,
+        cpu,
+        preset,
+        presets,
+        memory_steps,
+        cpu_steps,
+        memory_max,
+        cpu_max: vcpus(cpu_max),
+        memory_min: MODEL_MEMORY_MIB.0,
+        cpu_min: vcpus(MODEL_CPU_MILLIS.0),
     }
 }
 
@@ -221,8 +255,8 @@ mod tests {
     #[test]
     fn the_slider_stops_at_the_ceiling() {
         let page = view("", "", Some((1100, 1500)));
-        assert_eq!(page.get_attr("memory_steps").unwrap().len(), Some(5));
-        assert_eq!(page.get_attr("cpu_steps").unwrap().len(), Some(4));
-        assert_eq!(page.get_attr("preset").unwrap().as_str(), Some("medium"));
+        assert_eq!(page.memory_steps.len(), 5);
+        assert_eq!(page.cpu_steps.len(), 4);
+        assert_eq!(page.preset, "medium");
     }
 }

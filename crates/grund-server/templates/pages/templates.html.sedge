@@ -1,0 +1,10 @@
+use crate::templates::compiled::components::{ImageSprite, PageHead, Items, TemplateRow};
+props crate::web::apps::TemplatesPage { slug, manages, templates, image_keys };
+
+<ImageSprite icons={image_keys} />
+<PageHead title="Templates" />
+<Items view="grid">
+  {for template in templates {
+    <TemplateRow template={template} href={if *manages { format!("/{slug}/deploy?template={}", template.key) } else { String::new() }} />
+  }}
+</Items>

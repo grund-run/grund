@@ -1,7 +1,0 @@
-{% extends "layout-auth.html.jinja" %}
-{% set title = "Licenses" %}
-{% block card %}
-{{ ui.auth_head("Licenses", "grund's pages use these fonts, under the SIL Open Font License 1.1.") }}
-{% call ui.section("inter", "Inter") %}{{ ui.code(inter, copy=false, wrap=true) }}{% endcall %}
-{% call ui.section("jetbrains-mono", "JetBrains Mono") %}{{ ui.code(mono, copy=false, wrap=true) }}{% endcall %}
-{% endblock %}

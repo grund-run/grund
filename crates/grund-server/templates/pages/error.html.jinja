@@ -1,8 +1,0 @@
-{% extends "layout-auth.html.jinja" %}
-{% block card %}
-{{ ui.auth_head(title, text) }}
-{% call ui.foot() %}
-  <p>{{ ui.link_more("/", "Go to grund") }}</p>
-  {% if request_id %}{% call ui.para() %}Reference: <code>{{ request_id }}</code>{% endcall %}{% endif %}
-{% endcall %}
-{% endblock %}

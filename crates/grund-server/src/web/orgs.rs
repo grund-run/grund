@@ -13,7 +13,6 @@ use axum::{
 };
 use grund_domain::organisation::Role;
 use grund_store::organisations::Membership;
-use minijinja::{Value, context};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -33,13 +32,85 @@ use crate::{
         apps,
         browser::Browser,
         pages::{
-            Notice, PageError, PageResult, forged, message, not_found_page, redirect, render,
-            require_session, signed_in, start_session,
+            Notice, PageError, PageResult, forged, message, not_found_page, redirect,
+            require_session, start_session,
         },
     },
 };
 
 const OVERVIEW_APPS: usize = 5;
+pub fn role_title(role: &str) -> &'static str {
+    match role {
+        "owner" => "Owner",
+        "admin" => "Admin",
+        _ => "Member",
+    }
+}
+
+pub struct HomePage<'a> {
+    pub viewer: &'a super::pages::TypedViewer,
+    pub members: usize,
+    pub icons: Vec<&'static str>,
+    pub apps: Vec<apps::ListingView>,
+    pub app_count: usize,
+}
+
+pub struct MemberRow {
+    pub id: String,
+    pub username: String,
+    pub email: String,
+    pub role: String,
+    pub joined: String,
+    pub is_self: bool,
+    pub manageable: bool,
+}
+
+pub struct InvitationRow {
+    pub id: String,
+    pub email: String,
+    pub role: String,
+    pub invited_by: String,
+    pub expires: String,
+}
+
+pub struct MembersPage<'a> {
+    pub viewer: &'a super::pages::TypedViewer,
+    pub csrf: &'a str,
+    pub members: Vec<MemberRow>,
+    pub pending: Vec<InvitationRow>,
+    pub roles: &'static [(&'static str, &'static str)],
+    pub notice: &'a str,
+    pub error: &'a str,
+    pub invite_error: String,
+    pub email: String,
+    pub role: String,
+}
+
+pub struct BillingPage {
+    pub state: &'static str,
+    pub plan: String,
+    pub past_due: bool,
+    pub manage_url: Option<String>,
+}
+
+pub struct SettingsPage<'a> {
+    pub viewer: &'a super::pages::TypedViewer,
+    pub csrf: &'a str,
+    pub owners: Vec<String>,
+    pub billing: BillingPage,
+    pub rename_value: String,
+    pub deleting: bool,
+    pub refusal: String,
+    pub notice: &'a str,
+    pub rename_error: String,
+    pub delete_error: String,
+}
+
+pub struct NewOrganisationPage<'a> {
+    pub csrf: &'a str,
+    pub slug: &'a str,
+    pub error: &'a str,
+}
 
 pub(super) async fn member_of(
     state: &State,
@@ -106,30 +177,6 @@ impl FromRequestParts<State> for Member {
     }
 }
 
-impl Member {
-    /// Renders `template` in the signed-in layout for this organisation, as
-    /// [`signed_in`] does, with 200: an extracted member's page only reads.
-    pub async fn render(
-        &self,
-        state: &State,
-        template: &str,
-        section: &str,
-        page: Value,
-    ) -> PageResult {
-        signed_in(
-            state,
-            &self.browser,
-            &self.session,
-            Some(&self.membership),
-            StatusCode::OK,
-            template,
-            section,
-            page,
-        )
-        .await
-    }
-}
-
 fn permanent_redirect(to: &str) -> Response {
     let mut response = axum::response::IntoResponse::into_response(StatusCode::PERMANENT_REDIRECT);
     if let Ok(location) = axum::http::HeaderValue::from_str(to) {
@@ -158,15 +205,24 @@ pub async fn landing(AxumState(state): AxumState<State>, browser: Browser, uri: 
     if let Some(slug) = state.organisations().landing(session.account_id).await? {
         return Ok(redirect(&format!("/{slug}")));
     }
-    signed_in(
+    super::pages::signed_in_typed(
         &state,
         &browser,
         &session,
         None,
         StatusCode::OK,
-        "pages/no-organisation.html.jinja",
+        "",
         "overview",
-        context! {},
+        None,
+        None,
+        None,
+        |viewer, _| {
+            crate::templates::compiled::pages::no_organisation::render(
+                &super::pages::NoOrganisationPage {
+                    can_create: viewer.can_create,
+                },
+            )
+        },
     )
     .await
 }
@@ -185,19 +241,28 @@ pub async fn overview(AxumState(state): AxumState<State>, member: Member) -> Pag
         .await
         .map_err(|e| PageError::from(anyhow::anyhow!(e)))?;
     let shown: Vec<&AppListing> = listings.iter().take(OVERVIEW_APPS).collect();
-    member
-        .render(
-            &state,
-            "pages/home.html.jinja",
-            "overview",
-            context! {
+    super::pages::signed_in_typed(
+        &state,
+        &member.browser,
+        &member.session,
+        Some(membership),
+        StatusCode::OK,
+        "",
+        "overview",
+        None,
+        None,
+        None,
+        |viewer, _| {
+            crate::templates::compiled::pages::home::render(&HomePage {
+                viewer,
                 members,
-                icons => apps::icons_of(&shown),
-                apps => shown.iter().map(|l| apps::listing_context(l)).collect::<Vec<_>>(),
-                app_count => listings.len(),
-            },
-        )
-        .await
+                icons: apps::icons_of(&shown),
+                apps: shown.iter().map(|l| apps::listing_view(l)).collect(),
+                app_count: listings.len(),
+            })
+        },
+    )
+    .await
 }
 
 /// `/{org}/settings/members`: members, pending invitations, and (for owners and
@@ -272,7 +337,7 @@ async fn members_view(
 ) -> PageResult {
     let organisations = state.organisations();
     let viewer_role = Role::parse(&membership.role).unwrap_or(Role::Member);
-    let members: Vec<Value> = organisations
+    let members: Vec<MemberRow> = organisations
         .members(membership.organisation_id)
         .await?
         .into_iter()
@@ -282,29 +347,30 @@ async fn members_view(
             let manageable = !is_self
                 && viewer_role.manages_members()
                 && (role != Role::Owner || viewer_role == Role::Owner);
-            context! {
-                id => m.account_id.to_string(),
-                username => m.username,
-                email => m.email,
-                role => m.role,
-                joined => m.joined_at.map(|at| at.format("%-d %b %Y").to_string()).unwrap_or_default(),
+            MemberRow {
+                id: m.account_id.to_string(),
+                username: m.username,
+                email: m.email,
+                role: m.role,
+                joined: m
+                    .joined_at
+                    .map(|at| at.format("%-d %b %Y").to_string())
+                    .unwrap_or_default(),
                 is_self,
                 manageable,
             }
         })
         .collect();
-    let pending: Vec<Value> = organisations
+    let pending: Vec<InvitationRow> = organisations
         .pending(membership.organisation_id)
         .await?
         .into_iter()
-        .map(|i| {
-            context! {
-                id => i.invitation_id.to_string(),
-                email => i.email,
-                role => i.role,
-                invited_by => i.invited_by,
-                expires => i.expires_at.format("%-d %b %Y").to_string(),
-            }
+        .map(|i| InvitationRow {
+            id: i.invitation_id.to_string(),
+            email: i.email,
+            role: i.role,
+            invited_by: i.invited_by,
+            expires: i.expires_at.format("%-d %b %Y").to_string(),
         })
         .collect();
     let roles: &[(&str, &str)] = if viewer_role == Role::Owner {
@@ -312,19 +378,34 @@ async fn members_view(
     } else {
         &[("member", "Member"), ("admin", "Admin")]
     };
-    signed_in(
+    super::pages::signed_in_typed(
         state,
         browser,
         session,
         Some(membership),
         status,
-        "pages/members.html.jinja",
+        "Members",
         "members",
-        context! {
-            members, pending, roles,
-            notice => form.notice, error => form.error,
-            invite_error => form.invite_error, email => form.email,
-            role => if form.role.is_empty() { "member".to_string() } else { form.role },
+        None,
+        None,
+        None,
+        |viewer, csrf| {
+            crate::templates::compiled::pages::members::render(&MembersPage {
+                viewer,
+                csrf,
+                members,
+                pending,
+                roles,
+                notice: form.notice,
+                error: form.error,
+                invite_error: form.invite_error,
+                email: form.email,
+                role: if form.role.is_empty() {
+                    "member".to_string()
+                } else {
+                    form.role
+                },
+            })
         },
     )
     .await
@@ -558,38 +639,58 @@ async fn settings_view(
         .map(|m| m.username)
         .collect();
     let billing = match organisations.billing(membership.organisation_id).await {
-        BillingView::Free => {
-            context! { state => "free", plan => "Free", past_due => false, manage_url => () }
-        }
+        BillingView::Free => BillingPage {
+            state: "free",
+            plan: "Free".into(),
+            past_due: false,
+            manage_url: None,
+        },
         BillingView::Account {
             plan,
             past_due,
             manage_url,
-        } => context! { state => "account", plan, past_due, manage_url },
-        BillingView::Unavailable => {
-            context! { state => "unavailable", plan => "", past_due => false, manage_url => () }
-        }
+        } => BillingPage {
+            state: "account",
+            plan,
+            past_due,
+            manage_url,
+        },
+        BillingView::Unavailable => BillingPage {
+            state: "unavailable",
+            plan: String::new(),
+            past_due: false,
+            manage_url: None,
+        },
     };
     let rename_value = if form.rename_value.is_empty() {
         membership.slug.clone()
     } else {
         form.rename_value
     };
-    signed_in(
+    super::pages::signed_in_typed(
         state,
         browser,
         session,
         Some(membership),
         status,
-        "pages/org-settings.html.jinja",
+        "Organisation",
         "org-settings",
-        context! {
-            owners, billing, rename_value,
-            deleting => membership.deletion_requested_at.is_some(),
-            refusal => membership.deletion_refusal.clone().unwrap_or_default(),
-            notice => form.notice,
-            rename_error => form.rename_error,
-            delete_error => form.delete_error,
+        None,
+        membership.deletion_requested_at.as_ref().map(|_| 3),
+        None,
+        |viewer, csrf| {
+            crate::templates::compiled::pages::org_settings::render(&SettingsPage {
+                viewer,
+                csrf,
+                owners,
+                billing,
+                rename_value,
+                deleting: membership.deletion_requested_at.is_some(),
+                refusal: membership.deletion_refusal.clone().unwrap_or_default(),
+                notice: form.notice,
+                rename_error: form.rename_error,
+                delete_error: form.delete_error,
+            })
         },
     )
     .await
@@ -746,15 +847,24 @@ async fn new_page(
     slug: &str,
     error: &str,
 ) -> PageResult {
-    signed_in(
+    super::pages::signed_in_typed(
         state,
         browser,
         session,
         None,
         status,
-        "pages/org-new.html.jinja",
+        "New organisation",
         "new-organisation",
-        context! { slug, error },
+        None,
+        None,
+        None,
+        |_, csrf| {
+            crate::templates::compiled::pages::org_new::render(&NewOrganisationPage {
+                csrf,
+                slug,
+                error,
+            })
+        },
     )
     .await
 }
@@ -853,20 +963,23 @@ async fn invitation_view(
     };
     let return_to = serde_urlencoded::to_string([("return_to", format!("/invite?token={token}"))])
         .unwrap_or_default();
-    let response = render(
-        state,
+    let csrf = browser.csrf_token();
+    let response = super::pages::render_typed(
         browser,
         status,
-        "pages/invite.html.jinja",
-        context! {
-            mode, token, errors, username, return_to,
-            organisation => invitation.slug,
-            invited_by => invitation.invited_by,
-            role => invitation.role,
-            email => invitation.email,
-            signed_in_as => signed_in.map(|v| v.username),
-            csrf => browser.csrf_token(),
-        },
+        crate::templates::compiled::pages::invite::render(&super::pages::InvitePage {
+            mode,
+            token,
+            errors,
+            username,
+            return_to: &return_to,
+            organisation: &invitation.slug,
+            invited_by: &invitation.invited_by,
+            role: &invitation.role,
+            email: &invitation.email,
+            signed_in_as: signed_in.as_ref().map(|viewer| viewer.username.as_str()),
+            csrf: &csrf,
+        }),
     )?;
     Ok(super::pages::with_referrer_same_origin(response))
 }

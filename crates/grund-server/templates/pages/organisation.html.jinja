@@ -1,9 +1,0 @@
-{#- The Organisation pages: one head and the tabs. Each tab extends this,
-    sets title and tab (its key), and fills block tab. -#}
-{% extends "layout-app.html.jinja" %}
-{% block content %}
-{{ ui.page_head("Organisation") }}
-{{ ui.tabs("Organisation", [("general", "/" ~ org.slug ~ "/settings", "General"), ("members", "/" ~ org.slug ~ "/settings/members", "Members"), ("tokens", "/" ~ org.slug ~ "/settings/tokens", "API tokens"), ("registries", "/" ~ org.slug ~ "/settings/registries", "Registries"), ("about", "/" ~ org.slug ~ "/settings/about", "About")], tab) }}
-{{ forms.banner(error, ok=notice) }}
-{% block tab %}{% endblock %}
-{% endblock %}

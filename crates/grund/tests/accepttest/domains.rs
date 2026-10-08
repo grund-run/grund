@@ -285,7 +285,7 @@ async fn a_verified_domain_bound_to_an_app_is_served_through_the_edge_with_a_cer
         .body_contains("Serving hello at https:")?;
     when.visiting(&format!("/{org}/apps/hello")).await?;
     then.status(200)?
-        .body_contains(&format!("https:&#x2f;&#x2f;{name}"))?;
+        .body_contains(&format!("https://{name}"))?;
 
     let answer = domain_call(
         when,

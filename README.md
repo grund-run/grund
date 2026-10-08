@@ -332,6 +332,7 @@ image is refused when you deploy, with a message that names the host.
 ```
 crates/grund/          the binary; tests/accepttest/ (the contract over the wire)
 crates/grund-server/   the control plane: config, services, pages, API, background work
+crates/grund-server/templates/  compiled .html.sedge pages and components, and .txt.sedge mail
 crates/grund-store/    PostgreSQL: migrations, event-sourced write paths, read models
 crates/grund-domain/   aggregates, events and pure decisions; no I/O
 crates/grund-proto/    the API contract, generated from proto/ (needs protoc)
@@ -345,6 +346,10 @@ check.sh               the static binary in a read-only scratch container, again
 
 The design documents, threat model and agent notes live in
 [grund/grund-docs](https://git.kjuulh.io/grund/grund-docs) (private).
+
+Pages and mail compile from typed Sedge templates at build time; page models and
+form errors are Rust values. There is no runtime template loader. Changing a
+template rebuilds `grund-server`.
 
 ## Develop and verify
 

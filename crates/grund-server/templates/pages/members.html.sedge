@@ -1,0 +1,39 @@
+use crate::templates::compiled::components::{OrganisationTabs, Rows, Row, Panel, Form, Field, Button, Banner, PostButton, ChipsField, SelectForm, EmptyState};
+use crate::web::orgs::role_title;
+props crate::web::orgs::MembersPage<'_> { viewer, csrf, members, pending, roles, notice, error, invite_error, email, role };
+
+{if let Some(org) = &viewer.current {
+  <OrganisationTabs slug={&org.slug} active="members" />
+  <Banner text={error} ok={Some(notice)} />
+  <Rows>
+    {for member in members {
+      <Row name={&member.username} sub={&format!("{}{}", member.email, if member.joined.is_empty() { String::new() } else { format!(" · joined {}", member.joined) })} tone="ok" letter={&member.username} tags={if member.is_self { &["You"][..] } else { &[][..] }} status_text={if member.manageable { None } else { Some(role_title(&member.role)) }} status_tone="ok" end_active={Some(member.manageable || member.is_self)}>
+        <:status>{if member.manageable {
+          <SelectForm action="/{org.slug}/settings/members/{member.id}/role" csrf={csrf} name="role" id="role-{member.id}" label="Role of {member.username}" options={roles} selected={&member.role} button="Change" />
+        }}</:status>
+        <:end>{if member.manageable || member.is_self {
+          <PostButton action="/{org.slug}/settings/members/{member.id}/remove" csrf={csrf} label={if member.is_self { "Leave" } else { "Remove" }} kind={if member.is_self { "secondary" } else { "danger" }} size="sm" />
+        }}</:end>
+      </Row>
+    }}
+  </Rows>
+  {if org.manages {
+    <Panel id="invite" title="Invite someone">
+      <Form action="/{org.slug}/settings/members/invite" csrf={csrf} layout={Some("row")}>
+        {if !invite_error.is_empty() { <Banner text={invite_error} /> }}
+        <Field name="email" label="Email" kind="email" value={email} required autocomplete="off" placeholder={Some("name@example.com")} hint="They get a link that works for 7 days." />
+        <ChipsField name="role" label="Role" options={&[("member","Member"),("admin","Admin")]} selected={role} />
+        <Button label="Send invitation" kind="primary" />
+      </Form>
+    </Panel>
+  }}
+  <section class="section" aria-labelledby="pending"><div class="section-head"><h2 class="section-title" id="pending">Pending invitations<span class="count">{pending.len()}</span></h2></div>
+    {if pending.is_empty() { <EmptyState text="No invitations are waiting." /> } else {
+      <Rows>{for invitation in pending {
+        <Row name={&invitation.email} sub="invited by {invitation.invited_by} · expires {invitation.expires}" icon_name="mail" tone="violet" status_text={Some(role_title(&invitation.role))} status_tone="muted" end_active={Some(org.manages)}>
+          <:end>{if org.manages { <PostButton action="/{org.slug}/settings/invitations/{invitation.id}/revoke" csrf={csrf} label="Withdraw" kind="danger" size="sm" /> }}</:end>
+        </Row>
+      }}</Rows>
+    }}
+  </section>
+}}

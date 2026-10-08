@@ -1,0 +1,18 @@
+use crate::templates::compiled::layouts::Auth;
+use crate::templates::compiled::components::{AuthHead, Form, Banner, Field, Button, Foot, Icon};
+props crate::web::pages::ResetConfirmPage<'_> { csrf, token, valid, error, password_error };
+
+<Auth title="Choose a new password">
+  {if *valid {
+    <AuthHead title="Choose a new password" subtitle="Every device signed in to your account is signed out." />
+    <Form action="/reset/confirm" csrf={csrf}>
+      <input type="hidden" name="token" value={token}>
+      <Banner text={error} />
+      <Field name="password" label="New password" kind="password" error={password_error} required autocomplete="new-password" hint="At least 12 characters." autofocus />
+      <Button label="Set password" kind="primary" block />
+    </Form>
+  } else {
+    <AuthHead title="This link has expired" subtitle="Reset links work once, for 30 minutes." />
+    <Foot><p><a class="link-more" href="/reset">Send a new link<Icon name="arrow" class="icon-sm" /></a></p></Foot>
+  }}
+</Auth>

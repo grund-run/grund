@@ -7,6 +7,10 @@
 
 pub mod social;
 
+pub mod templates {
+    include!(concat!(env!("OUT_DIR"), "/sedge.rs"));
+}
+
 use std::sync::Arc;
 
 use grund_server::{config::ServeConfig, extension::Extension};

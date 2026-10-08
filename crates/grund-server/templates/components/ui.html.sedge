@@ -1,0 +1,220 @@
+component Icon(name: &str, class: &str) {
+<svg class="icon {class}" aria-hidden="true"><use href="#i-{name}"/></svg>
+}
+component Brand(href: &str) {
+<a class="brand" href={href}><img class="brand-mark" src="/static/mark.svg" alt="" width="40" height="40">grund</a>
+}
+component SkipLink() {
+<a class="skip" href="#main">Skip to content</a>
+}
+component Mark(name: &str, size: &str) {
+<span class="org-mark{if !size.is_empty() { " org-mark-" } else { "" }}{size}" aria-hidden="true">{name.chars().next()}</span>
+}
+component Tag(text: &str) {
+<span class="tag">{text}</span>
+}
+component Pill(text: &str, tone: &str, plain: bool) {
+<span class={if *plain { "pill pill-plain" } else { "pill" }}>{if !tone.is_empty() { <span class="dot tone-{tone}" aria-hidden="true"></span> }}{text}</span>
+}
+component ImageIcon(key: &str, size: &str) {
+{if *key == "image" {
+  <span class="image-icon{if !size.is_empty() { " image-icon-" } else { "" }}{size} image-icon-neutral" aria-hidden="true"><Icon name="box" /></span>
+} else {
+  <svg class="image-icon{if !size.is_empty() { " image-icon-" } else { "" }}{size}" viewBox="0 0 32 32" aria-hidden="true"><use href="#img-{key}"/></svg>
+}}
+}
+component Status(text: &str, tone: &str) {
+<span class="row-status"><svg class="icon tone-{tone}" aria-hidden="true"><use href="#i-{match *tone { "orange" | "danger" => "alert", "blue" => "clock", "muted" => "minus", _ => "ok" }}"/></svg>{text}</span>
+}
+component Button(label: &str, kind: &str = "primary", href: &str, icon_name: &str, block: bool, size: &str) {
+{if !href.is_empty() {
+  <a class="btn btn-{kind}{if !size.is_empty() { " btn-" } else { "" }}{size}{if *block { " btn-block" } else { "" }}" href={href}>{if !icon_name.is_empty() { <Icon name={icon_name} class="icon-sm" /> }}<span>{label}</span></a>
+} else {
+  <button class="btn btn-{kind}{if !size.is_empty() { " btn-" } else { "" }}{size}{if *block { " btn-block" } else { "" }}" type="submit">{if !icon_name.is_empty() { <Icon name={icon_name} class="icon-sm" /> }}<span>{label}</span></button>
+}}
+}
+component ButtonAdvanced(label: &str, href: &str, icon_name: &str, kind: &str = "primary", size: &str, button_type: &str = "submit", collapse: bool, block: bool, icon_size: &str = "sm", extra: &str, icon_end: bool, hidden: bool, download: &str) {
+{if !href.is_empty() {
+  <a class="btn btn-{kind}{if !size.is_empty() { " btn-" } else { "" }}{size}{if *block { " btn-block" } else { "" }}{if !extra.is_empty() { " " } else { "" }}{extra}" href={href} download={if download.is_empty() { None } else { Some(download) }}>
+    {if !icon_name.is_empty() && !*icon_end { <Icon name={icon_name} class={if icon_size.is_empty() { "" } else { "icon-sm" }} /> }}<span class={if *collapse { Some("btn-label") } else { None }}>{label}</span>{if !icon_name.is_empty() && *icon_end { <Icon name={icon_name} class={if icon_size.is_empty() { "" } else { "icon-sm" }} /> }}
+  </a>
+} else {
+  <button class="btn btn-{kind}{if !size.is_empty() { " btn-" } else { "" }}{size}{if *block { " btn-block" } else { "" }}{if !extra.is_empty() { " " } else { "" }}{extra}" type={button_type} hidden={hidden}>
+    {if !icon_name.is_empty() && !*icon_end { <Icon name={icon_name} class={if icon_size.is_empty() { "" } else { "icon-sm" }} /> }}<span class={if *collapse { Some("btn-label") } else { None }}>{label}</span>{if !icon_name.is_empty() && *icon_end { <Icon name={icon_name} class={if icon_size.is_empty() { "" } else { "icon-sm" }} /> }}
+  </button>
+}}
+}
+component LinkMore(href: &str, label: &str) {
+<a class="link-more" href={href}>{label}<Icon name="arrow" class="icon-sm" /></a>
+}
+component External(href: &str, label: &str) {
+<a class="address" href={href} rel="noopener noreferrer" target="_blank"><span class="address-text">{label}</span><Icon name="external" class="icon-sm" /><span class="visually-hidden"> (opens in a new tab)</span></a>
+}
+component IconLink(href: &str, icon_name: &str, label: &str, external: bool) {
+<a class="icon-btn" href={href} rel={if *external { Some("noopener noreferrer") } else { None }} target={if *external { Some("_blank") } else { None }} aria-label={label}><Icon name={icon_name} class="icon-sm" /></a>
+}
+component CopyButton(text: &str, label: &str, labelled: bool) {
+{if *labelled {
+  <button class="btn btn-secondary btn-sm copy" type="button" data-copy={text} hidden><Icon name="copy" class="icon-sm" /><span data-copy-label>Copy</span></button>
+} else {
+  <button class="icon-btn copy" type="button" data-copy={text} aria-label="Copy {label}" title="Copy" hidden><Icon name="copy" class="icon-sm" /></button>
+}}
+}
+component AuthHead(title: &str, subtitle: &str) {
+<h1 class="auth-title">{title}</h1>{if !subtitle.is_empty() { <p class="auth-lede">{subtitle}</p> }}
+}
+component Foot(children: Html) {
+<div class="form-foot">{children}</div>
+}
+component PageHead(title: &str, reference: Option<&str>, back: Option<(&str, &str)>, image: Option<&str>, state: Option<(&str, &str)>, children: Option<Html>) {
+{if let Some((href, label)) = back { <a class="back" href={href}><Icon name="arrow" class="icon-sm back-icon" />{label}</a> }}
+<div class="page-head">
+  <div class="page-id">
+    {if let Some(image) = image { <ImageIcon key={image} size="lg" /> }}
+    <div class="page-name">
+      <h1 class="page-title">{title}{if let Some((text, tone)) = state { {" "}<Pill text={text} tone={tone} /> }}</h1>
+      {if let Some(reference) = reference {
+        <p class="page-ref"><span class="page-ref-text" title={reference}>{crate::templates::short_image(reference)}</span><CopyButton text={reference} label="the image reference" /></p>
+      }}
+    </div>
+  </div>
+  {if let Some(children) = children { <div class="page-tools">{children}</div> }}
+</div>
+}
+component StatusLine(text: &str, tone: &str, id: &str) {
+<p class="status-line" id={if id.is_empty() { None } else { Some(id) }}><Status text={text} tone={tone} /></p>
+}
+component Section(id: &str, title: &str, count: Option<usize>, more: Option<(&str, &str)>, first: Option<bool>, stack: Option<bool>, children: Html) {
+<section class={if first.unwrap_or(false) && !stack.unwrap_or(false) { None } else if first.unwrap_or(false) { Some("section-stack") } else if stack.unwrap_or(false) { Some("section section-stack") } else { Some("section") }} aria-labelledby={id}>
+  <div class="section-head">
+    <h2 class="section-title" id={id}>{title}{if let Some(count) = count { <span class="count">{count}</span> }}</h2>
+    {if let Some((href, label)) = more { <LinkMore href={href} label={label} /> }}
+  </div>
+  {children}
+</section>
+}
+component Panel(id: &str, title: &str, action: Option<(&str, &str)>, children: Html) {
+<section class="panel" aria-labelledby={id}>
+  <div class="panel-head">
+    <h2 class="panel-title" id={id}>{title}</h2>
+    {if let Some((href, label)) = action { <ButtonAdvanced label={label} href={href} icon_name="arrow" kind="secondary" size="sm" icon_end /> }}
+  </div>
+  {children}
+</section>
+}
+component ChoiceLinks(label: &str, choices: &[crate::templates::ChoiceLink<'_>], active: &str) {
+<nav class="choices choices-lg" aria-label={label}>
+  {for choice in choices.iter() {
+    <a class={if choice.key == *active { "choice is-chosen" } else { "choice" }} href={choice.href} aria-current={if choice.key == *active { Some("true") } else { None }}>
+      <span class="icon-tile" aria-hidden="true"><Icon name={choice.icon} /></span>
+      <span class="choice-text"><span class="choice-title">{choice.title}</span><span class="choice-line">{choice.text}</span>{if !choice.sub.is_empty() { <span class="choice-sub">{choice.sub}</span> }}</span>
+      <span class="choice-dot" aria-hidden="true"></span>
+    </a>
+  }}
+</nav>
+}
+component TabLinks(label: &str, tabs: &[(&str, &str, &str, &str)], active: &str, counts: &[(&str, usize)], filter: bool) {
+<nav class="tabs" aria-label={label}>
+  {for tab in tabs.iter() {
+    <a class={if *active == tab.0 { "tab is-active" } else { "tab" }} href={tab.1} aria-current={if *active == tab.0 { Some("page") } else { None }} data-tab={if *filter { Some(tab.0) } else { None }}>{if !tab.3.is_empty() { <Icon name={tab.3} class="icon-sm" /> }}{tab.2}{if let Some((_, count)) = counts.iter().find(|(key, _)| *key == tab.0) { <span class="tab-count">{count}</span> }}</a>
+  }}
+</nav>
+}
+component Tabs(label: &str, tabs: &[(&str, &str, &str, &str)], active: &str, counts: &[(&str, usize)], filter: bool, children: Option<Html>) {
+{if let Some(children) = children {
+  <div class="tabs-bar"><TabLinks label={label} tabs={tabs} active={active} counts={counts} filter={*filter} /><div class="tabs-tools">{children}</div></div>
+} else {
+  <TabLinks label={label} tabs={tabs} active={active} counts={counts} filter={*filter} />
+}}
+}
+component Facts(children: Html) {
+<dl class="facts">{children}</dl>
+}
+component Fact(label: &str, value: &str, icon_name: &str, tone: &str, lines: &[(&str, &str)], wide: bool, after: &str, children: Option<Html>) {
+<div class={if *wide { "fact fact-wide" } else { "fact" }}>
+  <dt class="fact-label">{label}</dt>
+  {if let Some(children) = children {
+    <dd class="fact-body">{children}</dd>
+  } else {
+    <dd class="fact-value">{if !icon_name.is_empty() { <Icon name={icon_name} /> } else if !tone.is_empty() { <span class="dot dot-lg tone-{tone}" aria-hidden="true"></span> }}<span title={value}>{value}</span>{if !after.is_empty() { <span class="fact-after" title={after}>{after}</span> }}</dd>
+    {for line in lines.iter() { <dd class="fact-line" title={if line.1.is_empty() { None } else { Some(line.1) }}>{line.0}</dd> }}
+  }}
+</div>
+}
+component Endpoint(text: &str, href: &str) {
+<p class="endpoint"><Icon name="link" />{if !href.is_empty() { <a class="endpoint-text" href={href} title={text} rel="noopener noreferrer" target="_blank">{text}<span class="visually-hidden"> (opens in a new tab)</span></a> } else { <code class="endpoint-text" title={text}>{text}</code> }}<CopyButton text={text} label="the address" /></p>
+}
+component Callout(title: &str, text: &str, icon_name: &str, tone: &str, danger: bool) {
+<div class={if *danger { "callout callout-danger" } else { "callout" }}>
+  {if !icon_name.is_empty() { <svg class="icon icon-lg tone-{tone}" aria-hidden="true"><use href="#i-{icon_name}"/></svg> }}
+  <div class="callout-body"><p class="callout-title">{title}</p><p class="callout-text">{text}</p></div>
+</div>
+}
+component IconFact(icon_name: &str, text: &str) {
+<span class="icon-fact"><Icon name={icon_name} class="icon-sm" />{text}</span>
+}
+component Stats(facts: &[(&str, &str)]) {
+<ul class="stats">{for (icon_name, text) in facts.iter() { <li><IconFact icon_name={icon_name} text={text} /></li> }}</ul>
+}
+component EmptyState(title: &str, text: &str, icon_name: &str, filter_empty: &str, hidden: bool, children: Option<Html>) {
+<div class={if icon_name.is_empty() { "empty" } else { "empty empty-hero" }} data-filter-empty={if filter_empty.is_empty() { None } else { Some(filter_empty) }} hidden={hidden}>{if !icon_name.is_empty() { <Icon name={icon_name} class="icon-lg" /> }}{if !title.is_empty() { <strong>{title}</strong> }}{if let Some(children) = children {
+  {if icon_name.is_empty() { {children} } else { <div class="empty-actions">{children}</div> }}
+} else { {text} }}</div>
+}
+component AddCard(href: &str, title: &str) {
+<a class="empty empty-action" href={href}><span class="icon-btn icon-btn-boxed" aria-hidden="true"><Icon name="plus" class="icon-sm" /></span><strong>{title}</strong></a>
+}
+component Para(text: &str, kind: &str = "hint", hidden: bool, filter_empty: bool, children: Option<Html>) {
+<p class={kind} data-filter-empty={crate::templates::BareDataAttr(*filter_empty)} hidden={hidden}>{if let Some(children) = children { {children} } else { {text} }}</p>
+}
+component DnsRecords(records: &[(&str, &str, &str)], label: &str) {
+<table class="dns-records">
+  <caption class="visually-hidden">{label}</caption>
+  <thead><tr><th scope="col">Type</th><th scope="col">Name</th><th scope="col">Value</th></tr></thead>
+  <tbody>
+    {for record in records.iter() {
+      <tr>
+        <td data-label="Type"><code>{record.0}</code></td>
+        <td data-label="Name"><span class="dns-cell"><code>{record.1}</code><button class="icon-btn copy" type="button" data-copy={record.1} aria-label="Copy the {record.0} record's name" title="Copy" hidden><Icon name="copy" class="icon-sm" /></button></span></td>
+        <td data-label="Value"><span class="dns-cell"><code>{record.2}</code><button class="icon-btn copy" type="button" data-copy={record.2} aria-label="Copy the {record.0} record's value" title="Copy" hidden><Icon name="copy" class="icon-sm" /></button></span></td>
+      </tr>
+    }}
+  </tbody>
+</table>
+}
+component Code(text: &str, filename: &str, download: &str, id: &str, copy: bool = true, wrap: bool, what: &str = "the text") {
+<div class="code{if *wrap { " code-wrap" } else { "" }}{if *copy && filename.is_empty() { " code-corner" } else { "" }}" id={if id.is_empty() { None } else { Some(id) }}>
+  {if !filename.is_empty() {
+    <div class="code-head"><span class="code-name"><Icon name="file" class="icon-sm" />{filename}</span><span class="code-tools">
+      {if *copy { <CopyButton text={text} label={filename} labelled /> }}
+      {if !download.is_empty() { <ButtonAdvanced label="Download" href={download} icon_name="download" kind="secondary" size="sm" download={filename} /> }}
+    </span></div>
+  }}
+  <pre class="code-body mono">{text}</pre>
+  {if *copy && filename.is_empty() { <CopyButton text={text} label={what} /> }}
+</div>
+}
+component Expanders(children: Html) {
+<div class="expanders">{children}</div>
+}
+component Expander(title: &str, summary: &str, icon_name: &str, tone: &str, state: Option<(&str, &str)>, meta: &[&str], open: bool, kind: &str, id: &str, children: Html) {
+<details class="expander{if !kind.is_empty() { " expander-" } else { "" }}{kind}" id={if id.is_empty() { None } else { Some(id) }} open={open}>
+  <summary class="expander-head">
+    {if !icon_name.is_empty() { <svg class="icon icon-sm expander-icon{if !tone.is_empty() { " tone-" } else { "" }}{tone}" aria-hidden="true"><use href="#i-{icon_name}"/></svg> }}
+    <span class="expander-text"><span class="expander-title">{title}{if let Some((text, tone)) = state { {" "}<Pill text={text} tone={tone} /> }}</span>{if !summary.is_empty() { <span class="expander-summary">{summary}</span> }}</span>
+    {if !meta.is_empty() { <span class="expander-meta">{for fact in meta.iter() { <span>{fact}</span> }}</span> }}
+    <Icon name="down" class="icon-sm expander-chevron" />
+  </summary>
+  <div class="expander-body">{children}</div>
+</details>
+}
+component OrganisationTabs(slug: &str, active: &str) {
+<PageHead title="Organisation" />
+<nav class="tabs" aria-label="Organisation">
+  <a class={if *active == "general" { "tab is-active" } else { "tab" }} href="/{slug}/settings" aria-current={if *active == "general" { Some("page") } else { None }}>General</a>
+  <a class={if *active == "members" { "tab is-active" } else { "tab" }} href="/{slug}/settings/members" aria-current={if *active == "members" { Some("page") } else { None }}>Members</a>
+  <a class={if *active == "tokens" { "tab is-active" } else { "tab" }} href="/{slug}/settings/tokens" aria-current={if *active == "tokens" { Some("page") } else { None }}>API tokens</a>
+  <a class={if *active == "registries" { "tab is-active" } else { "tab" }} href="/{slug}/settings/registries" aria-current={if *active == "registries" { Some("page") } else { None }}>Registries</a>
+  <a class={if *active == "about" { "tab is-active" } else { "tab" }} href="/{slug}/settings/about" aria-current={if *active == "about" { Some("page") } else { None }}>About</a>
+</nav>
+}

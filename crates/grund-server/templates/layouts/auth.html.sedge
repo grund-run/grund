@@ -1,0 +1,12 @@
+use crate::templates::compiled::layouts::Base;
+use crate::templates::compiled::components::Brand;
+component Auth(title: &str, children: Html) {
+<Base title={title}>
+  <main class="auth" id="main">
+    <div class="auth-card">
+      <Brand href="/" />
+      {children}
+    </div>
+  </main>
+</Base>
+}

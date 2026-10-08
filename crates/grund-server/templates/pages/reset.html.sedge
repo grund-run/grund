@@ -1,0 +1,13 @@
+use crate::templates::compiled::layouts::Auth;
+use crate::templates::compiled::components::{AuthHead, Form, Banner, Field, Button, Foot};
+props crate::web::pages::ResetPage<'_> { csrf, email, error };
+
+<Auth title="Reset your password">
+  <AuthHead title="Reset your password" subtitle="We mail a link to choose a new password." />
+  <Form action="/reset" csrf={csrf}>
+    <Banner text={error} />
+    <Field name="email" label="Email" kind="email" value={email} required autocomplete="email" autofocus />
+    <Button label="Send link" kind="primary" block />
+  </Form>
+  <Foot><p><a href="/login">Back to sign in</a></p></Foot>
+</Auth>

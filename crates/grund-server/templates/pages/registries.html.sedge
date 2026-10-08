@@ -1,0 +1,29 @@
+use crate::templates::compiled::components::{OrganisationTabs, Rows, Row, Panel, Form, Field, Button, Banner, PostButton, EmptyState, Grid, Actions};
+props crate::web::registries::RegistriesPage<'_> { viewer, csrf, credentials, notice, error, form_error, host_error, username_error, password_error, host, username };
+
+{if let Some(org) = &viewer.current {
+  <OrganisationTabs slug={&org.slug} active="registries" />
+  <Banner text={error} ok={Some(notice)} />
+  <section class="section" aria-labelledby="credentials"><div class="section-head"><h2 class="section-title" id="credentials">Registries with a login<span class="count">{credentials.len()}</span></h2></div>
+    {if credentials.is_empty() { <EmptyState text="No registry logins. Public images need none." /> } else {
+      <Rows>{for credential in credentials {
+        <Row name={&credential.host} sub="as {credential.username} · {credential.updated}" icon_name="lock" tone="violet" status_tone="ok" end_active={Some(org.manages)}>
+          <:end>{if org.manages { <PostButton action="/{org.slug}/settings/registries/remove" csrf={csrf} label="Remove" kind="danger" size="sm" hidden={&[("host",credential.host.as_str())]} /> }}</:end>
+        </Row>
+      }}</Rows>
+    }}
+  </section>
+  {if org.manages {
+    <Panel id="set" title="Add or replace a login">
+      <Form action="/{org.slug}/settings/registries" csrf={csrf} autocomplete={Some("off")}>
+        <Banner text={form_error} fields={Some(&[host_error.as_str(),username_error.as_str(),password_error.as_str()])} />
+        <Field name="host" label="Registry" value={host} error={host_error} required autocomplete="off" hint="Such as ghcr.io, or docker.io for Docker Hub." width={Some("md")} mono />
+        <Grid>
+          <Field name="username" label="Username" value={username} error={username_error} required autocomplete="off" />
+          <Field name="password" label="Password or access token" kind="password" error={password_error} required autocomplete="new-password" hint="Never shown again." />
+        </Grid>
+        <Actions note="Saving a registry that has a login replaces it."><Button label="Save login" kind="primary" /></Actions>
+      </Form>
+    </Panel>
+  }}
+}}

@@ -4,28 +4,64 @@
 //! app, unbind and remove it. Every member sees them; owners and admins
 //! change them.
 
+use crate::templates::compiled::pages::domains;
 use axum::{
     Form,
     extract::{Path, Query, State as AxumState},
     http::{StatusCode, Uri},
 };
 use grund_store::organisations::Membership;
-use minijinja::{Value, context};
 use serde::Deserialize;
+use std::borrow::Cow;
 
 use crate::{
     services::{
         apps::AppsState,
-        domains::{DomainView, DomainsError, DomainsState, MAX_PER_ORGANISATION, Status},
+        domains::{DomainView, DomainsError, DomainsState, Status},
         sessions::Session,
     },
     state::State,
     web::{
         browser::Browser,
         orgs::Member,
-        pages::{Notice, PageError, PageResult, forged, redirect, signed_in},
+        pages::{Notice, PageError, PageResult, forged, redirect, signed_in_typed},
     },
 };
+
+pub struct DomainRecord<'a> {
+    pub kind: &'static str,
+    pub name: &'a str,
+    pub value: &'a str,
+}
+
+pub struct DomainItem<'a> {
+    pub id: String,
+    pub name: &'a str,
+    pub state: &'a str,
+    pub app: &'a str,
+    pub sentence: Cow<'a, str>,
+    pub tone: &'static str,
+    pub record: Option<DomainRecord<'a>>,
+    pub records_aside: Option<String>,
+}
+
+pub struct AppAddress<'a> {
+    pub name: &'a str,
+    pub address: &'a str,
+}
+
+pub struct DomainsPage<'a> {
+    pub csrf: &'a str,
+    pub slug: &'a str,
+    pub manages: bool,
+    pub addresses: Vec<AppAddress<'a>>,
+    pub domains: Vec<DomainItem<'a>>,
+    pub notice: &'static str,
+    pub error: &'static str,
+    pub form_error: String,
+    pub name_error: String,
+    pub name: String,
+}
 
 #[derive(Default)]
 struct AddForm {
@@ -36,71 +72,65 @@ struct AddForm {
     name: String,
 }
 
-fn cooldown_words(seconds: u64) -> String {
-    match seconds {
-        s if s % 86_400 == 0 && s >= 86_400 => {
-            let days = s / 86_400;
-            format!("{days} day{}", if days == 1 { "" } else { "s" })
-        }
-        s if s % 3600 == 0 && s >= 3600 => format!("{} hours", s / 3600),
-        s => format!("{s} seconds"),
-    }
-}
-
-fn domain_context(index: usize, domain: &DomainView, address: Option<&str>) -> Value {
-    let app = domain.app_name.clone().unwrap_or_default();
+fn domain_context<'a>(
+    index: usize,
+    domain: &'a DomainView,
+    address: Option<&'a str>,
+) -> DomainItem<'a> {
+    let app = domain.app_name.as_deref().unwrap_or("");
     let (sentence, tone) = match domain.status {
-        Status::Pending => ("Waiting for its TXT record.".to_string(), "orange"),
+        Status::Pending => (Cow::Borrowed("Waiting for its TXT record."), "orange"),
         Status::Verified => (
-            "Verified: it is this organisation's on this grund. Bind it to an app to serve it."
-                .to_string(),
+            Cow::Borrowed(
+                "Verified: it is this organisation's on this grund. Bind it to an app to serve it.",
+            ),
             "blue",
         ),
         Status::Bound => (
-            format!(
+            Cow::Owned(format!(
                 "Bound to {app}. Its certificate is on its way once {} points at the app's address.",
                 domain.name
-            ),
+            )),
             "orange",
         ),
         Status::Issued => (
-            format!(
+            Cow::Owned(format!(
                 "Serving {app} at https://{}, certificate valid until {}.",
                 domain.name,
                 domain
                     .certificate_not_after
                     .map(|at| at.format("%-d %b %Y").to_string())
                     .unwrap_or_default()
-            ),
+            )),
             "ok",
         ),
         Status::Error => (
-            domain
-                .problem
-                .clone()
-                .unwrap_or_else(|| "Something went wrong.".into()),
+            Cow::Borrowed(domain.problem.as_deref().unwrap_or("Something went wrong.")),
             "danger",
         ),
     };
-    let records: Vec<Value> = match (domain.state.as_str(), address) {
-        ("pending", _) => vec![context! {
-            type => "TXT", name => domain.txt_name, value => domain.txt_value,
-        }],
-        ("bound", Some(address)) => vec![context! {
-            type => "CNAME", name => domain.name, value => address,
-        }],
-        _ => Vec::new(),
+    let record = match (domain.state.as_str(), address) {
+        ("pending", _) => Some(DomainRecord {
+            kind: "TXT",
+            name: &domain.txt_name,
+            value: &domain.txt_value,
+        }),
+        ("bound", Some(address)) => Some(DomainRecord {
+            kind: "CNAME",
+            name: &domain.name,
+            value: address,
+        }),
+        _ => None,
     };
-    context! {
-        id => format!("domain-{}", index + 1),
-        name => domain.name,
-        state => domain.state,
-        app,
-        sentence, tone, records,
-        records_aside => format!(
+    DomainItem {
+        id: format!("domain-{}", index + 1),
+        name: &domain.name,
+        state: &domain.state,
+        app, sentence, tone, record,
+        records_aside: (domain.state == "bound" && address.is_some()).then(|| format!(
             "Point {} at the app with this record. A domain at the top of its zone (example.com itself) cannot have a CNAME: use your provider's ALIAS, ANAME or CNAME flattening to the same address.",
             domain.name
-        ),
+        )),
     }
 }
 
@@ -117,18 +147,14 @@ async fn domains_view(
         .listings(membership.organisation_id, &membership.slug)
         .await
         .map_err(|e| PageError::from(anyhow::anyhow!(e)))?;
-    let addresses: Vec<Value> = listings
+    let addresses: Vec<AppAddress<'_>> = listings
         .iter()
         .filter_map(|l| {
-            l.address
-                .as_ref()
-                .map(|address| context! { name => l.view.row.name, address })
+            l.address.as_deref().map(|address| AppAddress {
+                name: &l.view.row.name,
+                address,
+            })
         })
-        .collect();
-    let apps: Vec<(String, String)> = listings
-        .iter()
-        .filter(|l| l.address.is_some())
-        .map(|l| (l.view.row.name.clone(), l.view.row.name.clone()))
         .collect();
     let address_of = |app: &Option<String>| {
         app.as_ref().and_then(|app| {
@@ -138,29 +164,40 @@ async fn domains_view(
                 .and_then(|l| l.address.as_deref())
         })
     };
-    let domains: Vec<Value> = state
+    let domain_rows = state
         .domains()
         .list(membership.organisation_id)
         .await
-        .map_err(|e| PageError::from(anyhow::anyhow!(e)))?
+        .map_err(|e| PageError::from(anyhow::anyhow!(e)))?;
+    let domains: Vec<DomainItem<'_>> = domain_rows
         .iter()
         .enumerate()
         .map(|(index, domain)| domain_context(index, domain, address_of(&domain.app_name)))
         .collect();
-    signed_in(
+    signed_in_typed(
         state,
         browser,
         session,
         Some(membership),
         status,
-        "pages/domains.html.jinja",
+        "Domains",
         "domains",
-        context! {
-            addresses, domains, apps,
-            max => MAX_PER_ORGANISATION,
-            cooldown => cooldown_words(state.config.entry.domain_cooldown),
-            notice => form.notice, error => form.error,
-            form_error => form.form_error, name_error => form.name_error, name => form.name,
+        None,
+        None,
+        None,
+        |_, csrf| {
+            domains::render(&DomainsPage {
+                csrf,
+                slug: &membership.slug,
+                manages: matches!(membership.role.as_str(), "owner" | "admin"),
+                addresses,
+                domains,
+                notice: form.notice,
+                error: form.error,
+                form_error: form.form_error,
+                name_error: form.name_error,
+                name: form.name,
+            })
         },
     )
     .await
@@ -414,17 +451,4 @@ pub async fn remove(
         Action::Remove,
     )
     .await
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_cool_down_is_said_in_the_largest_whole_unit() {
-        assert_eq!(cooldown_words(604_800), "7 days");
-        assert_eq!(cooldown_words(86_400), "1 day");
-        assert_eq!(cooldown_words(7200), "2 hours");
-        assert_eq!(cooldown_words(5), "5 seconds");
-    }
 }

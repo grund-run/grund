@@ -11,7 +11,6 @@ use crate::{
     extension::Extensions,
     secrets::SecretKey,
     services::{billing::Billing, entitlements::Entitlements, passwords::Passwords},
-    templates::Templates,
 };
 
 /// Cheap to clone: every field is an `Arc`, a pool or a handle.
@@ -26,7 +25,6 @@ pub struct State {
     pub certificates: crate::certificates::Certificates,
     pub health: nostatus::StatusState,
     pub passwords: Passwords,
-    pub templates: Templates,
     pub entitlements: Arc<Entitlements>,
     /// The billing shim: free, or a billing service (GRUND_BILLING_URL).
     pub billing: Billing,

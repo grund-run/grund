@@ -1369,7 +1369,7 @@ fn setup_command(page: &str) -> anyhow::Result<Vec<String>> {
     Ok(line[..end]
         .split_whitespace()
         .skip(2)
-        .map(|arg| arg.replace("&#x2f;", "/"))
+        .map(str::to_string)
         .collect())
 }
 
@@ -1479,7 +1479,7 @@ async fn the_machines_page_adds_a_device_shows_it_connected_and_runs_a_vm_on_it(
         .body_contains("vm1")?
         .body_contains("on desk · 1 vCPU, 512 MiB, 2 GiB")?
         .body_contains("Running")?;
-    let body = then.body()?.replace("&#x2f;", "/");
+    let body = then.body()?;
     let stop = body
         .split("/machines/vms/")
         .nth(1)
@@ -1864,7 +1864,7 @@ async fn the_machines_page_offers_the_configured_installer_and_vm_image() -> any
 
     when.submitting(&page, &format!("{page}/add"), &[("name", "desk")])
         .await?;
-    let body = then.status(200)?.body()?.replace("&#x2f;", "/");
+    let body = then.status(200)?.body()?;
     let expected = format!(
         "curl -fsSL https://example.accept.test/install.sh | sudo sh -s -- --url {} --code grund_join_",
         origin(&when)
@@ -1893,7 +1893,7 @@ async fn the_machines_page_offers_the_configured_installer_and_vm_image() -> any
     then.status(200)?
         .body_contains(&format!("value=\"{kernel_sha}\""))?
         .body_contains(&format!("value=\"{rootfs_sha}\""))?;
-    let body = then.body()?.replace("&#x2f;", "/");
+    let body = then.body()?;
     anyhow::ensure!(
         body.contains("value=\"https://images.accept.test/guest.ext4\""),
         "{body}"
@@ -1951,7 +1951,7 @@ async fn an_instance_serving_its_installer_hands_out_its_script_and_its_own_bina
     let page = format!("/{}/machines", owner.username);
     when.submitting(&page, &format!("{page}/add"), &[("name", "desk")])
         .await?;
-    let body = then.status(200)?.body()?.replace("&#x2f;", "/");
+    let body = then.status(200)?.body()?;
     let origin = origin(&when);
     let offered =
         format!("curl -fsSL {origin}/install | sudo sh -s -- --url {origin} --code grund_join_");

@@ -31,7 +31,7 @@ use grund_store::{
     apps::{ReleaseRow, ReplicaRow},
     organisations::Membership,
 };
-use minijinja::{Value, context};
+
 use serde::Deserialize;
 
 use crate::{
@@ -45,7 +45,7 @@ use crate::{
     web::{
         browser::Browser,
         orgs::Member,
-        pages::{PageError, PageResult, forged, redirect, signed_in},
+        pages::{AppSearch, PageError, PageResult, forged, redirect, signed_in_typed},
     },
 };
 
@@ -215,8 +215,18 @@ fn internal_address(name: &str, spec: &AppSpec) -> Option<String> {
         .map(|port| format!("{name}.grund.internal:{}", port.port))
 }
 
+pub struct ListingView {
+    pub name: String,
+    pub tone: &'static str,
+    pub copies: u32,
+    pub icon: &'static str,
+    pub image: String,
+    pub address: Option<String>,
+    pub internal: Option<String>,
+}
+
 /// An app as a list row or card shows it.
-pub fn listing_context(listing: &AppListing) -> Value {
+pub fn listing_view(listing: &AppListing) -> ListingView {
     let view = &listing.view;
     let Health { tone, .. } = health(view, Utc::now());
     let image = listing
@@ -224,14 +234,17 @@ pub fn listing_context(listing: &AppListing) -> Value {
         .as_ref()
         .map(|spec| spec.image.clone())
         .unwrap_or_default();
-    context! {
-        name => view.row.name,
+    ListingView {
+        name: view.row.name.clone(),
         tone,
-        copies => view.row.settings.0.copies,
-        icon => image_icon(&image),
+        copies: view.row.settings.0.copies,
+        icon: image_icon(&image),
         image,
-        address => listing.address,
-        internal => listing.spec.as_ref().and_then(|spec| internal_address(&view.row.name, spec)),
+        address: listing.address.clone(),
+        internal: listing
+            .spec
+            .as_ref()
+            .and_then(|spec| internal_address(&view.row.name, spec)),
     }
 }
 
@@ -311,67 +324,66 @@ fn release_words(row: &ReleaseRow) -> ReleaseWords {
     }
 }
 
-fn release_context(row: &ReleaseRow, current: Option<i32>, now: DateTime<Utc>) -> Value {
-    let (outcome, tone, title, state, result) = match row.outcome.as_deref() {
-        Some("rolling_out") => ("Releasing", "blue", "Rolling out", "busy", "Rolling out"),
-        Some("live") => (
-            "Live",
-            "ok",
-            "Deployment successful",
-            "ok",
-            "Deployed successfully",
-        ),
-        Some("replaced") => (
-            "Replaced",
-            "muted",
-            "Deployment successful",
-            "",
-            "Deployed successfully",
-        ),
-        Some("failed") => (
-            "Failed",
-            "danger",
-            "Deployment failed",
-            "failed",
-            "Failed to start",
-        ),
-        Some("superseded") => (
-            "Superseded",
-            "muted",
-            "Superseded by a newer release",
-            "",
-            "Superseded",
-        ),
-        _ => (
-            "Made",
-            "muted",
-            "Waiting to roll out",
-            "",
-            "Waiting to roll out",
-        ),
+pub struct ReleaseView {
+    pub event: String,
+    pub short_digest: String,
+    pub number: i32,
+    pub image: String,
+    pub digest: String,
+    pub by: String,
+    pub verb: String,
+    pub source: &'static str,
+    pub at: String,
+    pub ago: String,
+    pub iso: String,
+    pub note: String,
+    pub outcome: &'static str,
+    pub tone: &'static str,
+    pub state: &'static str,
+    pub reason: Option<String>,
+    pub live: bool,
+    pub again: &'static str,
+}
+
+fn release_view(row: &ReleaseRow, current: Option<i32>, now: DateTime<Utc>) -> ReleaseView {
+    let (outcome, tone, state) = match row.outcome.as_deref() {
+        Some("rolling_out") => ("Releasing", "blue", "busy"),
+        Some("live") => ("Live", "ok", "ok"),
+        Some("replaced") => ("Replaced", "muted", ""),
+        Some("failed") => ("Failed", "danger", "failed"),
+        Some("superseded") => ("Superseded", "muted", ""),
+        _ => ("Made", "muted", ""),
     };
     let words = release_words(row);
     let digest = row.image_digest.trim_start_matches("sha256:");
-    context! {
-        event => match row.rollback_of {
-            Some(number) if row.source == "rollback" => format!("v{} · rolled back to v{number}", row.number),
+    ReleaseView {
+        event: match row.rollback_of {
+            Some(number) if row.source == "rollback" => {
+                format!("v{} · rolled back to v{number}", row.number)
+            }
             _ => format!("v{} · deployed", row.number),
         },
-        short_digest => digest.chars().take(12).collect::<String>(),
-        number => row.number,
-        image => row.spec.0.image,
-        digest => row.image_digest,
-        by => words.by,
-        verb => words.verb,
-        source => words.source,
-        at => when(row.created_at),
-        ago => ago(row.created_at, now),
-        iso => row.created_at.to_rfc3339(),
-        note => row.note,
-        outcome, tone, title, state, result,
-        reason => row.reason,
-        live => row.outcome.as_deref() == Some("live"),
-        again => if current.is_some_and(|c| row.number < c) { "Roll back to this" } else { "Run this again" },
+        short_digest: digest.chars().take(12).collect(),
+        number: row.number,
+        image: row.spec.0.image.clone(),
+        digest: row.image_digest.clone(),
+        by: words.by,
+        verb: words.verb,
+        source: words.source,
+        at: when(row.created_at),
+        ago: ago(row.created_at, now),
+        iso: row.created_at.to_rfc3339(),
+        note: row.note.clone(),
+        outcome,
+        tone,
+        state,
+        reason: row.reason.clone(),
+        live: row.outcome.as_deref() == Some("live"),
+        again: if current.is_some_and(|c| row.number < c) {
+            "Roll back to this"
+        } else {
+            "Run this again"
+        },
     }
 }
 
@@ -414,6 +426,21 @@ fn error_words(error: &str) -> &'static str {
 
 /// `/{org}/apps`, searched by `q`, ordered by `sort` and drawn as `view`
 /// (`list` or `grid`).
+pub struct AppsPage {
+    pub slug: String,
+    pub list_href: String,
+    pub grid_href: String,
+    pub all_href: String,
+    pub icons: Vec<&'static str>,
+    pub apps: Vec<ListingView>,
+    pub total: usize,
+    pub list: AppSearch,
+    pub sorts: &'static [(&'static str, &'static str)],
+    pub notice: &'static str,
+    pub error: &'static str,
+    pub manages: bool,
+}
+
 pub async fn apps_page(
     AxumState(state): AxumState<State>,
     Member {
@@ -454,22 +481,36 @@ pub async fn apps_page(
             serde_urlencoded::to_string(pairs).unwrap_or_default()
         )
     };
-    signed_in(
+    let page = AppsPage {
+        slug: membership.slug.clone(),
+        list_href: href(&q, "list"),
+        grid_href: href(&q, "grid"),
+        all_href: href("", view),
+        icons: icons_of(&shown),
+        apps: shown.iter().map(|l| listing_view(l)).collect(),
+        total: listings.len(),
+        list: AppSearch {
+            q,
+            sort: sort.into(),
+            view: view.into(),
+        },
+        sorts: SORTS,
+        notice: notice_words(&query.done),
+        error: error_words(&query.error),
+        manages: manages(&membership),
+    };
+    signed_in_typed(
         &state,
         &browser,
         &session,
         Some(&membership),
         StatusCode::OK,
-        "pages/apps.html.jinja",
+        "Apps",
         "apps",
-        context! {
-            list_href => href(&q, "list"), grid_href => href(&q, "grid"), all_href => href("", view),
-            icons => icons_of(&shown),
-            apps => shown.iter().map(|l| listing_context(l)).collect::<Vec<_>>(),
-            total => listings.len(),
-            list => context! { q, sort, view }, sorts => SORTS,
-            notice => notice_words(&query.done), error => error_words(&query.error),
-        },
+        Some(&page.list),
+        None,
+        None,
+        |_, _| crate::templates::compiled::pages::apps::render(&page),
     )
     .await
 }
@@ -601,20 +642,36 @@ pub(super) fn refusal(error: &AppsError) -> Refusal {
     }
 }
 
-fn exposures(app_domain: Option<&str>) -> Vec<Value> {
-    let public = match app_domain {
-        Some(domain) => context! {
-            value => "public", title => "Public HTTP", icon => "globe",
-            text => format!("Via a {domain} address"),
-        },
-        None => context! {
-            value => "public", title => "Public HTTP", icon => "globe", disabled => true,
-            tag => "Not set up", text => "This instance gives apps no address of their own",
-        },
-    };
+pub struct ExposureChoice {
+    pub value: &'static str,
+    pub title: &'static str,
+    pub icon: &'static str,
+    pub text: String,
+    pub disabled: bool,
+    pub tag: Option<&'static str>,
+}
+
+fn exposures(app_domain: Option<&str>) -> Vec<ExposureChoice> {
     vec![
-        context! { value => "private", title => "Private", icon => "lock", text => "Only other apps reach it" },
-        public,
+        ExposureChoice {
+            value: "private",
+            title: "Private",
+            icon: "lock",
+            text: "Only other apps reach it".into(),
+            disabled: false,
+            tag: None,
+        },
+        ExposureChoice {
+            value: "public",
+            title: "Public HTTP",
+            icon: "globe",
+            text: app_domain.map_or_else(
+                || "This instance gives apps no address of their own".into(),
+                |domain| format!("Via a {domain} address"),
+            ),
+            disabled: app_domain.is_none(),
+            tag: app_domain.is_none().then_some("Not set up"),
+        },
     ]
 }
 
@@ -636,14 +693,68 @@ fn template_icons() -> Vec<&'static str> {
 
 const NEEDS_STORAGE: &str = "Needs storage";
 
-/// A premade app as the Templates page shows it.
-pub fn template_context(template: &templates::Template) -> Value {
-    context! {
-        key => template.key,
-        title => template.title,
-        summary => template.summary,
-        icon => template_icon(template),
-        soon => template.needs_storage.then_some(NEEDS_STORAGE),
+pub struct TemplateView {
+    pub key: &'static str,
+    pub title: &'static str,
+    pub summary: &'static str,
+    pub icon: &'static str,
+    pub soon: Option<&'static str>,
+}
+
+pub struct TemplateChoice {
+    pub value: &'static str,
+    pub title: &'static str,
+    pub text: &'static str,
+    pub image: &'static str,
+    pub disabled: bool,
+    pub tag: Option<&'static str>,
+}
+
+pub struct DeployMode {
+    pub key: &'static str,
+    pub href: String,
+    pub icon: &'static str,
+    pub title: &'static str,
+    pub text: &'static str,
+    pub sub: &'static str,
+}
+
+pub struct DeployPage {
+    pub slug: String,
+    pub manages: bool,
+    pub mode: &'static str,
+    pub modes: Vec<DeployMode>,
+    pub new: NewForm,
+    pub new_error: String,
+    pub errors: std::collections::BTreeMap<&'static str, String>,
+    pub advanced: bool,
+    pub secrets_dropped: bool,
+    pub exposures: Vec<ExposureChoice>,
+    pub public_hint: String,
+    pub templates: Vec<TemplateChoice>,
+    pub image_keys: Vec<&'static str>,
+    pub signals: Vec<(&'static str, &'static str)>,
+    pub memory_steps: &'static [u64],
+    pub cpu_steps: Vec<String>,
+    pub checks: &'static [(&'static str, &'static str)],
+    pub action: String,
+    pub csrf: String,
+}
+
+pub struct TemplatesPage {
+    pub slug: String,
+    pub manages: bool,
+    pub templates: Vec<TemplateView>,
+    pub image_keys: Vec<&'static str>,
+}
+
+pub fn template_view(template: &templates::Template) -> TemplateView {
+    TemplateView {
+        key: template.key,
+        title: template.title,
+        summary: template.summary,
+        icon: template_icon(template),
+        soon: template.needs_storage.then_some(NEEDS_STORAGE),
     }
 }
 
@@ -656,13 +767,15 @@ async fn new_view(
     refused: Refusal,
 ) -> PageResult {
     let slug = &membership.slug;
-    let choices: Vec<Value> = templates::CATALOGUE
+    let choices: Vec<TemplateChoice> = templates::CATALOGUE
         .iter()
-        .map(|t| {
-            context! {
-                value => t.key, title => t.title, text => t.summary, image => template_icon(t),
-                disabled => t.needs_storage, tag => t.needs_storage.then_some(NEEDS_STORAGE),
-            }
+        .map(|t| TemplateChoice {
+            value: t.key,
+            title: t.title,
+            text: t.summary,
+            image: template_icon(t),
+            disabled: t.needs_storage,
+            tag: t.needs_storage.then_some(NEEDS_STORAGE),
         })
         .collect();
     let premade = new.mode == "premade";
@@ -672,47 +785,84 @@ async fn new_view(
         .keys()
         .any(|field| ADVANCED_FIELDS.contains(field));
     let secrets_dropped = !refused.banner.is_empty() && !new.secrets.is_empty();
-    let errors: std::collections::BTreeMap<&str, &str> = FORM_FIELDS
+    let errors: std::collections::BTreeMap<&'static str, String> = FORM_FIELDS
         .iter()
-        .map(|field| (*field, refused.fields.get(field).map_or("", String::as_str)))
+        .map(|field| {
+            (
+                *field,
+                refused.fields.get(field).cloned().unwrap_or_default(),
+            )
+        })
         .collect();
-    signed_in(
+    let mut page = DeployPage {
+        slug: slug.clone(),
+        manages: manages(membership),
+        mode: if premade { "premade" } else { "custom" },
+        modes: vec![
+            DeployMode {
+                key: "premade",
+                href: mode_href("premade"),
+                icon: "grid",
+                title: "Premade",
+                text: "A pinned version of a common app",
+                sub: "NATS, whoami, nginx",
+            },
+            DeployMode {
+                key: "custom",
+                href: mode_href("custom"),
+                icon: "box",
+                title: "Custom",
+                text: "Any container image",
+                sub: "",
+            },
+        ],
+        new,
+        new_error: refused.banner.clone(),
+        errors,
+        advanced,
+        secrets_dropped,
+        exposures: exposures(state.config.entry.app_domain.as_deref()),
+        public_hint: state
+            .config
+            .entry
+            .app_domain
+            .as_deref()
+            .map(|domain| format!("Public: https://<name>-{slug}.{domain}"))
+            .unwrap_or_default(),
+        templates: choices,
+        image_keys: template_icons(),
+        signals: STOP_SIGNALS.iter().map(|s| (*s, *s)).collect(),
+        memory_steps: super::resources::MEMORY_STEPS,
+        cpu_steps: super::resources::CPU_STEPS
+            .iter()
+            .map(|c| super::resources::vcpus(*c))
+            .collect(),
+        checks: &[
+            ("", "None"),
+            ("http", "HTTP request"),
+            ("tcp", "TCP connection"),
+        ],
+        action: format!("/{slug}/deploy"),
+        csrf: String::new(),
+    };
+    signed_in_typed(
         state,
         browser,
         session,
         Some(membership),
-        if refused.banner.is_empty() {
+        if page.new_error.is_empty() {
             StatusCode::OK
         } else {
             StatusCode::UNPROCESSABLE_ENTITY
         },
-        "pages/deploy.html.jinja",
+        "Deploy app",
         "deploy",
-        context! {
-            mode => if premade { "premade" } else { "custom" },
-            modes => vec![
-                context! {
-                    key => "premade", href => mode_href("premade"), icon => "grid", title => "Premade",
-                    text => "A pinned version of a common app", sub => "NATS, whoami, nginx",
-                },
-                context! {
-                    key => "custom", href => mode_href("custom"), icon => "box", title => "Custom",
-                    text => "Any container image", sub => "",
-                },
-            ],
-            new => Value::from_serialize(&new),
-            new_error => refused.banner.clone(), errors,
-            advanced, secrets_dropped,
-            exposures => exposures(state.config.entry.app_domain.as_deref()),
-            public_hint => state.config.entry.app_domain.as_deref().map(|domain| format!("Public: https://<name>-{slug}.{domain}")).unwrap_or_default(),
-            templates => choices, image_keys => template_icons(),
-            signals => STOP_SIGNALS.iter().map(|s| (*s, *s)).collect::<Vec<_>>(),
-            memory_steps => super::resources::MEMORY_STEPS,
-            cpu_steps => super::resources::CPU_STEPS.iter().map(|c| super::resources::vcpus(*c)).collect::<Vec<_>>(),
-            checks => [("", "None"), ("http", "HTTP request"), ("tcp", "TCP connection")],
-            other_mode => mode_href(if premade { "custom" } else { "premade" }),
-            templates_href => format!("/{slug}/templates"),
-            action => format!("/{slug}/deploy"),
+        None,
+        None,
+        None,
+        |_, csrf| {
+            page.csrf = csrf.to_owned();
+            crate::templates::compiled::pages::deploy::render(&page)
         },
     )
     .await
@@ -727,18 +877,24 @@ pub async fn templates_page(
         membership,
     }: Member,
 ) -> PageResult {
-    let shown: Vec<Value> = templates::CATALOGUE.iter().map(template_context).collect();
-    signed_in(
+    let page = TemplatesPage {
+        slug: membership.slug.clone(),
+        manages: manages(&membership),
+        templates: templates::CATALOGUE.iter().map(template_view).collect(),
+        image_keys: template_icons(),
+    };
+    signed_in_typed(
         &state,
         &browser,
         &session,
         Some(&membership),
         StatusCode::OK,
-        "pages/templates.html.jinja",
+        "Templates",
         "templates",
-        context! {
-            templates => shown, image_keys => template_icons(),
-        },
+        None,
+        None,
+        None,
+        |_, _| crate::templates::compiled::pages::templates::render(&page),
     )
     .await
 }
@@ -748,47 +904,47 @@ pub async fn templates_page(
 /// (`env_key`/`env_value`, `secrets_key`/`secrets_value`), so it is read
 /// with [`NewForm::from_pairs`]. `secrets` is never written back into the
 /// page.
-#[derive(Deserialize, Default, serde::Serialize)]
+#[derive(Deserialize, Default)]
 pub struct NewForm {
-    #[serde(default, skip_serializing)]
+    #[serde(default)]
     csrf: String,
     #[serde(default)]
-    mode: String,
+    pub(crate) mode: String,
     #[serde(default)]
-    template: String,
+    pub(crate) template: String,
     #[serde(default)]
-    name: String,
+    pub(crate) name: String,
     #[serde(default)]
-    image: String,
+    pub(crate) image: String,
     #[serde(default)]
-    exposure: String,
+    pub(crate) exposure: String,
     #[serde(default)]
-    port: String,
+    pub(crate) port: String,
     #[serde(default)]
-    copies: String,
+    pub(crate) copies: String,
     #[serde(skip_deserializing)]
-    env: Vec<(String, String)>,
+    pub(crate) env: Vec<(String, String)>,
     #[serde(skip)]
     secrets: Vec<(String, String)>,
     #[serde(default)]
-    check: String,
+    pub(crate) check: String,
     #[serde(default)]
-    check_path: String,
+    pub(crate) check_path: String,
     #[serde(default)]
-    memory: String,
+    pub(crate) memory: String,
     #[serde(default)]
-    cpu: String,
+    pub(crate) cpu: String,
     #[serde(default)]
-    preset: String,
+    pub(crate) preset: String,
     #[serde(default)]
-    shown_preset: String,
+    pub(crate) shown_preset: String,
     #[serde(default)]
-    command: String,
+    pub(crate) command: String,
     #[serde(default)]
-    stop_signal: String,
+    pub(crate) stop_signal: String,
     #[serde(default)]
-    stop_grace: String,
-    #[serde(default, skip_serializing)]
+    pub(crate) stop_grace: String,
+    #[serde(default)]
     part: String,
 }
 
@@ -1142,31 +1298,19 @@ pub struct AppQuery {
     edit: String,
 }
 
+pub struct AppTab {
+    pub key: &'static str,
+    pub href: String,
+    pub label: &'static str,
+    pub icon: &'static str,
+}
+
 const APP_TABS: &[(&str, &str, &str, &str)] = &[
     ("overview", "", "Overview", "home"),
     ("deployments", "/deployments", "Deployments", "layers"),
     ("logs", "/logs", "Logs", "file"),
     ("metrics", "/metrics", "Metrics", "bars"),
     ("settings", "/settings", "Settings", "gear"),
-];
-
-const SETTINGS_FIELDS: &[&str] = &[
-    "image", "copies", "exposure", "port", "check", "env", "memory", "cpu", "command", "stop",
-    "variable", "value", "file", "confirm",
-];
-
-const SETTINGS_PARTS: &[&str] = &[
-    "image",
-    "copies",
-    "exposure",
-    "env",
-    "secrets",
-    "check",
-    "resources",
-    "command",
-    "placement",
-    "file",
-    "delete",
 ];
 
 fn part_of(field: &str) -> &'static str {
@@ -1235,6 +1379,18 @@ fn image_named(now: &str, given: &str) -> String {
     format!("{repository}:{given}")
 }
 
+pub struct SettingItem {
+    pub key: &'static str,
+    pub title: &'static str,
+    pub icon: &'static str,
+    pub value: Option<String>,
+}
+
+pub struct SettingItems {
+    pub configured: Vec<SettingItem>,
+    pub more: Vec<SettingItem>,
+}
+
 fn setting_items(
     spec: &AppSpec,
     image: &str,
@@ -1242,7 +1398,7 @@ fn setting_items(
     address: Option<&str>,
     secrets: &[String],
     domains: &[String],
-) -> Value {
+) -> SettingItems {
     let main = spec.ports.iter().find(|p| p.public).or(spec.ports.first());
     let exposure = match (main, address) {
         (Some(port), Some(address)) if port.public => {
@@ -1319,8 +1475,14 @@ fn setting_items(
         ("volumes", "Volumes / storage", "box", None),
         ("command", "Command override", "code", command),
     ];
-    let item = |key: &str, title: &str, icon: &str, value: Option<String>| {
-        context! { key, title, icon, value }
+    let item = |key: &'static str,
+                title: &'static str,
+                icon: &'static str,
+                value: Option<String>| SettingItem {
+        key,
+        title,
+        icon,
+        value,
     };
     let mut configured = vec![
         item("image", "Image", "layers", Some(image.to_string())),
@@ -1357,24 +1519,8 @@ fn setting_items(
         }
     }
     more.push(item("file", FILE_NAME, "file", None));
-    context! { configured, more }
+    SettingItems { configured, more }
 }
-
-const SETTING_KEYS: &[&str] = &[
-    "image",
-    "exposure",
-    "copies",
-    "placement",
-    "check",
-    "resources",
-    "env",
-    "secrets",
-    "domains",
-    "volumes",
-    "command",
-    "file",
-    "delete",
-];
 
 const FILE_NAME: &str = "grund.yaml";
 
@@ -1492,6 +1638,219 @@ app_page!(
     "`/{org}/apps/{app}/settings`: copies, exposure, port, checks, environment, secrets and delete."
 );
 
+pub struct AppDomain {
+    pub state_words: &'static str,
+    pub name: String,
+    pub serving: bool,
+}
+
+pub struct AppIdentity {
+    pub name: String,
+    pub base: String,
+    pub icon: &'static str,
+    pub image: Option<String>,
+    pub address: Option<String>,
+    pub domains: Vec<AppDomain>,
+    pub domains_href: String,
+    pub internal: Option<String>,
+    pub word: &'static str,
+    pub tone: &'static str,
+}
+
+pub struct RunningRelease {
+    pub version: String,
+    pub line: String,
+    pub reference: String,
+}
+
+pub struct ReplicaView {
+    pub slot: i32,
+    pub of: u32,
+    pub release: i32,
+    pub machine: String,
+    pub words: String,
+    pub tone: &'static str,
+    pub placed: String,
+}
+
+pub struct SecretView {
+    pub variable: String,
+    pub name: String,
+    pub sub: String,
+}
+
+pub struct AppShellPage {
+    pub slug: String,
+    pub tab: String,
+    pub tabs: Vec<AppTab>,
+    pub app: AppIdentity,
+    pub waiting: Vec<String>,
+    pub notice: String,
+    pub error: String,
+    pub manages: bool,
+}
+
+pub struct AppOverviewPage<'a> {
+    pub app: &'a AppIdentity,
+    pub running: &'a Option<RunningRelease>,
+    pub releases: &'a [ReleaseView],
+}
+
+pub struct AppDeploymentsPage<'a> {
+    pub app: &'a AppIdentity,
+    pub replicas: &'a [ReplicaView],
+    pub crowded: &'a Option<String>,
+    pub releases: &'a [ReleaseView],
+    pub manages: bool,
+    pub csrf: &'a str,
+}
+
+pub struct AppSoonPage {
+    pub title: &'static str,
+    pub text: &'static str,
+}
+
+pub enum SettingsEdit {
+    List,
+    Image {
+        image: String,
+    },
+    Exposure {
+        exposure: String,
+        port: String,
+        choices: Vec<ExposureChoice>,
+        hint: String,
+        port_hint: String,
+        ports: Vec<String>,
+    },
+    Copies {
+        copies: String,
+        auto_rollback: bool,
+    },
+    Placement(Box<super::placement::PlacementView>),
+    Check {
+        check: String,
+        path: String,
+    },
+    Resources(super::resources::ResourceView),
+    Env {
+        pairs: Vec<(String, String)>,
+    },
+    Secrets {
+        rows: Vec<SecretView>,
+        variable: String,
+    },
+    Domains,
+    Volumes,
+    Command {
+        command: String,
+        stop_signal: String,
+        stop_grace: String,
+        signals: Vec<(&'static str, &'static str)>,
+    },
+    File {
+        content: Option<String>,
+        rows: usize,
+        href: String,
+    },
+    Delete,
+}
+
+pub struct AppSettingsData {
+    pub items: Option<SettingItems>,
+    pub edit: SettingsEdit,
+    pub next: Option<i32>,
+    pub errors: std::collections::BTreeMap<&'static str, String>,
+    pub banners: std::collections::BTreeMap<&'static str, String>,
+}
+
+/// Borrowed options for the form components' slice props. Built once from the
+/// selected edit, rather than allocating adapters while rendering markup.
+#[derive(Default)]
+pub struct SettingsOptions<'a> {
+    pub ports: Vec<&'a str>,
+    pub machines: Vec<(&'a str, &'a str)>,
+    pub chosen_machines: Vec<&'a str>,
+    pub labels: Vec<(&'a str, &'a str)>,
+    pub chosen_labels: Vec<&'a str>,
+    pub apps: Vec<(&'a str, &'a str)>,
+    pub near: Vec<&'a str>,
+    pub apart: Vec<&'a str>,
+    pub typed_labels: Vec<(&'a str, &'a str)>,
+    pub label_keys: Vec<&'a str>,
+    pub label_values: Vec<&'a str>,
+    pub memory_steps: Vec<(&'a str, &'a str)>,
+    pub cpu_steps: Vec<(&'a str, &'a str)>,
+    pub memory_min: String,
+    pub memory_max: String,
+    pub env: Vec<(&'a str, &'a str)>,
+}
+
+fn setting_options<'a>(edit: &'a SettingsEdit, memory_values: &'a [String]) -> SettingsOptions<'a> {
+    let pairs = |rows: &'a [(String, String)]| {
+        rows.iter()
+            .map(|(value, text)| (value.as_str(), text.as_str()))
+            .collect()
+    };
+    let strings = |values: &'a [String]| values.iter().map(String::as_str).collect();
+    match edit {
+        SettingsEdit::Exposure { ports, .. } => SettingsOptions {
+            ports: strings(ports),
+            ..Default::default()
+        },
+        SettingsEdit::Placement(place) => SettingsOptions {
+            machines: pairs(&place.machines),
+            chosen_machines: strings(&place.chosen_machines),
+            labels: pairs(&place.labels),
+            chosen_labels: strings(&place.chosen_labels),
+            apps: pairs(&place.apps),
+            near: strings(&place.near),
+            apart: strings(&place.apart),
+            typed_labels: pairs(&place.typed_labels),
+            label_keys: strings(&place.label_keys),
+            label_values: strings(&place.label_values),
+            ..Default::default()
+        },
+        SettingsEdit::Resources(resources) => SettingsOptions {
+            memory_steps: resources
+                .memory_steps
+                .iter()
+                .zip(memory_values.iter())
+                .map(|((_, label), value)| (value.as_str(), label.as_str()))
+                .collect(),
+            cpu_steps: pairs(&resources.cpu_steps),
+            memory_min: resources.memory_min.to_string(),
+            memory_max: resources.memory_max.to_string(),
+            ..Default::default()
+        },
+        SettingsEdit::Env { pairs: rows } => SettingsOptions {
+            env: pairs(rows),
+            ..Default::default()
+        },
+        _ => SettingsOptions::default(),
+    }
+}
+
+pub struct AppSettingsPage<'a> {
+    pub app: &'a AppIdentity,
+    pub items: &'a Option<SettingItems>,
+    pub edit: &'a SettingsEdit,
+    pub next: Option<i32>,
+    pub manages: bool,
+    pub form: crate::templates::FormState<'a>,
+    pub options: SettingsOptions<'a>,
+}
+
+pub struct AppDetailPage {
+    pub shell: AppShellPage,
+    pub running: Option<RunningRelease>,
+    pub releases: Vec<ReleaseView>,
+    pub replicas: Vec<ReplicaView>,
+    pub crowded: Option<String>,
+    pub soon: AppSoonPage,
+    pub settings: AppSettingsData,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn app_view(
     state: &State,
@@ -1520,29 +1879,34 @@ pub(super) async fn app_view(
     let wanted = view.row.settings.0.copies;
     let current = view.row.current_release;
     let health = health(view, now);
-    let shown = listing_context(&listing);
+    let icon = listing
+        .spec
+        .as_ref()
+        .map_or("image", |spec| image_icon(&spec.image));
     let running = current
         .and_then(|number| releases.iter().find(|r| r.number == number))
-        .map(|r| {
-            context! {
-                version => format!("v{}", r.number),
-                line => image_line(&r.spec.0.image, &r.image_digest),
-                reference => format!("{}@{}", r.spec.0.image.split('@').next().unwrap_or_default(), r.image_digest),
-            }
+        .map(|r| RunningRelease {
+            version: format!("v{}", r.number),
+            line: image_line(&r.spec.0.image, &r.image_digest),
+            reference: format!(
+                "{}@{}",
+                r.spec.0.image.split('@').next().unwrap_or_default(),
+                r.image_digest
+            ),
         });
-    let replicas: Vec<Value> = view
+    let replicas: Vec<ReplicaView> = view
         .replicas
         .iter()
         .map(|replica| {
             let (words, tone) = replica_words(replica, now);
-            context! {
-                slot => replica.slot + 1,
-                of => wanted,
-                release => replica.release,
-                machine => replica.machine_name.clone().unwrap_or_default(),
+            ReplicaView {
+                slot: replica.slot + 1,
+                of: wanted,
+                release: replica.release,
+                machine: replica.machine_name.clone().unwrap_or_default(),
                 words,
                 tone,
-                placed => when(replica.placed_at),
+                placed: when(replica.placed_at),
             }
         })
         .collect();
@@ -1594,136 +1958,141 @@ pub(super) async fn app_view(
             .replicas
             .iter()
             .any(|r| r.state == "draining" || r.ready != Some(true));
-    let history: Vec<Value> = releases
+    let history: Vec<ReleaseView> = releases
         .iter()
-        .map(|r| release_context(r, current, now))
+        .map(|r| release_view(r, current, now))
         .collect();
     let newest = releases.first();
     let spec = newest.map(|r| &r.spec.0);
-    let form = refused.form.unwrap_or_else(|| match spec {
-        Some(spec) => NewForm::from_spec(spec, wanted),
-        None => NewForm::default(),
-    });
-    let read: Vec<&SecretEnv> = spec.map(|s| s.secrets.iter().collect()).unwrap_or_default();
-    let secret_names: Vec<String> = read.iter().map(|s| s.env.clone()).collect();
-    let mut secrets: Vec<Value> = read
+    let edit = if refused.part.is_empty() {
+        refused.edit.as_str()
+    } else {
+        refused.part
+    };
+    let form = if tab == "settings"
+        && matches!(
+            edit,
+            "image" | "exposure" | "check" | "resources" | "env" | "command"
+        ) {
+        refused.form.unwrap_or_else(|| match spec {
+            Some(spec) => NewForm::from_spec(spec, wanted),
+            None => NewForm::default(),
+        })
+    } else {
+        NewForm::default()
+    };
+    let read: Vec<&SecretEnv> = if tab == "settings" && edit == "secrets" {
+        spec.map(|s| s.secrets.iter().collect()).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let secret_names: Vec<String> = if tab == "settings" {
+        spec.map(|s| s.secrets.iter().map(|secret| secret.env.clone()).collect())
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let mut secrets: Vec<SecretView> = read
         .iter()
         .map(|secret| {
             let stored = view.secrets.iter().find(|(n, _, _)| *n == secret.secret);
-            context! {
-                variable => secret.env,
-                name => secret.secret,
-                sub => match stored {
-                    Some((_, version, at)) => format!("secret {} · version {version} · set {}", secret.secret, when(*at)),
+            SecretView {
+                variable: secret.env.clone(),
+                name: secret.secret.clone(),
+                sub: match stored {
+                    Some((_, version, at)) => format!(
+                        "secret {} · version {version} · set {}",
+                        secret.secret,
+                        when(*at)
+                    ),
                     None => format!("secret {} · not stored", secret.secret),
                 },
             }
         })
         .collect();
-    secrets.extend(
-        view.secrets
-            .iter()
-            .filter(|(n, _, _)| !read.iter().any(|s| s.secret == *n))
-            .map(|(name, version, at)| {
-                context! {
-                    variable => "", name,
-                    sub => format!("not read by the app · version {version} · set {}", when(*at)),
-                }
-            }),
-    );
-    let errors: std::collections::BTreeMap<&str, &str> = SETTINGS_FIELDS
+    if tab == "settings" && edit == "secrets" {
+        secrets.extend(
+            view.secrets
+                .iter()
+                .filter(|(n, _, _)| !read.iter().any(|s| s.secret == *n))
+                .map(|(name, version, at)| SecretView {
+                    variable: String::new(),
+                    name: name.clone(),
+                    sub: format!(
+                        "not read by the app · version {version} · set {}",
+                        when(*at)
+                    ),
+                }),
+        );
+    }
+    let errors: std::collections::BTreeMap<&str, &str> = refused
+        .refusal
+        .fields
         .iter()
-        .chain(super::placement::FIELDS)
-        .map(|f| (*f, refused.refusal.fields.get(f).map_or("", String::as_str)))
+        .map(|(field, text)| (*field, text.as_str()))
         .collect();
-    let edit = if refused.part.is_empty() {
-        SETTING_KEYS
-            .iter()
-            .find(|k| **k == refused.edit)
-            .copied()
-            .unwrap_or_default()
-    } else {
-        refused.part
-    };
-    let ports: Vec<u16> = match newest {
-        Some(r) if tab == "settings" && edit == "exposure" => {
-            let reference = format!(
-                "{}@{}",
-                r.spec.0.image.split('@').next().unwrap_or_default(),
-                r.image_digest
-            );
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(3),
-                apps.inspect(membership.organisation_id, &reference),
-            )
-            .await
-            {
-                Ok(Ok(inspection)) => inspection.exposed_ports,
-                _ => Vec::new(),
+    let ports = if tab == "settings" && edit == "exposure" {
+        match newest {
+            Some(r) => {
+                let reference = format!(
+                    "{}@{}",
+                    r.spec.0.image.split('@').next().unwrap_or_default(),
+                    r.image_digest
+                );
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(3),
+                    apps.inspect(membership.organisation_id, &reference),
+                )
+                .await
+                {
+                    Ok(Ok(inspection)) => inspection.exposed_ports,
+                    _ => Vec::new(),
+                }
             }
+            None => Vec::new(),
         }
-        _ => Vec::new(),
-    };
-    let resources = if tab == "settings" && edit == "resources" {
-        Some(super::resources::view(
-            &form.memory,
-            &form.cpu,
-            resource_ceiling(state, membership).await?,
-        ))
     } else {
-        None
+        Vec::new()
     };
     let placement = if tab == "settings" && edit == "placement" {
-        let form = refused
+        let placement_form = refused
             .placement
-            .clone()
             .unwrap_or_else(|| super::placement::PlacementForm::of(&view.row.settings.0));
         Some(
-            super::placement::context_for(state, membership, &view.row.name, &form, &errors)
-                .await?,
+            super::placement::context_for(
+                state,
+                membership,
+                &view.row.name,
+                &placement_form,
+                &errors,
+            )
+            .await?,
         )
     } else {
         None
     };
-    let banners: std::collections::BTreeMap<&str, &str> = SETTINGS_PARTS
-        .iter()
-        .copied()
-        .map(|part| {
-            (
-                part,
-                if part == refused.part {
-                    refused.refusal.banner.as_str()
-                } else {
-                    ""
-                },
-            )
-        })
-        .collect();
-    let file = refused.file.clone().or_else(|| {
-        newest.map(|r| {
-            render_file(
-                &view.row.name,
-                &r.spec.0,
-                &view.row.settings.0,
-                &schema_url(state),
-            )
-        })
-    });
-    let soon = match tab {
-        "logs" => context! {
-            title => "Logs are coming",
-            text => "grund does not collect logs yet.",
-        },
-        _ => context! {
-            title => "Metrics are coming",
-            text => "grund does not collect metrics yet.",
-        },
+    let banners = if refused.part.is_empty() || refused.refusal.banner.is_empty() {
+        std::collections::BTreeMap::new()
+    } else {
+        std::collections::BTreeMap::from([(refused.part, refused.refusal.banner)])
     };
-    let template = match tab {
-        "overview" => "pages/app-overview.html.jinja",
-        "deployments" => "pages/app-deployments.html.jinja",
-        "settings" => "pages/app-settings.html.jinja",
-        _ => "pages/app-soon.html.jinja",
+    let file = if tab == "settings" && edit == "file" {
+        refused.file.or_else(|| {
+            newest.map(|r| {
+                render_file(
+                    &view.row.name,
+                    &r.spec.0,
+                    &view.row.settings.0,
+                    &schema_url(state),
+                )
+            })
+        })
+    } else {
+        None
+    };
+    let (soon_title, soon_text) = match tab {
+        "logs" => ("Logs are coming", "grund does not collect logs yet."),
+        _ => ("Metrics are coming", "grund does not collect metrics yet."),
     };
     let bound = state
         .domains()
@@ -1731,74 +2100,215 @@ pub(super) async fn app_view(
         .await
         .map_err(|e| PageError::from(anyhow::anyhow!(e)))?;
     let domain_names: Vec<String> = bound.iter().map(|d| d.name.clone()).collect();
-    let domains: Vec<Value> = bound
+    let domains: Vec<AppDomain> = bound
         .into_iter()
         .map(|domain| {
             let serving = domain.status == crate::services::domains::Status::Issued;
-            context! {
-                summary => if serving { domain.name.clone() } else { format!("{} (certificate on its way)", domain.name) },
-                state_words => if serving { "Serving with its own certificate" } else { "Bound; its certificate is on its way once its DNS points here" },
-                name => domain.name,
+            AppDomain {
+                state_words: if serving {
+                    "Serving with its own certificate"
+                } else {
+                    "Bound; its certificate is on its way once its DNS points here"
+                },
+                name: domain.name,
                 serving,
             }
         })
         .collect();
-    signed_in(
+    let settings_edit = if tab != "settings" || newest.is_none() {
+        SettingsEdit::List
+    } else {
+        match edit {
+            "image" => SettingsEdit::Image { image: form.image },
+            "exposure" => {
+                let port_words: Vec<String> = ports.iter().map(u16::to_string).collect();
+                let port_hint = if port_words.is_empty() {
+                    "Empty: no port.".to_string()
+                } else {
+                    format!(
+                        "The image listens on {}. Empty: no port.",
+                        port_words.join(", ")
+                    )
+                };
+                SettingsEdit::Exposure {
+                    exposure: form.exposure,
+                    port: form.port,
+                    choices: exposures(state.config.entry.app_domain.as_deref()),
+                    hint: state
+                        .config
+                        .entry
+                        .app_domain
+                        .as_deref()
+                        .map(|domain| format!("Public: https://{}-{slug}.{domain}", view.row.name))
+                        .unwrap_or_default(),
+                    port_hint,
+                    ports: port_words,
+                }
+            }
+            "copies" => SettingsEdit::Copies {
+                copies: wanted.to_string(),
+                auto_rollback: view.row.settings.0.auto_rollback,
+            },
+            "placement" => SettingsEdit::Placement(Box::new(placement.expect("placement view"))),
+            "check" => SettingsEdit::Check {
+                check: form.check,
+                path: form.check_path,
+            },
+            "resources" => SettingsEdit::Resources(super::resources::view(
+                &form.memory,
+                &form.cpu,
+                resource_ceiling(state, membership).await?,
+            )),
+            "env" => SettingsEdit::Env { pairs: form.env },
+            "secrets" => SettingsEdit::Secrets {
+                rows: secrets,
+                variable: refused.variable,
+            },
+            "domains" => SettingsEdit::Domains,
+            "volumes" => SettingsEdit::Volumes,
+            "command" => SettingsEdit::Command {
+                command: form.command,
+                stop_signal: form.stop_signal,
+                stop_grace: form.stop_grace,
+                signals: STOP_SIGNALS
+                    .iter()
+                    .map(|signal| (*signal, *signal))
+                    .collect(),
+            },
+            "file" => SettingsEdit::File {
+                rows: file.as_ref().map_or(0, |f| f.lines().count() + 1),
+                content: file,
+                href: format!("{base}/grund.yaml"),
+            },
+            "delete" if manages(membership) => SettingsEdit::Delete,
+            _ => SettingsEdit::List,
+        }
+    };
+    let page = AppDetailPage {
+        shell: AppShellPage {
+            slug: slug.clone(),
+            tab: tab.to_owned(),
+            tabs: APP_TABS
+                .iter()
+                .map(|(key, path, label, icon)| AppTab {
+                    key,
+                    href: format!("{base}{path}"),
+                    label,
+                    icon,
+                })
+                .collect(),
+            app: AppIdentity {
+                name: view.row.name.clone(),
+                base: base.clone(),
+                icon,
+                image: spec.map(|s| s.image.clone()),
+                address: listing.address.clone(),
+                domains,
+                domains_href: format!("/{slug}/domains#custom"),
+                internal: listing
+                    .spec
+                    .as_ref()
+                    .and_then(|spec| internal_address(&view.row.name, spec)),
+                word: health.word,
+                tone: health.tone,
+            },
+            waiting,
+            notice,
+            error,
+            manages: manages(membership),
+        },
+        running,
+        releases: history,
+        replicas,
+        crowded,
+        soon: AppSoonPage {
+            title: soon_title,
+            text: soon_text,
+        },
+        settings: AppSettingsData {
+            items: if tab == "settings" {
+                newest.map(|r| {
+                    setting_items(
+                        &r.spec.0,
+                        &image_line(&r.spec.0.image, &r.image_digest),
+                        &view.row.settings.0,
+                        listing.address.as_deref(),
+                        &secret_names,
+                        &domain_names,
+                    )
+                })
+            } else {
+                None
+            },
+            edit: settings_edit,
+            next: newest.map(|r| r.number + 1),
+            errors: refused.refusal.fields,
+            banners,
+        },
+    };
+    let status = if refused.part.is_empty() {
+        StatusCode::OK
+    } else {
+        StatusCode::UNPROCESSABLE_ENTITY
+    };
+    let title = format!("{} · Apps", view.row.name);
+    signed_in_typed(
         state,
         browser,
         session,
         Some(membership),
-        if refused.part.is_empty() {
-            StatusCode::OK
-        } else {
-            StatusCode::UNPROCESSABLE_ENTITY
-        },
-        template,
+        status,
+        &title,
         "apps",
-        context! {
-            tab,
-            tabs => APP_TABS.iter().map(|(key, path, label, icon)| (*key, format!("{base}{path}"), *label, *icon)).collect::<Vec<_>>(),
-            app => context! {
-                name => view.row.name,
-                base,
-                icon => shown.get_attr("icon").ok(),
-                image => spec.map(|s| s.image.clone()),
-                address => listing.address,
-                domains,
-                domains_href => format!("/{slug}/domains#custom"),
-                internal => shown.get_attr("internal").ok(),
-                word => health.word, tone => health.tone,
-            },
-            running,
-            latest => history.first(),
-            activity => history.iter().take(3).collect::<Vec<_>>(),
-            releases => history,
-            replicas, waiting, crowded,
-            refresh => busy && matches!(tab, "overview" | "deployments"),
-            soon,
-            settings => context! {
-                copies => wanted,
-                auto_rollback => if view.row.settings.0.auto_rollback { "on" } else { "off" },
-            },
-            rollback_choices => vec![
-                context! { value => "on", title => "Roll back on its own", text => "The release before keeps serving" },
-                context! { value => "off", title => "Leave it as it is", text => "To debug a failing release in place" },
-            ],
-            exposures => exposures(state.config.entry.app_domain.as_deref()),
-            public_hint => state.config.entry.app_domain.as_deref().map(|domain| format!("Public: https://{}-{slug}.{domain}", view.row.name)).unwrap_or_default(),
-            checks => [("", "None"), ("http", "HTTP request"), ("tcp", "TCP connection")],
-            form => Value::from_serialize(&form),
-            variable => refused.variable,
-            secrets, errors, banners,
-            file_rows => file.as_ref().map_or(0, |f| f.lines().count() + 1),
-            file,
-            file_href => format!("{base}/grund.yaml"),
-            signals => STOP_SIGNALS.iter().map(|s| (*s, *s)).collect::<Vec<_>>(),
-            items => newest.map(|r| setting_items(&r.spec.0, &image_line(&r.spec.0.image, &r.image_digest), &view.row.settings.0, listing.address.as_deref(), &secret_names, &domain_names)),
-            next => newest.map(|r| r.number + 1),
-            edit, place => placement, resources, ports,
-            file_name => FILE_NAME,
-            notice, error,
+        None,
+        (busy && matches!(tab, "overview" | "deployments")).then_some(5),
+        None,
+        |_, csrf| {
+            let mut html = crate::templates::compiled::pages::app::render(&page.shell);
+            html.push_str(&match tab {
+                "overview" => {
+                    crate::templates::compiled::pages::app_overview::render(&AppOverviewPage {
+                        app: &page.shell.app,
+                        running: &page.running,
+                        releases: &page.releases,
+                    })
+                }
+                "deployments" => crate::templates::compiled::pages::app_deployments::render(
+                    &AppDeploymentsPage {
+                        app: &page.shell.app,
+                        replicas: &page.replicas,
+                        crowded: &page.crowded,
+                        releases: &page.releases,
+                        manages: page.shell.manages,
+                        csrf,
+                    },
+                ),
+                "settings" => {
+                    let memory_values: Vec<String> = match &page.settings.edit {
+                        SettingsEdit::Resources(view) => view
+                            .memory_steps
+                            .iter()
+                            .map(|(mib, _)| mib.to_string())
+                            .collect(),
+                        _ => Vec::new(),
+                    };
+                    crate::templates::compiled::pages::app_settings::render(&AppSettingsPage {
+                        app: &page.shell.app,
+                        items: &page.settings.items,
+                        edit: &page.settings.edit,
+                        next: page.settings.next,
+                        manages: page.shell.manages,
+                        form: crate::templates::FormState {
+                            csrf,
+                            errors: &page.settings.errors,
+                            banners: &page.settings.banners,
+                        },
+                        options: setting_options(&page.settings.edit, &memory_values),
+                    })
+                }
+                _ => crate::templates::compiled::pages::app_soon::render(&page.soon),
+            });
+            html
         },
     )
     .await
@@ -2480,15 +2990,7 @@ mod tests {
 
     #[test]
     fn settings_lists_what_is_set_in_order_and_offers_the_rest() {
-        let keys = |items: &Value, list: &str| -> Vec<String> {
-            items
-                .get_attr(list)
-                .expect("a list")
-                .try_iter()
-                .expect("items")
-                .map(|item| item.get_attr("key").expect("a key").to_string())
-                .collect()
-        };
+        let keys = |items: &[SettingItem]| items.iter().map(|item| item.key).collect::<Vec<_>>();
         let mut spec = AppSpec {
             image: "traefik/whoami:v1.11.0".into(),
             ports: vec![PortSpec {
@@ -2515,11 +3017,11 @@ mod tests {
             &[],
         );
         assert_eq!(
-            keys(&bare, "configured"),
+            keys(&bare.configured),
             ["image", "exposure", "copies", "resources"]
         );
         assert_eq!(
-            keys(&bare, "more"),
+            keys(&bare.more),
             [
                 "placement",
                 "check",
@@ -2554,7 +3056,7 @@ mod tests {
             &[],
         );
         assert_eq!(
-            keys(&set, "configured"),
+            keys(&set.configured),
             [
                 "image",
                 "exposure",
@@ -2567,7 +3069,7 @@ mod tests {
                 "command"
             ]
         );
-        assert_eq!(keys(&set, "more"), ["domains", "volumes", "file"]);
+        assert_eq!(keys(&set.more), ["domains", "volumes", "file"]);
     }
 
     #[test]

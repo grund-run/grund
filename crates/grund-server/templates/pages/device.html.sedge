@@ -1,0 +1,31 @@
+use crate::templates::compiled::components::{PageHead, Panel, Form, Field, Banner, Button, Facts, Fact, Para};
+props crate::web::device::DevicePage<'_> { csrf, login, username, code_error, code, done, notice, error };
+
+<PageHead title="Sign in the grund CLI" />
+{if !notice.is_empty() { <Banner text={notice} tone="ok" /> }}
+{if !error.is_empty() { <Banner text={error} /> }}
+{if let Some(login) = login {
+  <Panel id="login" title="Is this you?">
+    <Para kind="note">Approve only a login you started yourself. The CLI acts as {username} in every organisation you are in, until you sign it out on Sessions.</Para>
+    <Facts>
+      <Fact label="Code" value={login.code.as_str()} icon_name="key" />
+      <Fact label="Client" value={login.client.as_str()} />
+      <Fact label="Computer" value={login.host.as_str()} />
+      <Fact label="From" value={login.address.as_deref().unwrap_or("Unknown")} />
+      <Fact label="Started" value={login.created.as_str()} />
+    </Facts>
+    <Form action="/device" csrf={csrf}>
+      <input type="hidden" name="login" value={login.id.as_str()}>
+      <input type="hidden" name="decision" value="approve">
+      <div class="form-actions"><p class="form-note"><span>The terminal signs in at its next check, within seconds.</span></p><Button label="Approve" kind="primary" /></div>
+    </Form>
+    <form method="post" action="/device" novalidate><input type="hidden" name="csrf" value={csrf}><input type="hidden" name="decision" value="deny"><input type="hidden" name="login" value={login.id.as_str()}><Button label="Deny" kind="danger" /></form>
+  </Panel>
+} else if !done {
+  <Panel id="code" title="Enter the code your terminal shows">
+    <form class="form" method="get" action="/device" novalidate autocomplete="off">
+      <Field name="code" label="Code" value={code.as_str()} error={code_error.as_str()} required hint="Eight letters, such as BCDF-GHJK." autofocus mono />
+      <div class="form-actions"><Button label="Continue" kind="primary" /></div>
+    </form>
+  </Panel>
+}}

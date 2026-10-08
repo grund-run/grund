@@ -10,7 +10,6 @@ use axum::{
     http::{StatusCode, Uri},
 };
 use grund_store::organisations::Membership;
-use minijinja::{Value, context};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -26,9 +25,42 @@ use crate::{
     web::{
         browser::Browser,
         orgs::Member,
-        pages::{Notice, PageResult, forged, redirect, signed_in},
+        pages::{Notice, PageResult, forged, redirect},
     },
 };
+
+pub struct TokenRow {
+    pub id: String,
+    pub name: String,
+    pub by: String,
+    pub mine: bool,
+    pub created: String,
+    pub expires: String,
+    pub scope: &'static str,
+    pub used: String,
+}
+
+pub struct MintedToken {
+    pub token: String,
+    pub name: String,
+    pub expires: String,
+    pub example: String,
+}
+
+pub struct TokensPage<'a> {
+    pub viewer: &'a super::pages::TypedViewer,
+    pub csrf: &'a str,
+    pub tokens: Vec<TokenRow>,
+    pub lifetimes: Vec<(u32, String)>,
+    pub minted: Option<MintedToken>,
+    pub scopes: &'static [(&'static str, &'static str)],
+    pub days: u32,
+    pub scope: &'static str,
+    pub name: String,
+    pub notice: &'a str,
+    pub error: &'a str,
+    pub create_error: String,
+}
 
 /// `GET /{org}/settings/tokens`.
 pub async fn tokens_page(
@@ -78,7 +110,7 @@ async fn tokens_view(
     status: StatusCode,
     form: TokensForm<'_>,
 ) -> PageResult {
-    let tokens: Vec<Value> = state
+    let tokens: Vec<TokenRow> = state
         .tokens()
         .list(session.account_id, membership)
         .await?
@@ -88,38 +120,35 @@ async fn tokens_view(
                 .last_used_at
                 .map(|at| format!("last used {}", at.format("%-d %b %Y %H:%M UTC")))
                 .unwrap_or_else(|| "never used".into());
-            context! {
-                id => t.token_id.to_string(),
-                name => t.name,
-                by => t.username.unwrap_or_default(),
-                mine => t.account_id == session.account_id,
-                created => t.created_at.format("%-d %b %Y").to_string(),
-                expires => t.expires_at.format("%-d %b %Y").to_string(),
-                scope => if TokenScope::parse(&t.scope) == TokenScope::Full { "Full" } else { "Deploy" },
+            TokenRow {
+                id: t.token_id.to_string(),
+                name: t.name,
+                by: t.username.unwrap_or_default(),
+                mine: t.account_id == session.account_id,
+                created: t.created_at.format("%-d %b %Y").to_string(),
+                expires: t.expires_at.format("%-d %b %Y").to_string(),
+                scope: if TokenScope::parse(&t.scope) == TokenScope::Full {
+                    "Full"
+                } else {
+                    "Deploy"
+                },
                 used,
             }
         })
         .collect();
-    let mut lifetimes: Vec<u32> = LIFETIMES_DAYS.to_vec();
-    lifetimes.sort_unstable();
-    let lifetimes: Vec<(String, String)> = lifetimes
+    let mut lifetimes: Vec<(u32, String)> = LIFETIMES_DAYS
         .iter()
-        .map(|d| (d.to_string(), format!("{d} days")))
+        .map(|&d| (d, format!("{d} days")))
         .collect();
+    lifetimes.sort_unstable_by_key(|(days, _)| *days);
     let days = if form.days == 0 {
         LIFETIMES_DAYS[0]
     } else {
         form.days
     };
-    let scopes = vec![
-        (
-            "deploy".to_string(),
-            "Deploy: create, deploy and change apps".to_string(),
-        ),
-        (
-            "full".to_string(),
-            "Full: everything your role allows here".to_string(),
-        ),
+    let scopes = &[
+        ("deploy", "Deploy: create, deploy and change apps"),
+        ("full", "Full: everything your role allows here"),
     ];
     let scope = if form.scope == "full" {
         "full"
@@ -131,29 +160,39 @@ async fn tokens_view(
         let example = format!(
             "GRUND_INSTANCE={origin} GRUND_TOKEN=<the token> grund apps deploy APP -f grund.yaml --json"
         );
-        context! {
-            token => m.token,
-            name => m.name,
-            expires => m.expires_at.format("%-d %b %Y").to_string(),
+        MintedToken {
+            token: m.token,
+            name: m.name,
+            expires: m.expires_at.format("%-d %b %Y").to_string(),
             example,
         }
     });
-    signed_in(
+    super::pages::signed_in_typed(
         state,
         browser,
         session,
         Some(membership),
         status,
-        "pages/tokens.html.jinja",
+        "API tokens",
         "org-settings",
-        context! {
-            tokens, lifetimes, minted, scopes,
-            days => days.to_string(),
-            scope,
-            name => form.name,
-            max_live => MAX_LIVE_PER_ORGANISATION,
-            notice => form.notice, error => form.error,
-            create_error => form.create_error,
+        None,
+        None,
+        None,
+        |viewer, csrf| {
+            crate::templates::compiled::pages::tokens::render(&TokensPage {
+                viewer,
+                csrf,
+                tokens,
+                lifetimes,
+                minted,
+                scopes,
+                days,
+                scope,
+                name: form.name,
+                notice: form.notice,
+                error: form.error,
+                create_error: form.create_error,
+            })
         },
     )
     .await

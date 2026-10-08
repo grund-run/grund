@@ -1,0 +1,66 @@
+use crate::templates::compiled::components::{PageHead, Banner, Panel, Button, Icon, MachineRow, EmptyState, Field};
+props crate::web::machines::MachinesPage<'_> { csrf, slug, manages, machines, hosts, vms, editing, disconnected, shown, tabs, operator, run_open, tab, q, notice, error, run_error, run, label_keys, label_values };
+
+<PageHead title="Machines" />
+{if !notice.is_empty() { <Banner text={notice} tone="ok" /> }}
+{if !error.is_empty() { <Banner text={error} /> }}
+{if let Some(editing) = editing {
+  {if *manages {
+    <Panel id="labels" title="Labels of {editing.name}">
+      <form class="form" method="post" action="/{slug}/machines/{editing.id}/labels" novalidate><input type="hidden" name="csrf" value={csrf}>
+        <fieldset class="field"><legend class="field-label">Labels <span class="field-optional">Optional</span></legend><div class="pairs" data-pairs>
+          {for i in 0..=editing.pairs.len() {
+            {let (key, value) = editing.pairs.get(i).copied().unwrap_or(("", ""));}
+            <div class="pair"><input class="control mono" name="labels_key" value={key} placeholder={if label_keys.is_empty() { "NAME" } else { "key" }} aria-label="Key {i + 1}" autocomplete="off" spellcheck="false" list={if label_keys.is_empty() { None } else { Some("labels-keys") }}><input class="control mono" name="labels_value" value={value} placeholder="value" aria-label="Value {i + 1}" autocomplete="off" spellcheck="false" list={if label_values.is_empty() { None } else { Some("labels-values") }}><button class="icon-btn" type="button" data-remove-pair aria-label="Remove row {i + 1}" hidden><Icon name="trash" class="icon-sm" /></button></div>
+          }}
+        </div>
+        {if !label_keys.is_empty() { <datalist id="labels-keys">{for key in label_keys { <option value={*key}></option> }}</datalist> }}
+        {if !label_values.is_empty() { <datalist id="labels-values">{for value in label_values { <option value={*value}></option> }}</datalist> }}
+        <button class="btn btn-ghost btn-sm pairs-add" type="button" hidden><Icon name="plus" class="icon-sm" /><span>Add another</span></button></fieldset>
+        <div class="form-actions"><p class="form-note"><span>Copies on a machine that no longer matches their app move to one that does.</span></p><Button label="Save labels" kind="primary" /><Button label="Cancel" kind="secondary" href="/{slug}/machines" /></div>
+      </form>
+    </Panel>
+  }}
+}}
+{if *run_open && *manages {
+  <Panel id="run" title="Run a virtual machine">
+    <form class="form" method="post" action="/{slug}/machines/vms" novalidate><input type="hidden" name="csrf" value={csrf}>
+      {if !run_error.is_empty() { <Banner text={run_error} /> }}
+      <div class="form-grid">
+        <fieldset class="field"><legend class="field-label">On</legend>{if !hosts.is_empty() { <input class="control chips-search" type="search" placeholder="Search machines" aria-label="Search machines" autocomplete="off" data-chip-search hidden><div class="chips">{for (id, host) in hosts { <label class="chip"><input class="chip-input" type="radio" name="host" value={id.as_str()} checked={run.host == *id}><span>{host}</span></label> }}</div> }}</fieldset>
+        <Field name="vm_name" label="Name" value={run.vm_name.as_str()} autocomplete="off" required />
+      </div>
+      <div class="form-grid">
+        <div class="form-grid">
+          <Field name="vcpus" label="vCPUs" kind="number" value={if run.vcpus.is_empty() { "1" } else { run.vcpus.as_str() }} required />
+          <Field name="memory_mib" label="Memory (MiB)" kind="number" value={if run.memory_mib.is_empty() { "1024" } else { run.memory_mib.as_str() }} required />
+        </div>
+        <Field name="disk_gib" label="Disk (GiB)" kind="number" value={if run.disk_gib.is_empty() { "4" } else { run.disk_gib.as_str() }} required width={Some("sm")} />
+        {for (key, label, value) in [("kernel_url", "Kernel URL", &run.kernel_url), ("kernel_sha256", "Kernel SHA-256", &run.kernel_sha256), ("rootfs_url", "Root filesystem URL", &run.rootfs_url), ("rootfs_sha256", "Root filesystem SHA-256", &run.rootfs_sha256)] {
+          <Field name={key} label={label} value={value.as_str()} autocomplete="off" required mono />
+        }}
+      </div>
+      <div class="form-actions"><p class="form-note"><span>grund fetches both files and checks them against their SHA-256.</span></p><Button label="Run it" kind="primary" /><Button label="Cancel" kind="secondary" href="/{slug}/machines" /></div>
+    </form>
+  </Panel>
+}}
+{if !machines.is_empty() || *operator {
+  <div class="tabs-bar"><nav class="tabs" aria-label="Machines">{for (key, href, label) in tabs { <a class={if *tab == *key { "tab is-active" } else { "tab" }} href={href.as_str()} aria-current={if *tab == *key { Some("page") } else { None }} data-tab={key}>{label}{if *key == "disconnected" { <span class="tab-count">{disconnected}</span> }}</a> }}</nav><div class="tabs-tools">
+    <form class="search" role="search" method="get" action="/{slug}/machines"><label class="visually-hidden" for="machine-search">Search machines</label><Icon name="search" class="icon-sm search-icon" /><input id="machine-search" name="q" type="search" placeholder="Search machines…" autocomplete="off" value={q} data-filter>{if !tab.is_empty() { <input type="hidden" name="tab" value={tab}> }}</form>
+  </div></div>
+}}
+{if !machines.is_empty() {
+  <ul class="items items-list" data-filterable>{for machine in machines { <MachineRow slug={slug} manages={*manages} machine={machine} csrf={csrf} /> }}</ul>
+  <EmptyState title="No machines match" icon_name="search" filter_empty="match" hidden={*shown > 0 || q.is_empty()} />
+  <EmptyState title="No disconnected machines" icon_name="server" filter_empty="tab" hidden={*shown > 0 || !q.is_empty() || tab.is_empty()} />
+} else {
+  <EmptyState title="Add your first machine" icon_name="server">
+    {if *manages { <Button label="Add machine" kind="secondary" href="/{slug}/machines/add" icon_name="plus" /> }}
+    <a class="address" href="https://git.kjuulh.io/grund/grund#self-hosting" rel="noopener noreferrer" target="_blank"><span class="address-text">Learn more</span><Icon name="external" class="icon-sm" /><span class="visually-hidden"> (opens in a new tab)</span></a>
+  </EmptyState>
+}}
+{if !vms.is_empty() {
+  <section class="section" aria-labelledby="vms"><div class="section-head"><h2 class="section-title" id="vms">Virtual machines<span class="count">{vms.len()}</span></h2></div><ul class="rows">
+    {for vm in vms { <li class="row"><span class="row-icon"><Icon name="grid" class="icon-lg tone-violet" /></span><div><p class="row-name">{vm.name}</p><p class="row-sub">on {vm.host} · {vm.vcpus} vCPU, {vm.memory_mib} MiB, {vm.disk_gib} GiB{if let Some(reason) = vm.reason.as_deref().filter(|s| !s.is_empty()) { · {reason} }}</p></div><span class="row-status"><Icon name={match vm.tone { "orange" | "danger" => "alert", "blue" => "clock", "muted" => "minus", _ => "ok" }} class="tone-{vm.tone}" />{vm.observed}</span>{if *manages && vm.running { <div class="row-end"><form method="post" action="/{slug}/machines/vms/{vm.id}/stop" novalidate><input type="hidden" name="csrf" value={csrf}><Button label="Stop" kind="secondary" size="sm" /></form></div> } else { <span></span> }}</li> }}
+  </ul></section>
+}}
