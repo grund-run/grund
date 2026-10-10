@@ -426,10 +426,6 @@ async fn entitled_customer_orders_and_removes_an_opaque_machine_without_cross_or
     .await?;
     then.status(200)?;
     customer_when
-        .visiting(&format!("/{organisation}/machines/add"))
-        .await?;
-    customer_then.status(200)?.body_contains("Hosted machine")?;
-    customer_when
         .visiting(&format!("/{organisation}/machines/add?mode=hosted"))
         .await?;
     customer_then

@@ -16,9 +16,9 @@ props crate::web::machines::MachineAddPage<'_> { slug, csrf, setup, add_error, n
 } else if *mode == "" {
   <Panel id="choose" title="Choose a machine">
     <Tiles>
-      <Tile href="/{slug}/machines/add?mode=own" title="Your own machine" state="" />
+      <Tile href="/{slug}/machines/add?mode=own" title="Your machine" state="" />
       {if *hosted_enabled {
-        <Tile href="/{slug}/machines/add?mode=hosted" title="Hosted machine" state="" />
+        <Tile href="/{slug}/machines/add?mode=hosted" title="Hosted" state="" />
       }}
     </Tiles>
   </Panel>
@@ -36,13 +36,13 @@ props crate::web::machines::MachineAddPage<'_> { slug, csrf, setup, add_error, n
           <Para kind="aside">{offer.title}{if *regions_multiple { {" · "}{offer.id.split_once('|').map(|(_, region)| region).unwrap_or("")} }}: No capacity in this size.</Para>
         }}
         {if !options.is_empty() {
-          <div class="form-actions"><Button label="Add machine" kind="primary" /></div>
+          <div class="form-actions"><Button label="Create" kind="primary" /></div>
         }}
       </form>
     }}
   </Panel>
 } else {
-  <Panel id="add" title="Your own machine">
+  <Panel id="add" title="Your machine">
     <form class="form" method="post" action="/{slug}/machines/add" novalidate><input type="hidden" name="csrf" value={csrf}>
       {if !add_error.is_empty() { <Banner text="Nothing was saved. Check the field marked below." /> }}
       <Field name="name" label="Name" value={name} autocomplete="off" error={add_error} hint="Empty: its hostname." />

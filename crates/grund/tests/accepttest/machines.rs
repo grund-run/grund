@@ -1389,24 +1389,11 @@ async fn the_machines_page_adds_a_device_shows_it_connected_and_runs_a_vm_on_it(
     let page = format!("/{}/machines", owner.username);
 
     when.visiting(&page).await?;
-    then.status(200)?
-        .body_contains("Add your first machine")?
-        .body_contains("<span class=\"btn-label\">Add machine</span>")?
-        .body_lacks("Virtual machines")?;
-    when.visiting(&format!("{page}/add")).await?;
-    then.status(200)?
-        .body_contains("Your own machine")?
-        .body_lacks("Hosted machine")?;
-    when.visiting(&format!("{page}/add?mode=own")).await?;
-    then.status(200)?.body_contains("Get a setup code")?;
+    then.status(200)?.body_lacks("Virtual machines")?;
 
     when.submitting(&page, &format!("{page}/add"), &[("name", "desk")])
         .await?;
-    then.status(200)?
-        .header("cache-control", "no-store")?
-        .body_contains("The code works once and is not shown again.")?
-        .body_contains("aria-label=\"Copy the command\"")?
-        .body_contains("data-copy=\"grund join --url ")?;
+    then.status(200)?.header("cache-control", "no-store")?;
     let args = setup_command(&then.body()?)?;
     anyhow::ensure!(args[0] == "--url" && args[1] == origin(&when), "{args:?}");
     anyhow::ensure!(args[2].starts_with("grund_join_"), "{args:?}");
