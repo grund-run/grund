@@ -950,7 +950,11 @@ impl Apps {
         name: &str,
     ) -> Result<Vec<ReleaseRow>, AppsError> {
         let row = self.live(organisation_id, name).await?;
-        Ok(apps::releases(&self.state.pool, row.app_id, RELEASES_SHOWN).await?)
+        self.releases_for(row.app_id).await
+    }
+
+    pub(crate) async fn releases_for(&self, app_id: Uuid) -> Result<Vec<ReleaseRow>, AppsError> {
+        Ok(apps::releases(&self.state.pool, app_id, RELEASES_SHOWN).await?)
     }
 
     /// Fills missing port metadata after the page returns, at most once per

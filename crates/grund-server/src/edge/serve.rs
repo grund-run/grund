@@ -203,6 +203,7 @@ where
 }
 
 /// Serves one TCP connection on 443.
+#[tracing::instrument(name = "edge.connection", skip_all)]
 pub async fn connection(edge: Arc<Edge>, mut tcp: TcpStream, peer: SocketAddr) {
     edge.clients.fetch_add(1, Relaxed);
     let _counted = Counted(&edge.clients);

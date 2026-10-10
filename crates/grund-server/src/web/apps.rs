@@ -1871,7 +1871,7 @@ pub(super) async fn app_view(
         Err(error) => return Err(PageError::from(anyhow::anyhow!(error))),
     };
     let releases = apps
-        .releases(membership.organisation_id, name)
+        .releases_for(listing.view.row.app_id)
         .await
         .map_err(|e| PageError::from(anyhow::anyhow!(e)))?;
     let view = &listing.view;
