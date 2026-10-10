@@ -89,8 +89,8 @@ pub async fn apply_app(
         AppEvent::ReleaseCreated { release } => {
             sqlx::query(
                 "INSERT INTO grund_releases (app_id, number, spec, image_digest, platforms, \
-                   secret_versions, source, rollback_of, note, created_by, created_at) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
+                   exposed_ports, secret_versions, source, rollback_of, note, created_by, created_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
                  ON CONFLICT (app_id, number) DO NOTHING",
             )
             .bind(app_id)
@@ -98,6 +98,7 @@ pub async fn apply_app(
             .bind(Json(&release.spec))
             .bind(&release.image_digest)
             .bind(Json(&release.platforms))
+            .bind(release.exposed_ports.as_ref().map(Json))
             .bind(Json(&release.secret_versions))
             .bind(release.source.as_str())
             .bind(release.rollback_of.map(|n| n as i32))
@@ -628,6 +629,7 @@ pub struct ReleaseRow {
     pub spec: Json<grund_domain::app::AppSpec>,
     pub image_digest: String,
     pub platforms: Json<Vec<String>>,
+    pub exposed_ports: Option<Json<Vec<u16>>>,
     pub secret_versions: Json<Vec<grund_domain::app::SecretVersion>>,
     pub source: String,
     pub rollback_of: Option<i32>,
@@ -647,9 +649,9 @@ pub async fn releases(
     limit: i64,
 ) -> Result<Vec<ReleaseRow>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT r.app_id, r.number, r.spec, r.image_digest, r.platforms, r.secret_versions, r.source, \
-           r.rollback_of, r.note, r.created_by, a.username AS created_by_name, r.created_at, \
-           r.outcome, r.reason, r.ended_at \
+        "SELECT r.app_id, r.number, r.spec, r.image_digest, r.platforms, r.exposed_ports, \
+           r.secret_versions, r.source, r.rollback_of, r.note, r.created_by, \
+           a.username AS created_by_name, r.created_at, r.outcome, r.reason, r.ended_at \
          FROM grund_releases r LEFT JOIN grund_accounts a ON a.account_id = r.created_by \
          WHERE r.app_id = $1 ORDER BY r.number DESC LIMIT $2",
     )
@@ -657,6 +659,27 @@ pub async fn releases(
     .bind(limit)
     .fetch_all(executor)
     .await
+}
+
+/// Caches ports for a legacy release only if its image digest still matches.
+pub async fn cache_release_ports(
+    executor: impl PgExecutor<'_>,
+    app_id: Uuid,
+    number: i32,
+    digest: &str,
+    ports: &[u16],
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE grund_releases SET exposed_ports = $4 \
+         WHERE app_id = $1 AND number = $2 AND image_digest = $3 AND exposed_ports IS NULL",
+    )
+    .bind(app_id)
+    .bind(number)
+    .bind(digest)
+    .bind(Json(ports))
+    .execute(executor)
+    .await?;
+    Ok(())
 }
 
 /// The release an app runs, for its organisation's list.

@@ -6,7 +6,9 @@
 //! transaction with the events' read models and the signed documents of
 //! every machine it touched (§6.1, §10.3).
 
+use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::{LazyLock, Mutex};
 
 use anyhow::Context;
 use chrono::{DateTime, Utc};
@@ -200,8 +202,8 @@ fn probe(spec: &AppSpec, detect: Option<&PortSpec>) -> Result<(), AppsError> {
     Ok(())
 }
 
-fn detected(port: PortSpec, inspection: &Inspection) -> Result<PortSpec, AppsError> {
-    let Some(number) = inspection.exposed_ports.first() else {
+fn detected(port: PortSpec, exposed_ports: &[u16]) -> Result<PortSpec, AppsError> {
+    let Some(number) = exposed_ports.first() else {
         return Err(AppsError::Spec(SpecError {
             field: "port".into(),
             problem: "the image declares no port; enter the one it listens on".into(),
@@ -532,7 +534,7 @@ impl Apps {
         }
         let inspection = self.inspect(organisation_id, &spec.image).await?;
         if let Some(port) = detect {
-            spec.ports.push(detected(port, &inspection)?);
+            spec.ports.push(detected(port, &inspection.exposed_ports)?);
         }
         let spec = spec.validate()?;
         let app_id = Uuid::now_v7();
@@ -569,6 +571,7 @@ impl Apps {
                     spec,
                     image_digest: inspection.resolved.digest,
                     platforms: inspection.resolved.platforms,
+                    exposed_ports: Some(inspection.exposed_ports),
                     secret_versions,
                     source: ReleaseSource::Dashboard,
                     rollback_of: None,
@@ -613,7 +616,7 @@ impl Apps {
             }
             _ => None,
         };
-        let (digest, platforms) = if change.same_image {
+        let (digest, platforms, exposed_ports) = if change.same_image {
             let newest = apps::releases(&self.state.pool, row.app_id, 1)
                 .await?
                 .into_iter()
@@ -625,19 +628,36 @@ impl Apps {
                     problem: "a change of settings keeps the image; change it under Image".into(),
                 }));
             }
-            if let Some(port) = detect {
-                spec.ports.push(detected(
-                    port,
-                    &self.inspect(organisation_id, &spec.image).await?,
-                )?);
-            }
-            (newest.image_digest, newest.platforms.0)
+            let exposed_ports = if let Some(port) = detect {
+                let ports = match newest.exposed_ports {
+                    Some(ports) => ports.0,
+                    None => {
+                        let reference = format!(
+                            "{}@{}",
+                            spec.image.split('@').next().unwrap_or_default(),
+                            newest.image_digest
+                        );
+                        self.inspect(organisation_id, &reference)
+                            .await?
+                            .exposed_ports
+                    }
+                };
+                spec.ports.push(detected(port, &ports)?);
+                Some(ports)
+            } else {
+                newest.exposed_ports.map(|ports| ports.0)
+            };
+            (newest.image_digest, newest.platforms.0, exposed_ports)
         } else {
             let inspection = self.inspect(organisation_id, &spec.image).await?;
             if let Some(port) = detect {
-                spec.ports.push(detected(port, &inspection)?);
+                spec.ports.push(detected(port, &inspection.exposed_ports)?);
             }
-            (inspection.resolved.digest, inspection.resolved.platforms)
+            (
+                inspection.resolved.digest,
+                inspection.resolved.platforms,
+                Some(inspection.exposed_ports),
+            )
         };
         let spec = spec.validate()?;
         for (secret, (_, value)) in secret_names.iter().zip(&change.secrets) {
@@ -653,6 +673,7 @@ impl Apps {
                 spec,
                 image_digest: digest,
                 platforms,
+                exposed_ports,
                 secret_versions,
                 source: ReleaseSource::Dashboard,
                 rollback_of: None,
@@ -775,6 +796,7 @@ impl Apps {
             spec: sqlx::types::Json(release.spec),
             image_digest: release.image_digest,
             platforms: sqlx::types::Json(release.platforms),
+            exposed_ports: release.exposed_ports.map(sqlx::types::Json),
             secret_versions: sqlx::types::Json(release.secret_versions),
             source: release.source.as_str().to_string(),
             rollback_of: release.rollback_of.map(|n| n as i32),
@@ -858,22 +880,14 @@ impl Apps {
             }
         };
         let note: String = note.chars().take(200).collect();
-        let reference = ImageReference::parse(&spec.image)?;
-        let resolved = self
-            .registry(organisation_id, &reference)
-            .await?
-            .resolve(&reference)
-            .await
-            .map_err(|e| match e {
-                ResolveError::Unsupported(_) => AppsError::ImageUnsupported(e.to_string()),
-                other => AppsError::ImageUnresolved(other.to_string()),
-            })?;
+        let inspection = self.inspect(organisation_id, &spec.image).await?;
         let secret_versions = self.secret_versions(row.app_id, &spec).await?;
         let command = AppCommand::Release {
             actor,
             spec,
-            image_digest: resolved.digest,
-            platforms: resolved.platforms,
+            image_digest: inspection.resolved.digest,
+            platforms: inspection.resolved.platforms,
+            exposed_ports: Some(inspection.exposed_ports),
             secret_versions,
             source,
             rollback_of: None,
@@ -915,6 +929,7 @@ impl Apps {
                 spec,
                 image_digest: earlier.image_digest.clone(),
                 platforms: earlier.platforms.0.clone(),
+                exposed_ports: earlier.exposed_ports.map(|ports| ports.0),
                 secret_versions,
                 source: ReleaseSource::Rollback,
                 rollback_of: Some(number),
@@ -934,6 +949,55 @@ impl Apps {
     ) -> Result<Vec<ReleaseRow>, AppsError> {
         let row = self.live(organisation_id, name).await?;
         Ok(apps::releases(&self.state.pool, row.app_id, RELEASES_SHOWN).await?)
+    }
+
+    /// Fills missing port metadata after the page returns, at most once per
+    /// release concurrently in this process. A failed lookup can retry on the next visit.
+    pub fn cache_legacy_ports(&self, organisation_id: Uuid, release: &ReleaseRow) {
+        static IN_FLIGHT: LazyLock<Mutex<HashSet<(Uuid, i32)>>> =
+            LazyLock::new(|| Mutex::new(HashSet::new()));
+        let key = (release.app_id, release.number);
+        if !IN_FLIGHT
+            .lock()
+            .expect("legacy port lock poisoned")
+            .insert(key)
+        {
+            return;
+        }
+        let apps = self.clone();
+        let digest = release.image_digest.clone();
+        let reference = format!(
+            "{}@{}",
+            release.spec.0.image.split('@').next().unwrap_or_default(),
+            digest
+        );
+        tokio::spawn(async move {
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                apps.inspect(organisation_id, &reference),
+            )
+            .await;
+            match result {
+                Ok(Ok(inspection)) if inspection.resolved.digest == digest => {
+                    if let Err(error) = apps::cache_release_ports(
+                        &apps.state.pool,
+                        key.0,
+                        key.1,
+                        &digest,
+                        &inspection.exposed_ports,
+                    )
+                    .await
+                    {
+                        tracing::warn!(%error, "legacy image ports could not be cached");
+                    }
+                }
+                _ => tracing::warn!("legacy image ports could not be inspected"),
+            }
+            IN_FLIGHT
+                .lock()
+                .expect("legacy port lock poisoned")
+                .remove(&key);
+        });
     }
 
     async fn set_settings(

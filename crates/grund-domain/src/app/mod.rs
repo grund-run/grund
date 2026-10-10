@@ -59,6 +59,9 @@ pub struct Release {
     /// registry did not say (a single-platform manifest), in which case any
     /// machine may try.
     pub platforms: Vec<String>,
+    /// Ports declared by the image's chosen runnable variant; absent on older releases.
+    #[serde(default)]
+    pub exposed_ports: Option<Vec<u16>>,
     pub secret_versions: Vec<SecretVersion>,
     pub source: ReleaseSource,
     pub rollback_of: Option<u32>,
@@ -385,6 +388,7 @@ pub enum AppCommand {
         spec: AppSpec,
         image_digest: String,
         platforms: Vec<String>,
+        exposed_ports: Option<Vec<u16>>,
         secret_versions: Vec<SecretVersion>,
         source: ReleaseSource,
         rollback_of: Option<u32>,
@@ -459,6 +463,7 @@ impl mire::Command for AppCommand {
                 spec,
                 image_digest,
                 platforms,
+                exposed_ports,
                 secret_versions,
                 source,
                 rollback_of,
@@ -479,6 +484,7 @@ impl mire::Command for AppCommand {
                         spec,
                         image_digest,
                         platforms,
+                        exposed_ports,
                         secret_versions,
                         source,
                         rollback_of,
@@ -577,6 +583,7 @@ mod tests {
             image_digest: format!("sha256:{}", "b".repeat(64)),
             platforms: vec!["x86_64".into()],
             secret_versions: Vec::new(),
+            exposed_ports: Some(vec![80]),
             source: ReleaseSource::Api,
             rollback_of: None,
             note: String::new(),
@@ -642,6 +649,7 @@ mod tests {
             spec: spec(),
             image_digest: String::new(),
             platforms: Vec::new(),
+            exposed_ports: None,
             secret_versions: Vec::new(),
             source: ReleaseSource::Rollback,
             rollback_of: Some(4),

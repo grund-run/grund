@@ -59,6 +59,7 @@ async fn release(events: &EventStore, app_id: Uuid) -> u32 {
                 spec: spec(),
                 image_digest: format!("sha256:{}", "d".repeat(64)),
                 platforms: Vec::new(),
+                exposed_ports: Some(vec![80, 443]),
                 secret_versions: Vec::new(),
                 source: ReleaseSource::Api,
                 rollback_of: None,
@@ -343,4 +344,40 @@ async fn the_list_shows_the_release_an_app_runs_or_its_newest_before_one_is_live
     let mut expected = vec![(shop, 1), (fresh, 2)];
     expected.sort();
     assert_eq!(running, expected);
+}
+
+#[sqlx::test(migrations = false)]
+async fn legacy_release_ports_are_filled_once_without_changing_known_metadata(pool: PgPool) {
+    let events = store(&pool).await;
+    let app_id = create(&events, Uuid::now_v7(), "legacy").await;
+    release(&events, app_id).await;
+    let row = apps::releases(&pool, app_id, 1).await.unwrap().remove(0);
+    assert_eq!(row.exposed_ports.as_ref().unwrap().0, vec![80, 443]);
+    sqlx::query("UPDATE grund_releases SET exposed_ports = NULL WHERE app_id = $1")
+        .bind(app_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    apps::cache_release_ports(&pool, app_id, row.number, "sha256:wrong", &[1])
+        .await
+        .unwrap();
+    assert!(
+        apps::releases(&pool, app_id, 1).await.unwrap()[0]
+            .exposed_ports
+            .is_none()
+    );
+    apps::cache_release_ports(&pool, app_id, row.number, &row.image_digest, &[])
+        .await
+        .unwrap();
+    apps::cache_release_ports(&pool, app_id, row.number, &row.image_digest, &[9999])
+        .await
+        .unwrap();
+    assert_eq!(
+        apps::releases(&pool, app_id, 1).await.unwrap()[0]
+            .exposed_ports
+            .as_ref()
+            .unwrap()
+            .0,
+        Vec::<u16>::new()
+    );
 }

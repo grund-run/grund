@@ -2033,22 +2033,13 @@ pub(super) async fn app_view(
         .collect();
     let ports = if tab == "settings" && edit == "exposure" {
         match newest {
-            Some(r) => {
-                let reference = format!(
-                    "{}@{}",
-                    r.spec.0.image.split('@').next().unwrap_or_default(),
-                    r.image_digest
-                );
-                match tokio::time::timeout(
-                    std::time::Duration::from_secs(3),
-                    apps.inspect(membership.organisation_id, &reference),
-                )
-                .await
-                {
-                    Ok(Ok(inspection)) => inspection.exposed_ports,
-                    _ => Vec::new(),
+            Some(release) => match &release.exposed_ports {
+                Some(ports) => ports.0.clone(),
+                None => {
+                    apps.cache_legacy_ports(membership.organisation_id, release);
+                    Vec::new()
                 }
-            }
+            },
             None => Vec::new(),
         }
     } else {

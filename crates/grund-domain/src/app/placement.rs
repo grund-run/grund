@@ -317,6 +317,7 @@ mod tests {
             },
             image_digest: String::new(),
             platforms: platforms.iter().map(|p| p.to_string()).collect(),
+            exposed_ports: None,
             secret_versions: Vec::new(),
             source: ReleaseSource::Api,
             rollback_of: None,

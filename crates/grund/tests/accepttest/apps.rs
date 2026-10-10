@@ -1276,6 +1276,46 @@ async fn the_deploy_page_refuses_what_the_api_would_and_makes_nothing() -> anyho
 }
 
 #[tokio::test]
+async fn exposure_uses_release_ports_without_contacting_the_registry_on_get() -> anyhow::Result<()>
+{
+    let registry = FakeRegistry::start().await?;
+    let image = registry.image("acme/ports", "1");
+    registry.publish_exposing("acme/ports", "1", &["8080/tcp", "53/udp"]);
+    let Some((given, when, then)) =
+        testcase_configured(&[("GRUND_INSECURE_REGISTRIES", &registry.host)]).await?
+    else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let org = owner.username;
+    when.submitting(
+        &format!("/{org}/deploy"),
+        &format!("/{org}/deploy"),
+        &[
+            ("mode", "custom"),
+            ("name", "ports"),
+            ("image", &image),
+            ("exposure", "private"),
+            ("port", "8080"),
+        ],
+    )
+    .await?;
+    then.status(303)?;
+    let calls_after_deploy = registry.manifest_calls();
+    for _ in 0..2 {
+        when.visiting(&format!("/{org}/apps/ports/settings?edit=exposure"))
+            .await?;
+        then.status(200)?
+            .body_contains("The image listens on 8080. Empty: no port.")?;
+    }
+    anyhow::ensure!(
+        registry.manifest_calls() == calls_after_deploy,
+        "opening Exposure must not ask the registry again"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_releases()
 -> anyhow::Result<()> {
     let registry = FakeRegistry::start().await?;

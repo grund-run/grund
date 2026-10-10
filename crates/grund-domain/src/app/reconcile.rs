@@ -929,6 +929,7 @@ mod tests {
                 spec: spec(memory_mib),
                 image_digest: format!("sha256:{}", "c".repeat(64)),
                 platforms: Vec::new(),
+                exposed_ports: None,
                 secret_versions: Vec::new(),
                 source: ReleaseSource::Api,
                 rollback_of: None,
