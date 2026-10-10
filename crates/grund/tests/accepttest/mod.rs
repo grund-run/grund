@@ -18,6 +18,7 @@ mod network;
 mod organisations;
 mod outages;
 mod pages;
+mod partial_pages;
 mod placement;
 mod registries;
 mod relay_certificates;

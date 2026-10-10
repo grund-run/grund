@@ -5,19 +5,26 @@
 // grow and shrink, chips filtered as you type, sliders kept in step with
 // their numbers, presets that fill them, and the setting a link points
 // at, opened.
+//
+// sedx (loaded before this file) swaps signed-in pages in place, so this
+// file runs once per visit: everything below runs again on `sedx:load`
+// (after the first load and after every swap). Each run first removes the
+// listeners of the run before, so an element the swap kept is wired once,
+// with closures over the page it now belongs to.
 (function () {
   "use strict";
-  document.documentElement.classList.add("has-js");
 
-  function ready(fn) {
-    if (document.readyState === "loading") {
-      document.addEventListener("DOMContentLoaded", fn);
-    } else {
-      fn();
-    }
-  }
+  var listening = null;
+  var first = true;
 
-  ready(function () {
+  function enhance() {
+    if (listening) listening.abort();
+    listening = new AbortController();
+    var on = { signal: listening.signal };
+    var initial = first;
+    first = false;
+    document.documentElement.classList.add("has-js");
+
     if (navigator.clipboard) {
       document.querySelectorAll("button[data-copy]").forEach(function (button) {
         button.hidden = false;
@@ -34,14 +41,14 @@
               else button.setAttribute("aria-label", label);
             }, 1500);
           });
-        });
+        }, on);
       });
     }
 
     document.querySelectorAll("select[data-autosubmit]").forEach(function (select) {
       select.addEventListener("change", function () {
-        select.form.submit();
-      });
+        select.form.requestSubmit();
+      }, on);
     });
 
     var filter = document.querySelector("input[data-filter]");
@@ -70,7 +77,7 @@
           empty.hidden = shown !== 0 || (empty.dataset.filterEmpty || "match") !== why;
         });
       };
-      if (filter) filter.addEventListener("input", apply);
+      if (filter) filter.addEventListener("input", apply, on);
       tabs.forEach(function (link) {
         link.addEventListener("click", function (event) {
           event.preventDefault();
@@ -95,9 +102,9 @@
           var url = new URL(link.href);
           if (filter && filter.value.trim()) url.searchParams.set("q", filter.value.trim());
           else url.searchParams.delete("q");
-          history.replaceState(null, "", url.pathname + url.search);
+          history.replaceState(history.state, "", url.pathname + url.search);
           apply();
-        });
+        }, on);
       });
     }
 
@@ -112,7 +119,7 @@
         if (isNaN(value)) value = min;
         input.value = String(Math.min(max, Math.max(min, value + Number(button.dataset.step))));
         input.dispatchEvent(new Event("input", { bubbles: true }));
-      });
+      }, on);
     });
 
     document.querySelectorAll("input[data-fill]").forEach(function (choice) {
@@ -125,7 +132,7 @@
           target.value = choice.value;
           target.dataset.filled = choice.value;
         }
-      });
+      }, on);
     });
 
     document.querySelectorAll("[data-pairs]").forEach(function (pairs) {
@@ -149,7 +156,7 @@
           }
           number();
           if (next) next.querySelector("input").focus();
-        });
+        }, on);
       }
       Array.prototype.forEach.call(pairs.children, wire);
       if (!add) return;
@@ -165,7 +172,7 @@
         wire(row);
         number();
         row.querySelector("input").focus();
-      });
+      }, on);
     });
 
     document.querySelectorAll("input[data-chip-search]").forEach(function (search) {
@@ -174,14 +181,14 @@
       search.hidden = false;
       search.addEventListener("keydown", function (event) {
         if (event.key === "Enter") event.preventDefault();
-      });
+      }, on);
       search.addEventListener("input", function () {
         var query = search.value.trim().toLowerCase();
         chips.forEach(function (chip) {
           var input = chip.querySelector("input");
           chip.hidden = !!query && !input.checked && chip.textContent.toLowerCase().indexOf(query) === -1;
         });
-      });
+      }, on);
     });
 
     document.querySelectorAll("[data-range]").forEach(function (slider) {
@@ -209,12 +216,12 @@
         mark();
       }
       follow();
-      input.addEventListener("input", follow);
+      input.addEventListener("input", follow, on);
       range.addEventListener("input", function () {
         input.value = String(steps[range.value]);
         mark();
         input.dispatchEvent(new Event("change", { bubbles: true }));
-      });
+      }, on);
     });
 
     document.querySelectorAll("fieldset").forEach(function (group) {
@@ -237,7 +244,7 @@
             set.field.value = set.value;
             set.field.dispatchEvent(new Event("input", { bubbles: true }));
           });
-        });
+        }, on);
       });
       function choose() {
         var match = options.filter(function (option) {
@@ -249,8 +256,8 @@
       fields.forEach(function (field) {
         field.addEventListener("input", function (event) {
           if (event.isTrusted) choose();
-        });
-        field.addEventListener("change", choose);
+        }, on);
+        field.addEventListener("change", choose, on);
       });
     });
 
@@ -259,14 +266,14 @@
       if (target && target.tagName === "DETAILS") target.open = true;
     }
     openTarget();
-    window.addEventListener("hashchange", openTarget);
+    window.addEventListener("hashchange", openTarget, on);
 
     var menus = Array.prototype.slice.call(document.querySelectorAll("details.menu"));
     document.addEventListener("click", function (event) {
       menus.forEach(function (menu) {
         if (menu.open && !menu.contains(event.target)) menu.open = false;
       });
-    });
+    }, on);
     document.addEventListener("keydown", function (event) {
       if (event.key !== "Escape") return;
       menus.forEach(function (menu) {
@@ -275,8 +282,8 @@
           menu.querySelector("summary").focus();
         }
       });
-    });
-    if (document.getElementById("server-timing")) {
+    }, on);
+    if (initial && document.getElementById("server-timing")) {
       function showTimings() {
         var navigation = performance.getEntriesByType("navigation")[0];
         var paint = performance.getEntriesByName("first-contentful-paint")[0];
@@ -296,7 +303,14 @@
           "ready " + Math.round(navigation.loadEventEnd || navigation.domContentLoadedEventEnd) + " ms";
       }
       if (document.readyState === "complete") showTimings();
-      else window.addEventListener("load", showTimings, { once: true });
+      else window.addEventListener("load", showTimings, { once: true, signal: listening.signal });
     }
-  });
+  }
+
+  document.addEventListener("sedx:load", enhance);
+  function ready() {
+    if (!window.sedx) enhance();
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", ready);
+  else ready();
 })();

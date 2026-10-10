@@ -351,6 +351,10 @@ Pages and mail compile from typed Sedge templates at build time; page models and
 form errors are Rust values. There is no runtime template loader. Changing a
 template rebuilds `grund-server`.
 
+Signed-in pages move between each other without a full reload: sedx (in the
+sedge repository) fetches the next page and morphs it in, keeping the sidebar,
+focus and typed input. Every page is still a complete page without JavaScript.
+
 ## Develop and verify
 
 ```bash

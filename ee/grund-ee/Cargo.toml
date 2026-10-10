@@ -19,7 +19,7 @@ grund-store.workspace = true
 grund-tls.workspace = true
 reqwest = { version = "0.13", default-features = false, features = ["form", "json", "rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-sedge-rt = { git = "https://git.kjuulh.io/kjuulh/sedge.git", rev = "a4307b9cfacff525f18cffd2fac420ec9f6f7f88" }
+sedge-rt = { git = "https://git.kjuulh.io/kjuulh/sedge.git", rev = "48d0d4509d773b60c18ed2ce69adcb7934b81811" }
 serde.workspace = true
 serde_json.workspace = true
 serde_urlencoded = "0.7"
@@ -29,7 +29,7 @@ tracing.workspace = true
 uuid.workspace = true
 
 [build-dependencies]
-sedge-gen = { git = "https://git.kjuulh.io/kjuulh/sedge.git", rev = "a4307b9cfacff525f18cffd2fac420ec9f6f7f88" }
+sedge-gen = { git = "https://git.kjuulh.io/kjuulh/sedge.git", rev = "48d0d4509d773b60c18ed2ce69adcb7934b81811" }
 
 [dev-dependencies]
 clap.workspace = true

@@ -1,6 +1,7 @@
-//! Static files, embedded in the binary: the stylesheet, the script, the
+//! Static files, embedded in the binary: the stylesheet, the scripts (grund's
+//! own and sedx's, which loads signed-in pages without a full reload), the
 //! fonts and the mark, which is also the favicon. The stylesheet and the
-//! script are linked with a content hash in their query, so they are cached
+//! scripts are linked with a content hash in their query, so they are cached
 //! for a year and a new build is fetched at once.
 
 use std::sync::LazyLock;
@@ -30,9 +31,17 @@ static CSS_VERSION: LazyLock<String> =
 static JS_VERSION: LazyLock<String> =
     LazyLock::new(|| hex::encode(&Sha256::digest(JS.as_bytes())[..8]));
 
+static SEDX_VERSION: LazyLock<String> =
+    LazyLock::new(|| hex::encode(&Sha256::digest(sedx::JS.as_bytes())[..8]));
+
 /// Where signed-in pages load the script from.
 pub fn js_href() -> String {
     format!("/static/grund.js?v={}", *JS_VERSION)
+}
+
+/// Where signed-in pages load sedx's script from.
+pub fn sedx_href() -> String {
+    format!("/static/sedx.js?v={}", *SEDX_VERSION)
 }
 
 /// Where pages link the stylesheet from.
@@ -71,6 +80,11 @@ pub async fn serve(Path(path): Path<String>) -> Response {
     let (body, content_type, cache): (&'static [u8], &str, &str) = match path.as_str() {
         "grund.css" => (CSS.as_bytes(), "text/css; charset=utf-8", IMMUTABLE),
         "grund.js" => (JS.as_bytes(), "text/javascript; charset=utf-8", IMMUTABLE),
+        "sedx.js" => (
+            sedx::JS.as_bytes(),
+            "text/javascript; charset=utf-8",
+            IMMUTABLE,
+        ),
         "fonts/inter-latin.woff2" => (INTER, "font/woff2", A_DAY),
         "fonts/jetbrains-mono-latin.woff2" => (MONO, "font/woff2", A_DAY),
         "favicon.svg" | "mark.svg" => (MARK.as_bytes(), "image/svg+xml", A_DAY),
