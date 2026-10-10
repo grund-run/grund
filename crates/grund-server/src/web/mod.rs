@@ -3,6 +3,8 @@
 //!
 //! ```text
 //!   request ─► trace ─► security headers ─► panic guard ─► timeout ─► body limit
+//!           ─► sedx (a signed-in page the browser already shows renders only
+//!              what changes; redirects of its requests become Sedx-Location)
 //!           ─► request context (request id; failed pages rendered and logged)
 //!           ─► /health/live, /health/ready, /static/*
 //!           ─► /install, /install/* (only with GRUND_SERVE_INSTALLER)
@@ -236,6 +238,7 @@ pub fn router(state: State) -> Router {
             state.clone(),
             request_context,
         ))
+        .layer(middleware::from_fn(sedx::middleware))
         .with_state(state.clone())
         .merge(crate::api::router(state))
         .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))

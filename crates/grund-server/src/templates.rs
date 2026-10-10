@@ -18,6 +18,11 @@ pub(crate) fn compiled_js_href() -> &'static str {
     &URL
 }
 
+pub(crate) fn compiled_sedx_href() -> &'static str {
+    static URL: LazyLock<String> = LazyLock::new(crate::web::assets::sedx_href);
+    &URL
+}
+
 pub struct ChoiceLink<'a> {
     pub key: &'a str,
     pub href: &'a str,

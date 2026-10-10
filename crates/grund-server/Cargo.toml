@@ -52,7 +52,8 @@ parking_lot = "0.12"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-sedge-rt = { git = "https://git.kjuulh.io/kjuulh/sedge.git", rev = "a4307b9cfacff525f18cffd2fac420ec9f6f7f88" }
+sedge-rt = { git = "https://git.kjuulh.io/kjuulh/sedge.git", rev = "8cbeb5197cd890beb7adc85a1779dd5841dec0c2" }
+sedx = { git = "https://git.kjuulh.io/kjuulh/sedge.git", rev = "8cbeb5197cd890beb7adc85a1779dd5841dec0c2" }
 serde.workspace = true
 serde_json.workspace = true
 serde_urlencoded = "0.7"
@@ -74,7 +75,7 @@ webpki-roots = "1"
 x509-parser = { version = "0.18", features = ["verify"] }
 
 [build-dependencies]
-sedge-gen = { git = "https://git.kjuulh.io/kjuulh/sedge.git", rev = "a4307b9cfacff525f18cffd2fac420ec9f6f7f88" }
+sedge-gen = { git = "https://git.kjuulh.io/kjuulh/sedge.git", rev = "8cbeb5197cd890beb7adc85a1779dd5841dec0c2" }
 
 [dev-dependencies]
 argon2 = "0.5"

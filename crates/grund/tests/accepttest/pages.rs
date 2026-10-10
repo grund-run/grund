@@ -27,17 +27,18 @@ async fn every_page_is_html_that_needs_nothing_the_csp_forbids_and_is_never_cach
             .and_then(|t| t.body_lacks("<style"))
             .and_then(|t| t.body_lacks(" onclick="))
             .map_err(|error| error.context(*path))?;
-        only_the_script_file(&then.body()?).map_err(|error| error.context(*path))?;
+        only_the_script_files(&then.body()?).map_err(|error| error.context(*path))?;
     }
     Ok(())
 }
 
-fn only_the_script_file(body: &str) -> anyhow::Result<()> {
+fn only_the_script_files(body: &str) -> anyhow::Result<()> {
     let scripts = body.matches("<script").count();
-    let linked = body.matches("<script src=\"/static/grund.js?v=").count();
+    let grund = body.matches("<script src=\"/static/grund.js?v=").count();
+    let sedx = body.matches("<script src=\"/static/sedx.js?v=").count();
     anyhow::ensure!(
-        scripts == linked && linked <= 1,
-        "a page loads only /static/grund.js, and no inline script"
+        scripts == grund + sedx && grund <= 1 && sedx == grund,
+        "a page loads only /static/sedx.js and /static/grund.js, together, and no inline script"
     );
     Ok(())
 }
@@ -84,7 +85,7 @@ async fn every_signed_in_page_renders_in_the_shell_with_nothing_the_csp_forbids(
             .and_then(|t| t.body_lacks(" onclick="))
             .map_err(|error| error.context(path.clone()))?;
         let body = then.body()?;
-        only_the_script_file(&body).map_err(|error| error.context(path.clone()))?;
+        only_the_script_files(&body).map_err(|error| error.context(path.clone()))?;
         if path.starts_with(&format!("/{org}")) {
             let own_search = path.contains("/machines");
             anyhow::ensure!(

@@ -23,4 +23,4 @@ pub use given::mail_count;
 pub use insights::{FakeInsights, TOKEN as INSIGHTS_TOKEN};
 pub use registry::FakeRegistry;
 pub use testcase::*;
-pub use when::csrf_of;
+pub use when::{csrf_of, form_encode};
