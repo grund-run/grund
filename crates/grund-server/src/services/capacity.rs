@@ -59,6 +59,41 @@ pub struct Offer {
     pub can_place: bool,
 }
 
+pub(crate) fn protobuf_i64(value: &serde_json::Value) -> i64 {
+    value
+        .as_i64()
+        .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
+        .unwrap_or_default()
+}
+
+fn parse_offers(response: &serde_json::Value) -> Result<Vec<Offer>, CapacityError> {
+    let offers = response["offers"]
+        .as_array()
+        .ok_or_else(|| CapacityError::Refused("invalid offers response".into()))?;
+    offers
+        .iter()
+        .map(|offer| {
+            Ok(Offer {
+                size: offer["size"]
+                    .as_str()
+                    .filter(|v| !v.is_empty())
+                    .ok_or_else(|| CapacityError::Refused("invalid size".into()))?
+                    .to_owned(),
+                region: offer["region"]
+                    .as_str()
+                    .filter(|v| !v.is_empty())
+                    .ok_or_else(|| CapacityError::Refused("invalid region".into()))?
+                    .to_owned(),
+                vcpus: protobuf_i64(&offer["vcpus"]) as i32,
+                memory_mib: protobuf_i64(&offer["memoryMib"]),
+                disk_gib: protobuf_i64(&offer["diskGib"]),
+                ready: protobuf_i64(&offer["ready"]) as i32,
+                can_place: offer["canPlace"].as_bool().unwrap_or(false),
+            })
+        })
+        .collect()
+}
+
 impl Capacity {
     /// The shim this configuration asks for.
     pub fn new(config: &CapacityArgs) -> anyhow::Result<Self> {
@@ -90,31 +125,7 @@ impl Capacity {
             return Ok(Vec::new());
         }
         let response = self.call("ListOffers", &serde_json::json!({})).await?;
-        let offers = response["offers"]
-            .as_array()
-            .ok_or_else(|| CapacityError::Refused("invalid offers response".into()))?;
-        offers
-            .iter()
-            .map(|offer| {
-                Ok(Offer {
-                    size: offer["size"]
-                        .as_str()
-                        .filter(|v| !v.is_empty())
-                        .ok_or_else(|| CapacityError::Refused("invalid size".into()))?
-                        .to_owned(),
-                    region: offer["region"]
-                        .as_str()
-                        .filter(|v| !v.is_empty())
-                        .ok_or_else(|| CapacityError::Refused("invalid region".into()))?
-                        .to_owned(),
-                    vcpus: offer["vcpus"].as_i64().unwrap_or_default() as i32,
-                    memory_mib: offer["memoryMib"].as_i64().unwrap_or_default(),
-                    disk_gib: offer["diskGib"].as_i64().unwrap_or_default(),
-                    ready: offer["ready"].as_i64().unwrap_or_default() as i32,
-                    can_place: offer["canPlace"].as_bool().unwrap_or(false),
-                })
-            })
-            .collect()
+        parse_offers(&response)
     }
 
     /// Returns exact size and region of already assigned machines for migration
@@ -312,5 +323,28 @@ pub trait CapacityState {
 impl CapacityState for State {
     fn capacity(&self) -> Capacity {
         self.capacity.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hosted_offer_keeps_the_memory_and_disk_advertised_in_protobuf_json() {
+        let offers = parse_offers(&serde_json::json!({
+            "offers": [{
+                "size": "micro",
+                "region": "own-lab",
+                "vcpus": 1,
+                "memoryMib": "512",
+                "diskGib": "2",
+                "ready": 1,
+                "canPlace": true
+            }]
+        }))
+        .unwrap();
+        assert_eq!((offers[0].memory_mib, offers[0].disk_gib), (512, 2));
+        assert!(offers[0].can_place);
     }
 }

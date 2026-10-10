@@ -105,6 +105,14 @@ fn facts(value: &serde_json::Value) -> agent::MachineFacts {
     }
 }
 
+fn hosted_facts(value: &serde_json::Value) -> agent::MachineFacts {
+    let mut details = facts(value);
+    details.fleet_machine_id.clear();
+    details.hostname.clear();
+    details.os = "Linux".into();
+    details
+}
+
 #[derive(Clone, Copy)]
 enum View {
     Management,
@@ -163,10 +171,7 @@ fn machine(row: &MachineRow, view: View, own_slug: Option<&str>) -> Machine {
             .and_then(|hex| hex::decode(hex).ok())
             .unwrap_or_default(),
         facts: MessageField::from(if hosted {
-            let mut details = facts(&row.facts.0);
-            details.fleet_machine_id.clear();
-            details.hostname.clear();
-            details
+            hosted_facts(&row.facts.0)
         } else {
             facts(&row.facts.0)
         }),
@@ -1294,6 +1299,20 @@ impl MachineService for MachineApi {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn hosted_machine_facts_hide_provider_and_host_identity() {
+        let details = hosted_facts(&serde_json::json!({
+            "hostname": "hosted-a",
+            "fleet_machine_id": "fleet-secret-1",
+            "os": "fleet-guest 0.1.0",
+            "kernel": "6.18",
+            "cpus": 1
+        }));
+        assert_eq!(details.os, "Linux");
+        assert!(details.hostname.is_empty());
+        assert!(details.fleet_machine_id.is_empty());
+        assert_eq!(details.kernel, "6.18");
+    }
 
     #[test]
     fn vm_hosts_never_expose_a_removed_management_machine_id() {

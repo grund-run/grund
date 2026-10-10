@@ -38,6 +38,32 @@ pub struct AdminQuery {
     error: String,
 }
 
+fn protobuf_i64<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<i64, D::Error> {
+    struct Int64;
+
+    impl<'de> serde::de::Visitor<'de> for Int64 {
+        type Value = i64;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a proto3 JSON int64")
+        }
+
+        fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<i64, E> {
+            Ok(value)
+        }
+
+        fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<i64, E> {
+            value.try_into().map_err(E::custom)
+        }
+
+        fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<i64, E> {
+            value.parse().map_err(E::custom)
+        }
+    }
+
+    deserializer.deserialize_any(Int64)
+}
+
 #[derive(Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Host {
@@ -47,10 +73,14 @@ pub struct Host {
     pub provider: String,
     pub region: String,
     pub vcpus: i64,
+    #[serde(deserialize_with = "protobuf_i64")]
     pub memory_mib: i64,
+    #[serde(deserialize_with = "protobuf_i64")]
     pub disk_gib: i64,
     pub allocated_vcpus: i64,
+    #[serde(deserialize_with = "protobuf_i64")]
     pub allocated_memory_mib: i64,
+    #[serde(deserialize_with = "protobuf_i64")]
     pub allocated_disk_gib: i64,
     pub reachable: bool,
     pub last_heartbeat_at: String,
@@ -534,4 +564,28 @@ pub async fn entitlement_action(
         serde_urlencoded::to_string([("tab", "organisations"), ("organisation", named), marker])
             .unwrap_or_default();
     Ok(redirect(&format!("/{slug}/admin?{query}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_inventory_decodes_protobuf_json_capacity_as_strings() {
+        let wire = serde_json::json!({
+            "hosts": [{
+                "id": "host-id",
+                "name": "test-host",
+                "vcpus": 2,
+                "memoryMib": "1536",
+                "diskGib": "6",
+                "allocatedVcpus": 1,
+                "allocatedMemoryMib": "512",
+                "allocatedDiskGib": "2"
+            }]
+        });
+        let (hosts, _) = rows::<Host>(wire, "hosts").expect("a real host response");
+        assert_eq!(hosts[0].memory_mib - hosts[0].allocated_memory_mib, 1024);
+        assert_eq!(hosts[0].disk_gib - hosts[0].allocated_disk_gib, 4);
+    }
 }

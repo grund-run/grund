@@ -12,6 +12,7 @@ use serde_json::Value;
 use crate::{
     api::{Caller, caller},
     services::{
+        capacity::protobuf_i64,
         machines::{Access, MachinesState},
         operator_inventory::OperatorInventory,
     },
@@ -28,7 +29,7 @@ fn text(value: &Value, key: &str) -> String {
 }
 
 fn number(value: &Value, key: &str) -> i64 {
-    value[key].as_i64().unwrap_or_default()
+    protobuf_i64(&value[key])
 }
 
 fn time(value: &Value, key: &str) -> MessageField<Timestamp, buffa::Inline<Timestamp>> {
@@ -377,5 +378,35 @@ impl OperatorService for OperatorApi {
             .into(),
             ..Default::default()
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn operator_api_keeps_protobuf_json_host_capacity() {
+        let source = serde_json::json!({
+            "id": "host-id",
+            "name": "test-host",
+            "vcpus": 2,
+            "memoryMib": "1536",
+            "diskGib": "6",
+            "allocatedVcpus": 1,
+            "allocatedMemoryMib": "512",
+            "allocatedDiskGib": "2"
+        });
+        let mapped = host(&source);
+        let total = mapped.capacity.as_option().unwrap();
+        let used = mapped.allocated.as_option().unwrap();
+        assert_eq!(
+            (
+                total.memory_mib - used.memory_mib,
+                total.disk_gib - used.disk_gib
+            ),
+            (1024, 4)
+        );
+        assert_eq!(total.vcpus - used.vcpus, 1);
     }
 }

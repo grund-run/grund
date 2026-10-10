@@ -335,8 +335,27 @@ fn rollout_message(rollout: &serde_json::Value) -> Option<proto::RolloutStatus> 
     })
 }
 
+fn public_replica_machine_id(
+    machine_id: uuid::Uuid,
+    pool: Option<&str>,
+    placed_at: DateTime<Utc>,
+    leases: &[(uuid::Uuid, uuid::Uuid, DateTime<Utc>)],
+) -> String {
+    if pool == Some("organisation") {
+        return machine_id.to_string();
+    }
+    leases
+        .iter()
+        .find(|(_, leased_machine, since)| *leased_machine == machine_id && *since <= placed_at)
+        .map(|(public_id, _, _)| public_id.to_string())
+        .unwrap_or_default()
+}
+
 /// The wire form of an app.
-pub fn app_message(view: &AppView) -> proto::App {
+pub fn app_message(
+    view: &AppView,
+    leases: &[(uuid::Uuid, uuid::Uuid, DateTime<Utc>)],
+) -> proto::App {
     let now = Utc::now();
     let row = &view.row;
     proto::App {
@@ -357,7 +376,12 @@ pub fn app_message(view: &AppView) -> proto::App {
                 replica_id: r.replica_id.to_string(),
                 slot: r.slot as u32,
                 release: r.release as u32,
-                machine_id: r.machine_id.to_string(),
+                machine_id: public_replica_machine_id(
+                    r.machine_id,
+                    r.machine_pool.as_deref(),
+                    r.placed_at,
+                    leases,
+                ),
                 machine_name: r.machine_name.clone().unwrap_or_default(),
                 state: match r.state.as_str() {
                     "draining" => proto::ReplicaState::REPLICA_STATE_DRAINING,
@@ -483,6 +507,28 @@ impl AppApi {
         }
         Ok(membership)
     }
+
+    async fn hosted_ids(
+        &self,
+        organisation_id: uuid::Uuid,
+    ) -> Result<Vec<(uuid::Uuid, uuid::Uuid, DateTime<Utc>)>, ConnectError> {
+        grund_store::machines::hosted_vm_orders(&self.state.pool, organisation_id)
+            .await
+            .map_err(|error| failed(AppsError::Internal(error.into())))
+    }
+
+    async fn customer_app(
+        &self,
+        organisation_id: uuid::Uuid,
+        view: &AppView,
+    ) -> Result<proto::App, ConnectError> {
+        let history = if view.replicas.is_empty() {
+            Vec::new()
+        } else {
+            self.hosted_ids(organisation_id).await?
+        };
+        Ok(app_message(view, &history))
+    }
 }
 
 fn owned<'a, V: MessageView<'a>>(view: &V) -> Result<V::Owned, ConnectError> {
@@ -514,7 +560,7 @@ impl AppService for AppApi {
             .await
             .map_err(failed)?;
         Response::ok(CreateAppResponse {
-            app: MessageField::from(app_message(&view)),
+            app: MessageField::from(self.customer_app(membership.organisation_id, &view).await?),
             ..Default::default()
         })
     }
@@ -535,7 +581,7 @@ impl AppService for AppApi {
             .await
             .map_err(failed)?;
         Response::ok(GetAppResponse {
-            app: MessageField::from(app_message(&view)),
+            app: MessageField::from(self.customer_app(membership.organisation_id, &view).await?),
             ..Default::default()
         })
     }
@@ -555,8 +601,16 @@ impl AppService for AppApi {
             .list(membership.organisation_id)
             .await
             .map_err(failed)?;
+        let history = if views.iter().any(|view| !view.replicas.is_empty()) {
+            self.hosted_ids(membership.organisation_id).await?
+        } else {
+            Vec::new()
+        };
         Response::ok(ListAppsResponse {
-            apps: views.iter().map(app_message).collect(),
+            apps: views
+                .iter()
+                .map(|view| app_message(view, &history))
+                .collect(),
             ..Default::default()
         })
     }
@@ -678,7 +732,7 @@ impl AppService for AppApi {
             .await
             .map_err(failed)?;
         Response::ok(ScaleResponse {
-            app: MessageField::from(app_message(&view)),
+            app: MessageField::from(self.customer_app(membership.organisation_id, &view).await?),
             ..Default::default()
         })
     }
@@ -705,7 +759,7 @@ impl AppService for AppApi {
             .await
             .map_err(failed)?;
         Response::ok(ConfigureAppResponse {
-            app: MessageField::from(app_message(&view)),
+            app: MessageField::from(self.customer_app(membership.organisation_id, &view).await?),
             ..Default::default()
         })
     }
@@ -794,5 +848,29 @@ mod tests {
             stop: StopSpec::default(),
         };
         assert_eq!(spec_input(&spec_message(&spec)), spec);
+    }
+
+    #[test]
+    fn replicas_use_the_lease_visible_at_placement_and_hide_unmapped_management_ids() {
+        let physical = uuid::Uuid::now_v7();
+        let old_lease = uuid::Uuid::now_v7();
+        let new_lease = uuid::Uuid::now_v7();
+        let first = Utc::now() - chrono::Duration::minutes(10);
+        let second = first + chrono::Duration::minutes(5);
+        let placed = first + chrono::Duration::minutes(2);
+        let history = vec![(new_lease, physical, second), (old_lease, physical, first)];
+        assert_eq!(
+            public_replica_machine_id(physical, Some("management"), placed, &history),
+            old_lease.to_string()
+        );
+        assert_eq!(
+            public_replica_machine_id(physical, Some("management"), Utc::now(), &history),
+            new_lease.to_string()
+        );
+        assert!(public_replica_machine_id(physical, Some("management"), placed, &[]).is_empty());
+        assert_eq!(
+            public_replica_machine_id(physical, Some("organisation"), placed, &[]),
+            physical.to_string()
+        );
     }
 }

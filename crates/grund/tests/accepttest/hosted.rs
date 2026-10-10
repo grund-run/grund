@@ -153,6 +153,30 @@ async fn a_leased_machine_runs_its_lessees_apps_and_drops_them_when_the_lease_en
     )
     .await?;
     anyhow::ensure!(agent.containers().len() == 1, "{:?}", agent.containers());
+    lessee_when
+        .calling(
+            &format!("{MACHINES}/ListMachines"),
+            &json!({"organisation": org}).to_string(),
+        )
+        .await?;
+    lessee_then.status(200)?;
+    let customer_id = lessee_then.json()?["machines"][0]["machineId"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let shown = call(
+        &lessee_when,
+        &lessee_then,
+        "GetApp",
+        json!({"organisation": org, "name": "hello"}),
+    )
+    .await?;
+    anyhow::ensure!(
+        !customer_id.is_empty()
+            && customer_id != machine_id
+            && shown["app"]["replicas"][0]["machineId"] == customer_id,
+        "{shown}"
+    );
 
     pool_call(&when, &then, "EndLease", json!({"machineId": machine_id})).await?;
     exits_within(&mut agent, Duration::from_secs(20), "its lease ended").await?;
@@ -516,7 +540,9 @@ async fn entitled_customer_orders_and_removes_an_opaque_machine_without_cross_or
     customer_then.status(200)?;
     let joined = customer_then.json()?;
     anyhow::ensure!(
-        joined["machine"]["machineId"] == public_id && joined["machine"]["hosted"] == true,
+        joined["machine"]["machineId"] == public_id
+            && joined["machine"]["hosted"] == true
+            && joined["machine"]["facts"]["os"] == "Linux",
         "{joined}"
     );
     for forbidden in ["fm-1", "fleet", "provider", "lease", "pool"] {

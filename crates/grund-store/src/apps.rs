@@ -721,6 +721,7 @@ pub struct ReplicaRow {
     pub app_id: Uuid,
     pub machine_id: Uuid,
     pub machine_name: Option<String>,
+    pub machine_pool: Option<String>,
     pub slot: i32,
     pub release: i32,
     pub state: String,
@@ -742,8 +743,8 @@ pub async fn app_replicas(
     app_id: Uuid,
 ) -> Result<Vec<ReplicaRow>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT r.replica_id, r.app_id, r.machine_id, m.pool_name AS machine_name, r.slot, r.release, \
-           r.state, r.placed_at, s.state AS observed_state, s.ready, s.ready_since, s.restarts, \
+        "SELECT r.replica_id, r.app_id, r.machine_id, m.pool_name AS machine_name, m.pool AS machine_pool, \
+           r.slot, r.release, r.state, r.placed_at, s.state AS observed_state, s.ready, s.ready_since, s.restarts, \
            s.last_exit_code, s.reason, s.observed_at, p.last_seen_at \
          FROM grund_replicas r \
          LEFT JOIN grund_replica_status s ON s.replica_id = r.replica_id AND s.machine_id = r.machine_id \
