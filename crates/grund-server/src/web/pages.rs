@@ -13,6 +13,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::{
+    config::OrganisationMode,
     services::{
         accounts::{
             AccountsState, FieldErrors, LoginOutcome, OwnerSignupOutcome, ResetOutcome,
@@ -85,7 +86,34 @@ pub struct TypedViewer {
     pub orgs: Vec<TypedOrg>,
     pub current: Option<TypedOrg>,
     pub can_create: bool,
+    pub admin_footer: bool,
     pub registered_on: String,
+}
+
+/// The build and trace identity shown only to an instance operator.
+pub struct AdminFooter {
+    pub commit: String,
+    pub commit_url: Option<String>,
+    pub version: &'static str,
+    pub built: &'static str,
+    pub trace_id: Option<String>,
+}
+
+fn admin_footer() -> AdminFooter {
+    let revision = crate::health::revision();
+    let published = revision.len() == 40 && revision.bytes().all(|b| b.is_ascii_hexdigit());
+    AdminFooter {
+        commit: if published {
+            revision[..8].to_string()
+        } else {
+            "local".to_string()
+        },
+        commit_url: published
+            .then(|| format!("https://git.kjuulh.io/grund/grund/commit/{revision}")),
+        version: crate::health::VERSION,
+        built: crate::health::build_time(),
+        trace_id: crate::telemetry::current_trace_id(),
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -283,6 +311,23 @@ pub async fn typed_viewer_context(
         .ok_or_else(|| anyhow::anyhow!("session names an account that does not exist"))?;
     let organisations = state.organisations();
     let memberships = organisations.memberships_of(session.account_id).await?;
+    let admin_footer = match state.config.operator_organisation.as_deref() {
+        Some(operator) => {
+            let id = Uuid::parse_str(operator).ok();
+            memberships.iter().any(|membership| {
+                id.map_or_else(
+                    || membership.slug == operator,
+                    |id| membership.organisation_id == id,
+                )
+            })
+        }
+        None => {
+            state.config.organisations == OrganisationMode::Single
+                && memberships
+                    .iter()
+                    .any(|membership| membership.role == "owner")
+        }
+    };
     let current = match current {
         Some(current) => Some(current.clone()),
         None => match organisations.landing(session.account_id).await? {
@@ -331,6 +376,7 @@ pub async fn typed_viewer_context(
         initials,
         orgs,
         current,
+        admin_footer,
         can_create: organisations.can_create(),
         registered_on: viewer.registered_at.format("%-d %B %Y").to_string(),
     })
@@ -355,6 +401,7 @@ pub async fn signed_in_typed(
     use sedge_rt::Render;
 
     let viewer = typed_viewer_context(state, session, membership).await?;
+    let footer = viewer.admin_footer.then(admin_footer);
     let csrf = browser.csrf_token();
     let content = render(&viewer, &csrf);
     let html = crate::templates::compiled::layouts::App {
@@ -365,9 +412,19 @@ pub async fn signed_in_typed(
         list,
         refresh,
         title_org,
+        footer: footer.as_ref(),
         children: &|out| out.push_str(&content),
     }
     .render_to_string();
+    let mut html = html;
+    if footer.is_some() {
+        let marker = "__GRUND_SERVER_MS__";
+        let position = html.find(marker).expect("admin shell timing marker");
+        html.replace_range(
+            position..position + marker.len(),
+            &browser.request_started.elapsed().as_millis().to_string(),
+        );
+    }
     render_typed(browser, status, html)
 }
 
@@ -1288,6 +1345,7 @@ fn style_guide_fixture(csrf: String) -> StyleGuidePage {
             },
         ],
         can_create: true,
+        admin_footer: false,
     };
     let apps = [
         (

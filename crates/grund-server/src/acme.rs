@@ -18,6 +18,7 @@ use anyhow::Context;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use instant_acme::{BodyWrapper, BytesResponse, HttpClient};
+use tracing::Instrument as _;
 
 /// Each request to the CA must finish within this.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -86,45 +87,50 @@ impl HttpClient for Http {
     ) -> Pin<Box<dyn Future<Output = Result<BytesResponse, instant_acme::Error>> + Send>> {
         let client = self.client.clone();
         let slot = self.retry_after.clone();
-        Box::pin(async move {
-            let (parts, body) = request.into_parts();
-            let body = http_body_util::BodyExt::collect(body)
-                .await
-                .map(http_body_util::Collected::to_bytes)
-                .unwrap_or_else(|never| match never {});
-            let response = client
-                .request(parts.method, parts.uri.to_string())
-                .headers(parts.headers)
-                .body(body)
+        Box::pin(
+            async move {
+                let (parts, body) = request.into_parts();
+                let body = http_body_util::BodyExt::collect(body)
+                    .await
+                    .map(http_body_util::Collected::to_bytes)
+                    .unwrap_or_else(|never| match never {});
+                let response = crate::telemetry::propagate(
+                    client
+                        .request(parts.method, parts.uri.to_string())
+                        .headers(parts.headers)
+                        .body(body),
+                )
                 .send()
                 .await
                 .map_err(|error| instant_acme::Error::Other(Box::new(error)))?;
-            if !response.status().is_success()
-                && let Some(at) = response
-                    .headers()
-                    .get(http::header::RETRY_AFTER)
-                    .and_then(|value| value.to_str().ok())
-                    .and_then(parse_retry_after)
-            {
-                *slot.lock().expect("retry-after lock") = Some(at);
+                if !response.status().is_success()
+                    && let Some(at) = response
+                        .headers()
+                        .get(http::header::RETRY_AFTER)
+                        .and_then(|value| value.to_str().ok())
+                        .and_then(parse_retry_after)
+                {
+                    *slot.lock().expect("retry-after lock") = Some(at);
+                }
+                let mut head = http::Response::builder().status(response.status());
+                for (name, value) in response.headers() {
+                    head = head.header(name, value);
+                }
+                let bytes = response
+                    .bytes()
+                    .await
+                    .map_err(|error| instant_acme::Error::Other(Box::new(error)))?;
+                let (parts, ()) = head
+                    .body(())
+                    .map_err(instant_acme::Error::Http)?
+                    .into_parts();
+                Ok(BytesResponse {
+                    parts,
+                    body: Box::new(bytes),
+                })
             }
-            let mut head = http::Response::builder().status(response.status());
-            for (name, value) in response.headers() {
-                head = head.header(name, value);
-            }
-            let bytes = response
-                .bytes()
-                .await
-                .map_err(|error| instant_acme::Error::Other(Box::new(error)))?;
-            let (parts, ()) = head
-                .body(())
-                .map_err(instant_acme::Error::Http)?
-                .into_parts();
-            Ok(BytesResponse {
-                parts,
-                body: Box::new(bytes),
-            })
-        })
+            .instrument(tracing::info_span!("acme.http", otel.kind = "client")),
+        )
     }
 }
 

@@ -38,7 +38,6 @@
 mod probe;
 
 use clap::{CommandFactory, Parser, Subcommand};
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Parser)]
 #[command(
@@ -58,6 +57,21 @@ struct Cli {
         global = true
     )]
     log: String,
+    #[arg(
+        long,
+        env = "OTEL_EXPORTER_OTLP_ENDPOINT",
+        global = true,
+        help = "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off"
+    )]
+    otel_exporter_otlp_endpoint: Option<String>,
+
+    #[arg(
+        long,
+        env = "OTEL_SERVICE_NAME",
+        global = true,
+        help = "Service name in exported traces (default: grund, grund-relay or grund-edge)"
+    )]
+    otel_service_name: Option<String>,
 
     #[command(subcommand)]
     command: Command,
@@ -300,6 +314,7 @@ async fn agent<R: grund_agent::vm::VmRuntime>(
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     grund_server::health::set_revision(env!("GRUND_BUILD_REVISION"));
+    grund_server::health::set_build_time(env!("GRUND_BUILD_TIME"));
     grund_tls::install_default();
     let args = operator_alias(std::env::args().collect());
     let cli = match Cli::try_parse_from(&args) {
@@ -314,8 +329,21 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(status);
     }
     let to_stderr = matches!(cli.command, Command::Doctor(_) | Command::SetupLink(_));
-    init_tracing(&cli, to_stderr);
-    match cli.command {
+    let service = match &cli.command {
+        Command::Serve(_) => Some("grund"),
+        Command::Relay(_) => Some("grund-relay"),
+        Command::Edge(_) => Some("grund-edge"),
+        _ => None,
+    };
+    let provider = grund_server::telemetry::init(
+        &cli.log,
+        cli.log_format == "json",
+        to_stderr,
+        service.and(cli.otel_exporter_otlp_endpoint.as_deref()),
+        cli.otel_service_name.as_deref(),
+        service.unwrap_or("grund"),
+    )?;
+    let result = match cli.command {
         Command::Serve(mut config) => {
             config.validate()?;
             #[cfg(feature = "ee")]
@@ -346,28 +374,15 @@ async fn main() -> anyhow::Result<()> {
             "firecracker" => agent(&command, firecracker(&command)?).await,
             _ => agent(&command, grund_agent::vm::NoVms).await,
         },
-    }
-}
-
-fn init_tracing(cli: &Cli, to_stderr: bool) {
-    let filter = EnvFilter::try_new(&cli.log).unwrap_or_else(|_| EnvFilter::new("grund=info,warn"));
-    let registry = tracing_subscriber::registry().with(filter);
-    let writer = move || -> Box<dyn std::io::Write> {
-        if to_stderr {
-            Box::new(std::io::stderr())
-        } else {
-            Box::new(std::io::stdout())
-        }
     };
-    if cli.log_format == "json" {
-        registry
-            .with(fmt::layer().json().with_writer(writer))
-            .init();
-    } else {
-        registry
-            .with(fmt::layer().compact().with_writer(writer))
-            .init();
+    if let Some(provider) = provider {
+        match tokio::task::spawn_blocking(move || provider.shutdown()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => tracing::warn!(%error, "OTLP trace export did not finish"),
+            Err(error) => tracing::warn!(%error, "OTLP trace exporter could not shut down"),
+        }
     }
+    result
 }
 
 #[cfg(test)]

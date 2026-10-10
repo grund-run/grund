@@ -14,7 +14,8 @@ mod then;
 mod when;
 
 pub use billing::{
-    DeletionAnswer, FakeBilling, MANAGE_URL as BILLING_MANAGE_URL, TOKEN as BILLING_TOKEN,
+    AccountAnswer, DeletionAnswer, FakeBilling, MANAGE_URL as BILLING_MANAGE_URL,
+    TOKEN as BILLING_TOKEN,
 };
 pub use capacity::{FakeCapacity, TOKEN as CAPACITY_TOKEN};
 pub use fixture::*;

@@ -6,23 +6,31 @@
 //!
 //! Without GRUND_BILLING_URL (every self-hosted instance) the shim is
 //! [`Billing::Free`]: every organisation is free, deleting is allowed, and
-//! nothing is queued. grund never waits on billing to serve a page: a read
-//! that fails or takes over 2 seconds says billing is unavailable and nothing
-//! else changes. Only deleting fails closed, because it cannot be undone.
+//! nothing is queued. Settings use a process-local billing account cache:
+//! a missing or expired account refreshes in the background, never on the
+//! page's critical path. Only deleting fails closed when billing is down.
 
-use std::time::Duration;
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::Context;
 use chrono::{DateTime, Utc};
 use grund_store::outbox::{self, Claimed, Kind};
+use parking_lot::Mutex;
 use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::{config::BillingArgs, state::State};
 
-/// How long a read from the billing service may take before the page says
-/// billing is unavailable.
+/// How long a background account read or a deletion check may take.
 pub const READ_TIMEOUT: Duration = Duration::from_secs(2);
+
+const ACCOUNT_REFRESH: Duration = Duration::from_secs(60);
+const ACCOUNT_RETRY: Duration = Duration::from_secs(15);
+const ACCOUNT_MAX_STALE: Duration = Duration::from_secs(300);
 
 /// An organisation's billing, as its owners see it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,7 +42,7 @@ pub enum BillingView {
         past_due: bool,
         manage_url: Option<String>,
     },
-    /// The billing service did not answer in time, or answered an error.
+    /// No recent account is available from the billing service.
     Unavailable,
 }
 
@@ -80,15 +88,22 @@ pub enum RecordError {
 #[derive(Clone)]
 pub enum Billing {
     Free,
-    Remote(Remote),
+    Remote(Arc<Remote>),
 }
 
 /// A configured billing service.
-#[derive(Clone)]
 pub struct Remote {
     url: String,
     token: String,
     http: reqwest::Client,
+    accounts: Mutex<HashMap<Uuid, CachedAccount>>,
+}
+
+struct CachedAccount {
+    view: Option<BillingView>,
+    fetched_at: Option<Instant>,
+    refresh_after: Instant,
+    refreshing: bool,
 }
 
 impl Billing {
@@ -104,11 +119,12 @@ impl Billing {
             .user_agent("grund")
             .build()
             .context("build the HTTP client for billing")?;
-        Ok(Billing::Remote(Remote {
+        Ok(Billing::Remote(Arc::new(Remote {
             url: url.clone(),
             token: token.clone(),
             http,
-        }))
+            accounts: Mutex::new(HashMap::new()),
+        })))
     }
 
     /// Whether a billing service is configured.
@@ -116,29 +132,80 @@ impl Billing {
         matches!(self, Billing::Remote(_))
     }
 
-    /// The organisation's billing account.
-    pub async fn account(&self, organisation_id: Uuid) -> BillingView {
+    /// Returns the last recent account without waiting for the billing service.
+    /// Missing or expired accounts trigger one background refresh per organisation.
+    pub fn account(&self, organisation_id: Uuid) -> BillingView {
         let Billing::Remote(remote) = self else {
             return BillingView::Free;
         };
-        let body = serde_json::json!({ "organisationId": organisation_id.to_string() });
-        match remote.call("GetAccount", &body, Some(READ_TIMEOUT)).await {
-            Ok(answer) => {
-                let account = &answer["account"];
-                BillingView::Account {
-                    plan: account["plan"].as_str().unwrap_or("Free").to_string(),
-                    past_due: account["status"].as_str() == Some("ACCOUNT_STATUS_PAST_DUE"),
-                    manage_url: account["manageUrl"]
-                        .as_str()
-                        .filter(|url| url.starts_with("https://") || url.starts_with("http://"))
-                        .map(str::to_string),
+        let (view, refresh) = {
+            let mut accounts = remote.accounts.lock();
+            let now = Instant::now();
+            let account = accounts
+                .entry(organisation_id)
+                .or_insert_with(|| CachedAccount {
+                    view: None,
+                    fetched_at: None,
+                    refresh_after: now,
+                    refreshing: false,
+                });
+            let view = account
+                .fetched_at
+                .filter(|fetched_at| now.duration_since(*fetched_at) <= ACCOUNT_MAX_STALE)
+                .and_then(|_| account.view.clone())
+                .unwrap_or(BillingView::Unavailable);
+            let refresh = !account.refreshing && now >= account.refresh_after;
+            if refresh {
+                account.refreshing = true;
+            }
+            (view, refresh)
+        };
+        if refresh {
+            let remote = remote.clone();
+            tokio::spawn(async move {
+                let body = serde_json::json!({ "organisationId": organisation_id.to_string() });
+                let result = remote
+                    .call("GetAccount", &body, Some(READ_TIMEOUT))
+                    .await
+                    .map(|answer| {
+                        let billing_account = &answer["account"];
+                        BillingView::Account {
+                            plan: billing_account["plan"]
+                                .as_str()
+                                .unwrap_or("Free")
+                                .to_string(),
+                            past_due: billing_account["status"].as_str()
+                                == Some("ACCOUNT_STATUS_PAST_DUE"),
+                            manage_url: billing_account["manageUrl"]
+                                .as_str()
+                                .filter(|url| {
+                                    url.starts_with("https://") || url.starts_with("http://")
+                                })
+                                .map(str::to_string),
+                        }
+                    });
+                let now = Instant::now();
+                if let Err(error) = &result {
+                    tracing::warn!(error = %error, "billing account unavailable");
                 }
-            }
-            Err(error) => {
-                tracing::warn!(error = %error, %organisation_id, "billing account unavailable");
-                BillingView::Unavailable
-            }
+                let mut accounts = remote.accounts.lock();
+                let account = accounts
+                    .get_mut(&organisation_id)
+                    .expect("refreshing account exists");
+                account.refreshing = false;
+                match result {
+                    Ok(view) => {
+                        account.view = Some(view);
+                        account.fetched_at = Some(now);
+                        account.refresh_after = now + ACCOUNT_REFRESH;
+                    }
+                    Err(_) => {
+                        account.refresh_after = now + ACCOUNT_RETRY;
+                    }
+                }
+            });
         }
+        view
     }
 
     /// Whether billing lets the organisation be deleted now.
@@ -214,7 +281,10 @@ impl Remote {
         if let Some(timeout) = timeout {
             request = request.timeout(timeout);
         }
-        let response = request.send().await.map_err(|_| CallError::Unreachable)?;
+        let response = crate::telemetry::propagate(request)
+            .send()
+            .await
+            .map_err(|_| CallError::Unreachable)?;
         let status = response.status().as_u16();
         if status != 200 {
             return Err(CallError::Status(status));

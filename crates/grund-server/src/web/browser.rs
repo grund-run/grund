@@ -1,7 +1,7 @@
 //! What a page handler knows about the browser asking: its request id, its
 //! address, its cookies, its session and its CSRF token.
 
-use std::net::SocketAddr;
+use std::{net::SocketAddr, time::Instant};
 
 use axum::{
     extract::{ConnectInfo, FromRequestParts},
@@ -22,6 +22,10 @@ use crate::{
 /// The request id minted by [`crate::web::request_context`].
 #[derive(Debug, Clone, Copy)]
 pub struct RequestId(pub Uuid);
+
+/// The instant HTTP request handling began, carried in request extensions.
+#[derive(Debug, Clone, Copy)]
+pub struct RequestStart(pub Instant);
 
 /// The cookie names and attributes for this instance's origin. On https the
 /// cookies are `__Host-` prefixed and `Secure`; on plain-http loopback
@@ -68,6 +72,7 @@ impl CookieJar {
 #[derive(Debug, Clone)]
 pub struct Browser {
     pub request_id: Uuid,
+    pub request_started: Instant,
     pub address: String,
     pub user_agent: String,
     pub session_token: Option<String>,
@@ -151,6 +156,10 @@ impl FromRequestParts<State> for Browser {
             .extensions
             .get::<RequestId>()
             .map_or_else(Uuid::now_v7, |id| id.0);
+        let request_started = parts
+            .extensions
+            .get::<RequestStart>()
+            .map_or_else(Instant::now, |start| start.0);
         let peer = parts
             .extensions
             .get::<ConnectInfo<SocketAddr>>()
@@ -181,6 +190,7 @@ impl FromRequestParts<State> for Browser {
 
         Ok(Browser {
             request_id,
+            request_started,
             address,
             user_agent,
             session_token,

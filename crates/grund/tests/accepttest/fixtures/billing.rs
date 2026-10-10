@@ -26,9 +26,17 @@ pub enum DeletionAnswer {
     Unavailable,
 }
 
+#[derive(Clone, Copy)]
+pub enum AccountAnswer {
+    Available,
+    Delayed(Duration),
+    Unavailable,
+}
+
 struct Shared {
     calls: Vec<Call>,
     deletion: DeletionAnswer,
+    account: AccountAnswer,
 }
 
 pub struct FakeBilling {
@@ -45,11 +53,19 @@ impl Drop for FakeBilling {
 
 impl FakeBilling {
     pub async fn start(deletion: DeletionAnswer) -> anyhow::Result<Self> {
+        Self::start_with_account(deletion, AccountAnswer::Available).await
+    }
+
+    pub async fn start_with_account(
+        deletion: DeletionAnswer,
+        account: AccountAnswer,
+    ) -> anyhow::Result<Self> {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
         let url = format!("http://{}", listener.local_addr()?);
         let shared = Arc::new(Mutex::new(Shared {
             calls: Vec::new(),
             deletion,
+            account,
         }));
         let handle = shared.clone();
         let task = tokio::spawn(async move {
@@ -140,7 +156,7 @@ async fn serve(mut stream: TcpStream, shared: Arc<Mutex<Shared>>) -> anyhow::Res
         .strip_prefix("/grund.billing.v1.BillingService/")
         .unwrap_or(&path)
         .to_string();
-    let (status, answer) = {
+    let (status, answer, delay) = {
         let mut shared = shared.lock().unwrap();
         shared.calls.push(Call {
             method: method.clone(),
@@ -148,23 +164,49 @@ async fn serve(mut stream: TcpStream, shared: Arc<Mutex<Shared>>) -> anyhow::Res
             body,
         });
         match method.as_str() {
-            "GetAccount" => (
-                200,
-                serde_json::json!({
-                    "account": {"plan": "Pro", "status": "ACCOUNT_STATUS_ACTIVE", "manageUrl": MANAGE_URL}
-                }),
-            ),
-            "CheckDeletion" => match &shared.deletion {
-                DeletionAnswer::Allow => (200, serde_json::json!({"allowed": true})),
-                DeletionAnswer::Refuse(reason) => {
-                    (200, serde_json::json!({"allowed": false, "reason": reason}))
-                }
-                DeletionAnswer::Unavailable => (503, serde_json::json!({"code": "unavailable"})),
+            "GetAccount" => match shared.account {
+                AccountAnswer::Available | AccountAnswer::Delayed(_) => (
+                    200,
+                    serde_json::json!({
+                        "account": {"plan": "Pro", "status": "ACCOUNT_STATUS_ACTIVE", "manageUrl": MANAGE_URL}
+                    }),
+                    match shared.account {
+                        AccountAnswer::Delayed(delay) => delay,
+                        _ => Duration::ZERO,
+                    },
+                ),
+                AccountAnswer::Unavailable => (
+                    503,
+                    serde_json::json!({"code": "unavailable"}),
+                    Duration::ZERO,
+                ),
             },
-            "RecordOrganisation" => (200, serde_json::json!({})),
-            _ => (404, serde_json::json!({"code": "unimplemented"})),
+            "CheckDeletion" => match &shared.deletion {
+                DeletionAnswer::Allow => {
+                    (200, serde_json::json!({"allowed": true}), Duration::ZERO)
+                }
+                DeletionAnswer::Refuse(reason) => (
+                    200,
+                    serde_json::json!({"allowed": false, "reason": reason}),
+                    Duration::ZERO,
+                ),
+                DeletionAnswer::Unavailable => (
+                    503,
+                    serde_json::json!({"code": "unavailable"}),
+                    Duration::ZERO,
+                ),
+            },
+            "RecordOrganisation" => (200, serde_json::json!({}), Duration::ZERO),
+            _ => (
+                404,
+                serde_json::json!({"code": "unimplemented"}),
+                Duration::ZERO,
+            ),
         }
     };
+    if !delay.is_zero() {
+        tokio::time::sleep(delay).await;
+    }
     let text = answer.to_string();
     let response = format!(
         "HTTP/1.1 {status} Answer\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{text}",

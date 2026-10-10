@@ -94,6 +94,11 @@ kjuulh: "kubernetes-app": {
 					// The capacity provider's Secret: the one token it accepts
 					// from grund, and nothing else.
 					{name: "GRUND_CAPACITY_TOKEN", secret: "fleet-secrets", key: "grund_token"},
+					// Applied by the dev cluster operator; endpoint and deployment
+					// identity stay out of this public manifest.
+					{name: "OTEL_EXPORTER_OTLP_ENDPOINT", secret: "grund-otel", key: "OTEL_EXPORTER_OTLP_ENDPOINT"},
+					{name: "OTEL_SERVICE_NAME", secret: "grund-otel", key: "OTEL_SERVICE_NAME"},
+					{name: "OTEL_RESOURCE_ATTRIBUTES", secret: "grund-otel", key: "OTEL_RESOURCE_ATTRIBUTES"},
 				]
 			}
 		}

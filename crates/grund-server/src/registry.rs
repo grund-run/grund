@@ -275,6 +275,7 @@ impl Registry {
         }
     }
 
+    #[tracing::instrument(name = "registry.get", skip_all)]
     async fn get(
         &self,
         registry: &str,
@@ -290,7 +291,10 @@ impl Registry {
             if let Some(authorization) = token.as_deref() {
                 request = request.header(reqwest::header::AUTHORIZATION, authorization);
             }
-            let response = request.send().await.map_err(|e| unavailable(&e))?;
+            let response = crate::telemetry::propagate(request)
+                .send()
+                .await
+                .map_err(|e| unavailable(&e))?;
             let status = response.status();
             if status == reqwest::StatusCode::UNAUTHORIZED && attempt == 0 && token.is_none() {
                 let challenge = response
@@ -333,6 +337,7 @@ impl Registry {
         Err(self.unauthorized(registry))
     }
 
+    #[tracing::instrument(name = "registry.token", skip_all)]
     async fn token(
         &self,
         registry: &str,
@@ -359,7 +364,10 @@ impl Registry {
         if let Some(login) = &self.login {
             request = request.basic_auth(&login.username, Some(&login.password));
         }
-        let response = request.send().await.map_err(|e| unavailable(&e))?;
+        let response = crate::telemetry::propagate(request)
+            .send()
+            .await
+            .map_err(|e| unavailable(&e))?;
         if !response.status().is_success() {
             return Err(self.unauthorized(registry));
         }
@@ -409,6 +417,7 @@ impl Registry {
         })
     }
 
+    #[tracing::instrument(name = "registry.look", skip(self, reference))]
     async fn look(
         &self,
         reference: &ImageReference,

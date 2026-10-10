@@ -1851,6 +1851,7 @@ pub struct AppDetailPage {
     pub settings: AppSettingsData,
 }
 
+#[tracing::instrument(name = "web.apps.app_view", skip_all)]
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn app_view(
     state: &State,

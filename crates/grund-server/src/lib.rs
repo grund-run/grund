@@ -45,6 +45,7 @@ pub mod server;
 pub mod services;
 pub mod setup_link;
 pub mod state;
+pub mod telemetry;
 pub mod templates;
 pub mod wakes;
 pub mod web;

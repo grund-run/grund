@@ -366,6 +366,21 @@ code,
   margin: -0.25rem var(--space-2) 0;
 }
 
+.admin-timing {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--space-2);
+  margin: 0 var(--space-2);
+  color: var(--muted);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.admin-timing a {
+  text-decoration: underline;
+  text-underline-offset: 0.125rem;
+}
+
 .main,
 .org-switch-text,
 .expander-text {

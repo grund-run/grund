@@ -276,5 +276,27 @@
         }
       });
     });
+    if (document.getElementById("server-timing")) {
+      function showTimings() {
+        var navigation = performance.getEntriesByType("navigation")[0];
+        var paint = performance.getEntriesByName("first-contentful-paint")[0];
+        if (paint) {
+          document.getElementById("paint-timing").textContent = "paint " + Math.round(paint.startTime) + " ms";
+        } else if (window.PerformanceObserver) {
+          var observer = new PerformanceObserver(function (list) {
+            var fcp = list.getEntries().find(function (entry) { return entry.name === "first-contentful-paint"; });
+            if (fcp) {
+              document.getElementById("paint-timing").textContent = "paint " + Math.round(fcp.startTime) + " ms";
+              observer.disconnect();
+            }
+          });
+          observer.observe({ type: "paint", buffered: true });
+        }
+        if (navigation) document.getElementById("ready-timing").textContent =
+          "ready " + Math.round(navigation.loadEventEnd || navigation.domContentLoadedEventEnd) + " ms";
+      }
+      if (document.readyState === "complete") showTimings();
+      else window.addEventListener("load", showTimings, { once: true });
+    }
   });
 })();

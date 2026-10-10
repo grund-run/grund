@@ -233,6 +233,7 @@ impl Callout {
 }
 
 impl KeyPolicy for Callout {
+    #[tracing::instrument(name = "relay.access", skip(self, keys), fields(key_count = keys.len()))]
     async fn admitted(&self, keys: &[EndpointId]) -> anyhow::Result<HashSet<EndpointId>> {
         let body = serde_json::json!({
             "keys": keys.iter().map(ToString::to_string).collect::<Vec<_>>()
@@ -251,7 +252,7 @@ impl KeyPolicy for Callout {
                     request.header(name, value)
                 }),
         };
-        let response = request
+        let response = crate::telemetry::propagate(request)
             .body(body)
             .send()
             .await

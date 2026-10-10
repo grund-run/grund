@@ -321,6 +321,7 @@ impl RelayKey {
     }
 }
 
+#[tracing::instrument(name = "connect.outbound", skip(http, instance, headers, body), fields(rpc.method = path, otel.kind = "client"))]
 pub(crate) async fn unary<Resp: Message>(
     http: &reqwest::Client,
     instance: &str,
@@ -335,7 +336,7 @@ pub(crate) async fn unary<Resp: Message>(
     for (name, value) in headers {
         request = request.header(*name, value);
     }
-    let response = request
+    let response = crate::telemetry::propagate(request)
         .body(body)
         .send()
         .await
@@ -550,10 +551,13 @@ impl Instance {
         for (name, value) in self.key.headers(path, &body) {
             request = request.header(name, value);
         }
-        let response = tokio::time::timeout(CALL_TIMEOUT, request.body(body).send())
-            .await
-            .context("the instance did not open the watch in time")?
-            .with_context(|| format!("reach {}", self.key.instance))?;
+        let response = tokio::time::timeout(
+            CALL_TIMEOUT,
+            crate::telemetry::propagate(request).body(body).send(),
+        )
+        .await
+        .context("the instance did not open the watch in time")?
+        .with_context(|| format!("reach {}", self.key.instance))?;
         if !response.status().is_success() {
             let error: serde_json::Value = response.json().await.unwrap_or_default();
             return Err(Refused {

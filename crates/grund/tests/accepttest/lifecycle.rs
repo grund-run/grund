@@ -1,8 +1,8 @@
 use std::time::{Duration, Instant};
 
 use crate::accepttest::fixtures::{
-    BILLING_MANAGE_URL, BILLING_TOKEN, DeletionAnswer, FakeBilling, Given, Then, When,
-    testcase_configured, testcase_with_mail,
+    AccountAnswer, BILLING_MANAGE_URL, BILLING_TOKEN, DeletionAnswer, FakeBilling, Given, Then,
+    When, testcase_configured, testcase_with_mail,
 };
 
 const ORGS: &str = "/grund.organisation.v1.OrganisationService";
@@ -151,18 +151,24 @@ async fn owners_see_the_billing_services_plan_and_its_link() -> anyhow::Result<(
     };
     let account = given.a_signed_in_account().await?;
 
-    when.visiting(&format!("/{}/settings", account.username))
-        .await?;
-    then.status(200)?
-        .body_contains("Pro")?
-        .body_contains("Manage billing")?
-        .body_contains(
-            BILLING_MANAGE_URL
-                .trim_start_matches("https://")
-                .split('/')
-                .next()
-                .unwrap_or_default(),
-        )?;
+    let path = format!("/{}/settings", account.username);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        when.visiting(&path).await?;
+        then.status(200)?;
+        if then.body_contains("Manage billing").is_ok() {
+            then.body_contains("Pro")?.body_contains(
+                BILLING_MANAGE_URL
+                    .trim_start_matches("https://")
+                    .split('/')
+                    .next()
+                    .unwrap_or_default(),
+            )?;
+            break;
+        }
+        anyhow::ensure!(Instant::now() < deadline, "billing plan never showed");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     let calls = billing.calls("GetAccount");
     anyhow::ensure!(!calls.is_empty(), "no GetAccount call");
     anyhow::ensure!(
@@ -181,6 +187,65 @@ async fn owners_see_the_billing_services_plan_and_its_link() -> anyhow::Result<(
         created[0].body["slug"] == account.username.as_str(),
         "{created:?}"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn settings_does_not_wait_for_billing_and_refreshes_one_account_at_a_time()
+-> anyhow::Result<()> {
+    let billing = FakeBilling::start_with_account(
+        DeletionAnswer::Allow,
+        AccountAnswer::Delayed(Duration::from_millis(1800)),
+    )
+    .await?;
+    let Some((given, when, then)) = billed_by(&billing).await? else {
+        return Ok(());
+    };
+    let account = given.a_signed_in_account().await?;
+    let path = format!("/{}/settings", account.username);
+    tokio::time::timeout(Duration::from_secs(1), when.visiting(&path)).await??;
+    then.status(200)?
+        .body_contains("Billing is unavailable right now")?;
+    billing
+        .wait_for("GetAccount", 1, Duration::from_secs(5))
+        .await?;
+    when.visiting(&path).await?;
+    then.status(200)?;
+    anyhow::ensure!(
+        billing.calls("GetAccount").len() == 1,
+        "duplicate account refresh"
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        when.visiting(&path).await?;
+        if then.body_contains("Manage billing").is_ok() {
+            then.body_contains("Pro")?;
+            break;
+        }
+        anyhow::ensure!(Instant::now() < deadline, "billing plan never showed");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn settings_falls_back_when_billing_account_is_unavailable() -> anyhow::Result<()> {
+    let billing =
+        FakeBilling::start_with_account(DeletionAnswer::Allow, AccountAnswer::Unavailable).await?;
+    let Some((given, when, then)) = billed_by(&billing).await? else {
+        return Ok(());
+    };
+    let account = given.a_signed_in_account().await?;
+    let path = format!("/{}/settings", account.username);
+    when.visiting(&path).await?;
+    then.status(200)?
+        .body_contains("Billing is unavailable right now")?;
+    billing
+        .wait_for("GetAccount", 1, Duration::from_secs(5))
+        .await?;
+    when.visiting(&path).await?;
+    then.status(200)?
+        .body_contains("Billing is unavailable right now")?;
     Ok(())
 }
 

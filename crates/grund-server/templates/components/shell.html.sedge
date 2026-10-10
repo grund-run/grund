@@ -1,5 +1,5 @@
 use crate::templates::compiled::components::{Brand, Icon, Mark, MenuItem, CsrfField, HiddenField};
-use crate::web::pages::{AppSearch, TypedOrg, TypedViewer};
+use crate::web::pages::{AdminFooter, AppSearch, TypedOrg, TypedViewer};
 component NavItem(href: &str, icon_name: &str, label: &str, active: bool, state: &str) {
 <li><a class="nav-item{if *active { " is-active" } else { "" }}{if !state.is_empty() { " is-" } else { "" }}{state}" href={href} aria-current={if *active { Some("page") } else { None }}><Icon name={icon_name} />{label}</a></li>
 }
@@ -35,7 +35,7 @@ component AccountMenu(viewer: &TypedViewer, csrf: &str) {
   </ul>
 </details>
 }
-component Sidebar(viewer: &TypedViewer, section: &str, csrf: &str) {
+component Sidebar(viewer: &TypedViewer, section: &str, csrf: &str, footer: Option<&AdminFooter>) {
 <nav class="sidebar" aria-label="Main">
   <Brand href="/" />
   {if let Some(org) = &viewer.current {
@@ -58,6 +58,20 @@ component Sidebar(viewer: &TypedViewer, section: &str, csrf: &str) {
     <NavItem href="/settings/sessions" icon_name="user" label="Account" active={*section == "settings"} />
   </ul>
   <AccountMenu viewer={viewer} csrf={csrf} />
+  {if let Some(footer) = footer {
+    <div class="admin-timing" aria-label="Build and page timing">
+      <span id="server-timing" title={footer.trace_id.as_deref()}>server __GRUND_SERVER_MS__ ms</span>
+      <span id="paint-timing">paint —</span>
+      <span id="ready-timing">ready —</span>
+      {if let Some(url) = &footer.commit_url {
+        <a href={url.as_str()}>{footer.commit}</a>
+      } else {
+        <span>{footer.commit}</span>
+      }}
+      <span>v{footer.version}</span>
+      <span>built {footer.built}</span>
+    </div>
+  }}
 </nav>
 }
 component TopbarAction(org: &TypedOrg, section: &str, state: &str) {

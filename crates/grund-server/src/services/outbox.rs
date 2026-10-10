@@ -68,6 +68,7 @@ impl OutboxDrain {
         }
     }
 
+    #[tracing::instrument(name = "outbox.drain", skip(self))]
     async fn drain(&self) {
         for _ in 0..10 {
             let claimed = match outbox::claim(&self.state.pool, BATCH, LEASE).await {
@@ -89,6 +90,7 @@ impl OutboxDrain {
         }
     }
 
+    #[tracing::instrument(name = "outbox.process", skip(self, row), fields(outbox_id = %row.outbox_id, outbox.kind = %row.kind))]
     async fn process(&self, row: Claimed) -> anyhow::Result<()> {
         let Some(kind) = Kind::parse(&row.kind) else {
             tracing::error!(kind = %row.kind, outbox_id = %row.outbox_id, "unknown outbox kind; dropped");

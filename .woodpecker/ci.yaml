@@ -271,6 +271,7 @@ steps:
       # docs/ci-performance.md). Elsewhere, the shared one from the secret.
       - gw="$$(ip route | awk '/^default/ {print $$3; exit}')"; if printf 'version\r\n' | nc -w 1 "$$gw" 11311 2>/dev/null | grep -q '^VERSION'; then export SCCACHE_MEMCACHED_ENDPOINT="tcp://$$gw:11311"; echo "using this agent's own compile cache"; else echo "using the shared compile cache"; fi
       - hp="$${SCCACHE_MEMCACHED_ENDPOINT#tcp://}"; nc -z -w 3 "$${hp%:*}" "$${hp##*:}" || { echo "the compile cache is unreachable, so this step compiles without it"; unset RUSTC_WRAPPER; }
+      - export GRUND_BUILD_TIME="$$(date -u '+%Y-%m-%d %H:%M UTC')"
       - cargo build --locked --release -p grund -p grund-guest
       - if [ -n "$${RUSTC_WRAPPER:-}" ]; then sccache --show-stats; fi
       - if readelf -d target/release/grund | grep -q NEEDED; then echo "grund is dynamically linked; scratch cannot run it"; exit 1; fi

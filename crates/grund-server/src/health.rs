@@ -27,6 +27,7 @@ use tokio_util::sync::CancellationToken;
 use crate::state::State;
 
 static REVISION: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+static BUILD_TIME: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
 
 /// Records the commit this binary was built from. The binary crate calls it
 /// once, before anything else: the revision is compiled there, not here, so
@@ -40,6 +41,16 @@ pub fn set_revision(revision: &'static str) {
 /// "unknown" if it never was.
 pub fn revision() -> &'static str {
     REVISION.get().copied().unwrap_or("unknown")
+}
+
+/// Records when the shipped binary was built; local builds say "local".
+pub fn set_build_time(built: &'static str) {
+    let _ = BUILD_TIME.set(built);
+}
+
+/// The CI build timestamp, or "local" outside CI.
+pub fn build_time() -> &'static str {
+    BUILD_TIME.get().copied().unwrap_or("local")
 }
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 

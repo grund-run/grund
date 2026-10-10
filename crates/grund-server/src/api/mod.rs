@@ -1069,8 +1069,13 @@ impl Interceptor for Authorize {
         request: UnaryRequest,
         next: InterceptNext<'_>,
     ) -> Result<UnaryResponse, ConnectError> {
-        authorized(&request.ctx)?;
-        next.run(request).await
+        let response = async {
+            authorized(&request.ctx)?;
+            next.run(request).await
+        }
+        .await;
+        crate::telemetry::connect_code(&response);
+        response
     }
 
     async fn intercept_streaming(
@@ -1079,8 +1084,13 @@ impl Interceptor for Authorize {
         inbound: connectrpc::interceptor::PayloadStream,
         next: connectrpc::interceptor::NextStream<'_>,
     ) -> Result<connectrpc::interceptor::StreamResponse, ConnectError> {
-        authorized(&request.ctx)?;
-        next.run(request, inbound).await
+        let response = async {
+            authorized(&request.ctx)?;
+            next.run(request, inbound).await
+        }
+        .await;
+        crate::telemetry::connect_code(&response);
+        response
     }
 }
 

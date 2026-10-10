@@ -48,7 +48,11 @@ use tower_http::{
 };
 use uuid::Uuid;
 
-use crate::{health, state::State, web::browser::RequestId};
+use crate::{
+    health,
+    state::State,
+    web::browser::{RequestId, RequestStart},
+};
 
 /// Everything a page may load comes from this origin: no inline script or
 /// style, no framing, forms post only here. Loosening a directive is a
@@ -96,29 +100,56 @@ pub fn router(state: State) -> Router {
         .route("/logout", post(pages::logout))
         .route("/signup", get(pages::signup_form).post(pages::signup))
         .route("/signup/sent", get(pages::signup_sent))
-        .route(crate::setup_link::PATH, get(pages::owner_form).post(pages::owner_signup))
+        .route(
+            crate::setup_link::PATH,
+            get(pages::owner_form).post(pages::owner_signup),
+        )
         .route("/verify", get(pages::verify_form).post(pages::verify))
         .route("/reset", get(pages::reset_form).post(pages::reset))
         .route("/reset/sent", get(pages::reset_sent))
-        .route("/reset/confirm", get(pages::reset_confirm_form).post(pages::reset_confirm))
+        .route(
+            "/reset/confirm",
+            get(pages::reset_confirm_form).post(pages::reset_confirm),
+        )
         .route("/settings/sessions", get(pages::sessions_page))
         .route("/device", get(device::device_page).post(device::decide))
-        .route("/settings/sessions/revoke-others", post(pages::revoke_other_sessions))
-        .route("/settings/sessions/{id}/revoke", post(pages::revoke_session))
+        .route(
+            "/settings/sessions/revoke-others",
+            post(pages::revoke_other_sessions),
+        )
+        .route(
+            "/settings/sessions/{id}/revoke",
+            post(pages::revoke_session),
+        )
         .route("/licenses", get(pages::licenses))
         .route("/style-guide", get(pages::style_guide))
         .route("/orgs/new", get(orgs::new_form).post(orgs::create))
-        .route("/invite", get(orgs::invitation_page).post(orgs::accept_invitation))
+        .route(
+            "/invite",
+            get(orgs::invitation_page).post(orgs::accept_invitation),
+        )
         .route("/{org}", get(orgs::overview))
         .route("/{org}/members", get(orgs::members_moved))
         .route("/{org}/settings/members", get(orgs::members_page))
         .route("/{org}/settings/members/invite", post(orgs::invite))
-        .route("/{org}/settings/members/{account}/role", post(orgs::change_role))
-        .route("/{org}/settings/members/{account}/remove", post(orgs::remove_member))
-        .route("/{org}/settings/invitations/{invitation}/revoke", post(orgs::revoke_invitation))
+        .route(
+            "/{org}/settings/members/{account}/role",
+            post(orgs::change_role),
+        )
+        .route(
+            "/{org}/settings/members/{account}/remove",
+            post(orgs::remove_member),
+        )
+        .route(
+            "/{org}/settings/invitations/{invitation}/revoke",
+            post(orgs::revoke_invitation),
+        )
         .route("/{org}/apps", get(apps::apps_page))
         .route("/{org}/deploy", get(apps::deploy_page).post(apps::create))
-        .route("/{org}/domains", get(domains::domains_page).post(domains::add))
+        .route(
+            "/{org}/domains",
+            get(domains::domains_page).post(domains::add),
+        )
         .route("/{org}/domains/verify", post(domains::verify))
         .route("/{org}/domains/bind", post(domains::bind))
         .route("/{org}/domains/unbind", post(domains::unbind))
@@ -139,8 +170,14 @@ pub fn router(state: State) -> Router {
             post(apps::release_settings),
         )
         .route("/{org}/apps/{app}/secrets", post(apps::set_secret))
-        .route("/{org}/apps/{app}/secrets/remove", post(apps::remove_secret))
-        .route("/{org}/apps/{app}/releases/{number}/rollback", post(apps::rollback))
+        .route(
+            "/{org}/apps/{app}/secrets/remove",
+            post(apps::remove_secret),
+        )
+        .route(
+            "/{org}/apps/{app}/releases/{number}/rollback",
+            post(apps::rollback),
+        )
         .route("/{org}/apps/{app}/delete", post(apps::delete))
         .route("/{org}/apps/{app}/grund.yaml", get(apps::file))
         .route("/{org}/apps/{app}/settings/file", post(apps::apply_file))
@@ -160,33 +197,76 @@ pub fn router(state: State) -> Router {
         .route("/{org}/pool/{machine}/end", post(pool::end_lease))
         .route("/{org}/pool/{machine}/rebuild", post(pool::rebuild))
         .route("/{org}/pool/{machine}/revoke", post(pool::revoke))
-        .route("/{org}/settings/tokens", get(tokens::tokens_page).post(tokens::create))
-        .route("/{org}/settings/tokens/{token}/revoke", post(tokens::revoke))
-        .route("/{org}/settings/registries", get(registries::registries_page).post(registries::set))
-        .route("/{org}/settings/registries/remove", post(registries::remove))
+        .route(
+            "/{org}/settings/tokens",
+            get(tokens::tokens_page).post(tokens::create),
+        )
+        .route(
+            "/{org}/settings/tokens/{token}/revoke",
+            post(tokens::revoke),
+        )
+        .route(
+            "/{org}/settings/registries",
+            get(registries::registries_page).post(registries::set),
+        )
+        .route(
+            "/{org}/settings/registries/remove",
+            post(registries::remove),
+        )
         .route("/{org}/settings/about", get(about::about_page))
         .route("/{org}/settings", get(orgs::settings_page))
         .route("/{org}/settings/rename", post(orgs::rename))
         .route("/{org}/settings/delete", post(orgs::delete))
-        .route("/{org}/settings/cancel-deletion", post(orgs::cancel_deletion))
+        .route(
+            "/{org}/settings/cancel-deletion",
+            post(orgs::cancel_deletion),
+        )
         .merge(installer)
         .merge(extensions)
         .fallback(pages::not_found)
-        .layer(middleware::from_fn_with_state(state.clone(), request_context))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            request_context,
+        ))
         .with_state(state.clone())
         .merge(crate::api::router(state))
         .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
-        .layer(TimeoutLayer::with_status_code(StatusCode::SERVICE_UNAVAILABLE, timeout))
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::SERVICE_UNAVAILABLE,
+            timeout,
+        ))
         .layer(CatchPanicLayer::new())
         .layer(header_layer(header::CONTENT_SECURITY_POLICY, CSP))
         .layer(header_layer(header::X_CONTENT_TYPE_OPTIONS, "nosniff"))
-        .layer(header_layer(header::REFERRER_POLICY, "strict-origin-when-cross-origin"))
+        .layer(header_layer(
+            header::REFERRER_POLICY,
+            "strict-origin-when-cross-origin",
+        ))
         .layer(header_layer(header::X_FRAME_OPTIONS, "DENY"))
-        .layer(header_layer(HeaderName::from_static("cross-origin-opener-policy"), "same-origin"))
-        .layer(header_layer(HeaderName::from_static("permissions-policy"), PERMISSIONS_POLICY))
-        .layer(TraceLayer::new_for_http().make_span_with(|request: &Request| {
-            tracing::info_span!("request", method = %request.method(), path = %request.uri().path())
-        }))
+        .layer(header_layer(
+            HeaderName::from_static("cross-origin-opener-policy"),
+            "same-origin",
+        ))
+        .layer(header_layer(
+            HeaderName::from_static("permissions-policy"),
+            PERMISSIONS_POLICY,
+        ))
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(crate::telemetry::request_span)
+                .on_response(
+                    |response: &Response, _: std::time::Duration, span: &tracing::Span| {
+                        span.record("http.response.status_code", response.status().as_u16());
+                        if let Some(code) = response
+                            .headers()
+                            .get("grpc-status")
+                            .and_then(|v| v.to_str().ok())
+                        {
+                            span.record("rpc.grpc.status_code", code);
+                        }
+                    },
+                ),
+        )
 }
 
 fn header_layer(name: HeaderName, value: &'static str) -> SetResponseHeaderLayer<HeaderValue> {
@@ -202,6 +282,9 @@ pub async fn request_context(
     mut request: Request,
     next: Next,
 ) -> Response {
+    request
+        .extensions_mut()
+        .insert(RequestStart(std::time::Instant::now()));
     let request_id = Uuid::now_v7();
     request.extensions_mut().insert(RequestId(request_id));
     let mut response = next.run(request).await;

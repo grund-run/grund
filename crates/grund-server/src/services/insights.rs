@@ -104,14 +104,11 @@ impl Reporter {
         };
         let mut body = row.payload.clone();
         body["email"] = row.recipient.clone().into();
-        let response = self
-            .http
-            .post(url)
-            .bearer_auth(token)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|_| ReportError::Transient)?;
+        let response =
+            crate::telemetry::propagate(self.http.post(url).bearer_auth(token).json(&body))
+                .send()
+                .await
+                .map_err(|_| ReportError::Transient)?;
         match response.status().as_u16() {
             200 | 201 => Ok(()),
             400 | 413 | 415 => Err(ReportError::Permanent),

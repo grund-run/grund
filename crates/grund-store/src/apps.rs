@@ -538,6 +538,7 @@ macro_rules! select_apps {
 }
 
 /// A live app of the organisation, by name.
+#[tracing::instrument(name = "store.apps.app_by_name", skip_all)]
 pub async fn app_by_name(
     executor: impl PgExecutor<'_>,
     organisation_id: Uuid,
@@ -552,6 +553,7 @@ pub async fn app_by_name(
     .await
 }
 
+#[tracing::instrument(name = "store.apps.app", skip_all)]
 pub async fn app(
     executor: impl PgExecutor<'_>,
     app_id: Uuid,
@@ -563,6 +565,7 @@ pub async fn app(
 }
 
 /// The organisation's live apps, by name.
+#[tracing::instrument(name = "store.apps.organisation_apps", skip_all)]
 pub async fn organisation_apps(
     executor: impl PgExecutor<'_>,
     organisation_id: Uuid,
@@ -643,6 +646,7 @@ pub struct ReleaseRow {
 }
 
 /// The app's releases, newest first.
+#[tracing::instrument(name = "store.apps.releases", skip_all)]
 pub async fn releases(
     executor: impl PgExecutor<'_>,
     app_id: Uuid,
@@ -662,6 +666,7 @@ pub async fn releases(
 }
 
 /// Caches ports for a legacy release only if its image digest still matches.
+#[tracing::instrument(name = "store.apps.cache_release_ports", skip_all)]
 pub async fn cache_release_ports(
     executor: impl PgExecutor<'_>,
     app_id: Uuid,
@@ -693,6 +698,7 @@ pub struct RunningRow {
 
 /// For each live app of the organisation that has a release, its current
 /// release, or its newest while none has gone live. One row per app.
+#[tracing::instrument(name = "store.apps.running_releases", skip_all)]
 pub async fn running_releases(
     executor: impl PgExecutor<'_>,
     organisation_id: Uuid,
@@ -730,6 +736,7 @@ pub struct ReplicaRow {
 }
 
 /// The app's replicas, by slot, newest placement first within a slot.
+#[tracing::instrument(name = "store.apps.app_replicas", skip_all)]
 pub async fn app_replicas(
     executor: impl PgExecutor<'_>,
     app_id: Uuid,
@@ -1068,6 +1075,7 @@ pub async fn insert_secret(
 }
 
 /// The newest version of each of the app's secrets.
+#[tracing::instrument(name = "store.apps.latest_secrets", skip_all)]
 pub async fn latest_secrets(
     executor: impl PgExecutor<'_>,
     app_id: Uuid,

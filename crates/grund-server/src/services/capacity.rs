@@ -142,6 +142,7 @@ impl Capacity {
         .map(drop)
     }
 
+    #[tracing::instrument(name = "capacity.call", skip(self, body))]
     async fn call(
         &self,
         method: &str,
@@ -150,21 +151,23 @@ impl Capacity {
         let Capacity::Remote(remote) = self else {
             return Err(CapacityError::NotConfigured);
         };
-        let response = remote
-            .http
-            .post(format!(
-                "{}/grund.capacity.v1.CapacityService/{method}",
-                remote.url
-            ))
-            .bearer_auth(&remote.token)
-            .header("Connect-Protocol-Version", "1")
-            .json(body)
-            .send()
-            .await
-            .map_err(|error| {
-                tracing::warn!(error = %error, method, "the capacity provider could not be reached");
-                CapacityError::Unavailable
-            })?;
+        let response = crate::telemetry::propagate(
+            remote
+                .http
+                .post(format!(
+                    "{}/grund.capacity.v1.CapacityService/{method}",
+                    remote.url
+                ))
+                .bearer_auth(&remote.token)
+                .header("Connect-Protocol-Version", "1")
+                .json(body),
+        )
+        .send()
+        .await
+        .map_err(|error| {
+            tracing::warn!(error = %error, method, "the capacity provider could not be reached");
+            CapacityError::Unavailable
+        })?;
         let status = response.status().as_u16();
         let answer: serde_json::Value = response.json().await.unwrap_or_default();
         match status {

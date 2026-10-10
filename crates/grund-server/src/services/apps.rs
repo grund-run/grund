@@ -490,6 +490,7 @@ impl Apps {
 
     /// What `image` names now, and the ports it declares, asked with the
     /// organisation's registry credential.
+    #[tracing::instrument(name = "apps.inspect", skip_all)]
     pub async fn inspect(
         &self,
         organisation_id: Uuid,
@@ -840,6 +841,7 @@ impl Apps {
             .await
     }
 
+    #[tracing::instrument(name = "apps.deploy_or_preview", skip_all)]
     #[allow(clippy::too_many_arguments)]
     async fn deploy_or_preview(
         &self,

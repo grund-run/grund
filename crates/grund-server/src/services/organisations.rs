@@ -460,9 +460,9 @@ impl Organisations {
         Ok(ChangeOutcome::Done)
     }
 
-    /// The organisation's billing, for its settings page.
-    pub async fn billing(&self, organisation_id: Uuid) -> BillingView {
-        self.state.billing.account(organisation_id).await
+    /// The organisation's cached billing account, for its settings page.
+    pub fn billing(&self, organisation_id: Uuid) -> BillingView {
+        self.state.billing.account(organisation_id)
     }
 
     /// Invites `email` to the organisation as `role`, and mails the link.

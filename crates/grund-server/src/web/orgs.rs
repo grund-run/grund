@@ -638,7 +638,7 @@ async fn settings_view(
         .filter(|m| m.role == Role::Owner.as_str())
         .map(|m| m.username)
         .collect();
-    let billing = match organisations.billing(membership.organisation_id).await {
+    let billing = match organisations.billing(membership.organisation_id) {
         BillingView::Free => BillingPage {
             state: "free",
             plan: "Free".into(),

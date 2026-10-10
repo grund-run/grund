@@ -51,6 +51,7 @@ impl Kind {
 
 /// Queues a row. A second row with the same id is ignored, so a retried cause
 /// never queues twice.
+#[tracing::instrument(name = "store.outbox.enqueue", skip_all)]
 pub async fn enqueue(
     connection: &mut PgConnection,
     outbox_id: Uuid,
@@ -84,6 +85,7 @@ pub struct Claimed {
 
 /// Claims up to `limit` due rows, leasing each for `lease` (its
 /// `next_attempt_at` moves out, so another replica skips it until then).
+#[tracing::instrument(name = "store.outbox.claim", skip_all)]
 pub async fn claim(
     executor: impl PgExecutor<'_>,
     limit: i64,
@@ -108,6 +110,7 @@ pub async fn claim(
 
 /// Marks a row done and scrubs its recipient and payload, which may hold a
 /// live link or an account's details.
+#[tracing::instrument(name = "store.outbox.delivered", skip_all)]
 pub async fn delivered(executor: impl PgExecutor<'_>, outbox_id: Uuid) -> Result<(), sqlx::Error> {
     sqlx::query(
         "UPDATE grund_outbox SET delivered_at = clock_timestamp(), recipient = '', payload = '{}', last_error = NULL \
@@ -121,6 +124,7 @@ pub async fn delivered(executor: impl PgExecutor<'_>, outbox_id: Uuid) -> Result
 
 /// Schedules the next attempt after a failure: 2^attempts seconds, at most
 /// five minutes. `error` must be generic: no provider text, no secrets.
+#[tracing::instrument(name = "store.outbox.failed", skip_all)]
 pub async fn failed(
     executor: impl PgExecutor<'_>,
     outbox_id: Uuid,
