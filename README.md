@@ -60,6 +60,17 @@ x86_64) and connects it. This instance serves the installer and its own
 binary at `/install`. On the machine running compose, the command works as
 given. A machine on another host needs https, below.
 
+On an instance with a configured capacity provider, an organisation granted
+hosted access by the operator can instead choose **Hosted** on Add machine,
+select an offered size (and region when there is a choice), and create it.
+It appears as Joining until registered, then Connected. The CLI offers
+`grund machines offers`, `grund machines create --size …`, and
+`grund machines remove` from a signed-in account.
+The customer sees neither physical hosts
+nor provider identifiers. Removing ends the lease; the machine is wiped and
+re-registered with a new key before it can be rented again. Hosted access is
+off by default and unavailable without a capacity provider.
+
 **HTTPS.** With `GRUND_DOMAIN` set, grund terminates TLS itself on 443, with
 no proxy in front. It orders the certificate by ACME from Let's Encrypt
 (`GRUND_ACME_DIRECTORY` names another CA), proving the name with

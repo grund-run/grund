@@ -166,11 +166,12 @@ fn walk(
     }
 }
 
-/// Whether `path` is one of the client commands (`grund login`, `grund
-/// apps …`) rather than an operator's (`grund serve`, `grund join`, …).
+/// Whether `path` calls the instance API as a client command, including the
+/// Connect-backed operator nouns (but not database-only `operator apps`).
 pub fn is_client(path: &str) -> bool {
     let first = path.split(' ').next().unwrap_or_default();
     crate::commands::CLIENT_NOUNS.contains(&first)
+        || path.starts_with("operator ") && !path.starts_with("operator apps ")
 }
 
 /// The whole `grund describe --json` document.

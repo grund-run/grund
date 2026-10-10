@@ -296,3 +296,272 @@ async fn the_operator_leases_ends_and_revokes_on_the_pool_page_which_no_one_else
         .body_contains("No machines in the pool.")?;
     Ok(())
 }
+
+#[tokio::test]
+async fn only_the_operator_can_grant_hosted_access_to_a_customer() -> anyhow::Result<()> {
+    let operator = format!("ops-{}", random_hex(4));
+    let Some((given, when, then)) =
+        testcase_configured(&[("GRUND_OPERATOR_ORGANISATION", &operator)]).await?
+    else {
+        return Ok(());
+    };
+    given.a_signed_in_account_named(&operator).await?;
+    let (customer, customer_when, customer_then) = given.testcase.another_browser();
+    let org = customer.a_signed_in_account().await?.username;
+    let service = "/grund.operator.v1.OperatorService";
+
+    when.visiting(&format!("/{operator}/admin?tab=organisations"))
+        .await?;
+    then.status(200)?.body_contains("Organisations")?;
+    customer_when.visiting(&format!("/{org}/admin")).await?;
+    customer_then.status(404)?;
+    customer_when
+        .visiting(&format!("/{operator}/admin"))
+        .await?;
+    customer_then.status(404)?;
+    customer_when
+        .calling(
+            &format!("{service}/SetHostedEntitlement"),
+            &json!({"organisation": org, "enabled": true}).to_string(),
+        )
+        .await?;
+    customer_then.status(404)?;
+
+    when.calling(
+        &format!("{service}/SetHostedEntitlement"),
+        &json!({"organisation": org, "enabled": true}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    when.calling(&format!("{service}/ListEntitlements"), "{}")
+        .await?;
+    then.status(200)?;
+    let listed = then.json()?;
+    anyhow::ensure!(
+        listed["organisations"].as_array().is_some_and(|rows| rows
+            .iter()
+            .any(|row| row["organisation"] == org && row["enabled"] == true)),
+        "{listed}"
+    );
+    when.calling(
+        &format!("{service}/SetHostedEntitlement"),
+        &json!({"organisation": org, "enabled": false}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    when.calling(&format!("{service}/ListEntitlements"), "{}")
+        .await?;
+    then.status(200)?;
+    let listed = then.json()?;
+    anyhow::ensure!(
+        listed["organisations"].as_array().is_some_and(|rows| rows
+            .iter()
+            .any(|row| row["organisation"] == org && !row["enabled"].as_bool().unwrap_or(false))),
+        "{listed}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn entitled_customer_orders_and_removes_an_opaque_machine_without_cross_organisation_access()
+-> anyhow::Result<()> {
+    use crate::accepttest::fixtures::{CAPACITY_TOKEN, FakeCapacity};
+
+    let capacity = FakeCapacity::start().await?;
+    let operator = format!("ops-{}", random_hex(4));
+    let Some((given, when, then)) = testcase_configured(&[
+        ("GRUND_OPERATOR_ORGANISATION", &operator),
+        ("GRUND_CAPACITY_URL", &capacity.url),
+        ("GRUND_CAPACITY_TOKEN", CAPACITY_TOKEN),
+    ])
+    .await?
+    else {
+        return Ok(());
+    };
+    given.a_signed_in_account_named(&operator).await?;
+    let (customer, customer_when, customer_then) = given.testcase.another_browser();
+    let organisation = customer.a_signed_in_account().await?.username;
+    let (stranger, stranger_when, stranger_then) = given.testcase.another_browser();
+    let other = stranger.a_signed_in_account().await?.username;
+
+    customer_when
+        .calling(
+            &format!("{MACHINES}/ListHostedOffers"),
+            &json!({"organisation":organisation}).to_string(),
+        )
+        .await?;
+    customer_then.status(403)?;
+    stranger_when.calling(&format!("{MACHINES}/CreateHostedMachine"),
+        &json!({"organisation":other,"name":"other-1","size":"small","region":"test-region","idempotencyKey":"denied"}).to_string()).await?;
+    stranger_then.status(403)?;
+
+    when.calling(
+        "/grund.operator.v1.OperatorService/SetHostedEntitlement",
+        &json!({"organisation":organisation,"enabled":true}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    customer_when
+        .visiting(&format!("/{organisation}/machines/add"))
+        .await?;
+    customer_then.status(200)?.body_contains("Hosted machine")?;
+    customer_when
+        .visiting(&format!("/{organisation}/machines/add?mode=hosted"))
+        .await?;
+    customer_then
+        .status(200)?
+        .body_contains("No capacity in this size")?
+        .body_lacks("fm-1")?;
+    customer_when
+        .calling(
+            &format!("{MACHINES}/ListHostedOffers"),
+            &json!({"organisation":organisation}).to_string(),
+        )
+        .await?;
+    customer_then.status(200)?;
+    let offer = customer_then.json()?;
+    anyhow::ensure!(
+        !offer["offers"][0]["available"].as_bool().unwrap_or(false),
+        "{offer}"
+    );
+    let create = json!({"organisation":organisation,"name":"first-1","size":"small","region":"test-region","idempotencyKey":"hosted-first-1"});
+    customer_when
+        .calling(
+            &format!("{MACHINES}/CreateHostedMachine"),
+            &create.to_string(),
+        )
+        .await?;
+    customer_then.status(429)?;
+    customer_then.body_contains("No capacity in this size")?;
+    anyhow::ensure!(capacity.calls("ProvisionMachine").is_empty());
+
+    capacity.set_can_place(true);
+    customer_when
+        .calling(
+            &format!("{MACHINES}/CreateHostedMachine"),
+            &create.to_string(),
+        )
+        .await?;
+    customer_then.status(200)?;
+    let created = customer_then.json()?;
+    let public_id = created["machine"]["machineId"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    anyhow::ensure!(
+        !public_id.is_empty()
+            && created["machine"]["hosted"] == true
+            && created["machine"]["state"] == "MACHINE_STATE_JOINING",
+        "{created}"
+    );
+    for forbidden in [
+        "fm-1", "fleet", "provider", "lease", "pool", "hostId", "host_id",
+    ] {
+        anyhow::ensure!(
+            !created
+                .to_string()
+                .to_lowercase()
+                .contains(&forbidden.to_lowercase()),
+            "{created}"
+        );
+    }
+    customer_when
+        .calling(
+            &format!("{MACHINES}/CreateHostedMachine"),
+            &create.to_string(),
+        )
+        .await?;
+    customer_then.status(200)?;
+    anyhow::ensure!(customer_then.json()?["machine"]["machineId"] == public_id);
+    anyhow::ensure!(capacity.calls("ProvisionMachine").len() == 1);
+    stranger_when
+        .calling(
+            &format!("{MACHINES}/GetMachine"),
+            &json!({"organisation":organisation,"machineId":public_id}).to_string(),
+        )
+        .await?;
+    stranger_then.status(404)?;
+    stranger_when
+        .calling(
+            &format!("{MACHINES}/RemoveHostedMachine"),
+            &json!({"organisation":other,"machineId":public_id}).to_string(),
+        )
+        .await?;
+    stranger_then.status(404)?;
+
+    customer_when
+        .calling(
+            &format!("{MACHINES}/ListMachines"),
+            &json!({"organisation":organisation}).to_string(),
+        )
+        .await?;
+    customer_then.status(200)?;
+    let joining = customer_then.json()?;
+    anyhow::ensure!(
+        joining["machines"][0]["state"] == "MACHINE_STATE_JOINING"
+            && joining["machines"][0]["machineId"] == public_id,
+        "{joining}"
+    );
+    let token = capacity.calls("ProvisionMachine")[0].body["enrollmentToken"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    let _dir = joined_with(&customer_when, &token).await?;
+    customer_when
+        .calling(
+            &format!("{MACHINES}/GetMachine"),
+            &json!({"organisation":organisation,"machineId":public_id}).to_string(),
+        )
+        .await?;
+    customer_then.status(200)?;
+    let joined = customer_then.json()?;
+    anyhow::ensure!(
+        joined["machine"]["machineId"] == public_id && joined["machine"]["hosted"] == true,
+        "{joined}"
+    );
+    for forbidden in ["fm-1", "fleet", "provider", "lease", "pool"] {
+        anyhow::ensure!(
+            !joined.to_string().to_lowercase().contains(forbidden),
+            "{joined}"
+        );
+    }
+    customer_when
+        .visiting(&format!("/{organisation}/machines"))
+        .await?;
+    customer_then
+        .status(200)?
+        .body_contains("Hosted")?
+        .body_contains("first-1")?
+        .body_lacks("fm-1")?;
+    capacity.unavailable_for("RebuildMachine", true);
+    customer_when
+        .calling(
+            &format!("{MACHINES}/RemoveHostedMachine"),
+            &json!({"organisation":organisation,"machineId":public_id}).to_string(),
+        )
+        .await?;
+    customer_then.status(200)?;
+    anyhow::ensure!(capacity.calls("RebuildMachine").len() == 1);
+    capacity.unavailable_for("RebuildMachine", false);
+    let started = Instant::now();
+    while capacity.calls("RebuildMachine").len() < 2 {
+        anyhow::ensure!(
+            started.elapsed() < Duration::from_secs(45),
+            "the cancelled hosted lease was not retried for a wipe"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    customer_when
+        .calling(
+            &format!("{MACHINES}/ListMachines"),
+            &json!({"organisation":organisation}).to_string(),
+        )
+        .await?;
+    customer_then.status(200)?;
+    anyhow::ensure!(
+        customer_then.json()?["machines"]
+            .as_array()
+            .is_none_or(|rows| rows.is_empty())
+    );
+    Ok(())
+}

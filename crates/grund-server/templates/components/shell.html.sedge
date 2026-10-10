@@ -43,11 +43,14 @@ component Sidebar(viewer: &TypedViewer, section: &str, csrf: &str, footer: Optio
     <ul class="nav">
       <OrgNavItem slug={org.slug.as_str()} icon_name="home" label="Overview" active={*section == "overview"} />
       <OrgNavItem slug={org.slug.as_str()} suffix="/apps" icon_name="grid" label="Apps" active={*section == "apps" || *section == "deploy"} />
-      <OrgNavItem slug={org.slug.as_str()} suffix="/machines" icon_name="server" label="Machines" active={*section == "machines" || *section == "machine-add" || *section == "pool"} />
+      <OrgNavItem slug={org.slug.as_str()} suffix="/machines" icon_name="server" label="Machines" active={*section == "machines" || *section == "machine-add"} />
       <OrgNavItem slug={org.slug.as_str()} suffix="/domains" icon_name="globe" label="Domains" active={*section == "domains"} />
       <OrgNavItem slug={org.slug.as_str()} suffix="/templates" icon_name="template" label="Templates" active={*section == "templates"} />
       <OrgNavItem slug={org.slug.as_str()} suffix="/settings" icon_name="users" label="Organisation" active={*section == "org-settings" || *section == "members"} />
     </ul>
+    {if viewer.operator {
+      <ul class="nav"><OrgNavItem slug={org.slug.as_str()} suffix="/admin" icon_name="gear" label="Admin" active={*section == "admin" || *section == "pool"} /></ul>
+    }}
   } else {
     <ul class="nav">
       {if viewer.can_create { <NavItem href="/orgs/new" icon_name="plus" label="New organisation" active={*section == "new-organisation"} /> }}
@@ -75,14 +78,14 @@ component Sidebar(viewer: &TypedViewer, section: &str, csrf: &str, footer: Optio
 </nav>
 }
 component TopbarAction(org: &TypedOrg, section: &str, state: &str) {
-{if org.manages && *section != "deploy" && *section != "machine-add" && *section != "pool" {
+{if org.manages && *section != "deploy" && *section != "machine-add" && *section != "pool" && *section != "admin" {
   <span class="topbar-end"><a class="btn btn-primary{if !state.is_empty() { " is-" } else { "" }}{state}" href="/{org.slug}{if *section == "machines" { "/machines/add" } else { "/deploy" }}"><Icon name="plus" class="icon-sm" /><span class="btn-label">{if *section == "machines" { Add machine } else { Deploy app }}</span></a></span>
 }}
 }
 component Topbar(viewer: &TypedViewer, section: &str, list: Option<&AppSearch>) {
 <header class="topbar">
   {if let Some(org) = &viewer.current {
-    {if *section != "machines" && *section != "machine-add" && *section != "pool" {
+    {if *section != "machines" && *section != "machine-add" && *section != "pool" && *section != "admin" {
       <form class="search" role="search" method="get" action="/{org.slug}/apps">
         <label class="visually-hidden" for="search">Search apps</label>
         <Icon name="search" class="icon-sm search-icon" />

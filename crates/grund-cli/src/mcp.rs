@@ -39,6 +39,7 @@ pub fn tools(root: &clap::Command) -> Vec<Tool> {
         .into_iter()
         .filter(|(path, _, _)| {
             describe::is_client(path)
+                && !path.starts_with("operator ")
                 && !matches!(path.as_str(), "login" | "logout" | "mcp")
                 && !path.starts_with("skill")
         })

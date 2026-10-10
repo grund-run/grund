@@ -13,24 +13,30 @@ use grund_domain::machine::{
 use grund_proto::grund::{
     agent::v1 as agent,
     machine::v1::{
-        CreateJoinTokenRequest, CreateJoinTokenResponse, CreateRegistrationTokenRequest,
-        CreateRegistrationTokenResponse, CreateReregistrationTokenRequest,
-        CreateReregistrationTokenResponse, DeclareMachinePortsRequest, DeclareMachinePortsResponse,
-        EndLeaseRequest, EndLeaseResponse, GetMachineRequest, GetMachineResponse,
-        GetOrganisationKeyRequest, GetOrganisationKeyResponse, GetPoolMachineRequest,
-        GetPoolMachineResponse, Lease, LeaseMachineRequest, LeaseMachineResponse,
-        ListMachinesRequest, ListMachinesResponse, ListPoolMachinesRequest,
-        ListPoolMachinesResponse, ListVmsRequest, ListVmsResponse, Machine, MachineService,
-        MachineState, ManagementPoolService, NetworkPort as NetworkPortProto, NetworkTransport,
-        ProviderStep as ProviderStepProto, ProvisionPoolMachineRequest,
-        ProvisionPoolMachineResponse, RebuildPoolMachineRequest, RebuildPoolMachineResponse,
+        CreateHostedMachineRequest, CreateHostedMachineResponse, CreateJoinTokenRequest,
+        CreateJoinTokenResponse, CreateRegistrationTokenRequest, CreateRegistrationTokenResponse,
+        CreateReregistrationTokenRequest, CreateReregistrationTokenResponse,
+        DeclareMachinePortsRequest, DeclareMachinePortsResponse, EndLeaseRequest, EndLeaseResponse,
+        GetMachineRequest, GetMachineResponse, GetOrganisationKeyRequest,
+        GetOrganisationKeyResponse, GetPoolMachineRequest, GetPoolMachineResponse, HostedOffer,
+        Lease, LeaseMachineRequest, LeaseMachineResponse, ListHostedOffersRequest,
+        ListHostedOffersResponse, ListMachinesRequest, ListMachinesResponse,
+        ListPoolMachinesRequest, ListPoolMachinesResponse, ListVmsRequest, ListVmsResponse,
+        Machine, MachineService, MachineState, ManagementPoolService,
+        NetworkPort as NetworkPortProto, NetworkTransport, ProviderStep as ProviderStepProto,
+        ProvisionPoolMachineRequest, ProvisionPoolMachineResponse, RebuildPoolMachineRequest,
+        RebuildPoolMachineResponse, RemoveHostedMachineRequest, RemoveHostedMachineResponse,
         RevokeMachineRequest, RevokeMachineResponse, RevokePoolMachineRequest,
         RevokePoolMachineResponse, RunVmRequest, RunVmResponse, SetMachineInServiceRequest,
         SetMachineInServiceResponse, SetMachineLabelsRequest, SetMachineLabelsResponse,
         StopVmRequest, StopVmResponse, Vm,
     },
 };
-use grund_store::{agents::VmRow, machines::MachineRow, organisations::Membership};
+use grund_store::{
+    agents::VmRow,
+    machines::{self, HostedOrder, MachineRow},
+    organisations::Membership,
+};
 use uuid::Uuid;
 
 use crate::{
@@ -39,8 +45,8 @@ use crate::{
         OrganisationsState,
         agents::{AgentsState, VmOutcome, VmRequest},
         machines::{
-            Access, ChangeOutcome, MachinesState, MintOutcome, Minted, ProviderStep,
-            ProvisionOutcome, public_key_message,
+            Access, ChangeOutcome, HostedCreate, HostedRemove, MachinesState, MintOutcome, Minted,
+            ProviderStep, ProvisionOutcome, public_key_message,
         },
     },
     state::State,
@@ -106,6 +112,7 @@ enum View {
 }
 
 fn machine(row: &MachineRow, view: View, own_slug: Option<&str>) -> Machine {
+    let hosted = matches!(view, View::Organisation) && row.pool == "management";
     let name = match view {
         View::Organisation => row.pool_name.clone().unwrap_or_else(|| row.name.clone()),
         View::Management => row.name.clone(),
@@ -115,20 +122,37 @@ fn machine(row: &MachineRow, view: View, own_slug: Option<&str>) -> Machine {
         (None, Some(own)) if row.pool == "organisation" => own.to_string(),
         _ => String::new(),
     };
-    let lease = row.lease_id.map(|lease_id| Lease {
-        lease_id: lease_id.to_string(),
-        organisation: row.lessee_slug.clone().unwrap_or_default(),
-        name: row.lease_name.clone().unwrap_or_default(),
-        leased_at: row.leased_at.map(timestamp).unwrap_or_default(),
-        ..Default::default()
-    });
+    let lease = if hosted {
+        None
+    } else {
+        row.lease_id.map(|lease_id| Lease {
+            lease_id: lease_id.to_string(),
+            organisation: row.lessee_slug.clone().unwrap_or_default(),
+            name: row.lease_name.clone().unwrap_or_default(),
+            leased_at: row.leased_at.map(timestamp).unwrap_or_default(),
+            ..Default::default()
+        })
+    };
     Machine {
-        machine_id: row.machine_id.to_string(),
+        machine_id: if hosted {
+            row.lease_id.unwrap_or(row.machine_id)
+        } else {
+            row.machine_id
+        }
+        .to_string(),
         name,
-        state: state(&row.state),
-        pool: match row.pool.as_str() {
-            "management" => agent::Pool::POOL_MANAGEMENT,
-            _ => agent::Pool::POOL_ORGANISATION,
+        state: if hosted {
+            MachineState::MACHINE_STATE_ACTIVE.into()
+        } else {
+            state(&row.state)
+        },
+        pool: if hosted {
+            agent::Pool::POOL_UNSPECIFIED
+        } else {
+            match row.pool.as_str() {
+                "management" => agent::Pool::POOL_MANAGEMENT,
+                _ => agent::Pool::POOL_ORGANISATION,
+            }
         }
         .into(),
         organisation,
@@ -138,10 +162,21 @@ fn machine(row: &MachineRow, view: View, own_slug: Option<&str>) -> Machine {
             .as_deref()
             .and_then(|hex| hex::decode(hex).ok())
             .unwrap_or_default(),
-        facts: MessageField::from(facts(&row.facts.0)),
+        facts: MessageField::from(if hosted {
+            let mut details = facts(&row.facts.0);
+            details.fleet_machine_id.clear();
+            details.hostname.clear();
+            details
+        } else {
+            facts(&row.facts.0)
+        }),
         registered_at: timestamp(row.registered_at),
         key_registered_at: timestamp(row.key_registered_at),
-        minted_by: row.minted_by.clone(),
+        minted_by: if hosted {
+            String::new()
+        } else {
+            row.minted_by.clone()
+        },
         provider_machine_id: match view {
             View::Management => row.provider_machine_id.clone().unwrap_or_default(),
             View::Organisation => String::new(),
@@ -174,8 +209,30 @@ fn machine(row: &MachineRow, view: View, own_slug: Option<&str>) -> Machine {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect(),
         out_of_service_since: row.cordoned_at.map(timestamp).unwrap_or_default(),
+        hosted,
         ..Default::default()
     }
+}
+
+fn hosted_machine(order: &HostedOrder, row: Option<&MachineRow>) -> Machine {
+    let mut shown = row
+        .map(|row| machine(row, View::Organisation, None))
+        .unwrap_or_default();
+    shown.machine_id = order.order_id.to_string();
+    shown.name = order.name.clone();
+    shown.hosted = true;
+    shown.pool = agent::Pool::POOL_UNSPECIFIED.into();
+    shown.lease = MessageField::default();
+    shown.provider_machine_id.clear();
+    shown.minted_by.clear();
+    if row.is_none() {
+        shown.state = if order.status == "failed" {
+            MachineState::MACHINE_STATE_FAILED.into()
+        } else {
+            MachineState::MACHINE_STATE_JOINING.into()
+        };
+    }
+    shown
 }
 
 fn declared(
@@ -239,7 +296,7 @@ fn capabilities(value: &serde_json::Value) -> agent::Capabilities {
     }
 }
 
-fn vm(row: &VmRow) -> Vm {
+fn vm(row: &VmRow, orders: &[(Uuid, Uuid, chrono::DateTime<chrono::Utc>)]) -> Vm {
     let artifact = |url: &str, sha256: &str| agent::Artifact {
         url: url.to_string(),
         sha256: sha256.to_string(),
@@ -248,7 +305,21 @@ fn vm(row: &VmRow) -> Vm {
     Vm {
         vm_id: row.vm_id.to_string(),
         name: row.name.clone(),
-        host_machine_id: row.host_machine_id.to_string(),
+        host_machine_id: orders
+            .iter()
+            .find(|(_, machine_id, created_at)| {
+                *machine_id == row.host_machine_id && *created_at <= row.created_at
+            })
+            .map_or_else(
+                || {
+                    if row.host_pool.as_deref() == Some("management") {
+                        String::new()
+                    } else {
+                        row.host_machine_id.to_string()
+                    }
+                },
+                |(order_id, _, _)| order_id.to_string(),
+            ),
         host_name: row.host_name.clone().unwrap_or_default(),
         vcpus: row.vcpus as u32,
         memory_mib: row.memory_mib as u32,
@@ -273,7 +344,18 @@ fn vm(row: &VmRow) -> Vm {
         }
         .into(),
         observed_reason: row.observed_reason.clone().unwrap_or_default(),
-        machine_id: row.machine_id.map(|id| id.to_string()).unwrap_or_default(),
+        machine_id: row
+            .machine_id
+            .map(|id| {
+                orders
+                    .iter()
+                    .find(|(_, machine_id, created_at)| {
+                        *machine_id == id && *created_at <= row.created_at
+                    })
+                    .map_or(id, |(order_id, _, _)| *order_id)
+                    .to_string()
+            })
+            .unwrap_or_default(),
         created_at: timestamp(row.created_at),
         ..Default::default()
     }
@@ -648,12 +730,52 @@ impl MachineApi {
         membership: &Membership,
         machine_id: &str,
     ) -> Result<MachineRow, ConnectError> {
-        self.state
-            .machines()
-            .organisation_machine(membership.organisation_id, uuid(machine_id)?)
+        let id = uuid(machine_id)?;
+        let machines = self.state.machines();
+        if let Some(row) = machines
+            .organisation_machine(membership.organisation_id, id)
             .await
             .map_err(internal)?
-            .ok_or_else(|| ConnectError::not_found("no such machine"))
+        {
+            return Ok(row);
+        }
+        if let Some(machine_id) = machines
+            .hosted_orders(membership.organisation_id)
+            .await
+            .map_err(internal)?
+            .into_iter()
+            .find(|order| order.order_id == id)
+            .and_then(|order| order.machine_id)
+        {
+            return machines
+                .organisation_machine(membership.organisation_id, machine_id)
+                .await
+                .map_err(internal)?
+                .ok_or_else(|| ConnectError::not_found("no such machine"));
+        }
+        Err(ConnectError::not_found("no such machine"))
+    }
+
+    async fn visible_machine(
+        &self,
+        membership: &Membership,
+        row: &MachineRow,
+    ) -> Result<Machine, ConnectError> {
+        let orders = self
+            .state
+            .machines()
+            .hosted_orders(membership.organisation_id)
+            .await
+            .map_err(internal)?;
+        Ok(
+            match orders
+                .iter()
+                .find(|order| order.machine_id == Some(row.machine_id))
+            {
+                Some(order) => hosted_machine(order, Some(row)),
+                None => machine(row, View::Organisation, Some(&membership.slug)),
+            },
+        )
     }
 }
 
@@ -694,6 +816,142 @@ impl MachineService for MachineApi {
         })
     }
 
+    async fn list_hosted_offers(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, ListHostedOffersRequest>,
+    ) -> ServiceResult<ListHostedOffersResponse> {
+        let caller = principal(&ctx)?;
+        let membership = self
+            .member(&caller, request.organisation, Access::Read)
+            .await?;
+        let offers = self
+            .state
+            .machines()
+            .hosted_offers(membership.organisation_id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| {
+                ConnectError::permission_denied(
+                    "Hosted machines are not enabled for this organisation",
+                )
+            })?;
+        Response::ok(ListHostedOffersResponse {
+            offers: offers
+                .into_iter()
+                .map(|offer| HostedOffer {
+                    size: offer.size,
+                    region: offer.region,
+                    vcpus: offer.vcpus,
+                    memory_mib: offer.memory_mib,
+                    disk_gib: offer.disk_gib,
+                    available: offer.can_place,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        })
+    }
+
+    async fn create_hosted_machine(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, CreateHostedMachineRequest>,
+    ) -> ServiceResult<CreateHostedMachineResponse> {
+        let caller = principal(&ctx)?;
+        let membership = self
+            .member(&caller, request.organisation, Access::Manage)
+            .await?;
+        let result = self
+            .state
+            .machines()
+            .create_hosted(
+                caller.account_id,
+                membership.organisation_id,
+                request.name,
+                request.size,
+                request.region,
+                request.idempotency_key,
+            )
+            .await
+            .map_err(internal)?;
+        let order = match result {
+            HostedCreate::Created(order) => order,
+            HostedCreate::Denied => {
+                return Err(ConnectError::permission_denied(
+                    "Hosted machines are not enabled for this organisation",
+                ));
+            }
+            HostedCreate::Invalid => {
+                return Err(ConnectError::invalid_argument(
+                    "Choose a valid machine name, size, region and retry key",
+                ));
+            }
+            HostedCreate::NameTaken => {
+                return Err(ConnectError::already_exists(
+                    "That machine name is already in use",
+                ));
+            }
+            HostedCreate::PoolFull => {
+                return Err(ConnectError::resource_exhausted(
+                    "This organisation has reached its machine limit",
+                ));
+            }
+            HostedCreate::NoCapacity => {
+                return Err(ConnectError::resource_exhausted("No capacity in this size"));
+            }
+            HostedCreate::Unavailable => {
+                return Err(ConnectError::unavailable(
+                    "Hosted machines are temporarily unavailable",
+                ));
+            }
+        };
+        let row = match order.machine_id {
+            Some(id) => self
+                .state
+                .machines()
+                .organisation_machine(membership.organisation_id, id)
+                .await
+                .map_err(internal)?,
+            None => None,
+        };
+        Response::ok(CreateHostedMachineResponse {
+            machine: MessageField::from(hosted_machine(&order, row.as_ref())),
+            ..Default::default()
+        })
+    }
+
+    async fn remove_hosted_machine(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, RemoveHostedMachineRequest>,
+    ) -> ServiceResult<RemoveHostedMachineResponse> {
+        let caller = principal(&ctx)?;
+        let membership = self
+            .member(&caller, request.organisation, Access::Manage)
+            .await?;
+        match self
+            .state
+            .machines()
+            .remove_hosted(
+                caller.account_id,
+                membership.organisation_id,
+                uuid(request.machine_id)?,
+            )
+            .await
+            .map_err(internal)?
+        {
+            HostedRemove::Removed => Response::ok(RemoveHostedMachineResponse {
+                removed: true,
+                ..Default::default()
+            }),
+            HostedRemove::NotFound => Err(ConnectError::not_found("no such machine")),
+            HostedRemove::Unavailable => Err(ConnectError::unavailable(
+                "Machine removal is temporarily unavailable",
+            )),
+        }
+    }
+
     async fn list_machines(
         &self,
         ctx: RequestContext,
@@ -709,11 +967,31 @@ impl MachineService for MachineApi {
             .organisation_machines(membership.organisation_id)
             .await
             .map_err(internal)?;
+        let orders = self
+            .state
+            .machines()
+            .hosted_orders(membership.organisation_id)
+            .await
+            .map_err(internal)?;
+        let mut listed: Vec<Machine> = rows
+            .iter()
+            .filter(|row| {
+                !orders
+                    .iter()
+                    .any(|order| order.machine_id == Some(row.machine_id))
+            })
+            .map(|row| machine(row, View::Organisation, Some(&membership.slug)))
+            .collect();
+        listed.extend(orders.iter().map(|order| {
+            hosted_machine(
+                order,
+                order
+                    .machine_id
+                    .and_then(|id| rows.iter().find(|row| row.machine_id == id)),
+            )
+        }));
         Response::ok(ListMachinesResponse {
-            machines: rows
-                .iter()
-                .map(|r| machine(r, View::Organisation, Some(&membership.slug)))
-                .collect(),
+            machines: listed,
             ..Default::default()
         })
     }
@@ -727,9 +1005,34 @@ impl MachineService for MachineApi {
         let membership = self
             .member(&caller, request.organisation, Access::Read)
             .await?;
-        let row = self.pool_machine(&membership, request.machine_id).await?;
+        let id = uuid(request.machine_id)?;
+        let order = self
+            .state
+            .machines()
+            .hosted_orders(membership.organisation_id)
+            .await
+            .map_err(internal)?
+            .into_iter()
+            .find(|order| order.order_id == id || order.machine_id == Some(id));
+        let row = match order.as_ref().and_then(|order| order.machine_id) {
+            Some(id) => self
+                .state
+                .machines()
+                .organisation_machine(membership.organisation_id, id)
+                .await
+                .map_err(internal)?,
+            None if order.is_some() => None,
+            None => Some(self.pool_machine(&membership, request.machine_id).await?),
+        };
         Response::ok(GetMachineResponse {
-            machine: MessageField::from(machine(&row, View::Organisation, Some(&membership.slug))),
+            machine: MessageField::from(match order {
+                Some(order) => hosted_machine(&order, row.as_ref()),
+                None => machine(
+                    &row.ok_or_else(|| ConnectError::not_found("no such machine"))?,
+                    View::Organisation,
+                    Some(&membership.slug),
+                ),
+            }),
             ..Default::default()
         })
     }
@@ -756,7 +1059,7 @@ impl MachineService for MachineApi {
                 .map_err(internal)?,
         )?;
         Response::ok(RevokeMachineResponse {
-            machine: MessageField::from(machine(&row, View::Organisation, Some(&membership.slug))),
+            machine: MessageField::from(self.visible_machine(&membership, &row).await?),
             ..Default::default()
         })
     }
@@ -792,7 +1095,7 @@ impl MachineService for MachineApi {
             outcome => changed(outcome)?,
         };
         Response::ok(DeclareMachinePortsResponse {
-            machine: MessageField::from(machine(&row, View::Organisation, Some(&membership.slug))),
+            machine: MessageField::from(self.visible_machine(&membership, &row).await?),
             ..Default::default()
         })
     }
@@ -829,7 +1132,7 @@ impl MachineService for MachineApi {
             outcome => changed(outcome)?,
         };
         Response::ok(SetMachineLabelsResponse {
-            machine: MessageField::from(machine(&row, View::Organisation, Some(&membership.slug))),
+            machine: MessageField::from(self.visible_machine(&membership, &row).await?),
             ..Default::default()
         })
     }
@@ -864,7 +1167,7 @@ impl MachineService for MachineApi {
             outcome => changed(outcome)?,
         };
         Response::ok(SetMachineInServiceResponse {
-            machine: MessageField::from(machine(&row, View::Organisation, Some(&membership.slug))),
+            machine: MessageField::from(self.visible_machine(&membership, &row).await?),
             ..Default::default()
         })
     }
@@ -899,7 +1202,10 @@ impl MachineService for MachineApi {
         let membership = self
             .member(&caller, request.organisation, Access::Manage)
             .await?;
-        let host_machine_id = uuid(request.on_machine_id)?;
+        let host_machine_id = self
+            .pool_machine(&membership, request.on_machine_id)
+            .await?
+            .machine_id;
         let image = request.image.as_option();
         let kernel = image.and_then(|i| i.kernel.as_option());
         let rootfs = image.and_then(|i| i.rootfs.as_option());
@@ -924,8 +1230,11 @@ impl MachineService for MachineApi {
             .await
             .map_err(internal)?;
         let row = vm_done(outcome)?;
+        let orders = machines::hosted_vm_orders(&self.state.pool, membership.organisation_id)
+            .await
+            .map_err(internal)?;
         Response::ok(RunVmResponse {
-            vm: MessageField::from(vm(&row)),
+            vm: MessageField::from(vm(&row, &orders)),
             ..Default::default()
         })
     }
@@ -948,8 +1257,11 @@ impl MachineService for MachineApi {
                 .await
                 .map_err(internal)?,
         )?;
+        let orders = machines::hosted_vm_orders(&self.state.pool, membership.organisation_id)
+            .await
+            .map_err(internal)?;
         Response::ok(StopVmResponse {
-            vm: MessageField::from(vm(&row)),
+            vm: MessageField::from(vm(&row, &orders)),
             ..Default::default()
         })
     }
@@ -969,9 +1281,51 @@ impl MachineService for MachineApi {
             .vms(membership.organisation_id)
             .await
             .map_err(internal)?;
+        let orders = machines::hosted_vm_orders(&self.state.pool, membership.organisation_id)
+            .await
+            .map_err(internal)?;
         Response::ok(ListVmsResponse {
-            vms: rows.iter().map(vm).collect(),
+            vms: rows.iter().map(|row| vm(row, &orders)).collect(),
             ..Default::default()
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vm_hosts_never_expose_a_removed_management_machine_id() {
+        let host = Uuid::now_v7();
+        let public = Uuid::now_v7();
+        let created_at = Utc::now();
+        let mut row = VmRow {
+            vm_id: Uuid::now_v7(),
+            organisation_id: Uuid::now_v7(),
+            host_machine_id: host,
+            host_name: Some("customer-machine".into()),
+            host_pool: Some("management".into()),
+            name: "child".into(),
+            vcpus: 1,
+            memory_mib: 512,
+            disk_gib: 2,
+            kernel_url: String::new(),
+            kernel_sha256: String::new(),
+            rootfs_url: String::new(),
+            rootfs_sha256: String::new(),
+            state: "running".into(),
+            observed_state: None,
+            observed_reason: None,
+            machine_id: None,
+            created_at,
+        };
+        assert_eq!(
+            vm(&row, &[(public, host, created_at)]).host_machine_id,
+            public.to_string()
+        );
+        assert!(vm(&row, &[]).host_machine_id.is_empty());
+        row.host_pool = Some("organisation".into());
+        assert_eq!(vm(&row, &[]).host_machine_id, host.to_string());
     }
 }

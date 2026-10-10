@@ -392,16 +392,18 @@ async fn a_lease_puts_the_machine_in_the_lessee_pool_with_a_grant_the_management
         .await?;
     lessee_then.status(200)?;
     let listed = json(&lessee_then)?;
-    anyhow::ensure!(listed["machines"][0]["name"] == "web-1", "{listed}");
     anyhow::ensure!(
-        listed["machines"][0]["state"] == "MACHINE_STATE_LEASED",
+        listed["machines"][0]["name"] == "web-1"
+            && listed["machines"][0]["state"] == "MACHINE_STATE_ACTIVE"
+            && listed["machines"][0]["hosted"] == true
+            && listed["machines"][0]["machineId"] != machine_id,
         "{listed}"
     );
 
     lessee_when
         .calling(
             &format!("{MACHINES}/RevokeMachine"),
-            &json!({"organisation": tenant.username, "machineId": machine_id}).to_string(),
+            &json!({"organisation": tenant.username, "machineId": listed["machines"][0]["machineId"]}).to_string(),
         )
         .await?;
     lessee_then
@@ -1393,8 +1395,10 @@ async fn the_machines_page_adds_a_device_shows_it_connected_and_runs_a_vm_on_it(
         .body_lacks("Virtual machines")?;
     when.visiting(&format!("{page}/add")).await?;
     then.status(200)?
-        .body_contains("Get a setup code")?
-        .body_lacks("<span class=\"btn-label\">")?;
+        .body_contains("Your own machine")?
+        .body_lacks("Hosted machine")?;
+    when.visiting(&format!("{page}/add?mode=own")).await?;
+    then.status(200)?.body_contains("Get a setup code")?;
 
     when.submitting(&page, &format!("{page}/add"), &[("name", "desk")])
         .await?;

@@ -19,6 +19,7 @@ macro_rules! member_or_return {
 }
 
 pub mod about;
+pub mod admin;
 pub mod apps;
 pub mod assets;
 pub mod browser;
@@ -186,11 +187,18 @@ pub fn router(state: State) -> Router {
             "/{org}/machines/add",
             get(machines::add_page).post(machines::add),
         )
+        .route("/{org}/machines/hosted", post(machines::create_hosted))
         .route("/{org}/machines/vms", post(machines::run_vm))
         .route("/{org}/machines/vms/{vm}/stop", post(machines::stop_vm))
         .route("/{org}/machines/{machine}/remove", post(machines::remove))
         .route("/{org}/machines/{machine}/service", post(machines::service))
         .route("/{org}/machines/{machine}/labels", post(machines::labels))
+        .route("/{org}/admin", get(admin::admin_page))
+        .route("/{org}/admin/hosts/action", post(admin::host_action))
+        .route(
+            "/{org}/admin/organisations/entitlement",
+            post(admin::entitlement_action),
+        )
         .route("/{org}/pool", get(pool::pool_page))
         .route("/{org}/pool/provision", post(pool::provision))
         .route("/{org}/pool/{machine}/lease", post(pool::lease))

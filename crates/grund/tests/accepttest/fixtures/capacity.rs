@@ -1,7 +1,5 @@
-use std::{
-    collections::BTreeSet,
-    sync::{Arc, Mutex},
-};
+use parking_lot::Mutex;
+use std::{collections::BTreeSet, sync::Arc};
 
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -22,6 +20,8 @@ struct Shared {
     calls: Vec<Call>,
     unavailable: BTreeSet<String>,
     boot_before_answer: Option<std::path::PathBuf>,
+    can_place: bool,
+    assigned: Vec<(String, String)>,
 }
 
 pub struct FakeCapacity {
@@ -52,9 +52,12 @@ impl FakeCapacity {
         });
         Ok(Self { url, shared, task })
     }
+    pub fn set_can_place(&self, can_place: bool) {
+        self.shared.lock().can_place = can_place;
+    }
 
     pub fn unavailable_for(&self, method: &str, unavailable: bool) {
-        let mut shared = self.shared.lock().unwrap();
+        let mut shared = self.shared.lock();
         if unavailable {
             shared.unavailable.insert(method.to_string());
         } else {
@@ -63,13 +66,12 @@ impl FakeCapacity {
     }
 
     pub fn boot_before_answering(&self, data_dir: std::path::PathBuf) {
-        self.shared.lock().unwrap().boot_before_answer = Some(data_dir);
+        self.shared.lock().boot_before_answer = Some(data_dir);
     }
 
     pub fn calls(&self, method: &str) -> Vec<Call> {
         self.shared
             .lock()
-            .unwrap()
             .calls
             .iter()
             .filter(|c| c.method == method)
@@ -119,7 +121,7 @@ async fn serve(mut stream: TcpStream, shared: Arc<Mutex<Shared>>) -> anyhow::Res
         .unwrap_or(&path)
         .to_string();
     let boot = {
-        let shared = shared.lock().unwrap();
+        let shared = shared.lock();
         (method == "ProvisionMachine")
             .then(|| shared.boot_before_answer.clone())
             .flatten()
@@ -142,17 +144,17 @@ async fn serve(mut stream: TcpStream, shared: Arc<Mutex<Shared>>) -> anyhow::Res
         .await??;
     }
     let (status, answer) = {
-        let mut shared = shared.lock().unwrap();
+        let mut shared = shared.lock();
+        let request_key = body["idempotencyKey"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
         shared.calls.push(Call {
             method: method.clone(),
             authorization: header("authorization"),
             body,
         });
-        let provisioned = shared
-            .calls
-            .iter()
-            .filter(|c| c.method == "ProvisionMachine")
-            .count();
+        let provisioned = shared.assigned.len() + 1;
         if shared.unavailable.contains(&method) {
             (
                 503,
@@ -160,10 +162,44 @@ async fn serve(mut stream: TcpStream, shared: Arc<Mutex<Shared>>) -> anyhow::Res
             )
         } else {
             match method.as_str() {
-                "ProvisionMachine" => (
+                "ListOffers" => (
                     200,
-                    serde_json::json!({"providerMachineId": format!("fm-{provisioned}")}),
+                    serde_json::json!({"offers":[{
+                        "size":"small", "region":"test-region", "vcpus":2,
+                        "memoryMib":2048, "diskGib":20, "ready":0,
+                        "canPlace": shared.can_place,
+                    }]}),
                 ),
+                "ListInventoryMachines" => (
+                    200,
+                    serde_json::json!({"machines": [], "nextPageToken": ""}),
+                ),
+                "GetProvision" => {
+                    let found = shared
+                        .assigned
+                        .iter()
+                        .find(|(key, _)| *key == request_key)
+                        .map(|(_, id)| id.clone());
+                    (
+                        200,
+                        match found {
+                            Some(id) => serde_json::json!({"found":true,"providerMachineId":id}),
+                            None => serde_json::json!({"found":false}),
+                        },
+                    )
+                }
+                "ProvisionMachine" => {
+                    let id = if let Some((_, id)) =
+                        shared.assigned.iter().find(|(key, _)| *key == request_key)
+                    {
+                        id.clone()
+                    } else {
+                        let id = format!("fm-{provisioned}");
+                        shared.assigned.push((request_key, id.clone()));
+                        id
+                    };
+                    (200, serde_json::json!({"providerMachineId": id}))
+                }
                 "RebuildMachine" | "ReleaseMachine" => (200, serde_json::json!({})),
                 _ => (404, serde_json::json!({"code": "unimplemented"})),
             }

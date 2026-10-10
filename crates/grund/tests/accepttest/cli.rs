@@ -329,6 +329,17 @@ async fn an_agent_with_a_token_deploys_from_grund_yaml_reads_status_scales_rolls
         listed["machines"].as_array().map(Vec::len) == Some(2),
         "{listed:#}"
     );
+    anyhow::ensure!(
+        listed["machines"]
+            .as_array()
+            .is_some_and(
+                |machines| machines.iter().all(|machine| machine.get("pool").is_none()
+                    && machine.get("lease").is_none()
+                    && machine.get("providerMachineId").is_none()
+                    && machine["facts"].get("fleetMachineId").is_none())
+            ),
+        "customer machine listing exposed management details: {listed:#}"
+    );
     let tokens = shell.run(&["tokens", "list", "--json"]).await?;
     anyhow::ensure!(
         tokens.status == 4,
@@ -598,6 +609,20 @@ async fn the_cli_describes_itself_and_refuses_a_bad_line_as_json_without_an_inst
                 && c["output"]["$ref"] == "#/$defs/grund.cli.v1.DeployResult")),
         "describe has no apps deploy"
     );
+    anyhow::ensure!(
+        document["commands"].as_array().is_some_and(|commands| {
+            commands.iter().any(|command| {
+                command["path"] == "machines create"
+                    && command["output"]["$ref"]
+                        == "#/$defs/grund.machine.v1.CreateHostedMachineResponse"
+            }) && commands.iter().any(|command| {
+                command["path"] == "operator entitlements revoke"
+                    && command["output"]["$ref"]
+                        == "#/$defs/grund.operator.v1.SetHostedEntitlementResponse"
+            })
+        }),
+        "describe omitted hosted or operator CLI output contracts"
+    );
     let bad = shell
         .run(&["apps", "deploy", "--frobnicate", "--json"])
         .await?;
@@ -680,6 +705,126 @@ async fn the_cli_describes_itself_and_refuses_a_bad_line_as_json_without_an_inst
             && answers[2]["result"]["structuredContent"]["error"]["code"] == "not_signed_in",
         "{:#}",
         answers[2]
+    );
+    Ok(())
+}
+
+async fn approved_cli_session(shell: &Shell, when: &When, then: &Then) -> anyhow::Result<()> {
+    let (child, started) = logging_in(shell, &origin(when)).await?;
+    let uri = started["verificationUriComplete"]
+        .as_str()
+        .unwrap_or_default();
+    let path = &uri[uri.find("/device").unwrap_or(0)..];
+    when.visiting(path).await?;
+    then.status(200)?;
+    let html = then.body()?;
+    let login = hidden(&html, "login").ok_or_else(|| anyhow::anyhow!("no login field: {html}"))?;
+    when.submitting(
+        path,
+        "/device",
+        &[("login", &login), ("decision", "approve")],
+    )
+    .await?;
+    then.status(200)?;
+    let result = finished(child).await?;
+    anyhow::ensure!(result.status == 0, "CLI login failed: {}", result.stderr);
+    Ok(())
+}
+
+#[tokio::test]
+async fn operator_cli_controls_hosted_entitlements_and_denies_other_accounts() -> anyhow::Result<()>
+{
+    let capacity = crate::accepttest::fixtures::FakeCapacity::start().await?;
+    let operator = format!("ops-{}", crate::accepttest::fixtures::random_hex(4));
+    let Some((given, when, then)) = testcase_configured(&[
+        ("GRUND_OPERATOR_ORGANISATION", &operator),
+        ("GRUND_CAPACITY_URL", &capacity.url),
+        (
+            "GRUND_CAPACITY_TOKEN",
+            crate::accepttest::fixtures::CAPACITY_TOKEN,
+        ),
+    ])
+    .await?
+    else {
+        return Ok(());
+    };
+    given.a_signed_in_account_named(&operator).await?;
+    let shell = Shell::fresh(&[])?;
+    approved_cli_session(&shell, &when, &then).await?;
+
+    let (tenant, tenant_when, tenant_then) = given.testcase.another_browser();
+    let account = tenant.a_signed_in_account().await?;
+    let slug = account.username;
+    let dry_run = shell
+        .json("operator entitlements grant", &[&slug, "--dry-run"])
+        .await?;
+    anyhow::ensure!(
+        dry_run["calls"][0]["rpc"] == "grund.operator.v1.OperatorService/SetHostedEntitlement",
+        "{dry_run}"
+    );
+    let initially = shell.json("operator entitlements list", &[]).await?;
+    anyhow::ensure!(
+        !initially["organisations"]
+            .as_array()
+            .is_some_and(|items| items
+                .iter()
+                .any(|item| item["organisation"] == slug && item["enabled"] == true)),
+        "dry run changed hosted access: {initially}"
+    );
+    let granted = shell.json("operator entitlements grant", &[&slug]).await?;
+    anyhow::ensure!(
+        granted["organisation"]["organisation"] == slug
+            && granted["organisation"]["enabled"] == true,
+        "{granted}"
+    );
+    let enabled = shell.json("operator entitlements list", &[]).await?;
+    anyhow::ensure!(
+        enabled["organisations"]
+            .as_array()
+            .is_some_and(|items| items
+                .iter()
+                .any(|item| item["organisation"] == slug && item["enabled"] == true)),
+        "grant did not enable hosted access: {enabled}"
+    );
+
+    let tenant_shell = Shell::fresh(&[])?;
+    approved_cli_session(&tenant_shell, &tenant_when, &tenant_then).await?;
+    let forbidden = tenant_shell
+        .run(&["operator", "entitlements", "list", "--json"])
+        .await?;
+    anyhow::ensure!(
+        forbidden.status == 5 && forbidden.error()?["code"] == "not_found",
+        "non-operator access: {}",
+        forbidden.stderr
+    );
+
+    let confirmation = shell
+        .run(&["operator", "entitlements", "revoke", &slug, "--json"])
+        .await?;
+    anyhow::ensure!(
+        confirmation.status == 2 && confirmation.error()?["code"] == "confirmation_required",
+        "missing confirmation: {}",
+        confirmation.stderr
+    );
+    let revoked = shell
+        .json("operator entitlements revoke", &[&slug, "--yes"])
+        .await?;
+    anyhow::ensure!(
+        revoked["organisation"]["organisation"] == slug
+            && !revoked["organisation"]["enabled"]
+                .as_bool()
+                .unwrap_or(false),
+        "{revoked}"
+    );
+    let disabled = shell.json("operator entitlements list", &[]).await?;
+    anyhow::ensure!(
+        disabled["organisations"]
+            .as_array()
+            .is_some_and(|items| items
+                .iter()
+                .any(|item| item["organisation"] == slug
+                    && !item["enabled"].as_bool().unwrap_or(false))),
+        "revoke did not disable hosted access: {disabled}"
     );
     Ok(())
 }

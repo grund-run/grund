@@ -119,7 +119,7 @@ enum Command {
     )]
     Edges(grund_server::relays_command::EdgesCommand),
     #[command(
-        about = "Operator commands run against the instance's database: suspend an app's address"
+        about = "Operator commands: apps against the database, hosts, pool, leases and entitlements over the instance API"
     )]
     Operator(OperatorCommand),
     #[command(flatten)]
@@ -136,6 +136,14 @@ struct OperatorCommand {
 enum OperatorAction {
     #[command(about = "Suspend an app's address, or lift its suspension")]
     Apps(grund_server::apps_command::AppsCommand),
+    #[command(about = "Hosts: inventory, failures, cordon, uncordon and drain")]
+    Hosts(grund_cli::commands::operator::HostsCommand),
+    #[command(about = "Pool: inventory and direct machine operations")]
+    Pool(grund_cli::commands::operator::PoolCommand),
+    #[command(about = "Leases: list and end current pool leases")]
+    Leases(grund_cli::commands::operator::LeasesCommand),
+    #[command(about = "Hosted access: list, grant and revoke")]
+    Entitlements(grund_cli::commands::operator::EntitlementsCommand),
 }
 
 fn operator_alias(mut args: Vec<String>) -> Vec<String> {
@@ -328,6 +336,39 @@ async fn main() -> anyhow::Result<()> {
         let status = grund_cli::run(command, Cli::command(), env!("GRUND_BUILD_REVISION")).await;
         std::process::exit(status);
     }
+    if matches!(
+        &cli.command,
+        Command::Operator(OperatorCommand {
+            action: OperatorAction::Hosts(_)
+                | OperatorAction::Pool(_)
+                | OperatorAction::Leases(_)
+                | OperatorAction::Entitlements(_)
+        })
+    ) {
+        let Command::Operator(OperatorCommand { action }) = cli.command else {
+            unreachable!("checked above")
+        };
+        let (global, action) = match action {
+            OperatorAction::Hosts(command) => (
+                command.global,
+                grund_cli::commands::operator::OperatorClientAction::Hosts(command.action),
+            ),
+            OperatorAction::Pool(command) => (
+                command.global,
+                grund_cli::commands::operator::OperatorClientAction::Pool(command.action),
+            ),
+            OperatorAction::Leases(command) => (
+                command.global,
+                grund_cli::commands::operator::OperatorClientAction::Leases(command.action),
+            ),
+            OperatorAction::Entitlements(command) => (
+                command.global,
+                grund_cli::commands::operator::OperatorClientAction::Entitlements(command.action),
+            ),
+            OperatorAction::Apps(_) => unreachable!("operator apps remains database-only"),
+        };
+        std::process::exit(grund_cli::commands::operator::run(global, action).await);
+    }
     let to_stderr = matches!(cli.command, Command::Doctor(_) | Command::SetupLink(_));
     let service = match &cli.command {
         Command::Serve(_) => Some("grund"),
@@ -365,6 +406,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Operator(OperatorCommand {
             action: OperatorAction::Apps(command),
         }) => grund_server::apps_command::run(command).await,
+        Command::Operator(_) => unreachable!("Connect-backed operator commands returned above"),
         Command::Client(_) => unreachable!("client commands returned above"),
         Command::Agent(command) => match command.vm_runtime.as_str() {
             "simulated" => {
@@ -392,6 +434,46 @@ mod tests {
     #[test]
     fn the_command_definition_is_internally_consistent() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn operator_connect_commands_are_described_and_destructive_ones_require_confirmation() {
+        let paths = grund_cli::describe::leaves(&Cli::command());
+        for (path, _, _) in paths.iter().filter(|(path, _, _)| {
+            path.starts_with("operator ") && !path.starts_with("operator apps ")
+        }) {
+            assert_eq!(
+                grund_cli::meta::LEAVES
+                    .iter()
+                    .filter(|leaf| leaf.path == path.as_str())
+                    .count(),
+                1,
+                "grund {path} needs exactly one metadata entry"
+            );
+        }
+        for leaf in grund_cli::meta::LEAVES
+            .iter()
+            .filter(|leaf| leaf.path.starts_with("operator "))
+        {
+            let (_, _, args) = paths
+                .iter()
+                .find(|(path, _, _)| path == leaf.path)
+                .unwrap_or_else(|| panic!("grund {} has metadata but no command", leaf.path));
+            if leaf.destructive {
+                assert!(
+                    args.iter().any(|arg| arg.get_id() == "yes"),
+                    "grund {} requires --yes",
+                    leaf.path
+                );
+            }
+            if leaf.mutates {
+                assert!(
+                    args.iter().any(|arg| arg.get_id() == "dry_run"),
+                    "grund {} requires --dry-run",
+                    leaf.path
+                );
+            }
+        }
     }
 
     #[test]

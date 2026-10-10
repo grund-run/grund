@@ -115,6 +115,26 @@
       "title": "grund.agent.v1.MachineFacts",
       "type": "object"
     },
+    "grund.agent.v1.SignedLeaseGrant": {
+      "additionalProperties": false,
+      "description": "signature = Ed25519(management key, \"grund-lease-grant-v1\\n\" || payload), where payload is an encoded LeaseGrant. Verify the bytes, then decode them.",
+      "properties": {
+        "keyId": {
+          "description": "The management key's id.",
+          "type": "string"
+        },
+        "payload": {
+          "contentEncoding": "base64",
+          "type": "string"
+        },
+        "signature": {
+          "contentEncoding": "base64",
+          "type": "string"
+        }
+      },
+      "title": "grund.agent.v1.SignedLeaseGrant",
+      "type": "object"
+    },
     "grund.app.v1.App": {
       "additionalProperties": false,
       "properties": {
@@ -1242,6 +1262,67 @@
       "title": "grund.domain.v1.VerifyDomainResponse",
       "type": "object"
     },
+    "grund.machine.v1.CreateHostedMachineResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "machine": {
+          "$ref": "#/$defs/grund.machine.v1.Machine"
+        }
+      },
+      "title": "grund.machine.v1.CreateHostedMachineResponse",
+      "type": "object"
+    },
+    "grund.machine.v1.CreateRegistrationTokenResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "expiresAt": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "token": {
+          "type": "string"
+        }
+      },
+      "title": "grund.machine.v1.CreateRegistrationTokenResponse",
+      "type": "object"
+    },
+    "grund.machine.v1.CreateReregistrationTokenResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "expiresAt": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "token": {
+          "type": "string"
+        }
+      },
+      "title": "grund.machine.v1.CreateReregistrationTokenResponse",
+      "type": "object"
+    },
+    "grund.machine.v1.EndLeaseResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "machine": {
+          "$ref": "#/$defs/grund.machine.v1.Machine"
+        },
+        "providerMessage": {
+          "type": "string"
+        },
+        "providerStep": {
+          "description": "Whether the provider was asked to rebuild the machine.",
+          "enum": [
+            "PROVIDER_STEP_UNSPECIFIED",
+            "PROVIDER_STEP_NOT_NEEDED",
+            "PROVIDER_STEP_REQUESTED",
+            "PROVIDER_STEP_FAILED"
+          ],
+          "type": "string"
+        }
+      },
+      "title": "grund.machine.v1.EndLeaseResponse",
+      "type": "object"
+    },
     "grund.machine.v1.GetMachineResponse": {
       "additionalProperties": false,
       "properties": {
@@ -1250,6 +1331,49 @@
         }
       },
       "title": "grund.machine.v1.GetMachineResponse",
+      "type": "object"
+    },
+    "grund.machine.v1.GetPoolMachineResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "machine": {
+          "$ref": "#/$defs/grund.machine.v1.Machine"
+        }
+      },
+      "title": "grund.machine.v1.GetPoolMachineResponse",
+      "type": "object"
+    },
+    "grund.machine.v1.HostedOffer": {
+      "additionalProperties": false,
+      "properties": {
+        "available": {
+          "type": "boolean"
+        },
+        "diskGib": {
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "memoryMib": {
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "region": {
+          "type": "string"
+        },
+        "size": {
+          "type": "string"
+        },
+        "vcpus": {
+          "type": "integer"
+        }
+      },
+      "title": "grund.machine.v1.HostedOffer",
       "type": "object"
     },
     "grund.machine.v1.Lease": {
@@ -1274,6 +1398,32 @@
       "title": "grund.machine.v1.Lease",
       "type": "object"
     },
+    "grund.machine.v1.LeaseMachineResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "grant": {
+          "$ref": "#/$defs/grund.agent.v1.SignedLeaseGrant"
+        },
+        "machine": {
+          "$ref": "#/$defs/grund.machine.v1.Machine"
+        }
+      },
+      "title": "grund.machine.v1.LeaseMachineResponse",
+      "type": "object"
+    },
+    "grund.machine.v1.ListHostedOffersResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "offers": {
+          "items": {
+            "$ref": "#/$defs/grund.machine.v1.HostedOffer"
+          },
+          "type": "array"
+        }
+      },
+      "title": "grund.machine.v1.ListHostedOffersResponse",
+      "type": "object"
+    },
     "grund.machine.v1.ListMachinesResponse": {
       "additionalProperties": false,
       "properties": {
@@ -1285,6 +1435,19 @@
         }
       },
       "title": "grund.machine.v1.ListMachinesResponse",
+      "type": "object"
+    },
+    "grund.machine.v1.ListPoolMachinesResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "machines": {
+          "items": {
+            "$ref": "#/$defs/grund.machine.v1.Machine"
+          },
+          "type": "array"
+        }
+      },
+      "title": "grund.machine.v1.ListPoolMachinesResponse",
       "type": "object"
     },
     "grund.machine.v1.Machine": {
@@ -1304,6 +1467,10 @@
         },
         "facts": {
           "$ref": "#/$defs/grund.agent.v1.MachineFacts"
+        },
+        "hosted": {
+          "description": "True for a hosted machine, including one still joining.",
+          "type": "boolean"
         },
         "keyRegisteredAt": {
           "description": "When its current key was registered.",
@@ -1384,7 +1551,9 @@
             "MACHINE_STATE_LEASED",
             "MACHINE_STATE_RETURNING",
             "MACHINE_STATE_ACTIVE",
-            "MACHINE_STATE_REVOKED"
+            "MACHINE_STATE_REVOKED",
+            "MACHINE_STATE_JOINING",
+            "MACHINE_STATE_FAILED"
           ],
           "type": "string"
         }
@@ -1413,6 +1582,67 @@
       "title": "grund.machine.v1.NetworkPort",
       "type": "object"
     },
+    "grund.machine.v1.ProvisionPoolMachineResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "providerMachineId": {
+          "type": "string"
+        },
+        "tokenExpiresAt": {
+          "description": "When the registration token the provider holds expires: the machine must register before then.",
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "title": "grund.machine.v1.ProvisionPoolMachineResponse",
+      "type": "object"
+    },
+    "grund.machine.v1.RebuildPoolMachineResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "machine": {
+          "$ref": "#/$defs/grund.machine.v1.Machine"
+        },
+        "providerMessage": {
+          "type": "string"
+        },
+        "providerStep": {
+          "description": "What asking the capacity provider to act on a machine came to.",
+          "enum": [
+            "PROVIDER_STEP_UNSPECIFIED",
+            "PROVIDER_STEP_NOT_NEEDED",
+            "PROVIDER_STEP_REQUESTED",
+            "PROVIDER_STEP_FAILED"
+          ],
+          "type": "string"
+        }
+      },
+      "title": "grund.machine.v1.RebuildPoolMachineResponse",
+      "type": "object"
+    },
+    "grund.machine.v1.RevokePoolMachineResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "machine": {
+          "$ref": "#/$defs/grund.machine.v1.Machine"
+        },
+        "providerMessage": {
+          "type": "string"
+        },
+        "providerStep": {
+          "description": "Whether the provider was asked to take the machine back.",
+          "enum": [
+            "PROVIDER_STEP_UNSPECIFIED",
+            "PROVIDER_STEP_NOT_NEEDED",
+            "PROVIDER_STEP_REQUESTED",
+            "PROVIDER_STEP_FAILED"
+          ],
+          "type": "string"
+        }
+      },
+      "title": "grund.machine.v1.RevokePoolMachineResponse",
+      "type": "object"
+    },
     "grund.machine.v1.SetMachineInServiceResponse": {
       "additionalProperties": false,
       "properties": {
@@ -1431,6 +1661,293 @@
         }
       },
       "title": "grund.machine.v1.SetMachineLabelsResponse",
+      "type": "object"
+    },
+    "grund.operator.v1.CordonHostResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "host": {
+          "$ref": "#/$defs/grund.operator.v1.Host"
+        }
+      },
+      "title": "grund.operator.v1.CordonHostResponse",
+      "type": "object"
+    },
+    "grund.operator.v1.DrainHostResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "host": {
+          "$ref": "#/$defs/grund.operator.v1.Host"
+        }
+      },
+      "title": "grund.operator.v1.DrainHostResponse",
+      "type": "object"
+    },
+    "grund.operator.v1.Failure": {
+      "additionalProperties": false,
+      "properties": {
+        "hostId": {
+          "type": "string"
+        },
+        "machineId": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "title": "grund.operator.v1.Failure",
+      "type": "object"
+    },
+    "grund.operator.v1.FleetMachine": {
+      "additionalProperties": false,
+      "properties": {
+        "assigned": {
+          "type": "boolean"
+        },
+        "hostId": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "region": {
+          "type": "string"
+        },
+        "size": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "title": "grund.operator.v1.FleetMachine",
+      "type": "object"
+    },
+    "grund.operator.v1.Host": {
+      "additionalProperties": false,
+      "properties": {
+        "allocated": {
+          "$ref": "#/$defs/grund.operator.v1.ResourceCapacity"
+        },
+        "capacity": {
+          "$ref": "#/$defs/grund.operator.v1.ResourceCapacity"
+        },
+        "cordonReason": {
+          "type": "string"
+        },
+        "firecrackerVersion": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kernel": {
+          "type": "string"
+        },
+        "lastSeenAt": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "machineCount": {
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "reachable": {
+          "type": "boolean"
+        },
+        "region": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        }
+      },
+      "title": "grund.operator.v1.Host",
+      "type": "object"
+    },
+    "grund.operator.v1.HostedEntitlement": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "organisation": {
+          "type": "string"
+        }
+      },
+      "title": "grund.operator.v1.HostedEntitlement",
+      "type": "object"
+    },
+    "grund.operator.v1.ListEntitlementsResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "organisations": {
+          "items": {
+            "$ref": "#/$defs/grund.operator.v1.HostedEntitlement"
+          },
+          "type": "array"
+        }
+      },
+      "title": "grund.operator.v1.ListEntitlementsResponse",
+      "type": "object"
+    },
+    "grund.operator.v1.ListFailuresResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "failures": {
+          "items": {
+            "$ref": "#/$defs/grund.operator.v1.Failure"
+          },
+          "type": "array"
+        },
+        "nextPageToken": {
+          "type": "string"
+        }
+      },
+      "title": "grund.operator.v1.ListFailuresResponse",
+      "type": "object"
+    },
+    "grund.operator.v1.ListFleetMachinesResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "machines": {
+          "items": {
+            "$ref": "#/$defs/grund.operator.v1.FleetMachine"
+          },
+          "type": "array"
+        },
+        "nextPageToken": {
+          "type": "string"
+        }
+      },
+      "title": "grund.operator.v1.ListFleetMachinesResponse",
+      "type": "object"
+    },
+    "grund.operator.v1.ListHostsResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "hosts": {
+          "items": {
+            "$ref": "#/$defs/grund.operator.v1.Host"
+          },
+          "type": "array"
+        },
+        "nextPageToken": {
+          "type": "string"
+        }
+      },
+      "title": "grund.operator.v1.ListHostsResponse",
+      "type": "object"
+    },
+    "grund.operator.v1.ListPoolsResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "nextPageToken": {
+          "type": "string"
+        },
+        "pools": {
+          "items": {
+            "$ref": "#/$defs/grund.operator.v1.Pool"
+          },
+          "type": "array"
+        }
+      },
+      "title": "grund.operator.v1.ListPoolsResponse",
+      "type": "object"
+    },
+    "grund.operator.v1.Pool": {
+      "additionalProperties": false,
+      "properties": {
+        "desired": {
+          "type": "integer"
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "ready": {
+          "type": "integer"
+        },
+        "region": {
+          "type": "string"
+        },
+        "size": {
+          "type": "string"
+        },
+        "unschedulableReason": {
+          "type": "string"
+        },
+        "warm": {
+          "type": "integer"
+        }
+      },
+      "title": "grund.operator.v1.Pool",
+      "type": "object"
+    },
+    "grund.operator.v1.ResourceCapacity": {
+      "additionalProperties": false,
+      "properties": {
+        "diskGib": {
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "memoryMib": {
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "vcpus": {
+          "type": "integer"
+        }
+      },
+      "title": "grund.operator.v1.ResourceCapacity",
+      "type": "object"
+    },
+    "grund.operator.v1.SetHostedEntitlementResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "organisation": {
+          "$ref": "#/$defs/grund.operator.v1.HostedEntitlement"
+        }
+      },
+      "title": "grund.operator.v1.SetHostedEntitlementResponse",
+      "type": "object"
+    },
+    "grund.operator.v1.UncordonHostResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "host": {
+          "$ref": "#/$defs/grund.operator.v1.Host"
+        }
+      },
+      "title": "grund.operator.v1.UncordonHostResponse",
       "type": "object"
     },
     "grund.organisation.v1.CreateOrganisationResponse": {
@@ -5077,6 +5594,2303 @@
       "command": "grund operator apps lift",
       "path": "operator apps lift",
       "summary": "Lift ORGANISATION/APP's suspension"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "flag": "--page-size",
+          "name": "page_size",
+          "type": "integer",
+          "value_name": "PAGE_SIZE"
+        },
+        {
+          "flag": "--page-token",
+          "name": "page_token",
+          "type": "string",
+          "value_name": "PAGE_TOKEN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund operator hosts list",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund operator hosts list --json"
+      ],
+      "mutates": false,
+      "output": {
+        "$ref": "#/$defs/grund.operator.v1.ListHostsResponse"
+      },
+      "path": "operator hosts list",
+      "rpcs": [
+        "grund.operator.v1.OperatorService/ListHosts"
+      ],
+      "summary": "List hosts, capacity, allocation, and availability"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "flag": "--host",
+          "name": "host",
+          "type": "string",
+          "value_name": "HOST"
+        },
+        {
+          "flag": "--page-size",
+          "name": "page_size",
+          "type": "integer",
+          "value_name": "PAGE_SIZE"
+        },
+        {
+          "flag": "--page-token",
+          "name": "page_token",
+          "type": "string",
+          "value_name": "PAGE_TOKEN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund operator hosts machines",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund operator hosts machines --host HOST"
+      ],
+      "mutates": false,
+      "output": {
+        "$ref": "#/$defs/grund.operator.v1.ListFleetMachinesResponse"
+      },
+      "path": "operator hosts machines",
+      "rpcs": [
+        "grund.operator.v1.OperatorService/ListFleetMachines"
+      ],
+      "summary": "List fleet machines on a host, or across hosts"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "flag": "--page-size",
+          "name": "page_size",
+          "type": "integer",
+          "value_name": "PAGE_SIZE"
+        },
+        {
+          "flag": "--page-token",
+          "name": "page_token",
+          "type": "string",
+          "value_name": "PAGE_TOKEN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund operator hosts failures",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund operator hosts failures"
+      ],
+      "mutates": false,
+      "output": {
+        "$ref": "#/$defs/grund.operator.v1.ListFailuresResponse"
+      },
+      "path": "operator hosts failures",
+      "rpcs": [
+        "grund.operator.v1.OperatorService/ListFailures"
+      ],
+      "summary": "List failed fleet machine operations"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "host",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "HOST"
+        },
+        {
+          "flag": "--reason",
+          "name": "reason",
+          "required": true,
+          "type": "string",
+          "value_name": "REASON"
+        },
+        {
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund operator hosts cordon",
+      "destructive": false,
+      "dry_run": true,
+      "examples": [
+        "grund operator hosts cordon HOST --reason maintenance"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.operator.v1.CordonHostResponse"
+      },
+      "path": "operator hosts cordon",
+      "rpcs": [
+        "grund.operator.v1.OperatorService/CordonHost"
+      ],
+      "summary": "Stop scheduling on a host"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "host",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "HOST"
+        },
+        {
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund operator hosts uncordon",
+      "destructive": false,
+      "dry_run": true,
+      "examples": [
+        "grund operator hosts uncordon HOST"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.operator.v1.UncordonHostResponse"
+      },
+      "path": "operator hosts uncordon",
+      "rpcs": [
+        "grund.operator.v1.OperatorService/UncordonHost"
+      ],
+      "summary": "Resume scheduling on a host"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "host",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "HOST"
+        },
+        {
+          "flag": "--yes",
+          "name": "yes",
+          "type": "boolean",
+          "value_name": "YES"
+        },
+        {
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund operator hosts drain",
+      "destructive": true,
+      "dry_run": true,
+      "examples": [
+        "grund operator hosts drain HOST --yes"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.operator.v1.DrainHostResponse"
+      },
+      "path": "operator hosts drain",
+      "rpcs": [
+        "grund.operator.v1.OperatorService/DrainHost"
+      ],
+      "summary": "Evacuate a host"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "flag": "--page-size",
+          "name": "page_size",
+          "type": "integer",
+          "value_name": "PAGE_SIZE"
+        },
+        {
+          "flag": "--page-token",
+          "name": "page_token",
+          "type": "string",
+          "value_name": "PAGE_TOKEN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund operator pool list",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund operator pool list"
+      ],
+      "mutates": false,
+      "output": {
+        "$ref": "#/$defs/grund.operator.v1.ListPoolsResponse"
+      },
+      "path": "operator pool list",
+      "rpcs": [
+        "grund.operator.v1.OperatorService/ListPools"
+      ],
+      "summary": "List hosted pool capacity and available machines"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        }
+      ],
+      "audience": "client",
+      "command": "grund operator pool machines",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund operator pool machines"
+      ],
+      "mutates": false,
+      "output": {
+        "$ref": "#/$defs/grund.machine.v1.ListPoolMachinesResponse"
+      },
+      "path": "operator pool machines",
+      "rpcs": [
+        "grund.machine.v1.ManagementPoolService/ListPoolMachines"
+      ],
+      "summary": "List management pool machines"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "machine",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "MACHINE"
+        }
+      ],
+      "audience": "client",
+      "command": "grund operator pool get",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund operator pool get MACHINE"
+      ],
+      "mutates": false,
+      "output": {
+        "$ref": "#/$defs/grund.machine.v1.GetPoolMachineResponse"
+      },
+      "path": "operator pool get",
+      "rpcs": [
+        "grund.machine.v1.ManagementPoolService/GetPoolMachine"
+      ],
+      "summary": "Show one management pool machine"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "flag": "--name",
+          "name": "name",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
+          "flag": "--size",
+          "name": "size",
+          "type": "string",
+          "value_name": "SIZE"
+        },
+        {
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund operator pool provision",
+      "destructive": false,
+      "dry_run": true,
+      "examples": [
+        "grund operator pool provision --size small"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.machine.v1.ProvisionPoolMachineResponse"
+      },
+      "path": "operator pool provision",
+      "rpcs": [
+        "grund.machine.v1.ManagementPoolService/ProvisionPoolMachine"
+      ],
+      "summary": "Ask the capacity provider for a new pool machine"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "machine",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "MACHINE"
+        },
+        {
+          "name": "organisation",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "ORGANISATION"
+        },
+        {
+          "flag": "--name",
+          "name": "name",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund operator pool lease",
+      "destructive": false,
+      "dry_run": true,
+      "examples": [
+        "grund operator pool lease MACHINE ORGANISATION"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.machine.v1.LeaseMachineResponse"
+      },
+      "path": "operator pool lease",
+      "rpcs": [
+        "grund.machine.v1.ManagementPoolService/LeaseMachine"
+      ],
+      "summary": "Lease a pool machine to an organisation"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "machine",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "MACHINE"
+        },
+        {
+          "flag": "--yes",
+          "name": "yes",
+          "type": "boolean",
+          "value_name": "YES"
+        },
+        {
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund operator pool end",
+      "destructive": true,
+      "dry_run": true,
+      "examples": [
+        "grund operator pool end MACHINE --yes"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.machine.v1.EndLeaseResponse"
+      },
+      "path": "operator pool end",
+      "rpcs": [
+        "grund.machine.v1.ManagementPoolService/EndLease"
+      ],
+      "summary": "End a pool machine's lease and return it for wiping"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "machine",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "MACHINE"
+        },
+        {
+          "flag": "--yes",
+          "name": "yes",
+          "type": "boolean",
+          "value_name": "YES"
+        },
+        {
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund operator pool revoke",
+      "destructive": true,
+      "dry_run": true,
+      "examples": [
+        "grund operator pool revoke MACHINE --yes"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.machine.v1.RevokePoolMachineResponse"
+      },
+      "path": "operator pool revoke",
+      "rpcs": [
+        "grund.machine.v1.ManagementPoolService/RevokePoolMachine"
+      ],
+      "summary": "Permanently revoke a pool machine"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "machine",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "MACHINE"
+        },
+        {
+          "flag": "--yes",
+          "name": "yes",
+          "type": "boolean",
+          "value_name": "YES"
+        },
+        {
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund operator pool rebuild",
+      "destructive": true,
+      "dry_run": true,
+      "examples": [
+        "grund operator pool rebuild MACHINE --yes"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.machine.v1.RebuildPoolMachineResponse"
+      },
+      "path": "operator pool rebuild",
+      "rpcs": [
+        "grund.machine.v1.ManagementPoolService/RebuildPoolMachine"
+      ],
+      "summary": "Retry wiping and rebuilding a returning pool machine"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "flag": "--name",
+          "name": "name",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
+          "flag": "--ttl",
+          "name": "ttl",
+          "type": "integer",
+          "value_name": "TTL"
+        },
+        {
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund operator pool register",
+      "destructive": false,
+      "dry_run": true,
+      "examples": [
+        "grund operator pool register --name node-1"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.machine.v1.CreateRegistrationTokenResponse"
+      },
+      "path": "operator pool register",
+      "rpcs": [
+        "grund.machine.v1.ManagementPoolService/CreateRegistrationToken"
+      ],
+      "summary": "Mint a one-time token for a manually enrolled pool machine"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "machine",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "MACHINE"
+        },
+        {
+          "flag": "--ttl",
+          "name": "ttl",
+          "type": "integer",
+          "value_name": "TTL"
+        },
+        {
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund operator pool reregister",
+      "destructive": false,
+      "dry_run": true,
+      "examples": [
+        "grund operator pool reregister MACHINE"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.machine.v1.CreateReregistrationTokenResponse"
+      },
+      "path": "operator pool reregister",
+      "rpcs": [
+        "grund.machine.v1.ManagementPoolService/CreateReregistrationToken"
+      ],
+      "summary": "Mint a one-time token to re-enrol a wiped pool machine"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        }
+      ],
+      "audience": "client",
+      "command": "grund operator leases list",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund operator leases list"
+      ],
+      "mutates": false,
+      "output": {
+        "$ref": "#/$defs/grund.machine.v1.ListPoolMachinesResponse"
+      },
+      "path": "operator leases list",
+      "rpcs": [
+        "grund.machine.v1.ManagementPoolService/ListPoolMachines"
+      ],
+      "summary": "List machines currently leased to organisations"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "machine",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "MACHINE"
+        },
+        {
+          "flag": "--yes",
+          "name": "yes",
+          "type": "boolean",
+          "value_name": "YES"
+        },
+        {
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund operator leases end",
+      "destructive": true,
+      "dry_run": true,
+      "examples": [
+        "grund operator leases end MACHINE --yes"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.machine.v1.EndLeaseResponse"
+      },
+      "path": "operator leases end",
+      "rpcs": [
+        "grund.machine.v1.ManagementPoolService/EndLease"
+      ],
+      "summary": "End a lease and return the machine for wiping"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        }
+      ],
+      "audience": "client",
+      "command": "grund operator entitlements list",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund operator entitlements list"
+      ],
+      "mutates": false,
+      "output": {
+        "$ref": "#/$defs/grund.operator.v1.ListEntitlementsResponse"
+      },
+      "path": "operator entitlements list",
+      "rpcs": [
+        "grund.operator.v1.OperatorService/ListEntitlements"
+      ],
+      "summary": "List organisations' hosted access"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "organisation",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "ORGANISATION"
+        },
+        {
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund operator entitlements grant",
+      "destructive": false,
+      "dry_run": true,
+      "examples": [
+        "grund operator entitlements grant acme"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.operator.v1.SetHostedEntitlementResponse"
+      },
+      "path": "operator entitlements grant",
+      "rpcs": [
+        "grund.operator.v1.OperatorService/SetHostedEntitlement"
+      ],
+      "summary": "Allow an organisation to create hosted machines"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "organisation",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "ORGANISATION"
+        },
+        {
+          "flag": "--yes",
+          "name": "yes",
+          "type": "boolean",
+          "value_name": "YES"
+        },
+        {
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund operator entitlements revoke",
+      "destructive": true,
+      "dry_run": true,
+      "examples": [
+        "grund operator entitlements revoke acme --yes"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.operator.v1.SetHostedEntitlementResponse"
+      },
+      "path": "operator entitlements revoke",
+      "rpcs": [
+        "grund.operator.v1.OperatorService/SetHostedEntitlement"
+      ],
+      "summary": "Remove an organisation's hosted access"
     },
     {
       "args": [
@@ -8878,7 +11692,231 @@
       "rpcs": [
         "grund.machine.v1.MachineService/ListMachines"
       ],
-      "summary": "The organisation's machines: own and leased, connected or not"
+      "summary": "The organisation's machines, connected or not"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        }
+      ],
+      "audience": "client",
+      "command": "grund machines offers",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund machines offers --json"
+      ],
+      "mutates": false,
+      "output": {
+        "$ref": "#/$defs/grund.machine.v1.ListHostedOffersResponse"
+      },
+      "path": "machines offers",
+      "rpcs": [
+        "grund.machine.v1.MachineService/ListHostedOffers"
+      ],
+      "summary": "List hosted machine sizes and regions available to your organisation"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "description": "Machine name; generated when omitted",
+          "name": "name",
+          "positional": true,
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
+          "flag": "--size",
+          "name": "size",
+          "required": true,
+          "type": "string",
+          "value_name": "SIZE"
+        },
+        {
+          "flag": "--region",
+          "name": "region",
+          "type": "string",
+          "value_name": "REGION"
+        },
+        {
+          "description": "Reuse this key to retry the same creation safely",
+          "flag": "--idempotency-key",
+          "name": "idempotency_key",
+          "type": "string",
+          "value_name": "KEY"
+        },
+        {
+          "description": "Show the request instead of sending it",
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund machines create",
+      "destructive": false,
+      "dry_run": true,
+      "examples": [
+        "grund machines create --size small --region eu --json"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.machine.v1.CreateHostedMachineResponse"
+      },
+      "path": "machines create",
+      "rpcs": [
+        "grund.machine.v1.MachineService/CreateHostedMachine"
+      ],
+      "summary": "Create a hosted machine in your organisation"
     },
     {
       "args": [
@@ -9558,9 +12596,10 @@
       "path": "machines remove",
       "rpcs": [
         "grund.machine.v1.MachineService/ListMachines",
-        "grund.machine.v1.MachineService/RevokeMachine"
+        "grund.machine.v1.MachineService/RevokeMachine",
+        "grund.machine.v1.MachineService/RemoveHostedMachine"
       ],
-      "summary": "Revoke an own machine: it can no longer reach the instance. Take it out of service first"
+      "summary": "Remove a machine from the organisation; hosted machines are returned to the service"
     },
     {
       "args": [

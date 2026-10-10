@@ -71,6 +71,19 @@ service MachineService {
   // Shown once. ttl_seconds 0 means 600; at most 900.
   rpc CreateJoinToken(CreateJoinTokenRequest) returns (CreateJoinTokenResponse);
 
+  // Lists actual hosted sizes and regions only when this organisation is entitled.
+  rpc ListHostedOffers(ListHostedOffersRequest) returns (ListHostedOffersResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // Reserves an available machine or places a new one immediately; no capacity
+  // refuses the request instead of silently waiting. A retry key identifies
+  // one name, size and region for this organisation.
+  rpc CreateHostedMachine(CreateHostedMachineRequest) returns (CreateHostedMachineResponse);
+
+  // Ends this organisation's hosted lease and requests a wipe and new key.
+  rpc RemoveHostedMachine(RemoveHostedMachineRequest) returns (RemoveHostedMachineResponse);
+
   // By name.
   rpc ListMachines(ListMachinesRequest) returns (ListMachinesResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
@@ -164,6 +177,8 @@ message Machine {
   map<string, string> labels = 17;
   // Set while it is out of service: since when.
   google.protobuf.Timestamp out_of_service_since = 18;
+  // True for a hosted machine, including one still joining.
+  bool hosted = 19;
 }
 
 // The transport of a declared port.
@@ -229,6 +244,8 @@ enum MachineState {
   MACHINE_STATE_RETURNING = 3;
   MACHINE_STATE_ACTIVE = 4;
   MACHINE_STATE_REVOKED = 5;
+  MACHINE_STATE_JOINING = 6;
+  MACHINE_STATE_FAILED = 7;
 }
 
 message CreateRegistrationTokenRequest {
@@ -340,6 +357,44 @@ message CreateJoinTokenResponse {
   // Empty when the instance names no installer (GRUND_AGENT_INSTALL_URL,
   // GRUND_SERVE_INSTALLER).
   string install_command = 3;
+}
+
+message ListHostedOffersRequest {
+  string organisation = 1;
+}
+
+message HostedOffer {
+  string size = 1;
+  string region = 2;
+  int32 vcpus = 3;
+  int64 memory_mib = 4;
+  int64 disk_gib = 5;
+  bool available = 6;
+}
+
+message ListHostedOffersResponse {
+  repeated HostedOffer offers = 1;
+}
+
+message CreateHostedMachineRequest {
+  string organisation = 1;
+  string name = 2;
+  string size = 3;
+  string region = 4;
+  string idempotency_key = 5;
+}
+
+message CreateHostedMachineResponse {
+  Machine machine = 1;
+}
+
+message RemoveHostedMachineRequest {
+  string organisation = 1;
+  string machine_id = 2;
+}
+
+message RemoveHostedMachineResponse {
+  bool removed = 1;
 }
 
 message ListMachinesRequest {

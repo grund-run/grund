@@ -71,14 +71,16 @@ component MachineRow(slug: &str, manages: bool, machine: &crate::web::machines::
 component MachineMenu(slug: &str, machine: &crate::web::machines::MachineItem<'_>, csrf: &str) {
   {let base = format!("/{slug}/machines");}
   <Menu label={format!("Actions for {}", machine.name)} icon_name="more">
-    <MenuItem href={format!("{base}?labels={}#labels", machine.id)} icon_name="tag" label="Labels" />
-    {if machine.hosts_vms { <MenuItem href={format!("{base}?run={}#run", machine.id)} icon_name="box" label="Run a virtual machine" /> }}
-    {if machine.out_of_service {
-      <MenuPost action={format!("{base}/{}/service", machine.id)} csrf={csrf} icon_name="ok" label="Put back in service" hidden={&[("in_service", "yes")]} />
-    } else {
-      <MenuPost action={format!("{base}/{}/service", machine.id)} csrf={csrf} icon_name="minus" label="Take out of service" hidden={&[("in_service", "no")]} />
+    {if !machine.joining {
+      <MenuItem href={format!("{base}?labels={}#labels", machine.id)} icon_name="tag" label="Labels" />
+      {if machine.hosts_vms { <MenuItem href={format!("{base}?run={}#run", machine.id)} icon_name="box" label="Run a virtual machine" /> }}
+      {if machine.out_of_service {
+        <MenuPost action={format!("{base}/{}/service", machine.id)} csrf={csrf} icon_name="ok" label="Put back in service" hidden={&[("in_service", "yes")]} />
+      } else {
+        <MenuPost action={format!("{base}/{}/service", machine.id)} csrf={csrf} icon_name="minus" label="Take out of service" hidden={&[("in_service", "no")]} />
+      }}
     }}
-    {if !machine.leased { <MenuPost action={format!("{base}/{}/remove", machine.id)} csrf={csrf} icon_name="trash" label="Remove" danger /> }}
+    <MenuPost action={format!("{base}/{}/remove", machine.id)} csrf={csrf} icon_name="trash" label="Remove" danger />
   </Menu>
 }
 

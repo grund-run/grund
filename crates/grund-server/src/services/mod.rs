@@ -18,6 +18,7 @@ pub mod machines;
 pub mod mail;
 pub mod maintenance;
 pub mod networks;
+pub mod operator_inventory;
 pub mod organisations;
 pub mod outbox;
 pub mod passwords;

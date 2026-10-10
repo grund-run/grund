@@ -19,6 +19,7 @@ use crate::{
             AccountsState, FieldErrors, LoginOutcome, OwnerSignupOutcome, ResetOutcome,
             ResetRequestOutcome, SignupForm, SignupOutcome,
         },
+        machines::MachinesState,
         organisations::{Home, OrganisationsState},
         sessions::{Session, SessionsState},
     },
@@ -87,6 +88,7 @@ pub struct TypedViewer {
     pub current: Option<TypedOrg>,
     pub can_create: bool,
     pub admin_footer: bool,
+    pub operator: bool,
     pub registered_on: String,
 }
 
@@ -341,6 +343,10 @@ pub async fn typed_viewer_context(
         .filter_map(|part| part.chars().next())
         .take(2)
         .collect();
+    let operator = match &current {
+        Some(current) => state.machines().operator().await? == Some(current.organisation_id),
+        None => false,
+    };
     let orgs = memberships
         .iter()
         .map(|m| {
@@ -378,6 +384,7 @@ pub async fn typed_viewer_context(
         current,
         admin_footer,
         can_create: organisations.can_create(),
+        operator,
         registered_on: viewer.registered_at.format("%-d %B %Y").to_string(),
     })
 }
@@ -1346,6 +1353,7 @@ fn style_guide_fixture(csrf: String) -> StyleGuidePage {
         ],
         can_create: true,
         admin_footer: false,
+        operator: false,
     };
     let apps = [
         (
@@ -1449,6 +1457,7 @@ fn style_guide_fixture(csrf: String) -> StyleGuidePage {
                 detail: detail.into(),
                 out_of_service: status == "Out of service",
                 leased,
+                joining: false,
                 facts: [
                     ("cpu", format!("{vcpus} vCPU")),
                     ("memory", format!("{memory} RAM")),

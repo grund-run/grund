@@ -22,6 +22,9 @@ use grund_store::{
     organisations,
     work::{Work, WorkError},
 };
+use notmad::{Component, ComponentInfo, MadError};
+use std::time::Duration as StdDuration;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::{
@@ -172,6 +175,26 @@ pub enum ChangeOutcome {
     NoProvider,
 }
 
+/// The result of ordering a machine from an offered size and region.
+#[derive(Debug)]
+pub enum HostedCreate {
+    Created(machines::HostedOrder),
+    Denied,
+    Invalid,
+    NameTaken,
+    PoolFull,
+    NoCapacity,
+    Unavailable,
+}
+
+/// The result of removing an organisation's hosted machine.
+#[derive(Debug)]
+pub enum HostedRemove {
+    Removed,
+    NotFound,
+    Unavailable,
+}
+
 /// Machine flows.
 #[derive(Clone)]
 pub struct Machines {
@@ -212,6 +235,509 @@ impl Machines {
         Ok(machines::role_in(&self.state.pool, operator, account_id)
             .await?
             .and_then(|role| Access::of(&role)))
+    }
+
+    /// Whether hosted machines are explicitly enabled for this organisation.
+    pub async fn hosted_enabled(&self, organisation_id: Uuid) -> anyhow::Result<bool> {
+        Ok(machines::hosted_enabled(&self.state.pool, organisation_id).await?)
+    }
+
+    /// Grants or withdraws hosted-machine access for an existing organisation.
+    pub async fn grant_hosted(&self, organisation_id: Uuid, enabled: bool) -> anyhow::Result<()> {
+        if !machines::grant_hosted(&self.state.pool, organisation_id, enabled).await? {
+            anyhow::bail!("no such organisation");
+        }
+        Ok(())
+    }
+
+    /// Offers visible to an entitled customer, without provider identifiers.
+    pub async fn hosted_offers(
+        &self,
+        organisation_id: Uuid,
+    ) -> anyhow::Result<Option<Vec<crate::services::capacity::Offer>>> {
+        if !self.hosted_enabled(organisation_id).await? {
+            return Ok(None);
+        }
+        let capacity = self.state.capacity();
+        let inventory = capacity.inventory_sizes().await?;
+        machines::reconcile_hosted_sizes(&self.state.pool, &inventory).await?;
+        let mut offers = capacity.offers().await?;
+        for offer in &mut offers {
+            if machines::ready_hosted_count(&self.state.pool, &offer.size, &offer.region).await? > 0
+            {
+                offer.can_place = true;
+            }
+        }
+        Ok(Some(offers))
+    }
+
+    /// Pending and active hosted orders owned by this organisation.
+    pub async fn hosted_orders(
+        &self,
+        organisation_id: Uuid,
+    ) -> anyhow::Result<Vec<machines::HostedOrder>> {
+        Ok(machines::hosted_orders(&self.state.pool, organisation_id).await?)
+    }
+
+    /// Creates an immediately reserved hosted machine or refuses when nothing fits.
+    pub async fn create_hosted(
+        &self,
+        actor: Uuid,
+        organisation_id: Uuid,
+        name: &str,
+        size: &str,
+        region: &str,
+        idempotency_key: &str,
+    ) -> anyhow::Result<HostedCreate> {
+        if !self.hosted_enabled(organisation_id).await? {
+            return Ok(HostedCreate::Denied);
+        }
+        if idempotency_key.is_empty() || idempotency_key.len() > 128 {
+            return Ok(HostedCreate::Invalid);
+        }
+        let name = match MachineName::parse(name) {
+            Ok(name) => name,
+            Err(_) => return Ok(HostedCreate::Invalid),
+        };
+        if let Some(existing) =
+            machines::hosted_order_by_key(&self.state.pool, organisation_id, idempotency_key)
+                .await?
+        {
+            if existing.name != name.as_str()
+                || existing.size != size
+                || (!region.is_empty() && existing.region != region)
+            {
+                return Ok(HostedCreate::Invalid);
+            }
+            return match existing.status.as_str() {
+                "active" => Ok(HostedCreate::Created(existing)),
+                "joining" => self.retry_hosted(actor, existing).await,
+                "refused" => Ok(HostedCreate::NoCapacity),
+                _ => Ok(HostedCreate::Unavailable),
+            };
+        }
+        let capacity = self.state.capacity();
+        let offers = match self.hosted_offers(organisation_id).await {
+            Ok(Some(offers)) => offers,
+            _ => return Ok(HostedCreate::Unavailable),
+        };
+        let region = if region.is_empty() {
+            let mut regions = offers.iter().filter(|offer| offer.size == size);
+            match (regions.next(), regions.next()) {
+                (Some(only), None) => only.region.as_str(),
+                _ => return Ok(HostedCreate::Invalid),
+            }
+        } else {
+            region
+        };
+        let Some(offer) = offers
+            .iter()
+            .find(|offer| offer.size == size && offer.region == region)
+        else {
+            return Ok(HostedCreate::Invalid);
+        };
+        if machines::organisation_name_taken(&self.state.pool, organisation_id, name.as_str())
+            .await?
+        {
+            return Ok(HostedCreate::NameTaken);
+        }
+        let order_id = Uuid::now_v7();
+        let mut work =
+            Work::begin(&self.state.events, order_id, &format!("account:{actor}")).await?;
+        if !machines::lock_hosted_organisation(work.sql(), organisation_id).await?
+            || !machines::hosted_enabled(&mut **work.sql(), organisation_id).await?
+        {
+            return Ok(HostedCreate::Denied);
+        }
+        if machines::count_organisation_machines(&mut **work.sql(), organisation_id).await?
+            + machines::hosted_orders(&mut **work.sql(), organisation_id)
+                .await?
+                .iter()
+                .filter(|o| o.status == "joining")
+                .count() as i64
+            >= MAX_MACHINES_PER_ORGANISATION
+        {
+            return Ok(HostedCreate::PoolFull);
+        }
+        if let Some(machine_id) = machines::ready_hosted_machine(work.sql(), size, region).await? {
+            let result = work
+                .machine(
+                    machine_id,
+                    MachineCommand::Lease {
+                        actor,
+                        lease_id: Uuid::now_v7(),
+                        organisation_id,
+                        name: name.clone(),
+                        at: Utc::now(),
+                    },
+                )
+                .await;
+            if let Some(outcome) = refused(result)? {
+                return Ok(if matches!(outcome, ChangeOutcome::NameTaken) {
+                    HostedCreate::NameTaken
+                } else {
+                    HostedCreate::NoCapacity
+                });
+            }
+            let inserted = machines::insert_hosted_order(
+                &mut **work.sql(),
+                machines::NewHostedOrder {
+                    organisation_id,
+                    order_id,
+                    name: name.as_str(),
+                    size,
+                    region,
+                    idempotency_key,
+                    token_id: None,
+                    machine_id: Some(machine_id),
+                    status: "active",
+                },
+            )
+            .await;
+            if let Err(error) = inserted {
+                return Ok(
+                    match error.as_database_error().and_then(|e| e.constraint()) {
+                        Some("grund_hosted_orders_active_name_idx") => HostedCreate::NameTaken,
+                        Some("grund_hosted_orders_idempotency_idx") => HostedCreate::Unavailable,
+                        _ => return Err(error.into()),
+                    },
+                );
+            }
+            self.keys()
+                .ensure(work.sql(), KeyPurpose::Management, None)
+                .await?;
+            self.keys()
+                .ensure(work.sql(), KeyPurpose::Organisation, Some(organisation_id))
+                .await?;
+            work.commit().await?;
+            let order =
+                machines::hosted_order_by_key(&self.state.pool, organisation_id, idempotency_key)
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("committed hosted order is missing"))?;
+            return Ok(HostedCreate::Created(order));
+        }
+        drop(work);
+        if !offer.can_place {
+            return Ok(HostedCreate::NoCapacity);
+        }
+        let Some(minted) = self.mint_hosted(actor).await? else {
+            return Ok(HostedCreate::Unavailable);
+        };
+        machines::set_hosted_token_size(&self.state.pool, minted.token_id, size, region).await?;
+        let mut tx = self.state.pool.begin().await?;
+        if !machines::lock_hosted_organisation(&mut tx, organisation_id).await?
+            || !machines::hosted_enabled(&mut *tx, organisation_id).await?
+        {
+            machines::expire_hosted_token(&mut *tx, minted.token_id).await?;
+            tx.commit().await?;
+            return Ok(HostedCreate::Denied);
+        }
+        if machines::count_organisation_machines(&mut *tx, organisation_id).await?
+            + machines::hosted_orders(&mut *tx, organisation_id)
+                .await?
+                .iter()
+                .filter(|o| o.status == "joining")
+                .count() as i64
+            >= MAX_MACHINES_PER_ORGANISATION
+        {
+            machines::expire_hosted_token(&mut *tx, minted.token_id).await?;
+            tx.commit().await?;
+            return Ok(HostedCreate::PoolFull);
+        }
+        let inserted = machines::insert_hosted_order(
+            &mut *tx,
+            machines::NewHostedOrder {
+                organisation_id,
+                order_id,
+                name: name.as_str(),
+                size,
+                region,
+                idempotency_key,
+                token_id: Some(minted.token_id),
+                machine_id: None,
+                status: "joining",
+            },
+        )
+        .await;
+        if let Err(error) = inserted {
+            return Ok(
+                match error.as_database_error().and_then(|e| e.constraint()) {
+                    Some("grund_hosted_orders_active_name_idx") => HostedCreate::NameTaken,
+                    Some("grund_hosted_orders_idempotency_idx") => HostedCreate::Unavailable,
+                    _ => return Err(error.into()),
+                },
+            );
+        }
+        tx.commit().await?;
+        if !machines::hosted_token_provisionable(&self.state.pool, minted.token_id).await? {
+            return Ok(HostedCreate::Unavailable);
+        }
+        match capacity
+            .provision(
+                &minted.token_id.to_string(),
+                &self.state.config.public_origin().serialized,
+                &minted.token,
+                minted.expires_at,
+                size,
+                region,
+            )
+            .await
+        {
+            Ok(provider_id) => {
+                self.link_provider(actor, minted.token_id, &provider_id)
+                    .await?;
+                let order = machines::hosted_order_by_key(
+                    &self.state.pool,
+                    organisation_id,
+                    idempotency_key,
+                )
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("committed hosted order is missing"))?;
+                Ok(if matches!(order.status.as_str(), "joining" | "active") {
+                    HostedCreate::Created(order)
+                } else {
+                    HostedCreate::Unavailable
+                })
+            }
+            Err(CapacityError::Refused(error)) => {
+                tracing::warn!(error = %error, "hosted machine order refused");
+                let mut tx = self.state.pool.begin().await?;
+                machines::set_hosted_order(&mut *tx, organisation_id, order_id, "refused", None)
+                    .await?;
+                machines::expire_hosted_token(&mut *tx, minted.token_id).await?;
+                tx.commit().await?;
+                Ok(HostedCreate::NoCapacity)
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "hosted machine order outcome uncertain");
+                Ok(HostedCreate::Unavailable)
+            }
+        }
+    }
+
+    async fn retry_hosted(
+        &self,
+        actor: Uuid,
+        order: machines::HostedOrder,
+    ) -> anyhow::Result<HostedCreate> {
+        let Some(token_id) = order.token_id else {
+            return Ok(HostedCreate::Created(order));
+        };
+        match self
+            .state
+            .capacity()
+            .get_provision(&token_id.to_string())
+            .await
+        {
+            Ok(Some(provider_id)) => {
+                self.link_provider(actor, token_id, &provider_id).await?;
+                let latest = machines::hosted_order_by_token(&self.state.pool, token_id).await?;
+                return Ok(match latest {
+                    Some(latest) if matches!(latest.status.as_str(), "joining" | "active") => {
+                        HostedCreate::Created(latest)
+                    }
+                    _ => HostedCreate::Unavailable,
+                });
+            }
+            Ok(None) => {}
+            Err(_) => return Ok(HostedCreate::Unavailable),
+        }
+        let Some(expires_at) = machines::hosted_token_expiry(&self.state.pool, token_id).await?
+        else {
+            return Ok(HostedCreate::Unavailable);
+        };
+        if expires_at <= Utc::now() {
+            return Ok(HostedCreate::Unavailable);
+        }
+        let token = self.keys().hosted_token(token_id);
+        if !machines::hosted_token_provisionable(&self.state.pool, token_id).await? {
+            return Ok(HostedCreate::Unavailable);
+        }
+        match self
+            .state
+            .capacity()
+            .provision(
+                &token_id.to_string(),
+                &self.state.config.public_origin().serialized,
+                &token,
+                expires_at,
+                &order.size,
+                &order.region,
+            )
+            .await
+        {
+            Ok(provider_id) => {
+                self.link_provider(actor, token_id, &provider_id).await?;
+                let latest = machines::hosted_order_by_token(&self.state.pool, token_id).await?;
+                Ok(match latest {
+                    Some(latest) if matches!(latest.status.as_str(), "joining" | "active") => {
+                        HostedCreate::Created(latest)
+                    }
+                    _ => HostedCreate::Unavailable,
+                })
+            }
+            Err(CapacityError::Refused(error)) => {
+                tracing::warn!(error = %error, "hosted machine retry refused");
+                let mut tx = self.state.pool.begin().await?;
+                machines::set_hosted_order(
+                    &mut *tx,
+                    order.organisation_id,
+                    order.order_id,
+                    "refused",
+                    None,
+                )
+                .await?;
+                machines::expire_hosted_token(&mut *tx, token_id).await?;
+                tx.commit().await?;
+                Ok(HostedCreate::NoCapacity)
+            }
+            Err(_) => Ok(HostedCreate::Unavailable),
+        }
+    }
+
+    /// Removes only this organisation's hosted order and ends its lease.
+    pub async fn remove_hosted(
+        &self,
+        actor: Uuid,
+        organisation_id: Uuid,
+        order_id: Uuid,
+    ) -> anyhow::Result<HostedRemove> {
+        let Some(known) = machines::hosted_orders(&self.state.pool, organisation_id)
+            .await?
+            .into_iter()
+            .find(|order| order.order_id == order_id)
+        else {
+            return Ok(HostedRemove::NotFound);
+        };
+        if let (Some(machine_id), Some(token_id)) = (known.machine_id, known.token_id) {
+            let row = self.pool_machine(machine_id).await?;
+            if row
+                .as_ref()
+                .is_some_and(|row| row.provider_machine_id.is_none())
+            {
+                let provider_id = match self
+                    .state
+                    .capacity()
+                    .get_provision(&token_id.to_string())
+                    .await
+                {
+                    Ok(Some(id)) => id,
+                    _ => return Ok(HostedRemove::Unavailable),
+                };
+                self.link_provider(actor, token_id, &provider_id).await?;
+            }
+        }
+        let mut work = Work::begin(
+            &self.state.events,
+            Uuid::now_v7(),
+            &format!("account:{actor}"),
+        )
+        .await?;
+        if let Some(token_id) = known.token_id {
+            machines::token_by_id_for_update(work.sql(), token_id).await?;
+        }
+        let Some(order) =
+            machines::hosted_order_for_update(work.sql(), organisation_id, order_id).await?
+        else {
+            return Ok(HostedRemove::NotFound);
+        };
+        let machine = if let Some(machine_id) = order.machine_id {
+            let outcome = work
+                .machine(
+                    machine_id,
+                    MachineCommand::EndLease {
+                        actor,
+                        at: Utc::now(),
+                    },
+                )
+                .await;
+            if refused(outcome)?.is_some() {
+                return Ok(HostedRemove::NotFound);
+            }
+            Some(machine_id)
+        } else {
+            if let Some(token_id) = order.token_id {
+                machines::expire_hosted_token(&mut **work.sql(), token_id).await?;
+            }
+            None
+        };
+        machines::set_hosted_order(
+            &mut **work.sql(),
+            organisation_id,
+            order_id,
+            "removed",
+            None,
+        )
+        .await?;
+        work.commit().await?;
+        if let Some(machine_id) = machine {
+            let row = self
+                .pool_machine(machine_id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("hosted machine is missing after lease ends"))?;
+            match self.request_rebuild(actor, &row).await {
+                Ok(ProviderStep::Requested) => {
+                    machines::finish_hosted_rebuild(
+                        &self.state.pool,
+                        organisation_id,
+                        order_id,
+                        true,
+                    )
+                    .await?;
+                }
+                Ok(step) => tracing::warn!(?step, "hosted machine wipe will retry"),
+                Err(error) => tracing::warn!(%error, "hosted machine wipe will retry"),
+            }
+        }
+        if let Some(token_id) = order.token_id.filter(|_| machine.is_none())
+            && let Some(provider_machine_id) =
+                machines::hosted_token_provider(&self.state.pool, token_id).await?
+        {
+            if self
+                .state
+                .capacity()
+                .release(&format!("hosted-remove-{token_id}"), &provider_machine_id)
+                .await
+                .is_err()
+            {
+                return Ok(HostedRemove::Unavailable);
+            }
+            machines::mark_hosted_released(&self.state.pool, organisation_id, order_id).await?;
+        }
+        Ok(HostedRemove::Removed)
+    }
+
+    async fn mint_hosted(&self, actor: Uuid) -> anyhow::Result<Option<Minted>> {
+        let now = Utc::now();
+        if machines::open_tokens(&self.state.pool, TokenKind::Management.as_str(), None, now)
+            .await?
+            >= MAX_OPEN_TOKENS
+        {
+            return Ok(None);
+        }
+        let token_id = Uuid::now_v7();
+        let token = self.keys().hosted_token(token_id);
+        let expires_at = now + TOKEN_TTL;
+        machines::insert_token(
+            &self.state.pool,
+            &NewToken {
+                token_id,
+                digest: crypto::digest(&token),
+                kind: TokenKind::Management.as_str(),
+                organisation_id: None,
+                machine_id: None,
+                name: None,
+                minted_by: &format!("account:{actor}"),
+                expires_at,
+                vm_id: None,
+            },
+        )
+        .await?;
+        Ok(Some(Minted {
+            token_id,
+            token,
+            expires_at,
+        }))
     }
 
     /// Mints a one-time token for one pool. `kind` says which: management
@@ -365,7 +891,15 @@ impl Machines {
         let Some(token) = machines::token_for_update(work.sql(), &digest).await? else {
             return Ok(EnrollOutcome::TokenInvalid);
         };
-        if token.expires_at <= now || token.kind != kind.as_str() {
+        if token.expires_at <= Utc::now() || token.kind != kind.as_str() {
+            return Ok(EnrollOutcome::TokenInvalid);
+        }
+        if token.hosted_size.is_some()
+            && token.consumed_key.is_none()
+            && machines::pending_hosted_token(&mut **work.sql(), token.token_id)
+                .await?
+                .is_none()
+        {
             return Ok(EnrollOutcome::TokenInvalid);
         }
         if let Some(consumed_key) = &token.consumed_key {
@@ -427,6 +961,50 @@ impl Machines {
                     _ => return Err(error.into()),
                 });
             }
+        }
+        if let (Some(size), Some(region)) =
+            (token.hosted_size.as_deref(), token.hosted_region.as_deref())
+        {
+            machines::set_machine_hosted_size(&mut **work.sql(), machine_id, size, region).await?;
+        }
+        if let Some(order) =
+            machines::pending_hosted_token(&mut **work.sql(), token.token_id).await?
+        {
+            let leased = work
+                .machine(
+                    machine_id,
+                    MachineCommand::Lease {
+                        actor: Uuid::nil(),
+                        lease_id: Uuid::now_v7(),
+                        organisation_id: order.organisation_id,
+                        name: MachineName::parse(&order.name)?,
+                        at: now,
+                    },
+                )
+                .await;
+            if let Some(outcome) = refused(leased)? {
+                anyhow::bail!(
+                    "hosted registration could not take its reserved machine: {outcome:?}"
+                );
+            }
+            self.keys()
+                .ensure(work.sql(), KeyPurpose::Management, None)
+                .await?;
+            self.keys()
+                .ensure(
+                    work.sql(),
+                    KeyPurpose::Organisation,
+                    Some(order.organisation_id),
+                )
+                .await?;
+            machines::set_hosted_order(
+                &mut **work.sql(),
+                order.organisation_id,
+                order.order_id,
+                "active",
+                Some(machine_id),
+            )
+            .await?;
         }
         machines::consume_token(work.sql(), token.token_id, key.as_hex(), machine_id, now).await?;
         if let Some(vm_id) = token.vm_id {
@@ -563,6 +1141,14 @@ impl Machines {
         if let Some(outcome) = refused(leased)? {
             return Ok(outcome);
         }
+        machines::record_hosted_manual_lease(
+            &mut **work.sql(),
+            organisation_id,
+            machine_id,
+            lease_id,
+            now,
+        )
+        .await?;
         let keys = self.keys();
         keys.ensure(work.sql(), KeyPurpose::Management, None)
             .await?;
@@ -645,6 +1231,17 @@ impl Machines {
         if !capacity.enabled() {
             return Ok(ProvisionOutcome::NotConfigured);
         }
+        let region = capacity
+            .offers()
+            .await
+            .ok()
+            .and_then(|offers| {
+                offers
+                    .into_iter()
+                    .find(|offer| offer.size == size)
+                    .map(|offer| offer.region)
+            })
+            .unwrap_or_default();
         let minted = match self
             .mint(TokenKind::Management, None, None, name, 0, actor)
             .await?
@@ -658,6 +1255,10 @@ impl Machines {
                 ));
             }
         };
+        if !region.is_empty() {
+            machines::set_hosted_token_size(&self.state.pool, minted.token_id, size, &region)
+                .await?;
+        }
         match capacity
             .provision(
                 &minted.token_id.to_string(),
@@ -665,6 +1266,7 @@ impl Machines {
                 &minted.token,
                 minted.expires_at,
                 size.trim(),
+                &region,
             )
             .await
         {
@@ -743,6 +1345,11 @@ impl Machines {
         let token = machines::token_by_id_for_update(work.sql(), token_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("a minted token has a row"))?;
+        let cancelled = machines::hosted_order_by_token(&mut **work.sql(), token_id)
+            .await?
+            .filter(|order| {
+                matches!(order.status.as_str(), "removed" | "failed") && order.machine_id.is_none()
+            });
         machines::set_token_provider(&mut **work.sql(), token_id, provider_machine_id).await?;
         if let Some(machine_id) = token.consumed_machine_id {
             work.machine(
@@ -755,6 +1362,14 @@ impl Machines {
             .await?;
         }
         work.commit().await?;
+        if let Some(order) = cancelled {
+            self.state
+                .capacity()
+                .release(&format!("hosted-remove-{token_id}"), provider_machine_id)
+                .await?;
+            machines::mark_hosted_released(&self.state.pool, order.organisation_id, order.order_id)
+                .await?;
+        }
         Ok(())
     }
 
@@ -963,7 +1578,21 @@ impl Machines {
         organisation_id: Uuid,
         machine_id: Uuid,
     ) -> anyhow::Result<Option<MachineRow>> {
-        Ok(machines::organisation_machine(&self.state.pool, organisation_id, machine_id).await?)
+        if let Some(row) =
+            machines::organisation_machine(&self.state.pool, organisation_id, machine_id).await?
+        {
+            return Ok(Some(row));
+        }
+        let order = machines::hosted_orders(&self.state.pool, organisation_id)
+            .await?
+            .into_iter()
+            .find(|order| order.order_id == machine_id);
+        match order.and_then(|order| order.machine_id) {
+            Some(id) => {
+                Ok(machines::organisation_machine(&self.state.pool, organisation_id, id).await?)
+            }
+            None => Ok(None),
+        }
     }
 
     /// The organisation's desired-state key, made on first use.
@@ -1091,6 +1720,186 @@ pub fn base32(bytes: &[u8]) -> String {
         out.push(ALPHABET[((buffer << (5 - bits)) & 31) as usize] as char);
     }
     out
+}
+
+/// Reconciles uncertain hosted provisions and cancelled assignments.
+pub struct HostedRecovery {
+    state: State,
+}
+
+impl HostedRecovery {
+    pub fn new(state: State) -> Self {
+        Self { state }
+    }
+
+    async fn pass(&self) -> anyhow::Result<()> {
+        let machines = self.state.machines();
+        for _ in 0..20 {
+            let Some(order) = machines::claim_hosted_recovery(&self.state.pool).await? else {
+                break;
+            };
+            if let Err(error) = self.reconcile(&machines, &order).await {
+                tracing::warn!(error = %error, "hosted machine reconciliation will retry");
+            }
+            machines::retry_hosted_later(&self.state.pool, order.organisation_id, order.order_id)
+                .await?;
+        }
+        for _ in 0..20 {
+            let Some((organisation_id, order_id, machine_id)) =
+                machines::claim_hosted_rebuild(&self.state.pool).await?
+            else {
+                break;
+            };
+            let requested = match machines.pool_machine(machine_id).await {
+                Ok(Some(row)) if row.state == "returning" => {
+                    match machines.request_rebuild(Uuid::nil(), &row).await {
+                        Ok(ProviderStep::Requested) => true,
+                        Ok(step) => {
+                            tracing::warn!(?step, "hosted machine wipe will retry");
+                            false
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "hosted machine wipe will retry");
+                            false
+                        }
+                    }
+                }
+                Ok(Some(row)) if row.state == "available" => true,
+                Ok(_) => false,
+                Err(error) => {
+                    tracing::warn!(%error, "hosted machine lookup will retry");
+                    false
+                }
+            };
+            machines::finish_hosted_rebuild(&self.state.pool, organisation_id, order_id, requested)
+                .await?;
+        }
+        for (organisation_id, order_id, provider_id, token_id) in
+            machines::hosted_unreleased(&self.state.pool).await?
+        {
+            match self
+                .state
+                .capacity()
+                .release(&format!("hosted-remove-{token_id}"), &provider_id)
+                .await
+            {
+                Ok(()) => {
+                    machines::mark_hosted_released(&self.state.pool, organisation_id, order_id)
+                        .await?
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, "hosted machine cancellation will retry")
+                }
+            }
+        }
+        for (organisation_id, order_id, token_id) in
+            machines::hosted_unresolved_cancellations(&self.state.pool).await?
+        {
+            match self
+                .state
+                .capacity()
+                .get_provision(&token_id.to_string())
+                .await
+            {
+                Ok(Some(provider_id)) => {
+                    machines
+                        .link_provider(Uuid::nil(), token_id, &provider_id)
+                        .await?;
+                }
+                Ok(None) => {
+                    machines::mark_hosted_released(&self.state.pool, organisation_id, order_id)
+                        .await?
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, "hosted machine cancellation lookup will retry")
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn reconcile(
+        &self,
+        machines_service: &Machines,
+        order: &machines::HostedOrder,
+    ) -> anyhow::Result<()> {
+        let Some(token_id) = order.token_id else {
+            return Ok(());
+        };
+        let current = machines::hosted_order_by_token(&self.state.pool, token_id).await?;
+        if !current.is_some_and(|order| matches!(order.status.as_str(), "joining" | "active")) {
+            return Ok(());
+        }
+        let expiry = machines::hosted_token_expiry(&self.state.pool, token_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("hosted token missing"))?;
+        let capacity = self.state.capacity();
+        let provider = match machines::hosted_token_provider(&self.state.pool, token_id).await? {
+            Some(id) => Some(id),
+            None => capacity.get_provision(&token_id.to_string()).await?,
+        };
+        if expiry <= Utc::now() && order.status == "joining" {
+            let mut tx = self.state.pool.begin().await?;
+            machines::fail_hosted_token(&mut tx, token_id, "failed").await?;
+            tx.commit().await?;
+        }
+        if let Some(id) = provider {
+            machines_service
+                .link_provider(Uuid::nil(), token_id, &id)
+                .await?;
+        } else if expiry > Utc::now() && order.status == "joining" {
+            let token = machines_service.keys().hosted_token(token_id);
+            if !machines::hosted_token_provisionable(&self.state.pool, token_id).await? {
+                return Ok(());
+            }
+            match capacity
+                .provision(
+                    &token_id.to_string(),
+                    &self.state.config.public_origin().serialized,
+                    &token,
+                    expiry,
+                    &order.size,
+                    &order.region,
+                )
+                .await
+            {
+                Ok(id) => {
+                    machines_service
+                        .link_provider(Uuid::nil(), token_id, &id)
+                        .await?
+                }
+                Err(CapacityError::Refused(error)) => {
+                    tracing::warn!(error = %error, "hosted machine order refused");
+                    let mut tx = self.state.pool.begin().await?;
+                    machines::fail_hosted_token(&mut tx, token_id, "refused").await?;
+                    tx.commit().await?;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Component for HostedRecovery {
+    fn info(&self) -> ComponentInfo {
+        "grund/hosted-recovery".into()
+    }
+
+    async fn run(&self, cancellation: CancellationToken) -> Result<(), MadError> {
+        let mut tick = tokio::time::interval(StdDuration::from_secs(5));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                () = cancellation.cancelled() => return Ok(()),
+                _ = tick.tick() => {
+                    if let Err(error) = self.pass().await {
+                        tracing::warn!(error = %error, "hosted machine recovery will retry");
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Access to [`Machines`] from [`State`].

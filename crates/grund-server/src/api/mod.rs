@@ -41,6 +41,7 @@ pub mod edge;
 pub mod enrollment;
 pub mod login;
 pub mod machine;
+pub mod operator;
 pub mod organisation;
 pub mod registry;
 pub mod relay_access;
@@ -68,6 +69,7 @@ use grund_proto::grund::{
     edge::v1::{EDGE_ENROLLMENT_SERVICE_SERVICE_NAME, EDGE_SERVICE_SERVICE_NAME},
     login::v1::DEVICE_LOGIN_SERVICE_SERVICE_NAME,
     machine::v1::{MACHINE_SERVICE_SERVICE_NAME, MANAGEMENT_POOL_SERVICE_SERVICE_NAME},
+    operator::v1::OPERATOR_SERVICE_SERVICE_NAME,
     organisation::v1::ORGANISATION_SERVICE_SERVICE_NAME,
     registry::v1::REGISTRY_SERVICE_SERVICE_NAME,
     relay::v1::RELAY_ENROLLMENT_SERVICE_SERVICE_NAME,
@@ -196,6 +198,54 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
     (
         "/grund.agent.v1.MachineEnrollmentService/EnrollMachine",
         Requirement::Token,
+    ),
+    (
+        "/grund.operator.v1.OperatorService/ListHosts",
+        Requirement::Session,
+    ),
+    (
+        "/grund.operator.v1.OperatorService/ListFleetMachines",
+        Requirement::Session,
+    ),
+    (
+        "/grund.operator.v1.OperatorService/ListPools",
+        Requirement::Session,
+    ),
+    (
+        "/grund.operator.v1.OperatorService/ListFailures",
+        Requirement::Session,
+    ),
+    (
+        "/grund.operator.v1.OperatorService/CordonHost",
+        Requirement::Session,
+    ),
+    (
+        "/grund.operator.v1.OperatorService/UncordonHost",
+        Requirement::Session,
+    ),
+    (
+        "/grund.operator.v1.OperatorService/DrainHost",
+        Requirement::Session,
+    ),
+    (
+        "/grund.operator.v1.OperatorService/ListEntitlements",
+        Requirement::Session,
+    ),
+    (
+        "/grund.operator.v1.OperatorService/SetHostedEntitlement",
+        Requirement::Session,
+    ),
+    (
+        "/grund.machine.v1.MachineService/ListHostedOffers",
+        Requirement::SessionOrFullToken,
+    ),
+    (
+        "/grund.machine.v1.MachineService/CreateHostedMachine",
+        Requirement::SessionOrFullToken,
+    ),
+    (
+        "/grund.machine.v1.MachineService/RemoveHostedMachine",
+        Requirement::SessionOrFullToken,
     ),
     (
         "/grund.machine.v1.ManagementPoolService/CreateRegistrationToken",
@@ -483,6 +533,10 @@ pub fn router(state: State) -> axum::Router {
         )
         .route_service(
             &format!("/{MACHINE_SERVICE_SERVICE_NAME}/{{method}}"),
+            service.clone(),
+        )
+        .route_service(
+            &format!("/{OPERATOR_SERVICE_SERVICE_NAME}/{{method}}"),
             service.clone(),
         )
         .route_service(
@@ -882,6 +936,7 @@ pub fn connect_router(state: State) -> connectrpc::Router {
         .add_service(Arc::new(domain::DomainApi::new(state.clone())))
         .add_service(Arc::new(machine::ManagementPoolApi::new(state.clone())))
         .add_service(Arc::new(machine::MachineApi::new(state.clone())))
+        .add_service(Arc::new(operator::OperatorApi::new(state.clone())))
         .add_service(Arc::new(enrollment::EnrollmentApi::new(state.clone())))
         .add_service(Arc::new(relay_enrollment::RelayEnrollmentApi::new(
             state.clone(),
@@ -1159,7 +1214,7 @@ mod tests {
 
     use grund_proto::grund::{
         agent::v1 as agent, app::v1 as app_proto, certificates::v1 as certificates_proto,
-        machine::v1 as machine, organisation::v1 as org,
+        machine::v1 as machine, operator::v1 as operator_proto, organisation::v1 as org,
     };
 
     use super::*;
@@ -1354,6 +1409,27 @@ mod tests {
         ) -> ServiceResult<machine::CreateJoinTokenResponse> {
             unreachable!()
         }
+        async fn list_hosted_offers(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, machine::ListHostedOffersRequest>,
+        ) -> ServiceResult<machine::ListHostedOffersResponse> {
+            unreachable!()
+        }
+        async fn create_hosted_machine(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, machine::CreateHostedMachineRequest>,
+        ) -> ServiceResult<machine::CreateHostedMachineResponse> {
+            unreachable!()
+        }
+        async fn remove_hosted_machine(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, machine::RemoveHostedMachineRequest>,
+        ) -> ServiceResult<machine::RemoveHostedMachineResponse> {
+            unreachable!()
+        }
         async fn list_machines(
             &self,
             _: RequestContext,
@@ -1422,6 +1498,75 @@ mod tests {
             _: RequestContext,
             _: ServiceRequest<'_, machine::ListVmsRequest>,
         ) -> ServiceResult<machine::ListVmsResponse> {
+            unreachable!()
+        }
+    }
+
+    struct UnusedOperator;
+
+    #[allow(refining_impl_trait)]
+    impl operator_proto::OperatorService for UnusedOperator {
+        async fn list_hosts(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, operator_proto::ListHostsRequest>,
+        ) -> ServiceResult<operator_proto::ListHostsResponse> {
+            unreachable!()
+        }
+        async fn list_fleet_machines(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, operator_proto::ListFleetMachinesRequest>,
+        ) -> ServiceResult<operator_proto::ListFleetMachinesResponse> {
+            unreachable!()
+        }
+        async fn list_pools(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, operator_proto::ListPoolsRequest>,
+        ) -> ServiceResult<operator_proto::ListPoolsResponse> {
+            unreachable!()
+        }
+        async fn list_failures(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, operator_proto::ListFailuresRequest>,
+        ) -> ServiceResult<operator_proto::ListFailuresResponse> {
+            unreachable!()
+        }
+        async fn cordon_host(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, operator_proto::CordonHostRequest>,
+        ) -> ServiceResult<operator_proto::CordonHostResponse> {
+            unreachable!()
+        }
+        async fn uncordon_host(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, operator_proto::UncordonHostRequest>,
+        ) -> ServiceResult<operator_proto::UncordonHostResponse> {
+            unreachable!()
+        }
+        async fn drain_host(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, operator_proto::DrainHostRequest>,
+        ) -> ServiceResult<operator_proto::DrainHostResponse> {
+            unreachable!()
+        }
+        async fn list_entitlements(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, operator_proto::ListEntitlementsRequest>,
+        ) -> ServiceResult<operator_proto::ListEntitlementsResponse> {
+            unreachable!()
+        }
+        async fn set_hosted_entitlement(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, operator_proto::SetHostedEntitlementRequest>,
+        ) -> ServiceResult<operator_proto::SetHostedEntitlementResponse> {
             unreachable!()
         }
     }
@@ -2069,6 +2214,7 @@ mod tests {
             .add_service(Arc::new(UnusedOrganisations))
             .add_service(Arc::new(UnusedPool))
             .add_service(Arc::new(UnusedMachines))
+            .add_service(Arc::new(UnusedOperator))
             .add_service(Arc::new(UnusedEnrollment))
             .add_service(Arc::new(UnusedRelayEnrollment))
             .add_service(Arc::new(UnusedEdges))

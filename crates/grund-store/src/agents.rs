@@ -101,6 +101,7 @@ pub struct VmRow {
     pub organisation_id: Uuid,
     pub host_machine_id: Uuid,
     pub host_name: Option<String>,
+    pub host_pool: Option<String>,
     pub name: String,
     pub vcpus: i32,
     pub memory_mib: i32,
@@ -119,7 +120,7 @@ pub struct VmRow {
 macro_rules! select_vms {
     ($tail:literal) => {
         concat!(
-            "SELECT v.vm_id, v.organisation_id, v.host_machine_id, h.pool_name AS host_name, v.name, \
+            "SELECT v.vm_id, v.organisation_id, v.host_machine_id, h.pool_name AS host_name, h.pool AS host_pool, v.name, \
                v.vcpus, v.memory_mib, v.disk_gib, v.kernel_url, v.kernel_sha256, v.rootfs_url, \
                v.rootfs_sha256, v.state, v.observed_state, v.observed_reason, v.machine_id, \
                v.created_at \

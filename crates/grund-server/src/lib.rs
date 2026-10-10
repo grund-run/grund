@@ -153,6 +153,7 @@ pub async fn serve(
         .add(services::apps::AppReconciler::new(state.clone()))
         .add(services::entry::EntryKeys::new(state.clone()))
         .add(services::maintenance::Sweeper::new(state.clone()))
+        .add(services::machines::HostedRecovery::new(state.clone()))
         .add(certificates::CertificateWork::new(&state))
         .add(sagas::DeletionWorker::new(&state))
         .add(services::outbox::OutboxDrain::new(

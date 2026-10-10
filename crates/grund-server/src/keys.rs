@@ -43,6 +43,19 @@ impl Keys {
         SigningKey::from_bytes(&self.secret.derive(&format!("ed25519/{key_id}")))
     }
 
+    /// Reconstructs a hosted enrollment token after an ambiguous provider call.
+    /// The database keeps only its digest, while a retry of the provider's
+    /// idempotency key needs the identical token and expiry.
+    pub fn hosted_token(&self, token_id: Uuid) -> String {
+        format!(
+            "{}{}",
+            grund_domain::machine::TokenKind::Management.prefix(),
+            crate::services::machines::base32(
+                &self.secret.derive(&format!("hosted-enrollment/{token_id}"))
+            )
+        )
+    }
+
     /// The public half of the key with this id.
     pub fn public(&self, key_id: Uuid) -> [u8; 32] {
         self.signing_key(key_id).verifying_key().to_bytes()

@@ -1810,6 +1810,7 @@ dependencies = [
  "grund-vm",
  "hex",
  "iroh",
+ "parking_lot",
  "rcgen",
  "rustls",
  "serde_json",
@@ -1880,6 +1881,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "uuid",
  "webpki-roots 1.0.9",
 ]
 

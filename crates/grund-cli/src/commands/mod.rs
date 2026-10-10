@@ -6,6 +6,7 @@ pub mod auth;
 pub mod domains;
 pub mod machines;
 pub mod members;
+pub mod operator;
 pub mod orgs;
 pub mod registries;
 pub mod selfdesc;
@@ -54,7 +55,9 @@ pub enum Command {
         about = "Apps: list, status, deploy from grund.yaml or flags, change a setting, roll back, delete. Operators: grund operator apps suspend|lift"
     )]
     Apps(Box<apps::AppsCommand>),
-    #[command(about = "Machines: list, add with a setup code, labels, out of service, remove")]
+    #[command(
+        about = "Machines: list, create hosted, add your own, labels, out of service, remove"
+    )]
     Machines(machines::MachinesCommand),
     #[command(about = "Custom domains: add, verify, bind to an app, unbind, remove")]
     Domains(domains::DomainsCommand),
