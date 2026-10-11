@@ -74,10 +74,7 @@ kjuulh: "kubernetes-app": {
 					GRUND_VM_ROOTFS_SHA256:  "da6278094d71efd66f1c2b8eac27ef9a1e658bdf0f9b896b9f1465c0f956a332"
 					// The management pool (grund-docs design/machines.md §7a): its
 					// machines come from the capacity provider in this namespace.
-					// Keep the existing operator id until its owner renames that
-					// organisation to admin; then the default resolves admin.
-					GRUND_CAPACITY_URL:          "http://grund-fleet:8480"
-					GRUND_OPERATOR_ORGANISATION: "01a117a9-e780-72af-b063-fc46f89d9d73"
+					GRUND_CAPACITY_URL: "http://grund-fleet:8480"
 				}
 				// grund-secrets is applied by the cluster's operators, not by
 				// forest. Dev's smtp_url is the namespace's shared development
