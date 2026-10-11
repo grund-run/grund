@@ -16,6 +16,9 @@ component Tag(text: &str) {
 component Pill(text: &str, tone: &str, plain: bool) {
 <span class={if *plain { "pill pill-plain" } else { "pill" }}>{if !tone.is_empty() { <span class="dot tone-{tone}" aria-hidden="true"></span> }}{text}</span>
 }
+component RowPill(text: &str, tone: &str) {
+<span class="row-status"><Pill text={text} tone={tone} /></span>
+}
 component ImageIcon(key: &str, size: &str) {
 {if *key == "image" {
   <span class="image-icon{if !size.is_empty() { " image-icon-" } else { "" }}{size} image-icon-neutral" aria-hidden="true"><Icon name="box" /></span>
