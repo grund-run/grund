@@ -39,8 +39,8 @@ component InboxColumn(children: Html) {
 component NotificationRows(items: &[crate::web::notifications::NotificationView], csrf: &str) {
 <Rows>
   {for item in items.iter() {
-    <Row name={item.text.as_str()} href={item.href.as_str()} sub={item.when.as_str()} icon_name="bell" tone={if item.unread { "blue" } else { "muted" }} status_text={if item.unread { Some("Unread") } else { None }} status_tone="blue">
-      <:name_suffix>{if item.repeats > 1 { <span class="tag">×{item.repeats}</span> }}</:name_suffix>
+    <Row name={item.text.as_str()} href={item.href.as_str()} sub={item.when.as_str()} icon_name="bell" tone={if item.unread { "blue" } else { "muted" }}>
+      <:name_suffix>{if item.unread { <span class="dot tone-blue" aria-hidden="true"></span><span class="visually-hidden"> Unread</span> }}{if item.repeats > 1 { <span class="tag">×{item.repeats}</span> }}</:name_suffix>
       <:end>{if item.unread { <PostButton action={format!("/notifications/{}/read", item.id)} csrf={csrf} label="Mark read" kind="secondary" size="sm" /> }}</:end>
     </Row>
   }}

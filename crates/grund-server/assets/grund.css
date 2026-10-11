@@ -2747,6 +2747,11 @@ a.endpoint-text:hover {
   overflow-wrap: anywhere;
 }
 
+.inbox-column .row-name .dot {
+  display: inline-block;
+  vertical-align: middle;
+}
+
 /* ------------------------------------------------------------ small screens */
 @media (max-width: 900px) {
   .inbox-column .row {
