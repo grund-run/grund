@@ -330,7 +330,7 @@ pub async fn admin_page(
                         || "Unknown".to_owned(),
                         |at| at.format("%-d %b %Y %H:%M UTC").to_string(),
                     ),
-                    end: "Until ended by an operator",
+                    end: "when removed",
                 })
                 .collect();
         }
