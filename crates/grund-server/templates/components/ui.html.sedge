@@ -61,7 +61,7 @@ component CopyButton(text: &str, label: &str, labelled: bool) {
 }}
 }
 component ShortId(text: &str, label: &str) {
-<span class="address"><code class="address-text" title={text}>{crate::templates::short_id(text)}</code><CopyButton text={text} label={label} /></span>
+<span class="address"><code class="mono" title={text}>{crate::templates::short_id(text)}</code><CopyButton text={text} label={label} /></span>
 }
 component RelativeTime(value: &str, now: chrono::DateTime<chrono::Utc>) {
 {if value.is_empty() { Not reported } else { <time datetime={value} title={crate::web::time::absolute(value)}>{crate::web::time::display(value, *now)}</time> }}
