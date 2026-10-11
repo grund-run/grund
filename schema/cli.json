@@ -5316,6 +5316,24 @@
           "value_name": "PROXY_PROTOCOL_FROM"
         },
         {
+          "default": "1500",
+          "description": "Milliseconds allowed for the complete dial, stream open and gate answer on each candidate (default 1500, at most 5000)",
+          "env": "GRUND_EDGE_SETUP_ATTEMPT_MS",
+          "flag": "--setup-attempt-ms",
+          "name": "setup_attempt_ms",
+          "type": "integer",
+          "value_name": "SETUP_ATTEMPT_MS"
+        },
+        {
+          "default": "4000",
+          "description": "Milliseconds for all candidates before forwarding client bytes (default 4000, at most 10000)",
+          "env": "GRUND_EDGE_SETUP_TOTAL_MS",
+          "flag": "--setup-total-ms",
+          "name": "setup_total_ms",
+          "type": "integer",
+          "value_name": "SETUP_TOTAL_MS"
+        },
+        {
           "default": "10",
           "description": "Seconds to finish open connections on SIGTERM",
           "env": "GRUND_SHUTDOWN_GRACE",

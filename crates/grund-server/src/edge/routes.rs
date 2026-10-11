@@ -32,7 +32,7 @@ pub struct Route {
     pub custom_domain: bool,
     /// The machines' endpoint ids, with the relays to dial each through:
     /// its home relay, or every relay of the table when it reported none.
-    pub machines: Vec<(String, Vec<String>)>,
+    pub machines: Vec<(String, Vec<String>, u32, bool)>,
 }
 
 /// The table in force.
@@ -65,7 +65,12 @@ impl Table {
                                 } else {
                                     vec![m.relay_url.clone()]
                                 };
-                                (m.endpoint_id.clone(), relays)
+                                (
+                                    m.endpoint_id.clone(),
+                                    relays,
+                                    m.ready_copies,
+                                    m.migration_paused,
+                                )
                             })
                             .collect(),
                     }),

@@ -75,6 +75,7 @@ use grund_proto::grund::{
     relay::v1::RELAY_ENROLLMENT_SERVICE_SERVICE_NAME,
     token::v1::TOKEN_SERVICE_SERVICE_NAME,
 };
+use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
 use crate::{
@@ -102,6 +103,10 @@ pub struct Caller {
 /// enrollment), for its rate limit. Stamped by [`stamp_address`].
 #[derive(Debug, Clone)]
 pub struct ClientAddress(pub String);
+
+/// The configured capacity provider, authenticated with its shared token.
+#[derive(Debug, Clone, Copy)]
+pub struct CapacityCaller;
 
 /// What a procedure requires of its caller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,6 +139,8 @@ pub enum Requirement {
     /// An enrolled `grund edge`, proven by its key's signature
     /// ([`authenticate_edge`]): its route table and usage.
     Edge,
+    /// Fleet, authenticated by GRUND_CAPACITY_TOKEN for a management machine.
+    Capacity,
 }
 
 /// Every procedure and what it requires. A procedure missing here is denied,
@@ -282,6 +289,10 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
     (
         "/grund.machine.v1.ManagementPoolService/RebuildPoolMachine",
         Requirement::Session,
+    ),
+    (
+        "/grund.machine.v1.ManagementPoolService/SetMigrationPause",
+        Requirement::Capacity,
     ),
     (
         "/grund.machine.v1.MachineService/CreateJoinToken",
@@ -972,6 +983,21 @@ pub async fn authenticate(
             .unwrap_or_default()
             .trim()
             .to_string();
+        if request.uri().path() == "/grund.machine.v1.ManagementPoolService/SetMigrationPause" {
+            let valid = state
+                .config
+                .capacity
+                .capacity_token
+                .as_deref()
+                .is_some_and(|expected| bool::from(token.as_bytes().ct_eq(expected.as_bytes())));
+            if !valid {
+                return refuse(ConnectError::unauthenticated(
+                    "the capacity provider token is not configured or was refused",
+                ));
+            }
+            request.extensions_mut().insert(CapacityCaller);
+            return finish(next.run(request).await);
+        }
         if token.starts_with(crate::services::sessions::CLI_PREFIX) {
             let session = match state.sessions().authenticate_cli(&token).await {
                 Ok(Some(session)) => session,
@@ -1087,6 +1113,10 @@ pub fn authorized(ctx: &connectrpc::RequestContext) -> Result<(), ConnectError> 
             None => Err(ConnectError::unauthenticated("sign in first")),
         },
         Some(Requirement::Token | Requirement::Public) => Ok(()),
+        Some(Requirement::Capacity) if extensions.get::<CapacityCaller>().is_some() => Ok(()),
+        Some(Requirement::Capacity) => Err(ConnectError::unauthenticated(
+            "the capacity provider token is required",
+        )),
         Some(Requirement::Machine)
             if extensions
                 .get::<crate::services::agents::MachineCaller>()
@@ -1394,6 +1424,13 @@ mod tests {
             _: RequestContext,
             _: ServiceRequest<'_, machine::RebuildPoolMachineRequest>,
         ) -> ServiceResult<machine::RebuildPoolMachineResponse> {
+            unreachable!()
+        }
+        async fn set_migration_pause(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, machine::SetMigrationPauseRequest>,
+        ) -> ServiceResult<machine::SetMigrationPauseResponse> {
             unreachable!()
         }
     }

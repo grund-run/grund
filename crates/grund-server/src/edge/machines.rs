@@ -211,15 +211,23 @@ impl Pool {
         any
     }
 
-    /// The machines for `name` in the order to try them: those not ejected
-    /// for it, the first by two random choices on load, then the ejected
-    /// ones, soonest back first, as a last resort.
-    pub fn order(&self, name: &str, machines: &[(String, Vec<String>)]) -> Vec<Arc<Machine>> {
+    /// The machines for `name` in the order to try them: ready healthy
+    /// machines, running healthy fallbacks, then ejected ones. A planned
+    /// migration never receives new connections.
+    pub fn order(
+        &self,
+        name: &str,
+        machines: &[(String, Vec<String>, u32, bool)],
+    ) -> Vec<Arc<Machine>> {
         let now = Instant::now();
         let mut known = self.machines.lock().expect("pool lock");
-        let mut ok = Vec::new();
+        let mut ready = Vec::new();
+        let mut running = Vec::new();
         let mut ejected = Vec::new();
-        for (endpoint_id, relays) in machines {
+        for (endpoint_id, relays, ready_copies, migration_paused) in machines {
+            if *migration_paused {
+                continue;
+            }
             let Ok(id) = EndpointId::from_str(endpoint_id) else {
                 continue;
             };
@@ -231,27 +239,33 @@ impl Pool {
                 .iter()
                 .filter_map(|r| RelayUrl::from_str(r).ok())
                 .collect();
+            machine.ready.store((*ready_copies).max(1), Relaxed);
             match machine.ejected_for(name, now) {
                 Some(until) => ejected.push((until, machine)),
-                None => ok.push(machine),
+                None if *ready_copies > 0 => ready.push(machine),
+                None => running.push(machine),
             }
         }
-        if ok.len() >= 2 {
-            let first = random_below(ok.len());
-            let mut second = random_below(ok.len() - 1);
-            if second >= first {
-                second += 1;
+        for candidates in [&mut ready, &mut running] {
+            if candidates.len() >= 2 {
+                let first = random_below(candidates.len());
+                let mut second = random_below(candidates.len() - 1);
+                if second >= first {
+                    second += 1;
+                }
+                let pick = if candidates[first].load() <= candidates[second].load() {
+                    first
+                } else {
+                    second
+                };
+                candidates.swap(0, pick);
             }
-            let pick = if ok[first].load() <= ok[second].load() {
-                first
-            } else {
-                second
-            };
-            ok.swap(0, pick);
         }
         ejected.sort_by_key(|(until, _)| *until);
-        ok.into_iter()
-            .chain(ejected.into_iter().map(|(_, m)| m))
+        ready
+            .into_iter()
+            .chain(running)
+            .chain(ejected.into_iter().map(|(_, machine)| machine))
             .collect()
     }
 
@@ -359,6 +373,37 @@ impl Pool {
         rtt.map_or(ANSWER_MIN, |rtt| (rtt * 3).clamp(ANSWER_MIN, ANSWER_MAX))
     }
 
+    async fn drain_one(machine: &Machine) -> bool {
+        let notice = async {
+            let Some((connection, _)) = machine.connection.lock().await.clone() else {
+                return anyhow::Ok(false);
+            };
+            let mut send = connection.open_uni().await?;
+            send.write_all(grund_entry::DRAIN).await?;
+            send.finish()?;
+            anyhow::Ok(true)
+        };
+        matches!(
+            tokio::time::timeout(Duration::from_secs(1), notice).await,
+            Ok(Ok(true))
+        )
+    }
+
+    /// Asks one machine's gate to close its idle client connections before
+    /// fleet pauses that machine. The client requests in flight finish.
+    pub async fn drain_machine(&self, endpoint_id: EndpointId) -> bool {
+        let machine = self
+            .machines
+            .lock()
+            .expect("pool lock")
+            .get(&endpoint_id)
+            .cloned();
+        match machine {
+            Some(machine) => Self::drain_one(&machine).await,
+            None => false,
+        }
+    }
+
     /// Tells every machine the edge holds a connection to that it is
     /// stopping ([`grund_entry::DRAIN`]), so its gate closes each client
     /// connection after the current request. Returns how many were told.
@@ -372,19 +417,7 @@ impl Pool {
             .collect();
         let mut told = 0;
         for machine in machines {
-            let connection = machine.connection.lock().await.clone();
-            let Some((connection, _)) = connection else {
-                continue;
-            };
-            let notice = async {
-                let mut send = connection.open_uni().await?;
-                send.write_all(grund_entry::DRAIN).await?;
-                send.finish()?;
-                anyhow::Ok(())
-            };
-            if let Ok(Ok(())) = tokio::time::timeout(Duration::from_secs(1), notice).await {
-                told += 1;
-            }
+            told += usize::from(Self::drain_one(&machine).await);
         }
         told
     }
@@ -441,5 +474,35 @@ mod tests {
             m.ejected_for("blog.grund.run", Instant::now()).is_some(),
             "every address"
         );
+    }
+    #[tokio::test]
+    async fn a_ready_machine_precedes_an_unready_one_and_a_stall_is_skipped() {
+        let endpoint = Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .secret_key(iroh::SecretKey::from_bytes(&[2; 32]))
+            .relay_mode(iroh::RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let pool = Pool::new(endpoint);
+        let ready = iroh::SecretKey::from_bytes(&[3; 32]).public().to_string();
+        let fallback = iroh::SecretKey::from_bytes(&[4; 32]).public().to_string();
+        let route = vec![
+            (fallback.clone(), vec![], 0, false),
+            (ready.clone(), vec![], 1, false),
+        ];
+        let selected = pool.order("photos.grund.run", &route);
+        assert_eq!(selected[0].endpoint_id.to_string(), ready);
+        selected[0].eject("photos.grund.run");
+        let selected = pool.order("photos.grund.run", &route);
+        assert_eq!(selected[0].endpoint_id.to_string(), fallback);
+        let selected = pool.order("blog.grund.run", &route);
+        assert_eq!(selected[0].endpoint_id.to_string(), ready);
+        let route = vec![
+            (fallback.clone(), vec![], 1, true),
+            (ready.clone(), vec![], 1, false),
+        ];
+        let selected = pool.order("photos.grund.run", &route);
+        assert_eq!(selected.len(), 1, "a migration pause excludes its machine");
+        assert_eq!(selected[0].endpoint_id.to_string(), ready);
     }
 }

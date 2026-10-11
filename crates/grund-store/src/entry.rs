@@ -21,6 +21,8 @@ pub struct RouteRow {
     pub replica_id: Option<Uuid>,
     pub machine_id: Option<Uuid>,
     pub spec: Option<Json<grund_domain::app::AppSpec>>,
+    pub ready: bool,
+    pub migration_paused: bool,
     /// The machine's key, lowercase hex: its iroh endpoint id.
     pub machine_key: Option<String>,
     pub last_seen_at: Option<DateTime<Utc>>,
@@ -32,8 +34,10 @@ pub async fn route_rows(executor: impl PgExecutor<'_>) -> Result<Vec<RouteRow>, 
     sqlx::query_as(
         "SELECT a.app_id, a.organisation_id, a.name AS app_name, o.slug AS organisation_slug, \
                 a.created_at AS app_created_at, (s.app_id IS NOT NULL) AS suspended, \
-                cur.spec AS current_spec, r.replica_id, r.machine_id, rel.spec, m.public_key AS machine_key, \
-                p.last_seen_at, \
+                cur.spec AS current_spec, r.replica_id, r.machine_id, rel.spec, \
+                COALESCE(rs.ready, false) AS ready, \
+                (pause.machine_id IS NOT NULL) AS migration_paused, \
+                m.public_key AS machine_key, p.last_seen_at, \
                 (SELECT ns.home_relay_url FROM grund_network_slots ns \
                   WHERE ns.machine_id = r.machine_id AND ns.freed_at IS NULL \
                   ORDER BY ns.assigned_at DESC LIMIT 1) AS relay_url \
@@ -43,13 +47,59 @@ pub async fn route_rows(executor: impl PgExecutor<'_>) -> Result<Vec<RouteRow>, 
            LEFT JOIN grund_releases cur ON cur.app_id = a.app_id AND cur.number = a.current_release \
            LEFT JOIN grund_replicas r ON r.app_id = a.app_id AND r.state = 'running' \
            LEFT JOIN grund_releases rel ON rel.app_id = r.app_id AND rel.number = r.release \
+           LEFT JOIN grund_replica_status rs ON rs.replica_id = r.replica_id AND rs.machine_id = r.machine_id \
            LEFT JOIN grund_machines m ON m.machine_id = r.machine_id AND m.state <> 'revoked' \
            LEFT JOIN grund_machine_presence p ON p.machine_id = r.machine_id \
+           LEFT JOIN grund_machine_migration_pauses pause \
+             ON pause.machine_id = m.machine_id AND pause.expires_at > clock_timestamp() \
           WHERE a.deleted_at IS NULL \
           ORDER BY a.created_at, a.app_id, r.machine_id, r.replica_id",
     )
     .fetch_all(executor)
     .await
+}
+
+/// Records a bounded pause for a provider-owned management machine, or clears
+/// only the migration that set it. An unknown provider id has the same result
+/// as a revoked machine.
+pub async fn set_migration_pause(
+    executor: impl PgExecutor<'_>,
+    provider_machine_id: &str,
+    migration_id: Uuid,
+    paused: bool,
+) -> Result<bool, sqlx::Error> {
+    if paused {
+        let row: Option<Uuid> = sqlx::query_scalar(
+            "INSERT INTO grund_machine_migration_pauses (machine_id, migration_id, expires_at) \
+             SELECT machine_id, $2, clock_timestamp() + interval '120 seconds' \
+               FROM grund_machines WHERE provider_machine_id = $1 \
+                 AND pool = 'management' AND state <> 'revoked' \
+               ORDER BY registered_at DESC LIMIT 1 \
+             ON CONFLICT (machine_id) DO UPDATE SET migration_id = EXCLUDED.migration_id, \
+                 expires_at = EXCLUDED.expires_at \
+               WHERE grund_machine_migration_pauses.migration_id = EXCLUDED.migration_id \
+                  OR grund_machine_migration_pauses.expires_at <= clock_timestamp() \
+             RETURNING machine_id",
+        )
+        .bind(provider_machine_id)
+        .bind(migration_id)
+        .fetch_optional(executor)
+        .await?;
+        Ok(row.is_some())
+    } else {
+        sqlx::query_scalar(
+            "WITH machine AS (SELECT machine_id FROM grund_machines \
+               WHERE provider_machine_id = $1 AND pool = 'management' AND state <> 'revoked' \
+               ORDER BY registered_at DESC LIMIT 1), \
+             cleared AS (DELETE FROM grund_machine_migration_pauses p USING machine m \
+               WHERE p.machine_id = m.machine_id AND p.migration_id = $2 RETURNING p.machine_id) \
+             SELECT EXISTS(SELECT 1 FROM machine)",
+        )
+        .bind(provider_machine_id)
+        .bind(migration_id)
+        .fetch_one(executor)
+        .await
+    }
 }
 
 /// A live app's name and its organisation's slug, with when it was made.

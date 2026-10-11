@@ -13,11 +13,10 @@
 //!   machine with a copy gets a new document ([`EntryKeys`], a notmad
 //!   component, polling every 5 s).
 //! - **The route table**: per address, the machines with a running (not
-//!   draining) copy that were seen in the last 30 s (apps.md §9.2), their
-//!   keys and home relays, and whether the app is suspended. Every custom
-//!   domain bound to an app that has an address gets the same route, marked
-//!   `custom_domain` (app-domains.md §3). Its version is a digest of its
-//!   content, so an edge holding the newest table waits.
+//!   draining) copy seen in the last 30 s, the number ready on each, their
+//!   keys and home relays, and whether suspended. Every custom domain bound
+//!   to an app with an address gets the same route, marked `custom_domain`
+//!   (app-domains.md §3). Its version is a digest of its content.
 
 use std::{collections::BTreeMap, time::Duration};
 
@@ -163,17 +162,24 @@ impl Entry {
                     self.state.hearing.seen(row.last_seen_at),
                     now,
                 )
-                || route
-                    .machines
-                    .iter()
-                    .any(|m| m.machine_id == machine_id.to_string())
             {
                 continue;
             }
+            let machine_id = machine_id.to_string();
+            if let Some(machine) = route
+                .machines
+                .iter_mut()
+                .find(|m| m.machine_id == machine_id)
+            {
+                machine.ready_copies += u32::from(row.ready);
+                continue;
+            }
             route.machines.push(edge::RouteMachine {
-                machine_id: machine_id.to_string(),
+                machine_id,
                 endpoint_id: key.clone(),
                 relay_url: row.relay_url.clone().unwrap_or_default(),
+                ready_copies: u32::from(row.ready),
+                migration_paused: row.migration_paused,
                 ..Default::default()
             });
         }
@@ -221,6 +227,27 @@ impl Entry {
             }
             crate::wakes::Wakes::wait(&mut wakes).await;
         }
+    }
+
+    /// Fleet's short-lived warning before a management machine migrates.
+    /// A later migration cannot be cleared by an earlier completion.
+    pub async fn set_migration_pause(
+        &self,
+        provider_machine_id: &str,
+        migration_id: Uuid,
+        paused: bool,
+    ) -> anyhow::Result<bool> {
+        let found = grund_store::entry::set_migration_pause(
+            &self.state.pool,
+            provider_machine_id,
+            migration_id,
+            paused,
+        )
+        .await?;
+        if found {
+            self.state.wakes.documents_changed();
+        }
+        Ok(found)
     }
 
     /// Adds an edge's report of entry bytes, once per report id.

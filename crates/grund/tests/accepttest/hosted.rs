@@ -63,6 +63,119 @@ async fn pool_call(
 }
 
 #[tokio::test]
+async fn migration_pause_requires_capacity_token_and_only_its_owner_can_clear_it()
+-> anyhow::Result<()> {
+    use crate::accepttest::fixtures::{CAPACITY_TOKEN, FakeCapacity};
+
+    let capacity = FakeCapacity::start().await?;
+    let operator = format!("ops-{}", random_hex(4));
+    let Some((given, when, then)) = testcase_configured(&[
+        ("GRUND_OPERATOR_ORGANISATION", &operator),
+        ("GRUND_CAPACITY_URL", &capacity.url),
+        ("GRUND_CAPACITY_TOKEN", CAPACITY_TOKEN),
+    ])
+    .await?
+    else {
+        return Ok(());
+    };
+    let Some(database_url) = when.testcase.fixture.database_url() else {
+        return Ok(());
+    };
+    given.a_signed_in_account_named(&operator).await?;
+    let token = pool_call(
+        &when,
+        &then,
+        "CreateRegistrationToken",
+        json!({"name": "gm-pause"}),
+    )
+    .await?["token"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let dir = joined_with(&when, &token).await?;
+    let record: Value = serde_json::from_slice(&std::fs::read(dir.join("machine.json"))?)?;
+    let machine_id = record["machine_id"].as_str().unwrap_or_default();
+    let provider_id = "8eb3976b-130b-4437-923d-27b58d20f921";
+    let pool = sqlx::PgPool::connect(&database_url).await?;
+    sqlx::query("UPDATE grund_machines SET provider_machine_id = $1 WHERE machine_id = $2")
+        .bind(provider_id)
+        .bind(sqlx::types::Uuid::parse_str(machine_id)?)
+        .execute(&pool)
+        .await?;
+    let procedure = format!("{POOL}/SetMigrationPause");
+    let migration_id = "60fe5784-ac41-4113-a4e8-16ef838106bc";
+    let other_migration = "35d10c1d-f471-47e7-845d-2eddf0e6dc5a";
+    let pause = json!({"providerMachineId":provider_id,"migrationId":migration_id,"paused":true});
+    when.calling(&procedure, &pause.to_string()).await?;
+    then.status(401)?.connect_code("unauthenticated")?;
+    when.calling_with(
+        &procedure,
+        &pause.to_string(),
+        &[("Authorization", "Bearer wrong")],
+    )
+    .await?;
+    then.status(401)?.connect_code("unauthenticated")?;
+    when.calling_with(
+        &procedure,
+        &pause.to_string(),
+        &[("Authorization", &format!("Bearer {CAPACITY_TOKEN}"))],
+    )
+    .await?;
+    then.status(200)?;
+    let recorded: String = sqlx::query_scalar(
+        "SELECT migration_id::text FROM grund_machine_migration_pauses WHERE machine_id = $1 AND expires_at > now()",
+    )
+    .bind(sqlx::types::Uuid::parse_str(machine_id)?)
+    .fetch_one(&pool)
+    .await?;
+    anyhow::ensure!(
+        recorded == migration_id,
+        "wrong migration paused: {recorded}"
+    );
+    let other_pause =
+        json!({"providerMachineId":provider_id,"migrationId":other_migration,"paused":true});
+    when.calling_with(
+        &procedure,
+        &other_pause.to_string(),
+        &[("Authorization", &format!("Bearer {CAPACITY_TOKEN}"))],
+    )
+    .await?;
+    then.status(404)?.connect_code("not_found")?;
+    let clear =
+        json!({"providerMachineId":provider_id,"migrationId":other_migration,"paused":false});
+    when.calling_with(
+        &procedure,
+        &clear.to_string(),
+        &[("Authorization", &format!("Bearer {CAPACITY_TOKEN}"))],
+    )
+    .await?;
+    then.status(200)?;
+    let still_paused: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM grund_machine_migration_pauses WHERE machine_id = $1)",
+    )
+    .bind(sqlx::types::Uuid::parse_str(machine_id)?)
+    .fetch_one(&pool)
+    .await?;
+    anyhow::ensure!(still_paused, "a different migration cleared the drain");
+    let clear = json!({"providerMachineId":provider_id,"migrationId":migration_id,"paused":false});
+    when.calling_with(
+        &procedure,
+        &clear.to_string(),
+        &[("Authorization", &format!("Bearer {CAPACITY_TOKEN}"))],
+    )
+    .await?;
+    then.status(200)?;
+    let still_paused: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM grund_machine_migration_pauses WHERE machine_id = $1)",
+    )
+    .bind(sqlx::types::Uuid::parse_str(machine_id)?)
+    .fetch_one(&pool)
+    .await?;
+    anyhow::ensure!(!still_paused, "the owned migration pause was not cleared");
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_leased_machine_runs_its_lessees_apps_and_drops_them_when_the_lease_ends()
 -> anyhow::Result<()> {
     let registry = FakeRegistry::start().await?;

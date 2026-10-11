@@ -25,7 +25,7 @@ pub mod proxy;
 pub mod routes;
 pub mod serve;
 
-use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
+use std::{collections::HashSet, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::Context;
 use buffa::Message;
@@ -91,6 +91,16 @@ pub struct EdgeCommand {
     #[arg(long, env = "GRUND_EDGE_PROXY_PROTOCOL_FROM", value_delimiter = ',')]
     pub proxy_protocol_from: Vec<proxy::Source>,
 
+    /// Milliseconds allowed for the complete dial, stream open and gate
+    /// answer on each candidate (default 1500, at most 5000).
+    #[arg(long, env = "GRUND_EDGE_SETUP_ATTEMPT_MS", default_value_t = 1500)]
+    pub setup_attempt_ms: u64,
+
+    /// Milliseconds for all candidates before forwarding client bytes
+    /// (default 4000, at most 10000).
+    #[arg(long, env = "GRUND_EDGE_SETUP_TOTAL_MS", default_value_t = 4000)]
+    pub setup_total_ms: u64,
+
     /// Seconds to finish open connections on SIGTERM.
     #[arg(long, env = "GRUND_SHUTDOWN_GRACE", default_value_t = 10)]
     pub shutdown_grace: u64,
@@ -122,6 +132,14 @@ impl EdgeCommand {
         anyhow::ensure!(
             (1..=200).contains(&self.handshakes_per_address),
             "GRUND_EDGE_HANDSHAKES_PER_ADDRESS must be 1 to 200"
+        );
+        anyhow::ensure!(
+            (1..=5000).contains(&self.setup_attempt_ms),
+            "GRUND_EDGE_SETUP_ATTEMPT_MS must be 1 to 5000"
+        );
+        anyhow::ensure!(
+            (self.setup_attempt_ms..=10_000).contains(&self.setup_total_ms),
+            "GRUND_EDGE_SETUP_TOTAL_MS must be at least GRUND_EDGE_SETUP_ATTEMPT_MS and at most 10000"
         );
         Ok(())
     }
@@ -268,6 +286,8 @@ pub async fn run(command: EdgeCommand) -> anyhow::Result<()> {
             handshakes_per_second: f64::from(command.handshakes_per_address),
         }),
         meter: serve::Meter::default(),
+        setup_attempt: Duration::from_millis(command.setup_attempt_ms),
+        setup_total: Duration::from_millis(command.setup_total_ms),
         proxy_from: command.proxy_protocol_from.clone(),
         clients: Default::default(),
     });
@@ -283,6 +303,7 @@ pub async fn run(command: EdgeCommand) -> anyhow::Result<()> {
     certificates.load();
     tokio::spawn(certificates.run());
     tokio::spawn(report_usage(edge.clone(), key.clone(), http.clone()));
+    tokio::spawn(drain_paused(pool.clone(), routes.clone()));
     tokio::spawn(keep_relays(pool.clone(), routes.clone(), relays));
     tokio::spawn(revive_relay(
         pool.clone(),
@@ -351,6 +372,35 @@ pub async fn run(command: EdgeCommand) -> anyhow::Result<()> {
     );
     let _ = tokio::time::timeout_at(deadline, pool.endpoint().close()).await;
     Ok(())
+}
+
+async fn drain_paused(pool: machines::Pool, routes: routes::Routes) {
+    let mut changed = routes.subscribe();
+    let mut previous = HashSet::new();
+    loop {
+        let paused: HashSet<iroh::EndpointId> = routes
+            .current()
+            .by_name
+            .values()
+            .flat_map(|route| route.machines.iter())
+            .filter_map(|(id, _, _, paused)| paused.then(|| id.parse().ok()).flatten())
+            .collect();
+        for id in paused.difference(&previous) {
+            let pool = pool.clone();
+            let id = *id;
+            tokio::spawn(async move {
+                if pool.drain_machine(id).await {
+                    tracing::info!(
+                        "edge: a machine preparing to migrate is draining its client connections"
+                    );
+                }
+            });
+        }
+        previous = paused;
+        if changed.changed().await.is_err() {
+            return;
+        }
+    }
 }
 
 async fn shutdown() {

@@ -690,6 +690,312 @@ fn load(
     (tally, handles)
 }
 
+const FAILOVER_WHOLE: Duration = Duration::from_secs(4);
+const FAILOVER_EJECTED: Duration = Duration::from_millis(1200);
+
+struct PausedAgent(u32);
+
+impl PausedAgent {
+    fn new(agent: &Agent) -> anyhow::Result<Self> {
+        let pid = agent.child.id();
+        let status = std::process::Command::new("kill")
+            .args(["-STOP", &pid.to_string()])
+            .status()?;
+        anyhow::ensure!(status.success(), "could not SIGSTOP agent {pid}");
+        Ok(Self(pid))
+    }
+}
+
+impl Drop for PausedAgent {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("kill")
+            .args(["-CONT", &self.0.to_string()])
+            .status();
+    }
+}
+
+#[derive(Debug, Clone)]
+struct UnansweringGate {
+    entered: Arc<AtomicU64>,
+    client_bytes: Arc<AtomicU64>,
+}
+
+impl iroh::protocol::ProtocolHandler for UnansweringGate {
+    async fn accept(
+        &self,
+        connection: iroh::endpoint::Connection,
+    ) -> Result<(), iroh::protocol::AcceptError> {
+        while let Ok((_send, mut recv)) = connection.accept_bi().await {
+            let counters = self.clone();
+            tokio::spawn(async move {
+                let mut length = [0u8; 2];
+                if recv.read_exact(&mut length).await.is_ok() {
+                    let length = usize::from(u16::from_be_bytes(length));
+                    let mut header = vec![0u8; length.min(4096)];
+                    if length <= 4096
+                        && recv.read_exact(&mut header).await.is_ok()
+                        && serde_json::from_slice::<Value>(&header)
+                            .ok()
+                            .and_then(|header| header["host"].as_str().map(str::to_string))
+                            .is_some()
+                    {
+                        counters.entered.fetch_add(1, Relaxed);
+                        let mut byte = [0u8; 1];
+                        if matches!(
+                            tokio::time::timeout(Duration::from_secs(6), AsyncReadExt::read(&mut recv, &mut byte)).await,
+                            Ok(Ok(n)) if n > 0
+                        ) {
+                            counters.client_bytes.fetch_add(1, Relaxed);
+                        }
+                    }
+                }
+            });
+        }
+        Ok(())
+    }
+}
+
+struct StandinGate {
+    _router: iroh::protocol::Router,
+    counters: UnansweringGate,
+}
+
+async fn unanswering_gate(agent: &Agent) -> anyhow::Result<StandinGate> {
+    let seed: [u8; 32] =
+        hex::decode(std::fs::read_to_string(agent.dir.join("machine.key"))?.trim())?
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("the joined machine key is not 32 bytes"))?;
+    let record: Value = serde_json::from_slice(&std::fs::read(agent.dir.join("machine.json"))?)?;
+    let relays: Vec<iroh::RelayUrl> = record["network"]["relay_urls"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("the joined machine has no relays"))?
+        .iter()
+        .map(|url| {
+            url.as_str()
+                .ok_or_else(|| anyhow::anyhow!("non-string relay URL"))?
+                .parse()
+                .map_err(Into::into)
+        })
+        .collect::<anyhow::Result<_>>()?;
+    let config = grund_net::endpoint::NetConfig {
+        relays,
+        bind: grund_net::endpoint::Bind::Addrs(vec!["127.0.0.1:0".parse()?]),
+        ..Default::default()
+    };
+    let endpoint = grund_net::endpoint::bind(
+        grund_net::key::secret_key(&seed),
+        &config,
+        vec![b"grund/entry/1".to_vec()],
+    )
+    .await?;
+    let counters = UnansweringGate {
+        entered: Arc::new(AtomicU64::new(0)),
+        client_bytes: Arc::new(AtomicU64::new(0)),
+    };
+    let router = iroh::protocol::Router::builder(endpoint)
+        .accept(b"grund/entry/1", counters.clone())
+        .spawn();
+    Ok(StandinGate {
+        _router: router,
+        counters,
+    })
+}
+
+async fn two_ready_copies()
+-> anyhow::Result<Option<(Stack, Agent, Agent, String, Vec<(String, String)>)>> {
+    let Some(mut stack) = a_stack().await? else {
+        return Ok(None);
+    };
+    let owner = stack.given.a_signed_in_account().await?;
+    let org = owner.username.clone();
+    let a = stack.a_machine(&org, "box-a").await?;
+    let b = stack.a_machine(&org, "box-b").await?;
+    stack.deploy(&org, "failover", "1", 2).await?;
+    let running = stack
+        .until(
+            &org,
+            "failover",
+            Duration::from_secs(40),
+            "two ready copies on distinct machines",
+            |app| {
+                let copies = running_replicas(app);
+                copies.len() == 2
+                    && copies[0].1 != copies[1].1
+                    && app["replicas"].as_array().is_some_and(|replicas| {
+                        replicas
+                            .iter()
+                            .all(|replica| replica["observed"]["ready"] == true)
+                    })
+            },
+        )
+        .await?;
+    let copies = running_replicas(&running);
+    write_remote_copies(&[("box-a", &a), ("box-b", &b)], "failover", &copies);
+    stack.start_edge()?;
+    let name = stack.name_of(&org, "failover");
+    stack.served(&name, Duration::from_secs(60)).await?;
+    Ok(Some((stack, a, b, name, copies)))
+}
+
+async fn new_failover_connection(
+    stack: &Stack,
+    name: &str,
+    expected_replica: &str,
+    budget: Duration,
+) -> anyhow::Result<Duration> {
+    let started = Instant::now();
+    let attempt = async {
+        let mut conn = stack.connect(name).await?;
+        let answer = conn.get(name, "/?wait=5", &[]).await?;
+        anyhow::ensure!(
+            answer.status == 200 && answer.header("x-replica") == Some(expected_replica),
+            "new connection got {} from {:?}, expected {expected_replica}: {}",
+            answer.status,
+            answer.header("x-replica"),
+            answer.text(),
+        );
+        Ok::<_, anyhow::Error>(())
+    };
+    tokio::time::timeout(budget, attempt).await??;
+    Ok(started.elapsed())
+}
+
+async fn keep_healthy_while_failing(
+    stack: &Stack,
+    name: &str,
+    healthy: &mut Conn,
+    expected_replica: &str,
+) -> anyhow::Result<()> {
+    let answer = tokio::time::timeout(FAILOVER_WHOLE, healthy.get(name, "/?wait=5", &[])).await??;
+    anyhow::ensure!(
+        answer.status == 200 && answer.header("x-replica") == Some(expected_replica),
+        "established healthy connection broke: {} {:?}\n{}",
+        answer.status,
+        answer.header("x-replica"),
+        stack.edge_log()
+    );
+    Ok(())
+}
+
+fn stalled_since(stack: &Stack, before: usize) -> bool {
+    stack.edge_log().get(before..).is_some_and(|log| {
+        log.lines().any(|line| {
+            line.contains("edge.failover_attempt")
+                && (line.contains("outcome=\"stalled\"")
+                    || line.contains("outcome=\"answer_failed\""))
+        })
+    })
+}
+
+async fn edge_falls_back_during_fault(
+    stack: &Stack,
+    name: &str,
+    healthy: &mut Conn,
+    healthy_replica: &str,
+    saw_fault: impl Fn() -> bool,
+) -> anyhow::Result<()> {
+    let started = Instant::now();
+    for _ in 0..16 {
+        new_failover_connection(stack, name, healthy_replica, FAILOVER_WHOLE).await?;
+        if saw_fault() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    anyhow::ensure!(
+        saw_fault(),
+        "no new connection tried the faulty machine:\n{}",
+        stack.edge_log()
+    );
+    anyhow::ensure!(
+        started.elapsed() < Duration::from_secs(10),
+        "the first failed candidate took too long: {:?}\n{}",
+        started.elapsed(),
+        stack.edge_log()
+    );
+    for _ in 0..4 {
+        let latency =
+            new_failover_connection(stack, name, healthy_replica, FAILOVER_EJECTED).await?;
+        anyhow::ensure!(
+            latency < FAILOVER_EJECTED,
+            "an ejected machine delayed another connection by {latency:?}"
+        );
+    }
+    keep_healthy_while_failing(stack, name, healthy, healthy_replica).await
+}
+
+#[tokio::test]
+async fn an_unanswering_gate_is_ejected_before_it_can_receive_client_bytes() -> anyhow::Result<()> {
+    let Some((stack, mut a, mut b, name, copies)) = two_ready_copies().await? else {
+        return Ok(());
+    };
+    let mut established = stack.connect(&name).await?;
+    let first = established.get(&name, "/", &[]).await?;
+    anyhow::ensure!(first.status == 200, "{}", first.text());
+    let healthy_replica = first
+        .header("x-replica")
+        .ok_or_else(|| anyhow::anyhow!("no x-replica"))?;
+    let faulty_machine = copies
+        .iter()
+        .find(|(replica, _)| replica != healthy_replica)
+        .ok_or_else(|| anyhow::anyhow!("no second ready copy: {copies:?}"))?
+        .1
+        .as_str();
+    let faulty = if faulty_machine == "box-a" {
+        &mut a
+    } else {
+        &mut b
+    };
+    faulty.child.kill()?;
+    faulty.child.wait()?;
+    let log_before = stack.edge_log().len();
+    let gate = unanswering_gate(faulty).await?;
+    edge_falls_back_during_fault(&stack, &name, &mut established, healthy_replica, || {
+        gate.counters.entered.load(Relaxed) > 0 && stalled_since(&stack, log_before)
+    })
+    .await?;
+    tokio::time::sleep(Duration::from_secs(7)).await;
+    anyhow::ensure!(
+        gate.counters.client_bytes.load(Relaxed) == 0,
+        "the edge forwarded client bytes to a gate which never accepted entry"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_stopped_agent_blackholes_setup_but_healthy_connections_stay_served() -> anyhow::Result<()>
+{
+    let Some((stack, a, b, name, copies)) = two_ready_copies().await? else {
+        return Ok(());
+    };
+    let mut established = stack.connect(&name).await?;
+    let first = established.get(&name, "/", &[]).await?;
+    anyhow::ensure!(first.status == 200, "{}", first.text());
+    let healthy_replica = first
+        .header("x-replica")
+        .ok_or_else(|| anyhow::anyhow!("no x-replica"))?;
+    let faulty_machine = copies
+        .iter()
+        .find(|(replica, _)| replica != healthy_replica)
+        .ok_or_else(|| anyhow::anyhow!("no second ready copy: {copies:?}"))?
+        .1
+        .as_str();
+    let faulty = if faulty_machine == "box-a" { &a } else { &b };
+    let _paused = PausedAgent::new(faulty)?;
+    let paused_at = Instant::now();
+    let edge_log_before = stack.edge_log().len();
+    edge_falls_back_during_fault(&stack, &name, &mut established, healthy_replica, || {
+        stalled_since(&stack, edge_log_before)
+    })
+    .await?;
+    while paused_at.elapsed() < Duration::from_secs(10) {
+        new_failover_connection(&stack, &name, healthy_replica, FAILOVER_WHOLE).await?;
+        keep_healthy_while_failing(&stack, &name, &mut established, healthy_replica).await?;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn an_app_answers_over_https_through_the_edge_and_a_release_and_a_killed_copy_cost_no_request()
 -> anyhow::Result<()> {

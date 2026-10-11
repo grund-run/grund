@@ -29,7 +29,7 @@ use grund_proto::grund::{
         RevokeMachineRequest, RevokeMachineResponse, RevokePoolMachineRequest,
         RevokePoolMachineResponse, RunVmRequest, RunVmResponse, SetMachineInServiceRequest,
         SetMachineInServiceResponse, SetMachineLabelsRequest, SetMachineLabelsResponse,
-        StopVmRequest, StopVmResponse, Vm,
+        SetMigrationPauseRequest, SetMigrationPauseResponse, StopVmRequest, StopVmResponse, Vm,
     },
 };
 use grund_store::{
@@ -40,10 +40,11 @@ use grund_store::{
 use uuid::Uuid;
 
 use crate::{
-    api::{Caller, Principal, caller, principal},
+    api::{Caller, CapacityCaller, Principal, caller, principal},
     services::{
         OrganisationsState,
         agents::{AgentsState, VmOutcome, VmRequest},
+        entry::EntryState,
         machines::{
             Access, ChangeOutcome, HostedCreate, HostedRemove, MachinesState, MintOutcome, Minted,
             ProviderStep, ProvisionOutcome, public_key_message,
@@ -695,6 +696,31 @@ impl ManagementPoolService for ManagementPoolApi {
             provider_message,
             ..Default::default()
         })
+    }
+
+    async fn set_migration_pause(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, SetMigrationPauseRequest>,
+    ) -> ServiceResult<SetMigrationPauseResponse> {
+        if ctx.extensions().get::<CapacityCaller>().is_none() {
+            return Err(ConnectError::unauthenticated(
+                "the capacity provider token is required",
+            ));
+        }
+        let provider_machine_id = uuid(request.provider_machine_id)?.to_string();
+        let migration_id = Uuid::parse_str(request.migration_id)
+            .map_err(|_| ConnectError::invalid_argument("migration_id must be a UUID"))?;
+        let found = self
+            .state
+            .entry()
+            .set_migration_pause(&provider_machine_id, migration_id, request.paused)
+            .await
+            .map_err(internal)?;
+        if !found {
+            return Err(ConnectError::not_found("no such machine"));
+        }
+        Response::ok(SetMigrationPauseResponse::default())
     }
 }
 

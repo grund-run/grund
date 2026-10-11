@@ -158,6 +158,8 @@ pub struct Edge {
     pub host: String,
     pub admission: Admission,
     pub meter: Meter,
+    pub setup_attempt: Duration,
+    pub setup_total: Duration,
     /// Sources that put a PROXY header before the ClientHello.
     pub proxy_from: Vec<super::proxy::Source>,
     /// Client connections open now, for the drain at stop.
@@ -284,9 +286,32 @@ pub async fn connection(edge: Arc<Edge>, mut tcp: TcpStream, peer: SocketAddr) {
     let Ok(header) = header.encode() else {
         return;
     };
-    for machine in edge.pool.order(&name, &route.machines) {
-        match hand_over(&edge.pool, &machine, &name, &header).await {
-            Some((send, recv, relayed)) => {
+    let deadline = tokio::time::Instant::now() + edge.setup_total;
+    for (index, machine) in edge
+        .pool
+        .order(&name, &route.machines)
+        .into_iter()
+        .enumerate()
+    {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let started = Instant::now();
+        let attempt = tokio::time::timeout(
+            edge.setup_attempt.min(remaining),
+            hand_over(&edge.pool, &machine, &name, &header),
+        )
+        .await;
+        let outcome = match attempt {
+            Ok(Ok((send, recv, relayed))) => {
+                tracing::event!(
+                    tracing::Level::INFO,
+                    copy_index = index,
+                    outcome = "accepted",
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "edge.failover_attempt"
+                );
                 machine.streams.fetch_add(1, Relaxed);
                 let mut client = tls;
                 let mut stream = tokio::io::join(recv, send);
@@ -296,8 +321,19 @@ pub async fn connection(edge: Arc<Edge>, mut tcp: TcpStream, peer: SocketAddr) {
                 edge.meter.add(&name, relayed, bytes_in, bytes_out);
                 return;
             }
-            None => continue,
-        }
+            Ok(Err(outcome)) => outcome,
+            Err(_) => {
+                machine.eject(&name);
+                "stalled"
+            }
+        };
+        tracing::event!(
+            tracing::Level::INFO,
+            copy_index = index,
+            outcome,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "edge.failover_attempt"
+        );
     }
     page(
         tls,
@@ -312,22 +348,22 @@ async fn hand_over(
     machine: &Arc<Machine>,
     name: &str,
     header: &[u8],
-) -> Option<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream, bool)> {
+) -> Result<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream, bool), &'static str> {
     let connection = match pool.connection(machine).await {
         Ok(connection) => connection,
         Err(error) => {
             tracing::debug!(machine = %machine.endpoint_id, %error, "edge: machine unreachable");
             machine.eject_all();
-            return None;
+            return Err("dial_failed");
         }
     };
     let Ok((mut send, mut recv)) = Pool::open(&connection).await else {
         machine.eject_all();
-        return None;
+        return Err("stream_failed");
     };
     if send.write_all(header).await.is_err() {
         machine.eject_all();
-        return None;
+        return Err("header_failed");
     }
     let answer = tokio::time::timeout(
         Pool::answer_timeout(&connection),
@@ -337,17 +373,17 @@ async fn hand_over(
     match answer {
         Ok(Ok(grund_entry::Answer::Accept { ready })) => {
             machine.accepted(name, ready);
-            Some((send, recv, Machine::relayed(&connection)))
+            Ok((send, recv, Machine::relayed(&connection)))
         }
         Ok(Ok(refusal)) => {
             tracing::debug!(machine = %machine.endpoint_id, %name, answer = refusal.word(), "edge: the gate refused");
             machine.eject(name);
-            None
+            Err("refused")
         }
         _ => {
             tracing::debug!(machine = %machine.endpoint_id, %name, "edge: the gate did not answer in time");
             machine.eject(name);
-            None
+            Err("answer_failed")
         }
     }
 }
