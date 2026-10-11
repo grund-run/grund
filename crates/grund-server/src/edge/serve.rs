@@ -205,7 +205,11 @@ where
 }
 
 /// Serves one TCP connection on 443.
-#[tracing::instrument(name = "edge.connection", skip_all)]
+#[tracing::instrument(
+    name = "edge.connection",
+    skip_all,
+    fields(copy_index, machine_key, outcome, elapsed_ms, retry)
+)]
 pub async fn connection(edge: Arc<Edge>, mut tcp: TcpStream, peer: SocketAddr) {
     edge.clients.fetch_add(1, Relaxed);
     let _counted = Counted(&edge.clients);
@@ -310,15 +314,32 @@ pub async fn connection(edge: Arc<Edge>, mut tcp: TcpStream, peer: SocketAddr) {
         .await;
         let outcome = match attempt {
             Ok(Ok((send, recv, relayed, _session))) => {
-                tracing::event!(
-                    tracing::Level::INFO,
-                    copy_index = index,
-                    machine_key = %machine.endpoint_id,
-                    outcome = "accepted",
-                    elapsed_ms = started.elapsed().as_millis() as u64,
-                    retry,
-                    "edge.failover_attempt"
-                );
+                let elapsed_ms = started.elapsed().as_millis() as u64;
+                let span = tracing::Span::current();
+                span.record("copy_index", index as u64);
+                span.record("machine_key", tracing::field::display(machine.endpoint_id));
+                span.record("outcome", "accepted");
+                span.record("elapsed_ms", elapsed_ms);
+                span.record("retry", retry);
+                if attempt_index == 0 {
+                    tracing::debug!(
+                        copy_index = index,
+                        machine_key = %machine.endpoint_id,
+                        outcome = "accepted",
+                        elapsed_ms,
+                        retry,
+                        "edge.failover_attempt"
+                    );
+                } else {
+                    tracing::info!(
+                        copy_index = index,
+                        machine_key = %machine.endpoint_id,
+                        outcome = "accepted",
+                        elapsed_ms,
+                        retry,
+                        "edge.failover_attempt"
+                    );
+                }
                 machine.streams.fetch_add(1, Relaxed);
                 let mut client = tls;
                 let mut stream = tokio::io::join(recv, send);
@@ -338,6 +359,12 @@ pub async fn connection(edge: Arc<Edge>, mut tcp: TcpStream, peer: SocketAddr) {
         if !retry && retryable.is_none() && matches!(outcome, "answer_failed" | "stalled") {
             retryable = Some(index);
         }
+        let span = tracing::Span::current();
+        span.record("copy_index", index as u64);
+        span.record("machine_key", tracing::field::display(machine.endpoint_id));
+        span.record("outcome", outcome);
+        span.record("elapsed_ms", started.elapsed().as_millis() as u64);
+        span.record("retry", retry);
         tracing::event!(
             tracing::Level::INFO,
             copy_index = index,

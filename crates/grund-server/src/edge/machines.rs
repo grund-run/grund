@@ -11,7 +11,7 @@ use std::{
     ops::Deref,
     str::FromStr,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, Weak,
         atomic::{AtomicU32, AtomicUsize, Ordering::Relaxed},
     },
     time::{Duration, Instant},
@@ -79,6 +79,7 @@ pub struct Machine {
     pub endpoint_id: EndpointId,
     relays: Mutex<Vec<RelayUrl>>,
     connection: tokio::sync::Mutex<Option<(Arc<Session>, u64)>>,
+    live: Mutex<Vec<Weak<Session>>>,
     pub streams: AtomicUsize,
     ready: AtomicU32,
     ejected: Mutex<HashMap<String, Ejection>>,
@@ -92,12 +93,32 @@ impl Machine {
             endpoint_id,
             relays: Mutex::new(Vec::new()),
             connection: tokio::sync::Mutex::new(None),
+            live: Mutex::new(Vec::new()),
             streams: AtomicUsize::new(0),
             ready: AtomicU32::new(1),
             ejected: Mutex::new(HashMap::new()),
             down: Mutex::new(None),
             last_used: Mutex::new(Instant::now()),
         }
+    }
+
+    fn remember(&self, session: &Arc<Session>) {
+        let mut live = self.live.lock().expect("machine lock");
+        live.retain(|session| session.strong_count() != 0);
+        live.push(Arc::downgrade(session));
+    }
+
+    fn live_sessions(&self) -> Vec<Arc<Session>> {
+        let mut sessions = Vec::new();
+        self.live.lock().expect("machine lock").retain(|weak| {
+            if let Some(session) = weak.upgrade() {
+                sessions.push(session);
+                true
+            } else {
+                false
+            }
+        });
+        sessions
     }
 
     fn ejected_for(&self, name: &str, now: Instant) -> Option<Instant> {
@@ -310,6 +331,7 @@ impl Pool {
         .map_err(|_| anyhow::anyhow!("no connection within {} s", CONNECT_TIMEOUT.as_secs()))?
         .map_err(|e| anyhow::anyhow!("connect: {e}"))?;
         let session = Arc::new(Session { connection });
+        machine.remember(&session);
         self.watch(machine.clone(), session.connection.clone());
         *slot = Some((session.clone(), generation));
         Ok(session)
@@ -404,6 +426,7 @@ impl Pool {
             .await;
             if let Ok(Ok(connection)) = dialed {
                 let session = Arc::new(Session { connection });
+                machine.remember(&session);
                 self.watch(machine.clone(), session.connection.clone());
                 *slot = Some((session, generation));
                 machine.back();
@@ -430,20 +453,35 @@ impl Pool {
         rtt.map_or(ANSWER_MIN, |rtt| (rtt * 3).clamp(ANSWER_MIN, ANSWER_MAX))
     }
 
-    async fn drain_one(machine: &Machine) -> bool {
-        let notice = async {
-            let Some((connection, _)) = machine.connection.lock().await.clone() else {
-                return anyhow::Ok(false);
-            };
-            let mut send = connection.open_uni().await?;
-            send.write_all(grund_entry::DRAIN).await?;
-            send.finish()?;
-            anyhow::Ok(true)
-        };
-        matches!(
-            tokio::time::timeout(Duration::from_secs(1), notice).await,
-            Ok(Ok(true))
-        )
+    async fn drain_one(machine: &Machine, retire: bool) -> bool {
+        let mut slot = machine.connection.lock().await;
+        let sessions = machine.live_sessions();
+        if retire {
+            slot.take();
+        }
+        drop(slot);
+        let live = sessions.len();
+        let notified =
+            futures_util::future::join_all(sessions.into_iter().map(|session| async move {
+                let notice = async {
+                    let mut send = session.open_uni().await?;
+                    send.write_all(grund_entry::DRAIN).await?;
+                    send.finish()?;
+                    anyhow::Ok(())
+                };
+                matches!(
+                    tokio::time::timeout(Duration::from_secs(1), notice).await,
+                    Ok(Ok(()))
+                )
+            }))
+            .await
+            .into_iter()
+            .filter(|sent| *sent)
+            .count();
+        if live != 0 {
+            tracing::info!(machine = %machine.endpoint_id, live, notified, "edge: gate drain notices delivered");
+        }
+        notified != 0
     }
 
     /// Drain idle HTTP connections on a migrating gate, then retire the
@@ -457,11 +495,7 @@ impl Pool {
             .get(&endpoint_id)
             .cloned();
         match machine {
-            Some(machine) => {
-                let told = Self::drain_one(&machine).await;
-                machine.connection.lock().await.take();
-                told
-            }
+            Some(machine) => Self::drain_one(&machine, true).await,
             None => false,
         }
     }
@@ -479,7 +513,7 @@ impl Pool {
             .collect();
         let mut told = 0;
         for machine in machines {
-            told += usize::from(Self::drain_one(&machine).await);
+            told += usize::from(Self::drain_one(&machine, false).await);
         }
         told
     }
@@ -564,5 +598,85 @@ mod tests {
         let selected = pool.order("photos.grund.run", &route);
         assert_eq!(selected.len(), 1, "a migration pause excludes its machine");
         assert_eq!(selected[0].endpoint_id.to_string(), ready);
+    }
+    #[tokio::test]
+    async fn migration_tells_retired_and_current_sessions_to_drain() -> anyhow::Result<()> {
+        use iroh::protocol::{AcceptError, ProtocolHandler, Router};
+
+        #[derive(Debug)]
+        struct Notices(tokio::sync::mpsc::UnboundedSender<()>);
+
+        impl ProtocolHandler for Notices {
+            async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+                while let Ok(mut stream) = connection.accept_uni().await {
+                    if stream
+                        .read_to_end(grund_entry::DRAIN.len())
+                        .await
+                        .as_deref()
+                        == Ok(grund_entry::DRAIN)
+                    {
+                        let _ = self.0.send(());
+                    }
+                }
+                Ok(())
+            }
+        }
+
+        let server = Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .secret_key(iroh::SecretKey::from_bytes(&[4; 32]))
+            .relay_mode(iroh::RelayMode::Disabled)
+            .bind_addr(("127.0.0.1", 0))?
+            .bind()
+            .await?;
+        let (sent, mut notices) = tokio::sync::mpsc::unbounded_channel();
+        let router = Router::builder(server.clone())
+            .accept(grund_entry::ENTRY_ALPN, Notices(sent))
+            .spawn();
+        let client = Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .secret_key(iroh::SecretKey::from_bytes(&[5; 32]))
+            .relay_mode(iroh::RelayMode::Disabled)
+            .bind_addr(("127.0.0.1", 0))?
+            .bind()
+            .await?;
+        let address = EndpointAddr::new(server.id()).with_ip_addr(server.bound_sockets()[0]);
+        let pool = Pool::new(client);
+        let machine = Arc::new(Machine::new(server.id()));
+        pool.machines
+            .lock()
+            .expect("pool lock")
+            .insert(server.id(), machine.clone());
+
+        let old = Arc::new(Session {
+            connection: pool
+                .endpoint()
+                .connect(address.clone(), grund_entry::ENTRY_ALPN)
+                .await?,
+        });
+        machine.remember(&old);
+        *machine.connection.lock().await = Some((old.clone(), 0));
+        pool.discard(&machine, &old);
+        let current = Arc::new(Session {
+            connection: pool
+                .endpoint()
+                .connect(address, grund_entry::ENTRY_ALPN)
+                .await?,
+        });
+        machine.remember(&current);
+        *machine.connection.lock().await = Some((current.clone(), 0));
+
+        assert!(pool.drain_machine(server.id()).await);
+        for _ in 0..2 {
+            tokio::time::timeout(Duration::from_secs(2), notices.recv())
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("the gate missed a live session's drain"))?;
+        }
+        assert!(
+            old.close_reason().is_none(),
+            "accepted streams still own the old session"
+        );
+        drop((old, current));
+        router.shutdown().await?;
+        pool.endpoint().close().await;
+        Ok(())
     }
 }

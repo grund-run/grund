@@ -410,6 +410,56 @@ async fn a_draining_gate_refuses_new_streams_and_lets_in_flight_requests_finish(
 }
 
 #[tokio::test]
+async fn edge_session_drain_finishes_busy_http_then_closes_keepalive() {
+    let backends = Arc::new(Backends::default());
+    backends.start("a1").await;
+    let gate = Gate::new(backends, Limits::default());
+    let doc = document(vec![replica(
+        "a1",
+        "photos",
+        ReplicaState::REPLICA_STATE_RUNNING,
+    )]);
+    gate.update(Some(&doc), &ready(&doc, &["a1"]), &[]);
+    let (client, server) = tokio::io::duplex(64 * 1024);
+    let (stop, stopping) = tokio::sync::watch::channel(false);
+    let serving_gate = gate.clone();
+    let serving = tokio::spawn(async move {
+        serving_gate
+            .serve_until(
+                server,
+                EntryClient {
+                    client: "203.0.113.7:4242".into(),
+                    host: "photos-kasper.grund.test".into(),
+                },
+                stopping,
+            )
+            .await;
+    });
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(client))
+        .await
+        .unwrap();
+    tokio::spawn(conn);
+    let in_flight = tokio::spawn(async move {
+        get(&mut sender, "photos-kasper.grund.test", "/?wait=500", &[]).await
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    stop.send(true).unwrap();
+    let (status, headers, body) = in_flight.await.unwrap();
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.starts_with("a1\n"));
+    assert_eq!(headers[header::CONNECTION], "close");
+    tokio::time::timeout(Duration::from_secs(2), serving)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        gate.admit("photos-kasper.grund.test"),
+        grund_entry::Answer::Accept { ready: 1 },
+        "other edge sessions remain available"
+    );
+}
+
+#[tokio::test]
 async fn a_body_up_to_the_retry_buffer_is_retried_and_a_websocket_upgrade_passes_through() {
     let backends = Arc::new(Backends::default());
     backends.start("a2").await;
