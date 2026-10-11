@@ -836,8 +836,9 @@ async fn unanswering_gate(agent: &Agent) -> anyhow::Result<StandinGate> {
     })
 }
 
-async fn two_ready_copies()
--> anyhow::Result<Option<(Stack, Agent, Agent, String, Vec<(String, String)>)>> {
+async fn two_ready_copies(
+    start_edge: bool,
+) -> anyhow::Result<Option<(Stack, Agent, Agent, String, Vec<(String, String)>)>> {
     let Some(mut stack) = a_stack().await? else {
         return Ok(None);
     };
@@ -866,9 +867,11 @@ async fn two_ready_copies()
         .await?;
     let copies = running_replicas(&running);
     write_remote_copies(&[("box-a", &a), ("box-b", &b)], "failover", &copies);
-    stack.start_edge()?;
     let name = stack.name_of(&org, "failover");
-    stack.served(&name, Duration::from_secs(60)).await?;
+    if start_edge {
+        stack.start_edge()?;
+        stack.served(&name, Duration::from_secs(60)).await?;
+    }
     Ok(Some((stack, a, b, name, copies)))
 }
 
@@ -962,29 +965,30 @@ async fn edge_falls_back_during_fault(
 
 #[tokio::test]
 async fn an_unanswering_gate_is_ejected_before_it_can_receive_client_bytes() -> anyhow::Result<()> {
-    let Some((stack, mut a, mut b, name, copies)) = two_ready_copies().await? else {
+    let Some((mut stack, mut a, _b, name, copies)) = two_ready_copies(false).await? else {
         return Ok(());
     };
+    let healthy_replica = copies
+        .iter()
+        .find(|(_, machine)| machine == "box-b")
+        .ok_or_else(|| anyhow::anyhow!("no ready copy on box-b: {copies:?}"))?
+        .0
+        .as_str();
+    a.child.kill()?;
+    a.child.wait()?;
+    // Start the stand-in before the edge: this test is about a gate that
+    // never answers, not how iroh redials a previously connected endpoint.
+    let gate = unanswering_gate(&a).await?;
+    stack.start_edge()?;
+    stack.served(&name, Duration::from_secs(60)).await?;
     let mut established = stack.connect(&name).await?;
     let first = established.get(&name, "/", &[]).await?;
-    anyhow::ensure!(first.status == 200, "{}", first.text());
-    let healthy_replica = first
-        .header("x-replica")
-        .ok_or_else(|| anyhow::anyhow!("no x-replica"))?;
-    let faulty_machine = copies
-        .iter()
-        .find(|(replica, _)| replica != healthy_replica)
-        .ok_or_else(|| anyhow::anyhow!("no second ready copy: {copies:?}"))?
-        .1
-        .as_str();
-    let faulty = if faulty_machine == "box-a" {
-        &mut a
-    } else {
-        &mut b
-    };
-    faulty.child.kill()?;
-    faulty.child.wait()?;
-    let gate = unanswering_gate(faulty).await?;
+    anyhow::ensure!(
+        first.status == 200 && first.header("x-replica") == Some(healthy_replica),
+        "expected the healthy copy: {} {:?}",
+        first.status,
+        first.header("x-replica")
+    );
     edge_falls_back_during_fault(
         &stack,
         &name,
@@ -1004,7 +1008,7 @@ async fn an_unanswering_gate_is_ejected_before_it_can_receive_client_bytes() -> 
 #[tokio::test]
 async fn a_stopped_agent_blackholes_setup_but_healthy_connections_stay_served() -> anyhow::Result<()>
 {
-    let Some((stack, a, b, name, copies)) = two_ready_copies().await? else {
+    let Some((stack, a, b, name, copies)) = two_ready_copies(true).await? else {
         return Ok(());
     };
     let mut established = stack.connect(&name).await?;
