@@ -295,7 +295,7 @@ pub(crate) async fn run(
         result = mesh.run(rx) => result,
         result = follow(&link, &held, &mesh) => result,
         () = hear(&held, incoming_rx) => Ok(()),
-        result = carry(&mesh, key, &config, relays_rx.clone(), &counters, extra.as_ref(), &revive) => result,
+        result = carry(&mesh, MachineIdentity { link: &link, key }, &config, relays_rx.clone(), &counters, extra.as_ref(), &revive) => result,
         () = revive_relay(&mesh, &revive) => Ok(()),
         () = track_relays(&mesh, relays_rx) => Ok(()),
         () = resolve_or_warn(resolve(&mesh, lists, own_id, &counters)) => Ok(()),
@@ -338,9 +338,14 @@ async fn track_relays(mesh: &Mesh, mut relays: watch::Receiver<Vec<RelayUrl>>) {
     }
 }
 
+struct MachineIdentity<'a> {
+    link: &'a Link,
+    key: iroh::SecretKey,
+}
+
 async fn carry(
     mesh: &Mesh,
-    key: iroh::SecretKey,
+    identity: MachineIdentity<'_>,
     config: &NetConfig,
     relays: watch::Receiver<Vec<RelayUrl>>,
     counters: &Counters,
@@ -350,6 +355,7 @@ async fn carry(
     let mut bound: Option<(Vec<SocketAddr>, iroh::protocol::Router)> = None;
     let mut last = endpoint::Uplinks::default();
     let mut homeless = 0u32;
+    let MachineIdentity { link, key } = identity;
     let mut benched: Vec<(RelayUrl, tokio::time::Instant)> = Vec::new();
     let mut tick = tokio::time::interval(UPLINK_POLL);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -388,6 +394,12 @@ async fn carry(
             }
         }
         let now = endpoint::uplinks().await;
+        if bound.is_some()
+            && now != last
+            && let Err(error) = link.reset_http()
+        {
+            tracing::warn!(error = %format!("{error:#}"), "could not replace the machine control connection after a network change");
+        }
         match &bound {
             Some((addrs, router)) if !revived && !needs_rebind(addrs, &now.addrs) => {
                 if now != last {
@@ -431,6 +443,9 @@ async fn carry(
                     router = router.accept(extra.alpn.clone(), (extra.handler)());
                 }
                 let router = router.spawn();
+                if bound.is_some() {
+                    router.endpoint().network_change().await;
+                }
                 if let Some((old, old_router)) = bound.replace((addrs.clone(), router)) {
                     if revived {
                         tracing::info!(from = ?old, to = ?addrs, "private network: the home relay answers again; rebound so iroh dials it now");

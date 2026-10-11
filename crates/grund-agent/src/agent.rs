@@ -196,13 +196,33 @@ pub fn verify(
 /// The control link to the instance: every call signed by the machine key.
 #[derive(Clone)]
 pub struct Link {
-    http: reqwest::Client,
+    http: std::sync::Arc<std::sync::Mutex<std::sync::Arc<reqwest::Client>>>,
+    network_changed: tokio::sync::watch::Sender<u64>,
     origin: String,
     machine_id: String,
     key: SigningKey,
 }
 
 impl Link {
+    pub(crate) fn reset_http(&self) -> anyhow::Result<()> {
+        let fresh = std::sync::Arc::new(join::http_client()?);
+        *self.http.lock().expect("agent HTTP client lock") = fresh;
+        self.network_changed
+            .send_modify(|version| *version = version.wrapping_add(1));
+        Ok(())
+    }
+
+    fn reset_http_if(&self, old: &std::sync::Arc<reqwest::Client>) -> anyhow::Result<()> {
+        let mut current = self.http.lock().expect("agent HTTP client lock");
+        if std::sync::Arc::ptr_eq(&current, old) {
+            *current = std::sync::Arc::new(join::http_client()?);
+            drop(current);
+            self.network_changed
+                .send_modify(|version| *version = version.wrapping_add(1));
+        }
+        Ok(())
+    }
+
     /// Calls `procedure` of `grund.agent.v1.AgentService`, signed.
     pub async fn call<Req: Message, Resp: Message>(
         &self,
@@ -217,8 +237,9 @@ impl Link {
             hex::encode(Sha256::digest(&body))
         );
         let signature = STANDARD.encode(self.key.sign(message.as_bytes()).to_bytes());
-        let response = self
-            .http
+        let mut changed = (procedure == "Heartbeat").then(|| self.network_changed.subscribe());
+        let http = self.http.lock().expect("agent HTTP client lock").clone();
+        let request = http
             .post(format!("{}{path}", self.origin))
             .header("Content-Type", "application/proto")
             .header("Connect-Protocol-Version", "1")
@@ -227,11 +248,27 @@ impl Link {
             .header("x-grund-signed-at", signed_at.to_string())
             .header("x-grund-signature", signature)
             .body(body)
-            .send()
-            .await
-            .with_context(|| format!("reach {}", self.origin))?;
-        let status = response.status();
-        let bytes = response.bytes().await?;
+            .send();
+        let exchange = async {
+            let response = request.await?;
+            let status = response.status();
+            Ok::<_, reqwest::Error>((status, response.bytes().await?))
+        };
+        let outcome = if let Some(changed) = changed.as_mut() {
+            tokio::select! {
+                outcome = exchange => outcome,
+                _ = changed.changed() => bail!("machine network changed; retrying heartbeat"),
+            }
+        } else {
+            exchange.await
+        };
+        if procedure == "Heartbeat"
+            && outcome.as_ref().is_err_and(reqwest::Error::is_timeout)
+            && let Err(error) = self.reset_http_if(&http)
+        {
+            tracing::warn!(error = %format!("{error:#}"), "could not replace a timed-out machine control connection");
+        }
+        let (status, bytes) = outcome.with_context(|| format!("reach {}", self.origin))?;
         if !status.is_success() {
             let error: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
             bail!(
@@ -257,7 +294,10 @@ pub async fn run<R: VmRuntime, C: ContainerRuntime + 'static>(
     let key = join::machine_key(&args.data_dir)?;
     let policy = Policy::load(&args.policy)?;
     let link = Link {
-        http: join::http_client()?,
+        http: std::sync::Arc::new(std::sync::Mutex::new(std::sync::Arc::new(
+            join::http_client()?,
+        ))),
+        network_changed: tokio::sync::watch::Sender::new(0),
         origin: registered.instance_url.clone(),
         machine_id: registered.machine_id.clone(),
         key,
@@ -294,6 +334,7 @@ pub async fn run<R: VmRuntime, C: ContainerRuntime + 'static>(
             entry_relays.clone(),
             entry_endpoint.clone(),
         ));
+        tokio::spawn(watch_control_uplink(link.clone(), entry_endpoint.clone()));
     }
     let mesh: std::sync::Arc<std::sync::OnceLock<grund_net::mesh::Mesh>> =
         std::sync::Arc::new(std::sync::OnceLock::new());
@@ -303,6 +344,7 @@ pub async fn run<R: VmRuntime, C: ContainerRuntime + 'static>(
         let entry_gate = gate.clone();
         let fallback_gate = gate.clone();
         let fallback_seed = link.key.to_bytes();
+        let control = link.clone();
         let fallback_endpoint = entry_endpoint.clone();
         tokio::spawn(async move {
             let options = crate::net::NetOptions {
@@ -318,6 +360,7 @@ pub async fn run<R: VmRuntime, C: ContainerRuntime + 'static>(
             if let Err(error) = crate::net::run(link, network, seed, data_dir, options).await {
                 tracing::error!(error = %format!("{error:#}"), "private network stopped");
             }
+            tokio::spawn(watch_control_uplink(control, fallback_endpoint.clone()));
             entry_only(
                 fallback_gate,
                 fallback_seed,
@@ -527,6 +570,25 @@ async fn entry_only(
                 tokio::time::sleep(retry).await;
                 retry = (retry * 2).min(Duration::from_secs(60));
             }
+        }
+    }
+}
+
+async fn watch_control_uplink(link: Link, held: EntryEndpoint) {
+    let mut last = grund_net::endpoint::uplinks().await;
+    let mut tick = tokio::time::interval(crate::net::UPLINK_POLL);
+    loop {
+        tick.tick().await;
+        let now = grund_net::endpoint::uplinks().await;
+        if now != last {
+            if let Err(error) = link.reset_http() {
+                tracing::warn!(error = %format!("{error:#}"), "could not replace the machine control connection after a network change");
+            }
+            let endpoint = held.lock().expect("entry endpoint lock").clone();
+            if let Some(endpoint) = endpoint {
+                endpoint.network_change().await;
+            }
+            last = now;
         }
     }
 }
@@ -1083,6 +1145,63 @@ mod tests {
             generation,
             payload: hex::encode(payload),
         }
+    }
+
+    #[tokio::test]
+    async fn an_uplink_change_interrupts_a_stuck_heartbeat_and_the_next_one_uses_a_new_socket()
+    -> anyhow::Result<()> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        grund_tls::install_default();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let link = Link {
+            http: std::sync::Arc::new(std::sync::Mutex::new(std::sync::Arc::new(
+                join::http_client()?,
+            ))),
+            network_changed: tokio::sync::watch::Sender::new(0),
+            origin: format!("http://{}", listener.local_addr()?),
+            machine_id: "m-1".into(),
+            key: SigningKey::from_bytes(&[7; 32]),
+        };
+        let first = tokio::spawn({
+            let link = link.clone();
+            async move {
+                link.call::<_, HeartbeatResponse>("Heartbeat", &HeartbeatRequest::default())
+                    .await
+            }
+        });
+        let (mut stale, _) =
+            tokio::time::timeout(Duration::from_secs(2), listener.accept()).await??;
+        let mut request = [0; 1];
+        stale.read_exact(&mut request).await?;
+
+        link.reset_http()?;
+        let first = tokio::time::timeout(Duration::from_secs(1), first).await??;
+        anyhow::ensure!(
+            first.unwrap_err().to_string().contains("network changed"),
+            "the stale heartbeat did not stop on readdress"
+        );
+
+        let second = tokio::spawn(async move {
+            link.call::<_, HeartbeatResponse>("Heartbeat", &HeartbeatRequest::default())
+                .await
+        });
+        let (mut fresh, _) =
+            tokio::time::timeout(Duration::from_secs(2), listener.accept()).await??;
+        fresh.read_exact(&mut request).await?;
+        let answer = HeartbeatResponse::default().encode_to_vec();
+        fresh
+            .write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    answer.len()
+                )
+                .as_bytes(),
+            )
+            .await?;
+        fresh.write_all(&answer).await?;
+        tokio::time::timeout(Duration::from_secs(2), second).await???;
+        Ok(())
     }
 
     #[test]

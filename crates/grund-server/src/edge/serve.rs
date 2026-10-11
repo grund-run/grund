@@ -287,12 +287,17 @@ pub async fn connection(edge: Arc<Edge>, mut tcp: TcpStream, peer: SocketAddr) {
         return;
     };
     let deadline = tokio::time::Instant::now() + edge.setup_total;
-    for (index, machine) in edge
-        .pool
-        .order(&name, &route.machines)
-        .into_iter()
-        .enumerate()
-    {
+    let candidates = edge.pool.order(&name, &route.machines);
+    let mut retryable = None;
+    for attempt_index in 0..=candidates.len() {
+        let (index, machine) = if let Some(machine) = candidates.get(attempt_index) {
+            (attempt_index, machine)
+        } else if let Some(index) = retryable {
+            (index, &candidates[index])
+        } else {
+            break;
+        };
+        let retry = attempt_index == candidates.len();
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
             break;
@@ -300,7 +305,7 @@ pub async fn connection(edge: Arc<Edge>, mut tcp: TcpStream, peer: SocketAddr) {
         let started = Instant::now();
         let attempt = tokio::time::timeout(
             edge.setup_attempt.min(remaining),
-            hand_over(&edge.pool, &machine, &name, &header),
+            hand_over(&edge.pool, machine, &name, &header),
         )
         .await;
         let outcome = match attempt {
@@ -311,6 +316,7 @@ pub async fn connection(edge: Arc<Edge>, mut tcp: TcpStream, peer: SocketAddr) {
                     machine_key = %machine.endpoint_id,
                     outcome = "accepted",
                     elapsed_ms = started.elapsed().as_millis() as u64,
+                    retry,
                     "edge.failover_attempt"
                 );
                 machine.streams.fetch_add(1, Relaxed);
@@ -324,16 +330,20 @@ pub async fn connection(edge: Arc<Edge>, mut tcp: TcpStream, peer: SocketAddr) {
             }
             Ok(Err(outcome)) => outcome,
             Err(_) => {
-                edge.pool.discard_current(&machine);
+                edge.pool.discard_current(machine);
                 machine.eject(&name);
                 "stalled"
             }
         };
+        if !retry && retryable.is_none() && matches!(outcome, "answer_failed" | "stalled") {
+            retryable = Some(index);
+        }
         tracing::event!(
             tracing::Level::INFO,
             copy_index = index,
             machine_key = %machine.endpoint_id,
             outcome,
+            retry,
             elapsed_ms = started.elapsed().as_millis() as u64,
             "edge.failover_attempt"
         );

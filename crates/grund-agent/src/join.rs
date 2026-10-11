@@ -195,6 +195,8 @@ pub fn http_client() -> anyhow::Result<reqwest::Client> {
     let builder = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .connect_timeout(Duration::from_secs(5))
+        .tcp_keepalive(Some(Duration::from_secs(5)))
+        .pool_idle_timeout(Some(Duration::from_secs(10)))
         .user_agent(concat!("grund-agent/", env!("CARGO_PKG_VERSION")));
     let builder = if has_system_roots() {
         builder

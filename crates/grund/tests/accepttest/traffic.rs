@@ -1034,6 +1034,45 @@ async fn a_stopped_agent_blackholes_setup_but_healthy_connections_stay_served() 
 }
 
 #[tokio::test]
+async fn a_brief_stall_on_the_only_ready_copy_does_not_reject_a_new_connection()
+-> anyhow::Result<()> {
+    let Some(mut stack) = a_stack().await? else {
+        return Ok(());
+    };
+    let owner = stack.given.a_signed_in_account().await?;
+    let org = owner.username.clone();
+    let agent = stack.a_machine(&org, "box-a").await?;
+    stack.deploy(&org, "brief-stall", "1", 1).await?;
+    let running = stack
+        .until(
+            &org,
+            "brief-stall",
+            Duration::from_secs(40),
+            "one ready copy",
+            |app| {
+                running_replicas(app).len() == 1 && app["replicas"][0]["observed"]["ready"] == true
+            },
+        )
+        .await?;
+    let copies = running_replicas(&running);
+    write_remote_copies(&[("box-a", &agent)], "brief-stall", &copies);
+    stack.start_edge()?;
+    let name = stack.name_of(&org, "brief-stall");
+    stack.served(&name, Duration::from_secs(60)).await?;
+
+    let paused = PausedAgent::new(&agent)?;
+    let (result, ()) = tokio::join!(
+        new_failover_connection(&stack, &name, &copies[0].0, Duration::from_secs(4)),
+        async move {
+            tokio::time::sleep(Duration::from_millis(1200)).await;
+            drop(paused);
+        }
+    );
+    result.map_err(|error| anyhow::anyhow!("{error}\n{}", stack.edge_log()))?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn an_app_answers_over_https_through_the_edge_and_a_release_and_a_killed_copy_cost_no_request()
 -> anyhow::Result<()> {
     let Some(mut stack) = a_stack().await? else {
