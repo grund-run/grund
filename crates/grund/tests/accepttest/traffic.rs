@@ -5,9 +5,10 @@ use std::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering::Relaxed},
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use parking_lot::Mutex;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::{
@@ -624,12 +625,25 @@ impl Conn {
     }
 }
 
+fn load_failure(
+    worker: usize,
+    started: SystemTime,
+    phase: &str,
+    error: impl std::fmt::Display,
+) -> String {
+    let started_unix_ms = started
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    format!("worker={worker} started_unix_ms={started_unix_ms} phase={phase} error={error}")
+}
+
 #[derive(Default)]
 struct Load {
     ok: AtomicU64,
     failed: AtomicU64,
     stop: AtomicBool,
-    failures: std::sync::Mutex<Vec<String>>,
+    failures: Mutex<Vec<String>>,
 }
 
 fn load(
@@ -639,7 +653,7 @@ fn load(
 ) -> (Arc<Load>, Vec<tokio::task::JoinHandle<()>>) {
     let tally = Arc::new(Load::default());
     let handles = (0..connections)
-        .map(|_| {
+        .map(|worker| {
             let (tally, name, port, roots) = (
                 tally.clone(),
                 name.to_string(),
@@ -648,38 +662,59 @@ fn load(
             );
             tokio::spawn(async move {
                 let mut conn: Option<Conn> = None;
+                let mut accepted = false;
                 while !tally.stop.load(Relaxed) {
                     if conn.as_ref().is_none_or(|c| c.closed) {
+                        let started = SystemTime::now();
                         match Conn::open(&name, port, roots.clone(), None).await {
-                            Ok(c) => conn = Some(c),
+                            Ok(c) => {
+                                conn = Some(c);
+                                accepted = false;
+                            }
                             Err(error) => {
                                 tally.failed.fetch_add(1, Relaxed);
-                                tally
-                                    .failures
-                                    .lock()
-                                    .unwrap()
-                                    .push(format!("connect: {error:#}"));
+                                tally.failures.lock().push(load_failure(
+                                    worker,
+                                    started,
+                                    "handshake",
+                                    format_args!("{error:#}"),
+                                ));
                                 tokio::time::sleep(Duration::from_millis(50)).await;
                                 continue;
                             }
                         }
                     }
                     let Some(c) = conn.as_mut() else { continue };
+                    let started = SystemTime::now();
                     match c.get(&name, "/?wait=5", &[]).await {
                         Ok(answer) if answer.status == 200 => {
+                            accepted = true;
                             tally.ok.fetch_add(1, Relaxed);
                         }
                         Ok(answer) => {
+                            let phase = if answer.status == 503
+                                && answer.body == b"No machine is serving this app right now. Try again in a moment.\n"
+                            {
+                                "before_accept"
+                            } else {
+                                "after_accept"
+                            };
                             tally.failed.fetch_add(1, Relaxed);
-                            tally.failures.lock().unwrap().push(format!(
-                                "{} {}",
-                                answer.status,
-                                answer.text()
+                            tally.failures.lock().push(load_failure(
+                                worker,
+                                started,
+                                phase,
+                                format_args!("HTTP {} {}", answer.status, answer.text()),
                             ));
                         }
                         Err(error) => {
                             tally.failed.fetch_add(1, Relaxed);
-                            tally.failures.lock().unwrap().push(format!("{error:#}"));
+                            tally.failures.lock().push(load_failure(
+                                worker,
+                                started,
+                                if accepted { "after_accept" } else { "accept_unconfirmed" },
+                                format_args!("{error:#}"),
+                            ));
                             conn = None;
                         }
                     }
@@ -877,34 +912,30 @@ async fn keep_healthy_while_failing(
     Ok(())
 }
 
-fn stalled_since(stack: &Stack, before: usize) -> bool {
-    stack.edge_log().get(before..).is_some_and(|log| {
-        log.lines().any(|line| {
-            line.contains("edge.failover_attempt")
-                && (line.contains("outcome=\"stalled\"")
-                    || line.contains("outcome=\"answer_failed\""))
-        })
-    })
-}
-
 async fn edge_falls_back_during_fault(
     stack: &Stack,
     name: &str,
     healthy: &mut Conn,
     healthy_replica: &str,
-    saw_fault: impl Fn() -> bool,
+    gate_entered: Option<&AtomicU64>,
 ) -> anyhow::Result<()> {
     let started = Instant::now();
-    for _ in 0..16 {
-        new_failover_connection(stack, name, healthy_replica, FAILOVER_WHOLE).await?;
-        if saw_fault() {
+    let mut fault_attempt_started = None;
+    while started.elapsed() < Duration::from_secs(12) {
+        let attempted_at = Instant::now();
+        let latency = new_failover_connection(stack, name, healthy_replica, FAILOVER_WHOLE).await?;
+        let faulty_answered = gate_entered
+            .map(|entered| entered.load(Relaxed) > 0)
+            .unwrap_or(latency >= Duration::from_millis(700));
+        if faulty_answered {
+            fault_attempt_started = Some(attempted_at);
             break;
         }
-        tokio::time::sleep(Duration::from_millis(30)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
     anyhow::ensure!(
-        saw_fault(),
-        "no new connection tried the faulty machine:\n{}",
+        fault_attempt_started.is_some(),
+        "no new connection reached or waited for the faulty machine:\n{}",
         stack.edge_log()
     );
     anyhow::ensure!(
@@ -913,7 +944,12 @@ async fn edge_falls_back_during_fault(
         started.elapsed(),
         stack.edge_log()
     );
+    let fault_attempt_started = fault_attempt_started.expect("the fault was observed");
     for _ in 0..4 {
+        anyhow::ensure!(
+            fault_attempt_started.elapsed() < grund_server::edge::machines::EJECT_FIRST,
+            "the ejection window elapsed before the next connection"
+        );
         let latency =
             new_failover_connection(stack, name, healthy_replica, FAILOVER_EJECTED).await?;
         anyhow::ensure!(
@@ -948,11 +984,14 @@ async fn an_unanswering_gate_is_ejected_before_it_can_receive_client_bytes() -> 
     };
     faulty.child.kill()?;
     faulty.child.wait()?;
-    let log_before = stack.edge_log().len();
     let gate = unanswering_gate(faulty).await?;
-    edge_falls_back_during_fault(&stack, &name, &mut established, healthy_replica, || {
-        gate.counters.entered.load(Relaxed) > 0 && stalled_since(&stack, log_before)
-    })
+    edge_falls_back_during_fault(
+        &stack,
+        &name,
+        &mut established,
+        healthy_replica,
+        Some(&gate.counters.entered),
+    )
     .await?;
     tokio::time::sleep(Duration::from_secs(7)).await;
     anyhow::ensure!(
@@ -983,11 +1022,7 @@ async fn a_stopped_agent_blackholes_setup_but_healthy_connections_stay_served() 
     let faulty = if faulty_machine == "box-a" { &a } else { &b };
     let _paused = PausedAgent::new(faulty)?;
     let paused_at = Instant::now();
-    let edge_log_before = stack.edge_log().len();
-    edge_falls_back_during_fault(&stack, &name, &mut established, healthy_replica, || {
-        stalled_since(&stack, edge_log_before)
-    })
-    .await?;
+    edge_falls_back_during_fault(&stack, &name, &mut established, healthy_replica, None).await?;
     while paused_at.elapsed() < Duration::from_secs(10) {
         new_failover_connection(&stack, &name, healthy_replica, FAILOVER_WHOLE).await?;
         keep_healthy_while_failing(&stack, &name, &mut established, healthy_replica).await?;
@@ -1054,7 +1089,7 @@ async fn an_app_answers_over_https_through_the_edge_and_a_release_and_a_killed_c
     anyhow::ensure!(
         before_kill > 0,
         "the load runs: {:?}",
-        tally.failures.lock().unwrap()
+        tally.failures.lock()
     );
     let (victim, on) = running_replicas(&stack.app(&org, "hello").await?)[0].clone();
     if on == "box-a" { &a } else { &b }.kill_container(&victim)?;
@@ -1105,13 +1140,7 @@ async fn an_app_answers_over_https_through_the_edge_and_a_release_and_a_killed_c
         failed == 0,
         "{failed} of {} requests failed: {:?}\nagent a:\n{}\nagent b:\n{}",
         ok + failed,
-        tally
-            .failures
-            .lock()
-            .unwrap()
-            .iter()
-            .take(10)
-            .collect::<Vec<_>>(),
+        tally.failures.lock().iter().take(10).collect::<Vec<_>>(),
         a.log()
             .lines()
             .rev()
@@ -1332,13 +1361,7 @@ async fn an_app_is_served_through_the_edge_while_grund_is_down_and_keeps_its_cop
         failed == 0,
         "{failed} of {} requests failed: {:?}\nedge:\n{}",
         ok + failed,
-        tally
-            .failures
-            .lock()
-            .unwrap()
-            .iter()
-            .take(10)
-            .collect::<Vec<_>>(),
+        tally.failures.lock().iter().take(10).collect::<Vec<_>>(),
         stack
             .edge_log()
             .lines()
@@ -1448,13 +1471,7 @@ async fn an_agent_restarted_under_load_costs_no_request_and_the_edge_redials_it_
         failed == 0,
         "{failed} of {} requests failed: {:?}",
         ok + failed,
-        tally
-            .failures
-            .lock()
-            .unwrap()
-            .iter()
-            .take(10)
-            .collect::<Vec<_>>()
+        tally.failures.lock().iter().collect::<Vec<_>>()
     );
     anyhow::ensure!(
         noticed_after.is_some_and(|t| t <= Duration::from_secs(1)),

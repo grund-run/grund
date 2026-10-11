@@ -308,6 +308,7 @@ pub async fn connection(edge: Arc<Edge>, mut tcp: TcpStream, peer: SocketAddr) {
                 tracing::event!(
                     tracing::Level::INFO,
                     copy_index = index,
+                    machine_key = %machine.endpoint_id,
                     outcome = "accepted",
                     elapsed_ms = started.elapsed().as_millis() as u64,
                     "edge.failover_attempt"
@@ -330,6 +331,7 @@ pub async fn connection(edge: Arc<Edge>, mut tcp: TcpStream, peer: SocketAddr) {
         tracing::event!(
             tracing::Level::INFO,
             copy_index = index,
+            machine_key = %machine.endpoint_id,
             outcome,
             elapsed_ms = started.elapsed().as_millis() as u64,
             "edge.failover_attempt"
