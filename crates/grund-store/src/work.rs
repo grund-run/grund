@@ -253,6 +253,15 @@ impl<'a> Work<'a> {
         Ok(events)
     }
 
+    /// The organisation's state, under its stream lock, without recording
+    /// anything.
+    pub async fn load_organisation(
+        &mut self,
+        organisation_id: Uuid,
+    ) -> Result<Organisation, WorkError> {
+        Ok(self.load::<Organisation>(organisation_id).await?.state)
+    }
+
     /// The domain's state, under its stream lock, without recording
     /// anything.
     pub async fn load_domain(&mut self, domain_id: Uuid) -> Result<Domain, WorkError> {

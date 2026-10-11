@@ -474,6 +474,33 @@ pub const LEAVES: &[Leaf] = &[
         &["grund invitations revoke ana@example.com --yes"],
     ),
     read(
+        "notifications",
+        "grund.notification.v1.ListNotificationsResponse",
+        &["grund.notification.v1.NotificationService/ListNotifications"],
+        &[
+            "grund notifications --json",
+            "grund notifications --unread --page-size 100",
+        ],
+    ),
+    read(
+        "notifications count",
+        "grund.notification.v1.CountUnreadResponse",
+        &["grund.notification.v1.NotificationService/CountUnread"],
+        &["grund notifications count"],
+    ),
+    write(
+        "notifications read",
+        "grund.cli.v1.Done",
+        &[
+            "grund.notification.v1.NotificationService/MarkRead",
+            "grund.notification.v1.NotificationService/MarkAllRead",
+        ],
+        &[
+            "grund notifications read 0199a9b5-bcdf-7338-9a92-b6f536b9ca9b",
+            "grund notifications read --all",
+        ],
+    ),
+    read(
         "tokens list",
         "grund.token.v1.ListTokensResponse",
         &["grund.token.v1.TokenService/ListTokens"],

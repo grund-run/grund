@@ -19,7 +19,7 @@ use grund_domain::{
 use grund_proto::grund::agent::v1 as agent;
 use grund_store::{
     machines::{self, MachineRow, NewToken, TokenRow},
-    organisations,
+    notifications, organisations,
     work::{Work, WorkError},
 };
 use notmad::{Component, ComponentInfo, MadError};
@@ -405,6 +405,14 @@ impl Machines {
                     },
                 );
             }
+            notify_hosted_order(
+                work.sql(),
+                organisation_id,
+                order_id,
+                name.as_str(),
+                "hosted_machine.ready",
+            )
+            .await?;
             self.keys()
                 .ensure(work.sql(), KeyPurpose::Management, None)
                 .await?;
@@ -507,6 +515,14 @@ impl Machines {
                 machines::set_hosted_order(&mut *tx, organisation_id, order_id, "refused", None)
                     .await?;
                 machines::expire_hosted_token(&mut *tx, minted.token_id).await?;
+                notify_hosted_order(
+                    &mut tx,
+                    organisation_id,
+                    order_id,
+                    name.as_str(),
+                    "hosted_machine.failed",
+                )
+                .await?;
                 tx.commit().await?;
                 Ok(HostedCreate::NoCapacity)
             }
@@ -590,6 +606,14 @@ impl Machines {
                 )
                 .await?;
                 machines::expire_hosted_token(&mut *tx, token_id).await?;
+                notify_hosted_order(
+                    &mut tx,
+                    order.organisation_id,
+                    order.order_id,
+                    &order.name,
+                    "hosted_machine.failed",
+                )
+                .await?;
                 tx.commit().await?;
                 Ok(HostedCreate::NoCapacity)
             }
@@ -1005,6 +1029,14 @@ impl Machines {
                 order.order_id,
                 "active",
                 Some(machine_id),
+            )
+            .await?;
+            notify_hosted_order(
+                work.sql(),
+                order.organisation_id,
+                order.order_id,
+                &order.name,
+                "hosted_machine.ready",
             )
             .await?;
         }
@@ -1610,6 +1642,37 @@ impl Machines {
     }
 }
 
+async fn notify_hosted_order(
+    connection: &mut sqlx::PgConnection,
+    organisation_id: Uuid,
+    order_id: Uuid,
+    name: &str,
+    kind: &str,
+) -> Result<(), sqlx::Error> {
+    let (slug, occurred_at): (String, DateTime<Utc>) = sqlx::query_as(
+        "SELECT o.slug, CASE WHEN $3 THEN h.cancelled_at \
+             ELSE COALESCE(m.leased_at, h.created_at) END \
+         FROM grund_hosted_orders h \
+         JOIN grund_organisations o ON o.organisation_id = h.organisation_id \
+         LEFT JOIN grund_machines m ON m.machine_id = h.machine_id \
+         WHERE h.organisation_id = $1 AND h.order_id = $2",
+    )
+    .bind(organisation_id)
+    .bind(order_id)
+    .bind(kind == "hosted_machine.failed")
+    .fetch_one(&mut *connection)
+    .await?;
+    notifications::emit_org(
+        connection,
+        organisation_id,
+        kind,
+        order_id,
+        name,
+        &format!("/{slug}/machines"),
+        occurred_at,
+    )
+    .await
+}
 fn refused(
     result: Result<Vec<grund_domain::machine::MachineEvent>, WorkError>,
 ) -> anyhow::Result<Option<ChangeOutcome>> {
@@ -1842,7 +1905,16 @@ impl HostedRecovery {
         };
         if expiry <= Utc::now() && order.status == "joining" {
             let mut tx = self.state.pool.begin().await?;
-            machines::fail_hosted_token(&mut tx, token_id, "failed").await?;
+            if machines::fail_hosted_token(&mut tx, token_id, "failed").await? {
+                notify_hosted_order(
+                    &mut tx,
+                    order.organisation_id,
+                    order.order_id,
+                    &order.name,
+                    "hosted_machine.failed",
+                )
+                .await?;
+            }
             tx.commit().await?;
         }
         if let Some(id) = provider {
@@ -1873,7 +1945,16 @@ impl HostedRecovery {
                 Err(CapacityError::Refused(error)) => {
                     tracing::warn!(error = %error, "hosted machine order refused");
                     let mut tx = self.state.pool.begin().await?;
-                    machines::fail_hosted_token(&mut tx, token_id, "refused").await?;
+                    if machines::fail_hosted_token(&mut tx, token_id, "refused").await? {
+                        notify_hosted_order(
+                            &mut tx,
+                            order.organisation_id,
+                            order.order_id,
+                            &order.name,
+                            "hosted_machine.failed",
+                        )
+                        .await?;
+                    }
                     tx.commit().await?;
                 }
                 Err(error) => return Err(error.into()),

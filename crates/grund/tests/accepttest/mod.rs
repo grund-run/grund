@@ -15,6 +15,7 @@ mod lifecycle;
 mod login;
 mod machines;
 mod network;
+mod notifications;
 mod organisations;
 mod outages;
 mod pages;

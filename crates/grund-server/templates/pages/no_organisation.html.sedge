@@ -1,7 +1,13 @@
-use crate::templates::compiled::components::{PageHead, Button, EmptyState};
-props crate::web::pages::NoOrganisationPage { can_create };
+use crate::templates::compiled::components::{PageHead, Button, EmptyState, Section, InvitationRows};
+props crate::web::pages::NoOrganisationPage<'_> { viewer, csrf };
 
 <PageHead title="No organisation yet">
-  {if *can_create { <Button label="New organisation" kind="primary" href="/orgs/new" icon_name="plus" /> }}
+  {if viewer.can_create { <Button label="New organisation" kind="primary" href="/orgs/new" icon_name="plus" /> }}
 </PageHead>
-<EmptyState text={if *can_create { "Create one, or ask to be invited to one." } else { "Ask this grund's admin to invite you." }} />
+{if !viewer.pending_invitations.is_empty() {
+  <Section id="invitations" title="Invitations" count={Some(viewer.pending_invitations.len())} first={Some(true)}>
+    <InvitationRows invitations={viewer.pending_invitations.as_slice()} csrf={csrf} />
+  </Section>
+} else {
+  <EmptyState text={if viewer.can_create { "Create one, or ask to be invited to one." } else { "Ask this grund's admin to invite you." }} />
+}}

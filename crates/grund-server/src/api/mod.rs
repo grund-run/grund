@@ -41,6 +41,7 @@ pub mod edge;
 pub mod enrollment;
 pub mod login;
 pub mod machine;
+pub mod notifications;
 pub mod operator;
 pub mod organisation;
 pub mod registry;
@@ -69,6 +70,7 @@ use grund_proto::grund::{
     edge::v1::{EDGE_ENROLLMENT_SERVICE_SERVICE_NAME, EDGE_SERVICE_SERVICE_NAME},
     login::v1::DEVICE_LOGIN_SERVICE_SERVICE_NAME,
     machine::v1::{MACHINE_SERVICE_SERVICE_NAME, MANAGEMENT_POOL_SERVICE_SERVICE_NAME},
+    notification::v1::NOTIFICATION_SERVICE_SERVICE_NAME,
     operator::v1::OPERATOR_SERVICE_SERVICE_NAME,
     organisation::v1::ORGANISATION_SERVICE_SERVICE_NAME,
     registry::v1::REGISTRY_SERVICE_SERVICE_NAME,
@@ -477,6 +479,22 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
         Requirement::SessionOrFullToken,
     ),
     (
+        "/grund.notification.v1.NotificationService/ListNotifications",
+        Requirement::SessionOrFullToken,
+    ),
+    (
+        "/grund.notification.v1.NotificationService/CountUnread",
+        Requirement::SessionOrFullToken,
+    ),
+    (
+        "/grund.notification.v1.NotificationService/MarkRead",
+        Requirement::SessionOrFullToken,
+    ),
+    (
+        "/grund.notification.v1.NotificationService/MarkAllRead",
+        Requirement::SessionOrFullToken,
+    ),
+    (
         "/grund.token.v1.TokenService/ListTokens",
         Requirement::Session,
     ),
@@ -556,6 +574,10 @@ pub fn router(state: State) -> axum::Router {
         )
         .route_service(
             &format!("/{DOMAIN_SERVICE_SERVICE_NAME}/{{method}}"),
+            service.clone(),
+        )
+        .route_service(
+            &format!("/{NOTIFICATION_SERVICE_SERVICE_NAME}/{{method}}"),
             service.clone(),
         )
         .route_service(
@@ -944,6 +966,9 @@ pub fn connect_router(state: State) -> connectrpc::Router {
     connectrpc::Router::new()
         .add_service(Arc::new(account::AccountApi::new(state.clone())))
         .add_service(Arc::new(organisation::OrganisationApi::new(state.clone())))
+        .add_service(Arc::new(notifications::NotificationsApi::new(
+            state.clone(),
+        )))
         .add_service(Arc::new(domain::DomainApi::new(state.clone())))
         .add_service(Arc::new(machine::ManagementPoolApi::new(state.clone())))
         .add_service(Arc::new(machine::MachineApi::new(state.clone())))
@@ -1241,6 +1266,7 @@ mod tests {
         AccountService, GetViewerRequest, GetViewerResponse, ListSessionsRequest,
         ListSessionsResponse, RevokeSessionRequest, RevokeSessionResponse,
     };
+    use grund_proto::grund::notification::v1 as notify;
 
     use grund_proto::grund::{
         agent::v1 as agent, app::v1 as app_proto, certificates::v1 as certificates_proto,
@@ -1880,6 +1906,40 @@ mod tests {
         }
     }
 
+    struct UnusedNotifications;
+
+    #[allow(refining_impl_trait)]
+    impl notify::NotificationService for UnusedNotifications {
+        async fn list_notifications(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, notify::ListNotificationsRequest>,
+        ) -> ServiceResult<notify::ListNotificationsResponse> {
+            unreachable!()
+        }
+        async fn count_unread(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, notify::CountUnreadRequest>,
+        ) -> ServiceResult<notify::CountUnreadResponse> {
+            unreachable!()
+        }
+        async fn mark_read(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, notify::MarkReadRequest>,
+        ) -> ServiceResult<notify::MarkReadResponse> {
+            unreachable!()
+        }
+        async fn mark_all_read(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, notify::MarkAllReadRequest>,
+        ) -> ServiceResult<notify::MarkAllReadResponse> {
+            unreachable!()
+        }
+    }
+
     struct UnusedTokens;
 
     #[allow(refining_impl_trait)]
@@ -2261,6 +2321,7 @@ mod tests {
             .add_service(Arc::new(UnusedAgent))
             .add_service(Arc::new(UnusedApps))
             .add_service(Arc::new(UnusedDomains))
+            .add_service(Arc::new(UnusedNotifications))
             .add_service(Arc::new(UnusedTokens))
             .add_service(Arc::new(UnusedRegistries))
             .add_service(Arc::new(UnusedLogins));

@@ -138,10 +138,10 @@ pub async fn finish_settled_pause(
 /// migrations had to fall back to their deadline.
 pub async fn expire_migration_pauses(
     executor: impl PgExecutor<'_>,
-) -> Result<Vec<(Uuid, Uuid, bool)>, sqlx::Error> {
+) -> Result<Vec<(Uuid, Uuid, bool, DateTime<Utc>)>, sqlx::Error> {
     sqlx::query_as(
         "DELETE FROM grund_machine_migration_pauses WHERE expires_at <= clock_timestamp() \
-         RETURNING machine_id, migration_id, (clear_requested_at IS NOT NULL)",
+         RETURNING machine_id, migration_id, (clear_requested_at IS NOT NULL), expires_at",
     )
     .fetch_all(executor)
     .await

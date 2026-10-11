@@ -16,6 +16,7 @@ pub mod domains;
 pub mod entry;
 pub mod machines;
 pub mod networks;
+pub mod notifications;
 pub mod operator;
 pub mod organisations;
 pub mod outbox;

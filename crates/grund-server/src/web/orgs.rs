@@ -49,6 +49,7 @@ pub fn role_title(role: &str) -> &'static str {
 
 pub struct HomePage<'a> {
     pub viewer: &'a super::pages::TypedViewer,
+    pub csrf: &'a str,
     pub members: usize,
     pub icons: Vec<&'static str>,
     pub apps: Vec<apps::ListingView>,
@@ -216,11 +217,9 @@ pub async fn landing(AxumState(state): AxumState<State>, browser: Browser, uri: 
         None,
         None,
         None,
-        |viewer, _| {
+        |viewer, csrf| {
             crate::templates::compiled::pages::no_organisation::render(
-                &super::pages::NoOrganisationPage {
-                    can_create: viewer.can_create,
-                },
+                &super::pages::NoOrganisationPage { viewer, csrf },
             )
         },
     )
@@ -252,12 +251,13 @@ pub async fn overview(AxumState(state): AxumState<State>, member: Member) -> Pag
         None,
         None,
         None,
-        |viewer, _| {
+        |viewer, csrf| {
             crate::templates::compiled::pages::home::render(&HomePage {
                 viewer,
                 members,
                 icons: apps::icons_of(&shown),
                 apps: shown.iter().map(|l| apps::listing_view(l)).collect(),
+                csrf,
                 app_count: listings.len(),
             })
         },
@@ -1082,5 +1082,74 @@ pub async fn accept_invitation(
             .await
         }
         InvitedSignupOutcome::Expired => expired(&state, &browser),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct InvitationDecisionForm {
+    #[serde(default)]
+    csrf: String,
+}
+
+/// `POST /invitations/{invitation}/accept`: accept only an invitation for the
+/// authenticated, verified account, without disclosing its email token.
+pub async fn accept_account_invitation(
+    AxumState(state): AxumState<State>,
+    browser: Browser,
+    uri: Uri,
+    Path(invitation): Path<Uuid>,
+    Form(form): Form<InvitationDecisionForm>,
+) -> PageResult {
+    if !browser.form_is_genuine(&form.csrf) {
+        return forged(&state, &browser);
+    }
+    let session = match require_session(&browser, &uri) {
+        Ok(session) => session,
+        Err(response) => return Ok(*response),
+    };
+    match state
+        .organisations()
+        .accept_for_account(session.account_id, invitation, &browser.meta())
+        .await?
+    {
+        AcceptOutcome::Joined(slug) | AcceptOutcome::AlreadyMember(slug) => {
+            Ok(redirect(&format!("/{slug}")))
+        }
+        AcceptOutcome::Expired | AcceptOutcome::WrongAccount => {
+            super::pages::not_found_page(&state, &browser)
+        }
+    }
+}
+
+/// `POST /invitations/{invitation}/decline`: decline only an invitation for
+/// the authenticated, verified account.
+pub async fn decline_account_invitation(
+    AxumState(state): AxumState<State>,
+    browser: Browser,
+    uri: Uri,
+    Path(invitation): Path<Uuid>,
+    Form(form): Form<InvitationDecisionForm>,
+) -> PageResult {
+    if !browser.form_is_genuine(&form.csrf) {
+        return forged(&state, &browser);
+    }
+    let session = match require_session(&browser, &uri) {
+        Ok(session) => session,
+        Err(response) => return Ok(*response),
+    };
+    match state
+        .organisations()
+        .decline_for_account(session.account_id, invitation, &browser.meta())
+        .await?
+    {
+        crate::services::organisations::DeclineOutcome::Declined => {
+            let slug = state.organisations().landing(session.account_id).await?;
+            Ok(redirect(
+                &slug.map_or_else(|| "/".to_owned(), |slug| format!("/{slug}")),
+            ))
+        }
+        crate::services::organisations::DeclineOutcome::Expired => {
+            super::pages::not_found_page(&state, &browser)
+        }
     }
 }

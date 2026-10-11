@@ -82,6 +82,8 @@ async fn migration_pause_requires_capacity_token_and_only_its_owner_can_clear_it
         return Ok(());
     };
     given.a_signed_in_account_named(&operator).await?;
+    let (outsider, outsider_when, outsider_then) = given.testcase.another_browser();
+    outsider.a_signed_in_account().await?;
     let token = pool_call(
         &when,
         &then,
@@ -193,6 +195,66 @@ async fn migration_pause_requires_capacity_token_and_only_its_owner_can_clear_it
     anyhow::ensure!(
         (retry_deadline_seconds - deadline_seconds).abs() < 0.001,
         "repeated pause reopened a settled migration"
+    );
+    let expired = sqlx::query(
+        "UPDATE grund_machine_migration_pauses \
+         SET expires_at = clock_timestamp() - interval '1 millisecond' \
+         WHERE machine_id = $1 AND migration_id = $2",
+    )
+    .bind(sqlx::types::Uuid::parse_str(machine_id)?)
+    .bind(sqlx::types::Uuid::parse_str(migration_id)?)
+    .execute(&pool)
+    .await?
+    .rows_affected();
+    anyhow::ensure!(
+        expired == 1,
+        "migration pause disappeared before deadline setup"
+    );
+    let started = Instant::now();
+    let inbox = loop {
+        when.calling(
+            "/grund.notification.v1.NotificationService/ListNotifications",
+            "{}",
+        )
+        .await?;
+        then.status(200)?;
+        let inbox = then.json()?;
+        if inbox["notifications"].as_array().is_some_and(|items| {
+            items
+                .iter()
+                .filter(|item| item["kind"] == "operator.migration_timeout")
+                .count()
+                == 1
+        }) {
+            break inbox;
+        }
+        anyhow::ensure!(
+            started.elapsed() < Duration::from_secs(180),
+            "settling expiry did not notify operator: {inbox}"
+        );
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    };
+    anyhow::ensure!(
+        inbox["notifications"].as_array().is_some_and(|items| items
+            .iter()
+            .filter(|item| item["kind"] == "operator.migration_timeout")
+            .count()
+            == 1),
+        "migration timeout duplicated: {inbox}"
+    );
+    outsider_when
+        .calling(
+            "/grund.notification.v1.NotificationService/ListNotifications",
+            "{}",
+        )
+        .await?;
+    outsider_then.status(200)?;
+    let unrelated = outsider_then.json()?;
+    anyhow::ensure!(
+        unrelated
+            .get("notifications")
+            .is_none_or(|v| v.as_array().is_some_and(Vec::is_empty)),
+        "operator timeout reached another org: {unrelated}"
     );
     Ok(())
 }
@@ -795,6 +857,36 @@ async fn entitled_customer_orders_and_removes_an_opaque_machine_without_cross_or
             && joined["machine"]["facts"]["os"] == "Linux",
         "{joined}"
     );
+    customer_when
+        .calling(
+            "/grund.notification.v1.NotificationService/ListNotifications",
+            "{}",
+        )
+        .await?;
+    customer_then.status(200)?;
+    let inbox = customer_then.json()?;
+    anyhow::ensure!(
+        inbox["notifications"].as_array().is_some_and(|items| items
+            .iter()
+            .filter(|item| item["kind"] == "hosted_machine.ready")
+            .count()
+            == 1),
+        "hosted readiness notifies its customer once: {inbox}"
+    );
+    stranger_when
+        .calling(
+            "/grund.notification.v1.NotificationService/ListNotifications",
+            "{}",
+        )
+        .await?;
+    stranger_then.status(200)?;
+    let other_inbox = stranger_then.json()?;
+    anyhow::ensure!(
+        other_inbox
+            .get("notifications")
+            .is_none_or(|v| v.as_array().is_some_and(Vec::is_empty)),
+        "another organisation saw hosted readiness: {other_inbox}"
+    );
     for forbidden in ["fm-1", "fleet", "provider", "lease", "pool"] {
         anyhow::ensure!(
             !joined.to_string().to_lowercase().contains(forbidden),
@@ -838,6 +930,76 @@ async fn entitled_customer_orders_and_removes_an_opaque_machine_without_cross_or
         customer_then.json()?["machines"]
             .as_array()
             .is_none_or(|rows| rows.is_empty())
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_refused_hosted_creation_notifies_only_the_customer_once() -> anyhow::Result<()> {
+    use crate::accepttest::fixtures::{CAPACITY_TOKEN, FakeCapacity};
+
+    let capacity = FakeCapacity::start().await?;
+    let operator = format!("ops-{}", random_hex(4));
+    let Some((given, when, then)) = testcase_configured(&[
+        ("GRUND_OPERATOR_ORGANISATION", &operator),
+        ("GRUND_CAPACITY_URL", &capacity.url),
+        ("GRUND_CAPACITY_TOKEN", CAPACITY_TOKEN),
+    ])
+    .await?
+    else {
+        return Ok(());
+    };
+    given.a_signed_in_account_named(&operator).await?;
+    let (customer, customer_when, customer_then) = given.testcase.another_browser();
+    let account = customer.a_signed_in_account().await?;
+    let (stranger, stranger_when, stranger_then) = given.testcase.another_browser();
+    stranger.a_signed_in_account().await?;
+    when.calling(
+        "/grund.operator.v1.OperatorService/SetHostedEntitlement",
+        &json!({"organisation": account.username, "enabled": true}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    capacity.set_can_place(true);
+    capacity.refuse_for("ProvisionMachine", true);
+    let create = json!({
+        "organisation": account.username, "name": "refused-1",
+        "size": "small", "region": "test-region", "idempotencyKey": "hosted-refused-1",
+    })
+    .to_string();
+    customer_when
+        .calling(&format!("{MACHINES}/CreateHostedMachine"), &create)
+        .await?;
+    customer_then.status(429)?;
+    customer_when
+        .calling(
+            "/grund.notification.v1.NotificationService/ListNotifications",
+            "{}",
+        )
+        .await?;
+    customer_then.status(200)?;
+    let inbox = customer_then.json()?;
+    anyhow::ensure!(
+        inbox["notifications"].as_array().is_some_and(|items| items
+            .iter()
+            .filter(|item| item["kind"] == "hosted_machine.failed")
+            .count()
+            == 1),
+        "refused order creates exactly one failure fact: {inbox}"
+    );
+    stranger_when
+        .calling(
+            "/grund.notification.v1.NotificationService/ListNotifications",
+            "{}",
+        )
+        .await?;
+    stranger_then.status(200)?;
+    let unrelated = stranger_then.json()?;
+    anyhow::ensure!(
+        unrelated
+            .get("notifications")
+            .is_none_or(|v| v.as_array().is_some_and(Vec::is_empty)),
+        "unrelated account saw hosted failure: {unrelated}"
     );
     Ok(())
 }

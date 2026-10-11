@@ -331,6 +331,8 @@ async fn a_verified_domain_bound_to_an_app_is_served_through_the_edge_with_a_cer
     };
     let owner = stack.given.a_signed_in_account().await?;
     let org = owner.username.clone();
+    let (outsider, outsider_when, outsider_then) = stack.given.testcase.another_browser();
+    outsider.a_signed_in_account().await?;
     let _machine = stack.a_machine(&org, "box").await?;
     stack.deploy(&org, "hello", "1", 1).await?;
     stack.start_edge()?;
@@ -451,6 +453,42 @@ async fn a_verified_domain_bound_to_an_app_is_served_through_the_edge_with_a_cer
         );
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
+    when.calling(
+        "/grund.notification.v1.NotificationService/ListNotifications",
+        "{}",
+    )
+    .await?;
+    then.status(200)?;
+    let notifications = then.json()?;
+    anyhow::ensure!(
+        notifications["notifications"]
+            .as_array()
+            .is_some_and(|items| items
+                .iter()
+                .filter(|item| {
+                    item["kind"] == "domain.certificate_issued"
+                        && item["text"]
+                            .as_str()
+                            .is_some_and(|text| text.contains(&name))
+                })
+                .count()
+                == 1),
+        "certificate issuance has one fact: {notifications}"
+    );
+    outsider_when
+        .calling(
+            "/grund.notification.v1.NotificationService/ListNotifications",
+            "{}",
+        )
+        .await?;
+    outsider_then.status(200)?;
+    let unrelated = outsider_then.json()?;
+    anyhow::ensure!(
+        unrelated
+            .get("notifications")
+            .is_none_or(|v| v.as_array().is_some_and(Vec::is_empty)),
+        "certificate for another org leaked: {unrelated}"
+    );
     stack.served(&name, Duration::from_secs(60)).await?;
     let mut conn = stack.connect(&name).await?;
     let served = conn.get(&name, "/", &[]).await?;
@@ -744,5 +782,71 @@ async fn a_released_domain_cools_down_for_other_organisations_but_not_the_one_th
         409,
         "domain_taken",
     )?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_bound_domain_without_an_edge_records_one_certificate_failure() -> anyhow::Result<()> {
+    let Some(stack) = a_stack_with(&[]).await? else {
+        return Ok(());
+    };
+    let owner = stack.given.a_signed_in_account().await?;
+    let organisation = owner.username;
+    let (outsider, outsider_when, outsider_then) = stack.given.testcase.another_browser();
+    outsider.a_signed_in_account().await?;
+    let _machine = stack.a_machine(&organisation, "box").await?;
+    stack.deploy(&organisation, "hello", "1", 1).await?;
+    let name = a_custom_name();
+    let (when, then) = (&stack.when, &stack.then);
+    verified(&stack, when, then, &organisation, &name).await?;
+    let bound = domain_call(
+        when,
+        then,
+        "BindDomain",
+        json!({"organisation": organisation, "name": name, "app": "hello"}),
+    )
+    .await?;
+    anyhow::ensure!(bound.0 == 200, "domain did not bind: {}", bound.1);
+    let started = Instant::now();
+    loop {
+        let status = status_of(when, then, &organisation, &name).await?;
+        if status["status"] == "DOMAIN_STATUS_ERROR" {
+            break;
+        }
+        anyhow::ensure!(
+            started.elapsed() < Duration::from_secs(90),
+            "certificate order did not fail without an edge: {status}"
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    when.calling(
+        "/grund.notification.v1.NotificationService/ListNotifications",
+        "{}",
+    )
+    .await?;
+    then.status(200)?;
+    let inbox = then.json()?;
+    anyhow::ensure!(
+        inbox["notifications"].as_array().is_some_and(|items| items
+            .iter()
+            .filter(|item| item["kind"] == "domain.certificate_failing")
+            .count()
+            == 1),
+        "first certificate failure created one fact: {inbox}"
+    );
+    outsider_when
+        .calling(
+            "/grund.notification.v1.NotificationService/ListNotifications",
+            "{}",
+        )
+        .await?;
+    outsider_then.status(200)?;
+    let unrelated = outsider_then.json()?;
+    anyhow::ensure!(
+        unrelated
+            .get("notifications")
+            .is_none_or(|v| v.as_array().is_some_and(Vec::is_empty)),
+        "certificate failure for another org leaked: {unrelated}"
+    );
     Ok(())
 }

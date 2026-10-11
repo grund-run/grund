@@ -19,6 +19,7 @@ pub struct Call {
 struct Shared {
     calls: Vec<Call>,
     unavailable: BTreeSet<String>,
+    refused: BTreeSet<String>,
     boot_before_answer: Option<std::path::PathBuf>,
     can_place: bool,
     assigned: Vec<(String, String)>,
@@ -66,6 +67,15 @@ impl FakeCapacity {
             shared.unavailable.insert(method.to_string());
         } else {
             shared.unavailable.remove(method);
+        }
+    }
+
+    pub fn refuse_for(&self, method: &str, refused: bool) {
+        let mut shared = self.shared.lock();
+        if refused {
+            shared.refused.insert(method.to_string());
+        } else {
+            shared.refused.remove(method);
         }
     }
 
@@ -163,6 +173,11 @@ async fn serve(mut stream: TcpStream, shared: Arc<Mutex<Shared>>) -> anyhow::Res
             (
                 503,
                 serde_json::json!({"code": "unavailable", "message": "the provider is down"}),
+            )
+        } else if shared.refused.contains(&method) {
+            (
+                400,
+                serde_json::json!({"code": "failed_precondition", "message": "capacity refused the order"}),
             )
         } else {
             match method.as_str() {

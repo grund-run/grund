@@ -20,6 +20,7 @@
 
 use std::{collections::BTreeMap, time::Duration};
 
+use crate::services::machines::MachinesState;
 use buffa::Message;
 use chrono::Utc;
 use grund_proto::grund::edge::v1 as edge;
@@ -144,17 +145,48 @@ impl Entry {
             .collect()
     }
 
-    /// The route table as it stands.
-    pub async fn route_table(&self) -> anyhow::Result<edge::RouteTable> {
-        for (machine_id, migration_id, settling) in
-            grund_store::entry::expire_migration_pauses(&self.state.pool).await?
-        {
+    /// Removes elapsed migration pauses and records failed settling for operators.
+    pub async fn expire_migration_pauses(&self) -> anyhow::Result<()> {
+        let operator = self.state.machines().operator().await?;
+        let mut tx = self.state.pool.begin().await?;
+        let expired = grund_store::entry::expire_migration_pauses(&mut *tx).await?;
+        for (machine_id, migration_id, settling, expired_at) in expired {
             if settling {
                 tracing::warn!(%machine_id, %migration_id, "migration settling deadline expired");
+                if let Some(operator_id) = operator {
+                    let machine: Option<(String, String)> = sqlx::query_as(
+                        "SELECT m.name, o.slug FROM grund_machines m \
+                         JOIN grund_organisations o ON o.organisation_id = $2 \
+                         WHERE m.machine_id = $1",
+                    )
+                    .bind(machine_id)
+                    .bind(operator_id)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+                    if let Some((name, slug)) = machine {
+                        grund_store::notifications::emit_operator(
+                            &mut tx,
+                            operator_id,
+                            "operator.migration_timeout",
+                            Uuid::new_v5(&machine_id, migration_id.as_bytes()),
+                            &name,
+                            &format!("/{slug}/pool"),
+                            expired_at,
+                        )
+                        .await?;
+                    }
+                }
             } else {
                 tracing::warn!(%machine_id, %migration_id, "migration pause deadline expired");
             }
         }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// The route table as it stands.
+    pub async fn route_table(&self) -> anyhow::Result<edge::RouteTable> {
+        self.expire_migration_pauses().await?;
         let rows = grund_store::entry::route_rows(&self.state.pool).await;
         self.state.hearing.observe(&rows);
         let rows = rows?;

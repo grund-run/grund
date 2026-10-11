@@ -1,0 +1,17 @@
+use crate::templates::compiled::components::{InboxColumn, PageHead, Tabs, NotificationRows, EmptyState, PostButton, Button};
+props crate::web::notifications::NotificationsPage<'_> { csrf, viewer, items, unread_only, next };
+
+<InboxColumn>
+  <PageHead title="Notifications">
+    {if viewer.unread_notifications > 0 {
+      <PostButton action="/notifications/read-all" csrf={csrf} label="Mark all read" kind="secondary" size="sm" />
+    }}
+  </PageHead>
+  <Tabs label="Notifications" tabs={&[("all", "/notifications", "All", ""), ("unread", "/notifications?unread=1", "Unread", "")]} active={if *unread_only { "unread" } else { "all" }} />
+  {if items.is_empty() {
+    <EmptyState title={if *unread_only { "No unread notifications" } else { "No notifications" }} />
+  } else {
+    <NotificationRows items={items} csrf={csrf} />
+  }}
+  {if !next.is_empty() { <Button label="Older notifications" kind="secondary" href={next} /> }}
+</InboxColumn>

@@ -7,7 +7,7 @@ use std::time::Duration;
 use notmad::{Component, ComponentInfo, MadError};
 use tokio_util::sync::CancellationToken;
 
-use crate::state::State;
+use crate::{services::entry::EntryState, state::State};
 
 /// How often the sweeper runs.
 pub const INTERVAL: Duration = Duration::from_secs(600);
@@ -43,9 +43,20 @@ impl Component for Sweeper {
     async fn run(&self, cancellation: CancellationToken) -> Result<(), MadError> {
         let mut tick = tokio::time::interval(INTERVAL);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut notifications_tick = tokio::time::interval(Duration::from_secs(60));
+        notifications_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
                 () = cancellation.cancelled() => return Ok(()),
+                _ = notifications_tick.tick() => {
+                    match grund_store::notifications::sweep(&self.state.pool).await {
+                        Ok(notifications) => tracing::debug!(notifications, "notification sweep done"),
+                        Err(error) => tracing::warn!(error = %error, "notification sweep failed; retrying next tick"),
+                    }
+                    if let Err(error) = self.state.entry().expire_migration_pauses().await {
+                        tracing::warn!(error = %error, "migration pause expiry failed; retrying next tick");
+                    }
+                },
                 _ = tick.tick() => match self.pass().await {
                     Ok((sessions, tokens, windows, flows, api_tokens, device_logins)) => {
                         tracing::debug!(

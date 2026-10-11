@@ -11,6 +11,7 @@ const FILES: &[&str] = &[
     "grund/edge/v1/edge.proto",
     "grund/login/v1/login.proto",
     "grund/machine/v1/machine.proto",
+    "grund/notification/v1/notification.proto",
     "grund/organisation/v1/organisation.proto",
     "grund/operator/v1/operator.proto",
     "grund/registry/v1/registry.proto",

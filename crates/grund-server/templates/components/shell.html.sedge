@@ -1,5 +1,5 @@
 use crate::templates::compiled::components::{Brand, Icon, Mark, MenuItem, CsrfField, HiddenField};
-use crate::web::pages::{AdminFooter, AppSearch, TypedOrg, TypedViewer};
+use crate::web::pages::{AdminFooter, AppSearch, PendingInvitationView, TypedOrg, TypedViewer};
 component NavItem(href: &str, icon_name: &str, label: &str, active: bool, state: &str) {
 <li><a class="nav-item{if *active { " is-active" } else { "" }}{if !state.is_empty() { " is-" } else { "" }}{state}" href={href} aria-current={if *active { Some("page") } else { None }}><Icon name={icon_name} />{label}</a></li>
 }
@@ -9,7 +9,7 @@ component OrgNavItem(slug: &str, suffix: &str, icon_name: &str, label: &str, act
 component Nav(children: Html) {
 <ul class="nav">{children}</ul>
 }
-component OrgSwitcher(org: &TypedOrg, orgs: &[TypedOrg], can_create: bool) {
+component OrgSwitcher(org: &TypedOrg, orgs: &[TypedOrg], invitations: &[PendingInvitationView], csrf: &str, can_create: bool) {
 {let role = match org.role.as_str() { "owner" => "Owner", "admin" => "Admin", "member" => "Member", other => other };}
 <details class="org-switch menu">
   <summary class="org-switch-current">
@@ -20,6 +20,17 @@ component OrgSwitcher(org: &TypedOrg, orgs: &[TypedOrg], can_create: bool) {
   <ul class="menu-list menu-list-full">
     {for other in orgs.iter() {
       <li><a class={if other.current { "menu-item is-current" } else { "menu-item" }} href="/{other.slug}" aria-current={if other.current { Some("true") } else { None }}><Mark name={other.slug.as_str()} />{other.slug}</a></li>
+    }}
+    {if !invitations.is_empty() {
+      <li><p class="menu-title">Invitations</p></li>
+      {for invitation in invitations.iter() {
+        <li class="org-invitation"><span class="menu-text">{invitation.slug} · {crate::web::orgs::role_title(&invitation.role)}</span>
+          <div class="org-invitation-actions">
+            <form method="post" action="/invitations/{invitation.id}/accept"><CsrfField token={csrf} /><button class="menu-item" type="submit">Accept</button></form>
+            <form method="post" action="/invitations/{invitation.id}/decline"><CsrfField token={csrf} /><button class="menu-item" type="submit">Decline</button></form>
+          </div>
+        </li>
+      }}
     }}
     {if *can_create { <MenuItem href="/orgs/new" icon_name="plus" label="New organisation" /> }}
   </ul>
@@ -39,7 +50,7 @@ component Sidebar(viewer: &TypedViewer, section: &str, csrf: &str, footer: Optio
 <nav class="sidebar" aria-label="Main">
   <Brand href="/" />
   {if let Some(org) = &viewer.current {
-    <OrgSwitcher org={org} orgs={viewer.orgs.as_slice()} can_create={viewer.can_create} />
+    <OrgSwitcher org={org} orgs={viewer.orgs.as_slice()} invitations={viewer.pending_invitations.as_slice()} csrf={csrf} can_create={viewer.can_create} />
     <ul class="nav">
       <OrgNavItem slug={org.slug.as_str()} icon_name="home" label="Overview" active={*section == "overview"} />
       <OrgNavItem slug={org.slug.as_str()} suffix="/apps" icon_name="grid" label="Apps" active={*section == "apps" || *section == "deploy"} />
@@ -78,9 +89,15 @@ component Sidebar(viewer: &TypedViewer, section: &str, csrf: &str, footer: Optio
 </nav>
 }
 component TopbarAction(org: &TypedOrg, section: &str, state: &str) {
-{if org.manages && *section != "deploy" && *section != "machine-add" && *section != "pool" && *section != "admin" {
+{if org.manages && *section != "deploy" && *section != "machine-add" && *section != "pool" && *section != "admin" && *section != "notifications" {
   <span class="topbar-end"><a class="btn btn-primary{if !state.is_empty() { " is-" } else { "" }}{state}" href="/{org.slug}{if *section == "machines" { "/machines/add" } else { "/deploy" }}"><Icon name="plus" class="icon-sm" /><span class="btn-label">{if *section == "machines" { Add machine } else { Deploy app }}</span></a></span>
 }}
+}
+component NotificationBell(count: i64, active: bool, state: &str) {
+<a href="/notifications" class="notification-bell{if *active { " is-active" } else { "" }}{if !state.is_empty() { " is-" } else { "" }}{state}" aria-label={if *count > 0 { format!("Notifications, {count} unread") } else { "Notifications".to_owned() }} aria-current={if *active { Some("page") } else { None }}>
+  <Icon name="bell" class="icon-sm" />
+  {if *count > 0 { <span class="notification-count">{count}</span> }}
+</a>
 }
 component Topbar(viewer: &TypedViewer, section: &str, list: Option<&AppSearch>) {
 <header class="topbar">
@@ -96,9 +113,11 @@ component Topbar(viewer: &TypedViewer, section: &str, list: Option<&AppSearch>) 
         }}
       </form>
     }}
+    <NotificationBell count={viewer.unread_notifications} active={*section == "notifications"} />
     <TopbarAction org={org} section={section} />
   } else {
     <p class="topbar-title">{viewer.username}</p>
+    <NotificationBell count={viewer.unread_notifications} active={*section == "notifications"} />
   }}
 </header>
 }

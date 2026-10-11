@@ -145,11 +145,11 @@ fn walk(
         .get_subcommands()
         .filter(|c| !c.is_hide_set() && c.get_name() != "help")
         .collect();
-    if children.is_empty() {
-        if !path.is_empty() {
-            found.push((path.to_string(), command.clone(), args));
+    if children.is_empty() || !path.is_empty() && !command.is_subcommand_required_set() {
+        found.push((path.to_string(), command.clone(), args.clone()));
+        if children.is_empty() {
+            return;
         }
-        return;
     }
     let passed: Vec<Arg> = args
         .iter()

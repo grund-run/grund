@@ -1,4 +1,4 @@
-use crate::templates::compiled::components::{CopyButton, External, Icon, IconFact, ImageIcon, Mark, Pill, ShortId, Status, Tag};
+use crate::templates::compiled::components::{CopyButton, External, Icon, IconFact, ImageIcon, Mark, Pill, PostButton, ShortId, Status, Tag};
 
 component Rows(children: Html) {
   <ul class="rows">{children}</ul>
@@ -16,6 +16,37 @@ component Row(name: &str, sub: &str, icon_name: &str, tone: &str, letter: &str, 
     {if end_active.unwrap_or(true) { {if let Some(end) = end { <div class="row-end">{end}</div> } else { <span></span> }} } else { <span></span> }}
   </li>
 }
+component InvitationRows(invitations: &[crate::web::pages::PendingInvitationView], csrf: &str) {
+<Rows>
+  {for invitation in invitations.iter() {
+    <Row name={invitation.slug.as_str()} sub={&format!("Invited as {}", crate::web::orgs::role_title(&invitation.role))} icon_name="mail" tone="blue">
+      <:end><InvitationActions id={invitation.id.as_str()} csrf={csrf} /></:end>
+    </Row>
+  }}
+</Rows>
+}
+
+component InvitationActions(id: &str, csrf: &str) {
+<div class="invitation-actions">
+  <PostButton action={format!("/invitations/{id}/accept")} csrf={csrf} label="Accept" kind="secondary" size="sm" />
+  <PostButton action={format!("/invitations/{id}/decline")} csrf={csrf} label="Decline" kind="ghost" size="sm" />
+</div>
+}
+
+component InboxColumn(children: Html) {
+<div class="inbox-column">{children}</div>
+}
+component NotificationRows(items: &[crate::web::notifications::NotificationView], csrf: &str) {
+<Rows>
+  {for item in items.iter() {
+    <Row name={item.text.as_str()} href={item.href.as_str()} sub={item.when.as_str()} icon_name="bell" tone={if item.unread { "blue" } else { "muted" }} status_text={if item.unread { Some("Unread") } else { None }} status_tone="blue">
+      <:name_suffix>{if item.repeats > 1 { <span class="tag">×{item.repeats}</span> }}</:name_suffix>
+      <:end>{if item.unread { <PostButton action={format!("/notifications/{}/read", item.id)} csrf={csrf} label="Mark read" kind="secondary" size="sm" /> }}</:end>
+    </Row>
+  }}
+</Rows>
+}
+
 
 component Items(view: &str, children: Html) {
   <ul class="items items-{view}" data-filterable>{children}</ul>

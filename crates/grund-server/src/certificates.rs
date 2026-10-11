@@ -373,14 +373,41 @@ impl Certificates {
             retry_after,
             acme::unit_random(),
         );
+        let mut tx = self.inner.pool.begin().await?;
+        let domain_id = claim
+            .subject
+            .strip_prefix(DOMAIN_SUBJECT_PREFIX)
+            .and_then(|id| Uuid::parse_str(id).ok());
+        let first_failure: Option<i64> = if domain_id.is_some() && claim.chain_pem.is_none() {
+            sqlx::query_scalar(
+                "SELECT version FROM grund_certificates \
+                 WHERE subject = $1 AND leased_by = $2 AND last_error IS NULL",
+            )
+            .bind(&claim.subject)
+            .bind(self.inner.holder)
+            .fetch_optional(&mut *tx)
+            .await?
+        } else {
+            None
+        };
         let recorded = store::record_failure(
-            &self.inner.pool,
+            &mut *tx,
             &claim.subject,
             self.inner.holder,
             delay.as_secs_f64(),
             failed.failure.code(),
         )
         .await?;
+        if recorded && let (Some(domain_id), Some(version)) = (domain_id, first_failure) {
+            notify_domain(
+                &mut tx,
+                domain_id,
+                "domain.certificate_failing",
+                Uuid::new_v5(&domain_id, &version.to_be_bytes()),
+            )
+            .await?;
+        }
+        tx.commit().await?;
         let serving = match claim.terminator.as_str() {
             "remote" => claim
                 .chain_pem
@@ -520,8 +547,9 @@ impl Certificates {
             renew_at,
             ari_check_at,
         };
+        let mut tx = self.inner.pool.begin().await.map_err(Attempt::store)?;
         let recorded = store::record_issued(
-            &self.inner.pool,
+            &mut *tx,
             &claim.subject,
             self.inner.holder,
             order_id,
@@ -529,6 +557,17 @@ impl Certificates {
         )
         .await
         .map_err(Attempt::store)?;
+        if recorded
+            && let Some(domain_id) = claim
+                .subject
+                .strip_prefix(DOMAIN_SUBJECT_PREFIX)
+                .and_then(|id| Uuid::parse_str(id).ok())
+        {
+            notify_domain(&mut tx, domain_id, "domain.certificate_issued", order_id)
+                .await
+                .map_err(Attempt::store)?;
+        }
+        tx.commit().await.map_err(Attempt::store)?;
         if !recorded {
             tracing::warn!(
                 subject = %claim.subject,
@@ -964,6 +1003,36 @@ impl Attempt {
     fn internal(error: anyhow::Error) -> Self {
         Self::failed(Failure::Internal, error)
     }
+}
+
+async fn notify_domain(
+    connection: &mut sqlx::PgConnection,
+    domain_id: Uuid,
+    kind: &str,
+    source_id: Uuid,
+) -> Result<(), sqlx::Error> {
+    let domain: Option<(Uuid, String, String, DateTime<Utc>)> = sqlx::query_as(
+        "SELECT d.organisation_id, d.name, o.slug, c.updated_at FROM grund_domains d \
+         JOIN grund_organisations o ON o.organisation_id = d.organisation_id \
+         JOIN grund_certificates c ON c.subject = 'domain:' || d.domain_id::text \
+         WHERE d.domain_id = $1 AND d.state = 'bound' AND o.deleted_at IS NULL",
+    )
+    .bind(domain_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    if let Some((organisation_id, name, slug, occurred_at)) = domain {
+        grund_store::notifications::emit_org(
+            connection,
+            organisation_id,
+            kind,
+            source_id,
+            &name,
+            &format!("/{slug}/domains"),
+            occurred_at,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 fn order_status(order: &mut instant_acme::Order) -> OrderStatus {

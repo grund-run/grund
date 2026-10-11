@@ -657,7 +657,7 @@ pub async fn set_hosted_order(
         "UPDATE grund_hosted_orders SET status = $3, machine_id = COALESCE($4, machine_id), \
            leased_until = NULL, \
            next_attempt_at = CASE WHEN $3 = 'removed' THEN clock_timestamp() + interval '30 seconds' ELSE next_attempt_at END, \
-           cancelled_at = CASE WHEN $3 IN ('removed', 'failed') THEN clock_timestamp() ELSE cancelled_at END \
+           cancelled_at = CASE WHEN $3 IN ('removed', 'failed', 'refused') THEN clock_timestamp() ELSE cancelled_at END \
          WHERE organisation_id = $1 AND order_id = $2",
     )
     .bind(organisation_id)

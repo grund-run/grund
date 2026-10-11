@@ -1,6 +1,6 @@
-use crate::templates::compiled::components::{ImageSprite, PageHead, Section, Items, AppRow, AddCard, EmptyState, Rows, Row, Stats};
+use crate::templates::compiled::components::{ImageSprite, PageHead, Section, Items, AppRow, AddCard, EmptyState, Rows, Row, Stats, InvitationRows};
 use crate::web::orgs::role_title;
-props crate::web::orgs::HomePage<'_> { viewer, members, icons, apps, app_count };
+props crate::web::orgs::HomePage<'_> { viewer, csrf, members, icons, apps, app_count };
 
 {if let Some(org) = &viewer.current {
   {let apps_href = format!("/{}/apps", org.slug);}
@@ -8,7 +8,12 @@ props crate::web::orgs::HomePage<'_> { viewer, members, icons, apps, app_count }
   {let member_since = format!("Member since {}", viewer.registered_on);}
   <ImageSprite icons={icons} />
   <PageHead title="Overview" />
-  <Section id="apps" title="Apps" count={Some(*app_count)} more={if *app_count > 0 { Some((apps_href.as_str(),"View all")) } else { None }} first={Some(true)}>
+  {if !viewer.pending_invitations.is_empty() {
+    <Section id="invitations" title="Invitations" count={Some(viewer.pending_invitations.len())} first={Some(true)}>
+      <InvitationRows invitations={viewer.pending_invitations.as_slice()} csrf={csrf} />
+    </Section>
+  }}
+  <Section id="apps" title="Apps" count={Some(*app_count)} more={if *app_count > 0 { Some((apps_href.as_str(),"View all")) } else { None }} first={Some(viewer.pending_invitations.is_empty())}>
     {if !apps.is_empty() {
       <Items view="list">{for app in apps { <AppRow slug={&org.slug} manages={org.manages} app={app} /> }}</Items>
     } else if org.manages {

@@ -6,6 +6,7 @@ pub mod auth;
 pub mod domains;
 pub mod machines;
 pub mod members;
+pub mod notifications;
 pub mod operator;
 pub mod orgs;
 pub mod registries;
@@ -32,6 +33,7 @@ pub const CLIENT_NOUNS: &[&str] = &[
     "domains",
     "members",
     "invitations",
+    "notifications",
     "tokens",
     "registries",
     "describe",
@@ -65,6 +67,8 @@ pub enum Command {
     Members(members::MembersCommand),
     #[command(about = "Invitations not accepted yet: list, revoke")]
     Invitations(members::InvitationsCommand),
+    #[command(about = "Account notifications: list, count unread, mark as read")]
+    Notifications(notifications::NotificationsCommand),
     #[command(about = "Personal access tokens for CI and agents: list, create, revoke")]
     Tokens(tokens::TokensCommand),
     #[command(about = "Logins to private container registries: list, set, remove")]
@@ -103,6 +107,7 @@ impl Command {
             Command::Domains(c) => &c.global,
             Command::Members(c) => &c.global,
             Command::Invitations(c) => &c.global,
+            Command::Notifications(c) => &c.global,
             Command::Tokens(c) => &c.global,
             Command::Registries(c) => &c.global,
             Command::Describe(a) => &a.global,
@@ -131,6 +136,7 @@ pub async fn execute(
         Command::Domains(command) => domains::run(ctx, command.action).await?,
         Command::Members(command) => members::run_members(ctx, command.action).await?,
         Command::Invitations(command) => members::run_invitations(ctx, command.action).await?,
+        Command::Notifications(command) => notifications::run(ctx, command).await?,
         Command::Tokens(command) => tokens::run(ctx, command.action).await?,
         Command::Registries(command) => registries::run(ctx, command.action).await?,
         Command::Describe(args) => selfdesc::describe(root, args)?,

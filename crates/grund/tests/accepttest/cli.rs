@@ -828,3 +828,45 @@ async fn operator_cli_controls_hosted_entitlements_and_denies_other_accounts() -
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn the_notifications_cli_lists_json_and_marks_only_its_own_items_read() -> anyhow::Result<()>
+{
+    let Some((given, when, then)) = crate::accepttest::fixtures::testcase_with_mail().await? else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let (guest, guest_when, guest_then) = given.testcase.another_browser();
+    let account = guest.a_signed_in_account().await?;
+    when.inviting(&owner.username, &account.email, "member")
+        .await?;
+    then.status(303)?;
+    let instance = origin(&guest_when);
+    let shell = Shell::fresh(&[("GRUND_INSTANCE", &instance)])?;
+    approved_cli_session(&shell, &guest_when, &guest_then).await?;
+    let listed = shell.json("notifications", &["--unread"]).await?;
+    let items = listed["notifications"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("CLI JSON missing notifications: {listed}"))?;
+    anyhow::ensure!(items.len() == 1, "one unread invitation: {listed}");
+    let id = items[0]["id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("notification missing id: {listed}"))?;
+    anyhow::ensure!(!id.is_empty());
+    shell.json("notifications read", &[id]).await?;
+    let unread = shell.json("notifications", &["--unread"]).await?;
+    anyhow::ensure!(
+        unread
+            .get("notifications")
+            .is_none_or(|v| v.as_array().is_some_and(Vec::is_empty)),
+        "read item remains unread: {unread}"
+    );
+    let all = shell.json("notifications", &[]).await?;
+    anyhow::ensure!(
+        all["notifications"]
+            .as_array()
+            .is_some_and(|items| items.len() == 1),
+        "read item vanished from all items: {all}"
+    );
+    Ok(())
+}

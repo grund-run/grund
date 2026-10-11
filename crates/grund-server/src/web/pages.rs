@@ -77,12 +77,20 @@ pub struct TypedOrg {
     pub since: String,
     pub current: bool,
 }
+#[derive(Clone, serde::Serialize)]
+pub struct PendingInvitationView {
+    pub id: String,
+    pub slug: String,
+    pub role: String,
+}
 
 #[derive(Clone, serde::Serialize)]
 pub struct TypedViewer {
     pub username: String,
     pub email: String,
     pub initials: String,
+    pub pending_invitations: Vec<PendingInvitationView>,
+    pub unread_notifications: i64,
     pub orgs: Vec<TypedOrg>,
     pub current: Option<TypedOrg>,
     pub can_create: bool,
@@ -192,8 +200,9 @@ pub struct SessionsPage<'a> {
     pub notice: &'a str,
 }
 
-pub struct NoOrganisationPage {
-    pub can_create: bool,
+pub struct NoOrganisationPage<'a> {
+    pub viewer: &'a TypedViewer,
+    pub csrf: &'a str,
 }
 
 pub struct ErrorPage<'a> {
@@ -321,6 +330,18 @@ pub async fn typed_viewer_context(
         .ok_or_else(|| anyhow::anyhow!("session names an account that does not exist"))?;
     let organisations = state.organisations();
     let memberships = organisations.memberships_of(session.account_id).await?;
+    let pending_invitations =
+        grund_store::notifications::pending_for_account(&state.pool, session.account_id)
+            .await?
+            .into_iter()
+            .map(|invitation| PendingInvitationView {
+                id: invitation.invitation_id.to_string(),
+                slug: invitation.slug,
+                role: invitation.role,
+            })
+            .collect();
+    let unread_notifications =
+        grund_store::notifications::count(&state.pool, session.account_id, None).await?;
     let operator_id = state.machines().operator().await?;
     let admin_footer = memberships
         .iter()
@@ -375,6 +396,8 @@ pub async fn typed_viewer_context(
         email: viewer.email,
         initials,
         orgs,
+        pending_invitations,
+        unread_notifications,
         current,
         admin_footer,
         can_create: organisations.can_create(),
@@ -1317,6 +1340,12 @@ fn style_guide_fixture(csrf: String) -> StyleGuidePage {
         username: "example".into(),
         initials: "EX".into(),
         email: String::new(),
+        pending_invitations: vec![PendingInvitationView {
+            id: "0199e090-71ac-76db-821d-fb6bc598ea0b".into(),
+            slug: "new-studio".into(),
+            role: "member".into(),
+        }],
+        unread_notifications: 3,
         registered_on: String::new(),
         current: Some(TypedOrg {
             slug: "nord-studio".into(),

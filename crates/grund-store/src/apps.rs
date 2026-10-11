@@ -261,6 +261,36 @@ pub async fn apply_app(
                 json!({ "replica_id": replica_id, "machine_id": machine_id, "replica": replica }),
             )
             .await?;
+            let disconnected: Option<(Uuid, String, String, DateTime<Utc>)> = sqlx::query_as(
+                "SELECT a.organisation_id, COALESCE(m.pool_name, m.name), o.slug, \
+                        COALESCE(p.last_seen_at, m.registered_at) \
+                 FROM grund_apps a JOIN grund_machines m ON m.machine_id = $2 \
+                 JOIN grund_organisations o ON o.organisation_id = a.organisation_id \
+                 LEFT JOIN grund_machine_presence p ON p.machine_id = m.machine_id \
+                 WHERE a.app_id = $1 AND m.pool_organisation_id = a.organisation_id \
+                   AND m.state <> 'revoked' \
+                   AND (p.last_seen_at IS NULL OR p.last_seen_at <= $3 - interval '30 seconds')",
+            )
+            .bind(app_id)
+            .bind(machine_id)
+            .bind(lost_at)
+            .fetch_optional(&mut *connection)
+            .await?;
+            if let Some((organisation_id, machine_name, slug, last_seen)) = disconnected {
+                let mut episode = [0; 24];
+                episode[..16].copy_from_slice(organisation_id.as_bytes());
+                episode[16..].copy_from_slice(&last_seen.timestamp_micros().to_be_bytes());
+                crate::notifications::emit_org(
+                    connection,
+                    organisation_id,
+                    "machine.disconnected",
+                    Uuid::new_v5(machine_id, &episode),
+                    &machine_name,
+                    &format!("/{slug}/machines"),
+                    *lost_at,
+                )
+                .await?;
+            }
         }
         AppEvent::RolloutSucceeded {
             rollout_id,
@@ -323,6 +353,28 @@ pub async fn apply_app(
                 *failed_at,
                 "rollout_failed",
                 json!({ "release": to, "reason": reason, "rolled_back": rolled_back }),
+            )
+            .await?;
+            let (organisation_id, app_name, slug): (Uuid, String, String) = sqlx::query_as(
+                "SELECT a.organisation_id, a.name, o.slug FROM grund_apps a \
+                 JOIN grund_organisations o ON o.organisation_id = a.organisation_id \
+                 WHERE a.app_id = $1",
+            )
+            .bind(app_id)
+            .fetch_one(&mut *connection)
+            .await?;
+            crate::notifications::emit_org(
+                connection,
+                organisation_id,
+                if *rolled_back {
+                    "release.rolled_back"
+                } else {
+                    "release.failed"
+                },
+                *rollout_id,
+                &app_name,
+                &format!("/{slug}/apps/{app_name}/deployments"),
+                *failed_at,
             )
             .await?;
         }

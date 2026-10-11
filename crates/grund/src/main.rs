@@ -23,9 +23,9 @@
 //!
 //! The rest are the client commands of `grund-cli` (grund-docs
 //! design/cli.md): `login`, `whoami`, `orgs`, `apps`, `machines`, `domains`,
-//! `members`, `invitations`, `tokens`, `registries`, and the CLI's
-//! self-description, `describe`, `schema`, `skill` and `mcp`. They are what
-//! the dashboard does, over the same API.
+//! `members`, `invitations`, `notifications`, `tokens`, `registries`, and the
+//! CLI's self-description, `describe`, `schema`, `skill` and `mcp`. They are
+//! what the dashboard does, over the same API.
 //!
 //! The agent is part of this binary, so there is one artifact to build, sign
 //! and ship.

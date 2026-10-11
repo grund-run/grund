@@ -230,6 +230,8 @@ async fn an_app_runs_rolls_out_rolls_back_on_its_own_and_restarts_a_killed_copy(
     };
     let owner = given.a_signed_in_account().await?;
     let org = owner.username.as_str();
+    let (outsider, outsider_when, outsider_then) = given.testcase.another_browser();
+    outsider.a_signed_in_account().await?;
     let agent = a_machine(&when, &then, org, "box").await?;
     let v1 = registry.publish("acme/hello", "1");
 
@@ -338,6 +340,41 @@ async fn an_app_runs_rolls_out_rolls_back_on_its_own_and_restarts_a_killed_copy(
     )
     .await?;
     anyhow::ensure!(failed["currentRelease"] == 2, "{failed:#}");
+    when.calling(
+        "/grund.notification.v1.NotificationService/ListNotifications",
+        "{}",
+    )
+    .await?;
+    then.status(200)?;
+    let inbox = then.json()?;
+    let failures: Vec<&Value> = inbox["notifications"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("no notifications array: {inbox}"))?
+        .iter()
+        .filter(|item| {
+            item["kind"]
+                .as_str()
+                .is_some_and(|kind| kind.starts_with("release."))
+        })
+        .collect();
+    anyhow::ensure!(
+        failures.len() == 1,
+        "failed rollout creates one fact: {inbox}"
+    );
+    outsider_when
+        .calling(
+            "/grund.notification.v1.NotificationService/ListNotifications",
+            "{}",
+        )
+        .await?;
+    outsider_then.status(200)?;
+    let other = outsider_then.json()?;
+    anyhow::ensure!(
+        other
+            .get("notifications")
+            .is_none_or(|v| v.as_array().is_some_and(Vec::is_empty)),
+        "unrelated account sees no organisation's release: {other}"
+    );
     anyhow::ensure!(
         failed["rollout"]["reason"]
             .as_str()
@@ -719,6 +756,8 @@ async fn a_copy_on_a_machine_that_stops_answering_is_started_on_another() -> any
     };
     let owner = given.a_signed_in_account().await?;
     let org = owner.username.as_str();
+    let (outsider, outsider_when, outsider_then) = given.testcase.another_browser();
+    outsider.a_signed_in_account().await?;
     let mut first = a_machine(&when, &then, org, "one").await?;
     let _second = a_machine(&when, &then, org, "two").await?;
     registry.publish("acme/hello", "1");
@@ -773,6 +812,35 @@ async fn a_copy_on_a_machine_that_stops_answering_is_started_on_another() -> any
     )
     .await?;
     anyhow::ensure!(moved["currentRelease"] == 1, "{moved}");
+    when.calling(
+        "/grund.notification.v1.NotificationService/ListNotifications",
+        "{}",
+    )
+    .await?;
+    then.status(200)?;
+    let inbox = then.json()?;
+    anyhow::ensure!(
+        inbox["notifications"].as_array().is_some_and(|items| items
+            .iter()
+            .filter(|item| item["kind"] == "machine.disconnected")
+            .count()
+            == 1),
+        "one disconnected-machine fact after the reschedule window: {inbox}"
+    );
+    outsider_when
+        .calling(
+            "/grund.notification.v1.NotificationService/ListNotifications",
+            "{}",
+        )
+        .await?;
+    outsider_then.status(200)?;
+    let unrelated = outsider_then.json()?;
+    anyhow::ensure!(
+        unrelated
+            .get("notifications")
+            .is_none_or(|v| v.as_array().is_some_and(Vec::is_empty)),
+        "disconnected machine leaked to another organisation: {unrelated}"
+    );
     Ok(())
 }
 

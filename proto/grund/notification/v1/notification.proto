@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+package grund.notification.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// A signed-in account's inbox. A full personal token sees only notifications
+// for the organisation to which that token belongs, including invitations to
+// that organisation; a deploy token cannot call this service.
+service NotificationService {
+  // Newest first. Page tokens are opaque and tied to the unread filter.
+  // The default page size is 50 and the maximum is 100.
+  rpc ListNotifications(ListNotificationsRequest) returns (ListNotificationsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // The unread total for the same audience as ListNotifications.
+  rpc CountUnread(CountUnreadRequest) returns (CountUnreadResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // A missing or another account's notification is not_found.
+  rpc MarkRead(MarkReadRequest) returns (MarkReadResponse);
+
+  // Marks the caller's currently visible notifications read.
+  rpc MarkAllRead(MarkAllReadRequest) returns (MarkAllReadResponse);
+}
+
+message Notification {
+  string id = 1;
+  string kind = 2;
+  string text = 3;
+  // A relative path, never an invitation token or a mail link.
+  string href = 4;
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp read_at = 6;
+  int32 repeat_count = 7;
+  // The UUID of the committed fact; for an invitation, its tokenless ID.
+  string source_id = 8;
+}
+
+message ListNotificationsRequest {
+  bool unread_only = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListNotificationsResponse {
+  repeated Notification notifications = 1;
+  string next_page_token = 2;
+}
+
+message CountUnreadRequest {}
+message CountUnreadResponse {
+  int64 count = 1;
+}
+
+message MarkReadRequest {
+  string id = 1;
+}
+message MarkReadResponse {}
+message MarkAllReadRequest {}
+message MarkAllReadResponse {}

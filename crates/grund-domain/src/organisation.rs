@@ -93,6 +93,7 @@ pub enum Withdrawal {
     Revoked,
     /// A new invitation to the same address took its place.
     Replaced,
+    Declined,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, mire::EventData)]
@@ -350,6 +351,14 @@ pub enum OrganisationCommand {
         invitation_id: Uuid,
         at: DateTime<Utc>,
     },
+    /// Withdraws the invitation by its verified recipient, without requiring
+    /// membership in the inviting organisation.
+    DeclineInvitation {
+        invitation_id: Uuid,
+        account_id: Uuid,
+        email_digest: String,
+        at: DateTime<Utc>,
+    },
     /// Uses an invitation: the account joins with the invited role. The
     /// account's verified address must be the invited one.
     AcceptInvitation {
@@ -520,6 +529,25 @@ impl mire::Command for OrganisationCommand {
                     invitation_id,
                     withdrawal: Withdrawal::Revoked,
                     withdrawn_by: actor,
+                    withdrawn_at: at,
+                }])
+            }
+            OrganisationCommand::DeclineInvitation {
+                invitation_id,
+                account_id,
+                email_digest,
+                at,
+            } => {
+                let invitation = organisation
+                    .open_invitation(invitation_id, at)
+                    .ok_or(OrganisationError::NoSuchInvitation)?;
+                if invitation.email_digest != email_digest {
+                    return Err(OrganisationError::WrongAddress);
+                }
+                Ok(vec![OrganisationEvent::InvitationWithdrawn {
+                    invitation_id,
+                    withdrawal: Withdrawal::Declined,
+                    withdrawn_by: account_id,
                     withdrawn_at: at,
                 }])
             }

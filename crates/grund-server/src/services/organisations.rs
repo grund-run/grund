@@ -11,7 +11,7 @@ use grund_domain::{
     },
 };
 use grund_store::{
-    accounts,
+    accounts, notifications,
     organisations::{self, InvitationView, MemberRow, Membership, NewInvitation, PendingRow},
     outbox::{self, Kind},
     work::{Work, WorkError},
@@ -226,6 +226,12 @@ pub enum AcceptOutcome {
     AlreadyMember(String),
     /// The signed-in account's address is not the invited one.
     WrongAccount,
+    Expired,
+}
+/// How declining a verified account's pending invitation ended.
+#[derive(Debug, PartialEq, Eq)]
+pub enum DeclineOutcome {
+    Declined,
     Expired,
 }
 
@@ -599,6 +605,13 @@ impl Organisations {
             },
         )
         .await?;
+        notifications::emit_invitation(
+            work.sql(),
+            invitation_id,
+            organisation.organisation_id,
+            &organisation.slug,
+        )
+        .await?;
         let payload = serde_json::json!({
             "organisation": organisation.slug,
             "invited_by": actor_name,
@@ -747,6 +760,86 @@ impl Organisations {
         work.commit().await?;
         tracing::info!(organisation_id = %invitation.organisation_id, %account_id, "invitation accepted");
         Ok(AcceptOutcome::Joined(invitation.slug))
+    }
+    /// Joins the verified recipient by invitation ID without a mail token.
+    pub async fn accept_for_account(
+        &self,
+        account_id: Uuid,
+        invitation_id: Uuid,
+        meta: &RequestMeta,
+    ) -> anyhow::Result<AcceptOutcome> {
+        let Some(found) =
+            notifications::invitation_for_account(&self.state.pool, account_id, invitation_id)
+                .await?
+        else {
+            return Ok(AcceptOutcome::Expired);
+        };
+        let mut work =
+            Work::begin(&self.state.events, meta.request_id, "accept-invitation").await?;
+        work.load_organisation(found.organisation_id).await?;
+        let Some(invitation) =
+            notifications::invitation_for_account_in(work.sql(), account_id, invitation_id).await?
+        else {
+            return Ok(AcceptOutcome::Expired);
+        };
+        match accept_in(&mut work, &invitation, account_id, Utc::now()).await {
+            Ok(()) => {}
+            Err(WorkError::Organisation(OrganisationError::AlreadyMember)) => {
+                return Ok(AcceptOutcome::AlreadyMember(invitation.slug));
+            }
+            Err(WorkError::Organisation(
+                OrganisationError::NoSuchInvitation | OrganisationError::WrongAddress,
+            )) => return Ok(AcceptOutcome::Expired),
+            Err(error) => return Err(error.into()),
+        }
+        work.commit().await?;
+        Ok(AcceptOutcome::Joined(invitation.slug))
+    }
+
+    /// Withdraws a pending invitation at its verified recipient's request.
+    pub async fn decline_for_account(
+        &self,
+        account_id: Uuid,
+        invitation_id: Uuid,
+        meta: &RequestMeta,
+    ) -> anyhow::Result<DeclineOutcome> {
+        let Some(found) =
+            notifications::invitation_for_account(&self.state.pool, account_id, invitation_id)
+                .await?
+        else {
+            return Ok(DeclineOutcome::Expired);
+        };
+        let mut work =
+            Work::begin(&self.state.events, meta.request_id, "decline-invitation").await?;
+        work.load_organisation(found.organisation_id).await?;
+        let Some(invitation) =
+            notifications::invitation_for_account_in(work.sql(), account_id, invitation_id).await?
+        else {
+            return Ok(DeclineOutcome::Expired);
+        };
+        let result = work
+            .organisation(
+                invitation.organisation_id,
+                OrganisationCommand::DeclineInvitation {
+                    invitation_id,
+                    account_id,
+                    email_digest: crypto::email_digest(&invitation.email_normalized),
+                    at: Utc::now(),
+                },
+            )
+            .await;
+        match result {
+            Ok(_) => {}
+            Err(WorkError::Organisation(
+                OrganisationError::NoSuchInvitation | OrganisationError::WrongAddress,
+            )) => return Ok(DeclineOutcome::Expired),
+            Err(error) => return Err(error.into()),
+        }
+        if !notifications::decline_in(work.sql(), account_id, invitation_id).await? {
+            return Ok(DeclineOutcome::Expired);
+        }
+        work.commit().await?;
+        Ok(DeclineOutcome::Declined)
     }
 }
 

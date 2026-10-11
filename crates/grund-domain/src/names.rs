@@ -31,6 +31,7 @@ const RESERVED: &[&str] = &[
     "me",
     "new",
     "org",
+    "notifications",
     "orgs",
     "reset",
     "root",

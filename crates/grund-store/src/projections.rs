@@ -54,7 +54,7 @@ pub async fn apply_account(
             .await?;
         }
         AccountEvent::EmailVerified { verified_at, .. } => {
-            sqlx::query(
+            let changed = sqlx::query(
                 "UPDATE grund_accounts SET email_verified_at = $2, stream_version = $3 \
                  WHERE account_id = $1 AND stream_version < $3",
             )
@@ -62,7 +62,21 @@ pub async fn apply_account(
             .bind(verified_at)
             .bind(version)
             .execute(&mut *connection)
-            .await?;
+            .await?
+            .rows_affected();
+            if changed != 0 {
+                let invitations =
+                    crate::notifications::pending_for_account(&mut *connection, account_id).await?;
+                for invitation in invitations {
+                    crate::notifications::emit_invitation(
+                        connection,
+                        invitation.invitation_id,
+                        invitation.organisation_id,
+                        &invitation.slug,
+                    )
+                    .await?;
+                }
+            }
         }
         AccountEvent::PasswordChanged { .. } | AccountEvent::IdentityLinked { .. } => {
             sqlx::query(
@@ -168,6 +182,13 @@ pub async fn apply_organisation(
             .bind(account_id)
             .execute(&mut *connection)
             .await?;
+            sqlx::query(
+                "DELETE FROM grund_notifications WHERE organisation_id = $1 AND account_id = $2",
+            )
+            .bind(organisation_id)
+            .bind(account_id)
+            .execute(&mut *connection)
+            .await?;
         }
         OrganisationEvent::Renamed {
             from,
@@ -235,10 +256,21 @@ pub async fn apply_organisation(
                 .bind(organisation_id)
                 .execute(&mut *connection)
                 .await?;
+            sqlx::query("DELETE FROM grund_notifications WHERE organisation_id = $1")
+                .bind(organisation_id)
+                .execute(&mut *connection)
+                .await?;
         }
-        OrganisationEvent::InvitationIssued { .. }
-        | OrganisationEvent::InvitationWithdrawn { .. }
-        | OrganisationEvent::InvitationAccepted { .. } => {}
+        OrganisationEvent::InvitationIssued { .. } => {}
+        OrganisationEvent::InvitationWithdrawn { invitation_id, .. }
+        | OrganisationEvent::InvitationAccepted { invitation_id, .. } => {
+            sqlx::query(
+                "DELETE FROM grund_notifications WHERE source_kind = 'invitation' AND source_id = $1",
+            )
+            .bind(invitation_id)
+            .execute(&mut *connection)
+            .await?;
+        }
     }
     Ok(())
 }
@@ -384,6 +416,27 @@ pub async fn apply_machine(
                 .bind(cordoned_at)
                 .execute(&mut *connection)
                 .await?;
+            let recipient: Option<(Uuid, String, String)> = sqlx::query_as(
+                "SELECT m.pool_organisation_id, COALESCE(m.pool_name, m.name), o.slug \
+                 FROM grund_machines m \
+                 JOIN grund_organisations o ON o.organisation_id = m.pool_organisation_id \
+                 WHERE m.machine_id = $1",
+            )
+            .bind(machine_id)
+            .fetch_optional(&mut *connection)
+            .await?;
+            if let Some((organisation_id, name, slug)) = recipient {
+                crate::notifications::emit_org(
+                    connection,
+                    organisation_id,
+                    "machine.out_of_service",
+                    Uuid::new_v5(&machine_id, &version.to_be_bytes()),
+                    &name,
+                    &format!("/{slug}/machines"),
+                    *cordoned_at,
+                )
+                .await?;
+            }
         }
         MachineEvent::Uncordoned { .. } => {
             sqlx::query("UPDATE grund_machines SET cordoned_at = NULL WHERE machine_id = $1")

@@ -1663,6 +1663,71 @@
       "title": "grund.machine.v1.SetMachineLabelsResponse",
       "type": "object"
     },
+    "grund.notification.v1.CountUnreadResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "count": {
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        }
+      },
+      "title": "grund.notification.v1.CountUnreadResponse",
+      "type": "object"
+    },
+    "grund.notification.v1.ListNotificationsResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "nextPageToken": {
+          "type": "string"
+        },
+        "notifications": {
+          "items": {
+            "$ref": "#/$defs/grund.notification.v1.Notification"
+          },
+          "type": "array"
+        }
+      },
+      "title": "grund.notification.v1.ListNotificationsResponse",
+      "type": "object"
+    },
+    "grund.notification.v1.Notification": {
+      "additionalProperties": false,
+      "properties": {
+        "createdAt": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "href": {
+          "description": "A relative path, never an invitation token or a mail link.",
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "readAt": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "repeatCount": {
+          "type": "integer"
+        },
+        "sourceId": {
+          "description": "The UUID of the committed fact; for an invitation, its tokenless ID.",
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "title": "grund.notification.v1.Notification",
+      "type": "object"
+    },
     "grund.operator.v1.CordonHostResponse": {
       "additionalProperties": false,
       "properties": {
@@ -14076,6 +14141,336 @@
         "grund.organisation.v1.OrganisationService/RevokeInvitation"
       ],
       "summary": "Revoke an invitation; its link stops working"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "description": "Show unread notifications only",
+          "flag": "--unread",
+          "name": "unread",
+          "type": "boolean",
+          "value_name": "UNREAD"
+        },
+        {
+          "default": "50",
+          "description": "Notifications per page (1 to 100)",
+          "flag": "--page-size",
+          "name": "page_size",
+          "type": "integer",
+          "value_name": "COUNT"
+        },
+        {
+          "description": "Continue from a previous page's nextPageToken",
+          "flag": "--page-token",
+          "name": "page_token",
+          "type": "string",
+          "value_name": "TOKEN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund notifications",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund notifications --json",
+        "grund notifications --unread --page-size 100"
+      ],
+      "mutates": false,
+      "output": {
+        "$ref": "#/$defs/grund.notification.v1.ListNotificationsResponse"
+      },
+      "path": "notifications",
+      "rpcs": [
+        "grund.notification.v1.NotificationService/ListNotifications"
+      ],
+      "summary": "Account notifications: list, count unread, mark as read"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        }
+      ],
+      "audience": "client",
+      "command": "grund notifications count",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund notifications count"
+      ],
+      "mutates": false,
+      "output": {
+        "$ref": "#/$defs/grund.notification.v1.CountUnreadResponse"
+      },
+      "path": "notifications count",
+      "rpcs": [
+        "grund.notification.v1.NotificationService/CountUnread"
+      ],
+      "summary": "Count unread notifications"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "id",
+          "positional": true,
+          "type": "string",
+          "value_name": "ID"
+        },
+        {
+          "description": "Mark all notifications as read",
+          "flag": "--all",
+          "name": "all",
+          "type": "boolean",
+          "value_name": "ALL"
+        },
+        {
+          "description": "Show the request instead of sending it",
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund notifications read",
+      "destructive": false,
+      "dry_run": true,
+      "examples": [
+        "grund notifications read 0199a9b5-bcdf-7338-9a92-b6f536b9ca9b",
+        "grund notifications read --all"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.cli.v1.Done"
+      },
+      "path": "notifications read",
+      "rpcs": [
+        "grund.notification.v1.NotificationService/MarkRead",
+        "grund.notification.v1.NotificationService/MarkAllRead"
+      ],
+      "summary": "Mark one notification, or all notifications, as read"
     },
     {
       "args": [

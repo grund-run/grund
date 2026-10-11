@@ -26,6 +26,7 @@ pub mod device;
 pub mod domains;
 pub mod install;
 pub mod machines;
+pub mod notifications;
 pub mod orgs;
 pub mod pages;
 pub mod placement;
@@ -135,6 +136,17 @@ pub fn router(state: State) -> Router {
         )
         .route("/licenses", get(pages::licenses))
         .route("/style-guide", get(pages::style_guide))
+        .route("/notifications", get(notifications::page))
+        .route("/notifications/read-all", post(notifications::mark_all))
+        .route("/notifications/{id}/read", post(notifications::mark_read))
+        .route(
+            "/invitations/{invitation}/accept",
+            post(orgs::accept_account_invitation),
+        )
+        .route(
+            "/invitations/{invitation}/decline",
+            post(orgs::decline_account_invitation),
+        )
         .route("/orgs/new", get(orgs::new_form).post(orgs::create))
         .route(
             "/invite",
@@ -650,8 +662,10 @@ mod tests {
             "reset",
             "settings",
             "licenses",
+            "notifications",
             "style-guide",
             "orgs",
+            "invitations",
             "invite",
             "auth",
             "api",
