@@ -147,6 +147,25 @@ pub struct Lease {
     pub end: &'static str,
 }
 
+pub fn host_name(host: &Host) -> &str {
+    host.name
+        .strip_suffix(&host.id)
+        .and_then(|prefix| prefix.strip_suffix("-retired-"))
+        .filter(|name| !name.is_empty())
+        .unwrap_or(&host.name)
+}
+
+pub fn gb(mib: i64) -> String {
+    let mut value = format!("{:.2}", mib as f64 / 1024.0);
+    let digits = value.trim_end_matches('0').trim_end_matches('.').len();
+    value.truncate(digits);
+    if mib > 0 && value == "0" {
+        "<0.01".to_owned()
+    } else {
+        value
+    }
+}
+
 pub fn fleet_state(state: &str) -> (&str, &str) {
     match state {
         "ready" => ("Ready", "ok"),
@@ -183,7 +202,6 @@ pub struct AdminPage<'a> {
     pub csrf: &'a str,
     pub manages: bool,
     pub host_filter: &'a str,
-    pub host_counts: Vec<(String, usize)>,
     pub retired_count: usize,
     pub now: DateTime<Utc>,
     pub tab: &'a str,
@@ -298,7 +316,6 @@ pub async fn admin_page(
     } else {
         "active"
     };
-    let mut host_counts: Vec<(String, usize)> = vec![];
     let mut retired_count = 0;
     let now = Utc::now();
     match tab {
@@ -330,14 +347,6 @@ pub async fn admin_page(
             for host in &hosts {
                 if host.state == "retired" {
                     retired_count += 1;
-                }
-                if let Some((_, count)) = host_counts
-                    .iter_mut()
-                    .find(|(state, _)| *state == host.state)
-                {
-                    *count += 1;
-                } else {
-                    host_counts.push((host.state.clone(), 1));
                 }
             }
             if let Some((index, host)) = hosts
@@ -476,7 +485,6 @@ pub async fn admin_page(
                 csrf,
                 manages: manages(&member.membership),
                 host_filter,
-                host_counts,
                 retired_count,
                 now,
                 tab,

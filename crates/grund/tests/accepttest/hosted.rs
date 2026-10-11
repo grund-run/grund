@@ -505,7 +505,7 @@ async fn operator_hosts_hide_retired_inventory_without_losing_state_counts() -> 
 
     let capacity = FakeCapacity::start().await?;
     capacity.set_inventory_hosts(vec![
-        json!({"id":"old-1","name":"retired-one","state":"retired"}),
+        json!({"id":"01a117d6-85c5-757f-96ac-b734364ba89e","name":"lab-a-retired-01a117d6-85c5-757f-96ac-b734364ba89e","state":"retired"}),
         json!({"id":"old-2","name":"retired-two","state":"retired"}),
         json!({"id":"live-1","name":"live-host","state":"ready",
             "vcpus":4,"allocatedVcpus":2,"memoryMib":"4096","allocatedMemoryMib":"2048",
@@ -526,18 +526,21 @@ async fn operator_hosts_hide_retired_inventory_without_losing_state_counts() -> 
     when.visiting(&format!("/{operator}/admin")).await?;
     then.status(200)?
         .body_contains("live-host")?
-        .body_contains("2 used / 2 free vCPU")?
-        .body_contains("2048 used / 2048 free MiB RAM")?
+        .body_contains("vCPU 2/4")?
+        .body_contains("RAM 2/4 GB")?
+        .body_contains("Disk 8/20 GB")?
         .body_contains("Retired")?
-        .body_lacks("retired-one")?
+        .body_lacks("lab-a-retired-01a117d6-85c5-757f-96ac-b734364ba89e")?
         .body_lacks("retired-two")?;
     anyhow::ensure!(capacity.calls("ListInventoryHosts").len() == 2);
 
     when.visiting(&format!("/{operator}/admin?host_filter=retired"))
         .await?;
     then.status(200)?
-        .body_contains("retired-one")?
+        .body_contains("lab-a")?
         .body_contains("retired-two")?
+        .body_contains("01a117d6")?
+        .body_lacks("lab-a-retired-01a117d6-85c5-757f-96ac-b734364ba89e")?
         .body_lacks("live-host")?;
     Ok(())
 }

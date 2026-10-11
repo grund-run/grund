@@ -1,5 +1,5 @@
-use crate::templates::compiled::components::{PageHead, Tabs, Banner, Section, Rows, Row, EmptyState, Facts, Fact, Expanders, Expander, Form, Field, HiddenField, Button, PostButton, Panel, Actions, LinkMore, RowPill, ShortId, RelativeTime, CopyButton};
-props crate::web::admin::AdminPage<'_> { slug, csrf, manages, tab, host_filter, host_counts, retired_count, now, hosts, selected_host, machines, pools, failures, events, leases, organisations, available, leased, next_page, next_machines_page, organisation, entitlement, error, notice };
+use crate::templates::compiled::components::{PageHead, Tabs, Banner, Section, Rows, Row, EmptyState, Facts, Fact, IconFact, Expanders, Expander, Form, Field, HiddenField, Button, PostButton, Panel, Actions, LinkMore, RowPill, ShortId, RelativeTime, CopyButton};
+props crate::web::admin::AdminPage<'_> { slug, csrf, manages, tab, host_filter, retired_count, now, hosts, selected_host, machines, pools, failures, events, leases, organisations, available, leased, next_page, next_machines_page, organisation, entitlement, error, notice };
 
 <PageHead title="Admin" />
 {let hosts_url = format!("/{slug}/admin");}
@@ -16,16 +16,18 @@ props crate::web::admin::AdminPage<'_> { slug, csrf, manages, tab, host_filter, 
   {let retired_url = format!("/{slug}/admin?host_filter=retired");}
   <Tabs label="Hosts" tabs={&[("active", active_url.as_str(), "Active", ""), ("retired", retired_url.as_str(), "Retired", "")]} counts={&[("active", hosts.len() - retired_count), ("retired", *retired_count)]} active={host_filter} />
   <Section id="hosts" title="Hosts" count={Some(if *host_filter == "retired" { *retired_count } else { hosts.len() - retired_count })}>
-    <Facts>{for (state, count) in host_counts {
-      {let (word, tone) = crate::web::admin::fleet_state(state);}
-      <Fact label={word} value={&count.to_string()} tone={tone} />
-    }}</Facts>
     {if hosts.is_empty() && error.is_empty() { <EmptyState text="No hosts reported." /> }}
     {if !hosts.is_empty() && hosts.iter().all(|host| (host.state == "retired") != (*host_filter == "retired")) && error.is_empty() { <EmptyState text={if *host_filter == "retired" { "No retired hosts." } else { "No active hosts." }} /> }}
     <Rows>{for item in hosts.iter().filter(|host| (host.state == "retired") == (*host_filter == "retired")) {
       {let href = format!("{}&host_filter={host_filter}", crate::web::admin::host_url(slug, &item.id, "", ""));}
       {let (word, tone) = crate::web::admin::fleet_state(&item.state);}
-      <Row name={if item.name.is_empty() { crate::templates::short_id(&item.id) } else { &item.name }} sub="{item.provider} · {item.region} · {item.allocated_vcpus} used / {item.vcpus - item.allocated_vcpus} free vCPU · {item.allocated_memory_mib} used / {item.memory_mib - item.allocated_memory_mib} free MiB RAM · {item.allocated_disk_gib} used / {item.disk_gib - item.allocated_disk_gib} free GiB disk · {item.machine_count} VMs" icon_name="server" tone={tone} href={href.as_str()}>
+      {let retired = item.state == "retired";}
+      {let cpu = if retired { format!("{} vCPU", item.vcpus) } else { format!("vCPU {}/{}", item.allocated_vcpus, item.vcpus) };}
+      {let ram = if retired { format!("{} GB RAM", crate::web::admin::gb(item.memory_mib)) } else { format!("RAM {}/{} GB", crate::web::admin::gb(item.allocated_memory_mib), crate::web::admin::gb(item.memory_mib)) };}
+      {let disk = if retired { format!("{} GB disk", item.disk_gib) } else { format!("Disk {}/{} GB", item.allocated_disk_gib, item.disk_gib) };}
+      <Row name={if item.name.is_empty() { crate::templates::short_id(&item.id) } else { crate::web::admin::host_name(item) }} sub="" icon_name="server" tone={tone} href={href.as_str()}>
+        <:name_suffix>{if retired && !item.name.is_empty() { <ShortId text={&item.id} label="the host identifier" /> }}</:name_suffix>
+        <:sub_content>{item.provider} · {item.region} · <IconFact icon_name="cpu" text={&cpu} />{" · "}<IconFact icon_name="memory" text={&ram} />{" · "}<IconFact icon_name="disk" text={&disk} /> · {item.machine_count} VMs</:sub_content>
         <:status><RowPill text={word} tone={tone} /></:status>
         <:end>{if item.name.is_empty() { <CopyButton text={&item.id} label="the host identifier" /> }}</:end>
       </Row>
@@ -33,7 +35,7 @@ props crate::web::admin::AdminPage<'_> { slug, csrf, manages, tab, host_filter, 
   </Section>
   {if let Some(item) = selected_host.and_then(|index| hosts.get(index)) {
     {let (word, tone) = crate::web::admin::fleet_state(&item.state);}
-    <Section id="host-detail" title={if item.name.is_empty() { crate::templates::short_id(&item.id) } else { &item.name }}>
+    <Section id="host-detail" title={if item.name.is_empty() { crate::templates::short_id(&item.id) } else { crate::web::admin::host_name(item) }}>
       <Facts>
         <Fact label="State" value={word} tone={tone} />
         <Fact label="Reachable" value={if item.reachable { "Yes" } else { "No" }} />
