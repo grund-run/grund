@@ -68,6 +68,10 @@ impl AgentService for AgentApi {
         request: ServiceRequest<'_, HeartbeatRequest>,
     ) -> ServiceResult<HeartbeatResponse> {
         let caller = machine(&ctx)?;
+        tracing::Span::current().record(
+            "machine_key_prefix",
+            std::str::from_utf8(&caller.endpoint_key_prefix).expect("verified hex key"),
+        );
         let capabilities = request
             .capabilities
             .as_option()

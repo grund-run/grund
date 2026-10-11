@@ -2010,6 +2010,7 @@ mod tests {
                     extensions.insert(crate::services::agents::MachineCaller {
                         machine_id: Uuid::now_v7(),
                         organisation_id: None,
+                        endpoint_key_prefix: [b'0'; 12],
                     });
                 }
                 "token" | "full_token" => {

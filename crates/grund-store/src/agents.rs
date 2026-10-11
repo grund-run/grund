@@ -14,20 +14,27 @@ pub async fn heartbeat(
     agent_version: &str,
     capabilities: &Value,
     at: DateTime<Utc>,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "INSERT INTO grund_machine_presence (machine_id, last_seen_at, agent_version, capabilities) \
-         VALUES ($1, $2, $3, $4) \
-         ON CONFLICT (machine_id) DO UPDATE SET last_seen_at = EXCLUDED.last_seen_at, \
-           agent_version = EXCLUDED.agent_version, capabilities = EXCLUDED.capabilities",
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "WITH presence AS ( \
+           INSERT INTO grund_machine_presence (machine_id, last_seen_at, agent_version, capabilities) \
+           VALUES ($1, $2, $3, $4) \
+           ON CONFLICT (machine_id) DO UPDATE SET last_seen_at = EXCLUDED.last_seen_at, \
+             agent_version = EXCLUDED.agent_version, capabilities = EXCLUDED.capabilities \
+           RETURNING machine_id), \
+         recovery AS (UPDATE grund_machine_migration_pauses pause \
+           SET recovery_heartbeat_at = clock_timestamp() FROM presence p \
+           WHERE pause.machine_id = p.machine_id AND pause.clear_requested_at IS NOT NULL \
+             AND pause.recovery_heartbeat_at IS NULL AND pause.expires_at > clock_timestamp() \
+           RETURNING pause.machine_id) \
+         SELECT EXISTS(SELECT 1 FROM recovery)",
     )
     .bind(machine_id)
     .bind(at)
     .bind(agent_version)
     .bind(capabilities)
-    .execute(executor)
-    .await?;
-    Ok(())
+    .fetch_one(executor)
+    .await
 }
 
 /// Records what the agent reported applying, and what it refused.

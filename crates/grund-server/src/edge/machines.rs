@@ -446,8 +446,9 @@ impl Pool {
         )
     }
 
-    /// Asks one machine's gate to close its idle client connections before
-    /// fleet pauses that machine. The client requests in flight finish.
+    /// Drain idle HTTP connections on a migrating gate, then retire the
+    /// reusable iroh session. Accepted streams retain their own Arc lease;
+    /// the first request after unpause must dial the restored endpoint.
     pub async fn drain_machine(&self, endpoint_id: EndpointId) -> bool {
         let machine = self
             .machines
@@ -456,7 +457,11 @@ impl Pool {
             .get(&endpoint_id)
             .cloned();
         match machine {
-            Some(machine) => Self::drain_one(&machine).await,
+            Some(machine) => {
+                let told = Self::drain_one(&machine).await;
+                machine.connection.lock().await.take();
+                told
+            }
             None => false,
         }
     }

@@ -242,6 +242,7 @@ pub fn request_span(request: &axum::extract::Request) -> tracing::Span {
         "rpc.system" = if procedure.is_some() { "connect" } else { "" },
         "rpc.method" = procedure.unwrap_or(""),
         "rpc.grpc.status_code" = tracing::field::Empty,
+        "machine_key_prefix" = tracing::field::Empty,
         "rpc.connect.code" = tracing::field::Empty,
     );
     if ENABLED.load(Ordering::Relaxed) {

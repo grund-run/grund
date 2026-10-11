@@ -122,6 +122,15 @@ impl Entry {
 
     /// The route table as it stands.
     pub async fn route_table(&self) -> anyhow::Result<edge::RouteTable> {
+        for (machine_id, migration_id, settling) in
+            grund_store::entry::expire_migration_pauses(&self.state.pool).await?
+        {
+            if settling {
+                tracing::warn!(%machine_id, %migration_id, "migration settling deadline expired");
+            } else {
+                tracing::warn!(%machine_id, %migration_id, "migration pause deadline expired");
+            }
+        }
         let rows = grund_store::entry::route_rows(&self.state.pool).await;
         self.state.hearing.observe(&rows);
         let rows = rows?;

@@ -76,7 +76,12 @@ pub async fn set_migration_pause(
                  AND pool = 'management' AND state <> 'revoked' \
                ORDER BY registered_at DESC LIMIT 1 \
              ON CONFLICT (machine_id) DO UPDATE SET migration_id = EXCLUDED.migration_id, \
-                 expires_at = EXCLUDED.expires_at \
+                 expires_at = CASE WHEN grund_machine_migration_pauses.migration_id = EXCLUDED.migration_id \
+                   THEN grund_machine_migration_pauses.expires_at ELSE EXCLUDED.expires_at END, \
+                 clear_requested_at = CASE WHEN grund_machine_migration_pauses.migration_id = EXCLUDED.migration_id \
+                   THEN grund_machine_migration_pauses.clear_requested_at ELSE NULL END, \
+                 recovery_heartbeat_at = CASE WHEN grund_machine_migration_pauses.migration_id = EXCLUDED.migration_id \
+                   THEN grund_machine_migration_pauses.recovery_heartbeat_at ELSE NULL END \
                WHERE grund_machine_migration_pauses.migration_id = EXCLUDED.migration_id \
                   OR grund_machine_migration_pauses.expires_at <= clock_timestamp() \
              RETURNING machine_id",
@@ -91,8 +96,11 @@ pub async fn set_migration_pause(
             "WITH machine AS (SELECT machine_id FROM grund_machines \
                WHERE provider_machine_id = $1 AND pool = 'management' AND state <> 'revoked' \
                ORDER BY registered_at DESC LIMIT 1), \
-             cleared AS (DELETE FROM grund_machine_migration_pauses p USING machine m \
-               WHERE p.machine_id = m.machine_id AND p.migration_id = $2 RETURNING p.machine_id) \
+             settling AS (UPDATE grund_machine_migration_pauses p \
+               SET clear_requested_at = clock_timestamp(), \
+                   expires_at = clock_timestamp() + interval '10 seconds' \
+               FROM machine m WHERE p.machine_id = m.machine_id AND p.migration_id = $2 \
+                 AND p.clear_requested_at IS NULL RETURNING p.machine_id) \
              SELECT EXISTS(SELECT 1 FROM machine)",
         )
         .bind(provider_machine_id)
@@ -100,6 +108,43 @@ pub async fn set_migration_pause(
         .fetch_one(executor)
         .await
     }
+}
+
+/// Clears a settling pause only after this agent has both heartbeated and
+/// reported one of its own running copies ready since Fleet's restore clear.
+pub async fn finish_settled_pause(
+    executor: impl PgExecutor<'_>,
+    machine_id: Uuid,
+) -> Result<Option<Uuid>, sqlx::Error> {
+    sqlx::query_scalar(
+        "DELETE FROM grund_machine_migration_pauses pause \
+         WHERE pause.machine_id = $1 AND pause.clear_requested_at IS NOT NULL \
+           AND pause.expires_at > clock_timestamp() \
+           AND pause.recovery_heartbeat_at > pause.clear_requested_at \
+           AND EXISTS (SELECT 1 FROM grund_replicas r \
+             JOIN grund_replica_status rs ON rs.replica_id = r.replica_id \
+               AND rs.machine_id = r.machine_id \
+             WHERE r.machine_id = pause.machine_id AND r.state = 'running' \
+               AND rs.state = 'running' AND rs.ready \
+               AND rs.observed_at > pause.clear_requested_at) \
+         RETURNING pause.migration_id",
+    )
+    .bind(machine_id)
+    .fetch_optional(executor)
+    .await
+}
+
+/// Remove expired pauses when building the next route table, recording which
+/// migrations had to fall back to their deadline.
+pub async fn expire_migration_pauses(
+    executor: impl PgExecutor<'_>,
+) -> Result<Vec<(Uuid, Uuid, bool)>, sqlx::Error> {
+    sqlx::query_as(
+        "DELETE FROM grund_machine_migration_pauses WHERE expires_at <= clock_timestamp() \
+         RETURNING machine_id, migration_id, (clear_requested_at IS NOT NULL)",
+    )
+    .fetch_all(executor)
+    .await
 }
 
 /// A live app's name and its organisation's slug, with when it was made.

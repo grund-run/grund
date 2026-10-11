@@ -165,24 +165,51 @@ async fn migration_pause_requires_capacity_token_and_only_its_owner_can_clear_it
     )
     .await?;
     then.status(200)?;
-    let still_paused: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM grund_machine_migration_pauses WHERE machine_id = $1)",
+    let deadline_seconds: f64 = sqlx::query_scalar(
+        "SELECT EXTRACT(EPOCH FROM expires_at - clear_requested_at)::float8 \
+         FROM grund_machine_migration_pauses WHERE machine_id = $1",
     )
     .bind(sqlx::types::Uuid::parse_str(machine_id)?)
     .fetch_one(&pool)
     .await?;
-    anyhow::ensure!(!still_paused, "the owned migration pause was not cleared");
+    anyhow::ensure!(
+        (9.0..=11.0).contains(&deadline_seconds),
+        "Fleet clear released the machine before recovery or lacked its 10s deadline: {deadline_seconds}"
+    );
+    when.calling_with(
+        &procedure,
+        &pause.to_string(),
+        &[("Authorization", &format!("Bearer {CAPACITY_TOKEN}"))],
+    )
+    .await?;
+    then.status(200)?;
+    let retry_deadline_seconds: f64 = sqlx::query_scalar(
+        "SELECT EXTRACT(EPOCH FROM expires_at - clear_requested_at)::float8 \
+         FROM grund_machine_migration_pauses WHERE machine_id = $1",
+    )
+    .bind(sqlx::types::Uuid::parse_str(machine_id)?)
+    .fetch_one(&pool)
+    .await?;
+    anyhow::ensure!(
+        (retry_deadline_seconds - deadline_seconds).abs() < 0.001,
+        "repeated pause reopened a settled migration"
+    );
     Ok(())
 }
 
 #[tokio::test]
 async fn a_leased_machine_runs_its_lessees_apps_and_drops_them_when_the_lease_ends()
 -> anyhow::Result<()> {
+    use crate::accepttest::fixtures::{CAPACITY_TOKEN, FakeCapacity};
+
+    let capacity = FakeCapacity::start().await?;
     let registry = FakeRegistry::start().await?;
     let operator = format!("ops-{}", random_hex(4));
     let Some((given, when, then)) = testcase_configured(&[
         ("GRUND_OPERATOR_ORGANISATION", &operator),
         ("GRUND_INSECURE_REGISTRIES", &registry.host),
+        ("GRUND_CAPACITY_URL", &capacity.url),
+        ("GRUND_CAPACITY_TOKEN", CAPACITY_TOKEN),
     ])
     .await?
     else {
@@ -206,6 +233,19 @@ async fn a_leased_machine_runs_its_lessees_apps_and_drops_them_when_the_lease_en
         .as_str()
         .unwrap_or_default()
         .to_string();
+    let database_url = when
+        .testcase
+        .fixture
+        .database_url()
+        .ok_or_else(|| anyhow::anyhow!("hosted acceptance needs its database"))?;
+    let pool = sqlx::PgPool::connect(&database_url).await?;
+    let provider_id = "157f7772-b947-49a6-8183-943def0c0200";
+    let machine_uuid = sqlx::types::Uuid::parse_str(&machine_id)?;
+    sqlx::query("UPDATE grund_machines SET provider_machine_id = $1 WHERE machine_id = $2")
+        .bind(provider_id)
+        .bind(machine_uuid)
+        .execute(&pool)
+        .await?;
     let mut agent = a_running_agent(dir.clone())?;
 
     let (lessee, lessee_when, lessee_then) = given.testcase.another_browser();
@@ -219,7 +259,7 @@ async fn a_leased_machine_runs_its_lessees_apps_and_drops_them_when_the_lease_en
     )
     .await?;
     exits_within(&mut agent, Duration::from_secs(20), "it was leased").await?;
-    let mut agent = a_running_agent(dir.clone())?;
+    let agent = a_running_agent(dir.clone())?;
     let started = Instant::now();
     while !dir.join("lease.json").exists() {
         anyhow::ensure!(
@@ -289,6 +329,61 @@ async fn a_leased_machine_runs_its_lessees_apps_and_drops_them_when_the_lease_en
             && customer_id != machine_id
             && shown["app"]["replicas"][0]["machineId"] == customer_id,
         "{shown}"
+    );
+
+    let procedure = format!("{POOL}/SetMigrationPause");
+    let migration_id = "08097eb6-5a81-481a-9dde-16c93a354501";
+    let bearer = format!("Bearer {CAPACITY_TOKEN}");
+    let pause = json!({"providerMachineId":provider_id,"migrationId":migration_id,"paused":true});
+    when.calling_with(
+        &procedure,
+        &pause.to_string(),
+        &[("Authorization", &bearer)],
+    )
+    .await?;
+    then.status(200)?;
+    drop(agent);
+    let clear = json!({"providerMachineId":provider_id,"migrationId":migration_id,"paused":false});
+    when.calling_with(
+        &procedure,
+        &clear.to_string(),
+        &[("Authorization", &bearer)],
+    )
+    .await?;
+    then.status(200)?;
+    let pending: (bool, bool) = sqlx::query_as(
+        "SELECT clear_requested_at IS NOT NULL, recovery_heartbeat_at IS NULL \
+         FROM grund_machine_migration_pauses WHERE machine_id = $1",
+    )
+    .bind(machine_uuid)
+    .fetch_one(&pool)
+    .await?;
+    anyhow::ensure!(
+        pending == (true, true),
+        "Fleet's restore cleared a ready copy before its moved agent heartbeated: {pending:?}"
+    );
+    let mut agent = a_running_agent(dir.clone())?;
+    let started = Instant::now();
+    loop {
+        let paused: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM grund_machine_migration_pauses WHERE machine_id = $1)",
+        )
+        .bind(machine_uuid)
+        .fetch_one(&pool)
+        .await?;
+        if !paused {
+            break;
+        }
+        anyhow::ensure!(
+            started.elapsed() < Duration::from_secs(9),
+            "the restored agent did not verify a ready copy before the migration deadline"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    anyhow::ensure!(
+        agent.containers().len() == 1,
+        "the migration was released before its copy ran: {:?}",
+        agent.containers()
     );
 
     pool_call(&when, &then, "EndLease", json!({"machineId": machine_id})).await?;

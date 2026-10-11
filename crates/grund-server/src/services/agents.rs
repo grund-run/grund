@@ -14,6 +14,7 @@ use grund_domain::{
 use grund_proto::grund::agent::v1 as agent;
 use grund_store::{
     agents::{self, DocumentRow, NewVm, VmRow},
+    entry,
     machines::{self, MachineRow},
 };
 use sha2::{Digest, Sha256};
@@ -46,6 +47,8 @@ pub struct MachineCaller {
     pub machine_id: Uuid,
     /// The organisation whose pool the machine is in now, if any.
     pub organisation_id: Option<Uuid>,
+    /// First twelve ASCII hex bytes of the verified iroh endpoint key.
+    pub endpoint_key_prefix: [u8; 12],
 }
 
 /// The bytes an agent signs for one request.
@@ -158,9 +161,13 @@ impl Agents {
         {
             return Ok(None);
         }
+        let endpoint_key_prefix = row.public_key.as_ref().unwrap().as_bytes()[..12]
+            .try_into()
+            .expect("verified endpoint key has twelve hex bytes");
         Ok(Some(MachineCaller {
             machine_id,
             organisation_id: row.pool_organisation_id,
+            endpoint_key_prefix,
         }))
     }
 
@@ -172,7 +179,7 @@ impl Agents {
         capabilities: &serde_json::Value,
     ) -> anyhow::Result<i64> {
         let version: String = agent_version.chars().take(64).collect();
-        agents::heartbeat(
+        let recovering = agents::heartbeat(
             &self.state.pool,
             caller.machine_id,
             &version,
@@ -180,6 +187,9 @@ impl Agents {
             Utc::now(),
         )
         .await?;
+        if recovering {
+            self.finish_migration_settling(caller.machine_id).await?;
+        }
         Ok(agents::document(&self.state.pool, caller.machine_id)
             .await?
             .map_or(0, |d| d.generation))
@@ -317,6 +327,19 @@ impl Agents {
                 reason.as_deref(),
             )
             .await?;
+        }
+        if replicas.is_some() {
+            self.finish_migration_settling(caller.machine_id).await?;
+        }
+        Ok(())
+    }
+
+    async fn finish_migration_settling(&self, machine_id: Uuid) -> anyhow::Result<()> {
+        if let Some(migration_id) =
+            entry::finish_settled_pause(&self.state.pool, machine_id).await?
+        {
+            tracing::info!(%machine_id, %migration_id, "migration settled after ready agent report");
+            self.state.wakes.documents_changed();
         }
         Ok(())
     }
