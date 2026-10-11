@@ -163,7 +163,6 @@ pub(super) async fn a_stack_with(extra: &[(&str, &str)]) -> anyhow::Result<Optio
             "GRUND_INSECURE_REGISTRIES".to_string(),
             registry.host.clone(),
         ),
-        ("GRUND_APP_DOMAIN".into(), domain.clone()),
         ("GRUND_EDGES".into(), edge_host.clone()),
         (
             "GRUND_RELAY_ADDRESS".into(),
@@ -178,6 +177,12 @@ pub(super) async fn a_stack_with(extra: &[(&str, &str)]) -> anyhow::Result<Optio
         "GRUND_DNS_RESOLVER".into(),
         format!("127.0.0.1:{}", pebble.dns_port),
     ));
+    if !extra
+        .iter()
+        .any(|(key, value)| *key == "GRUND_APP_DOMAINS" && *value == "custom-only")
+    {
+        env.push(("GRUND_APP_DOMAIN".into(), domain.clone()));
+    }
     env.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
     let pairs: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let Some((given, when, then)) = testcase_configured(&pairs).await? else {
@@ -303,6 +308,18 @@ impl Stack {
         tag: &str,
         copies: u32,
     ) -> anyhow::Result<()> {
+        self.deploy_with_exposure(organisation, app, tag, copies, true)
+            .await
+    }
+
+    pub(super) async fn deploy_with_exposure(
+        &self,
+        organisation: &str,
+        app: &str,
+        tag: &str,
+        copies: u32,
+        public: bool,
+    ) -> anyhow::Result<()> {
         self.registry.publish(&format!("acme/{app}"), tag);
         if self
             .call("GetApp", json!({"organisation": organisation, "name": app}))
@@ -323,7 +340,7 @@ impl Stack {
             "Deploy",
             json!({"organisation": organisation, "name": app, "spec": {
                 "image": self.registry.image(&format!("acme/{app}"), tag),
-                "ports": [{"name": "web", "port": 8080, "protocol": "PROTOCOL_HTTP", "public": true}],
+                "ports": [{"name": "web", "port": 8080, "protocol": "PROTOCOL_HTTP", "public": public}],
                 "resources": {"memoryMib": "64", "cpuMillis": 100},
                 "env": [{"name": "PORT", "value": "8080"}, {"name": "RELEASE", "value": tag}],
                 "check": {"httpPath": "/", "port": 8080, "intervalMs": 500, "timeoutMs": 300},

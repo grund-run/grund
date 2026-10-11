@@ -37,21 +37,21 @@ pub fn binary_name() -> String {
     format!("grund-{}-{}", std::env::consts::OS, std::env::consts::ARCH)
 }
 
-/// Refuses GRUND_SERVE_INSTALLER at startup when this process cannot read
-/// its own executable, instead of failing the first machine that asks.
+/// Hashes the executable before accepting requests, so the first installer
+/// checksum request does not wait for a full binary read. Refuses startup
+/// when the executable cannot be read.
 pub fn check() -> anyhow::Result<()> {
     anyhow::ensure!(
         cfg!(target_os = "linux"),
         "GRUND_SERVE_INSTALLER needs Linux: grund serves its own executable from {EXECUTABLE}"
     );
-    std::fs::File::open(EXECUTABLE)
-        .and_then(|mut file| file.read(&mut [0u8; 4]))
-        .map_err(|error| {
-            anyhow::anyhow!(
-                "GRUND_SERVE_INSTALLER is on, but grund cannot read its own executable \
-                 ({EXECUTABLE}): {error}. Turn it off, or set GRUND_AGENT_INSTALL_URL instead"
-            )
-        })?;
+    let digest = executable_digest().map_err(|error| {
+        anyhow::anyhow!(
+            "GRUND_SERVE_INSTALLER is on, but grund cannot read its own executable \
+             ({EXECUTABLE}): {error}. Turn it off, or set GRUND_AGENT_INSTALL_URL instead"
+        )
+    })?;
+    let _ = DIGEST.set(digest);
     Ok(())
 }
 
@@ -115,22 +115,21 @@ async fn binary() -> anyhow::Result<Response> {
 
 async fn digest() -> anyhow::Result<String> {
     DIGEST
-        .get_or_try_init(|| async {
-            tokio::task::spawn_blocking(|| -> anyhow::Result<String> {
-                let mut file = std::fs::File::open(EXECUTABLE)?;
-                let mut hasher = Sha256::new();
-                let mut buffer = vec![0u8; 1 << 20];
-                loop {
-                    let read = file.read(&mut buffer)?;
-                    if read == 0 {
-                        break;
-                    }
-                    hasher.update(&buffer[..read]);
-                }
-                Ok(hex::encode(hasher.finalize()))
-            })
-            .await?
-        })
+        .get_or_try_init(|| async { tokio::task::spawn_blocking(executable_digest).await? })
         .await
         .cloned()
+}
+
+fn executable_digest() -> anyhow::Result<String> {
+    let mut file = std::fs::File::open(EXECUTABLE)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 1 << 20];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex::encode(hasher.finalize()))
 }

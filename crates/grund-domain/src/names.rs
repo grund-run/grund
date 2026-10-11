@@ -89,6 +89,12 @@ impl Username {
         Ok(Self(name))
     }
 
+    /// The operator's organisation is the sole exception to reserved names.
+    /// Only trusted bootstrap and a UUID-pinned operator owner may use it.
+    pub fn operator_admin() -> Self {
+        Self("admin".to_owned())
+    }
+
     /// Makes a username out of something a provider suggested (a GitHub
     /// login, the part of an address before the `@`), or `None` when nothing
     /// usable is left. Only a suggestion: the person confirms or changes it.
@@ -288,9 +294,13 @@ mod tests {
     }
 
     #[test]
-    fn names_that_read_as_grund_are_reserved() {
+    fn operator_and_public_endpoint_names_are_reserved_for_normal_users() {
+        for name in [
+            "admin", "grund", "api", "www", "app", "support", "security", "status", "docs", "mail",
+        ] {
+            assert_eq!(Username::parse(name), Err(NameError::Reserved), "{name}");
+        }
         assert_eq!(Username::parse("Admin"), Err(NameError::Reserved));
-        assert_eq!(Username::parse("grund"), Err(NameError::Reserved));
     }
 
     #[test]

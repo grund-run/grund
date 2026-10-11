@@ -275,16 +275,31 @@ pub struct ServeConfig {
 /// is a configuration to fix, not an outage to ride out.
 pub const MAX_DATABASE_WAIT: Duration = Duration::from_secs(3600);
 
+/// How public app addresses are handed out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum AppDomains {
+    /// Public apps get an address under GRUND_APP_DOMAIN as well as bound domains.
+    #[default]
+    Shared,
+    /// Only verified custom domains bound to an app may serve it publicly.
+    CustomOnly,
+}
+
 /// The traffic path's settings on the instance (grund-docs
 /// design/traffic.md §6, §7.3).
 #[derive(Clone, Debug, Default, Args)]
 pub struct EntryArgs {
-    /// The domain app addresses live under: an app gets
-    /// `<app>-<organisation>.<domain>` (grund.run on grund's hosted
-    /// instance), which its machines' gates answer for and the edges route.
-    /// Unset: apps have no address, and nothing reaches them from outside.
+    /// The domain for shared app addresses (`<app>-<organisation>.<domain>`).
+    /// Unset: no shared addresses; custom domains can still serve apps.
     #[arg(long, env = "GRUND_APP_DOMAIN", value_parser = dns_name)]
     pub app_domain: Option<String>,
+
+    /// `shared` (default): issue shared addresses under GRUND_APP_DOMAIN;
+    /// `custom-only`: issue no shared address and require a verified, bound
+    /// custom domain before publishing an app's HTTP port. Private apps work
+    /// without a domain in either mode.
+    #[arg(long, env = "GRUND_APP_DOMAINS", value_enum, default_value = "shared")]
+    pub app_domains: AppDomains,
 
     /// The hosts `grund edge`s may enroll for (comma-separated DNS names,
     /// one per edge node). An edge whose host leaves this list is shut out
@@ -1343,6 +1358,14 @@ mod tests {
         let mut config = Harness::try_parse_from(base.iter().chain(args).copied())?.serve;
         config.validate()?;
         Ok(config)
+    }
+
+    #[test]
+    fn app_domains_default_to_shared_and_refuse_unknown_modes() {
+        assert_eq!(parse(&[]).unwrap().entry.app_domains, AppDomains::Shared);
+        let custom = parse(&["--app-domains", "custom-only"]).unwrap();
+        assert_eq!(custom.entry.app_domains, AppDomains::CustomOnly);
+        assert!(parse(&["--app-domains", "something-else"]).is_err());
     }
 
     #[test]

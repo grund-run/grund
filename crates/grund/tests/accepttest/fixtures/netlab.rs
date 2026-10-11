@@ -323,6 +323,33 @@ impl Lab {
             .with_context(|| format!("run {args:?} in {ns}"))
     }
 
+    pub async fn run_with_env(
+        self: &Arc<Self>,
+        ns: &str,
+        args: &[&str],
+        env: &[(String, String)],
+    ) -> anyhow::Result<Output> {
+        let lab = self.clone();
+        let ns = ns.to_owned();
+        let args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
+        let env = env.to_vec();
+        tokio::task::spawn_blocking(move || {
+            let mut command = lab.enter(&ns);
+            command
+                .args(&args)
+                .env_clear()
+                .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+                .stdin(Stdio::null());
+            for (name, value) in &env {
+                command.env(name, value);
+            }
+            command
+                .output()
+                .with_context(|| format!("run {args:?} in {ns}"))
+        })
+        .await?
+    }
+
     pub async fn run_async(self: &Arc<Self>, ns: &str, args: &[&str]) -> anyhow::Result<Output> {
         let (lab, ns, args) = (
             self.clone(),

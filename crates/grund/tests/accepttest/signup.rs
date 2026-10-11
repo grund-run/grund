@@ -138,10 +138,10 @@ async fn a_taken_username_is_said_plainly_and_nothing_is_created() -> anyhow::Re
 
 #[tokio::test]
 async fn an_invalid_sign_up_names_each_field_that_is_wrong() -> anyhow::Result<()> {
-    let Some((_given, when, then)) = testcase_with_mail().await? else {
+    let Some((given, when, then)) = testcase_with_mail().await? else {
         return Ok(());
     };
-
+    given.ensure_first_owner().await?;
     when.signing_up("-x", "not-an-address", "short").await?;
     then.status(422)?
         .body_contains("Use 3 to 32 characters.")?

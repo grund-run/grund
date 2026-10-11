@@ -182,7 +182,7 @@ pub struct DeployArgs {
     #[arg(
         long = "public",
         value_name = "NAME",
-        help = "With --image: make this port reachable at the app's address"
+        help = "With --image: publish this port. On custom-only instances, bind a verified domain to an existing private app first"
     )]
     pub public: Vec<String>,
 
@@ -343,7 +343,7 @@ pub enum SetItem {
         #[arg(
             long = "public",
             value_name = "NAME",
-            help = "Reachable at the app's address. Repeat for more"
+            help = "Publish this port. On custom-only instances, bind a verified domain first"
         )]
         public: Vec<String>,
     },

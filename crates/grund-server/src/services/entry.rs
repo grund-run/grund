@@ -12,11 +12,11 @@
 //!   into every machine's signed document; when the set changes, every
 //!   machine with a copy gets a new document ([`EntryKeys`], a notmad
 //!   component, polling every 5 s).
-//! - **The route table**: per address, the machines with a running (not
-//!   draining) copy seen in the last 30 s, the number ready on each, their
-//!   keys and home relays, and whether suspended. Every custom domain bound
-//!   to an app with an address gets the same route, marked `custom_domain`
-//!   (app-domains.md §3). Its version is a digest of its content.
+//! - **The route table**: per published app, the machines with a running
+//!   (not draining) copy seen in the last 30 s, the number ready on each,
+//!   their keys and home relays, and whether suspended. Bound, verified
+//!   custom domains get routes independently of shared-address mode.
+//!   Its version is a digest of its content.
 
 use std::{collections::BTreeMap, time::Duration};
 
@@ -65,10 +65,34 @@ pub fn version_of(routes: &[edge::Route], relay_urls: &[String]) -> String {
     hex::encode(&hasher.finalize()[..16])
 }
 
+fn published_routes(
+    routes: &[edge::Route],
+    bound: &[grund_store::domains::BoundName],
+) -> Vec<edge::Route> {
+    let mut published: Vec<edge::Route> = routes
+        .iter()
+        .filter(|route| !route.name.is_empty())
+        .cloned()
+        .collect();
+    published.extend(bound.iter().filter_map(|domain| {
+        let app_id = domain.app_id.to_string();
+        let route = routes.iter().find(|r| r.app_id == app_id)?;
+        Some(edge::Route {
+            name: domain.name.clone(),
+            custom_domain: true,
+            ..route.clone()
+        })
+    }));
+    published.sort_by(|a, b| a.name.cmp(&b.name));
+    published
+}
+
 impl Entry {
-    /// GRUND_APP_DOMAIN.
+    /// The shared-address domain, if this instance issues shared addresses.
     pub fn app_domain(&self) -> Option<&str> {
-        self.state.config.entry.app_domain.as_deref()
+        (self.state.config.entry.app_domains == crate::config::AppDomains::Shared)
+            .then_some(self.state.config.entry.app_domain.as_deref())
+            .flatten()
     }
 
     /// The address of the app `app_id`, named `app_name` in the
@@ -134,28 +158,23 @@ impl Entry {
         let rows = grund_store::entry::route_rows(&self.state.pool).await;
         self.state.hearing.observe(&rows);
         let rows = rows?;
-        let Some(domain) = self.app_domain() else {
-            let relay_urls = self.relay_urls();
-            return Ok(edge::RouteTable {
-                version: version_of(&[], &relay_urls),
-                issued_at_unix: Utc::now().timestamp(),
-                relay_urls,
-                ..Default::default()
-            });
-        };
+        let shared_domain = self.app_domain();
         let now = Utc::now();
         let mut held: BTreeMap<String, Uuid> = BTreeMap::new();
         let mut routes: BTreeMap<Uuid, edge::Route> = BTreeMap::new();
         for row in &rows {
-            let name = format!("{}-{}.{domain}", row.app_name, row.organisation_slug);
-            match held.get(&name) {
-                Some(holder) if *holder != row.app_id => continue,
-                _ => {
-                    held.insert(name.clone(), row.app_id);
+            let name = shared_domain
+                .map(|domain| format!("{}-{}.{domain}", row.app_name, row.organisation_slug));
+            if let Some(name) = &name {
+                match held.get(name) {
+                    Some(holder) if *holder != row.app_id => continue,
+                    _ => {
+                        held.insert(name.clone(), row.app_id);
+                    }
                 }
             }
             let route = routes.entry(row.app_id).or_insert_with(|| edge::Route {
-                name: name.clone(),
+                name: name.unwrap_or_default(),
                 app_id: row.app_id.to_string(),
                 suspended: row.suspended,
                 ..Default::default()
@@ -192,25 +211,12 @@ impl Entry {
                 ..Default::default()
             });
         }
-        let mut routes: Vec<edge::Route> = routes
+        let routes: Vec<edge::Route> = routes
             .into_values()
             .filter(|r| !r.machines.is_empty() || published_any(&rows, r))
             .collect();
         let bound = grund_store::domains::bound_names(&self.state.pool).await?;
-        let custom: Vec<edge::Route> = bound
-            .iter()
-            .filter_map(|domain| {
-                let app_id = domain.app_id.to_string();
-                let route = routes.iter().find(|r| r.app_id == app_id)?;
-                Some(edge::Route {
-                    name: domain.name.clone(),
-                    custom_domain: true,
-                    ..route.clone()
-                })
-            })
-            .collect();
-        routes.extend(custom);
-        routes.sort_by(|a, b| a.name.cmp(&b.name));
+        let routes = published_routes(&routes, &bound);
         let relay_urls = self.relay_urls();
         Ok(edge::RouteTable {
             version: version_of(&routes, &relay_urls),
@@ -370,5 +376,54 @@ impl Component for EntryKeys {
                 () = tokio::time::sleep(ENTRY_KEYS_EVERY) => {}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn custom_only_routes_bound_public_apps_without_a_shared_address() {
+        let app = Uuid::now_v7();
+        let other = Uuid::now_v7();
+        let bound = [grund_store::domains::BoundName {
+            domain_id: Uuid::now_v7(),
+            name: "shop.example.com".into(),
+            app_id: app,
+        }];
+        let shared = edge::Route {
+            name: "shop-team.grund.test".into(),
+            app_id: app.to_string(),
+            ..Default::default()
+        };
+        let without_shared = edge::Route {
+            name: String::new(),
+            ..shared.clone()
+        };
+        let private = edge::Route {
+            name: String::new(),
+            app_id: other.to_string(),
+            ..Default::default()
+        };
+        let shared_routes = published_routes(&[shared], &bound);
+        assert_eq!(shared_routes.len(), 2);
+        assert!(
+            shared_routes
+                .iter()
+                .any(|r| !r.custom_domain && r.name == "shop-team.grund.test")
+        );
+        assert!(
+            shared_routes
+                .iter()
+                .any(|r| r.custom_domain && r.name == "shop.example.com")
+        );
+
+        let custom = published_routes(&[without_shared.clone(), private], &bound);
+        assert_eq!(custom.len(), 1);
+        assert_eq!(custom[0].name, "shop.example.com");
+        assert!(custom[0].custom_domain);
+        assert_eq!(custom[0].app_id, app.to_string());
+        assert!(published_routes(&[without_shared], &[]).is_empty());
     }
 }

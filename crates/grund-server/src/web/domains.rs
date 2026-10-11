@@ -18,6 +18,7 @@ use crate::{
     services::{
         apps::AppsState,
         domains::{DomainView, DomainsError, DomainsState, Status},
+        entry::publishes,
         sessions::Session,
     },
     state::State,
@@ -55,6 +56,8 @@ pub struct DomainsPage<'a> {
     pub slug: &'a str,
     pub manages: bool,
     pub addresses: Vec<AppAddress<'a>>,
+    pub bindable_apps: Vec<&'a str>,
+    pub custom_only: bool,
     pub domains: Vec<DomainItem<'a>>,
     pub notice: &'static str,
     pub error: &'static str,
@@ -76,6 +79,7 @@ fn domain_context<'a>(
     index: usize,
     domain: &'a DomainView,
     address: Option<&'a str>,
+    public: bool,
 ) -> DomainItem<'a> {
     let app = domain.app_name.as_deref().unwrap_or("");
     let (sentence, tone) = match domain.status {
@@ -86,12 +90,24 @@ fn domain_context<'a>(
             ),
             "blue",
         ),
+        Status::Bound if !public => (
+            Cow::Owned(format!(
+                "Bound to {app}. Publish its HTTP port to serve it."
+            )),
+            "blue",
+        ),
         Status::Bound => (
             Cow::Owned(format!(
-                "Bound to {app}. Its certificate is on its way once {} points at the app's address.",
+                "Bound to {app}. Its certificate is on its way once {} points at grund's edge.",
                 domain.name
             )),
             "orange",
+        ),
+        Status::Issued if !public => (
+            Cow::Owned(format!(
+                "Bound to {app}. Publish its HTTP port to serve it."
+            )),
+            "blue",
         ),
         Status::Issued => (
             Cow::Owned(format!(
@@ -128,7 +144,7 @@ fn domain_context<'a>(
         state: &domain.state,
         app, sentence, tone, record,
         records_aside: (domain.state == "bound" && address.is_some()).then(|| format!(
-            "Point {} at the app with this record. A domain at the top of its zone (example.com itself) cannot have a CNAME: use your provider's ALIAS, ANAME or CNAME flattening to the same address.",
+            "Point {} at grund with this record. A domain at the top of its zone (example.com itself) cannot have a CNAME: use your provider's ALIAS, ANAME or CNAME flattening to the same address.",
             domain.name
         )),
     }
@@ -156,12 +172,22 @@ async fn domains_view(
             })
         })
         .collect();
+    let custom_only = state.config.entry.app_domains == crate::config::AppDomains::CustomOnly;
+    let bindable_apps: Vec<&str> = listings
+        .iter()
+        .filter(|listing| custom_only || listing.address.is_some())
+        .map(|listing| listing.view.row.name.as_str())
+        .collect();
     let address_of = |app: &Option<String>| {
         app.as_ref().and_then(|app| {
             listings
                 .iter()
                 .find(|l| &l.view.row.name == app)
-                .and_then(|l| l.address.as_deref())
+                .and_then(|l| {
+                    l.address
+                        .as_deref()
+                        .or_else(|| state.config.entry.edges.first().map(String::as_str))
+                })
         })
     };
     let domain_rows = state
@@ -172,7 +198,14 @@ async fn domains_view(
     let domains: Vec<DomainItem<'_>> = domain_rows
         .iter()
         .enumerate()
-        .map(|(index, domain)| domain_context(index, domain, address_of(&domain.app_name)))
+        .map(|(index, domain)| {
+            let public = domain.app_name.as_ref().is_some_and(|name| {
+                listings.iter().any(|listing| {
+                    &listing.view.row.name == name && listing.spec.as_ref().is_some_and(publishes)
+                })
+            });
+            domain_context(index, domain, address_of(&domain.app_name), public)
+        })
         .collect();
     signed_in_typed(
         state,
@@ -191,6 +224,8 @@ async fn domains_view(
                 slug: &membership.slug,
                 manages: matches!(membership.role.as_str(), "owner" | "admin"),
                 addresses,
+                bindable_apps,
+                custom_only,
                 domains,
                 notice: form.notice,
                 error: form.error,
@@ -212,7 +247,7 @@ pub async fn domains_page(
     let notice = match query.done.as_str() {
         "added" => "Domain added. Make its TXT record, then check it.",
         "verified" => "Domain verified. Bind it to an app to serve it.",
-        "bound" => "Domain bound. grund orders its certificate once it points at the app.",
+        "bound" => "Domain bound. grund orders its certificate once it points at grund's edge.",
         "unbound" => "Domain unbound. It stays verified for this organisation.",
         "removed" => "Domain removed.",
         _ => "",
@@ -227,6 +262,9 @@ pub async fn domains_page(
         }
         "not-verified" => "Verify the domain before binding it.",
         "app" => "That app is gone, or has no public HTTP port to serve a domain on.",
+        "last-domain" => {
+            "Make the app private or bind another domain before removing its last public domain."
+        }
         "app-limit" => "That app has as many custom domains as it can hold.",
         "failed" => "grund could not finish that. Try again.",
         _ => "",
@@ -323,6 +361,7 @@ fn error_query(error: DomainsError) -> Result<&'static str, PageError> {
         DomainsError::NotVerified => "error=not-verified",
         DomainsError::VerificationFailed(_) => "error=unverified",
         DomainsError::AppNotFound | DomainsError::AppNotPublic => "error=app",
+        DomainsError::LastPublicDomain => "error=last-domain",
         DomainsError::AppLimit => "error=app-limit",
         DomainsError::Internal(error) => return Err(PageError::from(error)),
         _ => "error=failed",

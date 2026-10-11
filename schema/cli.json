@@ -450,7 +450,7 @@
           "type": "string"
         },
         "public": {
-          "description": "Reachable from outside through the entry: an http or h2c port answers on the app's address (<app>-<organisation>.<GRUND_APP_DOMAIN>) through the instance's edges. The first public http or h2c port is the one the address routes to.",
+          "description": "Reachable from outside through an edge: an http or h2c port answers on the shared address when configured, or on a verified bound domain. With GRUND_APP_DOMAINS=custom-only, binding a verified domain is required before a public release. The first public http or h2c port receives it.",
           "type": "boolean"
         }
       },
@@ -2713,12 +2713,25 @@
           "value_name": "RELAY_ACCESS_TOKEN"
         },
         {
-          "description": "The domain app addresses live under: an app gets `<app>-<organisation>.<domain>` (grund.run on grund's hosted instance), which its machines' gates answer for and the edges route. Unset: apps have no address, and nothing reaches them from outside",
+          "description": "The domain for shared app addresses (`<app>-<organisation>.<domain>`). Unset: no shared addresses; custom domains can still serve apps",
           "env": "GRUND_APP_DOMAIN",
           "flag": "--app-domain",
           "name": "app_domain",
           "type": "string",
           "value_name": "APP_DOMAIN"
+        },
+        {
+          "default": "shared",
+          "description": "`shared` (default): issue shared addresses under GRUND_APP_DOMAIN; `custom-only`: issue no shared address and require a verified, bound custom domain before publishing an app's HTTP port. Private apps work without a domain in either mode",
+          "enum": [
+            "shared",
+            "custom-only"
+          ],
+          "env": "GRUND_APP_DOMAINS",
+          "flag": "--app-domains",
+          "name": "app_domains",
+          "type": "string",
+          "value_name": "APP_DOMAINS"
         },
         {
           "description": "The hosts `grund edge`s may enroll for (comma-separated DNS names, one per edge node). An edge whose host leaves this list is shut out at its next call, and machines stop accepting its entry streams with their next document",
@@ -3583,12 +3596,25 @@
           "value_name": "RELAY_ACCESS_TOKEN"
         },
         {
-          "description": "The domain app addresses live under: an app gets `<app>-<organisation>.<domain>` (grund.run on grund's hosted instance), which its machines' gates answer for and the edges route. Unset: apps have no address, and nothing reaches them from outside",
+          "description": "The domain for shared app addresses (`<app>-<organisation>.<domain>`). Unset: no shared addresses; custom domains can still serve apps",
           "env": "GRUND_APP_DOMAIN",
           "flag": "--app-domain",
           "name": "app_domain",
           "type": "string",
           "value_name": "APP_DOMAIN"
+        },
+        {
+          "default": "shared",
+          "description": "`shared` (default): issue shared addresses under GRUND_APP_DOMAIN; `custom-only`: issue no shared address and require a verified, bound custom domain before publishing an app's HTTP port. Private apps work without a domain in either mode",
+          "enum": [
+            "shared",
+            "custom-only"
+          ],
+          "env": "GRUND_APP_DOMAINS",
+          "flag": "--app-domains",
+          "name": "app_domains",
+          "type": "string",
+          "value_name": "APP_DOMAINS"
         },
         {
           "description": "The hosts `grund edge`s may enroll for (comma-separated DNS names, one per edge node). An edge whose host leaves this list is shut out at its next call, and machines stop accepting its entry streams with their next document",
@@ -4315,12 +4341,25 @@
           "value_name": "RELAY_ACCESS_TOKEN"
         },
         {
-          "description": "The domain app addresses live under: an app gets `<app>-<organisation>.<domain>` (grund.run on grund's hosted instance), which its machines' gates answer for and the edges route. Unset: apps have no address, and nothing reaches them from outside",
+          "description": "The domain for shared app addresses (`<app>-<organisation>.<domain>`). Unset: no shared addresses; custom domains can still serve apps",
           "env": "GRUND_APP_DOMAIN",
           "flag": "--app-domain",
           "name": "app_domain",
           "type": "string",
           "value_name": "APP_DOMAIN"
+        },
+        {
+          "default": "shared",
+          "description": "`shared` (default): issue shared addresses under GRUND_APP_DOMAIN; `custom-only`: issue no shared address and require a verified, bound custom domain before publishing an app's HTTP port. Private apps work without a domain in either mode",
+          "enum": [
+            "shared",
+            "custom-only"
+          ],
+          "env": "GRUND_APP_DOMAINS",
+          "flag": "--app-domains",
+          "name": "app_domains",
+          "type": "string",
+          "value_name": "APP_DOMAINS"
         },
         {
           "description": "The hosts `grund edge`s may enroll for (comma-separated DNS names, one per edge node). An edge whose host leaves this list is shut out at its next call, and machines stop accepting its entry streams with their next document",
@@ -9492,7 +9531,7 @@
           "value_name": "NAME=PORT[/PROTOCOL]"
         },
         {
-          "description": "With --image: make this port reachable at the app's address",
+          "description": "With --image: publish this port. On custom-only instances, bind a verified domain to an existing private app first",
           "flag": "--public",
           "name": "public",
           "repeated": true,
@@ -10175,7 +10214,7 @@
           "value_name": "NAME=PORT[/PROTOCOL]"
         },
         {
-          "description": "Reachable at the app's address. Repeat for more",
+          "description": "Publish this port. On custom-only instances, bind a verified domain first",
           "flag": "--public",
           "name": "public",
           "repeated": true,
@@ -13112,7 +13151,7 @@
           "value_name": "DOMAIN"
         },
         {
-          "description": "An app with a public http or h2c port",
+          "description": "An existing app (private apps can be bound in custom-only mode)",
           "name": "app",
           "positional": true,
           "required": true,
@@ -13142,7 +13181,7 @@
       "rpcs": [
         "grund.domain.v1.DomainService/BindDomain"
       ],
-      "summary": "Serve an app on a verified domain; its certificate follows within minutes"
+      "summary": "Bind a verified domain to an app; in custom-only mode, bind before publishing its HTTP port"
     },
     {
       "args": [

@@ -38,6 +38,7 @@ use crate::{
     services::{
         apps::{AppListing, AppView, AppsError, AppsState, Change, DeployInput, Launch},
         domains::DomainsState,
+        entry::{EntryState, publishes},
         machines::MachinesState,
         sessions::Session,
     },
@@ -211,6 +212,7 @@ pub struct ListingView {
     pub image: String,
     pub address: Option<String>,
     pub internal: Option<String>,
+    pub public: bool,
 }
 
 /// An app as a list row or card shows it.
@@ -229,6 +231,7 @@ pub fn listing_view(listing: &AppListing) -> ListingView {
         icon: image_icon(&image),
         image,
         address: listing.address.clone(),
+        public: listing.spec.as_ref().is_some_and(publishes),
         internal: listing
             .spec
             .as_ref()
@@ -626,6 +629,10 @@ pub(super) fn refusal(error: &AppsError) -> Refusal {
         AppsError::ImageUnresolved(message) | AppsError::ImageUnsupported(message) => {
             Refusal::field("image", format!("{message}."))
         }
+        AppsError::DomainRequired => Refusal::field(
+            "exposure",
+            "Bind a verified custom domain to this app before choosing Public HTTP.",
+        ),
         other => Refusal::banner(sentence(other)),
     }
 }
@@ -639,7 +646,7 @@ pub struct ExposureChoice {
     pub tag: Option<&'static str>,
 }
 
-fn exposures(app_domain: Option<&str>) -> Vec<ExposureChoice> {
+fn exposures(app_domain: Option<&str>, custom_only: bool, has_domain: bool) -> Vec<ExposureChoice> {
     vec![
         ExposureChoice {
             value: "private",
@@ -653,12 +660,25 @@ fn exposures(app_domain: Option<&str>) -> Vec<ExposureChoice> {
             value: "public",
             title: "Public HTTP",
             icon: "globe",
-            text: app_domain.map_or_else(
-                || "This instance gives apps no address of their own".into(),
-                |domain| format!("Via a {domain} address"),
-            ),
-            disabled: app_domain.is_none(),
-            tag: app_domain.is_none().then_some("Not set up"),
+            text: if custom_only {
+                "Requires a verified custom domain bound to this app".into()
+            } else {
+                app_domain.map_or_else(
+                    || "This instance gives apps no address of their own".into(),
+                    |domain| format!("Via a {domain} address"),
+                )
+            },
+            disabled: if custom_only {
+                !has_domain
+            } else {
+                app_domain.is_none()
+            },
+            tag: (if custom_only {
+                !has_domain
+            } else {
+                app_domain.is_none()
+            })
+            .then_some("Not set up"),
         },
     ]
 }
@@ -809,12 +829,14 @@ async fn new_view(
         errors,
         advanced,
         secrets_dropped,
-        exposures: exposures(state.config.entry.app_domain.as_deref()),
+        exposures: exposures(
+            state.entry().app_domain(),
+            state.config.entry.app_domains == crate::config::AppDomains::CustomOnly,
+            false,
+        ),
         public_hint: state
-            .config
-            .entry
-            .app_domain
-            .as_deref()
+            .entry()
+            .app_domain()
             .map(|domain| format!("Public: https://<name>-{slug}.{domain}"))
             .unwrap_or_default(),
         templates: choices,
@@ -1228,16 +1250,22 @@ pub async fn create(
         return Ok(redirect(&format!("/{slug}/apps?error=not-allowed")));
     }
     let public = form.exposure == "public";
-    let launch = if public && state.config.entry.app_domain.is_none() {
-        Err(Refusal::field(
-            "exposure",
-            "This instance gives apps no public address. Choose Private.",
-        ))
-    } else if form.mode == "premade" {
-        premade_launch(&form, public)
-    } else {
-        custom_launch(&form, public)
-    };
+    let launch =
+        if public && state.config.entry.app_domains == crate::config::AppDomains::CustomOnly {
+            Err(Refusal::field(
+                "exposure",
+                "Deploy privately, bind a verified custom domain, then choose Public HTTP.",
+            ))
+        } else if public && state.entry().app_domain().is_none() {
+            Err(Refusal::field(
+                "exposure",
+                "This instance gives apps no public address. Choose Private.",
+            ))
+        } else if form.mode == "premade" {
+            premade_launch(&form, public)
+        } else {
+            custom_launch(&form, public)
+        };
     let refused = match launch {
         Ok(launch) => {
             let wanted = launch.name.trim().to_ascii_lowercase();
@@ -1392,7 +1420,9 @@ fn setting_items(
         (Some(port), Some(address)) if port.public => {
             format!("Public HTTP on port {} · https://{address}", port.port)
         }
-        (Some(port), _) if port.public => format!("Public HTTP on port {}", port.port),
+        (Some(port), _) if port.public => {
+            format!("Public HTTP on port {} · No default address", port.port)
+        }
         (Some(port), _) => format!("Private on port {}", port.port),
         (None, _) => "No port: nothing reaches it".into(),
     };
@@ -1640,6 +1670,7 @@ pub struct AppIdentity {
     pub address: Option<String>,
     pub domains: Vec<AppDomain>,
     pub domains_href: String,
+    pub custom_only: bool,
     pub internal: Option<String>,
     pub word: &'static str,
     pub tone: &'static str,
@@ -2083,9 +2114,12 @@ pub(super) async fn app_view(
     let domains: Vec<AppDomain> = bound
         .into_iter()
         .map(|domain| {
-            let serving = domain.status == crate::services::domains::Status::Issued;
+            let public = listing.spec.as_ref().is_some_and(publishes);
+            let serving = public && domain.status == crate::services::domains::Status::Issued;
             AppDomain {
-                state_words: if serving {
+                state_words: if !public {
+                    "Bound; publish the app's HTTP port to serve it"
+                } else if serving {
                     "Serving with its own certificate"
                 } else {
                     "Bound; its certificate is on its way once its DNS points here"
@@ -2113,12 +2147,14 @@ pub(super) async fn app_view(
                 SettingsEdit::Exposure {
                     exposure: form.exposure,
                     port: form.port,
-                    choices: exposures(state.config.entry.app_domain.as_deref()),
+                    choices: exposures(
+                        state.entry().app_domain(),
+                        state.config.entry.app_domains == crate::config::AppDomains::CustomOnly,
+                        !domain_names.is_empty(),
+                    ),
                     hint: state
-                        .config
-                        .entry
-                        .app_domain
-                        .as_deref()
+                        .entry()
+                        .app_domain()
                         .map(|domain| format!("Public: https://{}-{slug}.{domain}", view.row.name))
                         .unwrap_or_default(),
                     port_hint,
@@ -2185,6 +2221,8 @@ pub(super) async fn app_view(
                 address: listing.address.clone(),
                 domains,
                 domains_href: format!("/{slug}/domains#custom"),
+                custom_only: state.config.entry.app_domains
+                    == crate::config::AppDomains::CustomOnly,
                 internal: listing
                     .spec
                     .as_ref()
@@ -2496,7 +2534,10 @@ pub async fn release_settings(
         },
     };
     let public = form.exposure == "public";
-    let made = if public && state.config.entry.app_domain.is_none() {
+    let made = if public
+        && state.config.entry.app_domains != crate::config::AppDomains::CustomOnly
+        && state.entry().app_domain().is_none()
+    {
         Err(Refusal::field(
             "exposure",
             "This instance gives apps no public address. Choose Private.",

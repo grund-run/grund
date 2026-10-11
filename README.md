@@ -144,8 +144,11 @@ confirmed (see [.env.example](.env.example)). Without them nothing is queued.
 - Everything grund manages belongs to an organisation, and so does billing.
   A self-hosted instance has one (`GRUND_ORGANISATIONS=single`, the default):
   the first account, made with the setup link, owns it, and everyone after
-  joins by invitation. `multi` gives every sign-up its own organisation and lets
-  anyone create more, as grund's hosted service does.
+  joins by invitation. A fresh `multi` instance also starts with a setup link:
+  its first owner owns both `admin` (the operator organisation) and a personal
+  organisation. Later sign-ups get their own organisations while open signup
+  is enabled. Reserved names, including `admin` and `grund`, cannot be claimed
+  by an ordinary organisation create or rename.
 - Pages: `/signup`, `/signup/owner` (the setup link), `/verify`, `/login`, `/reset`, `/` (which opens your
   organisation), `/{org}`, `/{org}/members`, `/{org}/settings`,
   `/{org}/settings/tokens`, `/{org}/settings/registries`, `/orgs/new`,

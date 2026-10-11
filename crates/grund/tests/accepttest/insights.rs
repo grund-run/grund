@@ -28,8 +28,11 @@ async fn a_confirmed_account_is_reported_once_with_the_token_and_nothing_more() 
 
     let account = given.an_account().await?;
 
-    let reports = insights.wait_for(1, Duration::from_secs(15)).await?;
-    let report = &reports[0];
+    let reports = insights.wait_for(2, Duration::from_secs(15)).await?;
+    let report = reports
+        .iter()
+        .find(|report| report.body["username"] == account.username)
+        .expect("the confirmed account was reported");
     assert_eq!(report.path, "/v1/accounts");
     assert_eq!(
         report.authorization.as_deref(),
@@ -58,7 +61,15 @@ async fn a_confirmed_account_is_reported_once_with_the_token_and_nothing_more() 
     when.signing_in(&account.username, &account.password)
         .await?;
     tokio::time::sleep(Duration::from_secs(3)).await;
-    assert_eq!(insights.reports().len(), 1, "one report per account");
+    assert_eq!(
+        insights
+            .reports()
+            .iter()
+            .filter(|report| report.body["username"] == account.username)
+            .count(),
+        1,
+        "one report per confirmed account"
+    );
     Ok(())
 }
 
@@ -68,32 +79,50 @@ async fn an_account_whose_address_is_not_confirmed_is_not_reported() -> anyhow::
     let Some((given, _when, _then)) = reporting_to(&insights).await? else {
         return Ok(());
     };
+    given.ensure_first_owner().await?;
+    let baseline = insights.wait_for(1, Duration::from_secs(15)).await?.len();
 
     given.an_unconfirmed_account().await?;
 
     tokio::time::sleep(Duration::from_secs(3)).await;
-    assert!(insights.reports().is_empty());
+    assert_eq!(insights.reports().len(), baseline);
     Ok(())
 }
 
 #[tokio::test]
 async fn a_report_insights_could_not_take_is_sent_again() -> anyhow::Result<()> {
-    let insights = FakeInsights::start(&[503, 401]).await?;
+    let insights = FakeInsights::start(&[]).await?;
     let Some((given, _when, _then)) = reporting_to(&insights).await? else {
         return Ok(());
     };
+    given.ensure_first_owner().await?;
+    insights.wait_for(1, Duration::from_secs(15)).await?;
+    insights.answer_next(&[503, 401]);
 
-    given.an_account().await?;
+    let account = given.an_account().await?;
 
-    let reports = insights.wait_for(3, Duration::from_secs(30)).await?;
+    let reports = insights.wait_for(4, Duration::from_secs(30)).await?;
+    let attempts: Vec<_> = reports
+        .iter()
+        .filter(|report| report.body["username"] == account.username)
+        .collect();
+    assert_eq!(attempts.len(), 3, "the confirmed account was retried twice");
     assert!(
-        reports
+        attempts
             .iter()
-            .all(|r| r.body["account_id"] == reports[0].body["account_id"]),
-        "the same report each time"
+            .all(|report| report.body["account_id"] == attempts[0].body["account_id"]),
+        "the same account was retried"
     );
     tokio::time::sleep(Duration::from_secs(3)).await;
-    assert_eq!(insights.reports().len(), 3, "delivered on the third try");
+    assert_eq!(
+        insights
+            .reports()
+            .iter()
+            .filter(|report| report.body["username"] == account.username)
+            .count(),
+        3,
+        "delivered on the third try"
+    );
     Ok(())
 }
 

@@ -378,6 +378,27 @@ impl Fixture {
     }
 
     pub async fn running_with(&self, args: &[&str], extra: &[(&str, &str)]) -> anyhow::Result<Ran> {
+        if let Some(lab) = &self.lab {
+            let mut env = self.settings.clone();
+            for (name, value) in extra {
+                env.retain(|(key, _)| key != name);
+                env.push((name.to_string(), value.to_string()));
+            }
+            let mut command = vec![grund_binary()];
+            command.extend(args);
+            let output = tokio::time::timeout(
+                Duration::from_secs(30),
+                lab.run_with_env("lh", &command, &env),
+            )
+            .await
+            .with_context(|| format!("grund {args:?} did not finish within 30 s"))??;
+            return Ok(Ran {
+                success: output.status.success(),
+                code: output.status.code(),
+                stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            });
+        }
         anyhow::ensure!(
             self.lab.is_none() && self.log_path.is_some(),
             "commands run beside a spawned local instance"
@@ -410,7 +431,7 @@ impl Fixture {
         let ran = self.running(&["setup-link"]).await?;
         anyhow::ensure!(ran.success, "grund setup-link failed: {}", ran.stderr);
         ran.setup_link_path()
-            .with_context(|| format!("grund setup-link printed no link:\n{}", ran.stdout))
+            .context("grund setup-link printed no owner URL")
     }
 
     pub async fn sql(&self, statement: &str) -> anyhow::Result<u64> {

@@ -64,6 +64,14 @@ impl FakeInsights {
         self.recorded.lock().unwrap().reports.clone()
     }
 
+    pub fn answer_next(&self, answers: &[u16]) {
+        self.recorded
+            .lock()
+            .unwrap()
+            .answers
+            .extend(answers.iter().copied());
+    }
+
     pub async fn wait_for(&self, count: usize, within: Duration) -> anyhow::Result<Vec<Report>> {
         let deadline = Instant::now() + within;
         loop {

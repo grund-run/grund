@@ -25,6 +25,8 @@ component AppAddress(app: &crate::web::apps::ListingView) {
   {if let Some(address) = &app.address {
     {let href = format!("https://{address}");}
     <External href={href} label={href} />
+  } else if app.public {
+    <span class="address">No default address</span>
   } else if let Some(internal) = &app.internal {
     <span class="address"><code class="address-text">{internal}</code><CopyButton text={internal} label={internal} /></span>
   }}

@@ -6,6 +6,18 @@ impl Given {
     pub fn a_fresh_name(&self, prefix: &str) -> String {
         format!("{prefix}-{}", random_hex(5))
     }
+    pub async fn ensure_first_owner(&self) -> anyhow::Result<()> {
+        let (_, when, _) = self.testcase.another_browser();
+        when.visiting("/signup").await?;
+        let needs_owner = when.testcase.data().last.as_ref().is_some_and(|response| {
+            response.status == 403 && response.text().contains("no owner yet")
+        });
+        if needs_owner {
+            let (owner, _, _) = self.testcase.another_browser();
+            owner.the_owner().await?;
+        }
+        Ok(())
+    }
 
     pub async fn an_unconfirmed_account(&self) -> anyhow::Result<Account> {
         self.an_unconfirmed_account_named(&self.a_fresh_name("acc"))
@@ -13,6 +25,7 @@ impl Given {
     }
 
     pub async fn an_unconfirmed_account_named(&self, username: &str) -> anyhow::Result<Account> {
+        self.ensure_first_owner().await?;
         let username = username.to_string();
         let account = Account {
             email: format!("{username}@accept.test"),

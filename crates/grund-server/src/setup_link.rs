@@ -1,7 +1,7 @@
-//! `grund setup-link`: the owner's one-time setup link, which creates the
-//! first account of a `single` instance with no mail (grund-docs
-//! design/auth.md §5). Run where `grund serve` runs, with the same settings:
-//! `docker compose exec grund /grund setup-link`.
+//! `grund setup-link`: a one-time first-owner link minted on the instance's
+//! machine (`docker compose exec grund /grund setup-link`). On a fresh `multi`
+//! instance without an operator override it also creates the reserved
+//! operator organisation; the link is unavailable after any account exists.
 //!
 //! The link is printed once, to standard output, and never logged. Only
 //! `HMAC-SHA256(secret.derive("setup-link"), token)` is stored, so a link
@@ -52,9 +52,13 @@ pub struct Link {
 /// Mints a link, refusing with the cause when this instance cannot have one.
 pub async fn mint(config: &ServeConfig) -> anyhow::Result<Link> {
     anyhow::ensure!(
-        config.organisations == OrganisationMode::Single,
-        "GRUND_ORGANISATIONS is multi: sign-up is open there, so the first account signs up like \
-         any other and no setup link is needed"
+        config.organisations == OrganisationMode::Single
+            || config
+                .operator_organisation
+                .as_deref()
+                .is_none_or(|named| named == "admin"),
+        "GRUND_OPERATOR_ORGANISATION already pins the operator: setup-link will not create a \
+         competing admin organisation"
     );
     anyhow::ensure!(
         config.secret_key.is_some() || config.secret_key_file.is_some(),
@@ -77,8 +81,8 @@ pub async fn mint(config: &ServeConfig) -> anyhow::Result<Link> {
     let expires_at = match minted {
         Ok(Minted::Issued(expires_at)) => expires_at,
         Ok(Minted::AccountsExist) => anyhow::bail!(
-            "this instance already has an account, so it has its owner and a setup link would \
-             create nothing. Sign in, or reset the password from the sign-in page"
+            "this instance already has an account, so a setup link would create nothing. \
+             Sign in, or reset the password from the sign-in page"
         ),
         Err(error) if undefined_table(&error) => anyhow::bail!(
             "the database has no setup links yet: start `grund serve` of this build once, which \

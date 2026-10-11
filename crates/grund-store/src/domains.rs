@@ -332,6 +332,19 @@ pub async fn names_of_app(
     .await
 }
 
+/// The first verified bound hostname of an app, for the app list's public link.
+pub async fn first_bound_name(
+    executor: impl PgExecutor<'_>,
+    app_id: Uuid,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT name FROM grund_domains WHERE app_id = $1 AND state = 'bound' ORDER BY name LIMIT 1",
+    )
+    .bind(app_id)
+    .fetch_optional(executor)
+    .await
+}
+
 /// The spec of the app's current release, or of its newest while none is
 /// live yet.
 pub async fn current_spec(

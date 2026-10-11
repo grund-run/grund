@@ -13,7 +13,6 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::{
-    config::OrganisationMode,
     services::{
         accounts::{
             AccountsState, FieldErrors, LoginOutcome, OwnerSignupOutcome, ResetOutcome,
@@ -322,23 +321,10 @@ pub async fn typed_viewer_context(
         .ok_or_else(|| anyhow::anyhow!("session names an account that does not exist"))?;
     let organisations = state.organisations();
     let memberships = organisations.memberships_of(session.account_id).await?;
-    let admin_footer = match state.config.operator_organisation.as_deref() {
-        Some(operator) => {
-            let id = Uuid::parse_str(operator).ok();
-            memberships.iter().any(|membership| {
-                id.map_or_else(
-                    || membership.slug == operator,
-                    |id| membership.organisation_id == id,
-                )
-            })
-        }
-        None => {
-            state.config.organisations == OrganisationMode::Single
-                && memberships
-                    .iter()
-                    .any(|membership| membership.role == "owner")
-        }
-    };
+    let operator_id = state.machines().operator().await?;
+    let admin_footer = memberships
+        .iter()
+        .any(|membership| Some(membership.organisation_id) == operator_id);
     let current = match current {
         Some(current) => Some(current.clone()),
         None => match organisations.landing(session.account_id).await? {
@@ -352,10 +338,9 @@ pub async fn typed_viewer_context(
         .filter_map(|part| part.chars().next())
         .take(2)
         .collect();
-    let operator = match &current {
-        Some(current) => state.machines().operator().await? == Some(current.organisation_id),
-        None => false,
-    };
+    let operator = current
+        .as_ref()
+        .is_some_and(|current| Some(current.organisation_id) == operator_id);
     let orgs = memberships
         .iter()
         .map(|m| {
@@ -1399,6 +1384,7 @@ fn style_guide_fixture(csrf: String) -> StyleGuidePage {
             icon: crate::web::apps::image_icon(image),
             image: image.into(),
             address: address.map(str::to_owned),
+            public: address.is_some(),
             internal: internal.map(str::to_owned),
         },
     )

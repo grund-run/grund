@@ -345,6 +345,16 @@ async fn creating_an_organisation_makes_its_creator_the_owner_and_names_are_one_
         (slug.as_str(), "That name is taken."),
         (account.username.as_str(), "That name is taken."),
         ("orgs", "reserved"),
+        ("admin", "reserved"),
+        ("grund", "reserved"),
+        ("api", "reserved"),
+        ("www", "reserved"),
+        ("app", "reserved"),
+        ("support", "reserved"),
+        ("security", "reserved"),
+        ("status", "reserved"),
+        ("docs", "reserved"),
+        ("mail", "reserved"),
     ] {
         when.submitting("/orgs/new", "/orgs/new", &[("slug", taken)])
             .await?;
@@ -352,6 +362,88 @@ async fn creating_an_organisation_makes_its_creator_the_owner_and_names_are_one_
             .and_then(|then| then.body_contains(message))
             .map_err(|e| e.context(taken.to_string()))?;
     }
+    when.calling(
+        "/grund.organisation.v1.OrganisationService/CreateOrganisation",
+        r#"{"slug":"admin"}"#,
+    )
+    .await?;
+    then.status(400)?.connect_code("invalid_argument")?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn only_the_uuid_pinned_operator_owner_can_rename_to_admin() -> anyhow::Result<()> {
+    let Some((given, when, then)) =
+        testcase_configured(&[("GRUND_OPERATOR_ORGANISATION", "not-yet-claimed")]).await?
+    else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let other = given.a_fresh_name("other");
+    when.submitting(
+        &format!("/{}/settings", owner.username),
+        &format!("/{}/settings/rename", owner.username),
+        &[("slug", "admin")],
+    )
+    .await?;
+    then.status(200)?.body_contains("reserved")?;
+    when.calling(
+        "/grund.organisation.v1.OrganisationService/GetOrganisation",
+        &serde_json::json!({"slug": owner.username}).to_string(),
+    )
+    .await?;
+    let id = then.json()?["organisation"]["organisationId"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing organisation id"))?
+        .to_owned();
+    when.testcase
+        .fixture
+        .restart_with(&[("GRUND_OPERATOR_ORGANISATION", &id)])
+        .await?;
+    when.calling(
+        "/grund.organisation.v1.OrganisationService/DeleteOrganisation",
+        &serde_json::json!({"slug": owner.username, "confirmSlug": owner.username}).to_string(),
+    )
+    .await?;
+    then.status(400)?.connect_code("failed_precondition")?;
+    let (outsider, outsider_when, outsider_then) = given.testcase.another_browser();
+    outsider.a_signed_in_account_named(&other).await?;
+    outsider_when
+        .calling(
+            "/grund.organisation.v1.OrganisationService/RenameOrganisation",
+            &serde_json::json!({"slug": other, "newSlug": "admin"}).to_string(),
+        )
+        .await?;
+    outsider_then
+        .status(400)?
+        .connect_code("invalid_argument")?;
+    when.calling(
+        "/grund.organisation.v1.OrganisationService/RenameOrganisation",
+        &serde_json::json!({"slug": owner.username, "newSlug": "admin"}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    anyhow::ensure!(then.json()?["organisation"]["slug"] == "admin");
+    when.submitting(
+        "/admin/settings",
+        "/admin/settings/delete",
+        &[("confirm", "admin")],
+    )
+    .await?;
+    then.status(200)?.body_contains("cannot be deleted")?;
+    when.calling(
+        "/grund.machine.v1.ManagementPoolService/ListPoolMachines",
+        "{}",
+    )
+    .await?;
+    then.status(200)?;
+    outsider_when
+        .calling(
+            "/grund.machine.v1.ManagementPoolService/ListPoolMachines",
+            "{}",
+        )
+        .await?;
+    outsider_then.status(404)?.connect_code("not_found")?;
     Ok(())
 }
 

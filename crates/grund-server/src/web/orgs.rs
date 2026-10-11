@@ -729,6 +729,10 @@ pub async fn rename(
             StatusCode::FORBIDDEN,
             "Only owners rename an organisation.".to_string(),
         ),
+        RenameOutcome::Operator => (
+            StatusCode::OK,
+            "The operator organisation must keep its admin name.".to_string(),
+        ),
     };
     settings_view(
         &state,
@@ -788,6 +792,10 @@ pub async fn delete(
         DeleteOutcome::Instance => (
             StatusCode::OK,
             "This is the instance's own organisation, and an instance needs it.".to_string(),
+        ),
+        DeleteOutcome::Operator => (
+            StatusCode::OK,
+            "This organisation operates the management pool and cannot be deleted.".to_string(),
         ),
     };
     settings_view(

@@ -35,7 +35,7 @@ use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::{
-    services::{agents::AgentsState, entry::publishes},
+    services::{agents::AgentsState, apps::lock_app_domain_policy, entry::publishes},
     state::State,
 };
 
@@ -153,7 +153,7 @@ fn check_words(code: &str) -> String {
 fn certificate_words(code: &str, name: &str) -> String {
     match code {
         "authorization_failed" => format!(
-            "The certificate authority could not reach {name} on port 80 through grund's edge. Check that it points at the app's address (CNAME)."
+            "The certificate authority could not reach {name} on port 80 through grund's edge. Check that the domain points at grund's edge."
         ),
         "acme_rate_limited" => {
             "The certificate authority is limiting new certificates; grund tries again later."
@@ -195,6 +195,8 @@ pub enum DomainsError {
     AppNotFound,
     #[error("that app has no public HTTP port to serve a domain on")]
     AppNotPublic,
+    #[error("make the app private or bind another domain before removing its last public domain")]
+    LastPublicDomain,
     #[error("an app has at most {MAX_PER_APP} custom domains")]
     AppLimit,
     #[error(transparent)]
@@ -218,6 +220,7 @@ impl DomainsError {
             DomainsError::VerificationFailed(_) => "verification_failed",
             DomainsError::AppNotFound => "app_not_found",
             DomainsError::AppNotPublic => "app_not_public",
+            DomainsError::LastPublicDomain => "last_public_domain",
             DomainsError::AppLimit => "app_domain_limit",
             DomainsError::Internal(_) => "internal",
         }
@@ -396,6 +399,35 @@ impl Domains {
             .ok_or(DomainsError::NotFound)
     }
 
+    async fn lock_binding(
+        &self,
+        work: &mut Work<'_>,
+        initial: &DomainRow,
+    ) -> Result<DomainRow, DomainsError> {
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(format!("grund-domain-binding:{}", initial.domain_id))
+            .execute(&mut **work.sql())
+            .await?;
+        domains::by_name(&mut **work.sql(), initial.organisation_id, &initial.name)
+            .await?
+            .filter(|row| row.domain_id == initial.domain_id)
+            .ok_or(DomainsError::NotFound)
+    }
+
+    async fn lock_apps(
+        &self,
+        work: &mut Work<'_>,
+        app_ids: &mut [Uuid],
+    ) -> Result<(), DomainsError> {
+        app_ids.sort_unstable();
+        for (index, app_id) in app_ids.iter().enumerate() {
+            if index == 0 || *app_id != app_ids[index - 1] {
+                lock_app_domain_policy(work.sql(), *app_id).await?;
+            }
+        }
+        Ok(())
+    }
+
     async fn held_elsewhere(
         &self,
         organisation_id: Uuid,
@@ -510,8 +542,9 @@ impl Domains {
         self.get(membership.organisation_id, name.as_str()).await
     }
 
-    /// Binds a verified domain to one of the organisation's apps with a
-    /// public HTTP port; binding it to another app moves it.
+    /// Binds a verified domain to one of the organisation's apps. In
+    /// custom-only mode it may be bound before the app is public, so the
+    /// first public release can be made without a shared address.
     pub async fn bind(
         &self,
         actor: Uuid,
@@ -522,25 +555,34 @@ impl Domains {
         if !manages(membership) {
             return Err(DomainsError::NotAllowed);
         }
-        let row = self.row(membership.organisation_id, name).await?;
-        if row.state == "pending" {
-            return Err(DomainsError::NotVerified);
-        }
+        let initial = self.row(membership.organisation_id, name).await?;
         let app =
             grund_store::apps::app_by_name(&self.state.pool, membership.organisation_id, app_name)
                 .await?
                 .ok_or(DomainsError::AppNotFound)?;
+        let mut work = Work::begin(&self.state.events, Uuid::now_v7(), &actor.to_string()).await?;
+        let row = self.lock_binding(&mut work, &initial).await?;
+        if row.state == "pending" {
+            return Err(DomainsError::NotVerified);
+        }
         if row.app_id == Some(app.app_id) {
             return Ok(view(row));
         }
-        let spec = domains::current_spec(&self.state.pool, app.app_id).await?;
-        if !spec.is_some_and(|spec| publishes(&spec.0)) {
+        let mut app_ids = vec![app.app_id];
+        app_ids.extend(row.app_id);
+        self.lock_apps(&mut work, &mut app_ids).await?;
+        let spec = domains::current_spec(&mut **work.sql(), app.app_id).await?;
+        if self.state.config.entry.app_domains != crate::config::AppDomains::CustomOnly
+            && !spec.is_some_and(|spec| publishes(&spec.0))
+        {
             return Err(DomainsError::AppNotPublic);
         }
-        if domains::count_bound(&self.state.pool, app.app_id).await? >= MAX_PER_APP {
+        if let Some(previous) = row.app_id {
+            self.require_other_domain(work.sql(), previous).await?;
+        }
+        if domains::count_bound(&mut **work.sql(), app.app_id).await? >= MAX_PER_APP {
             return Err(DomainsError::AppLimit);
         }
-        let mut work = Work::begin(&self.state.events, Uuid::now_v7(), &actor.to_string()).await?;
         work.domain(
             row.domain_id,
             DomainCommand::Bind {
@@ -561,9 +603,7 @@ impl Domains {
             )
             .await?;
         }
-        let mut apps = vec![app.app_id];
-        apps.extend(row.app_id);
-        self.publish_apps(work.sql(), &apps).await?;
+        self.publish_apps(work.sql(), &app_ids).await?;
         work.commit().await?;
         self.state.wakes.documents_changed();
         tracing::info!(organisation_id = %membership.organisation_id, domain = %row.name, app = %app.name, "domains: bound");
@@ -580,8 +620,13 @@ impl Domains {
         if !manages(membership) {
             return Err(DomainsError::NotAllowed);
         }
-        let row = self.row(membership.organisation_id, name).await?;
+        let initial = self.row(membership.organisation_id, name).await?;
         let mut work = Work::begin(&self.state.events, Uuid::now_v7(), &actor.to_string()).await?;
+        let row = self.lock_binding(&mut work, &initial).await?;
+        if let Some(app_id) = row.app_id {
+            self.lock_apps(&mut work, &mut [app_id]).await?;
+            self.require_other_domain(work.sql(), app_id).await?;
+        }
         work.domain(
             row.domain_id,
             DomainCommand::Unbind {
@@ -609,8 +654,13 @@ impl Domains {
         if !manages(membership) {
             return Err(DomainsError::NotAllowed);
         }
-        let row = self.row(membership.organisation_id, name).await?;
+        let initial = self.row(membership.organisation_id, name).await?;
         let mut work = Work::begin(&self.state.events, Uuid::now_v7(), &actor.to_string()).await?;
+        let row = self.lock_binding(&mut work, &initial).await?;
+        if let Some(app_id) = row.app_id {
+            self.lock_apps(&mut work, &mut [app_id]).await?;
+            self.require_other_domain(work.sql(), app_id).await?;
+        }
         work.domain(
             row.domain_id,
             DomainCommand::Remove {
@@ -645,6 +695,29 @@ impl Domains {
             )
             .await?;
             domains::drop_certificate(work.sql(), row.domain_id).await?;
+        }
+        Ok(())
+    }
+
+    async fn require_other_domain(
+        &self,
+        connection: &mut PgConnection,
+        app_id: Uuid,
+    ) -> Result<(), DomainsError> {
+        if self.state.config.entry.app_domains != crate::config::AppDomains::CustomOnly
+            || domains::count_bound(&mut *connection, app_id).await? != 1
+        {
+            return Ok(());
+        }
+        let current_public = domains::current_spec(&mut *connection, app_id)
+            .await?
+            .is_some_and(|spec| publishes(&spec.0));
+        let next_public = grund_store::apps::releases(&mut *connection, app_id, 1)
+            .await?
+            .first()
+            .is_some_and(|release| publishes(&release.spec.0));
+        if current_public || next_public {
+            return Err(DomainsError::LastPublicDomain);
         }
         Ok(())
     }

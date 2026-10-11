@@ -614,15 +614,27 @@ async fn only_owners_and_admins_of_the_operator_organisation_run_the_management_
 }
 
 #[tokio::test]
-async fn an_instance_without_an_operator_organisation_has_no_management_pool() -> anyhow::Result<()>
-{
-    let Some((given, when, then)) = testcase_with_mail().await? else {
+async fn the_operator_pool_is_unclaimed_until_the_first_owner_uses_a_setup_link()
+-> anyhow::Result<()> {
+    let Some((given, when, then)) = testcase_configured(&[]).await? else {
         return Ok(());
     };
-    given.a_signed_in_account().await?;
+    when.visiting("/signup").await?;
+    then.status(403)?.body_contains("no owner yet")?;
+    let owner = given.the_owner().await?;
     when.calling(&format!("{POOL}/ListPoolMachines"), "{}")
         .await?;
-    then.status(404)?.connect_code("not_found")?;
+    then.status(200)?;
+    let (outsider, outsider_when, outsider_then) = given.testcase.another_browser();
+    outsider.a_signed_in_account().await?;
+    outsider_when
+        .calling(&format!("{POOL}/ListPoolMachines"), "{}")
+        .await?;
+    outsider_then.status(404)?.connect_code("not_found")?;
+    when.visiting(&format!("/{}/admin", owner.username)).await?;
+    then.status(404)?;
+    when.visiting("/admin/admin").await?;
+    then.status(200)?;
     Ok(())
 }
 
@@ -828,7 +840,9 @@ async fn grund_join_says_why_a_refused_code_was_refused() -> anyhow::Result<()> 
 
 #[tokio::test]
 async fn the_operator_organisation_may_be_named_by_its_id() -> anyhow::Result<()> {
-    let Some((given, when, then)) = testcase_configured(&[]).await? else {
+    let Some((given, when, then)) =
+        testcase_configured(&[("GRUND_OPERATOR_ORGANISATION", "not-yet-claimed")]).await?
+    else {
         return Ok(());
     };
     let operator = given.a_signed_in_account().await?;

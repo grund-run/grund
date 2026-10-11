@@ -73,10 +73,9 @@ kjuulh: "kubernetes-app": {
 					GRUND_VM_ROOTFS_URL:     "https://git.kjuulh.io/api/packages/grund/generic/grund/main-a91694bfd5665209973a250dc4c3cf41652ced6b/grund-guest.ext4"
 					GRUND_VM_ROOTFS_SHA256:  "da6278094d71efd66f1c2b8eac27ef9a1e658bdf0f9b896b9f1465c0f956a332"
 					// The management pool (grund-docs design/machines.md §7a): its
-					// machines come from the capacity provider in the same
-					// namespace, in-cluster over plain http, and its operator
-					// organisation is grundcore-ops, named by id because sign-up is
-					// open.
+					// machines come from the capacity provider in this namespace.
+					// Keep the existing operator id until its owner renames that
+					// organisation to admin; then the default resolves admin.
 					GRUND_CAPACITY_URL:          "http://grund-fleet:8480"
 					GRUND_OPERATOR_ORGANISATION: "01a117a9-e780-72af-b063-fc46f89d9d73"
 				}
@@ -112,14 +111,17 @@ kjuulh: "kubernetes-app": {
 				host:      "app.grund.sh"
 				replicas:  2
 				env_vars: {
-					GRUND_PUBLIC_URL: "https://app.grund.sh"
+					GRUND_PUBLIC_URL:     "https://app.grund.sh"
+					GRUND_APP_DOMAINS:    "custom-only"
+					GRUND_SIGNUP_ENABLED: "false"
+					GRUND_MAIL_FROM:      "grund <grund@grund.sh>"
 				}
-				// No grund-secrets in prod yet: it needs a real mail provider
-				// first. Add GRUND_SECRET_KEY and GRUND_SMTP_URL here, as in
-				// dev, before the first promotion; without a key grund refuses
-				// to start, naming GRUND_SECRET_KEY.
+				// The operator creates these secrets before Kasper approves the
+				// first promotion; a missing Secret wedges the deployment.
 				secret_env: [
 					{name: "DATABASE_URL", secret: "grund-db-app", key: "uri"},
+					{name: "GRUND_SECRET_KEY", secret: "grund-secrets", key: "secret_key"},
+					{name: "GRUND_SMTP_URL", secret: "grund-secrets", key: "smtp_url"},
 				]
 			}
 		}

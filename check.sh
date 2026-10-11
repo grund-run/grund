@@ -13,8 +13,15 @@ img=grund:check
 name=grund-check
 port=${PORT:-8497}
 rust_image=rust:1.98.1-alpine3.24
+db=
 
-cleanup() { docker rm -f "$name" >/dev/null 2>&1 || true; }
+cleanup() {
+  docker rm -f "$name" >/dev/null 2>&1 || true
+  if [ -n "$db" ]; then
+    docker compose -f compose.dev.yaml exec -T postgres psql -U grund -d postgres \
+      -c "DROP DATABASE \"$db\" WITH (FORCE)" >/dev/null 2>&1 || true
+  fi
+}
 trap cleanup EXIT
 
 echo "infrastructure (compose.dev.yaml)"
@@ -49,12 +56,17 @@ echo "image"
 docker build -q -f Dockerfile.prebuilt -t "$img" .image >/dev/null
 echo "  ok   scratch image builds ($(docker images "$img" --format '{{.Size}}'))"
 
-echo "runtime (read-only, as deployed)"
 cleanup
+# The hosted-style container starts on a fresh database each run: setup-link
+# can claim its first owner without touching a developer's own accounts.
+db="grund_check_$(openssl rand -hex 6)"
+docker compose -f compose.dev.yaml exec -T postgres psql -U grund -d postgres \
+  -c "CREATE DATABASE \"$db\"" >/dev/null
+echo "runtime (read-only, as deployed)"
 docker run -d --name "$name" --read-only --cap-drop ALL --network "$network" \
   -p "127.0.0.1:$port:8080" \
   -e GRUND_PUBLIC_URL="http://127.0.0.1:$port" \
-  -e DATABASE_URL=postgres://grund:grund@postgres:5432/grund \
+  -e DATABASE_URL="postgres://grund:grund@postgres:5432/$db" \
   -e GRUND_SECRET_KEY="$(openssl rand -hex 32)" \
   -e GRUND_NATS_URL=nats://nats:4222 \
   -e GRUND_SMTP_URL=smtp://mailpit:1025 \
@@ -63,6 +75,7 @@ docker run -d --name "$name" --read-only --cap-drop ALL --network "$network" \
   -e GRUND_ENROLL_ATTEMPTS_PER_ADDRESS=0 \
   -e GRUND_ORGANISATIONS=multi \
   "$img" >/dev/null
+GRUND_ACCEPT_URL="http://127.0.0.1:$port" ./accept-bootstrap.sh docker exec "$name" /grund
 # The timing test alone after the rest, as CI runs it (.woodpecker/ci.yaml).
 timing_test=accepttest::login::an_unknown_account_and_a_wrong_password_get_the_same_answer_in_the_same_time
 if ! { GRUND_ACCEPT_URL="http://127.0.0.1:$port" GRUND_ACCEPT_MAILPIT_URL=http://127.0.0.1:58410 \

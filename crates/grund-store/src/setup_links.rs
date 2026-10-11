@@ -1,6 +1,6 @@
-//! The owner's setup link: a one-time link, minted on the instance's machine,
-//! that creates the first account of a `single` instance (grund-docs
-//! design/auth.md §5). Only a keyed digest of the token is stored.
+//! The first owner's setup link: minted on the instance's machine, valid only
+//! before any account exists. On a `multi` instance its redemption also
+//! creates the operator organisation. Only a keyed token digest is stored.
 
 use std::time::Duration;
 
@@ -85,7 +85,8 @@ pub async fn redeem(
     Ok(used && !any_account(&mut *connection).await?)
 }
 
-async fn any_account(executor: impl PgExecutor<'_>) -> Result<bool, sqlx::Error> {
+/// Whether any account already exists, including an unverified sign-up.
+pub async fn any_account(executor: impl PgExecutor<'_>) -> Result<bool, sqlx::Error> {
     sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT 1 FROM grund_accounts)")
         .fetch_one(executor)
         .await

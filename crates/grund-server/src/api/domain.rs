@@ -80,7 +80,8 @@ fn failed(error: DomainsError) -> ConnectError {
         DomainsError::CoolingDown(_)
         | DomainsError::NotVerified
         | DomainsError::VerificationFailed(_)
-        | DomainsError::AppNotPublic => ConnectError::failed_precondition(message),
+        | DomainsError::AppNotPublic
+        | DomainsError::LastPublicDomain => ConnectError::failed_precondition(message),
         DomainsError::Internal(cause) => {
             tracing::error!(error = %format!("{cause:#}"), "domain API call failed");
             ConnectError::internal("grund could not finish that")

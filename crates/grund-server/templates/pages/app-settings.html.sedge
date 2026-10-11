@@ -136,9 +136,7 @@ props crate::web::apps::AppSettingsPage<'_> { app, items, edit, next, manages, f
       SettingsEdit::Domains => {
         <Panel id="domains" title="Custom domain">
           {if !app.domains.is_empty() { <Rows>{for domain in &app.domains { <Row name={&domain.name} sub={domain.state_words} plain /> }}</Rows> }}
-          {if app.address.is_some() {
-            <Para kind="hint">Domains are added and bound on <a href={&app.domains_href}>Domains</a>.</Para>
-          } else { <Para kind="hint">Only an app with Public HTTP exposure can have one.</Para> }}
+          <Para kind="hint">Add and bind a verified domain on <a href={&app.domains_href}>Domains</a>. {if app.custom_only { A private app can be bound before you choose Public HTTP. }}</Para>
         </Panel>
       },
       SettingsEdit::Volumes => { <Panel id="volumes" title="Volumes / storage"><Para kind="hint">Volumes are not available yet.</Para></Panel> },

@@ -26,7 +26,7 @@ use grund_domain::app::{
 };
 use grund_store::{
     apps::{self, AppRow, ReleaseRow, ReplicaRow},
-    machines,
+    domains, machines,
     work::{Work, WorkError},
 };
 use ring::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
@@ -65,6 +65,10 @@ pub enum AppsError {
     ImageUnresolved(String),
     #[error("{0}")]
     ImageUnsupported(String),
+    #[error(
+        "Public HTTP requires a verified custom domain bound to this app; bind one under Domains first"
+    )]
+    DomainRequired,
     #[error("no such release")]
     ReleaseNotFound,
     #[error(transparent)]
@@ -81,6 +85,7 @@ impl AppsError {
             AppsError::Spec(_) => "spec_invalid",
             AppsError::ImageUnresolved(_) => "image_unresolved",
             AppsError::ImageUnsupported(_) => "image_unsupported",
+            AppsError::DomainRequired => "domain_required",
             AppsError::ReleaseNotFound => "release_not_found",
             AppsError::Internal(_) => "internal",
         }
@@ -240,7 +245,8 @@ pub struct AppListing {
     pub spec: Option<AppSpec>,
     /// When that release was made.
     pub deployed_at: Option<DateTime<Utc>>,
-    /// `<app>-<organisation>.<GRUND_APP_DOMAIN>`, when it holds one.
+    /// The app's public hostname when its current release publishes: the
+    /// shared address, or its first bound domain in custom-only mode.
     pub address: Option<String>,
 }
 
@@ -353,7 +359,44 @@ pub fn machine_view(row: &machines::MachineRow, others: Option<&apps::Reservatio
     }
 }
 
+pub(crate) async fn lock_app_domain_policy(
+    connection: &mut PgConnection,
+    app_id: Uuid,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("grund-app-domain-policy:{app_id}"))
+        .execute(connection)
+        .await?;
+    Ok(())
+}
+
+fn allows_public_release(
+    mode: crate::config::AppDomains,
+    spec: &AppSpec,
+    has_bound_domain: bool,
+) -> bool {
+    mode != crate::config::AppDomains::CustomOnly || !publishes(spec) || has_bound_domain
+}
+
 impl Apps {
+    async fn require_domain(
+        &self,
+        connection: &mut PgConnection,
+        app_id: Uuid,
+        command: &AppCommand,
+    ) -> Result<(), AppsError> {
+        if let AppCommand::Release { spec, .. } = command {
+            let mode = self.state.config.entry.app_domains;
+            if mode == crate::config::AppDomains::CustomOnly && publishes(spec) {
+                let bound = grund_store::domains::count_bound(&mut *connection, app_id).await? > 0;
+                if !allows_public_release(mode, spec, bound) {
+                    return Err(AppsError::DomainRequired);
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn registry(
         &self,
         organisation_id: Uuid,
@@ -431,10 +474,14 @@ impl Apps {
     ) -> Result<AppListing, AppsError> {
         let address = match &release {
             Some(release) if publishes(&release.spec.0) => {
-                self.state
-                    .entry()
-                    .address(connection, view.row.app_id, &view.row.name, slug)
-                    .await?
+                if self.state.config.entry.app_domains == crate::config::AppDomains::CustomOnly {
+                    domains::first_bound_name(&mut *connection, view.row.app_id).await?
+                } else {
+                    self.state
+                        .entry()
+                        .address(connection, view.row.app_id, &view.row.name, slug)
+                        .await?
+                }
             }
             _ => None,
         };
@@ -538,6 +585,9 @@ impl Apps {
             spec.ports.push(detected(port, &inspection.exposed_ports)?);
         }
         let spec = spec.validate()?;
+        if !allows_public_release(self.state.config.entry.app_domains, &spec, false) {
+            return Err(AppsError::DomainRequired);
+        }
         let app_id = Uuid::now_v7();
         let mut work = Work::begin(&self.state.events, Uuid::now_v7(), &actor.to_string()).await?;
         work.app(
@@ -735,6 +785,8 @@ impl Apps {
         settings: Option<AppSettings>,
     ) -> Result<ReleaseRow, AppsError> {
         let mut work = Work::begin(&self.state.events, Uuid::now_v7(), &actor.to_string()).await?;
+        lock_app_domain_policy(work.sql(), app_id).await?;
+        self.require_domain(work.sql(), app_id, &release).await?;
         if let Some(settings) = settings {
             work.app(
                 app_id,
@@ -771,6 +823,8 @@ impl Apps {
         settings: Option<AppSettings>,
     ) -> Result<ReleaseRow, AppsError> {
         let mut work = Work::begin(&self.state.events, Uuid::now_v7(), &actor.to_string()).await?;
+        lock_app_domain_policy(work.sql(), app_id).await?;
+        self.require_domain(work.sql(), app_id, &release).await?;
         if let Some(settings) = settings {
             work.app(
                 app_id,
@@ -1287,6 +1341,55 @@ impl notmad::Component for AppReconciler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_verified_bound_domain_allows_custom_only_publication() {
+        use grund_domain::app::spec::Protocol;
+
+        let mut spec = AppSpec {
+            image: "nginx:1.27".into(),
+            command: Vec::new(),
+            ports: vec![PortSpec {
+                name: "http".into(),
+                port: 8080,
+                protocol: Protocol::Http,
+                public: false,
+            }],
+            memory_mib: 0,
+            cpu_millis: 0,
+            env: Vec::new(),
+            secrets: Vec::new(),
+            check: None,
+            stop: Default::default(),
+        };
+        assert!(allows_public_release(
+            crate::config::AppDomains::CustomOnly,
+            &spec,
+            false
+        ));
+        spec.ports[0].public = true;
+        assert!(!allows_public_release(
+            crate::config::AppDomains::CustomOnly,
+            &spec,
+            false
+        ));
+        assert!(allows_public_release(
+            crate::config::AppDomains::CustomOnly,
+            &spec,
+            true
+        ));
+        assert!(allows_public_release(
+            crate::config::AppDomains::Shared,
+            &spec,
+            false
+        ));
+        spec.ports[0].protocol = Protocol::Tcp;
+        assert!(allows_public_release(
+            crate::config::AppDomains::CustomOnly,
+            &spec,
+            false
+        ));
+    }
 
     #[test]
     fn a_secret_is_named_after_its_variable() {

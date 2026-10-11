@@ -297,18 +297,29 @@ steps:
       # Alone after the rest, as in `test`.
       TIMING_TEST: accepttest::login::an_unknown_account_and_a_wrong_password_get_the_same_answer_in_the_same_time
     commands:
-      - apk add --no-cache openssl
+      - apk add --no-cache openssl curl
       - for i in $(seq 1 60); do nc -z contract-postgres 5432 && nc -z contract-nats 4222 && nc -z contract-mailpit 1025 && break; sleep 1; done
+      # One durable key is shared by serve and setup-link, without logging or
+      # publishing its value. Public sign-up starts only after the operator
+      # owner has claimed the reserved admin organisation.
+      - umask 077 && openssl rand -hex 32 > .accept/contract-secret
+      - trap 'rm -f .accept/contract-secret' EXIT
       - >-
         GRUND_LISTEN=127.0.0.1:8080 GRUND_PUBLIC_URL=http://127.0.0.1:8080
         DATABASE_URL=postgres://grund:grund@contract-postgres:5432/grund
-        GRUND_SECRET_KEY=$$(openssl rand -hex 32)
+        GRUND_SECRET_KEY_FILE=.accept/contract-secret
         GRUND_NATS_URL=nats://contract-nats:4222 GRUND_SMTP_URL=smtp://contract-mailpit:1025
         GRUND_WORK_POLL_INTERVAL=1 GRUND_HEALTH_INTERVAL=1
         GRUND_LOGIN_ATTEMPTS_PER_ADDRESS=0 GRUND_MAIL_REQUESTS_PER_ADDRESS=0
         GRUND_ENROLL_ATTEMPTS_PER_ADDRESS=0
         GRUND_ORGANISATIONS=multi
         ./.image/grund serve > server.log 2>&1 &
+      - >-
+        GRUND_PUBLIC_URL=http://127.0.0.1:8080
+        DATABASE_URL=postgres://grund:grund@contract-postgres:5432/grund
+        GRUND_SECRET_KEY_FILE=.accept/contract-secret
+        GRUND_ORGANISATIONS=multi
+        ./accept-bootstrap.sh ./.image/grund
       # Every test reaches this one server from one address, so the
       # per-address limits are off here, and it runs as grund's hosted
       # service does (multi), because the tests sign up many accounts. The

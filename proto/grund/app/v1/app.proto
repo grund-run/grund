@@ -97,10 +97,10 @@ message Port {
   // 1 to 65535.
   uint32 port = 2;
   Protocol protocol = 3;
-  // Reachable from outside through the entry: an http or h2c port answers
-  // on the app's address (<app>-<organisation>.<GRUND_APP_DOMAIN>) through
-  // the instance's edges. The first public http or h2c port is the one the
-  // address routes to.
+  // Reachable from outside through an edge: an http or h2c port answers
+  // on the shared address when configured, or on a verified bound domain.
+  // With GRUND_APP_DOMAINS=custom-only, binding a verified domain is required
+  // before a public release. The first public http or h2c port receives it.
   bool public = 4;
 }
 

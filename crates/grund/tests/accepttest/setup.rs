@@ -59,8 +59,7 @@ async fn a_setup_link_creates_the_signed_in_owner_and_sends_no_mail() -> anyhow:
     let link = ran.setup_link_path().expect("a link");
     anyhow::ensure!(
         ran.stdout.matches("grund_setup_").count() == 1,
-        "the link is printed once: {}",
-        ran.stdout
+        "the link was not printed exactly once"
     );
     when.visiting(&link).await?;
     then.status(200)?
@@ -227,7 +226,10 @@ async fn no_setup_link_is_minted_once_the_instance_has_an_account() -> anyhow::R
         "{}",
         ran.stderr
     );
-    anyhow::ensure!(!ran.stdout.contains("grund_setup_"), "{}", ran.stdout);
+    anyhow::ensure!(
+        !ran.stdout.contains("grund_setup_"),
+        "a setup URL was emitted"
+    );
     anyhow::ensure!(
         given
             .testcase
@@ -316,22 +318,143 @@ async fn a_form_that_does_not_validate_keeps_the_setup_link() -> anyhow::Result<
 }
 
 #[tokio::test]
-async fn a_multi_organisation_instance_has_no_setup_link() -> anyhow::Result<()> {
+async fn a_multi_instance_requires_operator_setup_before_open_signup() -> anyhow::Result<()> {
     let Some((given, when, then)) = testcase_configured(&[]).await? else {
         return Ok(());
     };
-    let ran = given.testcase.fixture.running(&["setup-link"]).await?;
-    anyhow::ensure!(!ran.success);
-    anyhow::ensure!(
-        ran.stderr.contains("GRUND_ORGANISATIONS is multi"),
+    when.visiting("/signup").await?;
+    then.status(403)?.body_contains("no owner yet")?;
+    let owner = given.the_owner().await?;
+    when.calling(
+        "/grund.machine.v1.ManagementPoolService/ListPoolMachines",
         "{}",
-        ran.stderr
+    )
+    .await?;
+    then.status(200)?;
+    anyhow::ensure!(
+        given
+            .testcase
+            .fixture
+            .count("SELECT count(*) FROM grund_organisations WHERE slug = 'admin'")
+            .await?
+            == 1,
+        "the setup link must create the reserved operator organisation"
     );
-    anyhow::ensure!(!ran.stdout.contains("grund_setup_"));
-    when.visiting("/signup/owner?token=grund_setup_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
-        .await?;
-    then.status(200)?.body_contains("expired")?;
+    when.calling(
+        "/grund.organisation.v1.OrganisationService/DeleteOrganisation",
+        r#"{"slug":"admin","confirmSlug":"admin"}"#,
+    )
+    .await?;
+    then.status(400)?.connect_code("failed_precondition")?;
+    when.calling(
+        "/grund.organisation.v1.OrganisationService/RenameOrganisation",
+        &serde_json::json!({"slug": "admin", "newSlug": given.a_fresh_name("away")}).to_string(),
+    )
+    .await?;
+    then.status(400)?.connect_code("failed_precondition")?;
+    when.visiting(&format!("/{}", owner.username)).await?;
+    then.status(200)?;
+    let (_, stranger_when, stranger_then) = given.testcase.another_browser();
+    stranger_when.visiting("/signup").await?;
+    stranger_then
+        .status(200)?
+        .body_contains("Create an account")?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn closed_multi_signup_still_allows_the_operator_setup_link() -> anyhow::Result<()> {
+    let Some((given, when, then)) =
+        testcase_configured(&[("GRUND_SIGNUP_ENABLED", "false")]).await?
+    else {
+        return Ok(());
+    };
+    let owner = given.the_owner().await?;
+    when.visiting(&format!("/{}", owner.username)).await?;
+    then.status(200)?;
+    when.calling(
+        "/grund.machine.v1.ManagementPoolService/ListPoolMachines",
+        "{}",
+    )
+    .await?;
+    then.status(200)?;
+    let (_, visitor, visitor_result) = given.testcase.another_browser();
+    visitor.visiting("/signup").await?;
+    visitor_result.status(403)?.body_contains("invite-only")?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn competing_multi_setup_requests_create_one_operator_owner() -> anyhow::Result<()> {
+    let Some((given, _, _)) = testcase_configured(&[]).await? else {
+        return Ok(());
+    };
+    let link = given.testcase.fixture.setup_link().await?;
+    let (first, _, _) = given.testcase.another_browser();
+    let (second, _, _) = given.testcase.another_browser();
+    let first_name = first.a_fresh_name("first");
+    let second_name = second.a_fresh_name("second");
+    let (a, b) = tokio::join!(
+        posting_the_owner_form(&first, &link, &first_name, "long enough password"),
+        posting_the_owner_form(&second, &link, &second_name, "long enough password"),
+    );
+    let mut statuses = [a?, b?];
+    statuses.sort_unstable();
+    anyhow::ensure!(statuses == [200, 303], "setup race: {statuses:?}");
+    anyhow::ensure!(given.testcase.fixture.count(ACCOUNTS).await? == 1);
+    anyhow::ensure!(
+        given
+            .testcase
+            .fixture
+            .count("SELECT count(*) FROM grund_organisations WHERE slug = 'admin'")
+            .await?
+            == 1
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_operator_override_prevents_competing_admin_bootstrap() -> anyhow::Result<()> {
+    let Some((given, when, then)) =
+        testcase_configured(&[("GRUND_OPERATOR_ORGANISATION", "existing-operator")]).await?
+    else {
+        return Ok(());
+    };
+    let minted = given.testcase.fixture.running(&["setup-link"]).await?;
+    anyhow::ensure!(!minted.success);
+    anyhow::ensure!(!minted.stdout.contains("grund_setup_"));
+    anyhow::ensure!(
+        minted.stderr.contains("GRUND_OPERATOR_ORGANISATION"),
+        "expected the override refusal"
+    );
     when.visiting("/signup").await?;
     then.status(200)?.body_contains("Create an account")?;
+    anyhow::ensure!(
+        given
+            .testcase
+            .fixture
+            .count("SELECT count(*) FROM grund_organisations WHERE slug = 'admin'")
+            .await?
+            == 0
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_explicit_admin_override_bootstraps_the_same_reserved_operator() -> anyhow::Result<()> {
+    let Some((given, when, then)) =
+        testcase_configured(&[("GRUND_OPERATOR_ORGANISATION", "admin")]).await?
+    else {
+        return Ok(());
+    };
+    when.visiting("/signup").await?;
+    then.status(403)?.body_contains("no owner yet")?;
+    given.the_owner().await?;
+    when.calling(
+        "/grund.machine.v1.ManagementPoolService/ListPoolMachines",
+        "{}",
+    )
+    .await?;
+    then.status(200)?;
     Ok(())
 }

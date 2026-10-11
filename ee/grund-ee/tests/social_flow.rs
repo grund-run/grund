@@ -22,7 +22,7 @@ use grund_server::{
     config::ServeConfig,
     license::{PREFIX, Verifier},
     services::{
-        accounts::{AccountsState, RequestMeta, SignupForm, SignupOutcome},
+        accounts::{AccountsState, OwnerSignupOutcome, RequestMeta, SignupForm, SignupOutcome},
         entitlements::Entitlements,
         passwords::Passwords,
     },
@@ -155,6 +155,42 @@ async fn state(pool: PgPool, issuer: &str) -> State {
     }
 }
 
+async fn create_instance_owner(state: &State) {
+    let mut random = [0u8; 32];
+    getrandom::fill(&mut random).unwrap();
+    let token = format!(
+        "{}{}",
+        grund_server::setup_link::PREFIX,
+        URL_SAFE_NO_PAD.encode(random)
+    );
+    let digest = grund_server::setup_link::digest(&state.secret, &token);
+    let issued =
+        grund_store::setup_links::mint(&state.pool, &digest, grund_server::setup_link::TTL)
+            .await
+            .unwrap();
+    assert!(matches!(
+        issued,
+        grund_store::setup_links::Minted::Issued(_)
+    ));
+    let outcome = state
+        .accounts()
+        .sign_up_owner(
+            &token,
+            SignupForm {
+                username: "instance-owner".into(),
+                email: "instance-owner@example.test".into(),
+                password: "a long owner password".into(),
+            },
+            &RequestMeta {
+                request_id: Uuid::now_v7(),
+                address: "127.0.0.1".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(outcome, OwnerSignupOutcome::SignedIn { .. }));
+}
+
 struct Browser {
     app: Router,
     cookies: Vec<(String, String)>,
@@ -276,7 +312,9 @@ async fn a_licensed_instance_offers_the_provider_and_a_new_identity_becomes_an_a
         ..Default::default()
     }));
     let issuer = start_provider(mock.clone()).await;
-    let app = grund_server::web::router(state(pool, &issuer).await);
+    let state = state(pool, &issuer).await;
+    create_instance_owner(&state).await;
+    let app = grund_server::web::router(state);
     let mut browser = Browser {
         app,
         cookies: Vec::new(),
@@ -349,6 +387,7 @@ async fn an_identity_whose_address_has_an_account_links_only_with_that_accounts_
     }));
     let issuer = start_provider(mock.clone()).await;
     let state = state(pool, &issuer).await;
+    create_instance_owner(&state).await;
     let meta = RequestMeta {
         request_id: Uuid::now_v7(),
         address: "127.0.0.1".into(),

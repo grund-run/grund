@@ -7,11 +7,16 @@ props crate::web::apps::AppOverviewPage<'_> { app, running, releases };
     <Fact label="Reachable at" wide>
       {if let Some(address) = &app.address {
         <Endpoint text={format!("https://{address}")} href={format!("https://{address}")} />
-        {for domain in &app.domains { {if domain.serving { <Endpoint text={format!("https://{}", domain.name)} href={format!("https://{}", domain.name)} /> }} }}
-      } else if let Some(internal) = &app.internal {
-        <Endpoint text={internal} href="" />
-      } else {
-        <Para kind="hint">Nowhere: it has no port.</Para>
+      } else if app.domains.iter().any(|domain| domain.serving) {
+        <Para kind="hint">No default address.</Para>
+      }}
+      {for domain in &app.domains { {if domain.serving { <Endpoint text={format!("https://{}", domain.name)} href={format!("https://{}", domain.name)} /> }} }}
+      {if app.address.is_none() && !app.domains.iter().any(|domain| domain.serving) {
+        {if let Some(internal) = &app.internal {
+          <Endpoint text={internal} href="" />
+        } else {
+          <Para kind="hint">Nowhere: it has no port.</Para>
+        }}
       }}
     </Fact>
     <Fact label="Status" value={app.word} tone={app.tone} />

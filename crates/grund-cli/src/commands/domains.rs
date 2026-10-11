@@ -38,11 +38,16 @@ pub enum DomainsAction {
         #[arg(value_name = "DOMAIN")]
         domain: String,
     },
-    #[command(about = "Serve an app on a verified domain; its certificate follows within minutes")]
+    #[command(
+        about = "Bind a verified domain to an app; in custom-only mode, bind before publishing its HTTP port"
+    )]
     Bind {
         #[arg(value_name = "DOMAIN")]
         domain: String,
-        #[arg(value_name = "APP", help = "An app with a public http or h2c port")]
+        #[arg(
+            value_name = "APP",
+            help = "An existing app (private apps can be bound in custom-only mode)"
+        )]
         app: String,
         #[arg(long, help = "Show the request instead of sending it")]
         dry_run: bool,

@@ -155,10 +155,10 @@ impl Accounts {
         )
     }
 
-    /// Creates an account, its home organisation (grund-docs
-    /// design/organisations.md) and a verification link. In `single` mode
-    /// only the first account signs up this way; later ones need an
-    /// invitation ([`Accounts::sign_up_invited`]).
+    /// Creates an account, its home organisation and a verification link.
+    /// In `multi` mode the operator first claims `admin` using a setup link,
+    /// then ordinary sign-up creates personal organisations. In `single` mode
+    /// later accounts join only through invitations.
     pub async fn sign_up(
         &self,
         form: SignupForm,
@@ -243,18 +243,23 @@ impl Accounts {
         .await?)
     }
 
-    /// Creates the owner of a `single` instance through its setup link
-    /// (grund-docs design/auth.md §5): the account, confirmed on the owner's
-    /// word, and the instance's organisation, in the transaction that uses
-    /// the link. A form that does not validate writes nothing, and the link
-    /// keeps working until it expires.
+    /// Creates the first owner through a setup link. In `single` mode that
+    /// account owns the instance organisation; in `multi` mode it owns its
+    /// personal organisation and the reserved operator organisation `admin`.
+    /// The account and organisations commit in the same transaction.
     pub async fn sign_up_owner(
         &self,
         token: &str,
         form: SignupForm,
         meta: &RequestMeta,
     ) -> anyhow::Result<OwnerSignupOutcome> {
-        if self.state.config.organisations != crate::config::OrganisationMode::Single
+        if (self.state.config.organisations == crate::config::OrganisationMode::Multi
+            && self
+                .state
+                .config
+                .operator_organisation
+                .as_deref()
+                .is_some_and(|named| named != "admin"))
             || !self.setup_link_is_live(token).await?
         {
             return Ok(OwnerSignupOutcome::Expired);
@@ -280,7 +285,10 @@ impl Accounts {
         let phc = self.passwords.hash(&form.password).await?;
         let digest = setup_link::digest(&self.state.secret, token);
         let account_id = Uuid::now_v7();
-        let home = Home::NewInstance(Uuid::now_v7());
+        let home = match self.state.config.organisations {
+            crate::config::OrganisationMode::Single => Home::NewInstance(Uuid::now_v7()),
+            crate::config::OrganisationMode::Multi => Home::Personal(Uuid::now_v7()),
+        };
         let now = Utc::now();
         let created: Result<bool, WorkError> = async {
             let mut work = Work::begin(&self.state.events, meta.request_id, "setup-link").await?;
@@ -307,6 +315,10 @@ impl Accounts {
             .await?;
             organisations::create_home(&self.state, &mut work, home, account_id, &username, now)
                 .await?;
+            if self.state.config.organisations == crate::config::OrganisationMode::Multi {
+                organisations::create_operator_admin(&self.state, &mut work, account_id, now)
+                    .await?;
+            }
             accounts::insert_email(work.sql(), account_id, email.as_str(), email.normalized())
                 .await?;
             accounts::set_password(work.sql(), account_id, &phc).await?;

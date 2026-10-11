@@ -207,8 +207,8 @@ impl Machines {
     }
 
     /// The operator organisation: GRUND_OPERATOR_ORGANISATION (an id, or a
-    /// slug), else the instance's organisation in `single` mode. `None`: no
-    /// management pool.
+    /// slug), else the instance's organisation in `single` mode or the
+    /// reserved `admin` organisation in `multi` mode. `None` if unclaimed.
     pub async fn operator(&self) -> anyhow::Result<Option<Uuid>> {
         if let Some(named) = &self.state.config.operator_organisation {
             if let Ok(organisation_id) = Uuid::parse_str(named) {
@@ -222,7 +222,9 @@ impl Machines {
         }
         Ok(match self.state.config.organisations {
             OrganisationMode::Single => organisations::instance(&self.state.pool).await?,
-            OrganisationMode::Multi => None,
+            OrganisationMode::Multi => {
+                machines::live_organisation_by_slug(&self.state.pool, "admin").await?
+            }
         })
     }
 

@@ -200,6 +200,11 @@ impl OrganisationService for OrganisationApi {
                     "only owners rename an organisation",
                 ));
             }
+            RenameOutcome::Operator => {
+                return Err(ConnectError::failed_precondition(
+                    "the operator organisation must keep its admin name",
+                ));
+            }
         };
         let membership = self.member(&caller.into(), &slug).await?;
         Response::ok(RenameOrganisationResponse {
@@ -235,6 +240,9 @@ impl OrganisationService for OrganisationApi {
             )),
             DeleteOutcome::Instance => Err(ConnectError::failed_precondition(
                 "this is the instance's own organisation, and an instance needs it",
+            )),
+            DeleteOutcome::Operator => Err(ConnectError::failed_precondition(
+                "this organisation operates the management pool and cannot be deleted",
             )),
         }
     }

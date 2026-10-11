@@ -25,6 +25,7 @@ use crate::{
         accounts::{RequestMeta, sentence},
         billing::{self, BillingView, Change},
         limits::{Limits, LimitsState},
+        machines::MachinesState,
         outbox::wake,
     },
     state::State,
@@ -41,9 +42,8 @@ pub enum Home {
     /// Sign-up without an invitation is closed (`single`, after the first
     /// account).
     Closed,
-    /// Sign-up is closed because the instance has no owner yet: its first
-    /// account comes only from a setup link minted on its machine (`single`;
-    /// grund-docs design/auth.md §5).
+    /// The first account must claim the instance through a setup link.
+    /// In `multi` mode this also claims the reserved operator organisation.
     Unclaimed,
 }
 
@@ -62,11 +62,21 @@ impl Home {
     }
 }
 
-/// Decides where an account that signs up without an invitation lives. In
-/// `single` mode that is nowhere: the first account comes from the setup
-/// link, and later ones from invitations.
+/// Decides where an account that signs up without an invitation lives. The
+/// first account must claim the instance via a setup link, unless a `multi`
+/// instance already pins an operator by explicit override.
 pub async fn plan_home(state: &State) -> Result<Home, sqlx::Error> {
     Ok(match state.config.organisations {
+        OrganisationMode::Multi
+            if state
+                .config
+                .operator_organisation
+                .as_deref()
+                .is_none_or(|named| named == "admin")
+                && !grund_store::setup_links::any_account(&state.pool).await? =>
+        {
+            Home::Unclaimed
+        }
         OrganisationMode::Multi => Home::Personal(Uuid::now_v7()),
         OrganisationMode::Single => match organisations::instance(&state.pool).await? {
             Some(_) => Home::Closed,
@@ -117,6 +127,38 @@ pub async fn create_home(
     Ok(())
 }
 
+/// Creates the operator organisation only as part of the trusted first-owner
+/// setup transaction. Ordinary organisation creation never accepts this slug.
+pub async fn create_operator_admin(
+    state: &State,
+    work: &mut Work<'_>,
+    owner: Uuid,
+    at: DateTime<Utc>,
+) -> Result<(), WorkError> {
+    let organisation_id = Uuid::now_v7();
+    let slug = Username::operator_admin();
+    work.organisation(
+        organisation_id,
+        OrganisationCommand::Create {
+            slug: slug.clone(),
+            kind: OrganisationKind::Shared,
+            owner,
+            at,
+        },
+    )
+    .await?;
+    billing::queue_change(
+        state,
+        work.sql(),
+        organisation_id,
+        slug.as_str(),
+        Change::Created,
+        at,
+    )
+    .await?;
+    Ok(())
+}
+
 /// Whether a unit of work failed because another first sign-up already
 /// created the instance's organisation.
 pub fn is_instance_taken(error: &WorkError) -> bool {
@@ -159,6 +201,8 @@ pub enum RenameOutcome {
     Renamed(String),
     Invalid(String),
     NotAllowed,
+    /// The reserved operator name cannot be moved to an alias.
+    Operator,
 }
 
 /// How a deletion request ended.
@@ -171,6 +215,8 @@ pub enum DeleteOutcome {
     NotAllowed,
     /// The instance's organisation (`single`) cannot be deleted.
     Instance,
+    /// The management pool's operator cannot be deleted.
+    Operator,
 }
 
 /// How accepting an invitation ended.
@@ -316,15 +362,32 @@ impl Organisations {
         slug: &str,
         meta: &RequestMeta,
     ) -> anyhow::Result<RenameOutcome> {
-        let slug = match Username::parse(slug) {
-            Ok(slug) => slug,
-            Err(error) => return Ok(RenameOutcome::Invalid(sentence(error))),
+        let slug = if slug.trim().eq_ignore_ascii_case("admin")
+            && self
+                .state
+                .config
+                .operator_organisation
+                .as_deref()
+                .and_then(|id| Uuid::parse_str(id).ok())
+                == Some(organisation.organisation_id)
+        {
+            Username::operator_admin()
+        } else {
+            match Username::parse(slug) {
+                Ok(slug) => slug,
+                Err(error) => return Ok(RenameOutcome::Invalid(sentence(error))),
+            }
         };
         if slug.as_str() == organisation.slug {
             return Ok(RenameOutcome::Renamed(slug.as_str().to_string()));
         }
         if Role::parse(&organisation.role) != Some(Role::Owner) {
             return Ok(RenameOutcome::NotAllowed);
+        }
+        if self.state.config.organisations == OrganisationMode::Multi
+            && organisation.slug == "admin"
+        {
+            return Ok(RenameOutcome::Operator);
         }
         if !organisations::slug_free_for(
             &self.state.pool,
@@ -382,9 +445,8 @@ impl Organisations {
     }
 
     /// Asks to delete an organisation once its owner has typed its slug.
-    /// Refused for the instance's organisation. Billing then answers in the
-    /// `organisation-deletion` saga (sagas.rs), which deletes it or cancels
-    /// the request with billing's reason.
+    /// Refused for the instance's organisation or the management operator.
+    /// Billing then answers in the `organisation-deletion` saga (sagas.rs).
     pub async fn request_deletion(
         &self,
         actor: Uuid,
@@ -400,6 +462,9 @@ impl Organisations {
         }
         if organisations::instance(&self.state.pool).await? == Some(organisation.organisation_id) {
             return Ok(DeleteOutcome::Instance);
+        }
+        if self.state.machines().operator().await? == Some(organisation.organisation_id) {
+            return Ok(DeleteOutcome::Operator);
         }
         let mut work = Work::begin(&self.state.events, meta.request_id, "request-deletion").await?;
         let requested = work

@@ -406,13 +406,11 @@ impl Agents {
                         grund_store::domains::names_of_app(&mut *connection, row.app_id).await?,
                     );
                 }
-                replica.hostnames = match &addresses[&row.app_id] {
-                    Some(address) => std::iter::once(address)
-                        .chain(custom[&row.app_id].iter())
-                        .cloned()
-                        .collect(),
-                    None => Vec::new(),
-                };
+                replica.hostnames = addresses[&row.app_id]
+                    .iter()
+                    .chain(custom[&row.app_id].iter())
+                    .cloned()
+                    .collect();
             }
             replicas.push(replica);
         }

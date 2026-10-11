@@ -66,7 +66,9 @@ fn failed(error: AppsError) -> ConnectError {
     let message = error.to_string();
     let base = match &error {
         AppsError::NotFound | AppsError::ReleaseNotFound => ConnectError::not_found(message),
-        AppsError::NameTaken | AppsError::AppLimit => ConnectError::failed_precondition(message),
+        AppsError::NameTaken | AppsError::AppLimit | AppsError::DomainRequired => {
+            ConnectError::failed_precondition(message)
+        }
         AppsError::Spec(_) | AppsError::ImageUnsupported(_) => {
             ConnectError::invalid_argument(message)
         }
