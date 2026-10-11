@@ -22,6 +22,7 @@ struct Shared {
     boot_before_answer: Option<std::path::PathBuf>,
     can_place: bool,
     assigned: Vec<(String, String)>,
+    inventory_hosts: Vec<serde_json::Value>,
 }
 
 pub struct FakeCapacity {
@@ -54,6 +55,9 @@ impl FakeCapacity {
     }
     pub fn set_can_place(&self, can_place: bool) {
         self.shared.lock().can_place = can_place;
+    }
+    pub fn set_inventory_hosts(&self, hosts: Vec<serde_json::Value>) {
+        self.shared.lock().inventory_hosts = hosts;
     }
 
     pub fn unavailable_for(&self, method: &str, unavailable: bool) {
@@ -170,6 +174,24 @@ async fn serve(mut stream: TcpStream, shared: Arc<Mutex<Shared>>) -> anyhow::Res
                         "canPlace": shared.can_place,
                     }]}),
                 ),
+                "ListInventoryHosts" => {
+                    let offset = shared
+                        .calls
+                        .last()
+                        .and_then(|call| call.body["pageToken"].as_str())
+                        .and_then(|token| token.parse::<usize>().ok())
+                        .unwrap_or(0);
+                    let end = (offset + 2).min(shared.inventory_hosts.len());
+                    let next = if end < shared.inventory_hosts.len() {
+                        end.to_string()
+                    } else {
+                        String::new()
+                    };
+                    (
+                        200,
+                        serde_json::json!({"hosts": &shared.inventory_hosts[offset.min(end)..end], "nextPageToken": next}),
+                    )
+                }
                 "ListInventoryMachines" => (
                     200,
                     serde_json::json!({"machines": [], "nextPageToken": ""}),

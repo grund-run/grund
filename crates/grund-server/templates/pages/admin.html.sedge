@@ -1,5 +1,5 @@
-use crate::templates::compiled::components::{PageHead, Tabs, Banner, Section, Rows, Row, EmptyState, Facts, Fact, Expanders, Expander, Form, Field, HiddenField, Button, PostButton, Panel, Actions, LinkMore};
-props crate::web::admin::AdminPage<'_> { slug, csrf, manages, tab, hosts, selected_host, machines, pools, failures, events, leases, organisations, available, leased, host_page, next_page, next_machines_page, organisation, entitlement, error, notice };
+use crate::templates::compiled::components::{PageHead, Tabs, Banner, Section, Rows, Row, EmptyState, Facts, Fact, Expanders, Expander, Form, Field, HiddenField, Button, PostButton, Panel, Actions, LinkMore, Pill, ShortId, RelativeTime, CopyButton};
+props crate::web::admin::AdminPage<'_> { slug, csrf, manages, tab, host_filter, host_counts, retired_count, now, hosts, selected_host, machines, pools, failures, events, leases, organisations, available, leased, next_page, next_machines_page, organisation, entitlement, error, notice };
 
 <PageHead title="Admin" />
 {let hosts_url = format!("/{slug}/admin");}
@@ -12,25 +12,39 @@ props crate::web::admin::AdminPage<'_> { slug, csrf, manages, tab, hosts, select
 {if !notice.is_empty() { <Banner text={notice} tone="ok" /> }}
 {if !error.is_empty() { <Banner text={error} /> }}
 {if *tab == "hosts" {
-  <Section id="hosts" title="Hosts" count={Some(hosts.len())}>
+  {let active_url = format!("/{slug}/admin");}
+  {let retired_url = format!("/{slug}/admin?host_filter=retired");}
+  <Tabs label="Hosts" tabs={&[("active", active_url.as_str(), "Active", ""), ("retired", retired_url.as_str(), "Retired", "")]} counts={&[("active", hosts.len() - retired_count), ("retired", *retired_count)]} active={host_filter} />
+  <Section id="hosts" title="Hosts" count={Some(if *host_filter == "retired" { *retired_count } else { hosts.len() - retired_count })}>
+    <Facts>{for (state, count) in host_counts {
+      {let (word, tone) = crate::web::admin::fleet_state(state);}
+      <Fact label={word} value={&count.to_string()} tone={tone} />
+    }}</Facts>
     {if hosts.is_empty() && error.is_empty() { <EmptyState text="No hosts reported." /> }}
-    <Rows>{for item in hosts {
-      {let href = crate::web::admin::host_url(slug, &item.id, host_page, "");}
-      <Row name={if item.name.is_empty() { &item.id } else { &item.name }} sub="{item.provider} · {item.region} · {item.machine_count} VMs" icon_name="server" tone={if item.reachable { "ok" } else { "orange" }} href={href.as_str()} status_text={Some(item.state.as_str())} status_tone={if item.reachable { "ok" } else { "orange" }} />
+    {if !hosts.is_empty() && hosts.iter().all(|host| (host.state == "retired") != (*host_filter == "retired")) && error.is_empty() { <EmptyState text={if *host_filter == "retired" { "No retired hosts." } else { "No active hosts." }} /> }}
+    <Rows>{for item in hosts.iter().filter(|host| (host.state == "retired") == (*host_filter == "retired")) {
+      {let href = format!("{}&host_filter={host_filter}", crate::web::admin::host_url(slug, &item.id, "", ""));}
+      {let (word, tone) = crate::web::admin::fleet_state(&item.state);}
+      <Row name={if item.name.is_empty() { crate::templates::short_id(&item.id) } else { &item.name }} sub="{item.provider} · {item.region} · {item.allocated_vcpus} used / {item.vcpus - item.allocated_vcpus} free vCPU · {item.allocated_memory_mib} used / {item.memory_mib - item.allocated_memory_mib} free MiB RAM · {item.allocated_disk_gib} used / {item.disk_gib - item.allocated_disk_gib} free GiB disk · {item.machine_count} VMs" icon_name="server" tone={tone} href={href.as_str()}>
+        <:status><Pill text={word} tone={tone} /></:status>
+        <:end>{if item.name.is_empty() { <CopyButton text={&item.id} label="the host identifier" /> }}</:end>
+      </Row>
     }}</Rows>
-    {if !next_page.is_empty() { <LinkMore href={crate::web::admin::host_url(slug, "", next_page, "")} label="Next hosts" /> }}
   </Section>
   {if let Some(item) = selected_host.and_then(|index| hosts.get(index)) {
-    <Section id="host-detail" title={if item.name.is_empty() { &item.id } else { &item.name }}>
+    {let (word, tone) = crate::web::admin::fleet_state(&item.state);}
+    <Section id="host-detail" title={if item.name.is_empty() { crate::templates::short_id(&item.id) } else { &item.name }}>
       <Facts>
-        <Fact label="State" value={&item.state} />
+        <Fact label="State" value={word} tone={tone} />
         <Fact label="Reachable" value={if item.reachable { "Yes" } else { "No" }} />
         <Fact label="Free vCPU" value={format!("{} of {}", i128::from(item.vcpus) - i128::from(item.allocated_vcpus), item.vcpus)} />
         <Fact label="Free RAM" value={format!("{} of {} MiB", i128::from(item.memory_mib) - i128::from(item.allocated_memory_mib), item.memory_mib)} />
         <Fact label="Free disk" value={format!("{} of {} GiB", i128::from(item.disk_gib) - i128::from(item.allocated_disk_gib), item.disk_gib)} />
         <Fact label="Kernel" value={if item.host_kernel.is_empty() { "Not reported" } else { &item.host_kernel }} />
         <Fact label="Firecracker" value={if item.firecracker_version.is_empty() { "Not reported" } else { &item.firecracker_version }} />
-        <Fact label="Last seen" value={if item.last_heartbeat_at.is_empty() { "Not reported" } else { &item.last_heartbeat_at }} />
+        <Fact label="Last seen" value="">
+          <RelativeTime value={&item.last_heartbeat_at} now={*now} />
+        </Fact>
         {if !item.cordon_reason.is_empty() { <Fact label="Cordon reason" value={&item.cordon_reason} /> }}
       </Facts>
       {if *manages {
@@ -49,29 +63,40 @@ props crate::web::admin::AdminPage<'_> { slug, csrf, manages, tab, hosts, select
     <Section id="host-vms" title="Virtual machines" count={Some(machines.len())}>
       {if machines.is_empty() && error.is_empty() { <EmptyState text="No VMs reported on this host." /> }}
       <Rows>{for machine in machines {
-        <Row name={&machine.id} sub="{machine.size} · {machine.region} · pool {machine.pool_id} · updated {machine.updated_at}" icon_name="box" tone="blue" status_text={Some(machine.state.as_str())} status_tone="blue" detail={if machine.reason.is_empty() { if machine.assigned { "Assigned" } else { "Unassigned" } } else { machine.reason.as_str() }} />
+        {let (word, tone) = crate::web::admin::fleet_state(&machine.state);}
+        <Row name={&machine.id} name_id sub="" icon_name="box" tone={tone} detail={if machine.reason.is_empty() { if machine.assigned { "Assigned" } else { "Unassigned" } } else { machine.reason.as_str() }}>
+          <:sub_content>{machine.size} · {machine.region} · updated <RelativeTime value={&machine.updated_at} now={*now} /></:sub_content>
+          <:status><Pill text={word} tone={tone} /></:status>
+        </Row>
       }}</Rows>
-      {if !next_machines_page.is_empty() { <LinkMore href={crate::web::admin::host_url(slug, &item.id, host_page, next_machines_page)} label="Next VMs" /> }}
+      {if !next_machines_page.is_empty() { <LinkMore href={format!("{}&host_filter={host_filter}", crate::web::admin::host_url(slug, &item.id, "", next_machines_page))} label="Next VMs" /> }}
     </Section>
   }}
 } else if *tab == "pool" {
   {let pool_href = format!("/{slug}/pool");}
   <Section id="grund-pool" title="grund pool" more={Some((pool_href.as_str(), "Management pool"))}>
-    <Rows><Row name="Available" sub={&available.to_string()} icon_name="server" tone="ok" /><Row name="Leased" sub={&leased.to_string()} icon_name="key" tone="violet" /></Rows>
+    <Rows><Row name="Available" sub={&available.to_string()} icon_name="server" tone="ok"><:status><Pill text="Available" tone="ok" /></:status></Row><Row name="Leased" sub={&leased.to_string()} icon_name="key" tone="violet"><:status><Pill text="Leased" tone="violet" /></:status></Row></Rows>
     {if *manages { <LinkMore href={format!("/{slug}/pool#provision")} label="Provision machine" /> }}
   </Section>
   <Section id="fleet-pools" title="Fleet pools">
     {if pools.is_empty() && error.is_empty() { <EmptyState text="No fleet pools reported." /> }}
     <Rows>{for pool in pools {
-      <Row name={if pool.name.is_empty() { &pool.id } else { &pool.name }} sub="{pool.region} · {pool.size} · desired {pool.desired} · headroom {pool.headroom} · warm {pool.warm} · ready {pool.ready}" icon_name="layers" tone="blue" detail={&pool.unschedulable_reason} />
+      {let pool_word = if !pool.unschedulable_reason.is_empty() { "No capacity" } else if pool.ready > 0 { "Ready" } else if pool.desired > 0 { "Warming" } else { "Empty" };}
+      {let pool_tone = if !pool.unschedulable_reason.is_empty() { "orange" } else if pool.ready > 0 { "ok" } else if pool.desired > 0 { "blue" } else { "muted" };}
+      <Row name={if pool.name.is_empty() { &pool.id } else { &pool.name }} name_id={pool.name.is_empty()} sub="{pool.region} · {pool.size} · desired {pool.desired} · headroom {pool.headroom} · warm {pool.warm} · ready {pool.ready}" icon_name="layers" tone={pool_tone} detail={&pool.unschedulable_reason}>
+        <:status><Pill text={pool_word} tone={pool_tone} /></:status>
+      </Row>
     }}</Rows>
     {if !next_page.is_empty() { <LinkMore href={crate::web::admin::admin_url(slug, "pool", "page", next_page)} label="Next pools" /> }}
   </Section>
 } else if *tab == "leases" {
   <Section id="leases" title="Leases" count={Some(leases.len())}>
-    {if leases.is_empty() { <EmptyState text="No active leases." /> }}
+    {if leases.is_empty() && error.is_empty() { <EmptyState text="No active leases." /> }}
     <Rows>{for lease in leases {
-      <Row name={&lease.name} sub="{lease.lessee} · since {lease.since} · ends {lease.end}" icon_name="key" tone="violet" status_text={Some("Leased")} status_tone="violet" />
+      <Row name={&lease.name} sub="" icon_name="key" tone="violet">
+        <:sub_content>{lease.lessee} · since <RelativeTime value={&lease.since} now={*now} /> · ends {lease.end}</:sub_content>
+        <:status><Pill text="Leased" tone="violet" /></:status>
+      </Row>
     }}</Rows>
     {if *manages { <LinkMore href={format!("/{slug}/pool")} label="Manage leases" /> }}
   </Section>
@@ -79,7 +104,10 @@ props crate::web::admin::AdminPage<'_> { slug, csrf, manages, tab, hosts, select
   <Section id="failures" title="Current fleet failures" count={Some(failures.len())}>
     {if failures.is_empty() && error.is_empty() { <EmptyState text="No current failures reported." /> }}
     <Rows>{for failure in failures {
-      <Row name={&failure.machine_id} sub="Host {failure.host_id} · updated {failure.updated_at}" icon_name="alert" tone="orange" detail={&failure.reason} status_text={Some(failure.state.as_str())} status_tone="orange" />
+      <Row name={&failure.machine_id} name_id sub="" icon_name="alert" tone="orange" detail={&failure.reason}>
+        <:sub_content>Host <ShortId text={&failure.host_id} label="the host identifier" /> · updated <RelativeTime value={&failure.updated_at} now={*now} /></:sub_content>
+        <:status>{let (word, tone) = crate::web::admin::fleet_state(&failure.state);}<Pill text={word} tone={tone} /></:status>
+      </Row>
     }}</Rows>
     {if !next_page.is_empty() { <LinkMore href={crate::web::admin::admin_url(slug, "failures", "page", next_page)} label="Next failures" /> }}
   </Section>
@@ -87,7 +115,9 @@ props crate::web::admin::AdminPage<'_> { slug, csrf, manages, tab, hosts, select
   <Section id="events" title="Recent events" count={Some(events.len())}>
     {if events.is_empty() && error.is_empty() { <EmptyState text="No recent events." /> }}
     <Rows>{for event in events {
-      <Row name={&event.event_type} sub="{event.resource_id} · {event.occurred_at}" icon_name="clock" tone="blue" />
+      <Row name={crate::web::admin::fleet_event(&event.event_type)} sub="" icon_name="clock" tone="blue">
+        <:sub_content><ShortId text={&event.resource_id} label="the resource identifier" /> · <RelativeTime value={&event.occurred_at} now={*now} /></:sub_content>
+      </Row>
     }}</Rows>
     {if !next_page.is_empty() { <LinkMore href={crate::web::admin::admin_url(slug, "events", "page", next_page)} label="Earlier events" /> }}
   </Section>
@@ -95,7 +125,7 @@ props crate::web::admin::AdminPage<'_> { slug, csrf, manages, tab, hosts, select
   <Panel id="hosted-access" title="Hosted machine access">
     <Form action="/{slug}/admin" method={Some("get")}><HiddenField name="tab" value="organisations" /><Field name="organisation" label="Organisation slug" value={organisation} autocomplete="off" required /><Actions><Button label="Find organisation" kind="secondary" /></Actions></Form>
     {if let Some(enabled) = entitlement {
-      <Rows><Row name={organisation} sub={if *enabled { "Hosted machines enabled" } else { "Hosted machines disabled" }} icon_name="users" tone={if *enabled { "ok" } else { "muted" }} /></Rows>
+      <Rows><Row name={organisation} sub="Hosted machines" icon_name="users" tone={if *enabled { "ok" } else { "muted" }}><:status><Pill text={if *enabled { "Enabled" } else { "Disabled" }} tone={if *enabled { "ok" } else { "muted" }} /></:status></Row></Rows>
       {if *manages {
         <PostButton action="/{slug}/admin/organisations/entitlement" csrf={csrf} label={if *enabled { "Revoke hosted access" } else { "Grant hosted access" }} kind={if *enabled { "danger" } else { "secondary" }} hidden={&[("organisation", organisation), ("action", if *enabled { "revoke" } else { "grant" })]} />
       }}
@@ -104,7 +134,9 @@ props crate::web::admin::AdminPage<'_> { slug, csrf, manages, tab, hosts, select
   <Section id="all-organisations" title="Organisations" count={Some(organisations.len())}>
     {if organisations.is_empty() && error.is_empty() { <EmptyState text="No organisations." /> }}
     <Rows>{for item in organisations {
-      <Row name={&item.slug} sub={if item.enabled { "Hosted machines enabled" } else { "Hosted machines disabled" }} icon_name="users" tone={if item.enabled { "ok" } else { "muted" }} href={crate::web::admin::admin_url(slug, "organisations", "organisation", &item.slug)} />
+      <Row name={&item.slug} sub="Hosted machines" icon_name="users" tone={if item.enabled { "ok" } else { "muted" }} href={crate::web::admin::admin_url(slug, "organisations", "organisation", &item.slug)}>
+        <:status><Pill text={if item.enabled { "Enabled" } else { "Disabled" }} tone={if item.enabled { "ok" } else { "muted" }} /></:status>
+      </Row>
     }}</Rows>
   </Section>
 }}

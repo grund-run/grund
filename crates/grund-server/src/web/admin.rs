@@ -5,6 +5,7 @@ use axum::{
     extract::{Path, Query, State as AxumState},
     http::Uri,
 };
+use chrono::{DateTime, Utc};
 use grund_store::{machines, operator as operator_store, organisations::Membership};
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -24,6 +25,8 @@ use crate::{
 pub struct AdminQuery {
     #[serde(default)]
     tab: String,
+    #[serde(default)]
+    host_filter: String,
     #[serde(default)]
     host: String,
     #[serde(default)]
@@ -144,10 +147,45 @@ pub struct Lease {
     pub end: &'static str,
 }
 
+pub fn fleet_state(state: &str) -> (&str, &str) {
+    match state {
+        "ready" => ("Ready", "ok"),
+        "retired" => ("Retired", "muted"),
+        "booted" => ("Running", "ok"),
+        "cordoned" => ("Cordoned", "orange"),
+        "draining" => ("Draining", "orange"),
+        "maintenance" => ("Maintenance", "orange"),
+        "failed" => ("Failed", "danger"),
+        "pending" => ("Pending", "blue"),
+        "provisioning" => ("Provisioning", "blue"),
+        "stopped" => ("Stopped", "muted"),
+        _ => ("Unknown", "muted"),
+    }
+}
+
+pub fn fleet_event(event_type: &str) -> String {
+    let (resource, action) = event_type.split_once('.').unwrap_or(("", event_type));
+    let resource = resource.strip_prefix("fleet-").unwrap_or(resource);
+    let action = if action == "booted" {
+        "running"
+    } else {
+        action
+    };
+    let words = format!("{} {}", resource, action.replace('_', " "));
+    let mut chars = words.trim().chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
+}
+
 pub struct AdminPage<'a> {
     pub slug: &'a str,
     pub csrf: &'a str,
     pub manages: bool,
+    pub host_filter: &'a str,
+    pub host_counts: Vec<(String, usize)>,
+    pub retired_count: usize,
+    pub now: DateTime<Utc>,
     pub tab: &'a str,
     pub hosts: Vec<Host>,
     pub selected_host: Option<usize>,
@@ -159,7 +197,6 @@ pub struct AdminPage<'a> {
     pub organisations: Vec<operator_store::HostedOrganisation>,
     pub available: usize,
     pub leased: usize,
-    pub host_page: &'a str,
     pub next_page: String,
     pub next_machines_page: String,
     pub organisation: &'a str,
@@ -256,20 +293,52 @@ pub async fn admin_page(
     let mut next_machines_page = String::new();
     let mut entitlement = None;
     let mut selected_host = None;
+    let host_filter = if query.host_filter == "retired" {
+        "retired"
+    } else {
+        "active"
+    };
+    let mut host_counts: Vec<(String, usize)> = vec![];
+    let mut retired_count = 0;
+    let now = Utc::now();
     match tab {
         "hosts" => {
-            match inventory
-                .list("ListInventoryHosts", 50, &query.page, "")
-                .await
-            {
-                Ok(value) => match rows(value, "hosts") {
-                    Ok((list, next)) => {
-                        hosts = list;
-                        next_page = next;
+            let mut token = String::new();
+            loop {
+                let value = match inventory.list("ListInventoryHosts", 100, &token, "").await {
+                    Ok(value) => value,
+                    Err(err) => {
+                        error = inventory_error(err);
+                        break;
                     }
-                    Err(()) => error = inventory_error("invalid hosts response"),
-                },
-                Err(err) => error = inventory_error(err),
+                };
+                match rows(value, "hosts") {
+                    Ok((list, next)) => {
+                        hosts.extend(list);
+                        if next.is_empty() {
+                            break;
+                        }
+                        token = next;
+                    }
+                    Err(()) => {
+                        error = inventory_error("invalid hosts response");
+                        break;
+                    }
+                }
+            }
+            hosts.sort_by_key(|host| host.state == "retired");
+            for host in &hosts {
+                if host.state == "retired" {
+                    retired_count += 1;
+                }
+                if let Some((_, count)) = host_counts
+                    .iter_mut()
+                    .find(|(state, _)| *state == host.state)
+                {
+                    *count += 1;
+                } else {
+                    host_counts.push((host.state.clone(), 1));
+                }
             }
             if let Some((index, host)) = hosts
                 .iter()
@@ -326,10 +395,7 @@ pub async fn admin_page(
                     lessee: row
                         .lessee_slug
                         .unwrap_or_else(|| "Unknown organisation".to_owned()),
-                    since: row.leased_at.map_or_else(
-                        || "Unknown".to_owned(),
-                        |at| at.format("%-d %b %Y %H:%M UTC").to_string(),
-                    ),
+                    since: row.leased_at.map_or_else(String::new, |at| at.to_rfc3339()),
                     end: "when removed",
                 })
                 .collect();
@@ -409,6 +475,10 @@ pub async fn admin_page(
                 slug: &member.membership.slug,
                 csrf,
                 manages: manages(&member.membership),
+                host_filter,
+                host_counts,
+                retired_count,
+                now,
                 tab,
                 selected_host,
                 hosts,
@@ -420,7 +490,6 @@ pub async fn admin_page(
                 organisations,
                 available,
                 leased,
-                host_page: &query.page,
                 next_page,
                 next_machines_page,
                 organisation: query.organisation.trim(),

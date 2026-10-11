@@ -112,18 +112,6 @@ fn capitalise(text: &str) -> String {
         .unwrap_or_default()
 }
 
-fn ago(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
-    let seconds = (now - at).num_seconds().max(0);
-    let (n, unit) = match seconds {
-        0..60 => return "just now".into(),
-        60..3_600 => (seconds / 60, "minute"),
-        3_600..86_400 => (seconds / 3_600, "hour"),
-        86_400..2_592_000 => (seconds / 86_400, "day"),
-        _ => return at.format("%-d %b %Y").to_string(),
-    };
-    format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" })
-}
-
 struct Health {
     word: &'static str,
     tone: &'static str,
@@ -371,7 +359,7 @@ fn release_view(row: &ReleaseRow, current: Option<i32>, now: DateTime<Utc>) -> R
         verb: words.verb,
         source: words.source,
         at: when(row.created_at),
-        ago: ago(row.created_at, now),
+        ago: super::time::ago(row.created_at, now),
         iso: row.created_at.to_rfc3339(),
         note: row.note.clone(),
         outcome,
@@ -2962,23 +2950,6 @@ pub async fn delete(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_time_reads_as_how_long_ago_it_was_then_as_a_date() {
-        let now = DateTime::parse_from_rfc3339("2026-10-06T12:00:00Z")
-            .expect("a time")
-            .with_timezone(&Utc);
-        for (seconds, words) in [
-            (5, "just now"),
-            (60, "1 minute ago"),
-            (7_200, "2 hours ago"),
-            (86_400, "1 day ago"),
-            (3 * 86_400, "3 days ago"),
-            (40 * 86_400, "27 Aug 2026"),
-        ] {
-            assert_eq!(ago(now - chrono::Duration::seconds(seconds), now), words);
-        }
-    }
 
     #[test]
     fn settings_lists_what_is_set_in_order_and_offers_the_rest() {

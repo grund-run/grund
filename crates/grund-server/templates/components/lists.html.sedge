@@ -1,15 +1,15 @@
-use crate::templates::compiled::components::{CopyButton, External, Icon, IconFact, ImageIcon, Mark, Pill, Status, Tag};
+use crate::templates::compiled::components::{CopyButton, External, Icon, IconFact, ImageIcon, Mark, Pill, ShortId, Status, Tag};
 
 component Rows(children: Html) {
   <ul class="rows">{children}</ul>
 }
 
-component Row(name: &str, sub: &str, icon_name: &str, tone: &str, letter: &str, href: &str, tags: &[&str], detail: &str, status_text: Option<&str>, status_tone: &str, plain: bool, status: Option<Html>, end: Option<Html>, status_active: Option<bool>, end_active: Option<bool>) {
+component Row(name: &str, sub: &str, icon_name: &str, tone: &str, letter: &str, href: &str, tags: &[&str], detail: &str, status_text: Option<&str>, status_tone: &str, plain: bool, status: Option<Html>, end: Option<Html>, status_active: Option<bool>, end_active: Option<bool>, name_id: bool, sub_content: Option<Html>) {
   <li class={if *plain { "row row-plain" } else { "row" }}>
     {if !*plain {
       <span class="row-icon">{if !letter.is_empty() { <Mark name={letter} size="lg" /> } else { <Icon name={icon_name} class="icon-lg tone-{tone}" /> }}</span>
     }}
-    <div><p class="row-name">{if !href.is_empty() { <a href={href}>{name}</a> } else { {name} }}{for text in tags.iter() { {" "}<span class="tag">{text}</span> }}</p><p class="row-sub">{sub}{if !detail.is_empty() { <br>{detail} }}</p></div>
+    <div><p class="row-name">{if *name_id { <ShortId text={name} label="the identifier" /> } else if !href.is_empty() { <a href={href}>{name}</a> } else { {name} }}{for text in tags.iter() { {" "}<span class="tag">{text}</span> }}</p><p class="row-sub">{if let Some(content) = sub_content { {content} } else { {sub} }}{if !detail.is_empty() { <br>{detail} }}</p></div>
     {if !*plain {
       {if let Some(text) = status_text { <Status text={text} tone={status_tone} /> } else if status_active.unwrap_or(true) { {if let Some(status) = status { {status} } else { <span></span> }} } else { <span></span> }}
     }}

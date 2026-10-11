@@ -387,6 +387,49 @@ async fn only_the_operator_can_grant_hosted_access_to_a_customer() -> anyhow::Re
 }
 
 #[tokio::test]
+async fn operator_hosts_hide_retired_inventory_without_losing_state_counts() -> anyhow::Result<()> {
+    use crate::accepttest::fixtures::{CAPACITY_TOKEN, FakeCapacity};
+
+    let capacity = FakeCapacity::start().await?;
+    capacity.set_inventory_hosts(vec![
+        json!({"id":"old-1","name":"retired-one","state":"retired"}),
+        json!({"id":"old-2","name":"retired-two","state":"retired"}),
+        json!({"id":"live-1","name":"live-host","state":"ready",
+            "vcpus":4,"allocatedVcpus":2,"memoryMib":"4096","allocatedMemoryMib":"2048",
+            "diskGib":"20","allocatedDiskGib":"8","machineCount":2}),
+    ]);
+    let operator = format!("ops-{}", random_hex(4));
+    let Some((given, when, then)) = testcase_configured(&[
+        ("GRUND_OPERATOR_ORGANISATION", &operator),
+        ("GRUND_CAPACITY_URL", &capacity.url),
+        ("GRUND_CAPACITY_TOKEN", CAPACITY_TOKEN),
+    ])
+    .await?
+    else {
+        return Ok(());
+    };
+    given.a_signed_in_account_named(&operator).await?;
+
+    when.visiting(&format!("/{operator}/admin")).await?;
+    then.status(200)?
+        .body_contains("live-host")?
+        .body_contains("2 used / 2 free vCPU")?
+        .body_contains("2048 used / 2048 free MiB RAM")?
+        .body_contains("Retired")?
+        .body_lacks("retired-one")?
+        .body_lacks("retired-two")?;
+    anyhow::ensure!(capacity.calls("ListInventoryHosts").len() == 2);
+
+    when.visiting(&format!("/{operator}/admin?host_filter=retired"))
+        .await?;
+    then.status(200)?
+        .body_contains("retired-one")?
+        .body_contains("retired-two")?
+        .body_lacks("live-host")?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn entitled_customer_orders_and_removes_an_opaque_machine_without_cross_organisation_access()
 -> anyhow::Result<()> {
     use crate::accepttest::fixtures::{CAPACITY_TOKEN, FakeCapacity};

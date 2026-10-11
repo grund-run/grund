@@ -73,6 +73,14 @@ pub(crate) fn short_image(reference: &str) -> String {
     }
 }
 
+pub(crate) fn short_id(value: &str) -> &str {
+    let id = ["fleet-host-", "fleet-machine-", "fleet-pool-"]
+        .iter()
+        .find_map(|prefix| value.strip_prefix(prefix))
+        .unwrap_or(value);
+    id.get(..8).unwrap_or(id)
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
