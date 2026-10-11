@@ -292,6 +292,39 @@ impl Pool {
         Ok(connection)
     }
 
+    /// Stops reusing an unanswered connection without closing its accepted streams.
+    /// A concurrent replacement is left alone.
+    pub fn discard(&self, machine: &Arc<Machine>, connection: &Connection) {
+        let id = connection.stable_id();
+        if let Ok(mut slot) = machine.connection.try_lock() {
+            if slot
+                .as_ref()
+                .is_some_and(|(cached, _)| cached.stable_id() == id)
+            {
+                slot.take();
+            }
+        } else {
+            let machine = machine.clone();
+            tokio::spawn(async move {
+                let mut slot = machine.connection.lock().await;
+                if slot
+                    .as_ref()
+                    .is_some_and(|(cached, _)| cached.stable_id() == id)
+                {
+                    slot.take();
+                }
+            });
+        }
+    }
+
+    /// A whole-attempt deadline may interrupt the handshake before it can
+    /// report which pooled connection failed. Drop only the reusable slot.
+    pub fn discard_current(&self, machine: &Machine) {
+        if let Ok(mut slot) = machine.connection.try_lock() {
+            slot.take();
+        }
+    }
+
     fn addr(machine: &Machine) -> EndpointAddr {
         let mut addr = EndpointAddr::new(machine.endpoint_id);
         for relay in machine.relays.lock().expect("machine lock").iter() {

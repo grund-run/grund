@@ -324,6 +324,7 @@ pub async fn connection(edge: Arc<Edge>, mut tcp: TcpStream, peer: SocketAddr) {
             }
             Ok(Err(outcome)) => outcome,
             Err(_) => {
+                edge.pool.discard_current(&machine);
                 machine.eject(&name);
                 "stalled"
             }
@@ -360,10 +361,12 @@ async fn hand_over(
         }
     };
     let Ok((mut send, mut recv)) = Pool::open(&connection).await else {
+        pool.discard(machine, &connection);
         machine.eject_all();
         return Err("stream_failed");
     };
     if send.write_all(header).await.is_err() {
+        pool.discard(machine, &connection);
         machine.eject_all();
         return Err("header_failed");
     }
@@ -384,6 +387,7 @@ async fn hand_over(
         }
         _ => {
             tracing::debug!(machine = %machine.endpoint_id, %name, "edge: the gate did not answer in time");
+            pool.discard(machine, &connection);
             machine.eject(name);
             Err("answer_failed")
         }
