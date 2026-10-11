@@ -976,8 +976,6 @@ async fn an_unanswering_gate_is_ejected_before_it_can_receive_client_bytes() -> 
         .as_str();
     a.child.kill()?;
     a.child.wait()?;
-    // Start the stand-in before the edge: this test is about a gate that
-    // never answers, not how iroh redials a previously connected endpoint.
     let gate = unanswering_gate(&a).await?;
     stack.start_edge()?;
     stack.served(&name, Duration::from_secs(60)).await?;
