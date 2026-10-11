@@ -8,6 +8,7 @@
 
 use std::{
     collections::HashMap,
+    ops::Deref,
     str::FromStr,
     sync::{
         Arc, Mutex,
@@ -51,12 +52,33 @@ struct Ejection {
     next: Duration,
 }
 
+/// A retired connection closes only after every hand-over using it has
+/// finished, including accepted streams that are already carrying client data.
+#[derive(Debug)]
+pub struct Session {
+    connection: Connection,
+}
+
+impl Deref for Session {
+    type Target = Connection;
+
+    fn deref(&self) -> &Connection {
+        &self.connection
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        self.connection.close(0u32.into(), b"retired");
+    }
+}
+
 /// One machine.
 #[derive(Debug)]
 pub struct Machine {
     pub endpoint_id: EndpointId,
     relays: Mutex<Vec<RelayUrl>>,
-    connection: tokio::sync::Mutex<Option<(Connection, u64)>>,
+    connection: tokio::sync::Mutex<Option<(Arc<Session>, u64)>>,
     pub streams: AtomicUsize,
     ready: AtomicU32,
     ejected: Mutex<HashMap<String, Ejection>>,
@@ -270,7 +292,7 @@ impl Pool {
     }
 
     /// The open connection to `machine`, opened now if there is none.
-    pub async fn connection(&self, machine: &Arc<Machine>) -> anyhow::Result<Connection> {
+    pub async fn connection(&self, machine: &Arc<Machine>) -> anyhow::Result<Arc<Session>> {
         let mut slot = machine.connection.lock().await;
         *machine.last_used.lock().expect("machine lock") = Instant::now();
         let (endpoint, generation) = self.endpoint.lock().expect("pool lock").clone();
@@ -287,29 +309,30 @@ impl Pool {
         .await
         .map_err(|_| anyhow::anyhow!("no connection within {} s", CONNECT_TIMEOUT.as_secs()))?
         .map_err(|e| anyhow::anyhow!("connect: {e}"))?;
-        *slot = Some((connection.clone(), generation));
-        self.watch(machine.clone(), connection.clone());
-        Ok(connection)
+        let session = Arc::new(Session { connection });
+        self.watch(machine.clone(), session.connection.clone());
+        *slot = Some((session.clone(), generation));
+        Ok(session)
     }
 
     /// Stops reusing an unanswered connection without closing its accepted streams.
     /// A concurrent replacement is left alone.
-    pub fn discard(&self, machine: &Arc<Machine>, connection: &Connection) {
-        let id = connection.stable_id();
+    pub fn discard(&self, machine: &Arc<Machine>, connection: &Arc<Session>) {
         if let Ok(mut slot) = machine.connection.try_lock() {
             if slot
                 .as_ref()
-                .is_some_and(|(cached, _)| cached.stable_id() == id)
+                .is_some_and(|(cached, _)| Arc::ptr_eq(cached, connection))
             {
                 slot.take();
             }
         } else {
             let machine = machine.clone();
+            let connection = connection.clone();
             tokio::spawn(async move {
                 let mut slot = machine.connection.lock().await;
                 if slot
                     .as_ref()
-                    .is_some_and(|(cached, _)| cached.stable_id() == id)
+                    .is_some_and(|(cached, _)| Arc::ptr_eq(cached, &connection))
                 {
                     slot.take();
                 }
@@ -380,10 +403,11 @@ impl Pool {
             )
             .await;
             if let Ok(Ok(connection)) = dialed {
-                *slot = Some((connection.clone(), generation));
+                let session = Arc::new(Session { connection });
+                self.watch(machine.clone(), session.connection.clone());
+                *slot = Some((session, generation));
                 machine.back();
                 tracing::info!(machine = %machine.endpoint_id, after_ms = lost.elapsed().as_millis() as u64, "edge: a machine answers again");
-                self.watch(machine.clone(), connection);
                 return;
             }
         }
@@ -468,9 +492,7 @@ impl Pool {
             let idle = machine.last_used.lock().expect("machine lock").elapsed() >= IDLE;
             if idle && machine.streams.load(Relaxed) == 0 {
                 let mut slot = machine.connection.lock().await;
-                if let Some((connection, _)) = slot.take() {
-                    connection.close(0u32.into(), b"idle");
-                }
+                slot.take();
             }
         }
     }

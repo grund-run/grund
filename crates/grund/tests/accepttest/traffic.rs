@@ -1488,6 +1488,101 @@ async fn an_agent_restarted_under_load_costs_no_request_and_the_edge_redials_it_
     Ok(())
 }
 
+async fn same_key_restart(hold_stream: bool) -> anyhow::Result<()> {
+    let Some(mut stack) = a_stack().await? else {
+        return Ok(());
+    };
+    let owner = stack.given.a_signed_in_account().await?;
+    let org = owner.username.clone();
+    let mut agent = stack.a_machine(&org, "box-a").await?;
+    stack.deploy(&org, "abrupt-restart", "1", 1).await?;
+    let running = stack
+        .until(
+            &org,
+            "abrupt-restart",
+            Duration::from_secs(40),
+            "one ready copy",
+            |app| {
+                running_replicas(app).len() == 1 && app["replicas"][0]["observed"]["ready"] == true
+            },
+        )
+        .await?;
+    let copies = running_replicas(&running);
+    write_remote_copies(&[("box-a", &agent)], "abrupt-restart", &copies);
+    stack.start_edge()?;
+    let name = stack.name_of(&org, "abrupt-restart");
+    stack.served(&name, Duration::from_secs(60)).await?;
+    let held = if hold_stream {
+        let mut held = stack.connect(&name).await?;
+        let slow = held.get(&name, "/?wait=6500", &[]).await?;
+        anyhow::ensure!(
+            slow.status == 200 && slow.header("x-replica") == Some(copies[0].0.as_str()),
+            "the live machine lost a slow accepted request: {}",
+            slow.status
+        );
+        anyhow::ensure!(
+            !held.closed,
+            "the slow response closed the long-lived stream"
+        );
+        Some(held)
+    } else {
+        None
+    };
+
+    let taking_before = agent.log().matches("gate: taking entry streams").count();
+    agent.child.kill()?;
+    agent.child.wait()?;
+    agent.start()?;
+    anyhow::ensure!(
+        appears(Duration::from_secs(30), taking_before, || {
+            agent.log().matches("gate: taking entry streams").count()
+        })
+        .await
+        .is_some(),
+        "restarted agent did not bring up its gate:\n{}",
+        agent.log()
+    );
+
+    let started = Instant::now();
+    let budget = if held.is_some() {
+        Duration::from_secs(6)
+    } else {
+        Duration::from_secs(5)
+    };
+    let mut last_error = None;
+    while started.elapsed() < budget {
+        match new_failover_connection(&stack, &name, &copies[0].0, Duration::from_secs(2)).await {
+            Ok(_) if started.elapsed() <= budget => {
+                eprintln!(
+                    "abrupt same-key restart served after {:?}",
+                    started.elapsed()
+                );
+                return Ok(());
+            }
+            Ok(_) => break,
+            Err(error) => last_error = Some(error),
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    anyhow::bail!(
+        "same-key agent restarted, but edge did not serve it within {budget:?}: {last_error:?}\nedge:\n{}\nagent:\n{}",
+        stack.edge_log(),
+        agent.log()
+    )
+}
+
+#[tokio::test]
+async fn a_killed_agent_restarting_on_a_new_port_is_reached_by_the_same_edge() -> anyhow::Result<()>
+{
+    same_key_restart(false).await
+}
+
+#[tokio::test]
+async fn a_killed_agent_restarting_with_an_old_stream_open_is_reached_by_the_same_edge()
+-> anyhow::Result<()> {
+    same_key_restart(true).await
+}
+
 #[tokio::test]
 async fn an_edge_stopped_under_load_finishes_every_request_it_took() -> anyhow::Result<()> {
     let Some(mut stack) = a_stack().await? else {

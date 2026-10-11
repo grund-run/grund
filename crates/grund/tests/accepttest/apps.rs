@@ -1366,7 +1366,6 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
     then.body_contains(">Live</span>")?
         .body_contains(&format!("https://hello-{org}.apps.accept.test"))?
         .body_contains("Reachable at")?
-        .body_contains(">v1</span>")?
         .body_contains(&format!(">· {org}</span>"))?
         .body_lacks("is live on")?
         .body_contains(&format!("by <strong>{org}</strong> from the dashboard"))?

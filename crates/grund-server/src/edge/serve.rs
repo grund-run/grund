@@ -35,7 +35,7 @@ use tokio::{
 };
 
 use super::{
-    machines::{Machine, Pool},
+    machines::{Machine, Pool, Session},
     routes::Routes,
 };
 
@@ -304,7 +304,7 @@ pub async fn connection(edge: Arc<Edge>, mut tcp: TcpStream, peer: SocketAddr) {
         )
         .await;
         let outcome = match attempt {
-            Ok(Ok((send, recv, relayed))) => {
+            Ok(Ok((send, recv, relayed, _session))) => {
                 tracing::event!(
                     tracing::Level::INFO,
                     copy_index = index,
@@ -351,7 +351,15 @@ async fn hand_over(
     machine: &Arc<Machine>,
     name: &str,
     header: &[u8],
-) -> Result<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream, bool), &'static str> {
+) -> Result<
+    (
+        iroh::endpoint::SendStream,
+        iroh::endpoint::RecvStream,
+        bool,
+        Arc<Session>,
+    ),
+    &'static str,
+> {
     let connection = match pool.connection(machine).await {
         Ok(connection) => connection,
         Err(error) => {
@@ -378,7 +386,7 @@ async fn hand_over(
     match answer {
         Ok(Ok(grund_entry::Answer::Accept { ready })) => {
             machine.accepted(name, ready);
-            Ok((send, recv, Machine::relayed(&connection)))
+            Ok((send, recv, Machine::relayed(&connection), connection))
         }
         Ok(Ok(refusal)) => {
             tracing::debug!(machine = %machine.endpoint_id, %name, answer = refusal.word(), "edge: the gate refused");

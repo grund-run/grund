@@ -435,8 +435,8 @@ impl Binder {
                     None => grund_net::endpoint::Bind::Uplinks(0),
                 },
                 relay_roots: self.relay_roots.clone(),
-                path_idle: Duration::from_secs(15),
-                path_keepalive: Duration::from_secs(5),
+                path_idle: Duration::from_secs(5),
+                path_keepalive: Duration::from_secs(1),
             },
             Vec::new(),
         )
