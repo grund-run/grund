@@ -7,6 +7,7 @@ use axum::{
     extract::{ConnectInfo, FromRequestParts},
     http::{HeaderMap, HeaderValue, header, request::Parts},
 };
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use uuid::Uuid;
 
 use crate::{
@@ -82,41 +83,63 @@ pub struct Browser {
     same_origin: bool,
     jar: CookieJar,
     csrf_key: [u8; 32],
+    csrf_mask: [u8; 32],
 }
 
 impl Browser {
-    /// The token every form on the page must carry: bound to the session when
-    /// there is one, else to this browser's CSRF cookie.
+    /// The masked token every form on the page carries. The mask is fresh for
+    /// each browser request and shared by all forms rendered in that response.
     pub fn csrf_token(&self) -> String {
+        let digest = self.csrf_digest();
+        let mut masked = [0u8; 64];
+        masked[..32].copy_from_slice(&self.csrf_mask);
+        for (byte, (mask, digest)) in masked[32..]
+            .iter_mut()
+            .zip(self.csrf_mask.iter().zip(digest.iter()))
+        {
+            *byte = mask ^ digest;
+        }
+        URL_SAFE_NO_PAD.encode(masked)
+    }
+
+    fn csrf_digest(&self) -> [u8; 32] {
         match &self.session {
-            Some(session) => crypto::encode(&crypto::hmac(
-                &self.csrf_key,
-                &[b"session", session.session_id.as_bytes()],
-            )),
+            Some(session) => {
+                crypto::hmac(&self.csrf_key, &[b"session", session.session_id.as_bytes()])
+            }
             None => {
                 let nonce = self
                     .csrf_nonce
                     .as_deref()
                     .or(self.fresh_nonce.as_deref())
                     .unwrap_or_default();
-                crypto::encode(&crypto::hmac(
-                    &self.csrf_key,
-                    &[b"anonymous", nonce.as_bytes()],
-                ))
+                crypto::hmac(&self.csrf_key, &[b"anonymous", nonce.as_bytes()])
             }
         }
     }
 
-    /// Whether a submitted form may act: it came from this origin and carries
-    /// the right token. A fresh nonce (no cookie arrived) never validates.
+    /// Whether a submitted form came from this origin with a valid token.
+    /// A fresh nonce (no cookie arrived) never validates.
     pub fn form_is_genuine(&self, submitted: &str) -> bool {
-        if !self.same_origin {
+        if !self.same_origin || (self.session.is_none() && self.csrf_nonce.is_none()) {
             return false;
         }
-        if self.session.is_none() && self.csrf_nonce.is_none() {
+        if submitted.len() != 86 {
             return false;
         }
-        crypto::constant_time_eq(self.csrf_token().as_bytes(), submitted.as_bytes())
+        let mut masked = [0u8; 64];
+        if URL_SAFE_NO_PAD.decode_slice(submitted, &mut masked).ok() != Some(64) {
+            return false;
+        }
+        let digest = self.csrf_digest();
+        let mut unmasked = [0u8; 32];
+        for (byte, (mask, value)) in unmasked
+            .iter_mut()
+            .zip(masked[..32].iter().zip(masked[32..].iter()))
+        {
+            *byte = mask ^ value;
+        }
+        crypto::constant_time_eq(&unmasked, &digest)
     }
 
     /// Cookies this response must set: a CSRF nonce when the browser had none.
@@ -187,6 +210,8 @@ impl FromRequestParts<State> for Browser {
             None => None,
         };
         let fresh_nonce = (session.is_none() && csrf_nonce.is_none()).then(crypto::random_token);
+        let mut csrf_mask = [0u8; 32];
+        getrandom::fill(&mut csrf_mask).expect("the operating system provides randomness");
 
         Ok(Browser {
             request_id,
@@ -200,6 +225,7 @@ impl FromRequestParts<State> for Browser {
             same_origin: same_origin(&parts.headers, &origin),
             jar,
             csrf_key: state.secret.derive("csrf"),
+            csrf_mask,
         })
     }
 }
@@ -332,5 +358,75 @@ mod tests {
         let h = headers(&[("cookie", "a=1; grund_session=abc"), ("cookie", "b=2")]);
         assert_eq!(cookie(&h, "grund_session").as_deref(), Some("abc"));
         assert_eq!(cookie(&h, "missing"), None);
+    }
+    fn anonymous_browser() -> Browser {
+        Browser {
+            request_id: Uuid::now_v7(),
+            request_started: Instant::now(),
+            address: String::new(),
+            user_agent: String::new(),
+            session_token: None,
+            session: None,
+            csrf_nonce: Some(crypto::random_token()),
+            fresh_nonce: None,
+            same_origin: true,
+            jar: CookieJar { secure: false },
+            csrf_key: [9; 32],
+            csrf_mask: [4; 32],
+        }
+    }
+
+    #[test]
+    fn masked_forms_are_stable_within_a_page_and_independent_between_requests() {
+        let browser = anonymous_browser();
+        let first = browser.csrf_token();
+        assert_eq!(first, browser.csrf_token());
+        assert!(browser.form_is_genuine(&first));
+        let mut next_response = browser.clone();
+        next_response.csrf_mask = [5; 32];
+        let second = next_response.csrf_token();
+        assert_ne!(first, second);
+        assert!(browser.form_is_genuine(&second));
+    }
+
+    #[test]
+    fn malformed_cross_site_and_unbound_tokens_cannot_submit_a_form() {
+        let browser = anonymous_browser();
+        let token = browser.csrf_token();
+        for wrong in [
+            String::new(),
+            crypto::encode(&browser.csrf_digest()),
+            format!("{token}x"),
+            "x".repeat(86),
+        ] {
+            assert!(!browser.form_is_genuine(&wrong), "{wrong}");
+        }
+        let mut altered = token.into_bytes();
+        altered[0] = if altered[0] == b'A' { b'B' } else { b'A' };
+        assert!(!browser.form_is_genuine(std::str::from_utf8(&altered).unwrap()));
+        let mut cross_site = browser.clone();
+        cross_site.same_origin = false;
+        assert!(!cross_site.form_is_genuine(&browser.csrf_token()));
+        let mut without_cookie = browser.clone();
+        without_cookie.csrf_nonce = None;
+        without_cookie.fresh_nonce = Some(crypto::random_token());
+        assert!(!without_cookie.form_is_genuine(&browser.csrf_token()));
+        let mut different_cookie = browser.clone();
+        different_cookie.csrf_nonce = Some(crypto::random_token());
+        assert!(!different_cookie.form_is_genuine(&browser.csrf_token()));
+    }
+
+    #[test]
+    fn a_session_rotates_the_csrf_binding_without_accepting_the_old_token() {
+        let mut browser = anonymous_browser();
+        browser.session = Some(Session {
+            session_id: Uuid::now_v7(),
+            account_id: Uuid::now_v7(),
+        });
+        let token = browser.csrf_token();
+        assert!(browser.form_is_genuine(&token));
+        browser.session.as_mut().unwrap().session_id = Uuid::now_v7();
+        assert!(!browser.form_is_genuine(&token));
+        assert!(browser.form_is_genuine(&browser.csrf_token()));
     }
 }

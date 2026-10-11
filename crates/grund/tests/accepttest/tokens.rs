@@ -10,7 +10,8 @@ async fn a_token(when: &When, then: &Then, org: &str, name: &str) -> anyhow::Res
     when.submitting(&page, &page, &[("name", name), ("days", "30")])
         .await?;
     then.status(200)?
-        .header("cache-control", "no-store")?
+        .header_contains("cache-control", "no-store")?
+        .header_contains("cache-control", "no-transform")?
         .body_contains("the only time grund shows it")?;
     let html = then.body()?;
     let start = html

@@ -52,7 +52,7 @@ thiserror = "2"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = "0.7"
 tower = { version = "0.5", default-features = false, features = ["util"] }
-tower-http = { version = "0.7", features = ["catch-panic", "limit", "set-header", "timeout", "trace"] }
+tower-http = { version = "0.7", default-features = false, features = ["catch-panic", "compression-gzip", "limit", "set-header", "timeout", "trace"] }
 tracing = "0.1"
 tracing-opentelemetry = { version = "=0.34.0", default-features = false }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }

@@ -788,6 +788,7 @@ pub async fn add(
             "grund could not make a setup code. Try again.".into()
         }
     };
+    let minted = setup.is_some();
     let status = if add_error.is_empty() {
         StatusCode::OK
     } else {
@@ -822,10 +823,9 @@ pub async fn add(
         },
     )
     .await?;
-    response.headers_mut().insert(
-        axum::http::header::CACHE_CONTROL,
-        axum::http::HeaderValue::from_static("no-store"),
-    );
+    if minted {
+        response = crate::web::pages::no_transform(response);
+    }
     Ok(response)
 }
 

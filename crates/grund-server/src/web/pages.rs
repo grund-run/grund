@@ -245,6 +245,15 @@ pub fn with_referrer_same_origin(mut response: Response) -> Response {
     response
 }
 
+/// Keeps a response with a one-time or reflected secret out of HTTP compression.
+pub fn no_transform(mut response: Response) -> Response {
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store, no-transform"),
+    );
+    response
+}
+
 pub fn message(
     _state: &State,
     browser: &Browser,
@@ -792,7 +801,7 @@ fn owner_page(
             errors,
         }),
     )?;
-    Ok(with_referrer_same_origin(response))
+    Ok(no_transform(with_referrer_same_origin(response)))
 }
 
 fn owner_link_expired(state: &State, browser: &Browser) -> PageResult {
@@ -888,7 +897,7 @@ pub async fn verify_form(
             valid,
         }),
     )?;
-    Ok(with_referrer_same_origin(response))
+    Ok(no_transform(with_referrer_same_origin(response)))
 }
 
 #[derive(Deserialize)]
@@ -938,6 +947,7 @@ fn verify_page(browser: &Browser, status: StatusCode, token: &str, valid: bool) 
             valid,
         }),
     )
+    .map(no_transform)
 }
 
 pub async fn reset_form(AxumState(_state): AxumState<State>, browser: Browser) -> PageResult {
@@ -1028,6 +1038,7 @@ fn reset_confirmation(
             password_error,
         }),
     )
+    .map(no_transform)
 }
 
 pub async fn reset_confirm(

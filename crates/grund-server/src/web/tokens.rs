@@ -156,6 +156,7 @@ async fn tokens_view(
         "deploy"
     };
     let origin = state.config.public_origin().serialized;
+    let shows_secret = form.minted.is_some();
     let minted = form.minted.map(|m| {
         let example = format!(
             "GRUND_INSTANCE={origin} GRUND_TOKEN=<the token> grund apps deploy APP -f grund.yaml --json"
@@ -167,7 +168,7 @@ async fn tokens_view(
             example,
         }
     });
-    super::pages::signed_in_typed(
+    let response = super::pages::signed_in_typed(
         state,
         browser,
         session,
@@ -195,7 +196,12 @@ async fn tokens_view(
             })
         },
     )
-    .await
+    .await?;
+    Ok(if shows_secret {
+        super::pages::no_transform(response)
+    } else {
+        response
+    })
 }
 
 #[derive(Deserialize)]

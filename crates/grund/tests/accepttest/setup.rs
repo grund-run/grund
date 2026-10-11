@@ -65,7 +65,8 @@ async fn a_setup_link_creates_the_signed_in_owner_and_sends_no_mail() -> anyhow:
     when.visiting(&link).await?;
     then.status(200)?
         .header("referrer-policy", "same-origin")?
-        .header("cache-control", "no-store")?
+        .header_contains("cache-control", "no-store")?
+        .header_contains("cache-control", "no-transform")?
         .body_contains("Create the owner")?;
     anyhow::ensure!(given.testcase.fixture.count(ACCOUNTS).await? == 0);
 

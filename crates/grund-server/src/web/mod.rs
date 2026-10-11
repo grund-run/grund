@@ -3,12 +3,9 @@
 //!
 //! ```text
 //!   request ─► trace ─► security headers ─► panic guard ─► timeout ─► body limit
-//!           ─► sedx (a signed-in page the browser already shows renders only
-//!              what changes; redirects of its requests become Sedx-Location)
-//!           ─► request context (request id; failed pages rendered and logged)
-//!           ─► /health/live, /health/ready, /static/*
-//!           ─► /install, /install/* (only with GRUND_SERVE_INSTALLER)
-//!           └► pages (server-rendered sedge)
+//!           ├► pages: compression ─► sedx ─► request context ─► pages
+//!           ├► static files: request context (no sedx or dynamic compression)
+//!           └► Connect: compression ─► secret response policy ─► API
 //! ```
 
 macro_rules! member_or_return {
@@ -41,14 +38,18 @@ pub mod tokens;
 use axum::{
     Router,
     extract::{Request, State as AxumState},
-    http::{HeaderName, HeaderValue, StatusCode, header},
+    http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
 use tower_http::{
-    catch_panic::CatchPanicLayer, limit::RequestBodyLimitLayer, set_header::SetResponseHeaderLayer,
-    timeout::TimeoutLayer, trace::TraceLayer,
+    catch_panic::CatchPanicLayer,
+    compression::{CompressionLayer, predicate::Predicate},
+    limit::RequestBodyLimitLayer,
+    set_header::SetResponseHeaderLayer,
+    timeout::TimeoutLayer,
+    trace::TraceLayer,
 };
 use uuid::Uuid;
 
@@ -80,6 +81,7 @@ pub const MAX_BODY_BYTES: usize = 16 * 1024;
 /// page's form with `Origin: null`, which the origin check refuses. The trace span records method and path only,
 /// because query strings carry tokens.
 pub fn router(state: State) -> Router {
+    assets::warm_up();
     let timeout = state.config.request_timeout;
     let extensions = state
         .extensions
@@ -94,10 +96,16 @@ pub fn router(state: State) -> Router {
     } else {
         Router::new()
     };
+    let static_files = Router::new()
+        .route("/static/{*path}", get(assets::serve))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            request_context,
+        ))
+        .with_state(state.clone());
     Router::new()
         .route("/health/live", get(health::live))
         .route("/health/ready", get(health::ready))
-        .route("/static/{*path}", get(assets::serve))
         .route(grund_domain::app::file::SCHEMA_PATH, get(assets::schema))
         .route("/", get(orgs::landing))
         .route("/login", get(pages::login_form).post(pages::login))
@@ -240,8 +248,16 @@ pub fn router(state: State) -> Router {
             request_context,
         ))
         .layer(middleware::from_fn(sedx::middleware))
+        .layer(compression())
+        .layer(middleware::from_fn(prefer_compression))
         .with_state(state.clone())
-        .merge(crate::api::router(state))
+        .merge(static_files)
+        .merge(
+            crate::api::router(state)
+                .layer(middleware::from_fn(secret_rpc_policy))
+                .layer(compression())
+                .layer(middleware::from_fn(prefer_compression)),
+        )
         .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -279,6 +295,91 @@ pub fn router(state: State) -> Router {
                     },
                 ),
         )
+}
+
+#[derive(Clone)]
+struct Compressible;
+
+impl Predicate for Compressible {
+    fn should_compress<B>(&self, response: &axum::http::Response<B>) -> bool
+    where
+        B: http_body::Body,
+    {
+        let headers = response.headers();
+        let size = response.body().size_hint().exact().or_else(|| {
+            headers
+                .get(header::CONTENT_LENGTH)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<u64>().ok())
+        });
+        size.is_some_and(|size| size >= 1024) && compressible_headers(headers)
+    }
+}
+
+fn compressible_headers(headers: &HeaderMap) -> bool {
+    let allowed_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|value| {
+            matches!(
+                value.trim(),
+                "text/html"
+                    | "text/css"
+                    | "text/javascript"
+                    | "application/javascript"
+                    | "application/json"
+                    | "application/connect+json"
+                    | "application/problem+json"
+                    | "image/svg+xml"
+            )
+        });
+    allowed_type
+        && !headers
+            .get_all(header::CACHE_CONTROL)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .flat_map(|value| value.split(','))
+            .any(|directive| directive.trim().eq_ignore_ascii_case("no-transform"))
+}
+
+fn compression() -> CompressionLayer<Compressible> {
+    CompressionLayer::new()
+        .no_deflate()
+        .compress_when(Compressible)
+}
+
+async fn prefer_compression(mut request: Request, next: Next) -> Response {
+    if let Some(encoding) = assets::preferred_encoding(request.headers(), false, true) {
+        request.headers_mut().insert(
+            header::ACCEPT_ENCODING,
+            HeaderValue::from_static(encoding.unwrap_or("identity")),
+        );
+    }
+    next.run(request).await
+}
+
+async fn secret_rpc_policy(request: Request, next: Next) -> Response {
+    let secret = matches!(
+        request.uri().path(),
+        "/grund.token.v1.TokenService/CreateToken"
+            | "/grund.login.v1.DeviceLoginService/StartDeviceLogin"
+            | "/grund.login.v1.DeviceLoginService/PollDeviceLogin"
+            | "/grund.machine.v1.ManagementPoolService/CreateRegistrationToken"
+            | "/grund.machine.v1.ManagementPoolService/CreateReregistrationToken"
+            | "/grund.machine.v1.MachineService/CreateJoinToken"
+            | "/grund.agent.v1.AgentService/GetMachineJoinToken"
+            | "/grund.agent.v1.AgentService/GetReplicaSecrets"
+            | "/grund.agent.v1.AgentService/GetPullCredential"
+    );
+    let mut response = next.run(request).await;
+    if secret {
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("no-store, no-transform"),
+        );
+    }
+    response
 }
 
 fn header_layer(name: HeaderName, value: &'static str) -> SetResponseHeaderLayer<HeaderValue> {
@@ -340,7 +441,202 @@ fn bad_form(_state: &State, status: StatusCode, request_id: Uuid) -> Response {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use axum::{body::Body, http::Request};
     use grund_domain::names::{NameError, Username};
+    use http_body_util::BodyExt;
+    use std::convert::Infallible;
+    use tower::ServiceExt;
+
+    async fn encoded(
+        accept: &'static str,
+        content_type: &'static str,
+        bytes: usize,
+        cache: &'static str,
+    ) -> Response {
+        let service = tower::service_fn(move |_: Request<Body>| async move {
+            let mut response = Response::new(Body::from("x".repeat(bytes)));
+            response
+                .headers_mut()
+                .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+            response
+                .headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static(cache));
+            response
+                .headers_mut()
+                .append(header::VARY, HeaderValue::from_static("sedx-layout"));
+            Ok::<_, Infallible>(response)
+        });
+        use tower::Layer;
+        middleware::from_fn(prefer_compression)
+            .layer(compression().layer(service))
+            .oneshot(
+                Request::builder()
+                    .header(header::ACCEPT_ENCODING, accept)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .map(Body::new)
+    }
+
+    #[tokio::test]
+    async fn compression_respects_threshold_media_type_and_no_transform() {
+        for (kind, bytes, cache, compress) in [
+            ("text/html", 1023, "no-store", false),
+            ("text/html", 1024, "no-store", true),
+            ("application/connect+json", 2048, "no-store", true),
+            ("text/event-stream", 2048, "no-store", false),
+            ("application/grpc", 2048, "no-store", false),
+            ("text/html", 2048, "no-store, no-transform", false),
+            (
+                "application/connect+json",
+                2048,
+                "no-store, No-Transform",
+                false,
+            ),
+        ] {
+            let response = encoded("gzip", kind, bytes, cache).await;
+            assert_eq!(
+                response.headers().get(header::CONTENT_ENCODING).is_some(),
+                compress,
+                "{kind}, {bytes} bytes, {cache}"
+            );
+            let varies: Vec<_> = response
+                .headers()
+                .get_all(header::VARY)
+                .iter()
+                .map(|v| v.to_str().unwrap())
+                .collect();
+            assert!(varies.contains(&"sedx-layout"));
+            if compress {
+                assert!(varies.contains(&"accept-encoding"));
+            }
+        }
+    }
+    #[tokio::test]
+    async fn identity_response_still_varies_by_encoding() {
+        let response = encoded("identity", "text/html", 2048, "no-store").await;
+        assert!(response.headers().get(header::CONTENT_ENCODING).is_none());
+        let varies: Vec<_> = response
+            .headers()
+            .get_all(header::VARY)
+            .iter()
+            .map(|v| v.to_str().unwrap())
+            .collect();
+        assert!(varies.contains(&"sedx-layout"));
+        assert!(varies.contains(&"accept-encoding"));
+    }
+
+    #[tokio::test]
+    async fn already_encoded_content_is_not_encoded_twice() {
+        use tower::Layer;
+        let response = compression()
+            .layer(tower::service_fn(|_: Request<Body>| async {
+                let mut response = Response::new(Body::from("x".repeat(2048)));
+                response
+                    .headers_mut()
+                    .insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html"));
+                response
+                    .headers_mut()
+                    .insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+                Ok::<_, Infallible>(response)
+            }))
+            .oneshot(
+                Request::builder()
+                    .header(header::ACCEPT_ENCODING, "gzip")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.headers()[header::CONTENT_ENCODING], "gzip");
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&bytes[..], "x".repeat(2048).as_bytes());
+    }
+
+    #[tokio::test]
+    async fn gzip_body_round_trips_without_losing_sedx_vary() {
+        use std::io::Read as _;
+        let response = encoded("gzip", "text/html", 2048, "no-store").await;
+        assert_eq!(response.headers()[header::CONTENT_ENCODING], "gzip");
+        assert!(
+            response
+                .headers()
+                .get_all(header::VARY)
+                .iter()
+                .any(|value| value == "sedx-layout")
+        );
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let mut decoded = Vec::new();
+        flate2::read::GzDecoder::new(&bytes[..])
+            .read_to_end(&mut decoded)
+            .unwrap();
+        assert_eq!(decoded, vec![b'x'; 2048]);
+    }
+
+    #[tokio::test]
+    async fn client_weights_choose_only_gzip_or_identity_for_dynamic_content() {
+        for (accept, gzip) in [
+            ("br, zstd, gzip", true),
+            ("br, zstd", false),
+            ("gzip;q=0.8, identity;q=0.3", true),
+            ("gzip;q=0.3, identity;q=0.8", false),
+            ("gzip;q=0, identity;q=1", false),
+            ("gzip, identity", true),
+        ] {
+            let response = encoded(accept, "application/json", 2048, "no-store").await;
+            assert_eq!(
+                response.headers().get(header::CONTENT_ENCODING),
+                gzip.then_some(&HeaderValue::from_static("gzip")),
+                "{accept}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn secret_connect_json_is_never_compressed() {
+        use tower::Layer;
+        let service = tower::service_fn(|_: Request<Body>| async {
+            let mut response = Response::new(Body::from("x".repeat(2048)));
+            response.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/connect+json"),
+            );
+            Ok::<_, Infallible>(response)
+        });
+        let service = middleware::from_fn(prefer_compression)
+            .layer(compression().layer(middleware::from_fn(secret_rpc_policy).layer(service)));
+        for (path, secret) in [
+            ("/grund.token.v1.TokenService/CreateToken", true),
+            ("/grund.agent.v1.AgentService/GetReplicaSecrets", true),
+            ("/grund.agent.v1.AgentService/GetPullCredential", true),
+            ("/grund.machine.v1.MachineService/GetMachine", false),
+        ] {
+            let response = service
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(path)
+                        .header(header::ACCEPT_ENCODING, "gzip")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.headers().get(header::CONTENT_ENCODING),
+                (!secret).then_some(&HeaderValue::from_static("gzip")),
+                "{path}"
+            );
+            assert_eq!(
+                response.headers().get(header::CACHE_CONTROL),
+                secret.then_some(&HeaderValue::from_static("no-store, no-transform")),
+                "{path}"
+            );
+        }
+    }
 
     #[test]
     fn no_organisation_can_take_a_top_level_path_of_the_dashboard() {

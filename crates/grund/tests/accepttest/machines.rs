@@ -1393,7 +1393,9 @@ async fn the_machines_page_adds_a_device_shows_it_connected_and_runs_a_vm_on_it(
 
     when.submitting(&page, &format!("{page}/add"), &[("name", "desk")])
         .await?;
-    then.status(200)?.header("cache-control", "no-store")?;
+    then.status(200)?
+        .header_contains("cache-control", "no-store")?
+        .header_contains("cache-control", "no-transform")?;
     let args = setup_command(&then.body()?)?;
     anyhow::ensure!(args[0] == "--url" && args[1] == origin(&when), "{args:?}");
     anyhow::ensure!(args[2].starts_with("grund_join_"), "{args:?}");

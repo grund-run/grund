@@ -22,7 +22,7 @@ async fn every_page_is_html_that_needs_nothing_the_csp_forbids_and_is_never_cach
         when.visiting(path).await?;
         then.carries_the_security_headers()
             .and_then(|t| t.header_contains("content-type", "text/html"))
-            .and_then(|t| t.header("cache-control", "no-store"))
+            .and_then(|t| t.header_contains("cache-control", "no-store"))
             .and_then(|t| t.body_lacks(" style="))
             .and_then(|t| t.body_lacks("<style"))
             .and_then(|t| t.body_lacks(" onclick="))

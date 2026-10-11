@@ -123,6 +123,7 @@ async fn device_view(
         },
     )
     .await
+    .map(crate::web::pages::no_transform)
 }
 
 /// `GET /device`, with `?code=` from the CLI's link or typed in.

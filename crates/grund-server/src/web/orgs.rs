@@ -981,7 +981,9 @@ async fn invitation_view(
             csrf: &csrf,
         }),
     )?;
-    Ok(super::pages::with_referrer_same_origin(response))
+    Ok(super::pages::no_transform(
+        super::pages::with_referrer_same_origin(response),
+    ))
 }
 
 fn expired(state: &State, browser: &Browser) -> PageResult {
