@@ -136,18 +136,18 @@ props crate::web::admin::AdminPage<'_> { slug, csrf, manages, tab, host_filter, 
   {if *billing_enabled && !organisation.is_empty() {
     <Panel id="complimentary-billing" title="Billing">
       {if let Some(account) = billing {
-        <Rows>
-          <Row name="Plan" sub={&account.details.plan} plain />
-          {if !account.details.pending_plan.is_empty() { <Row name="Next plan" sub={&account.details.pending_plan} plain /> }}
-          <Row name="Complimentary" sub={if account.details.complimentary { "Active" } else if account.details.complimentary_scheduled { "Scheduled" } else { "No" }} plain />
+        <Facts>
+          <Fact label="Plan" value={&account.details.plan} />
+          {if !account.details.pending_plan.is_empty() { <Fact label="Next plan" value={&account.details.pending_plan} /> }}
+          <Fact label="Complimentary" value={if account.details.complimentary { "Active" } else if account.details.complimentary_scheduled { "Scheduled" } else { "No" }} />
           {if account.details.complimentary_scheduled {
-            {if let Some(date) = &account.details.complimentary_effective_at { <Row name="Complimentary from" sub={date} plain /> }}
-            {if !account.details.complimentary_scheduled_plan.is_empty() { <Row name="Complimentary plan" sub={&account.details.complimentary_scheduled_plan} plain /> }}
+            {if let Some(date) = &account.details.complimentary_effective_at { <Fact label="Complimentary from" value={date} /> }}
+            {if !account.details.complimentary_scheduled_plan.is_empty() { <Fact label="Complimentary plan" value={&account.details.complimentary_scheduled_plan} /> }}
           }}
-          {if !account.details.complimentary_reason.is_empty() { <Row name="Reason" sub={&account.details.complimentary_reason} plain /> }}
-          {if let Some(expiry) = &account.details.complimentary_expires_at { <Row name="Until" sub={expiry} plain /> }}
-          {if account.details.complimentary { <Row name="Total" sub="€0" plain /> }}
-        </Rows>
+          {if !account.details.complimentary_reason.is_empty() { <Fact label="Reason" value={&account.details.complimentary_reason} /> }}
+          {if let Some(expiry) = &account.details.complimentary_expires_at { <Fact label="Until" value={expiry} /> }}
+          {if account.details.complimentary { <Fact label="Total" value="€0" /> }}
+        </Facts>
         {if account.details.complimentary_scheduled {
           <Para kind="hint">The current cycle is charged normally until the complimentary discount takes effect.</Para>
         }}

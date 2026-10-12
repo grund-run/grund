@@ -94,7 +94,7 @@ component Sidebar(viewer: &TypedViewer, section: &str, csrf: &str, footer: Optio
 </nav>
 }
 component TopbarAction(org: &TypedOrg, section: &str, state: &str) {
-{if org.manages && *section != "deploy" && *section != "machine-add" && *section != "pool" && *section != "admin" && *section != "notifications" {
+{if org.manages && *section != "deploy" && *section != "machine-add" && *section != "pool" && *section != "admin" && *section != "notifications" && *section != "org-settings" && *section != "members" {
   <span class="topbar-end"><a class="btn btn-primary{if !state.is_empty() { " is-" } else { "" }}{state}" href="/{org.slug}{if *section == "machines" { "/machines/add" } else { "/deploy" }}"><Icon name="plus" class="icon-sm" /><span class="btn-label">{if *section == "machines" { Add machine } else { Deploy app }}</span></a></span>
 }}
 }

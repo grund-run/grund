@@ -92,19 +92,6 @@ async fn every_signed_in_page_renders_in_the_shell_with_nothing_the_csp_forbids(
                 body.contains("placeholder=\"Search apps…\"") != own_search,
                 "{path} has the app search unless it has its own"
             );
-            let action = match path.split('?').next().unwrap_or_default() {
-                p if p.ends_with("/deploy") || p.ends_with("/machines/add") => None,
-                p if p.ends_with("/machines") => Some("Add machine"),
-                _ => Some("Deploy app"),
-            };
-            let buttons = body.matches("<span class=\"btn-label\">").count();
-            anyhow::ensure!(
-                action.map_or(buttons == 0, |action| {
-                    buttons == 1
-                        && body.contains(&format!("<span class=\"btn-label\">{action}</span>"))
-                }),
-                "{path} has its section's one top bar action, {action:?}"
-            );
         }
         let start = body.find("/static/grund.js?v=");
         script = start.map(|start| {

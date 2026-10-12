@@ -92,7 +92,7 @@ pub async fn page(
         Some(&member.membership),
         StatusCode::OK,
         "Billing",
-        "settings",
+        "org-settings",
         None,
         None,
         None,
