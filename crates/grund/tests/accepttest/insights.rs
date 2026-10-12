@@ -12,8 +12,11 @@ async fn reporting_to(
     )>,
 > {
     testcase_configured(&[
-        ("GRUND_INSIGHTS_URL", &insights.url),
-        ("GRUND_INSIGHTS_TOKEN", INSIGHTS_TOKEN),
+        (
+            "GRUND_ACCOUNT_EVENT_URL",
+            &format!("{}/v1/accounts", insights.url),
+        ),
+        ("GRUND_ACCOUNT_EVENT_TOKEN", INSIGHTS_TOKEN),
     ])
     .await
 }
@@ -74,6 +77,25 @@ async fn a_confirmed_account_is_reported_once_with_the_token_and_nothing_more() 
 }
 
 #[tokio::test]
+async fn the_old_base_url_still_reports_confirmed_accounts_during_cutover() -> anyhow::Result<()> {
+    let receiver = FakeInsights::start(&[]).await?;
+    let Some((given, _when, _then)) = testcase_configured(&[
+        ("GRUND_INSIGHTS_URL", &receiver.url),
+        ("GRUND_INSIGHTS_TOKEN", INSIGHTS_TOKEN),
+    ])
+    .await?
+    else {
+        return Ok(());
+    };
+    let account = given.an_account().await?;
+    let reports = receiver.wait_for(2, Duration::from_secs(15)).await?;
+    assert!(reports.iter().any(|report| {
+        report.path == "/v1/accounts" && report.body["username"] == account.username
+    }));
+    Ok(())
+}
+
+#[tokio::test]
 async fn an_account_whose_address_is_not_confirmed_is_not_reported() -> anyhow::Result<()> {
     let insights = FakeInsights::start(&[]).await?;
     let Some((given, _when, _then)) = reporting_to(&insights).await? else {
@@ -90,7 +112,7 @@ async fn an_account_whose_address_is_not_confirmed_is_not_reported() -> anyhow::
 }
 
 #[tokio::test]
-async fn a_report_insights_could_not_take_is_sent_again() -> anyhow::Result<()> {
+async fn an_account_event_rejected_temporarily_is_sent_again() -> anyhow::Result<()> {
     let insights = FakeInsights::start(&[]).await?;
     let Some((given, _when, _then)) = reporting_to(&insights).await? else {
         return Ok(());
@@ -127,7 +149,7 @@ async fn a_report_insights_could_not_take_is_sent_again() -> anyhow::Result<()> 
 }
 
 #[tokio::test]
-async fn without_insights_configured_nothing_is_queued_or_sent() -> anyhow::Result<()> {
+async fn without_account_event_endpoint_nothing_is_queued_or_sent() -> anyhow::Result<()> {
     let Some((given, _when, _then)) = testcase_configured(&[]).await? else {
         return Ok(());
     };

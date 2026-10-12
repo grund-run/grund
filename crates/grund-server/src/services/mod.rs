@@ -3,6 +3,7 @@
 //! `state.sessions()`, `state.limits()`, `state.passwords()`,
 //! `state.organisations()`, `state.machines()`.
 
+pub mod account_events;
 pub mod accounts;
 pub mod agents;
 pub mod apps;
@@ -12,7 +13,6 @@ pub mod device_logins;
 pub mod domains;
 pub mod entitlements;
 pub mod entry;
-pub mod insights;
 pub mod limits;
 pub mod machines;
 pub mod mail;

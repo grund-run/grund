@@ -59,9 +59,8 @@ kjuulh: "kubernetes-app": {
 					GRUND_APP_DOMAIN: "dev.grund.run"
 					GRUND_EDGES:      "edge-1.dev.grund.run"
 					GRUND_MAIL_FROM:  "grund dev <grund@dev.app.grund.sh>"
-					// Confirmed accounts are reported to the insights service in
-					// the same namespace, in-cluster, plain http.
-					GRUND_INSIGHTS_URL: "http://grund-insights:8081"
+					// The optional account event endpoint is an operator secret,
+					// not part of this public deployment manifest.
 					// The Machines page's defaults. The installer is the one on
 					// main; the guest image is the one CI published for a91694b,
 					// pinned by the digest in its .sha256, so a later build
@@ -83,10 +82,10 @@ kjuulh: "kubernetes-app": {
 					{name: "DATABASE_URL", secret: "grund-db-app", key: "uri"},
 					{name: "GRUND_SECRET_KEY", secret: "grund-secrets", key: "secret_key"},
 					{name: "GRUND_SMTP_URL", secret: "grund-secrets", key: "smtp_url"},
-					// Its own Secret, created by hand, so the script that rewrites
-					// grund-secrets cannot remove it. Shared with the insights and
-					// website deployments in dev.
-					{name: "GRUND_INSIGHTS_TOKEN", secret: "grund-insights-ingest", key: "token"},
+					// Both values belong to the operator-owned account event
+					// endpoint; absent from self-hosted instances by default.
+					{name: "GRUND_ACCOUNT_EVENT_URL", secret: "grund-account-events", key: "url"},
+					{name: "GRUND_ACCOUNT_EVENT_TOKEN", secret: "grund-account-events", key: "token"},
 					// The capacity provider's Secret: the one token it accepts
 					// from grund, and nothing else.
 					{name: "GRUND_CAPACITY_TOKEN", secret: "fleet-secrets", key: "grund_token"},

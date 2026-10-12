@@ -133,10 +133,14 @@ with `--json`. The exit code is 1 when any check fails. `grund serve --help` lis
 its environment variable.
 
 grund contacts no service you have not configured: no telemetry, no update
-check. The one report it can send is opt-in, for operators who run grund
-insights for their own users: with `GRUND_INSIGHTS_URL` and
-`GRUND_INSIGHTS_TOKEN` set, each account is reported once its address is
-confirmed (see [.env.example](.env.example)). Without them nothing is queued.
+check. With `GRUND_ACCOUNT_EVENT_URL` and `GRUND_ACCOUNT_EVENT_TOKEN`,
+an instance queues one account event after the owner's email is confirmed and
+POSTs it to the operator's configured endpoint. The event includes the account
+ID, username, address, sign-in method and registration/verification times;
+the endpoint chooses what to retain or notify. Without both settings, nothing
+is queued or sent. The legacy `GRUND_INSIGHTS_URL` and `GRUND_INSIGHTS_TOKEN`
+settings are accepted for one release (their URL is a base; `/v1/accounts` is
+appended). See [.env.example](.env.example).
 
 - `GET /health/live` answers `{"status":"ok"}` and checks nothing.
 - `GET /health/ready` answers 200 or 503 from the last dependency checks,

@@ -2673,20 +2673,20 @@
           "value_name": "OIDC_NAME"
         },
         {
-          "description": "The insights ingest endpoint, e.g. http://insights:8081. Once an account's address is confirmed, grund sends its username, address, sign-in method and the two times to `<url>/v1/accounts`, from the outbox, at least once. Set with GRUND_INSIGHTS_TOKEN",
-          "env": "GRUND_INSIGHTS_URL",
-          "flag": "--insights-url",
-          "name": "insights_url",
+          "description": "The complete HTTP endpoint for confirmed account events. The event is queued in the sign-up transaction and sent after commit, at least once",
+          "env": "GRUND_ACCOUNT_EVENT_URL",
+          "flag": "--account-event-url",
+          "name": "url",
           "type": "string",
-          "value_name": "INSIGHTS_URL"
+          "value_name": "URL"
         },
         {
-          "description": "The bearer token that insights expects (its INSIGHTS_INGEST_TOKEN), at least 32 printable ASCII characters",
-          "env": "GRUND_INSIGHTS_TOKEN",
-          "flag": "--insights-token",
-          "name": "insights_token",
+          "description": "Bearer credential for the configured account event endpoint",
+          "env": "GRUND_ACCOUNT_EVENT_TOKEN",
+          "flag": "--account-event-token",
+          "name": "token",
           "type": "string",
-          "value_name": "INSIGHTS_TOKEN"
+          "value_name": "TOKEN"
         },
         {
           "description": "The billing service, e.g. http://billing:8080, reached from grund's servers only. grund calls `grund.billing.v1.BillingService` on it. Set with GRUND_BILLING_TOKEN",
@@ -3556,20 +3556,20 @@
           "value_name": "OIDC_NAME"
         },
         {
-          "description": "The insights ingest endpoint, e.g. http://insights:8081. Once an account's address is confirmed, grund sends its username, address, sign-in method and the two times to `<url>/v1/accounts`, from the outbox, at least once. Set with GRUND_INSIGHTS_TOKEN",
-          "env": "GRUND_INSIGHTS_URL",
-          "flag": "--insights-url",
-          "name": "insights_url",
+          "description": "The complete HTTP endpoint for confirmed account events. The event is queued in the sign-up transaction and sent after commit, at least once",
+          "env": "GRUND_ACCOUNT_EVENT_URL",
+          "flag": "--account-event-url",
+          "name": "url",
           "type": "string",
-          "value_name": "INSIGHTS_URL"
+          "value_name": "URL"
         },
         {
-          "description": "The bearer token that insights expects (its INSIGHTS_INGEST_TOKEN), at least 32 printable ASCII characters",
-          "env": "GRUND_INSIGHTS_TOKEN",
-          "flag": "--insights-token",
-          "name": "insights_token",
+          "description": "Bearer credential for the configured account event endpoint",
+          "env": "GRUND_ACCOUNT_EVENT_TOKEN",
+          "flag": "--account-event-token",
+          "name": "token",
           "type": "string",
-          "value_name": "INSIGHTS_TOKEN"
+          "value_name": "TOKEN"
         },
         {
           "description": "The billing service, e.g. http://billing:8080, reached from grund's servers only. grund calls `grund.billing.v1.BillingService` on it. Set with GRUND_BILLING_TOKEN",
@@ -4301,20 +4301,20 @@
           "value_name": "OIDC_NAME"
         },
         {
-          "description": "The insights ingest endpoint, e.g. http://insights:8081. Once an account's address is confirmed, grund sends its username, address, sign-in method and the two times to `<url>/v1/accounts`, from the outbox, at least once. Set with GRUND_INSIGHTS_TOKEN",
-          "env": "GRUND_INSIGHTS_URL",
-          "flag": "--insights-url",
-          "name": "insights_url",
+          "description": "The complete HTTP endpoint for confirmed account events. The event is queued in the sign-up transaction and sent after commit, at least once",
+          "env": "GRUND_ACCOUNT_EVENT_URL",
+          "flag": "--account-event-url",
+          "name": "url",
           "type": "string",
-          "value_name": "INSIGHTS_URL"
+          "value_name": "URL"
         },
         {
-          "description": "The bearer token that insights expects (its INSIGHTS_INGEST_TOKEN), at least 32 printable ASCII characters",
-          "env": "GRUND_INSIGHTS_TOKEN",
-          "flag": "--insights-token",
-          "name": "insights_token",
+          "description": "Bearer credential for the configured account event endpoint",
+          "env": "GRUND_ACCOUNT_EVENT_TOKEN",
+          "flag": "--account-event-token",
+          "name": "token",
           "type": "string",
-          "value_name": "INSIGHTS_TOKEN"
+          "value_name": "TOKEN"
         },
         {
           "description": "The billing service, e.g. http://billing:8080, reached from grund's servers only. grund calls `grund.billing.v1.BillingService` on it. Set with GRUND_BILLING_TOKEN",

@@ -21,7 +21,7 @@ use uuid::Uuid;
 use crate::{
     crypto,
     services::{
-        insights,
+        account_events,
         limits::{Limits, LimitsState},
         organisations::{self, Home, OrganisationsState},
         outbox::wake,
@@ -322,8 +322,13 @@ impl Accounts {
             accounts::insert_email(work.sql(), account_id, email.as_str(), email.normalized())
                 .await?;
             accounts::set_password(work.sql(), account_id, &phc).await?;
-            insights::queue_account(&self.state, work.sql(), account_id, insights::PASSWORD)
-                .await?;
+            account_events::queue_account(
+                &self.state,
+                work.sql(),
+                account_id,
+                account_events::PASSWORD,
+            )
+            .await?;
             work.commit().await?;
             Ok(true)
         }
@@ -337,7 +342,7 @@ impl Accounts {
             Err(error) => return Err(error.into()),
         }
         tracing::info!(%account_id, "the instance's owner was created with its setup link");
-        if self.state.config.insights.enabled() {
+        if self.state.config.account_events.enabled() {
             wake(&self.state).await;
         }
         Ok(OwnerSignupOutcome::SignedIn {
@@ -429,8 +434,13 @@ impl Accounts {
                 .await?;
             accounts::set_password(work.sql(), account_id, &phc).await?;
             organisations::accept_in(&mut work, &invitation, account_id, now).await?;
-            insights::queue_account(&self.state, work.sql(), account_id, insights::PASSWORD)
-                .await?;
+            account_events::queue_account(
+                &self.state,
+                work.sql(),
+                account_id,
+                account_events::PASSWORD,
+            )
+            .await?;
             work.commit().await
         }
         .await;
@@ -453,7 +463,7 @@ impl Accounts {
             },
         }
         tracing::info!(%account_id, organisation_id = %invitation.organisation_id, "account created by invitation");
-        if self.state.config.insights.enabled() {
+        if self.state.config.account_events.enabled() {
             wake(&self.state).await;
         }
         Ok(InvitedSignupOutcome::SignedIn {
@@ -581,17 +591,17 @@ impl Accounts {
             )
             .await?;
         if !verified.is_empty() {
-            insights::queue_account(
+            account_events::queue_account(
                 &self.state,
                 work.sql(),
                 redeemed.account_id,
-                insights::PASSWORD,
+                account_events::PASSWORD,
             )
             .await?;
         }
         work.commit().await?;
         tracing::info!(account_id = %redeemed.account_id, "email verified");
-        if !verified.is_empty() && self.state.config.insights.enabled() {
+        if !verified.is_empty() && self.state.config.account_events.enabled() {
             wake(&self.state).await;
         }
         Ok(true)

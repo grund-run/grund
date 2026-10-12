@@ -1,14 +1,9 @@
-//! Reporting confirmed accounts to a grund insights service, for the people
-//! who operate this instance (GRUND_INSIGHTS_URL and GRUND_INSIGHTS_TOKEN).
+//! Reports confirmed account events to an optional operator-owned HTTP
+//! endpoint. The sign-up transaction queues one outbox row per confirmed
+//! account; the drain delivers it after commit and retries failures.
 //!
-//! Off unless both are set, and then nothing is queued, so an instance
-//! without them sends nothing anywhere. When on, the unit of work that
-//! confirms an address also queues one outbox row for that account, and the
-//! outbox drain posts it to `<url>/v1/accounts` after commit, at least once.
-//! insights records each account once, however many copies arrive.
-//!
-//! The report holds the username, the address, how the account signed up,
-//! when it registered and when the address was confirmed. Nothing else: no
+//! An instance without a configured endpoint queues and contacts nothing.
+//! The report includes username, address, sign-in method and times, but no
 //! password, session, client address or organisation.
 
 use std::time::Duration;
@@ -21,7 +16,7 @@ use grund_store::{
 use sqlx::PgConnection;
 use uuid::Uuid;
 
-use crate::{config::InsightsArgs, state::State};
+use crate::{config::AccountEventArgs, state::State};
 
 /// How the account was created: `password`, or the sign-in provider's id.
 pub const PASSWORD: &str = "password";
@@ -36,7 +31,7 @@ pub async fn queue_account(
     account_id: Uuid,
     method: &str,
 ) -> Result<(), sqlx::Error> {
-    if !state.config.insights.enabled() {
+    if !state.config.account_events.enabled() {
         return Ok(());
     }
     let Some(account) = accounts::confirmed(&mut *connection, account_id).await? else {
@@ -52,8 +47,8 @@ pub async fn queue_account(
     });
     outbox::enqueue(
         connection,
-        Uuid::new_v5(&account_id, Kind::InsightsAccount.as_str().as_bytes()),
-        Kind::InsightsAccount,
+        Uuid::new_v5(&account_id, Kind::AccountConfirmed.as_str().as_bytes()),
+        Kind::AccountConfirmed,
         &account.email,
         &payload,
     )
@@ -64,17 +59,17 @@ pub async fn queue_account(
 #[derive(Debug, thiserror::Error)]
 pub enum ReportError {
     /// Reporting was turned off after the row was queued: drop it.
-    #[error("insights is not configured")]
+    #[error("account event endpoint is not configured")]
     NotConfigured,
-    /// insights refused the report as invalid; retrying will not help.
-    #[error("refused by insights")]
+    /// The endpoint refused the report as invalid; retrying will not help.
+    #[error("refused by the account event endpoint")]
     Permanent,
-    /// insights was unreachable, refused the token, or failed this time.
-    #[error("delivery to insights failed; will retry")]
+    /// The endpoint was unreachable, refused the token, or failed this time.
+    #[error("account event delivery failed; will retry")]
     Transient,
 }
 
-/// Posts reports to insights.
+/// Posts account events to the configured endpoint.
 #[derive(Clone)]
 pub struct Reporter {
     target: Option<(String, String)>,
@@ -82,18 +77,22 @@ pub struct Reporter {
 }
 
 impl Reporter {
-    pub fn new(config: &InsightsArgs) -> anyhow::Result<Self> {
+    pub fn new(config: &AccountEventArgs) -> anyhow::Result<Self> {
         grund_tls::install_default();
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .connect_timeout(Duration::from_secs(5))
             .user_agent("grund")
             .build()
-            .context("build the HTTP client for insights")?;
-        let target = match (&config.insights_url, &config.insights_token) {
-            (Some(url), Some(token)) => Some((format!("{url}/v1/accounts"), token.clone())),
-            _ => None,
-        };
+            .context("build the HTTP client for account events")?;
+        let target = config.endpoint().map(|(url, token)| {
+            let url = if config.url.is_some() {
+                url.to_owned()
+            } else {
+                format!("{url}/v1/accounts")
+            };
+            (url, token.to_owned())
+        });
         Ok(Self { target, http })
     }
 
@@ -115,7 +114,7 @@ impl Reporter {
             status => {
                 if status == 401 {
                     tracing::warn!(
-                        "insights refused GRUND_INSIGHTS_TOKEN; reports wait until it matches INSIGHTS_INGEST_TOKEN"
+                        "account event endpoint refused the configured token; reports will retry"
                     );
                 }
                 Err(ReportError::Transient)

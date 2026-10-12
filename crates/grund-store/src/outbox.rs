@@ -1,7 +1,7 @@
 //! Work to do after commit (skills `messaging` §2): mail, resolving
-//! password-reset requests, and reports to grund insights. Rows are written in the transaction of the change
-//! they announce and claimed by the drain with `SKIP LOCKED`, so replicas
-//! share the work without doing any of it twice at once.
+//! password-reset requests, and account events for an optional operator-owned
+//! endpoint. Rows are written in the transaction of the change they announce
+//! and claimed by the drain with `SKIP LOCKED`.
 
 use std::time::Duration;
 
@@ -16,7 +16,7 @@ pub enum Kind {
     PasswordResetMail,
     SignupExistingMail,
     PasswordResetRequested,
-    InsightsAccount,
+    AccountConfirmed,
     InvitationMail,
     BillingOrganisation,
 }
@@ -28,19 +28,22 @@ impl Kind {
             Kind::PasswordResetMail => "mail.password_reset",
             Kind::SignupExistingMail => "mail.signup_existing",
             Kind::PasswordResetRequested => "auth.password_reset_requested",
-            Kind::InsightsAccount => "insights.account",
+            Kind::AccountConfirmed => "insights.account",
             Kind::InvitationMail => "mail.invitation",
             Kind::BillingOrganisation => "billing.organisation",
         }
     }
 
     pub fn parse(value: &str) -> Option<Self> {
+        if value == "account.confirmed" {
+            return Some(Kind::AccountConfirmed);
+        }
         [
             Kind::VerifyEmailMail,
             Kind::PasswordResetMail,
             Kind::SignupExistingMail,
             Kind::PasswordResetRequested,
-            Kind::InsightsAccount,
+            Kind::AccountConfirmed,
             Kind::InvitationMail,
             Kind::BillingOrganisation,
         ]

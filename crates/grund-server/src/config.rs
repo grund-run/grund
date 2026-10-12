@@ -227,7 +227,7 @@ pub struct ServeConfig {
     pub social: SocialArgs,
 
     #[command(flatten)]
-    pub insights: InsightsArgs,
+    pub account_events: AccountEventArgs,
 
     #[command(flatten)]
     pub billing: BillingArgs,
@@ -386,47 +386,75 @@ pub struct SocialArgs {
     pub oidc_name: String,
 }
 
-/// Reporting new accounts to a grund insights service, for the people who
-/// operate this instance. Off unless both settings are present: an instance
-/// without them sends nothing anywhere and queues nothing.
+/// An optional operator-owned endpoint for confirmed account events. Nothing
+/// is sent from a self-hosted instance unless an endpoint and token are set.
 #[derive(Clone, Debug, Default, Args)]
-pub struct InsightsArgs {
-    /// The insights ingest endpoint, e.g. http://insights:8081. Once an
-    /// account's address is confirmed, grund sends its username, address,
-    /// sign-in method and the two times to `<url>/v1/accounts`, from the
-    /// outbox, at least once. Set with GRUND_INSIGHTS_TOKEN.
-    #[arg(long, env = "GRUND_INSIGHTS_URL")]
-    pub insights_url: Option<String>,
+pub struct AccountEventArgs {
+    /// The complete HTTP endpoint for confirmed account events. The event is
+    /// queued in the sign-up transaction and sent after commit, at least once.
+    #[arg(long = "account-event-url", env = "GRUND_ACCOUNT_EVENT_URL")]
+    pub url: Option<String>,
 
-    /// The bearer token that insights expects (its INSIGHTS_INGEST_TOKEN), at
-    /// least 32 printable ASCII characters.
-    #[arg(long, env = "GRUND_INSIGHTS_TOKEN", hide_env_values = true)]
-    pub insights_token: Option<String>,
+    /// Bearer credential for the configured account event endpoint.
+    #[arg(
+        long = "account-event-token",
+        env = "GRUND_ACCOUNT_EVENT_TOKEN",
+        hide_env_values = true
+    )]
+    pub token: Option<String>,
+
+    #[arg(long = "insights-url", env = "GRUND_INSIGHTS_URL", hide = true)]
+    legacy_url: Option<String>,
+
+    #[arg(
+        long = "insights-token",
+        env = "GRUND_INSIGHTS_TOKEN",
+        hide = true,
+        hide_env_values = true
+    )]
+    legacy_token: Option<String>,
 }
 
-impl InsightsArgs {
-    /// Whether accounts are reported.
+impl AccountEventArgs {
+    /// Whether account events are reported.
     pub fn enabled(&self) -> bool {
-        self.insights_url.is_some() && self.insights_token.is_some()
+        self.endpoint().is_some()
+    }
+
+    pub fn endpoint(&self) -> Option<(&str, &str)> {
+        match (
+            self.url.as_deref().zip(self.token.as_deref()),
+            self.legacy_url.as_deref().zip(self.legacy_token.as_deref()),
+        ) {
+            (Some((url, token)), None) | (None, Some((url, token))) => Some((url, token)),
+            _ => None,
+        }
     }
 
     fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
-            self.insights_url.is_some() == self.insights_token.is_some(),
+            !((self.url.is_some() || self.token.is_some())
+                && (self.legacy_url.is_some() || self.legacy_token.is_some())),
+            "GRUND_ACCOUNT_EVENT_URL/TOKEN cannot be mixed with deprecated GRUND_INSIGHTS_URL/TOKEN"
+        );
+        anyhow::ensure!(
+            self.url.is_some() == self.token.is_some(),
+            "GRUND_ACCOUNT_EVENT_URL and GRUND_ACCOUNT_EVENT_TOKEN must be set together"
+        );
+        anyhow::ensure!(
+            self.legacy_url.is_some() == self.legacy_token.is_some(),
             "GRUND_INSIGHTS_URL and GRUND_INSIGHTS_TOKEN must be set together"
         );
-        if let Some(url) = &self.insights_url {
+        if let Some((url, token)) = self.endpoint() {
             anyhow::ensure!(
                 (url.starts_with("http://") || url.starts_with("https://"))
                     && !url.ends_with('/')
                     && !url.contains(['?', '#']),
-                "GRUND_INSIGHTS_URL must be an http or https URL without a trailing slash"
+                "GRUND_ACCOUNT_EVENT_URL must be an http or https URL without a trailing slash, query or fragment"
             );
-        }
-        if let Some(token) = &self.insights_token {
             anyhow::ensure!(
                 token.len() >= 32 && token.bytes().all(|b| b.is_ascii_graphic()),
-                "GRUND_INSIGHTS_TOKEN must be at least 32 printable ASCII characters"
+                "GRUND_ACCOUNT_EVENT_TOKEN must be at least 32 printable ASCII characters"
             );
         }
         Ok(())
@@ -978,8 +1006,10 @@ impl ServeConfig {
             &mut self.social.oidc_issuer,
             &mut self.social.oidc_client_id,
             &mut self.social.oidc_client_secret,
-            &mut self.insights.insights_url,
-            &mut self.insights.insights_token,
+            &mut self.account_events.url,
+            &mut self.account_events.token,
+            &mut self.account_events.legacy_url,
+            &mut self.account_events.legacy_token,
             &mut self.billing.billing_url,
             &mut self.billing.billing_token,
             &mut self.capacity.capacity_url,
@@ -1082,8 +1112,12 @@ impl ServeConfig {
                     self.social.oidc_client_secret.as_deref(),
                 ),
                 (
+                    "GRUND_ACCOUNT_EVENT_TOKEN",
+                    self.account_events.token.as_deref(),
+                ),
+                (
                     "GRUND_INSIGHTS_TOKEN",
-                    self.insights.insights_token.as_deref(),
+                    self.account_events.legacy_token.as_deref(),
                 ),
             ] {
                 if let Some(value) = value {
@@ -1161,7 +1195,7 @@ impl ServeConfig {
             "GRUND_SHUTDOWN_GRACE must be at most 30 s, the kubelet's default grace period"
         );
         self.social.validate()?;
-        self.insights.validate()?;
+        self.account_events.validate()?;
         self.billing.validate()?;
         self.capacity.validate()?;
         self.relay.validate()?;
@@ -1419,7 +1453,10 @@ mod tests {
         assert_eq!(config.public_origin().serialized, "http://localhost:8080");
         assert!(config.signup_enabled);
         assert!(!config.social.social_login);
-        assert!(!config.insights.enabled(), "nothing is reported by default");
+        assert!(
+            !config.account_events.enabled(),
+            "nothing is reported by default"
+        );
     }
 
     #[test]
@@ -1502,46 +1539,61 @@ mod tests {
     }
 
     #[test]
-    fn insights_needs_its_url_and_token_together_and_a_long_token() {
+    fn account_event_endpoint_needs_its_token_and_refuses_mixed_config() {
         let token = "0123456789abcdef0123456789abcdef";
-        let error = parse(&["--insights-url", "http://insights:8081"])
+        let error = parse(&["--account-event-url", "http://receiver:8081/v1/accounts"])
             .unwrap_err()
             .to_string();
-        assert!(error.contains("GRUND_INSIGHTS_TOKEN"), "{error}");
-        let error = parse(&["--insights-token", token]).unwrap_err().to_string();
-        assert!(error.contains("GRUND_INSIGHTS_URL"), "{error}");
+        assert!(error.contains("GRUND_ACCOUNT_EVENT_TOKEN"), "{error}");
+        let error = parse(&["--account-event-token", token])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("GRUND_ACCOUNT_EVENT_URL"), "{error}");
         let error = parse(&[
-            "--insights-url",
-            "http://insights:8081",
-            "--insights-token",
+            "--account-event-url",
+            "http://receiver:8081/v1/accounts",
+            "--account-event-token",
             "short",
         ])
         .unwrap_err()
         .to_string();
         assert!(error.contains("at least 32"), "{error}");
+        let config = parse(&[
+            "--account-event-url",
+            "http://receiver:8081/v1/accounts",
+            "--account-event-token",
+            token,
+        ])
+        .unwrap();
+        assert!(config.account_events.enabled());
         let error = parse(&[
+            "--account-event-url",
+            "http://receiver:8081/v1/accounts",
+            "--account-event-token",
+            token,
             "--insights-url",
-            "insights:8081/",
+            "http://receiver:8081",
             "--insights-token",
             token,
         ])
         .unwrap_err()
         .to_string();
-        assert!(error.contains("GRUND_INSIGHTS_URL"), "{error}");
+        assert!(error.contains("cannot be mixed"), "{error}");
+    }
+
+    #[test]
+    fn deprecated_reporting_settings_work_for_one_release() {
+        let token = "0123456789abcdef0123456789abcdef";
         let config = parse(&[
             "--insights-url",
-            "http://insights:8081",
+            "http://receiver:8081",
             "--insights-token",
             token,
         ])
         .unwrap();
-        assert!(config.insights.enabled());
-    }
-
-    #[test]
-    fn empty_insights_settings_count_as_unset() {
+        assert!(config.account_events.enabled());
         let config = parse(&["--insights-url", "", "--insights-token", " "]).unwrap();
-        assert!(!config.insights.enabled());
+        assert!(!config.account_events.enabled());
     }
 
     #[test]

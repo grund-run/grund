@@ -92,7 +92,7 @@ pub async fn serve(
     let nats = connect_nats(&config).await?;
 
     let mailer = services::mail::Mailer::new(&config)?;
-    let reporter = services::insights::Reporter::new(&config.insights)?;
+    let reporter = services::account_events::Reporter::new(&config.account_events)?;
     let secret = std::sync::Arc::new(secret);
     let certificates = certificates::Certificates::new(&config, pool.clone(), secret.clone());
     certificates.start().await?;
@@ -135,7 +135,7 @@ pub async fn serve(
         );
     }
     tracing::info!(
-        insights = state.config.insights.enabled(),
+        account_events = state.config.account_events.enabled(),
         billing = state.billing.enabled(),
         capacity = state.capacity.enabled(),
         extensions = ?state.extensions.iter().map(|e| e.name()).collect::<Vec<_>>(),

@@ -1,6 +1,6 @@
 //! The outbox drain (skills `messaging` §2): delivers mail, resolves reset
-//! requests and reports accounts to insights after commit, at least once. Added last to notmad, so it drains
-//! last.
+//! requests and reports account events after commit, at least once. Added last
+//! to notmad, so it drains last.
 //!
 //! It wakes on a NATS hint (`<prefix>.outbox`) when one is configured, and
 //! polls every GRUND_WORK_POLL_INTERVAL regardless: a lost hint costs latency,
@@ -21,8 +21,8 @@ use uuid::Uuid;
 use crate::{
     crypto,
     services::{
+        account_events::{ReportError, Reporter},
         billing::RecordError,
-        insights::{ReportError, Reporter},
         mail::{Mail, MailError, Mailer},
     },
     state::State,
@@ -99,7 +99,7 @@ impl OutboxDrain {
         };
         let mail = match kind {
             Kind::PasswordResetRequested => return self.resolve_reset(row).await,
-            Kind::InsightsAccount => return self.report(row).await,
+            Kind::AccountConfirmed => return self.report(row).await,
             Kind::BillingOrganisation => return self.bill(row).await,
             Kind::VerifyEmailMail => Mail::VerifyEmail,
             Kind::PasswordResetMail => Mail::PasswordReset,
@@ -132,7 +132,7 @@ impl OutboxDrain {
         match self.reporter.send(&row).await {
             Ok(()) => {
                 outbox::delivered(&self.state.pool, row.outbox_id).await?;
-                tracing::info!(outbox_id = %row.outbox_id, "account reported to insights");
+                tracing::info!(outbox_id = %row.outbox_id, "account event delivered");
             }
             Err(error @ (ReportError::NotConfigured | ReportError::Permanent)) => {
                 tracing::warn!(outbox_id = %row.outbox_id, reason = %error, "account report dropped");
