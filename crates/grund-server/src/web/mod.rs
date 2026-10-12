@@ -21,6 +21,7 @@ pub mod about;
 pub mod admin;
 pub mod apps;
 pub mod assets;
+pub mod billing;
 pub mod browser;
 pub mod device;
 pub mod domains;
@@ -104,6 +105,10 @@ pub fn router(state: State) -> Router {
             .route(
                 "/{org}/admin/organisations/entitlement",
                 post(admin::entitlement_action),
+            )
+            .route(
+                "/{org}/admin/organisations/complimentary",
+                post(admin::complimentary_action),
             )
             .route("/{org}/pool", get(pool::pool_page))
             .route("/{org}/pool/provision", post(pool::provision))
@@ -255,6 +260,10 @@ pub fn router(state: State) -> Router {
         )
         .route("/{org}/settings/about", get(about::about_page))
         .route("/{org}/settings", get(orgs::settings_page))
+        .route("/{org}/settings/billing", get(billing::page))
+        .route("/{org}/settings/billing/choose", post(billing::choose))
+        .route("/{org}/settings/billing/cancel", post(billing::cancel))
+        .route("/{org}/settings/billing/portal", post(billing::portal))
         .route("/{org}/settings/rename", post(orgs::rename))
         .route("/{org}/settings/delete", post(orgs::delete))
         .route(

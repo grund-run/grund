@@ -22,7 +22,7 @@ use crate::{
     crypto,
     services::{
         account_events::{ReportError, Reporter},
-        billing::RecordError,
+        billing::{self, RecordError},
         mail::{Mail, MailError, Mailer},
     },
     state::State,
@@ -101,6 +101,8 @@ impl OutboxDrain {
             Kind::PasswordResetRequested => return self.resolve_reset(row).await,
             Kind::AccountConfirmed => return self.report(row).await,
             Kind::BillingOrganisation => return self.bill(row).await,
+            Kind::BillingMachineCount => return self.bill(row).await,
+            Kind::BillingMachineChange => return self.bill(row).await,
             Kind::VerifyEmailMail => Mail::VerifyEmail,
             Kind::PasswordResetMail => Mail::PasswordReset,
             Kind::SignupExistingMail => Mail::SignupExisting,
@@ -233,6 +235,8 @@ impl Component for OutboxDrain {
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut prune = tokio::time::interval(Duration::from_secs(3600));
         prune.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut meter = tokio::time::interval(Duration::from_secs(60));
+        meter.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             let woken = async {
                 match wakes.as_mut() {
@@ -246,6 +250,13 @@ impl Component for OutboxDrain {
                     return Ok(());
                 }
                 _ = tick.tick() => self.drain().await,
+                _ = meter.tick(), if self.state.billing.enabled() => {
+                    if let Err(error) = billing::sample_machine_counts(&self.state).await {
+                        tracing::warn!(%error, "billing machine sample failed; retrying next minute");
+                    } else {
+                        wake(&self.state).await;
+                    }
+                }
                 alive = woken => {
                     if alive {
                         self.drain().await;

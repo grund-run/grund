@@ -243,6 +243,36 @@ pub enum EntitlementsAction {
     },
 }
 
+pub type BillingCommand = Noun<BillingAction>;
+
+#[derive(Debug, Subcommand)]
+pub enum BillingAction {
+    #[command(about = "Show one organisation's billing account")]
+    Get { organisation: String },
+    #[command(about = "Grant an organisation complimentary billing")]
+    Grant {
+        organisation: String,
+        #[arg(long)]
+        reason: String,
+        #[arg(long)]
+        expires_at: String,
+        #[arg(long, value_parser = ["Homelab", "Pro", "Business"])]
+        plan: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    #[command(about = "Revoke complimentary billing")]
+    Revoke {
+        organisation: String,
+        #[arg(long)]
+        reason: String,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
 fn pagination(page_size: Option<i32>, page_token: Option<String>) -> Value {
     let mut request = json!({});
     if let Some(size) = page_size {
@@ -491,6 +521,64 @@ pub async fn entitlements(ctx: &Ctx, action: EntitlementsAction) -> CliResult<Ou
     }
 }
 
+pub async fn billing(ctx: &Ctx, action: BillingAction) -> CliResult<Output> {
+    let api = ctx.api()?;
+    match action {
+        BillingAction::Get { organisation } => Ok(Output::fields(
+            api.call(
+                &format!("{SERVICE}/GetBillingAccount"),
+                json!({"organisation": organisation}),
+            )
+            .await?,
+        )),
+        BillingAction::Grant {
+            organisation,
+            reason,
+            expires_at,
+            plan,
+            dry_run,
+        } => {
+            change(
+                ctx,
+                &api,
+                SERVICE,
+                "SetComplimentary",
+                json!({
+                    "organisation": organisation, "enabled": true, "reason": reason,
+                    "expiresAt": expires_at, "plan": plan,
+                    "idempotencyKey": uuid::Uuid::now_v7().to_string()
+                }),
+                dry_run,
+                None,
+            )
+            .await
+        }
+        BillingAction::Revoke {
+            organisation,
+            reason,
+            yes,
+            dry_run,
+        } => {
+            change(
+                ctx,
+                &api,
+                SERVICE,
+                "SetComplimentary",
+                json!({
+                    "organisation": organisation, "enabled": false, "reason": reason,
+                    "idempotencyKey": uuid::Uuid::now_v7().to_string()
+                }),
+                dry_run,
+                Some((
+                    yes,
+                    format!("Revoke complimentary billing for {organisation}"),
+                )),
+            )
+            .await
+        }
+    }
+}
+
 /// Runs an operator client command, printing JSON errors with the same rules as client commands.
 pub async fn run(global: crate::context::Global, action: OperatorClientAction) -> i32 {
     let ctx = Ctx::new(global);
@@ -499,6 +587,7 @@ pub async fn run(global: crate::context::Global, action: OperatorClientAction) -
         OperatorClientAction::Pool(action) => pool(&ctx, action).await,
         OperatorClientAction::Leases(action) => leases(&ctx, action).await,
         OperatorClientAction::Entitlements(action) => entitlements(&ctx, action).await,
+        OperatorClientAction::Billing(action) => billing(&ctx, action).await,
     };
     match result {
         Ok(answer) => {
@@ -519,4 +608,5 @@ pub enum OperatorClientAction {
     Pool(PoolAction),
     Leases(LeasesAction),
     Entitlements(EntitlementsAction),
+    Billing(BillingAction),
 }

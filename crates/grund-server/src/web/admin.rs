@@ -11,10 +11,11 @@ use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::Value;
 
 use crate::{
-    services::{machines::MachinesState, operator_inventory::OperatorInventory},
+    services::{billing, machines::MachinesState, operator_inventory::OperatorInventory},
     state::State,
     templates::compiled::pages::admin,
     web::{
+        billing::AccountView,
         browser::Browser,
         orgs::{Member, member_of},
         pages::{PageResult, forged, not_found_page, redirect, signed_in_typed},
@@ -219,6 +220,10 @@ pub struct AdminPage<'a> {
     pub next_machines_page: String,
     pub organisation: &'a str,
     pub entitlement: Option<bool>,
+    pub billing: Option<AccountView>,
+    pub billing_enabled: bool,
+    pub grant_key: String,
+    pub revoke_key: String,
     pub error: &'static str,
     pub notice: &'static str,
 }
@@ -290,12 +295,14 @@ pub async fn admin_page(
         "organisation" => "There is no organisation by that name.",
         "reason" => "A reason is required.",
         "failed" => "The change could not be made. Try again later.",
+        "billing" => "Billing is unavailable. Try again later.",
         _ => "",
     };
     let notice = match query.done.as_str() {
         "host" => "Host action requested.",
         "grant" => "Hosted machines enabled for the organisation.",
         "revoke" => "Hosted machines disabled for the organisation.",
+        "billing" => "Complimentary billing changed.",
         _ => "",
     };
     let mut hosts: Vec<Host> = vec![];
@@ -310,6 +317,7 @@ pub async fn admin_page(
     let mut next_page = String::new();
     let mut next_machines_page = String::new();
     let mut entitlement = None;
+    let mut billing = None;
     let mut selected_host = None;
     let host_filter = if query.host_filter == "retired" {
         "retired"
@@ -451,13 +459,21 @@ pub async fn admin_page(
                 match machines::live_organisation_by_slug(&state.pool, query.organisation.trim())
                     .await
                 {
-                    Ok(Some(id)) => match state.machines().hosted_enabled(id).await {
-                        Ok(enabled) => entitlement = Some(enabled),
-                        Err(err) => {
-                            tracing::warn!(%err, "hosted access lookup failed");
-                            error = "Hosted access is unavailable. Try again later.";
+                    Ok(Some(id)) => {
+                        match state.machines().hosted_enabled(id).await {
+                            Ok(enabled) => entitlement = Some(enabled),
+                            Err(err) => {
+                                tracing::warn!(%err, "hosted access lookup failed");
+                                error = "Hosted access is unavailable. Try again later.";
+                            }
                         }
-                    },
+                        if state.billing.enabled() {
+                            billing = AccountView::from_billing_operator(
+                                state.billing.account(id),
+                                &state.billing,
+                            );
+                        }
+                    }
                     Ok(None) => error = "There is no organisation by that name.",
                     Err(err) => {
                         tracing::warn!(%err, "organisation lookup failed");
@@ -501,6 +517,18 @@ pub async fn admin_page(
                 next_page,
                 next_machines_page,
                 organisation: query.organisation.trim(),
+                billing,
+                billing_enabled: state.billing.enabled(),
+                grant_key: if state.billing.enabled() {
+                    uuid::Uuid::now_v7().to_string()
+                } else {
+                    String::new()
+                },
+                revoke_key: if state.billing.enabled() {
+                    uuid::Uuid::now_v7().to_string()
+                } else {
+                    String::new()
+                },
                 entitlement,
                 error,
                 notice,
@@ -636,6 +664,109 @@ pub async fn entitlement_action(
             tracing::warn!(%err, "organisation lookup failed");
             ("error", "failed")
         }
+    };
+    let query =
+        serde_urlencoded::to_string([("tab", "organisations"), ("organisation", named), marker])
+            .unwrap_or_default();
+    Ok(redirect(&format!("/{slug}/admin?{query}")))
+}
+
+#[derive(Deserialize)]
+pub struct ComplimentaryForm {
+    #[serde(default)]
+    csrf: String,
+    #[serde(default)]
+    organisation: String,
+    #[serde(default)]
+    action: String,
+    #[serde(default)]
+    plan: String,
+    #[serde(default)]
+    reason: String,
+    #[serde(default)]
+    expires_at: String,
+    #[serde(default)]
+    idempotency_key: String,
+}
+
+pub async fn complimentary_action(
+    AxumState(state): AxumState<State>,
+    browser: Browser,
+    uri: Uri,
+    Path(slug): Path<String>,
+    Form(form): Form<ComplimentaryForm>,
+) -> PageResult {
+    if !browser.form_is_genuine(&form.csrf) {
+        return forged(&state, &browser);
+    }
+    let (session, membership) = match member_of(&state, &browser, &uri, &slug).await {
+        Ok(member) => member,
+        Err(response) => return Ok(*response),
+    };
+    if !operator(&state, &membership).await? || !state.billing.enabled() {
+        return not_found_page(&state, &browser);
+    }
+    if !manages(&membership) {
+        return Ok(redirect(&admin_url(
+            &slug,
+            "organisations",
+            "error",
+            "not-allowed",
+        )));
+    }
+    let enabled = match form.action.as_str() {
+        "grant" => true,
+        "revoke" => false,
+        _ => {
+            return Ok(redirect(&admin_url(
+                &slug,
+                "organisations",
+                "error",
+                "billing",
+            )));
+        }
+    };
+    let Ok(key) = uuid::Uuid::parse_str(&form.idempotency_key) else {
+        return Ok(redirect(&admin_url(
+            &slug,
+            "organisations",
+            "error",
+            "billing",
+        )));
+    };
+    let named = form.organisation.trim();
+    let result = match machines::live_organisation_by_slug(&state.pool, named).await {
+        Ok(Some(id)) => {
+            if let Err(reason) =
+                billing::validate_complimentary(enabled, &form.plan, &form.reason, &form.expires_at)
+            {
+                tracing::debug!(reason, "complimentary billing request refused");
+                Err("reason")
+            } else {
+                state
+                    .billing
+                    .complimentary(billing::Complimentary {
+                        organisation_id: id,
+                        enabled,
+                        plan: &form.plan,
+                        reason: form.reason.trim(),
+                        expires_at: enabled.then_some(form.expires_at.as_str()),
+                        actor_id: session.account_id,
+                        key,
+                    })
+                    .await
+                    .map_err(|_| "billing")
+            }
+        }
+        Ok(None) => Err("organisation"),
+        Err(err) => {
+            tracing::warn!(%err, "organisation lookup failed");
+            Err("billing")
+        }
+    };
+    let marker = match result {
+        Ok(()) => ("done", "billing"),
+        Err(error) => ("error", error),
     };
     let query =
         serde_urlencoded::to_string([("tab", "organisations"), ("organisation", named), marker])

@@ -8,10 +8,12 @@ use grund_proto::grund::operator::v1 as proto;
 use grund_proto::grund::operator::v1::OperatorService;
 use grund_store::{machines, operator};
 use serde_json::Value;
+use uuid::Uuid;
 
 use crate::{
     api::{Caller, caller},
     services::{
+        billing::Complimentary,
         capacity::protobuf_i64,
         machines::{Access, MachinesState},
         operator_inventory::OperatorInventory,
@@ -178,6 +180,46 @@ impl OperatorApi {
             .map(host)
             .ok_or_else(|| internal("capacity host response is missing"))
     }
+}
+
+fn billing_account(
+    organisation: &str,
+    account: crate::services::billing::BillingView,
+    billing: &crate::services::billing::Billing,
+) -> Result<proto::GetBillingAccountResponse, ConnectError> {
+    let crate::services::billing::BillingView::Account(details) = account else {
+        return Err(ConnectError::unavailable("billing is unavailable"));
+    };
+    let operator_link_allowed =
+        billing.trusted_operator_url(&details.operator_url, &details.provider_subscription_id);
+    Ok(proto::GetBillingAccountResponse {
+        organisation: organisation.to_owned(),
+        plan: details.plan.clone(),
+        pending_plan: details.pending_plan.clone(),
+        past_due: details.past_due,
+        complimentary: details.complimentary,
+        complimentary_reason: details.complimentary_reason.clone(),
+        complimentary_expires_at: details.complimentary_expires_at.clone().unwrap_or_default(),
+        total_amount_cents: details.total_amount_cents,
+        currency: details.currency.clone(),
+        complimentary_scheduled_plan: details.complimentary_scheduled_plan.clone(),
+        complimentary_scheduled: details.complimentary_scheduled,
+        complimentary_effective_at: details
+            .complimentary_effective_at
+            .clone()
+            .unwrap_or_default(),
+        operator_url: if operator_link_allowed {
+            details.operator_url.clone()
+        } else {
+            String::new()
+        },
+        provider_subscription_id: if operator_link_allowed {
+            details.provider_subscription_id.clone()
+        } else {
+            String::new()
+        },
+        ..Default::default()
+    })
 }
 
 #[allow(refining_impl_trait)]
@@ -376,6 +418,71 @@ impl OperatorService for OperatorApi {
                 ..Default::default()
             }
             .into(),
+            ..Default::default()
+        })
+    }
+    async fn get_billing_account(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, proto::GetBillingAccountRequest>,
+    ) -> ServiceResult<proto::GetBillingAccountResponse> {
+        self.access(&caller(&ctx)?, Access::Read).await?;
+        if !self.state.billing.enabled() {
+            return Err(ConnectError::unavailable("billing is not configured"));
+        }
+        let organisation_id =
+            machines::live_organisation_by_slug(&self.state.pool, request.organisation)
+                .await
+                .map_err(internal)?
+                .ok_or_else(|| ConnectError::not_found("no such organisation"))?;
+        let account = self.state.billing.account_now(organisation_id).await;
+        Response::ok(billing_account(
+            request.organisation,
+            account,
+            &self.state.billing,
+        )?)
+    }
+
+    async fn set_complimentary(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, proto::SetComplimentaryRequest>,
+    ) -> ServiceResult<proto::SetComplimentaryResponse> {
+        let actor = caller(&ctx)?;
+        self.access(&actor, Access::Manage).await?;
+        if !self.state.billing.enabled() {
+            return Err(ConnectError::unavailable("billing is not configured"));
+        }
+        let key = Uuid::parse_str(request.idempotency_key)
+            .map_err(|_| ConnectError::invalid_argument("invalid idempotency key"))?;
+        crate::services::billing::validate_complimentary(
+            request.enabled,
+            request.plan,
+            request.reason,
+            request.expires_at,
+        )
+        .map_err(ConnectError::invalid_argument)?;
+        let organisation_id =
+            machines::live_organisation_by_slug(&self.state.pool, request.organisation)
+                .await
+                .map_err(internal)?
+                .ok_or_else(|| ConnectError::not_found("no such organisation"))?;
+        self.state
+            .billing
+            .complimentary(Complimentary {
+                organisation_id,
+                enabled: request.enabled,
+                plan: request.plan,
+                reason: request.reason,
+                expires_at: request.enabled.then_some(request.expires_at),
+                actor_id: actor.account_id,
+                key,
+            })
+            .await
+            .map_err(|_| ConnectError::unavailable("billing is unavailable"))?;
+        let account = self.state.billing.account_now(organisation_id).await;
+        Response::ok(proto::SetComplimentaryResponse {
+            account: billing_account(request.organisation, account, &self.state.billing)?.into(),
             ..Default::default()
         })
     }

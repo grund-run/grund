@@ -144,6 +144,8 @@ enum OperatorAction {
     Leases(grund_cli::commands::operator::LeasesCommand),
     #[command(about = "Hosted access: list, grant and revoke")]
     Entitlements(grund_cli::commands::operator::EntitlementsCommand),
+    #[command(about = "Billing: inspect and grant or revoke complimentary access")]
+    Billing(grund_cli::commands::operator::BillingCommand),
 }
 
 fn operator_alias(mut args: Vec<String>) -> Vec<String> {
@@ -359,6 +361,7 @@ pub async fn run_with_extensions(
                 | OperatorAction::Pool(_)
                 | OperatorAction::Leases(_)
                 | OperatorAction::Entitlements(_)
+                | OperatorAction::Billing(_)
         })
     ) {
         let Command::Operator(OperatorCommand { action }) = cli.command else {
@@ -380,6 +383,10 @@ pub async fn run_with_extensions(
             OperatorAction::Entitlements(command) => (
                 command.global,
                 grund_cli::commands::operator::OperatorClientAction::Entitlements(command.action),
+            ),
+            OperatorAction::Billing(command) => (
+                command.global,
+                grund_cli::commands::operator::OperatorClientAction::Billing(command.action),
             ),
             OperatorAction::Apps(_) => unreachable!("operator apps remains database-only"),
         };

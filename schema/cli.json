@@ -1803,6 +1803,59 @@
       "title": "grund.operator.v1.FleetMachine",
       "type": "object"
     },
+    "grund.operator.v1.GetBillingAccountResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "complimentary": {
+          "type": "boolean"
+        },
+        "complimentaryEffectiveAt": {
+          "type": "string"
+        },
+        "complimentaryExpiresAt": {
+          "type": "string"
+        },
+        "complimentaryReason": {
+          "type": "string"
+        },
+        "complimentaryScheduled": {
+          "type": "boolean"
+        },
+        "complimentaryScheduledPlan": {
+          "type": "string"
+        },
+        "currency": {
+          "type": "string"
+        },
+        "operatorUrl": {
+          "type": "string"
+        },
+        "organisation": {
+          "type": "string"
+        },
+        "pastDue": {
+          "type": "boolean"
+        },
+        "pendingPlan": {
+          "type": "string"
+        },
+        "plan": {
+          "type": "string"
+        },
+        "providerSubscriptionId": {
+          "type": "string"
+        },
+        "totalAmountCents": {
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        }
+      },
+      "title": "grund.operator.v1.GetBillingAccountResponse",
+      "type": "object"
+    },
     "grund.operator.v1.Host": {
       "additionalProperties": false,
       "properties": {
@@ -1993,6 +2046,16 @@
         }
       },
       "title": "grund.operator.v1.ResourceCapacity",
+      "type": "object"
+    },
+    "grund.operator.v1.SetComplimentaryResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "account": {
+          "$ref": "#/$defs/grund.operator.v1.GetBillingAccountResponse"
+        }
+      },
+      "title": "grund.operator.v1.SetComplimentaryResponse",
       "type": "object"
     },
     "grund.operator.v1.SetHostedEntitlementResponse": {
@@ -2703,6 +2766,14 @@
           "name": "billing_token",
           "type": "string",
           "value_name": "BILLING_TOKEN"
+        },
+        {
+          "description": "HTTPS origins allowed for checkout and payment portal redirects, separated by commas",
+          "env": "GRUND_BILLING_REDIRECT_ORIGINS",
+          "flag": "--billing-redirect-origins",
+          "name": "billing_redirect_origins",
+          "type": "string",
+          "value_name": "BILLING_REDIRECT_ORIGINS"
         },
         {
           "description": "The capacity provider, e.g. http://fleet:8080, reached from grund's servers only. grund calls `grund.capacity.v1.CapacityService` on it. Set with GRUND_CAPACITY_TOKEN",
@@ -3588,6 +3659,14 @@
           "value_name": "BILLING_TOKEN"
         },
         {
+          "description": "HTTPS origins allowed for checkout and payment portal redirects, separated by commas",
+          "env": "GRUND_BILLING_REDIRECT_ORIGINS",
+          "flag": "--billing-redirect-origins",
+          "name": "billing_redirect_origins",
+          "type": "string",
+          "value_name": "BILLING_REDIRECT_ORIGINS"
+        },
+        {
           "description": "The capacity provider, e.g. http://fleet:8080, reached from grund's servers only. grund calls `grund.capacity.v1.CapacityService` on it. Set with GRUND_CAPACITY_TOKEN",
           "env": "GRUND_CAPACITY_URL",
           "flag": "--capacity-url",
@@ -4331,6 +4410,14 @@
           "name": "billing_token",
           "type": "string",
           "value_name": "BILLING_TOKEN"
+        },
+        {
+          "description": "HTTPS origins allowed for checkout and payment portal redirects, separated by commas",
+          "env": "GRUND_BILLING_REDIRECT_ORIGINS",
+          "flag": "--billing-redirect-origins",
+          "name": "billing_redirect_origins",
+          "type": "string",
+          "value_name": "BILLING_REDIRECT_ORIGINS"
         },
         {
           "description": "The capacity provider, e.g. http://fleet:8080, reached from grund's servers only. grund calls `grund.capacity.v1.CapacityService` on it. Set with GRUND_CAPACITY_TOKEN",
@@ -8013,6 +8100,363 @@
         "grund.operator.v1.OperatorService/SetHostedEntitlement"
       ],
       "summary": "Remove an organisation's hosted access"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "organisation",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "ORGANISATION"
+        }
+      ],
+      "audience": "client",
+      "command": "grund operator billing get",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund operator billing get acme"
+      ],
+      "mutates": false,
+      "output": {
+        "$ref": "#/$defs/grund.operator.v1.GetBillingAccountResponse"
+      },
+      "path": "operator billing get",
+      "rpcs": [
+        "grund.operator.v1.OperatorService/GetBillingAccount"
+      ],
+      "summary": "Show one organisation's billing account"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "organisation",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "ORGANISATION"
+        },
+        {
+          "flag": "--reason",
+          "name": "reason",
+          "required": true,
+          "type": "string",
+          "value_name": "REASON"
+        },
+        {
+          "flag": "--expires-at",
+          "name": "expires_at",
+          "required": true,
+          "type": "string",
+          "value_name": "EXPIRES_AT"
+        },
+        {
+          "enum": [
+            "Homelab",
+            "Pro",
+            "Business"
+          ],
+          "flag": "--plan",
+          "name": "plan",
+          "required": true,
+          "type": "string",
+          "value_name": "PLAN"
+        },
+        {
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund operator billing grant",
+      "destructive": false,
+      "dry_run": true,
+      "examples": [
+        "grund operator billing grant acme --plan Pro --reason internal --expires-at 2027-01-01T00:00:00Z"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.operator.v1.SetComplimentaryResponse"
+      },
+      "path": "operator billing grant",
+      "rpcs": [
+        "grund.operator.v1.OperatorService/SetComplimentary"
+      ],
+      "summary": "Grant an organisation complimentary billing"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "organisation",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "ORGANISATION"
+        },
+        {
+          "flag": "--reason",
+          "name": "reason",
+          "required": true,
+          "type": "string",
+          "value_name": "REASON"
+        },
+        {
+          "flag": "--yes",
+          "name": "yes",
+          "type": "boolean",
+          "value_name": "YES"
+        },
+        {
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund operator billing revoke",
+      "destructive": true,
+      "dry_run": true,
+      "examples": [
+        "grund operator billing revoke acme --reason expired --yes"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.operator.v1.SetComplimentaryResponse"
+      },
+      "path": "operator billing revoke",
+      "rpcs": [
+        "grund.operator.v1.OperatorService/SetComplimentary"
+      ],
+      "summary": "Revoke complimentary billing"
     },
     {
       "args": [

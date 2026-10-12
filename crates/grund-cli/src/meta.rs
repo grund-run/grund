@@ -682,6 +682,28 @@ pub const LEAVES: &[Leaf] = &[
         )
     },
     read(
+        "operator billing get",
+        "grund.operator.v1.GetBillingAccountResponse",
+        &["grund.operator.v1.OperatorService/GetBillingAccount"],
+        &["grund operator billing get acme"],
+    ),
+    write(
+        "operator billing grant",
+        "grund.operator.v1.SetComplimentaryResponse",
+        &["grund.operator.v1.OperatorService/SetComplimentary"],
+        &[
+            "grund operator billing grant acme --plan Pro --reason internal --expires-at 2027-01-01T00:00:00Z",
+        ],
+    ),
+    Leaf {
+        output: "grund.operator.v1.SetComplimentaryResponse",
+        ..destroy(
+            "operator billing revoke",
+            &["grund.operator.v1.OperatorService/SetComplimentary"],
+            &["grund operator billing revoke acme --reason expired --yes"],
+        )
+    },
+    read(
         "describe",
         "",
         &[],

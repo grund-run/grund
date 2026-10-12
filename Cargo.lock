@@ -1879,6 +1879,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "chrono",
  "clap",
  "ed25519-dalek 2.2.0",
  "getrandom 0.3.4",
@@ -1902,6 +1903,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tracing",
+ "uuid",
  "webpki-roots 1.0.9",
 ]
 

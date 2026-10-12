@@ -705,14 +705,19 @@ async fn operator_hosts_hide_retired_inventory_without_losing_state_counts() -> 
 #[tokio::test]
 async fn entitled_customer_orders_and_removes_an_opaque_machine_without_cross_organisation_access()
 -> anyhow::Result<()> {
-    use crate::accepttest::fixtures::{CAPACITY_TOKEN, FakeCapacity};
+    use crate::accepttest::fixtures::{
+        BILLING_TOKEN, CAPACITY_TOKEN, DeletionAnswer, FakeBilling, FakeCapacity,
+    };
 
     let capacity = FakeCapacity::start().await?;
+    let billing = FakeBilling::start(DeletionAnswer::Allow).await?;
     let operator = format!("ops-{}", random_hex(4));
     let Some((given, when, then)) = testcase_configured(&[
         ("GRUND_OPERATOR_ORGANISATION", &operator),
         ("GRUND_CAPACITY_URL", &capacity.url),
         ("GRUND_CAPACITY_TOKEN", CAPACITY_TOKEN),
+        ("GRUND_BILLING_URL", &billing.url),
+        ("GRUND_BILLING_TOKEN", BILLING_TOKEN),
     ])
     .await?
     else {
@@ -893,6 +898,19 @@ async fn entitled_customer_orders_and_removes_an_opaque_machine_without_cross_or
             "{joined}"
         );
     }
+    let created = billing
+        .wait_for("RecordMachineChange", 1, Duration::from_secs(12))
+        .await?;
+    anyhow::ensure!(
+        created[0].body["machineKind"] == "MACHINE_KIND_HOSTED"
+            && created[0].body["change"] == "MACHINE_CHANGE_CREATED"
+            && created[0].body["size"] == "small"
+            && created[0].body["region"] == "test-region"
+            && created[0].body["orderId"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty()),
+        "hosted rental lease must be reported separately: {created:?}"
+    );
     customer_when
         .visiting(&format!("/{organisation}/machines"))
         .await?;
@@ -909,6 +927,16 @@ async fn entitled_customer_orders_and_removes_an_opaque_machine_without_cross_or
         )
         .await?;
     customer_then.status(200)?;
+    let removed = billing
+        .wait_for("RecordMachineChange", 2, Duration::from_secs(12))
+        .await?;
+    anyhow::ensure!(
+        removed[1].body["machineKind"] == "MACHINE_KIND_HOSTED"
+            && removed[1].body["change"] == "MACHINE_CHANGE_REMOVED"
+            && removed[1].body["orderId"] == created[0].body["orderId"]
+            && removed[1].body["eventId"] != created[0].body["eventId"],
+        "hosted rental removal must close the same lease once: {removed:?}"
+    );
     anyhow::ensure!(capacity.calls("RebuildMachine").len() == 1);
     capacity.unavailable_for("RebuildMachine", false);
     let started = Instant::now();

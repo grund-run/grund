@@ -646,15 +646,11 @@ async fn settings_view(
             past_due: false,
             manage_url: None,
         },
-        BillingView::Account {
-            plan,
-            past_due,
-            manage_url,
-        } => BillingPage {
+        BillingView::Account(details) => BillingPage {
             state: "account",
-            plan,
-            past_due,
-            manage_url,
+            plan: details.plan.clone(),
+            past_due: details.past_due,
+            manage_url: Some(format!("/{}/settings/billing", membership.slug)),
         },
         BillingView::Unavailable => BillingPage {
             state: "unavailable",

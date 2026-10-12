@@ -179,7 +179,17 @@ appended). See [.env.example](.env.example).
   answers first, and while it cannot be reached grund keeps asking.
 - Billing is a separate service (`proto/grund/billing/v1`), run only by
   grund's hosted service. Without `GRUND_BILLING_URL` every organisation is
-  free and nothing is sent anywhere.
+  free and nothing is sent anywhere. With `GRUND_BILLING_URL` and
+  `GRUND_BILLING_TOKEN`, owners choose Homelab, Pro or Business in
+  Organisation settings → Billing. Set `GRUND_BILLING_REDIRECT_ORIGINS` to
+  comma-separated bare HTTPS origins allowed for checkout and portal redirects;
+  without an allowed origin, a remote checkout or portal link is refused.
+  The separate billing service owns payment state and checks it before changes.
+  Grund reports own-machine creation and removal and sends one durable count
+  (including zero and disconnected machines, excluding hosted machines) per
+  completed UTC hour. Missing hours are not invented after downtime. Only an
+  operator owner or admin can grant or revoke complimentary billing in the
+  Organisations admin panel or with `grund operator billing`.
 
 ```bash
 curl -s -X POST -H 'Content-Type: application/json' -d '{}' \

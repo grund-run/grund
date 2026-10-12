@@ -895,3 +895,61 @@ async fn the_notifications_cli_lists_json_and_marks_only_its_own_items_read() ->
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn operator_billing_cli_grants_and_revokes_a_complimentary_account() -> anyhow::Result<()> {
+    use crate::accepttest::fixtures::{AccountAnswer, BILLING_TOKEN, DeletionAnswer, FakeBilling};
+    let billing =
+        FakeBilling::start_with_account(DeletionAnswer::Allow, AccountAnswer::Free).await?;
+    let operator = format!("ops-{}", crate::accepttest::fixtures::random_hex(4));
+    let Some((given, when, then)) = testcase_configured(&[
+        ("GRUND_OPERATOR_ORGANISATION", &operator),
+        ("GRUND_BILLING_URL", &billing.url),
+        ("GRUND_BILLING_TOKEN", BILLING_TOKEN),
+    ])
+    .await?
+    else {
+        return Ok(());
+    };
+    given.a_signed_in_account_named(&operator).await?;
+    let (other, _, _) = given.testcase.another_browser();
+    let target = other.a_signed_in_account().await?;
+    let shell = Shell::fresh(&[])?;
+    approved_cli_session(&shell, &when, &then).await?;
+    let before = shell
+        .json("operator billing get", &[&target.username])
+        .await?;
+    anyhow::ensure!(
+        before["plan"] == "Free" && before["complimentary"] != true,
+        "{before}"
+    );
+    let granted = shell
+        .json(
+            "operator billing grant",
+            &[
+                &target.username,
+                "--plan",
+                "Pro",
+                "--reason",
+                "test organisation",
+                "--expires-at",
+                "2099-01-01T00:00:00Z",
+            ],
+        )
+        .await?;
+    anyhow::ensure!(
+        granted["account"]["complimentary"] == true && granted["account"]["plan"] == "Pro",
+        "{granted}"
+    );
+    let revoked = shell
+        .json(
+            "operator billing revoke",
+            &[&target.username, "--reason", "access ended", "--yes"],
+        )
+        .await?;
+    anyhow::ensure!(
+        revoked["account"]["complimentary"] != true && revoked["account"]["plan"] == "Free",
+        "{revoked}"
+    );
+    Ok(())
+}

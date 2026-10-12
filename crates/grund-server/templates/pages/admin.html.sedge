@@ -1,5 +1,5 @@
-use crate::templates::compiled::components::{PageHead, Tabs, Banner, Section, Rows, Row, EmptyState, Facts, Fact, IconFact, Expanders, Expander, Form, Field, HiddenField, Button, PostButton, Panel, Actions, LinkMore, RowPill, ShortId, RelativeTime, CopyButton};
-props crate::web::admin::AdminPage<'_> { slug, csrf, manages, tab, host_filter, retired_count, now, hosts, selected_host, machines, pools, failures, events, leases, organisations, available, leased, next_page, next_machines_page, organisation, entitlement, error, notice };
+use crate::templates::compiled::components::{PageHead, Tabs, Banner, Section, Rows, Row, EmptyState, Facts, Fact, IconFact, Expanders, Expander, Form, Field, HiddenField, Button, PostButton, Panel, Actions, LinkMore, RowPill, ShortId, RelativeTime, CopyButton, ChoiceField, ChoiceCard, Para, External};
+props crate::web::admin::AdminPage<'_> { slug, csrf, manages, tab, host_filter, retired_count, now, hosts, selected_host, machines, pools, failures, events, leases, organisations, available, leased, next_page, next_machines_page, organisation, entitlement, billing, billing_enabled, grant_key, revoke_key, error, notice };
 
 <PageHead title="Admin" />
 {let hosts_url = format!("/{slug}/admin");}
@@ -133,6 +133,57 @@ props crate::web::admin::AdminPage<'_> { slug, csrf, manages, tab, host_filter, 
       }}
     }}
   </Panel>
+  {if *billing_enabled && !organisation.is_empty() {
+    <Panel id="complimentary-billing" title="Billing">
+      {if let Some(account) = billing {
+        <Rows>
+          <Row name="Plan" sub={&account.details.plan} plain />
+          {if !account.details.pending_plan.is_empty() { <Row name="Next plan" sub={&account.details.pending_plan} plain /> }}
+          <Row name="Complimentary" sub={if account.details.complimentary { "Active" } else if account.details.complimentary_scheduled { "Scheduled" } else { "No" }} plain />
+          {if account.details.complimentary_scheduled {
+            {if let Some(date) = &account.details.complimentary_effective_at { <Row name="Complimentary from" sub={date} plain /> }}
+            {if !account.details.complimentary_scheduled_plan.is_empty() { <Row name="Complimentary plan" sub={&account.details.complimentary_scheduled_plan} plain /> }}
+          }}
+          {if !account.details.complimentary_reason.is_empty() { <Row name="Reason" sub={&account.details.complimentary_reason} plain /> }}
+          {if let Some(expiry) = &account.details.complimentary_expires_at { <Row name="Until" sub={expiry} plain /> }}
+          {if account.details.complimentary { <Row name="Total" sub="€0" plain /> }}
+        </Rows>
+        {if account.details.complimentary_scheduled {
+          <Para kind="hint">The current cycle is charged normally until the complimentary discount takes effect.</Para>
+        }}
+        {if *manages {
+          {if account.operator_url_allowed {
+            <Rows><Row name="Provider subscription ID" sub={&account.details.provider_subscription_id} plain /></Rows>
+            <External href={&account.details.operator_url} label="Open payment provider" />
+          }}
+          <Form action="/{slug}/admin/organisations/complimentary" csrf={csrf}>
+            <HiddenField name="organisation" value={organisation} />
+            <HiddenField name="action" value="grant" />
+            <HiddenField name="idempotency_key" value={grant_key} />
+            <ChoiceField name="plan" label="Complimentary plan">
+              <ChoiceCard name="plan" value="Homelab" title="Homelab" selected />
+              <ChoiceCard name="plan" value="Pro" title="Pro" />
+              <ChoiceCard name="plan" value="Business" title="Business" />
+            </ChoiceField>
+            <Field name="reason" label="Reason" required />
+            <Field name="expires_at" label="Expires at (ISO 8601 UTC)" placeholder={Some("2027-01-01T00:00:00Z")} required />
+            <Actions><Button label="Grant complimentary billing" kind="secondary" /></Actions>
+          </Form>
+          {if account.details.complimentary || account.details.complimentary_scheduled {
+            <Form action="/{slug}/admin/organisations/complimentary" csrf={csrf}>
+              <HiddenField name="organisation" value={organisation} />
+              <HiddenField name="action" value="revoke" />
+              <HiddenField name="idempotency_key" value={revoke_key} />
+              <Field name="reason" label="Reason for revocation" required />
+              <Actions><Button label="Revoke complimentary billing" kind="secondary" /></Actions>
+            </Form>
+          }}
+        }}
+      } else {
+        <Banner text="Billing is unavailable. Try again later." />
+      }}
+    </Panel>
+  }}
   <Section id="all-organisations" title="Organisations" count={Some(organisations.len())}>
     {if organisations.is_empty() && error.is_empty() { <EmptyState text="No organisations." /> }}
     <Rows>{for item in organisations {

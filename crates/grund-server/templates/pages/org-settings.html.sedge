@@ -2,7 +2,7 @@ use crate::templates::compiled::components::{OrganisationTabs, Rows, Row, Sectio
 props crate::web::orgs::SettingsPage<'_> { viewer, csrf, owners, billing, rename_value, deleting, refusal, notice, rename_error, delete_error };
 
 {if let Some(org) = &viewer.current {
-  <OrganisationTabs slug={&org.slug} active="general" />
+  <OrganisationTabs slug={&org.slug} active="general" billing={billing.state != "free" && org.owner} />
   {if !notice.is_empty() { <Banner text={notice} tone="ok" /> }}
   <Rows>
     <Row name="Name" sub={&org.slug} tone="ok" status_tone="ok" plain end_active={Some(!org.owner)}><:end>{if !org.owner { <Para kind="hint">Owners can rename it.</Para> }}</:end></Row>

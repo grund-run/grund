@@ -245,6 +245,14 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
         Requirement::Session,
     ),
     (
+        "/grund.operator.v1.OperatorService/GetBillingAccount",
+        Requirement::Session,
+    ),
+    (
+        "/grund.operator.v1.OperatorService/SetComplimentary",
+        Requirement::Session,
+    ),
+    (
         "/grund.machine.v1.MachineService/ListHostedOffers",
         Requirement::SessionOrFullToken,
     ),
@@ -1708,6 +1716,20 @@ mod tests {
             _: RequestContext,
             _: ServiceRequest<'_, operator_proto::SetHostedEntitlementRequest>,
         ) -> ServiceResult<operator_proto::SetHostedEntitlementResponse> {
+            unreachable!()
+        }
+        async fn get_billing_account(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, operator_proto::GetBillingAccountRequest>,
+        ) -> ServiceResult<operator_proto::GetBillingAccountResponse> {
+            unreachable!()
+        }
+        async fn set_complimentary(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, operator_proto::SetComplimentaryRequest>,
+        ) -> ServiceResult<operator_proto::SetComplimentaryResponse> {
             unreachable!()
         }
     }

@@ -13,10 +13,7 @@ mod given;
 mod then;
 mod when;
 
-pub use billing::{
-    AccountAnswer, DeletionAnswer, FakeBilling, MANAGE_URL as BILLING_MANAGE_URL,
-    TOKEN as BILLING_TOKEN,
-};
+pub use billing::{AccountAnswer, DeletionAnswer, FakeBilling, TOKEN as BILLING_TOKEN};
 pub use capacity::{FakeCapacity, TOKEN as CAPACITY_TOKEN};
 pub use fixture::*;
 pub use given::mail_count;

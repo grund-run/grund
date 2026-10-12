@@ -19,6 +19,8 @@ pub enum Kind {
     AccountConfirmed,
     InvitationMail,
     BillingOrganisation,
+    BillingMachineCount,
+    BillingMachineChange,
 }
 
 impl Kind {
@@ -31,6 +33,8 @@ impl Kind {
             Kind::AccountConfirmed => "insights.account",
             Kind::InvitationMail => "mail.invitation",
             Kind::BillingOrganisation => "billing.organisation",
+            Kind::BillingMachineCount => "billing.machine_count",
+            Kind::BillingMachineChange => "billing.machine_change",
         }
     }
 
@@ -46,6 +50,8 @@ impl Kind {
             Kind::AccountConfirmed,
             Kind::InvitationMail,
             Kind::BillingOrganisation,
+            Kind::BillingMachineCount,
+            Kind::BillingMachineChange,
         ]
         .into_iter()
         .find(|kind| kind.as_str() == value)

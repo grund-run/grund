@@ -31,6 +31,18 @@ service BillingService {
   rpc CheckDeletion(CheckDeletionRequest) returns (CheckDeletionResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
   }
+
+  rpc BeginCheckout(BeginCheckoutRequest) returns (BeginCheckoutResponse);
+  rpc ChangePlan(ChangePlanRequest) returns (ChangePlanResponse);
+  rpc CancelSubscription(CancelSubscriptionRequest) returns (CancelSubscriptionResponse);
+  rpc OpenPortal(OpenPortalRequest) returns (OpenPortalResponse);
+  rpc RecordMachineCount(RecordMachineCountRequest) returns (RecordMachineCountResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  rpc RecordMachineChange(RecordMachineChangeRequest) returns (RecordMachineChangeResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  rpc SetComplimentary(SetComplimentaryRequest) returns (SetComplimentaryResponse);
 }
 
 message GetAccountRequest {
@@ -49,6 +61,21 @@ message Account {
   // The billing service's own page where owners manage payment details and
   // invoices. Empty when there is nothing to manage.
   string manage_url = 3;
+  string pending_plan = 4;
+  bool complimentary = 5;
+  google.protobuf.Timestamp complimentary_expires_at = 6;
+  int64 total_amount_cents = 7;
+  string currency = 8;
+  string complimentary_reason = 9;
+  // A paid subscription remains charged until the next-cycle grant is
+  // verified effective by the provider. Never infer €0 from this schedule.
+  string complimentary_scheduled_plan = 10;
+  bool complimentary_scheduled = 11;
+  google.protobuf.Timestamp complimentary_effective_at = 12;
+  // Operator-only payment-provider dashboard for manual refund decisions.
+  string operator_url = 13;
+  // Provider subscription UUID for an operator's manual refund lookup.
+  string provider_subscription_id = 14;
 }
 
 enum AccountStatus {
@@ -57,6 +84,7 @@ enum AccountStatus {
   ACCOUNT_STATUS_ACTIVE = 1;
   // A payment failed; owners should update payment details.
   ACCOUNT_STATUS_PAST_DUE = 2;
+  ACCOUNT_STATUS_CANCELLED = 3;
 }
 
 message RecordOrganisationRequest {
@@ -86,4 +114,96 @@ message CheckDeletionResponse {
   bool allowed = 1;
   // Shown to the owner when allowed is false, e.g. "An invoice is unpaid."
   string reason = 2;
+}
+
+message BeginCheckoutRequest {
+  string organisation_id = 1;
+  string plan = 2;
+  string success_url = 3;
+  string idempotency_key = 4;
+}
+
+message BeginCheckoutResponse {
+  string url = 1;
+}
+
+message ChangePlanRequest {
+  string organisation_id = 1;
+  string plan = 2;
+  string idempotency_key = 3;
+}
+
+message ChangePlanResponse {
+  Account account = 1;
+}
+
+message CancelSubscriptionRequest {
+  string organisation_id = 1;
+  string idempotency_key = 2;
+}
+
+message CancelSubscriptionResponse {
+  Account account = 1;
+}
+
+message OpenPortalRequest {
+  string organisation_id = 1;
+  string return_url = 2;
+  string idempotency_key = 3;
+}
+
+message OpenPortalResponse {
+  string url = 1;
+}
+
+message RecordMachineCountRequest {
+  string event_id = 1;
+  string organisation_id = 2;
+  google.protobuf.Timestamp sampled_at = 3;
+  int32 machines = 4;
+  string idempotency_key = 5;
+}
+
+message RecordMachineCountResponse {}
+
+enum MachineChange {
+  MACHINE_CHANGE_UNSPECIFIED = 0;
+  MACHINE_CHANGE_CREATED = 1;
+  MACHINE_CHANGE_REMOVED = 2;
+}
+
+// Rental leases are reconciled separately from own-machine licence samples.
+enum MachineKind {
+  MACHINE_KIND_UNSPECIFIED = 0;
+  MACHINE_KIND_OWN = 1;
+  MACHINE_KIND_HOSTED = 2;
+}
+
+message RecordMachineChangeRequest {
+  string event_id = 1;
+  string organisation_id = 2;
+  string machine_id = 3;
+  MachineChange change = 4;
+  google.protobuf.Timestamp changed_at = 5;
+  string idempotency_key = 6;
+  MachineKind machine_kind = 7;
+  string order_id = 8;
+  string size = 9;
+  string region = 10;
+}
+
+message RecordMachineChangeResponse {}
+
+message SetComplimentaryRequest {
+  string organisation_id = 1;
+  bool enabled = 2;
+  string plan = 3;
+  string reason = 4;
+  google.protobuf.Timestamp expires_at = 5;
+  string actor_id = 6;
+  string idempotency_key = 7;
+}
+
+message SetComplimentaryResponse {
+  Account account = 1;
 }

@@ -476,6 +476,10 @@ pub struct BillingArgs {
     /// ASCII characters.
     #[arg(long, env = "GRUND_BILLING_TOKEN", hide_env_values = true)]
     pub billing_token: Option<String>,
+
+    /// HTTPS origins allowed for checkout and payment portal redirects, separated by commas.
+    #[arg(long, env = "GRUND_BILLING_REDIRECT_ORIGINS")]
+    pub billing_redirect_origins: Option<String>,
 }
 
 /// What the Machines page offers by default: the script that installs the
@@ -967,6 +971,29 @@ impl BillingArgs {
             self.billing_url.is_some() == self.billing_token.is_some(),
             "GRUND_BILLING_URL and GRUND_BILLING_TOKEN must be set together"
         );
+        anyhow::ensure!(
+            self.billing_redirect_origins.is_none() || self.enabled(),
+            "GRUND_BILLING_REDIRECT_ORIGINS requires GRUND_BILLING_URL"
+        );
+        if let Some(origins) = &self.billing_redirect_origins {
+            for origin in origins.split(',') {
+                let parsed = reqwest::Url::parse(origin)?;
+                anyhow::ensure!(
+                    parsed.scheme() == "https",
+                    "GRUND_BILLING_REDIRECT_ORIGINS must contain HTTPS origins"
+                );
+                anyhow::ensure!(
+                    parsed.host_str().is_some()
+                        && parsed.username().is_empty()
+                        && parsed.password().is_none()
+                        && parsed.path() == "/"
+                        && parsed.query().is_none()
+                        && parsed.fragment().is_none()
+                        && !origin.ends_with('/'),
+                    "GRUND_BILLING_REDIRECT_ORIGINS must contain bare HTTPS origins"
+                );
+            }
+        }
         if let Some(url) = &self.billing_url {
             anyhow::ensure!(
                 (url.starts_with("http://") || url.starts_with("https://"))

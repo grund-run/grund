@@ -26,6 +26,10 @@ service OperatorService {
     option idempotency_level = NO_SIDE_EFFECTS;
   }
   rpc SetHostedEntitlement(SetHostedEntitlementRequest) returns (SetHostedEntitlementResponse);
+  rpc GetBillingAccount(GetBillingAccountRequest) returns (GetBillingAccountResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  rpc SetComplimentary(SetComplimentaryRequest) returns (SetComplimentaryResponse);
 }
 
 message ResourceCapacity {
@@ -99,3 +103,29 @@ message HostedEntitlement { string organisation = 1; bool enabled = 2; }
 message ListEntitlementsResponse { repeated HostedEntitlement organisations = 1; }
 message SetHostedEntitlementRequest { string organisation = 1; bool enabled = 2; }
 message SetHostedEntitlementResponse { HostedEntitlement organisation = 1; }
+message GetBillingAccountRequest { string organisation = 1; }
+message GetBillingAccountResponse {
+  string organisation = 1;
+  string plan = 2;
+  string pending_plan = 3;
+  bool complimentary = 4;
+  string complimentary_reason = 5;
+  string complimentary_expires_at = 6;
+  bool past_due = 7;
+  int64 total_amount_cents = 8;
+  string currency = 9;
+  string complimentary_scheduled_plan = 10;
+  bool complimentary_scheduled = 11;
+  string complimentary_effective_at = 12;
+  string operator_url = 13;
+  string provider_subscription_id = 14;
+}
+message SetComplimentaryRequest {
+  string organisation = 1;
+  bool enabled = 2;
+  string plan = 3;
+  string reason = 4;
+  string expires_at = 5;
+  string idempotency_key = 6;
+}
+message SetComplimentaryResponse { GetBillingAccountResponse account = 1; }

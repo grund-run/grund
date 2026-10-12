@@ -3,6 +3,7 @@ mod fixtures;
 
 mod api;
 mod apps;
+mod billing;
 mod certificates;
 mod cli;
 mod csrf;

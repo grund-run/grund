@@ -1,8 +1,8 @@
 use std::time::{Duration, Instant};
 
 use crate::accepttest::fixtures::{
-    AccountAnswer, BILLING_MANAGE_URL, BILLING_TOKEN, DeletionAnswer, FakeBilling, Given, Then,
-    When, testcase_configured, testcase_with_mail,
+    AccountAnswer, BILLING_TOKEN, DeletionAnswer, FakeBilling, Given, Then, When,
+    testcase_configured, testcase_with_mail,
 };
 
 const ORGS: &str = "/grund.organisation.v1.OrganisationService";
@@ -144,7 +144,7 @@ async fn the_instance_organisation_cannot_be_deleted() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-async fn owners_see_the_billing_services_plan_and_its_link() -> anyhow::Result<()> {
+async fn owners_see_their_billing_account_in_organisation_settings() -> anyhow::Result<()> {
     let billing = FakeBilling::start(DeletionAnswer::Allow).await?;
     let Some((given, when, then)) = billed_by(&billing).await? else {
         return Ok(());
@@ -157,13 +157,8 @@ async fn owners_see_the_billing_services_plan_and_its_link() -> anyhow::Result<(
         when.visiting(&path).await?;
         then.status(200)?;
         if then.body_contains("Manage billing").is_ok() {
-            then.body_contains("Pro")?.body_contains(
-                BILLING_MANAGE_URL
-                    .trim_start_matches("https://")
-                    .split('/')
-                    .next()
-                    .unwrap_or_default(),
-            )?;
+            then.body_contains("Pro")?
+                .body_contains(&format!("/{}/settings/billing", account.username))?;
             break;
         }
         anyhow::ensure!(Instant::now() < deadline, "billing plan never showed");

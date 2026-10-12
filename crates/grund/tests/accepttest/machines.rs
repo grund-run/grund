@@ -3,6 +3,7 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+use crate::accepttest::fixtures::{AccountAnswer, BILLING_TOKEN, DeletionAnswer, FakeBilling};
 use crate::accepttest::fixtures::{Given, Then, When, testcase_configured, testcase_with_mail};
 
 const ENROLL: &str = "/grund.agent.v1.MachineEnrollmentService/EnrollMachine";
@@ -2377,5 +2378,117 @@ async fn a_members_reported_home_relay_goes_into_the_list_only_when_it_is_one_of
         "a relay grund does not run is ignored"
     );
     anyhow::ensure!(hint_after("").await?.is_none(), "reporting none clears it");
+    Ok(())
+}
+
+#[tokio::test]
+async fn own_machine_lifecycle_and_completed_hour_samples_use_historical_inventory()
+-> anyhow::Result<()> {
+    let billing =
+        FakeBilling::start_with_account(DeletionAnswer::Allow, AccountAnswer::Free).await?;
+    let Some((given, when, then)) = testcase_configured(&[
+        ("GRUND_BILLING_URL", &billing.url),
+        ("GRUND_BILLING_TOKEN", BILLING_TOKEN),
+    ])
+    .await?
+    else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let token = minting(
+        &when,
+        &then,
+        &format!("{MACHINES}/CreateJoinToken"),
+        json!({"organisation": owner.username, "name": "metered"}),
+    )
+    .await?;
+    enrolling(&when, &token, &a_machine_key(), "metered").await?;
+    then.status(200)?;
+    let machine_id = json(&then)?["machineId"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    let created = billing
+        .wait_for("RecordMachineChange", 1, std::time::Duration::from_secs(12))
+        .await?;
+    anyhow::ensure!(
+        created[0].body["change"] == "MACHINE_CHANGE_CREATED"
+            && created[0].body["machineKind"] == "MACHINE_KIND_OWN",
+        "creation is not reported"
+    );
+    when.calling(
+        &format!("{MACHINES}/RevokeMachine"),
+        &json!({"organisation": owner.username, "machineId": machine_id}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    let changes = billing
+        .wait_for("RecordMachineChange", 2, std::time::Duration::from_secs(12))
+        .await?;
+    anyhow::ensure!(
+        changes[1].body["change"] == "MACHINE_CHANGE_REMOVED"
+            && changes[1].body["machineKind"] == "MACHINE_KIND_OWN"
+            && changes[0].body["eventId"] != changes[1].body["eventId"],
+        "removal needs a distinct durable event"
+    );
+    let Some(database_url) = when.testcase.fixture.database_url() else {
+        return Ok(());
+    };
+    let pool = sqlx::PgPool::connect(&database_url).await?;
+    let sampled_at: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT date_trunc('hour', now()) - interval '2 hours'")
+            .fetch_one(&pool)
+            .await?;
+    let organisation_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT organisation_id FROM grund_organisations WHERE slug = $1")
+            .bind(&owner.username)
+            .fetch_one(&pool)
+            .await?;
+    grund_server::services::billing::enqueue_completed_hour(&pool, sampled_at).await?;
+    let premature: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM grund_outbox \
+         WHERE kind = 'billing.machine_count' AND payload->>'organisationId' = $1",
+    )
+    .bind(organisation_id.to_string())
+    .fetch_one(&pool)
+    .await?;
+    anyhow::ensure!(
+        premature == 0,
+        "a newly created organisation must not receive a sample for an earlier hour"
+    );
+    let mut tx = pool.begin().await?;
+    sqlx::query("UPDATE grund_organisations SET created_at = $1 WHERE organisation_id = $2")
+        .bind(sampled_at + chrono::Duration::minutes(5))
+        .bind(organisation_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "UPDATE grund_machines SET registered_at = $1, revoked_at = $2 WHERE machine_id = $3",
+    )
+    .bind(sampled_at + chrono::Duration::minutes(10))
+    .bind(sampled_at + chrono::Duration::minutes(90))
+    .bind(uuid::Uuid::parse_str(&machine_id)?)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    grund_server::services::billing::enqueue_completed_hour(&pool, sampled_at).await?;
+    grund_server::services::billing::enqueue_completed_hour(
+        &pool,
+        sampled_at + chrono::Duration::hours(1),
+    )
+    .await?;
+    let counts = billing
+        .wait_for("RecordMachineCount", 2, std::time::Duration::from_secs(12))
+        .await?;
+    anyhow::ensure!(
+        counts
+            .iter()
+            .any(|call| call.body["machines"] == 1
+                && call.body["sampledAt"] == sampled_at.to_rfc3339())
+            && counts.iter().any(|call| call.body["machines"] == 0
+                && call.body["sampledAt"]
+                    == (sampled_at + chrono::Duration::hours(1)).to_rfc3339()),
+        "samples must use registered/revoked state at each completed hour: {counts:?}"
+    );
     Ok(())
 }

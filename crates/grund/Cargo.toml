@@ -31,6 +31,8 @@ tracing.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
 parking_lot = "0.12"
 # The accepttests speak raw HTTP/1.1 so that what they assert is what went
 # over the wire. TLS is for running them against a live https origin. ring,

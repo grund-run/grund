@@ -32,6 +32,7 @@ use crate::{
     crypto,
     keys::{Keys, KeysState, PublicKey},
     services::{
+        billing,
         capacity::{CapacityError, CapacityState},
         limits::LimitsState,
         networks::NetworksState,
@@ -433,6 +434,20 @@ impl Machines {
                     },
                 );
             }
+            billing::queue_hosted_change(
+                &self.state,
+                work.sql(),
+                billing::HostedChange {
+                    organisation_id,
+                    order_id,
+                    machine_id,
+                    size,
+                    region,
+                    change: "MACHINE_CHANGE_CREATED",
+                    at: Utc::now(),
+                },
+            )
+            .await?;
             notify_hosted_order(
                 work.sql(),
                 organisation_id,
@@ -723,6 +738,22 @@ impl Machines {
             None,
         )
         .await?;
+        if let Some(machine_id) = machine {
+            billing::queue_hosted_change(
+                &self.state,
+                work.sql(),
+                billing::HostedChange {
+                    organisation_id,
+                    order_id,
+                    machine_id,
+                    size: &order.size,
+                    region: &order.region,
+                    change: "MACHINE_CHANGE_REMOVED",
+                    at: Utc::now(),
+                },
+            )
+            .await?;
+        }
         work.commit().await?;
         if let Some(machine_id) = machine {
             let row = self
@@ -1077,6 +1108,20 @@ impl Machines {
                         Some(machine_id),
                     )
                     .await?;
+                    billing::queue_hosted_change(
+                        &self.state,
+                        work.sql(),
+                        billing::HostedChange {
+                            organisation_id: order.organisation_id,
+                            order_id: order.order_id,
+                            machine_id,
+                            size: &order.size,
+                            region: &order.region,
+                            change: "MACHINE_CHANGE_CREATED",
+                            at: now,
+                        },
+                    )
+                    .await?;
                     notify_hosted_order(
                         work.sql(),
                         order.organisation_id,
@@ -1093,6 +1138,16 @@ impl Machines {
             grund_store::agents::link_vm_machine(&mut **work.sql(), vm_id, machine_id).await?;
         }
         let enrollment = self.enrollment(&mut work, machine_id, pool).await?;
+        if token.machine_id.is_none() && matches!(pool, Pool::Organisation { .. }) {
+            billing::queue_machine_change(
+                &self.state,
+                work.sql(),
+                machine_id,
+                "MACHINE_CHANGE_CREATED",
+                now,
+            )
+            .await?;
+        }
         work.commit().await?;
         Ok(EnrollOutcome::Enrolled(enrollment))
     }
@@ -1655,6 +1710,7 @@ impl Machines {
         machine_id: Uuid,
         command: MachineCommand,
     ) -> anyhow::Result<ChangeOutcome> {
+        let removed = matches!(&command, MachineCommand::Revoke { .. });
         let mut work = Work::begin(
             &self.state.events,
             Uuid::now_v7(),
@@ -1663,6 +1719,16 @@ impl Machines {
         .await?;
         if let Some(outcome) = refused(work.machine(machine_id, command).await)? {
             return Ok(outcome);
+        }
+        if removed {
+            billing::queue_machine_change(
+                &self.state,
+                work.sql(),
+                machine_id,
+                "MACHINE_CHANGE_REMOVED",
+                Utc::now(),
+            )
+            .await?;
         }
         work.commit().await?;
         let row = machines::machine(&self.state.pool, machine_id)
