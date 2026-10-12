@@ -74,6 +74,10 @@ kjuulh: "kubernetes-app": {
 					// The management pool (grund-docs design/machines.md §7a): its
 					// machines come from the capacity provider in this namespace.
 					GRUND_CAPACITY_URL: "http://grund-fleet:8480"
+					// Dev-only checkout, portal and operator links share the
+					// verified external origin; production stays inert.
+					GRUND_BILLING_URL:              "http://billing:8080"
+					GRUND_BILLING_REDIRECT_ORIGINS: "https://sandbox.polar.sh"
 				}
 				// grund-secrets is applied by the cluster's operators, not by
 				// forest. Dev's smtp_url is the namespace's shared development
@@ -89,6 +93,9 @@ kjuulh: "kubernetes-app": {
 					// The capacity provider's Secret: the one token it accepts
 					// from grund, and nothing else.
 					{name: "GRUND_CAPACITY_TOKEN", secret: "fleet-secrets", key: "grund_token"},
+					// Dev-only shared Connect credential; the billing pod reads
+					// the same key from the operator-managed Secret.
+					{name: "GRUND_BILLING_TOKEN", secret: "billing-secrets", key: "grund_token"},
 					// Applied by the dev cluster operator; endpoint and deployment
 					// identity stay out of this public manifest.
 					{name: "OTEL_EXPORTER_OTLP_ENDPOINT", secret: "grund-otel", key: "OTEL_EXPORTER_OTLP_ENDPOINT"},

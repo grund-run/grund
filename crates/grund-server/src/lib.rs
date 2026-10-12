@@ -67,6 +67,11 @@ pub async fn serve(
     let secret = secrets::SecretKey::load(&config)?;
     let pool = db::connect_waiting(&config.database, config.database_wait, config.listen).await?;
     grund_store::migrate(&pool).await?;
+    if config.billing.enabled() {
+        services::billing::queue_existing(&pool)
+            .await
+            .context("queue existing organisations for billing")?;
+    }
     if config.organisations == config::OrganisationMode::Single {
         use grund_store::organisations::{InstanceCheck, prepare_single_instance};
         match prepare_single_instance(&pool).await? {

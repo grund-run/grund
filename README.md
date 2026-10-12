@@ -185,6 +185,8 @@ appended). See [.env.example](.env.example).
   comma-separated bare HTTPS origins allowed for checkout and portal redirects;
   without an allowed origin, a remote checkout or portal link is refused.
   The separate billing service owns payment state and checks it before changes.
+  Enabling billing on an existing instance queues its live organisations for
+  registration at startup; restart retries are idempotent.
   Grund reports own-machine creation and removal and sends one durable count
   (including zero and disconnected machines, excluding hosted machines) per
   completed UTC hour. Missing hours are not invented after downtime. Only an

@@ -525,20 +525,31 @@ fn view_from_response(answer: &serde_json::Value) -> BillingView {
     }))
 }
 
-/// Queues `RecordOrganisation` for a change, inside the unit of work that
-/// made it. Does nothing without a billing service.
-pub async fn queue_change(
-    state: &State,
+/// Enqueues existing live organisations when billing is enabled on a populated
+/// instance. The stable event ID makes restart retries safe, and the original
+/// creation timestamp prevents a delayed seed from undoing a later rename.
+pub async fn queue_existing(pool: &PgPool) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let organisations: Vec<(Uuid, String, DateTime<Utc>)> = sqlx::query_as(
+        "SELECT organisation_id,slug,created_at FROM grund_organisations WHERE deleted_at IS NULL",
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    for (id, slug, created_at) in organisations {
+        let event_id = Uuid::new_v5(&id, b"billing-existing-organisation-v1");
+        enqueue_change(&mut tx, event_id, id, &slug, Change::Created, created_at).await?;
+    }
+    tx.commit().await
+}
+
+async fn enqueue_change(
     connection: &mut PgConnection,
+    event_id: Uuid,
     organisation_id: Uuid,
     slug: &str,
     change: Change,
     at: DateTime<Utc>,
 ) -> Result<(), sqlx::Error> {
-    if !state.billing.enabled() {
-        return Ok(());
-    }
-    let event_id = Uuid::now_v7();
     let payload = serde_json::json!({
         "eventId": event_id.to_string(),
         "organisationId": organisation_id.to_string(),
@@ -552,6 +563,30 @@ pub async fn queue_change(
         Kind::BillingOrganisation,
         "",
         &payload,
+    )
+    .await
+}
+
+/// Queues `RecordOrganisation` for a change, inside the unit of work that
+/// made it. Does nothing without a billing service.
+pub async fn queue_change(
+    state: &State,
+    connection: &mut PgConnection,
+    organisation_id: Uuid,
+    slug: &str,
+    change: Change,
+    at: DateTime<Utc>,
+) -> Result<(), sqlx::Error> {
+    if !state.billing.enabled() {
+        return Ok(());
+    }
+    enqueue_change(
+        connection,
+        Uuid::now_v7(),
+        organisation_id,
+        slug,
+        change,
+        at,
     )
     .await
 }
