@@ -109,7 +109,7 @@ kjuulh: "kubernetes-app": {
 				env_vars: {
 					GRUND_PUBLIC_URL:     "https://app.grund.sh"
 					GRUND_APP_DOMAINS:    "custom-only"
-					GRUND_SIGNUP_ENABLED: "false"
+					GRUND_SIGNUP_ENABLED: "true"
 					GRUND_MAIL_FROM:      "grund <grund@grund.sh>"
 				}
 				// The operator creates these secrets before Kasper approves the
