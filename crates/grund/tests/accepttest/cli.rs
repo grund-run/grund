@@ -735,6 +735,11 @@ async fn approved_cli_session(shell: &Shell, when: &When, then: &Then) -> anyhow
 async fn operator_cli_controls_hosted_entitlements_and_denies_other_accounts() -> anyhow::Result<()>
 {
     let capacity = crate::accepttest::fixtures::FakeCapacity::start().await?;
+    capacity.set_inventory_hosts(vec![
+        json!({"id":"retired-1","name":"retired-first","state":"retired"}),
+        json!({"id":"retired-2","name":"retired-second","state":"retired"}),
+        json!({"id":"live-3","name":"live-after-retired","state":"ready"}),
+    ]);
     let operator = format!("ops-{}", crate::accepttest::fixtures::random_hex(4));
     let Some((given, when, then)) = testcase_configured(&[
         ("GRUND_OPERATOR_ORGANISATION", &operator),
@@ -751,6 +756,26 @@ async fn operator_cli_controls_hosted_entitlements_and_denies_other_accounts() -
     given.a_signed_in_account_named(&operator).await?;
     let shell = Shell::fresh(&[])?;
     approved_cli_session(&shell, &when, &then).await?;
+    let hosts = shell.json("operator hosts list", &[]).await?;
+    anyhow::ensure!(
+        hosts["hosts"]
+            .as_array()
+            .is_some_and(|items| items.len() == 3
+                && items
+                    .iter()
+                    .any(|host| host["name"] == "live-after-retired")),
+        "default host list hid a later page: {hosts}"
+    );
+    let first_page = shell
+        .json("operator hosts list", &["--page-size", "2"])
+        .await?;
+    anyhow::ensure!(
+        first_page["hosts"]
+            .as_array()
+            .is_some_and(|items| items.len() == 2)
+            && first_page["nextPageToken"] == "2",
+        "explicit host page did not preserve its cursor: {first_page}"
+    );
 
     let (tenant, tenant_when, tenant_then) = given.testcase.another_browser();
     let account = tenant.a_signed_in_account().await?;

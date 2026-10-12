@@ -76,7 +76,7 @@ pub type HostsCommand = Noun<HostsAction>;
 /// Host operations.
 #[derive(Debug, Subcommand)]
 pub enum HostsAction {
-    #[command(about = "List hosts, capacity, allocation, and availability")]
+    #[command(about = "List all hosts, or one page with --page-size/--page-token")]
     List {
         #[arg(long)]
         page_size: Option<i32>,
@@ -280,15 +280,34 @@ pub async fn hosts(ctx: &Ctx, action: HostsAction) -> CliResult<Output> {
         HostsAction::List {
             page_size,
             page_token,
-        } => Ok(Output::table(
-            api.call(
-                &format!("{SERVICE}/ListHosts"),
-                pagination(page_size, page_token),
-            )
-            .await?,
-            "/hosts",
-            HOSTS,
-        )),
+        } => {
+            let value = if page_size.is_some() || page_token.is_some() {
+                api.call(
+                    &format!("{SERVICE}/ListHosts"),
+                    pagination(page_size, page_token),
+                )
+                .await?
+            } else {
+                let mut hosts = Vec::new();
+                let mut request = json!({});
+                loop {
+                    let mut response = api.call(&format!("{SERVICE}/ListHosts"), request).await?;
+                    let next = response
+                        .get_mut("nextPageToken")
+                        .map(Value::take)
+                        .unwrap_or(Value::Null);
+                    if let Some(Value::Array(page)) = response.get_mut("hosts") {
+                        hosts.append(page);
+                    }
+                    if !next.as_str().is_some_and(|token| !token.is_empty()) {
+                        break;
+                    }
+                    request = json!({"pageToken": next});
+                }
+                json!({"hosts": hosts})
+            };
+            Ok(Output::table(value, "/hosts", HOSTS))
+        }
         HostsAction::Machines {
             host,
             page_size,

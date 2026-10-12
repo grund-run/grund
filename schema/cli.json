@@ -5822,7 +5822,7 @@
       "rpcs": [
         "grund.operator.v1.OperatorService/ListHosts"
       ],
-      "summary": "List hosts, capacity, allocation, and availability"
+      "summary": "List all hosts, or one page with --page-size/--page-token"
     },
     {
       "args": [
