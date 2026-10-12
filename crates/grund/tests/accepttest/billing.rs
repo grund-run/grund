@@ -84,16 +84,20 @@ async fn enabling_billing_backfills_organisations_created_while_billing_was_off(
         ])
         .await?;
 
-    let calls = billing
-        .wait_for("RecordOrganisation", 1, Duration::from_secs(10))
-        .await?;
-    anyhow::ensure!(
-        calls.iter().any(|call| {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if billing.calls("RecordOrganisation").iter().any(|call| {
             call.body["slug"] == owner.username
                 && call.body["change"] == "ORGANISATION_CHANGE_CREATED"
-        }),
-        "existing organisation was not seeded as a creation"
-    );
+        }) {
+            break;
+        }
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "existing organisation was not seeded as a creation"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     Ok(())
 }
 
