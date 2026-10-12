@@ -69,6 +69,11 @@ pub struct EdgeCommand {
     #[arg(long = "grund-url", env = "GRUND_URL")]
     pub grund_url: String,
 
+    /// Edge-only relay address for dialing, with the public relay's TLS hostname
+    /// and a different port. Never sent to machines or stored in route tables.
+    #[arg(long, env = "GRUND_EDGE_RELAY_URL_OVERRIDE")]
+    pub relay_url_override: Option<String>,
+
     /// Open connections one source address may hold (default 256, at most
     /// 1024).
     #[arg(
@@ -119,6 +124,9 @@ impl EdgeCommand {
             origin.https || origin.is_loopback(),
             "GRUND_URL must be https, except on loopback"
         );
+        if let Some(url) = &self.relay_url_override {
+            RelayDialOverride::parse(url)?;
+        }
         if let Some(token) = &self.enrollment_token {
             anyhow::ensure!(
                 token.starts_with(crate::services::relays::EDGE_TOKEN_PREFIX),
@@ -267,7 +275,15 @@ pub async fn run(command: EdgeCommand) -> anyhow::Result<()> {
         tracing::info!("edge: waiting for the first route table from the instance");
         let _ = changed.changed().await;
     }
-    let relays = relay_urls(&routes);
+    let relay_override = command
+        .relay_url_override
+        .as_deref()
+        .map(RelayDialOverride::parse)
+        .transpose()?;
+    if let Some(override_url) = &relay_override {
+        override_url.validate_table(&routes.current())?;
+    }
+    let relays = relay_urls(&routes, relay_override.as_ref());
     let binder = Binder {
         key: iroh::SecretKey::from_bytes(&key.seed()),
         iroh_listen: command.iroh_listen,
@@ -275,7 +291,7 @@ pub async fn run(command: EdgeCommand) -> anyhow::Result<()> {
     };
     let endpoint = binder.bind(relays.clone()).await?;
     tracing::info!(edge = %endpoint.id(), host = %key.host, "edge: running");
-    let pool = machines::Pool::new(endpoint.clone());
+    let pool = machines::Pool::new(endpoint.clone(), relay_override.clone());
     let edge = Arc::new(serve::Edge {
         routes: routes.clone(),
         pool: pool.clone(),
@@ -304,11 +320,17 @@ pub async fn run(command: EdgeCommand) -> anyhow::Result<()> {
     tokio::spawn(certificates.run());
     tokio::spawn(report_usage(edge.clone(), key.clone(), http.clone()));
     tokio::spawn(drain_paused(pool.clone(), routes.clone()));
-    tokio::spawn(keep_relays(pool.clone(), routes.clone(), relays));
+    tokio::spawn(keep_relays(
+        pool.clone(),
+        routes.clone(),
+        relay_override.clone(),
+        relays,
+    ));
     tokio::spawn(revive_relay(
         pool.clone(),
         routes.clone(),
         binder,
+        relay_override,
         http.clone(),
     ));
     tokio::spawn({
@@ -445,12 +467,66 @@ impl Binder {
     }
 }
 
-fn relay_urls(routes: &routes::Routes) -> Vec<iroh::RelayUrl> {
+#[derive(Debug, Clone)]
+pub(super) struct RelayDialOverride {
+    url: iroh::RelayUrl,
+}
+
+impl RelayDialOverride {
+    fn parse(value: &str) -> anyhow::Result<Self> {
+        let url: iroh::RelayUrl = value
+            .parse()
+            .context("GRUND_EDGE_RELAY_URL_OVERRIDE must be an https relay origin")?;
+        anyhow::ensure!(
+            url.scheme() == "https"
+                && url.host_str().is_some()
+                && url.port().is_some()
+                && url.username().is_empty()
+                && url.password().is_none()
+                && url.path() == "/"
+                && url.query().is_none()
+                && url.fragment().is_none(),
+            "GRUND_EDGE_RELAY_URL_OVERRIDE must be an https relay origin with an explicit port and no credentials, path, query or fragment"
+        );
+        Ok(Self { url })
+    }
+
+    fn validate_table(&self, table: &routes::Table) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            table.relay_urls.iter().any(|public| public
+                .parse::<iroh::RelayUrl>()
+                .is_ok_and(|url| self.matches(&url))),
+            "GRUND_EDGE_RELAY_URL_OVERRIDE hostname must match a public relay in the route table"
+        );
+        Ok(())
+    }
+
+    fn matches(&self, public: &iroh::RelayUrl) -> bool {
+        public.scheme() == "https" && public.host_str() == self.url.host_str()
+    }
+
+    fn dial(&self, public: iroh::RelayUrl) -> iroh::RelayUrl {
+        if self.matches(&public) {
+            self.url.clone()
+        } else {
+            public
+        }
+    }
+}
+
+fn relay_urls(
+    routes: &routes::Routes,
+    override_url: Option<&RelayDialOverride>,
+) -> Vec<iroh::RelayUrl> {
     routes
         .current()
         .relay_urls
         .iter()
         .filter_map(|u| u.parse().ok())
+        .map(|url| match override_url {
+            Some(dial) => dial.dial(url),
+            None => url,
+        })
         .collect()
 }
 
@@ -467,6 +543,7 @@ async fn revive_relay(
     pool: machines::Pool,
     routes: routes::Routes,
     binder: Binder,
+    override_url: Option<RelayDialOverride>,
     http: reqwest::Client,
 ) {
     let mut lost_since: Option<tokio::time::Instant> = None;
@@ -498,7 +575,10 @@ async fn revive_relay(
         if binder.iroh_listen.is_some_and(|a| a.port() != 0) {
             pool.endpoint().close().await;
         }
-        match binder.bind(relay_urls(&routes)).await {
+        match binder
+            .bind(relay_urls(&routes, override_url.as_ref()))
+            .await
+        {
             Ok(endpoint) => {
                 let old = pool.replace_endpoint(endpoint);
                 tracing::info!(relay = %home, "edge: the home relay answers again; dialing machines from a new endpoint rather than waiting out iroh's backoff");
@@ -514,11 +594,16 @@ async fn revive_relay(
     }
 }
 
-async fn keep_relays(pool: machines::Pool, routes: routes::Routes, mut have: Vec<iroh::RelayUrl>) {
+async fn keep_relays(
+    pool: machines::Pool,
+    routes: routes::Routes,
+    override_url: Option<RelayDialOverride>,
+    mut have: Vec<iroh::RelayUrl>,
+) {
     let mut changed = routes.subscribe();
     while changed.changed().await.is_ok() {
         let endpoint = pool.endpoint();
-        let wanted = relay_urls(&routes);
+        let wanted = relay_urls(&routes, override_url.as_ref());
         for url in have.iter().filter(|u| !wanted.contains(u)) {
             endpoint.remove_relay(url).await;
         }

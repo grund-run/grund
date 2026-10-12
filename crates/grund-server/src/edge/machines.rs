@@ -17,6 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use super::RelayDialOverride;
 use iroh::{
     Endpoint, EndpointAddr, EndpointId, RelayUrl, TransportAddr,
     endpoint::{Connection, RecvStream, SendStream},
@@ -198,6 +199,7 @@ impl Machine {
 pub struct Pool {
     endpoint: Arc<Mutex<(Endpoint, u64)>>,
     machines: Arc<Mutex<HashMap<EndpointId, Arc<Machine>>>>,
+    relay_override: Option<RelayDialOverride>,
 }
 
 fn random_below(n: usize) -> usize {
@@ -207,10 +209,11 @@ fn random_below(n: usize) -> usize {
 }
 
 impl Pool {
-    pub fn new(endpoint: Endpoint) -> Self {
+    pub(super) fn new(endpoint: Endpoint, relay_override: Option<RelayDialOverride>) -> Self {
         Self {
             endpoint: Arc::new(Mutex::new((endpoint, 0))),
             machines: Arc::new(Mutex::new(HashMap::new())),
+            relay_override,
         }
     }
 
@@ -281,6 +284,10 @@ impl Pool {
             *machine.relays.lock().expect("machine lock") = relays
                 .iter()
                 .filter_map(|r| RelayUrl::from_str(r).ok())
+                .map(|url| match &self.relay_override {
+                    Some(dial) => dial.dial(url),
+                    None => url,
+                })
                 .collect();
             machine.ready.store((*ready_copies).max(1), Relaxed);
             match machine.ejected_for(name, now) {
@@ -541,6 +548,75 @@ impl Pool {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn an_edge_dials_the_direct_relay_without_advertising_it_to_machines()
+    -> anyhow::Result<()> {
+        use grund_proto::grund::edge::v1::{Route as WireRoute, RouteMachine, RouteTable};
+
+        let public = "https://relay.example.com";
+        let direct = "https://relay.example.com:8446";
+        let override_url = RelayDialOverride::parse(direct)?;
+        let endpoint_id = iroh::SecretKey::from_bytes(&[3; 32]).public().to_string();
+        let table = |version: &str, home: &str| RouteTable {
+            version: version.to_string(),
+            relay_urls: vec![public.to_string()],
+            routes: vec![WireRoute {
+                name: "photos.example.com".to_string(),
+                machines: vec![RouteMachine {
+                    endpoint_id: endpoint_id.clone(),
+                    relay_url: home.to_string(),
+                    ready_copies: 1,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let dir = std::env::temp_dir().join(format!("grund-edge-relays-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir)?;
+        let routes = super::super::routes::Routes::load(&dir);
+        let endpoint = Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .secret_key(iroh::SecretKey::from_bytes(&[2; 32]))
+            .relay_mode(iroh::RelayMode::Disabled)
+            .bind()
+            .await?;
+        let pool = Pool::new(endpoint, Some(override_url.clone()));
+        for (version, home) in [("first", public), ("second", "")] {
+            routes.install(&table(version, home))?;
+            override_url.validate_table(&routes.current())?;
+            let route = routes.current().get("photos.example.com").unwrap();
+            assert_eq!(routes.current().relay_urls, vec![public]);
+            assert_eq!(route.machines[0].1, vec![public]);
+            let endpoint_relays = super::super::relay_urls(&routes, Some(&override_url));
+            assert_eq!(endpoint_relays[0].as_str(), format!("{direct}/"));
+            assert_eq!(
+                grund_net::endpoint::relay_ping_url(&endpoint_relays[0]),
+                format!("{direct}/ping")
+            );
+            let selected = pool.order("photos.example.com", &route.machines);
+            let address = Pool::addr(&selected[0]);
+            assert_eq!(
+                address.relay_urls().next().unwrap().as_str(),
+                format!("{direct}/")
+            );
+        }
+        assert!(
+            RelayDialOverride::parse("https://other.example.com:8446")?
+                .validate_table(&routes.current())
+                .is_err()
+        );
+        for invalid in [
+            "http://relay.example.com:8446",
+            "https://relay.example.com:8446/other",
+            "https://user@relay.example.com:8446",
+        ] {
+            assert!(RelayDialOverride::parse(invalid).is_err());
+        }
+        pool.endpoint().close().await;
+        std::fs::remove_dir_all(dir)?;
+        Ok(())
+    }
+
     fn machine() -> Machine {
         Machine::new(iroh::SecretKey::from_bytes(&[3; 32]).public())
     }
@@ -577,7 +653,7 @@ mod tests {
             .bind()
             .await
             .unwrap();
-        let pool = Pool::new(endpoint);
+        let pool = Pool::new(endpoint, None);
         let ready = iroh::SecretKey::from_bytes(&[3; 32]).public().to_string();
         let fallback = iroh::SecretKey::from_bytes(&[4; 32]).public().to_string();
         let route = vec![
@@ -639,7 +715,7 @@ mod tests {
             .bind()
             .await?;
         let address = EndpointAddr::new(server.id()).with_ip_addr(server.bound_sockets()[0]);
-        let pool = Pool::new(client);
+        let pool = Pool::new(client, None);
         let machine = Arc::new(Machine::new(server.id()));
         pool.machines
             .lock()

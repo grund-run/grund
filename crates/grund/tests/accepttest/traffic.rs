@@ -78,27 +78,30 @@ fn spawn_agent(dir: &Path) -> anyhow::Result<std::process::Child> {
         .create(true)
         .append(true)
         .open(dir.join("agent.log"))?;
-    Ok(
-        std::process::Command::new(crate::accepttest::fixtures::grund_binary())
-            .args([
-                "agent",
-                "--app-runtime",
-                "simulated",
-                "--interval",
-                "1",
-                "--data-dir",
-            ])
-            .arg(dir)
-            .arg("--policy")
-            .arg(dir.join("policy.yaml"))
-            .arg("--gate-remote-copies")
-            .arg(dir.join("remote-copies.json"))
-            .env_clear()
-            .env("RUST_LOG", "grund_agent=debug,info")
-            .stdout(log.try_clone()?)
-            .stderr(log)
-            .spawn()?,
-    )
+    let mut command = std::process::Command::new(crate::accepttest::fixtures::grund_binary());
+    command
+        .args([
+            "agent",
+            "--app-runtime",
+            "simulated",
+            "--interval",
+            "1",
+            "--data-dir",
+        ])
+        .arg(dir)
+        .arg("--policy")
+        .arg(dir.join("policy.yaml"))
+        .arg("--gate-remote-copies")
+        .arg(dir.join("remote-copies.json"))
+        .env_clear()
+        .env("RUST_LOG", "grund_agent=debug,info")
+        .stdout(log.try_clone()?)
+        .stderr(log);
+    let ca = dir.join("relay-ca.pem");
+    if ca.is_file() {
+        command.env("SSL_CERT_FILE", ca);
+    }
+    Ok(command.spawn()?)
 }
 
 async fn appears(within: Duration, before: usize, read: impl Fn() -> usize) -> Option<Instant> {
@@ -218,9 +221,13 @@ impl Stack {
     }
 
     pub(super) fn start_edge(&mut self) -> anyhow::Result<()> {
+        self.start_edge_with_relay(None)
+    }
+
+    fn start_edge_with_relay(&mut self, relay: Option<(&str, &Path)>) -> anyhow::Result<()> {
         std::fs::create_dir_all(&self.edge_dir)?;
         let mut command = std::process::Command::new(crate::accepttest::fixtures::grund_binary());
-        if !self.edge_dir.join("edge.key").exists() {
+        if !self.edge_dir.join("data/edge.key").exists() {
             let output = self.edges(&["token", &self.edge_host])?;
             anyhow::ensure!(
                 output.status.success(),
@@ -247,6 +254,11 @@ impl Stack {
             .env("RUST_LOG", "grund_server=debug,info")
             .stdout(log.try_clone()?)
             .stderr(log);
+        if let Some((url, ca)) = relay {
+            command
+                .args(["--relay-url-override", url])
+                .env("SSL_CERT_FILE", ca);
+        }
         self.edge = Some(Running(command.spawn()?));
         Ok(())
     }
@@ -1814,5 +1826,110 @@ async fn an_edge_killed_while_the_ca_validates_its_name_still_gets_the_certifica
         "an edge killed during validation served {name} {:?} after the kill",
         killed.elapsed()
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_edge_reaches_the_relay_directly_when_its_public_gateway_stops_accepting()
+-> anyhow::Result<()> {
+    if external_target().is_some() {
+        return Ok(());
+    }
+    let relay_dir = dir("direct-relay");
+    std::fs::create_dir_all(&relay_dir)?;
+    let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new())?;
+    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    let ca = rcgen::CertifiedIssuer::self_signed(ca_params, rcgen::KeyPair::generate()?)?;
+    let mut leaf_params = rcgen::CertificateParams::new(vec!["localhost".to_string()])?;
+    leaf_params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+    let leaf_key = rcgen::KeyPair::generate()?;
+    let leaf = leaf_params.signed_by(&leaf_key, &ca)?;
+    let ca_file = relay_dir.join("ca.pem");
+    let cert_file = relay_dir.join("relay.pem");
+    let key_file = relay_dir.join("relay.key");
+    std::fs::write(&ca_file, ca.pem())?;
+    std::fs::write(&cert_file, leaf.pem())?;
+    std::fs::write(&key_file, leaf_key.serialize_pem())?;
+
+    let reserved = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let direct_port = reserved.local_addr()?.port();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let public_port = listener.local_addr()?.port();
+    drop(reserved);
+    let public_url = format!("https://localhost:{public_port}");
+    let direct_url = format!("https://localhost:{direct_port}");
+    let forwarder = tokio::spawn(async move {
+        while let Ok((mut incoming, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                if let Ok(mut upstream) = TcpStream::connect(("127.0.0.1", direct_port)).await {
+                    let _ = tokio::io::copy_bidirectional(&mut incoming, &mut upstream).await;
+                }
+            });
+        }
+    });
+    let relay_address = format!("127.0.0.1:{direct_port}");
+    let Some(mut stack) = a_stack_with(&[
+        ("GRUND_RELAY_ADDRESS", &relay_address),
+        ("GRUND_RELAY_URL", &public_url),
+        ("GRUND_RELAY_TLS_CERT_FILE", cert_file.to_str().unwrap()),
+        ("GRUND_RELAY_TLS_KEY_FILE", key_file.to_str().unwrap()),
+    ])
+    .await?
+    else {
+        forwarder.abort();
+        return Ok(());
+    };
+    let owner = stack.given.a_signed_in_account().await?;
+    let org = owner.username.clone();
+    let mut agent = stack.a_machine(&org, "box-a").await?;
+    let record: Value = serde_json::from_slice(&std::fs::read(agent.dir.join("machine.json"))?)?;
+    anyhow::ensure!(
+        record["network"]["relay_urls"]
+            .as_array()
+            .is_some_and(|urls| urls.iter().any(|url| url.as_str() == Some(&public_url))),
+        "the machine must keep the public relay URL: {record:#}"
+    );
+    agent.stop().await?;
+    std::fs::copy(&ca_file, agent.dir.join("relay-ca.pem"))?;
+    agent.start()?;
+    stack.deploy(&org, "direct-relay", "1", 1).await?;
+    let running = stack
+        .until(
+            &org,
+            "direct-relay",
+            Duration::from_secs(40),
+            "one ready copy",
+            |app| running_replicas(app).len() == 1,
+        )
+        .await?;
+    write_remote_copies(
+        &[("box-a", &agent)],
+        "direct-relay",
+        &running_replicas(&running),
+    );
+    let name = stack.name_of(&org, "direct-relay");
+    stack.start_edge_with_relay(Some((&direct_url, &ca_file)))?;
+    stack.served(&name, Duration::from_secs(60)).await?;
+    let stored_routes = std::fs::read(stack.edge_dir.join("data/routes.pb"))?;
+    anyhow::ensure!(
+        stored_routes
+            .windows(public_url.len())
+            .any(|bytes| bytes == public_url.as_bytes())
+            && !stored_routes
+                .windows(direct_url.len())
+                .any(|bytes| bytes == direct_url.as_bytes()),
+        "the persisted route table must advertise only the public relay URL"
+    );
+    stack.edge = None;
+    forwarder.abort();
+    let _ = forwarder.await;
+    anyhow::ensure!(
+        TcpStream::connect(("127.0.0.1", public_port))
+            .await
+            .is_err(),
+        "the public relay gateway still accepts connections"
+    );
+    stack.start_edge_with_relay(Some((&direct_url, &ca_file)))?;
+    stack.served(&name, Duration::from_secs(60)).await?;
     Ok(())
 }

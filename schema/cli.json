@@ -5480,6 +5480,14 @@
           "value_name": "GRUND_URL"
         },
         {
+          "description": "Edge-only relay address for dialing, with the public relay's TLS hostname and a different port. Never sent to machines or stored in route tables",
+          "env": "GRUND_EDGE_RELAY_URL_OVERRIDE",
+          "flag": "--relay-url-override",
+          "name": "relay_url_override",
+          "type": "string",
+          "value_name": "RELAY_URL_OVERRIDE"
+        },
+        {
           "default": "256",
           "description": "Open connections one source address may hold (default 256, at most 1024)",
           "env": "GRUND_EDGE_CONNECTIONS_PER_ADDRESS",
