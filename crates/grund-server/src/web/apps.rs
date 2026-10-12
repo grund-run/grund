@@ -3333,7 +3333,7 @@ pub async fn restore_volume(
         return forged(&state, &browser);
     }
     let (_, membership) = member_or_return!(&state, &browser, &uri, &slug);
-    if !manages(&membership) {
+    if membership.role != "owner" {
         return Ok(redirect(&format!("/{slug}/apps/{name}?error=not-allowed")));
     }
     let source = Uuid::parse_str(&id);

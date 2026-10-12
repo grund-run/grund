@@ -199,7 +199,7 @@ props crate::web::apps::AppSettingsPage<'_> { app, items, edit, next, manages, o
                   <Rows>{for point in &detail.points {
                     <Row name={&point.id} sub="Completed {point.completed} · restore verified {point.verified}" icon_name="ok" tone="ok" />
                   }}</Rows>
-                  {if *manages {
+                  {if *owner {
                     <Form action="{app.base}/volumes/{detail.id}/restore" form={Some(&form)} autocomplete={Some("off")}>
                       <HiddenField name="expected_version" value={&volume.version.to_string()} />
                       <HiddenField name="idempotency_key" value={&uuid::Uuid::now_v7().to_string()} />
@@ -229,7 +229,7 @@ props crate::web::apps::AppSettingsPage<'_> { app, items, edit, next, manages, o
             <Grid>
               <Field name="volume_name" label="New volume name" value={name} hint="Name stays with this app across releases. Add one here; use grund.yaml for more." autocomplete="off" error={form.error("volumes").unwrap_or("")} required form={Some(&form)} />
               <Field name="volume_path" label="Container path" value={path} hint="Absolute path inside the container, such as /data." autocomplete="off" mono required form={Some(&form)} />
-              <Field name="volume_source" label="Existing host directory" value={source} hint="Optional. Its machine owner must allow the containing root in /etc/grund/policy.yaml. Grund never erases its files." autocomplete="off" mono form={Some(&form)} />
+              <Field name="volume_source" label="Existing host directory" value={source} hint="Optional. Its machine owner must allow the containing root in /etc/grund/policy.yaml. All parent directories must be root-owned and not writable by non-root users; grund never erases its files." autocomplete="off" mono form={Some(&form)} />
             </Grid>
             <ToggleField name="volume_backup" label="Request daily encrypted S3 backup for this volume" checked={*backup} hint="Requires separate bucket credentials and a verified recovery point before data is protected. Off by default." />
             <Para kind="hint">Managed directories persist across releases and reboots. An existing host path stays the owner's. There is no enforced quota or default own-machine at-rest encryption. A volume needs one copy; losing an unbacked-up disk loses its data.</Para>

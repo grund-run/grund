@@ -70,7 +70,7 @@ impl VolumeApi {
         }
         if access == Access::Owner && membership.role != "owner" {
             return Err(ConnectError::permission_denied(
-                "only the organisation owner may export or configure backup keys",
+                "only the organisation owner may configure backup credentials, restore, or export the backup key",
             ));
         }
         Ok(membership)
@@ -527,7 +527,7 @@ impl VolumeService for VolumeApi {
         let request: RestoreRecoveryPointRequest = owned(&*request)?;
         let hash = digest::digest(&digest::SHA256, &request.encode_to_vec());
         let (org, app) = self
-            .app(&caller, &request.organisation, &request.app, Access::Manage)
+            .app(&caller, &request.organisation, &request.app, Access::Owner)
             .await?;
         let new_volume = Uuid::new_v5(&app, request.new_volume_name.as_bytes());
         let attempt = self

@@ -121,6 +121,14 @@ pub fn valid_id(id: &str) -> bool {
 /// Open each directory component relative to an already-open parent, refusing
 /// symlinks anywhere in the path. Never canonicalize untrusted source paths.
 pub fn directory(path: &Path) -> anyhow::Result<File> {
+    checked_directory(path, false)
+}
+
+fn host_directory(path: &Path) -> anyhow::Result<File> {
+    checked_directory(path, true)
+}
+
+fn checked_directory(path: &Path, stable_parents: bool) -> anyhow::Result<File> {
     ensure!(
         path.is_absolute(),
         "{} is not an absolute directory",
@@ -131,6 +139,14 @@ pub fn directory(path: &Path) -> anyhow::Result<File> {
         match component {
             Component::RootDir => {}
             Component::Normal(name) => {
+                if stable_parents {
+                    let parent = current.metadata()?;
+                    ensure!(
+                        parent.uid() == 0 && parent.mode() & 0o022 == 0,
+                        "host path {} has an ancestor writable by a non-root user",
+                        path.display()
+                    );
+                }
                 let name = CString::new(name.as_bytes())?;
                 let fd = unsafe {
                     libc::openat(
@@ -344,7 +360,7 @@ pub fn prepare(
                 "volume {} host path overlaps the agent's storage",
                 mount.name
             );
-            directory(source).with_context(|| {
+            host_directory(source).with_context(|| {
                 format!(
                     "volume {} source is not a safe existing directory",
                     mount.name
@@ -404,7 +420,7 @@ pub fn verify_bind(data_dir: &Path, roots: &[PathBuf], bind: &VolumeBind) -> any
             !overlaps(path, data_dir),
             "host path overlaps the agent's storage"
         );
-        directory(path)
+        host_directory(path)
     }
 }
 
@@ -652,7 +668,7 @@ mod tests {
         fs::remove_dir_all(base).unwrap();
     }
     #[test]
-    fn existing_paths_need_local_permission_and_cannot_escape_by_symlink() {
+    fn existing_paths_need_local_permission_stable_ancestors_and_no_symlink() {
         let base = scratch("policy");
         let data = base.join("data");
         fs::create_dir(&data).unwrap();
@@ -662,15 +678,23 @@ mod tests {
         fs::create_dir(&photos).unwrap();
         let source = photos.display().to_string();
         assert!(prepare(&data, &[], "app", &[mount(ID, &source)]).is_err());
+        let unsafe_parent = prepare(
+            &data,
+            std::slice::from_ref(&allowed),
+            "app",
+            &[mount(ID, &source)],
+        )
+        .unwrap_err();
         assert!(
-            prepare(
-                &data,
-                std::slice::from_ref(&allowed),
-                "app",
-                &[mount(ID, &source)]
-            )
-            .is_ok()
+            format!("{unsafe_parent:#}").contains("ancestor writable by a non-root user"),
+            "{unsafe_parent:#}"
         );
+        let safe_source = "/usr/lib";
+        let safe_roots = [PathBuf::from("/usr")];
+        let safe = prepare(&data, &safe_roots, "app", &[mount(ID, safe_source)])
+            .unwrap()
+            .remove(0);
+        verify_bind(&data, &safe_roots, &safe).unwrap();
         assert!(
             prepare(
                 &data,
@@ -680,19 +704,12 @@ mod tests {
             )
             .is_err()
         );
-        let mut nested = mount("22222222-2222-2222-2222-222222222222", &source);
+        let mut nested = mount("22222222-2222-2222-2222-222222222222", safe_source);
         nested.path = "/other".into();
-        assert!(
-            prepare(
-                &data,
-                std::slice::from_ref(&allowed),
-                "app",
-                &[mount(ID, &source), nested]
-            )
-            .is_err()
-        );
+        assert!(prepare(&data, &safe_roots, "app", &[mount(ID, safe_source), nested]).is_err());
         fs::remove_dir(&photos).unwrap();
         std::os::unix::fs::symlink("/etc", &photos).unwrap();
+        assert!(directory(&photos).is_err());
         assert!(prepare(&data, &[allowed], "app", &[mount(ID, &source)]).is_err());
         fs::remove_dir_all(base).unwrap();
     }

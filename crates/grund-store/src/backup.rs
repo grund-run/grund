@@ -85,7 +85,7 @@ pub async fn points(
     app: Uuid,
     volume: Uuid,
 ) -> Result<Vec<RecoveryPoint>, sqlx::Error> {
-    sqlx::query_as("SELECT p.snapshot_id,p.completed_at,p.verified_at FROM grund_volume_backup_points p JOIN grund_volumes v ON v.organisation_id=p.organisation_id AND v.volume_id=p.volume_id WHERE p.organisation_id=$1 AND p.app_id=$2 AND p.volume_id=$3 AND v.app_id=$2 AND v.status NOT IN ('deleting','deleted') ORDER BY p.completed_at DESC,p.snapshot_id DESC LIMIT 100")
+    sqlx::query_as("SELECT p.snapshot_id,p.completed_at,p.verified_at FROM grund_volume_backup_points p JOIN grund_volumes v ON v.organisation_id=p.organisation_id AND v.volume_id=p.volume_id WHERE p.organisation_id=$1 AND p.app_id=$2 AND p.volume_id=$3 AND v.app_id=$2 AND v.status NOT IN ('deleting','deleted') AND NOT EXISTS (SELECT 1 FROM grund_volume_backup_attempts a WHERE a.organisation_id=p.organisation_id AND a.volume_id=p.volume_id AND a.snapshot_id=p.snapshot_id AND a.operation='prune' AND a.attempts>0) ORDER BY p.completed_at DESC,p.snapshot_id DESC LIMIT 100")
         .bind(org).bind(app).bind(volume).fetch_all(pool).await
 }
 
@@ -118,8 +118,21 @@ pub async fn lease_machine(
     if !signed_document_applied {
         return Ok(None);
     }
-    sqlx::query_as("WITH due AS (SELECT a.organisation_id,a.attempt_id FROM grund_volume_backup_attempts a JOIN grund_volumes v ON v.organisation_id=a.organisation_id AND v.volume_id=a.volume_id JOIN grund_volume_backup_configs c ON c.organisation_id=a.organisation_id AND c.volume_id=a.volume_id LEFT JOIN grund_volumes dest ON dest.organisation_id=a.organisation_id AND dest.volume_id=a.destination_volume_id JOIN grund_machines m ON m.machine_id=a.machine_id AND m.pool_organisation_id=a.organisation_id AND m.state='active' AND m.pool <> 'management' AND m.cordoned_at IS NULL WHERE a.machine_id=$1 AND a.app_id=v.app_id AND c.app_id=v.app_id AND ((a.operation='restore' AND v.status IN ('attached','available')) OR (a.operation<>'restore' AND v.status='attached')) AND v.backup AND a.placement_generation=v.stream_version AND (CASE WHEN a.operation='restore' THEN dest.app_id=a.app_id AND dest.status='requested' AND dest.source IS NULL ELSE v.machine_id=$1 END) AND a.status IN ('pending','leased') AND a.next_attempt_at<=clock_timestamp() AND (a.leased_until IS NULL OR a.leased_until<clock_timestamp()) AND NOT EXISTS (SELECT 1 FROM grund_volume_backup_attempts other WHERE other.organisation_id=a.organisation_id AND other.volume_id=a.volume_id AND other.attempt_id<>a.attempt_id AND other.status='leased' AND other.leased_until>clock_timestamp()) ORDER BY a.next_attempt_at,a.attempt_id FOR UPDATE OF a SKIP LOCKED LIMIT 1) UPDATE grund_volume_backup_attempts a SET status='leased',attempts=a.attempts+1,leased_until=clock_timestamp()+interval '7 hours' FROM due WHERE a.organisation_id=due.organisation_id AND a.attempt_id=due.attempt_id RETURNING a.organisation_id,a.app_id,a.volume_id,a.attempt_id,a.machine_id,a.placement_generation,a.operation,a.source_volume_id,a.destination_volume_id,a.snapshot_id")
-        .bind(machine).fetch_optional(pool).await
+    let due: Option<BackupAttempt> = sqlx::query_as("WITH due AS (SELECT a.organisation_id,a.attempt_id FROM grund_volume_backup_attempts a JOIN grund_volumes v ON v.organisation_id=a.organisation_id AND v.volume_id=a.volume_id JOIN grund_volume_backup_configs c ON c.organisation_id=a.organisation_id AND c.volume_id=a.volume_id LEFT JOIN grund_volumes dest ON dest.organisation_id=a.organisation_id AND dest.volume_id=a.destination_volume_id JOIN grund_machines m ON m.machine_id=a.machine_id AND m.pool_organisation_id=a.organisation_id AND m.state='active' AND m.pool <> 'management' AND m.cordoned_at IS NULL WHERE a.machine_id=$1 AND a.operation<>'prune' AND a.app_id=v.app_id AND c.app_id=v.app_id AND ((a.operation='restore' AND v.status IN ('attached','available')) OR (a.operation<>'restore' AND v.status='attached')) AND v.backup AND a.placement_generation=v.stream_version AND (CASE WHEN a.operation='restore' THEN dest.app_id=a.app_id AND dest.status='requested' AND dest.source IS NULL ELSE v.machine_id=$1 END) AND a.status IN ('pending','leased') AND a.next_attempt_at<=clock_timestamp() AND (a.leased_until IS NULL OR a.leased_until<clock_timestamp()) AND NOT EXISTS (SELECT 1 FROM grund_volume_backup_attempts other WHERE other.organisation_id=a.organisation_id AND other.volume_id=a.volume_id AND other.attempt_id<>a.attempt_id AND other.status='leased' AND other.leased_until>clock_timestamp()) ORDER BY a.next_attempt_at,a.attempt_id FOR UPDATE OF a SKIP LOCKED LIMIT 1) UPDATE grund_volume_backup_attempts a SET status='leased',attempts=a.attempts+1,leased_until=clock_timestamp()+interval '7 hours' FROM due WHERE a.organisation_id=due.organisation_id AND a.attempt_id=due.attempt_id RETURNING a.organisation_id,a.app_id,a.volume_id,a.attempt_id,a.machine_id,a.placement_generation,a.operation,a.source_volume_id,a.destination_volume_id,a.snapshot_id")
+        .bind(machine).fetch_optional(pool).await?;
+    if due.is_some() {
+        return Ok(due);
+    }
+    let mut tx = pool.begin().await?;
+    let point: Option<(Uuid, Uuid, String, Uuid)> = sqlx::query_as("SELECT p.organisation_id,p.volume_id,p.snapshot_id,a.attempt_id FROM grund_volume_backup_points p JOIN grund_volume_backup_attempts a ON a.organisation_id=p.organisation_id AND a.volume_id=p.volume_id AND a.snapshot_id=p.snapshot_id JOIN grund_volumes v ON v.organisation_id=a.organisation_id AND v.volume_id=a.volume_id JOIN grund_volume_backup_configs c ON c.organisation_id=a.organisation_id AND c.volume_id=a.volume_id JOIN grund_machines m ON m.machine_id=a.machine_id AND m.pool_organisation_id=a.organisation_id AND m.state='active' AND m.pool <> 'management' AND m.cordoned_at IS NULL WHERE a.machine_id=$1 AND a.operation='prune' AND a.app_id=v.app_id AND c.app_id=v.app_id AND v.status='attached' AND v.backup AND v.machine_id=$1 AND a.placement_generation=v.stream_version AND a.status IN ('pending','leased') AND a.next_attempt_at<=clock_timestamp() AND (a.leased_until IS NULL OR a.leased_until<clock_timestamp()) AND NOT EXISTS (SELECT 1 FROM grund_volume_backup_attempts other WHERE other.organisation_id=a.organisation_id AND other.volume_id=a.volume_id AND other.attempt_id<>a.attempt_id AND other.status='leased' AND other.leased_until>clock_timestamp()) AND NOT EXISTS (SELECT 1 FROM grund_volume_backup_attempts r WHERE r.organisation_id=a.organisation_id AND r.volume_id=a.volume_id AND r.snapshot_id=a.snapshot_id AND r.operation='restore' AND r.status IN ('pending','leased')) ORDER BY a.next_attempt_at,a.attempt_id FOR UPDATE OF p SKIP LOCKED LIMIT 1")
+        .bind(machine).fetch_optional(&mut *tx).await?;
+    let Some((org, volume, snapshot, attempt)) = point else {
+        return Ok(None);
+    };
+    let due = sqlx::query_as("UPDATE grund_volume_backup_attempts a SET status='leased',attempts=a.attempts+1,leased_until=clock_timestamp()+interval '7 hours' WHERE a.organisation_id=$1 AND a.attempt_id=$2 AND a.status IN ('pending','leased') AND (a.leased_until IS NULL OR a.leased_until<clock_timestamp()) AND NOT EXISTS (SELECT 1 FROM grund_volume_backup_attempts other WHERE other.organisation_id=$1 AND other.volume_id=$3 AND other.attempt_id<>a.attempt_id AND other.status='leased' AND other.leased_until>clock_timestamp()) AND NOT EXISTS (SELECT 1 FROM grund_volume_backup_attempts r WHERE r.organisation_id=$1 AND r.volume_id=$3 AND r.snapshot_id=$4 AND r.operation='restore' AND r.status IN ('pending','leased')) RETURNING a.organisation_id,a.app_id,a.volume_id,a.attempt_id,a.machine_id,a.placement_generation,a.operation,a.source_volume_id,a.destination_volume_id,a.snapshot_id")
+        .bind(org).bind(attempt).bind(volume).bind(snapshot).fetch_optional(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(due)
 }
 
 /// One pass schedules overdue work without relying on an in-memory timer.
@@ -168,6 +181,17 @@ pub async fn complete(
     source_path: &str,
 ) -> Result<bool, sqlx::Error> {
     let mut tx = pool.begin().await?;
+    if success {
+        let pruning: Option<(Uuid, Uuid, Option<String>)> = sqlx::query_as("SELECT organisation_id,volume_id,snapshot_id FROM grund_volume_backup_attempts WHERE attempt_id=$1 AND machine_id=$2 AND operation='prune'")
+            .bind(attempt).bind(machine).fetch_optional(&mut *tx).await?;
+        if let Some((org, volume, Some(point))) = pruning {
+            let present: Option<i32> = sqlx::query_scalar("SELECT 1 FROM grund_volume_backup_points WHERE organisation_id=$1 AND volume_id=$2 AND snapshot_id=$3 FOR UPDATE")
+                .bind(org).bind(volume).bind(point).fetch_optional(&mut *tx).await?;
+            if present.is_none() {
+                return Ok(false);
+            }
+        }
+    }
     let row: Option<BackupAttempt> = sqlx::query_as("SELECT a.organisation_id,a.app_id,a.volume_id,a.attempt_id,a.machine_id,a.placement_generation,a.operation,a.source_volume_id,a.destination_volume_id,a.snapshot_id FROM grund_volume_backup_attempts a JOIN grund_volumes v ON v.organisation_id=a.organisation_id AND v.volume_id=a.volume_id LEFT JOIN grund_volumes dest ON dest.organisation_id=a.organisation_id AND dest.volume_id=a.destination_volume_id WHERE a.attempt_id=$1 AND a.machine_id=$2 AND v.app_id=a.app_id AND ((a.operation='restore' AND v.status IN ('attached','available')) OR (a.operation<>'restore' AND v.status='attached')) AND a.placement_generation=$3 AND v.stream_version=$3 AND (CASE WHEN a.operation='restore' THEN dest.app_id=a.app_id AND dest.status='requested' AND dest.source IS NULL ELSE v.machine_id=$2 END) AND a.status='leased' AND a.leased_until>clock_timestamp() FOR UPDATE OF a")
         .bind(attempt).bind(machine).bind(generation).fetch_optional(&mut *tx).await?;
     let Some(row) = row else {
@@ -179,6 +203,13 @@ pub async fn complete(
             || (row.operation != "backup" && row.snapshot_id.as_deref() != Some(snapshot)))
     {
         return Ok(false);
+    }
+    if success && row.operation == "prune" {
+        let reserved: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM grund_volume_backup_attempts WHERE organisation_id=$1 AND volume_id=$2 AND snapshot_id=$3 AND operation='restore' AND status IN ('pending','leased'))")
+            .bind(row.organisation_id).bind(row.volume_id).bind(snapshot).fetch_one(&mut *tx).await?;
+        if reserved {
+            return Ok(false);
+        }
     }
     if success && row.operation == "backup" {
         let path = Path::new(source_path);
@@ -237,4 +268,106 @@ pub async fn complete(
     }
     tx.commit().await?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_reserved_point_survives_prune_completion_until_restore_fails(pool: PgPool) {
+        let (org, app, source, destination, machine, prune, restore) = (
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+        );
+        let snapshot = "a".repeat(64);
+        sqlx::query("INSERT INTO grund_volumes (organisation_id,app_id,volume_id,name,path,backup,machine_id,status,created_at,stream_version) VALUES ($1,$2,$3,'source','/source',true,$4,'attached',clock_timestamp(),1),($1,$2,$5,'destination','/destination',false,NULL,'requested',clock_timestamp(),1)")
+            .bind(org).bind(app).bind(source).bind(machine).bind(destination)
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO grund_volume_backup_points (organisation_id,app_id,volume_id,snapshot_id,archived_path,completed_at,verified_at) VALUES ($1,$2,$3,$4,'/source',clock_timestamp(),clock_timestamp())")
+            .bind(org).bind(app).bind(source).bind(&snapshot).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO grund_volume_backup_attempts (organisation_id,app_id,volume_id,attempt_id,machine_id,placement_generation,operation,source_volume_id,snapshot_id,status,attempts,leased_until) VALUES ($1,$2,$3,$4,$5,1,'prune',$3,$6,'leased',1,clock_timestamp()+interval '1 hour')")
+            .bind(org).bind(app).bind(source).bind(prune).bind(machine).bind(&snapshot)
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO grund_volume_backup_attempts (organisation_id,app_id,volume_id,attempt_id,machine_id,placement_generation,operation,source_volume_id,destination_volume_id,snapshot_id,status) VALUES ($1,$2,$3,$4,$5,1,'restore',$3,$6,$7,'pending')")
+            .bind(org).bind(app).bind(source).bind(restore).bind(machine).bind(destination).bind(&snapshot)
+            .execute(&pool).await.unwrap();
+
+        assert!(
+            !complete(&pool, machine, prune, 1, true, &snapshot, "", "")
+                .await
+                .unwrap()
+        );
+        assert!(
+            archived_path(&pool, org, app, source, &snapshot)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        sqlx::query("UPDATE grund_volume_backup_attempts SET status='failed' WHERE organisation_id=$1 AND attempt_id=$2")
+            .bind(org).bind(restore).execute(&pool).await.unwrap();
+        assert!(
+            complete(&pool, machine, prune, 1, true, &snapshot, "", "")
+                .await
+                .unwrap()
+        );
+        assert!(
+            archived_path(&pool, org, app, source, &snapshot)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn prune_waits_for_point_reservation_and_runs_after_restore_fails(pool: PgPool) {
+        let (org, app, volume, machine, prune, restore) = (
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+        );
+        let snapshot = "b".repeat(64);
+        sqlx::query("INSERT INTO grund_machines (machine_id,pool,home_organisation_id,name,state,public_key,pool_organisation_id,pool_name,minted_by,registered_at,key_registered_at,stream_version) VALUES ($1,'organisation',$2,'own','active',$3,$2,'own','account:owner',clock_timestamp(),clock_timestamp(),1)")
+            .bind(machine).bind(org).bind("a".repeat(64)).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO grund_machine_documents (machine_id,generation,key_id,payload,signature,issued_at) VALUES ($1,1,$1,'',decode(repeat('00',64),'hex'),clock_timestamp())")
+            .bind(machine).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO grund_machine_presence (machine_id,last_seen_at,applied_generation) VALUES ($1,clock_timestamp(),1)")
+            .bind(machine).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO grund_volumes (organisation_id,app_id,volume_id,name,path,backup,machine_id,status,created_at,stream_version) VALUES ($1,$2,$3,'source','/source',true,$4,'attached',clock_timestamp(),1)")
+            .bind(org).bind(app).bind(volume).bind(machine).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO grund_volume_backup_configs (organisation_id,app_id,volume_id,endpoint,bucket,repo_prefix,sealed_access_key,sealed_secret,sealed_password,version,next_due_at) VALUES ($1,$2,$3,'https://s3.example','backup','repo',decode('00','hex'),decode('00','hex'),decode('00','hex'),1,clock_timestamp()+interval '1 day')")
+            .bind(org).bind(app).bind(volume).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO grund_volume_backup_points (organisation_id,app_id,volume_id,snapshot_id,archived_path,completed_at,verified_at) VALUES ($1,$2,$3,$4,'/source',clock_timestamp(),clock_timestamp())")
+            .bind(org).bind(app).bind(volume).bind(&snapshot).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO grund_volume_backup_attempts (organisation_id,app_id,volume_id,attempt_id,machine_id,placement_generation,operation,source_volume_id,snapshot_id,status) VALUES ($1,$2,$3,$4,$5,1,'prune',$3,$6,'pending')")
+            .bind(org).bind(app).bind(volume).bind(prune).bind(machine).bind(&snapshot)
+            .execute(&pool).await.unwrap();
+
+        let mut reservation = pool.begin().await.unwrap();
+        sqlx::query("SELECT 1 FROM grund_volume_backup_points WHERE organisation_id=$1 AND volume_id=$2 AND snapshot_id=$3 FOR UPDATE")
+            .bind(org).bind(volume).bind(&snapshot).fetch_one(&mut *reservation).await.unwrap();
+        assert!(lease_machine(&pool, machine).await.unwrap().is_none());
+        sqlx::query("INSERT INTO grund_volume_backup_attempts (organisation_id,app_id,volume_id,attempt_id,machine_id,placement_generation,operation,source_volume_id,snapshot_id,status) VALUES ($1,$2,$3,$4,$5,1,'restore',$3,$6,'pending')")
+            .bind(org).bind(app).bind(volume).bind(restore).bind(machine).bind(&snapshot)
+            .execute(&mut *reservation).await.unwrap();
+        reservation.commit().await.unwrap();
+        assert!(lease_machine(&pool, machine).await.unwrap().is_none());
+        sqlx::query("UPDATE grund_volume_backup_attempts SET status='failed' WHERE organisation_id=$1 AND attempt_id=$2")
+            .bind(org).bind(restore).execute(&pool).await.unwrap();
+        assert_eq!(
+            lease_machine(&pool, machine)
+                .await
+                .unwrap()
+                .map(|a| a.attempt_id),
+            Some(prune)
+        );
+    }
 }

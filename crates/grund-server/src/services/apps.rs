@@ -367,6 +367,32 @@ pub fn machine_view(row: &machines::MachineRow, others: Option<&apps::Reservatio
     }
 }
 
+fn reconcile_machine_view(
+    row: &machines::MachineRow,
+    others: Option<&apps::Reservation>,
+    stateful: bool,
+    pinned: Option<Uuid>,
+    placed: bool,
+) -> Option<MachineView> {
+    if !matches!(row.state.as_str(), "active" | "leased") {
+        return None;
+    }
+    let eligible = !stateful
+        || (row.pool != "management"
+            && row.minted_by.starts_with("account:")
+            && row
+                .capabilities
+                .as_ref()
+                .is_some_and(|c| c.0["volumes"].as_bool() == Some(true))
+            && pinned.is_none_or(|id| id == row.machine_id));
+    if !eligible && !placed {
+        return None;
+    }
+    let mut view = machine_view(row, others);
+    view.apps &= eligible;
+    Some(view)
+}
+
 pub(crate) async fn lock_app_domain_policy(
     connection: &mut PgConnection,
     app_id: Uuid,
@@ -1383,8 +1409,7 @@ impl Apps {
                     .iter()
                     .find(|v| v.status == "available" && wanted(&v.name))
                     .and_then(|v| v.machine_id)
-            })
-            .or_else(|| stateful.then(|| before.first().copied()).flatten());
+            });
         anyhow::ensure!(
             owned_volumes
                 .iter()
@@ -1396,21 +1421,17 @@ impl Apps {
             machines::organisation_machines(&mut **work.sql(), organisation_id)
                 .await?
                 .iter()
-                .filter(|m| matches!(m.state.as_str(), "active" | "leased"))
-                .filter(|m| {
-                    !stateful
-                        || (m.pool != "management"
-                            && m.minted_by.starts_with("account:")
-                            && m.capabilities
-                                .as_ref()
-                                .is_some_and(|c| c.0["volumes"].as_bool() == Some(true))
-                            && pinned.is_none_or(|id| id == m.machine_id))
-                })
-                .map(|m| {
+                .filter_map(|m| {
                     let others = reserved.iter().find(|r| r.machine_id == m.machine_id);
-                    let mut view = machine_view(m, others);
+                    let mut view = reconcile_machine_view(
+                        m,
+                        others,
+                        stateful,
+                        pinned,
+                        before.contains(&m.machine_id),
+                    )?;
                     view.last_seen = self.state.hearing.seen(view.last_seen);
-                    view
+                    Some(view)
                 })
                 .collect();
         let observations: Vec<Observation> = apps::app_statuses(&mut **work.sql(), app_id)
@@ -1544,6 +1565,255 @@ impl notmad::Component for AppReconciler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_volume_release_stops_the_old_writer_before_starting_on_a_capable_machine() {
+        use chrono::Duration;
+        use grund_domain::app::{
+            PlaceReason, Release, ReleaseSource, ReplicaState,
+            placement::Unplaceable,
+            spec::{StopSpec, VolumeSpec},
+        };
+        use serde_json::json;
+        use sqlx::types::Json;
+
+        let now = Utc::now();
+        let old_id = Uuid::from_u128(1);
+        let own_id = Uuid::from_u128(2);
+        let row = |machine_id, pool: &str, minted_by: &str, volumes| machines::MachineRow {
+            machine_id,
+            pool: pool.into(),
+            home_organisation_id: None,
+            name: format!("machine-{machine_id}"),
+            state: if pool == "management" {
+                "leased"
+            } else {
+                "active"
+            }
+            .into(),
+            public_key: None,
+            lease_id: None,
+            lessee_organisation_id: None,
+            lessee_slug: None,
+            lease_name: None,
+            leased_at: None,
+            pool_organisation_id: None,
+            pool_name: None,
+            facts: Json(json!({})),
+            minted_by: minted_by.into(),
+            registered_at: now,
+            key_registered_at: now,
+            revoked_at: None,
+            provider_machine_id: None,
+            last_seen_at: Some(now),
+            capabilities: Some(Json(json!({
+                "apps": true,
+                "volumes": volumes,
+                "arch": "x86_64",
+                "memory_mib": 4096,
+                "cpu_millis": 4000
+            }))),
+            network_ports: Json(Vec::new()),
+            labels: Json(Default::default()),
+            cordoned_at: None,
+            hosted_size: None,
+            hosted_region: None,
+        };
+        let spec = |volumes: bool| AppSpec {
+            image: "nginx".into(),
+            command: Vec::new(),
+            ports: Vec::new(),
+            memory_mib: 512,
+            cpu_millis: 100,
+            env: Vec::new(),
+            secrets: Vec::new(),
+            check: None,
+            stop: StopSpec::default(),
+            volumes: if volumes {
+                vec![VolumeSpec {
+                    name: "data".into(),
+                    path: "/data".into(),
+                    source: None,
+                    backup: false,
+                }]
+            } else {
+                Vec::new()
+            },
+        };
+        for (pool, minted_by) in [("management", "provider"), ("own", "account:owner")] {
+            let old = row(old_id, pool, minted_by, false);
+            let mut own = row(own_id, "own", "account:owner", false);
+            let views = |own: &machines::MachineRow, app: &App| {
+                [&old, own]
+                    .into_iter()
+                    .filter_map(|machine| {
+                        let placed = app
+                            .replicas
+                            .iter()
+                            .any(|r| r.machine_id == machine.machine_id);
+                        reconcile_machine_view(machine, None, true, None, placed)
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let mut app = App::default();
+            let old_replica = Uuid::from_u128(3);
+            let rollout_id = Uuid::from_u128(4);
+            for event in [
+                AppEvent::Created {
+                    organisation_id: Uuid::from_u128(5),
+                    name: AppName::parse("db").unwrap(),
+                    settings: AppSettings::default(),
+                    created_by: Uuid::nil(),
+                    created_at: now,
+                },
+                AppEvent::ReleaseCreated {
+                    release: Release {
+                        number: 1,
+                        spec: spec(false),
+                        image_digest: "sha256:old".into(),
+                        platforms: Vec::new(),
+                        exposed_ports: None,
+                        secret_versions: Vec::new(),
+                        source: ReleaseSource::Api,
+                        rollback_of: None,
+                        note: String::new(),
+                        created_by: Uuid::nil(),
+                        created_at: now,
+                    },
+                },
+                AppEvent::ReplicaPlaced {
+                    replica_id: old_replica,
+                    slot: 0,
+                    release: 1,
+                    machine_id: old_id,
+                    placement: 1,
+                    reason: PlaceReason::Scale,
+                    placed_at: now,
+                },
+                AppEvent::CurrentReleaseSet {
+                    release: 1,
+                    set_at: now,
+                },
+                AppEvent::ReleaseCreated {
+                    release: Release {
+                        number: 2,
+                        spec: spec(true),
+                        image_digest: "sha256:new".into(),
+                        platforms: Vec::new(),
+                        exposed_ports: None,
+                        secret_versions: Vec::new(),
+                        source: ReleaseSource::Api,
+                        rollback_of: None,
+                        note: String::new(),
+                        created_by: Uuid::nil(),
+                        created_at: now,
+                    },
+                },
+                AppEvent::RolloutStarted {
+                    rollout_id,
+                    from: Some(1),
+                    to: 2,
+                    started_at: now,
+                },
+            ] {
+                mire::Aggregate::apply(&mut app, &event);
+            }
+            let mut observation = Observation {
+                replica_id: old_replica,
+                state: Observed::Running,
+                ready: true,
+                ready_since: Some(now - Duration::seconds(20)),
+                ever_ready: true,
+                restarts: 0,
+                last_exit_code: 0,
+                reason: String::new(),
+                idle: false,
+            };
+            let mut new_id = || Uuid::from_u128(6);
+            let first = reconcile_with_volumes(
+                &app,
+                &[observation.clone()],
+                &views(&own, &app),
+                now,
+                true,
+                &mut new_id,
+            );
+            assert!(
+                matches!(first.events.as_slice(), [AppEvent::ReplicaDraining { replica_id, .. }] if *replica_id == old_replica),
+                "the old {pool} writer must be stopped before any replacement: {first:?}"
+            );
+            mire::Aggregate::apply(&mut app, &first.events[0]);
+            own.capabilities.as_mut().unwrap().0["volumes"] = json!(true);
+            let still_running = reconcile_with_volumes(
+                &app,
+                &[observation.clone()],
+                &views(&own, &app),
+                now,
+                true,
+                &mut new_id,
+            );
+            assert!(
+                still_running.events.is_empty(),
+                "even a capable machine cannot receive a second writer before stop acknowledgement"
+            );
+            own.capabilities.as_mut().unwrap().0["volumes"] = json!(false);
+            observation.state = Observed::Exited;
+            let stopped = reconcile_with_volumes(
+                &app,
+                &[observation],
+                &views(&own, &app),
+                now,
+                true,
+                &mut new_id,
+            );
+            assert!(
+                matches!(stopped.events.as_slice(), [AppEvent::ReplicaRemoved { replica_id, .. }] if *replica_id == old_replica),
+                "the old writer is fenced, but an incapable own machine cannot receive its volume: {stopped:?}"
+            );
+            assert_eq!(stopped.waiting[0].reason, Unplaceable::NoCapability);
+            mire::Aggregate::apply(&mut app, &stopped.events[0]);
+            let waiting =
+                reconcile_with_volumes(&app, &[], &views(&own, &app), now, true, &mut new_id);
+            assert!(
+                waiting.events.is_empty(),
+                "without a capable machine no writer is started"
+            );
+            assert_eq!(waiting.waiting[0].reason, Unplaceable::NoMachine);
+            assert_eq!(
+                app.current_release,
+                Some(1),
+                "the old release remains current until v2 is ready"
+            );
+            own.capabilities.as_mut().unwrap().0["volumes"] = json!(true);
+            let placed =
+                reconcile_with_volumes(&app, &[], &views(&own, &app), now, true, &mut new_id);
+            assert!(
+                matches!(placed.events.as_slice(), [AppEvent::ReplicaPlaced { machine_id, release: 2, .. }] if *machine_id == own_id),
+                "the newly capable own machine receives the new writer: {placed:?}"
+            );
+            mire::Aggregate::apply(&mut app, &placed.events[0]);
+            let ready = Observation {
+                replica_id: app.replicas[0].replica_id,
+                state: Observed::Running,
+                ready: true,
+                ready_since: Some(now - Duration::seconds(20)),
+                ever_ready: true,
+                restarts: 0,
+                last_exit_code: 0,
+                reason: String::new(),
+                idle: false,
+            };
+            let finished =
+                reconcile_with_volumes(&app, &[ready], &views(&own, &app), now, true, &mut new_id);
+            for event in &finished.events {
+                mire::Aggregate::apply(&mut app, event);
+            }
+            assert_eq!(app.current_release, Some(2), "{finished:?}");
+            assert_eq!(app.replicas.len(), 1);
+            assert_eq!(app.replicas[0].state, ReplicaState::Running);
+            assert_eq!(app.replicas[0].machine_id, own_id);
+        }
+    }
 
     #[test]
     fn only_a_verified_bound_domain_allows_custom_only_publication() {

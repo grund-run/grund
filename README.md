@@ -333,6 +333,11 @@ directory. Storage uses the host filesystem and its existing permissions and
 encryption; there is no volume size quota. Keep independent backups of the
 machine.
 
+Every ancestor of an existing host directory must be root-owned and not
+writable by non-root users; a user-writable home directory cannot be a source.
+The source directory itself keeps its existing owner and permissions. This
+prevents replacing its path after the agent checks it but before it is mounted.
+
 `backup: daily` only requests backups; it does not protect data until an owner
 configures an HTTPS S3-compatible destination and a verified recovery point
 appears in Settings → Volumes. The agent encrypts backups with restic; the

@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 
 use crate::accepttest::{
     apps::{a_machine, a_running_agent, app, call, live, quick, spec, until},
-    fixtures::{FakeRegistry, testcase_configured},
+    fixtures::{FakeRegistry, testcase_configured, testcase_with_mail},
 };
 
 const VOLUMES: &str = "/grund.volume.v1.VolumeService";
@@ -23,6 +23,55 @@ async fn list(
     .await?;
     then.status(200)?;
     then.json()
+}
+
+#[tokio::test]
+async fn an_admin_cannot_restore_an_owners_backup_into_their_machine() -> anyhow::Result<()> {
+    let Some((given, when, then)) = testcase_with_mail().await? else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let org = &owner.username;
+    call(
+        &when,
+        &then,
+        "CreateApp",
+        json!({"organisation": org, "name": "safebox", "settings": quick(1)}),
+    )
+    .await?;
+    then.status(200)?;
+    let (guest, guest_when, guest_then) = given.testcase.another_browser();
+    let admin = guest.a_signed_in_account().await?;
+    when.inviting(org, &admin.email, "admin").await?;
+    let link = guest_when
+        .the_mailed_link(&admin.email, "Join", "/invite?token=")
+        .await?;
+    guest_when.visiting(&link).await?;
+    let token = guest.last_token()?;
+    guest_when
+        .submitting_on_current_page("/invite", &[("token", &token)])
+        .await?;
+    guest_then.redirects_to(&format!("/{org}"))?;
+    guest_when
+        .calling(
+            &format!("{VOLUMES}/RestoreRecoveryPoint"),
+            &json!({
+                "organisation": org,
+                "app": "safebox",
+                "sourceVolumeId": uuid::Uuid::now_v7(),
+                "snapshotId": "a".repeat(64),
+                "newVolumeName": "stolen",
+                "targetContainerPath": "/data",
+                "targetMachineId": uuid::Uuid::now_v7(),
+                "expectedVersion": 0,
+                "confirmNewVolume": true,
+                "idempotencyKey": uuid::Uuid::now_v7().to_string()
+            })
+            .to_string(),
+        )
+        .await?;
+    guest_then.status(403)?.connect_code("permission_denied")?;
+    Ok(())
 }
 
 #[tokio::test]
@@ -121,19 +170,37 @@ async fn an_app_owned_directory_survives_release_and_agent_restart_then_erases_o
         "one bind per active container"
     );
 
+    let current = app(&when, &then, org, "storage").await?;
+    let copy = current["replicas"][0]["replicaId"]
+        .as_str()
+        .context("active replica ID")?
+        .to_owned();
     let data_dir = agent.dir.clone();
     drop(agent);
-    let agent = a_running_agent(data_dir)?;
+    let lost = data_dir.join("simulated-containers/lost").join(&copy);
+    std::fs::create_dir_all(lost.parent().context("lost marker parent")?)?;
+    std::fs::write(&lost, [])?;
+    let mut agent = a_running_agent(data_dir)?;
     until(
         &when,
         &then,
         org,
         "storage",
         Duration::from_secs(45),
-        "agent restart",
-        |app| live(app, 2),
+        "restarted agent recreated the same mounted task",
+        |app| {
+            live(app, 2)
+                && !lost.exists()
+                && agent.containers().iter().any(|container| {
+                    container["spec"]["id"] == copy.as_str()
+                        && container["task_lost"] == false
+                        && container["spec"]["volumes"][0]["source"]
+                            == root.to_string_lossy().as_ref()
+                })
+        },
     )
     .await?;
+    ensure!(!agent.has_exited(), "the restarted agent exited");
     ensure!(
         std::fs::read(&marker)? == b"written before release",
         "restart retained the bytes"
@@ -323,6 +390,31 @@ async fn a_verified_s3_point_restores_its_bytes_to_a_different_own_machine() -> 
     let restore = then.json()?;
     let new_id = restore["newVolumeId"].as_str().context("new volume ID")?;
     ensure!(new_id != volume_id, "restore allocated a different volume");
+    let restore_request = json!({
+        "organisation":org,"app":"backup","sourceVolumeId":volume_id,
+        "snapshotId":snapshot,"idempotencyKey":"restore-backup-scenario",
+        "expectedVersion":source_version,"newVolumeName":"recovered",
+        "targetContainerPath":"/recovered","targetMachineId":target_machine,
+        "confirmNewVolume":true
+    });
+    when.calling(
+        &format!("{VOLUMES}/RestoreRecoveryPoint"),
+        &restore_request.to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    ensure!(
+        then.json()?["attemptId"] == restore["attemptId"],
+        "same-key retry returns the original restore attempt"
+    );
+    let mut competing = restore_request;
+    competing["idempotencyKey"] = json!("different-restore-request");
+    when.calling(
+        &format!("{VOLUMES}/RestoreRecoveryPoint"),
+        &competing.to_string(),
+    )
+    .await?;
+    then.status(409)?;
     let marker = target_agent
         .dir
         .join("volumes")

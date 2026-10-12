@@ -485,10 +485,33 @@ impl Backups {
         if !matches!(source_row.status.as_str(), "attached" | "available") {
             return Err(BackupError::Ineligible);
         }
-        let present: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM grund_volume_backup_points WHERE organisation_id=$1 AND app_id=$2 AND volume_id=$3 AND snapshot_id=$4)")
-            .bind(org).bind(app).bind(source).bind(snapshot).fetch_one(&mut **work.sql()).await.map_err(anyhow::Error::from)?;
-        if !present {
+        let already_named: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM grund_volumes WHERE app_id=$1 AND name=$2)",
+        )
+        .bind(app)
+        .bind(name)
+        .fetch_one(&mut **work.sql())
+        .await
+        .map_err(anyhow::Error::from)?;
+        if already_named {
+            return Err(BackupError::Conflict);
+        }
+        let present: Option<i32> = sqlx::query_scalar("SELECT 1 FROM grund_volume_backup_points WHERE organisation_id=$1 AND app_id=$2 AND volume_id=$3 AND snapshot_id=$4 FOR UPDATE")
+            .bind(org).bind(app).bind(source).bind(snapshot).fetch_optional(&mut **work.sql()).await.map_err(anyhow::Error::from)?;
+        if present.is_none() {
             return Err(BackupError::NotFound);
+        }
+        let attempted: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM grund_volume_backup_attempts WHERE organisation_id=$1 AND volume_id=$2 AND snapshot_id=$3 AND operation='prune' AND (attempts>0 OR status='completed'))")
+            .bind(org).bind(source).bind(snapshot).fetch_one(&mut **work.sql()).await.map_err(anyhow::Error::from)?;
+        if attempted {
+            return Err(BackupError::Conflict);
+        }
+        sqlx::query("UPDATE grund_volume_backup_attempts SET status='failed',failure_class='source' WHERE organisation_id=$1 AND volume_id=$2 AND snapshot_id=$3 AND operation='prune' AND status='pending' AND attempts=0")
+            .bind(org).bind(source).bind(snapshot).execute(&mut **work.sql()).await.map_err(anyhow::Error::from)?;
+        let pruning: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM grund_volume_backup_attempts WHERE organisation_id=$1 AND volume_id=$2 AND snapshot_id=$3 AND operation='prune' AND status IN ('pending','leased'))")
+            .bind(org).bind(source).bind(snapshot).fetch_one(&mut **work.sql()).await.map_err(anyhow::Error::from)?;
+        if pruning {
+            return Err(BackupError::Conflict);
         }
         work.volume(
             new_volume,
