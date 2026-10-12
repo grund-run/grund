@@ -118,6 +118,11 @@ kjuulh: "kubernetes-app": {
 					{name: "DATABASE_URL", secret: "grund-db-app", key: "uri"},
 					{name: "GRUND_SECRET_KEY", secret: "grund-secrets", key: "secret_key"},
 					{name: "GRUND_SMTP_URL", secret: "grund-secrets", key: "smtp_url"},
+					// The hosted instance reports confirmed accounts to the
+					// operator's in-cluster insights endpoint; self-hosted
+					// instances remain opt-in.
+					{name: "GRUND_ACCOUNT_EVENT_URL", secret: "grund-account-events", key: "url"},
+					{name: "GRUND_ACCOUNT_EVENT_TOKEN", secret: "grund-account-events", key: "token"},
 				]
 			}
 		}
