@@ -108,7 +108,19 @@ pub async fn serve(
     let entitlements = entitlements(&config)?;
     let grace = config.shutdown_grace;
     let config_billing = config.billing.clone();
-    let capacity = services::capacity::Capacity::new(&config.capacity)?;
+    let mut extension_capacity = None;
+    for extension in &extensions {
+        if let Some(candidate) = extension.capacity_provider(&config)? {
+            anyhow::ensure!(
+                extension_capacity.replace(candidate).is_none(),
+                "only one capacity provider may be active"
+            );
+        }
+    }
+    let capacity = match extension_capacity {
+        Some(provider) => services::capacity::Capacity::Provider(provider),
+        None => services::capacity::Capacity::new(&config.capacity)?,
+    };
     let deletions = sagas::Deletions::new(events.clone());
     let state = State {
         config: std::sync::Arc::new(config),
@@ -154,6 +166,7 @@ pub async fn serve(
         .add(services::entry::EntryKeys::new(state.clone()))
         .add(services::maintenance::Sweeper::new(state.clone()))
         .add(services::machines::HostedRecovery::new(state.clone()))
+        .add(extension::ExtensionWork(state.clone()))
         .add(certificates::CertificateWork::new(&state))
         .add(sagas::DeletionWorker::new(&state))
         .add(services::outbox::OutboxDrain::new(

@@ -59,7 +59,12 @@ component Sidebar(viewer: &TypedViewer, section: &str, csrf: &str, footer: Optio
       <OrgNavItem slug={org.slug.as_str()} suffix="/templates" icon_name="template" label="Templates" active={*section == "templates"} />
       <OrgNavItem slug={org.slug.as_str()} suffix="/settings" icon_name="users" label="Organisation" active={*section == "org-settings" || *section == "members"} />
     </ul>
-    {if viewer.operator {
+    {if !viewer.navigation.is_empty() {
+      <ul class="nav">{for link in &viewer.navigation {
+        <OrgNavItem slug={org.slug.as_str()} suffix={link.suffix.as_str()} icon_name={link.icon_name} label={link.label} active={*section == link.section} />
+      }}</ul>
+    }}
+    {if viewer.operator && !viewer.navigation.iter().any(|link| link.suffix == "/admin") {
       <ul class="nav"><OrgNavItem slug={org.slug.as_str()} suffix="/admin" icon_name="gear" label="Admin" active={*section == "admin" || *section == "pool"} /></ul>
     }}
   } else {

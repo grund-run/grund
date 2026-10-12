@@ -4,6 +4,10 @@ use flate2::{Compression, write::GzEncoder};
 
 fn main() {
     sedge_gen::build("templates");
+    println!(
+        "cargo::metadata=templates={}/templates",
+        env!("CARGO_MANIFEST_DIR")
+    );
 
     let out_dir = env::var_os("OUT_DIR").expect("OUT_DIR");
     let out_dir = Path::new(&out_dir);

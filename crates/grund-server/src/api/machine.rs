@@ -34,7 +34,7 @@ use grund_proto::grund::{
 };
 use grund_store::{
     agents::VmRow,
-    machines::{self, HostedOrder, MachineRow},
+    machines::{HostedOrder, MachineRow},
     organisations::Membership,
 };
 use uuid::Uuid;
@@ -89,29 +89,33 @@ fn state_name(value: EnumValue<MachineState>) -> Option<&'static str> {
     }
 }
 
-fn facts(value: &serde_json::Value) -> agent::MachineFacts {
+fn facts(value: &serde_json::Value, hosted_os: Option<&str>) -> agent::MachineFacts {
     let text = |key: &str| value[key].as_str().unwrap_or_default().to_string();
     agent::MachineFacts {
-        hostname: text("hostname"),
+        hostname: if hosted_os.is_some() {
+            String::new()
+        } else {
+            text("hostname")
+        },
         arch: text("arch"),
         cpu_model: text("cpu_model"),
         cpus: value["cpus"].as_i64().unwrap_or_default() as i32,
         memory_mib: value["memory_mib"].as_i64().unwrap_or_default(),
         disk_gib: value["disk_gib"].as_i64().unwrap_or_default(),
-        os: text("os"),
+        os: hosted_os.map(str::to_owned).unwrap_or_else(|| text("os")),
         kernel: text("kernel"),
         agent_version: text("agent_version"),
-        fleet_machine_id: text("fleet_machine_id"),
+        fleet_machine_id: if hosted_os.is_some() {
+            String::new()
+        } else {
+            text("fleet_machine_id")
+        },
         ..Default::default()
     }
 }
 
 fn hosted_facts(value: &serde_json::Value) -> agent::MachineFacts {
-    let mut details = facts(value);
-    details.fleet_machine_id.clear();
-    details.hostname.clear();
-    details.os = "Linux".into();
-    details
+    facts(value, Some("Linux"))
 }
 
 #[derive(Clone, Copy)]
@@ -174,7 +178,7 @@ fn machine(row: &MachineRow, view: View, own_slug: Option<&str>) -> Machine {
         facts: MessageField::from(if hosted {
             hosted_facts(&row.facts.0)
         } else {
-            facts(&row.facts.0)
+            facts(&row.facts.0, None)
         }),
         registered_at: timestamp(row.registered_at),
         key_registered_at: timestamp(row.key_registered_at),
@@ -233,6 +237,38 @@ fn hosted_machine(order: &HostedOrder, row: Option<&MachineRow>) -> Machine {
     shown.minted_by.clear();
     if row.is_none() {
         shown.state = if order.status == "failed" {
+            MachineState::MACHINE_STATE_FAILED.into()
+        } else {
+            MachineState::MACHINE_STATE_JOINING.into()
+        };
+    }
+    shown
+}
+
+fn external_machine(
+    listing: &crate::extension::ExternalMachine,
+    row: Option<&MachineRow>,
+    slug: &str,
+) -> Machine {
+    let mut shown = row
+        .map(|row| machine(row, View::Organisation, Some(slug)))
+        .unwrap_or_default();
+    shown.machine_id = listing.id.to_string();
+    shown.name = listing.name.clone();
+    shown.hosted = true;
+    shown.pool = agent::Pool::POOL_UNSPECIFIED.into();
+    shown.lease = MessageField::default();
+    shown.provider_machine_id.clear();
+    shown.minted_by.clear();
+    shown.public_key.clear();
+    shown.registered_at = MessageField::default();
+    shown.key_registered_at = MessageField::default();
+    shown.capabilities = MessageField::default();
+    if let Some(row) = row {
+        shown.facts = MessageField::from(facts(&row.facts.0, Some(listing.os.unwrap_or_default())));
+    }
+    if row.is_none() {
+        shown.state = if listing.state == "failed" {
             MachineState::MACHINE_STATE_FAILED.into()
         } else {
             MachineState::MACHINE_STATE_JOINING.into()
@@ -734,6 +770,29 @@ impl MachineApi {
         Self { state }
     }
 
+    fn uses_external_hosted(&self) -> bool {
+        self.state
+            .extensions
+            .iter()
+            .any(|extension| extension.replaces_builtin_hosted())
+    }
+
+    async fn listings(
+        &self,
+        membership: &Membership,
+    ) -> Result<Vec<crate::extension::ExternalMachine>, ConnectError> {
+        let mut listings = Vec::new();
+        for extension in self.state.extensions.iter() {
+            listings.extend(
+                extension
+                    .machine_listings(&self.state, membership.organisation_id, &membership.slug)
+                    .await
+                    .map_err(internal)?,
+            );
+        }
+        Ok(listings)
+    }
+
     async fn member(
         &self,
         caller: &Principal,
@@ -762,6 +821,23 @@ impl MachineApi {
         machine_id: &str,
     ) -> Result<MachineRow, ConnectError> {
         let id = uuid(machine_id)?;
+        if self.uses_external_hosted() {
+            let resolved = self
+                .state
+                .machine_id(membership.organisation_id, id)
+                .await
+                .map_err(internal)?;
+            return self
+                .state
+                .machines()
+                .organisation_machine(membership.organisation_id, resolved)
+                .await
+                .map_err(internal)?
+                .filter(|row| {
+                    row.pool != "management" || row.lease_id == Some(id) || resolved != id
+                })
+                .ok_or_else(|| ConnectError::not_found("no such machine"));
+        }
         let machines = self.state.machines();
         if let Some(row) = machines
             .organisation_machine(membership.organisation_id, id)
@@ -792,6 +868,18 @@ impl MachineApi {
         membership: &Membership,
         row: &MachineRow,
     ) -> Result<Machine, ConnectError> {
+        if self.uses_external_hosted() {
+            let listings = self.listings(membership).await?;
+            return Ok(
+                match listings
+                    .iter()
+                    .find(|listing| listing.machine_id == Some(row.machine_id))
+                {
+                    Some(listing) => external_machine(listing, Some(row), &membership.slug),
+                    None => machine(row, View::Organisation, Some(&membership.slug)),
+                },
+            );
+        }
         let orders = self
             .state
             .machines()
@@ -998,6 +1086,31 @@ impl MachineService for MachineApi {
             .organisation_machines(membership.organisation_id)
             .await
             .map_err(internal)?;
+        if self.uses_external_hosted() {
+            let listings = self.listings(&membership).await?;
+            let mut listed: Vec<Machine> = rows
+                .iter()
+                .filter(|row| {
+                    !listings
+                        .iter()
+                        .any(|listing| listing.machine_id == Some(row.machine_id))
+                })
+                .map(|row| machine(row, View::Organisation, Some(&membership.slug)))
+                .collect();
+            listed.extend(listings.iter().map(|listing| {
+                external_machine(
+                    listing,
+                    listing
+                        .machine_id
+                        .and_then(|id| rows.iter().find(|row| row.machine_id == id)),
+                    &membership.slug,
+                )
+            }));
+            return Response::ok(ListMachinesResponse {
+                machines: listed,
+                ..Default::default()
+            });
+        }
         let orders = self
             .state
             .machines()
@@ -1037,6 +1150,40 @@ impl MachineService for MachineApi {
             .member(&caller, request.organisation, Access::Read)
             .await?;
         let id = uuid(request.machine_id)?;
+        if self.uses_external_hosted() {
+            let listings = self.listings(&membership).await?;
+            if let Some(listing) = listings
+                .iter()
+                .find(|listing| listing.id == id || listing.machine_id == Some(id))
+            {
+                let row = match listing.machine_id {
+                    Some(machine_id) => self
+                        .state
+                        .machines()
+                        .organisation_machine(membership.organisation_id, machine_id)
+                        .await
+                        .map_err(internal)?,
+                    None => None,
+                };
+                return Response::ok(GetMachineResponse {
+                    machine: MessageField::from(external_machine(
+                        listing,
+                        row.as_ref(),
+                        &membership.slug,
+                    )),
+                    ..Default::default()
+                });
+            }
+            let row = self.pool_machine(&membership, request.machine_id).await?;
+            return Response::ok(GetMachineResponse {
+                machine: MessageField::from(machine(
+                    &row,
+                    View::Organisation,
+                    Some(&membership.slug),
+                )),
+                ..Default::default()
+            });
+        }
         let order = self
             .state
             .machines()
@@ -1261,7 +1408,9 @@ impl MachineService for MachineApi {
             .await
             .map_err(internal)?;
         let row = vm_done(outcome)?;
-        let orders = machines::hosted_vm_orders(&self.state.pool, membership.organisation_id)
+        let orders = self
+            .state
+            .vm_aliases(membership.organisation_id)
             .await
             .map_err(internal)?;
         Response::ok(RunVmResponse {
@@ -1288,7 +1437,9 @@ impl MachineService for MachineApi {
                 .await
                 .map_err(internal)?,
         )?;
-        let orders = machines::hosted_vm_orders(&self.state.pool, membership.organisation_id)
+        let orders = self
+            .state
+            .vm_aliases(membership.organisation_id)
             .await
             .map_err(internal)?;
         Response::ok(StopVmResponse {
@@ -1312,7 +1463,9 @@ impl MachineService for MachineApi {
             .vms(membership.organisation_id)
             .await
             .map_err(internal)?;
-        let orders = machines::hosted_vm_orders(&self.state.pool, membership.organisation_id)
+        let orders = self
+            .state
+            .vm_aliases(membership.organisation_id)
             .await
             .map_err(internal)?;
         Response::ok(ListVmsResponse {

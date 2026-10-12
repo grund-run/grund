@@ -11,7 +11,7 @@
 //! idempotency key; enrollment tokens are derived from a secret key rather
 //! than stored as reusable plaintext.
 
-use std::time::Duration;
+use std::{any::Any, future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use anyhow::Context;
 use chrono::{DateTime, Utc};
@@ -32,11 +32,50 @@ pub enum CapacityError {
     Refused(String),
 }
 
+pub type CapacityFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// Size, region and state reported by a provider's inventory.
+pub type InventorySize = (String, String, String);
+
+/// Provider operations supplied by an extension alongside the legacy remote provider.
+pub trait CapacityProvider: Any + Send + Sync {
+    fn as_any(&self) -> &dyn Any;
+    fn offers(&self) -> CapacityFuture<'_, Result<Vec<Offer>, CapacityError>>;
+    fn inventory_sizes(&self) -> CapacityFuture<'_, Result<Vec<InventorySize>, CapacityError>>;
+    fn get_provision<'a>(
+        &'a self,
+        key: &'a str,
+    ) -> CapacityFuture<'a, Result<Option<String>, CapacityError>>;
+    fn provision<'a>(
+        &'a self,
+        key: &'a str,
+        url: &'a str,
+        token: &'a str,
+        expiry: DateTime<Utc>,
+        size: &'a str,
+        region: &'a str,
+    ) -> CapacityFuture<'a, Result<String, CapacityError>>;
+    fn rebuild<'a>(
+        &'a self,
+        key: &'a str,
+        provider_id: &'a str,
+        url: &'a str,
+        token: &'a str,
+        expiry: DateTime<Utc>,
+    ) -> CapacityFuture<'a, Result<(), CapacityError>>;
+    fn release<'a>(
+        &'a self,
+        key: &'a str,
+        provider_id: &'a str,
+    ) -> CapacityFuture<'a, Result<(), CapacityError>>;
+}
+
 /// The capacity seam: none, or a provider.
 #[derive(Clone)]
 pub enum Capacity {
     None,
     Remote(Remote),
+    Provider(Arc<dyn CapacityProvider>),
 }
 
 /// A configured provider.
@@ -116,11 +155,14 @@ impl Capacity {
 
     /// Whether a provider is configured.
     pub fn enabled(&self) -> bool {
-        matches!(self, Capacity::Remote(_))
+        matches!(self, Capacity::Remote(_) | Capacity::Provider(_))
     }
 
     /// Lists actual selectable capacity; an unconfigured provider offers nothing.
     pub async fn offers(&self) -> Result<Vec<Offer>, CapacityError> {
+        if let Self::Provider(provider) = self {
+            return provider.offers().await;
+        }
         if !self.enabled() {
             return Ok(Vec::new());
         }
@@ -131,6 +173,9 @@ impl Capacity {
     /// Returns exact size and region of already assigned machines for migration
     /// from an older registration that did not record its selected offer.
     pub async fn inventory_sizes(&self) -> Result<Vec<(String, String, String)>, CapacityError> {
+        if let Self::Provider(provider) = self {
+            return provider.inventory_sizes().await;
+        }
         if !self.enabled() {
             return Ok(Vec::new());
         }
@@ -178,6 +223,9 @@ impl Capacity {
         &self,
         idempotency_key: &str,
     ) -> Result<Option<String>, CapacityError> {
+        if let Self::Provider(provider) = self {
+            return provider.get_provision(idempotency_key).await;
+        }
         let answer = self
             .call(
                 "GetProvision",
@@ -207,6 +255,11 @@ impl Capacity {
         size: &str,
         region: &str,
     ) -> Result<String, CapacityError> {
+        if let Self::Provider(provider) = self {
+            return provider
+                .provision(idempotency_key, grund_url, token, expires_at, size, region)
+                .await;
+        }
         let answer = self
             .call(
                 "ProvisionMachine",
@@ -236,6 +289,17 @@ impl Capacity {
         token: &str,
         expires_at: DateTime<Utc>,
     ) -> Result<(), CapacityError> {
+        if let Self::Provider(provider) = self {
+            return provider
+                .rebuild(
+                    idempotency_key,
+                    provider_machine_id,
+                    grund_url,
+                    token,
+                    expires_at,
+                )
+                .await;
+        }
         self.call(
             "RebuildMachine",
             &serde_json::json!({
@@ -256,6 +320,9 @@ impl Capacity {
         idempotency_key: &str,
         provider_machine_id: &str,
     ) -> Result<(), CapacityError> {
+        if let Self::Provider(provider) = self {
+            return provider.release(idempotency_key, provider_machine_id).await;
+        }
         self.call(
             "ReleaseMachine",
             &serde_json::json!({

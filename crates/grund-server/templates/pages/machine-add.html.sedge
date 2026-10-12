@@ -1,5 +1,5 @@
 use crate::templates::compiled::components::{PageHead, Panel, Banner, Button, Code, Para, Field, Tiles, Tile, ChipsField};
-props crate::web::machines::MachineAddPage<'_> { slug, csrf, setup, add_error, name, minutes, mode, hosted_enabled, offers, selected_offer, retry_key, regions_multiple };
+props crate::web::machines::MachineAddPage<'_> { slug, csrf, setup, add_error, name, minutes, mode, hosted_enabled, offers, selected_offer, retry_key, regions_multiple, options };
 {let back = format!("/{slug}/machines");}
 
 <PageHead title="Add machine" back={Some((back.as_str(), "Machines"))} />
@@ -17,6 +17,9 @@ props crate::web::machines::MachineAddPage<'_> { slug, csrf, setup, add_error, n
   <Panel id="choose" title="Choose a machine">
     <Tiles>
       <Tile href="/{slug}/machines/add?mode=own" title="Your machine" state="" />
+      {for option in options {
+        <Tile href={option.href.as_str()} title={option.title} state="" />
+      }}
       {if *hosted_enabled {
         <Tile href="/{slug}/machines/add?mode=hosted" title="Hosted" state="" />
       }}

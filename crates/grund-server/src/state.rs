@@ -42,3 +42,68 @@ pub struct State {
     /// Since when this instance has been hearing its machines (hearing.rs).
     pub hearing: Arc<crate::hearing::Hearing>,
 }
+
+impl State {
+    /// The organisation that operates hosted infrastructure. Public builds
+    /// continue using their configured legacy operator.
+    pub async fn operator_organisation(&self) -> anyhow::Result<Option<uuid::Uuid>> {
+        for extension in self.extensions.iter() {
+            if let Some(organisation_id) = extension.operator_organisation(self).await? {
+                return Ok(Some(organisation_id));
+            }
+        }
+        if self
+            .extensions
+            .iter()
+            .any(|extension| extension.replaces_builtin_hosted())
+        {
+            return Ok(None);
+        }
+        use crate::services::machines::MachinesState;
+        self.machines().operator().await
+    }
+
+    /// Resolves an extension-owned machine identifier within its organisation.
+    pub async fn machine_id(
+        &self,
+        organisation_id: uuid::Uuid,
+        public_id: uuid::Uuid,
+    ) -> anyhow::Result<uuid::Uuid> {
+        for extension in self.extensions.iter() {
+            if let Some(machine_id) = extension
+                .machine_alias(self, organisation_id, public_id)
+                .await?
+            {
+                return Ok(machine_id);
+            }
+        }
+        Ok(public_id)
+    }
+
+    /// Public identifiers for hosted VM placements, from the active provider.
+    pub async fn vm_aliases(
+        &self,
+        organisation_id: uuid::Uuid,
+    ) -> anyhow::Result<Vec<(uuid::Uuid, uuid::Uuid, chrono::DateTime<chrono::Utc>)>> {
+        if self
+            .extensions
+            .iter()
+            .any(|extension| extension.replaces_builtin_hosted())
+        {
+            let mut aliases = Vec::new();
+            for extension in self.extensions.iter() {
+                aliases.extend(extension.vm_aliases(self, organisation_id).await?);
+            }
+            aliases.extend(
+                grund_store::machines::organisation_machines(&self.pool, organisation_id)
+                    .await?
+                    .into_iter()
+                    .filter(|row| row.pool == "management")
+                    .filter_map(|row| Some((row.lease_id?, row.machine_id, row.leased_at?))),
+            );
+            Ok(aliases)
+        } else {
+            Ok(grund_store::machines::hosted_vm_orders(&self.pool, organisation_id).await?)
+        }
+    }
+}

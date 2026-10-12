@@ -26,6 +26,12 @@ can be read. They are not in any release yet.
 | Sign in with GitHub or Google (planned for the Homelab plan) | `ee/` | all rights reserved for now |
 | Single sign-on with your own provider, audit log (planned for Business) | `ee/` | all rights reserved for now *(not built)* |
 
+The grund.sh-hosted capacity provider is not needed to self-host grund.
+Its implementation is being separated from the open-source binary; the
+current public build still contains the already published hosted code
+until a coordinated release. Moving that code does not change the rights
+granted under its existing AGPL license.
+
 Where things stand, plainly: nothing is for sale yet. The commercial
 features are published so you can read them, but they are not licensed for
 use and no official build or image contains them. Commercial terms come

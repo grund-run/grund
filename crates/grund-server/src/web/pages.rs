@@ -18,7 +18,6 @@ use crate::{
             AccountsState, FieldErrors, LoginOutcome, OwnerSignupOutcome, ResetOutcome,
             ResetRequestOutcome, SignupForm, SignupOutcome,
         },
-        machines::MachinesState,
         organisations::{Home, OrganisationsState},
         sessions::{Session, SessionsState},
     },
@@ -85,6 +84,14 @@ pub struct PendingInvitationView {
 }
 
 #[derive(Clone, serde::Serialize)]
+pub struct NavLink {
+    pub suffix: String,
+    pub icon_name: &'static str,
+    pub label: &'static str,
+    pub section: &'static str,
+}
+
+#[derive(Clone, serde::Serialize)]
 pub struct TypedViewer {
     pub username: String,
     pub email: String,
@@ -97,6 +104,7 @@ pub struct TypedViewer {
     pub admin_footer: bool,
     pub operator: bool,
     pub registered_on: String,
+    pub navigation: Vec<NavLink>,
 }
 
 /// The build and trace identity shown only to an instance operator.
@@ -342,7 +350,7 @@ pub async fn typed_viewer_context(
             .collect();
     let unread_notifications =
         grund_store::notifications::count(&state.pool, session.account_id, None).await?;
-    let operator_id = state.machines().operator().await?;
+    let operator_id = state.operator_organisation().await?;
     let admin_footer = memberships
         .iter()
         .any(|membership| Some(membership.organisation_id) == operator_id);
@@ -391,7 +399,7 @@ pub async fn typed_viewer_context(
             current: true,
         }
     });
-    Ok(TypedViewer {
+    let mut viewer = TypedViewer {
         username: viewer.username,
         email: viewer.email,
         initials,
@@ -403,7 +411,14 @@ pub async fn typed_viewer_context(
         can_create: organisations.can_create(),
         operator,
         registered_on: viewer.registered_at.format("%-d %B %Y").to_string(),
-    })
+        navigation: Vec::new(),
+    };
+    viewer.navigation = state
+        .extensions
+        .iter()
+        .flat_map(|extension| extension.navigation(&viewer))
+        .collect();
+    Ok(viewer)
 }
 
 /// Renders a signed-in page in the typed app layout, using the viewer for
@@ -1347,6 +1362,7 @@ fn style_guide_fixture(csrf: String) -> StyleGuidePage {
         }],
         unread_notifications: 3,
         registered_on: String::new(),
+        navigation: Vec::new(),
         current: Some(TypedOrg {
             slug: "nord-studio".into(),
             role: "owner".into(),
@@ -1473,6 +1489,7 @@ fn style_guide_fixture(csrf: String) -> StyleGuidePage {
         |(name, status, tone, tab, leased, labels, detail, vcpus, memory, disk)| {
             crate::web::machines::MachineItem {
                 id: name.into(),
+                remove_href: format!("/nord-studio/machines/{name}/remove"),
                 name,
                 labels: labels.into_iter().map(str::to_owned).collect(),
                 status,

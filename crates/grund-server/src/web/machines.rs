@@ -37,6 +37,7 @@ use crate::{
 
 pub struct MachineItem<'a> {
     pub id: String,
+    pub remove_href: String,
     pub name: &'a str,
     pub labels: Vec<String>,
     pub status: &'static str,
@@ -114,6 +115,7 @@ pub struct MachineAddPage<'a> {
     pub selected_offer: String,
     pub retry_key: String,
     pub regions_multiple: bool,
+    pub options: Vec<crate::extension::MachineAddOption>,
 }
 
 pub struct HostedOption {
@@ -275,6 +277,8 @@ fn machine_context<'a>(
     copies: i64,
     now: chrono::DateTime<Utc>,
     form: &MachinesForm<'_>,
+    slug: &str,
+    external_remove_href: Option<&str>,
 ) -> MachineItem<'a> {
     let capabilities = row.capabilities.as_ref().map(|c| &c.0);
     let labels: Vec<String> = row
@@ -307,6 +311,11 @@ fn machine_context<'a>(
             .unwrap_or_default(),
         _ => String::new(),
     };
+    let id = row
+        .lease_id
+        .filter(|_| row.pool == "management")
+        .unwrap_or(row.machine_id)
+        .to_string();
     MachineItem {
         labels,
         status,
@@ -316,11 +325,10 @@ fn machine_context<'a>(
         shown,
         detail,
         name,
-        id: row
-            .lease_id
-            .filter(|_| row.pool == "management")
-            .unwrap_or(row.machine_id)
-            .to_string(),
+        remove_href: external_remove_href
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("/{slug}/machines/{id}/remove")),
+        id,
         out_of_service: row.cordoned_at.is_some(),
         leased: row.pool == "management",
         joining: false,
@@ -374,10 +382,35 @@ async fn machines_view(
         .machines()
         .organisation_machines(membership.organisation_id)
         .await?;
-    let orders = state
-        .machines()
-        .hosted_orders(membership.organisation_id)
-        .await?;
+    let mut orders: Vec<crate::extension::ExternalMachine> = if state
+        .extensions
+        .iter()
+        .any(|extension| extension.replaces_builtin_hosted())
+    {
+        Vec::new()
+    } else {
+        state
+            .machines()
+            .hosted_orders(membership.organisation_id)
+            .await?
+            .into_iter()
+            .map(|order| crate::extension::ExternalMachine {
+                id: order.order_id,
+                machine_id: order.machine_id,
+                name: order.name,
+                state: order.status,
+                remove_href: format!("/{}/machines/{}/remove", membership.slug, order.order_id),
+                os: Some("Linux"),
+            })
+            .collect()
+    };
+    for extension in state.extensions.iter() {
+        orders.extend(
+            extension
+                .machine_listings(state, membership.organisation_id, &membership.slug)
+                .await?,
+        );
+    }
     let copies = grund_store::apps::copies_per_machine(&state.pool, membership.organisation_id)
         .await
         .map_err(anyhow::Error::from)?;
@@ -393,7 +426,7 @@ async fn machines_view(
                 .iter()
                 .find(|(id, _)| *id == row.machine_id)
                 .map_or(0, |(_, n)| *n);
-            machine_context(row, n, now, &form)
+            machine_context(row, n, now, &form, &membership.slug, None)
         })
         .collect();
     for order in &orders {
@@ -405,18 +438,26 @@ async fn machines_view(
                 .iter()
                 .find(|(id, _)| *id == row.machine_id)
                 .map_or(0, |(_, n)| *n);
-            machine_context(row, n, now, &form)
+            machine_context(
+                row,
+                n,
+                now,
+                &form,
+                &membership.slug,
+                Some(&order.remove_href),
+            )
         } else {
             MachineItem {
                 id: String::new(),
+                remove_href: order.remove_href.clone(),
                 name: &order.name,
                 labels: Vec::new(),
-                status: if order.status == "failed" {
+                status: if order.state == "failed" {
                     "Failed"
                 } else {
                     "Joining"
                 },
-                tone: if order.status == "failed" {
+                tone: if order.state == "failed" {
                     "danger"
                 } else {
                     "blue"
@@ -424,7 +465,7 @@ async fn machines_view(
                 tab: "",
                 search: order.name.to_lowercase(),
                 shown: form.tab.is_empty() && order.name.to_lowercase().contains(&form.q),
-                detail: if order.status == "failed" {
+                detail: if order.state == "failed" {
                     "Machine could not join.".into()
                 } else {
                     String::new()
@@ -441,7 +482,7 @@ async fn machines_view(
                 hosts_vms: false,
             }
         };
-        item.id = order.order_id.to_string();
+        item.id = order.id.to_string();
         machines.push(item);
     }
     let disconnected = rows
@@ -456,8 +497,7 @@ async fn machines_view(
                 || (row.pool == "management"
                     && row.lease_id.is_some_and(|id| id.to_string() == form.labels))
                 || orders.iter().any(|order| {
-                    order.order_id.to_string() == form.labels
-                        && order.machine_id == Some(row.machine_id)
+                    order.id.to_string() == form.labels && order.machine_id == Some(row.machine_id)
                 })
         })
         .map(|row| {
@@ -479,7 +519,7 @@ async fn machines_view(
                                 .unwrap_or(row.machine_id)
                                 .to_string()
                         },
-                        |order| order.order_id.to_string(),
+                        |order| order.id.to_string(),
                     ),
                 name: row.pool_name.as_deref().unwrap_or(&row.name),
             }
@@ -495,7 +535,7 @@ async fn machines_view(
             query => format!("{base}?{query}"),
         }
     };
-    let operator = state.machines().operator().await? == Some(membership.organisation_id);
+    let operator = state.operator_organisation().await? == Some(membership.organisation_id);
     let mut tabs = vec![
         ("", href(""), "All machines"),
         (DISCONNECTED, href(DISCONNECTED), "Disconnected"),
@@ -522,7 +562,7 @@ async fn machines_view(
                                 .unwrap_or(row.machine_id)
                                 .to_string()
                         },
-                        |order| order.order_id.to_string(),
+                        |order| order.id.to_string(),
                     ),
                 row.pool_name.as_deref().unwrap_or(&row.name),
             )
@@ -617,10 +657,25 @@ async fn add_view(
         selected_offer,
         retry_key,
     } = input;
-    let enabled = state
-        .machines()
-        .hosted_enabled(membership.organisation_id)
-        .await?;
+    let enabled = !state
+        .extensions
+        .iter()
+        .any(|extension| extension.replaces_builtin_hosted())
+        && state
+            .machines()
+            .hosted_enabled(membership.organisation_id)
+            .await?;
+    let mut options = Vec::new();
+    if setup.is_none() {
+        for extension in state.extensions.iter() {
+            if let Some(option) = extension
+                .machine_add_option(state, membership.organisation_id, &membership.slug)
+                .await?
+            {
+                options.push(option);
+            }
+        }
+    }
     let mode = if mode == "hosted" && enabled {
         "hosted"
     } else if mode == "own" || setup.is_some() {
@@ -694,6 +749,7 @@ async fn add_view(
                 selected_offer,
                 retry_key,
                 regions_multiple,
+                options,
             })
         },
     )
@@ -819,6 +875,7 @@ pub async fn add(
                 selected_offer: String::new(),
                 retry_key: String::new(),
                 regions_multiple: false,
+                options: Vec::new(),
             })
         },
     )

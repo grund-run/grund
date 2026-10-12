@@ -74,18 +74,26 @@ impl MachineEnrollmentService for EnrollmentApi {
             .get::<ClientAddress>()
             .map(|a| a.0.clone())
             .unwrap_or_default();
+        let hosted = self
+            .state
+            .extensions
+            .iter()
+            .find_map(|extension| extension.hosted_enrollment(&self.state));
         let outcome = self
             .state
             .machines()
-            .enroll(EnrollRequest {
-                token: request.token.to_string(),
-                machine_public_key: request.machine_public_key.to_vec(),
-                signed_at_unix: request.signed_at_unix,
-                signature: request.signature.to_vec(),
-                facts: request.facts.as_option().map(facts).unwrap_or_default(),
-                requested_name: request.requested_name.to_string(),
-                address,
-            })
+            .enroll_with(
+                hosted.as_deref(),
+                EnrollRequest {
+                    token: request.token.to_string(),
+                    machine_public_key: request.machine_public_key.to_vec(),
+                    signed_at_unix: request.signed_at_unix,
+                    signature: request.signature.to_vec(),
+                    facts: request.facts.as_option().map(facts).unwrap_or_default(),
+                    requested_name: request.requested_name.to_string(),
+                    address,
+                },
+            )
             .await
             .map_err(|error| {
                 tracing::error!(error = %error, "machine enrollment failed");

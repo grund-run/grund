@@ -113,7 +113,8 @@ pub struct NewOrganisationPage<'a> {
     pub error: &'a str,
 }
 
-pub(super) async fn member_of(
+/// Resolves a member by slug with the same redirects and concealment as core pages.
+pub async fn member_of(
     state: &State,
     browser: &Browser,
     uri: &Uri,

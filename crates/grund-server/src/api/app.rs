@@ -514,9 +514,10 @@ impl AppApi {
         &self,
         organisation_id: uuid::Uuid,
     ) -> Result<Vec<(uuid::Uuid, uuid::Uuid, DateTime<Utc>)>, ConnectError> {
-        grund_store::machines::hosted_vm_orders(&self.state.pool, organisation_id)
+        self.state
+            .vm_aliases(organisation_id)
             .await
-            .map_err(|error| failed(AppsError::Internal(error.into())))
+            .map_err(|error| failed(AppsError::Internal(error)))
     }
 
     async fn customer_app(

@@ -113,7 +113,7 @@ component MachineMenu(slug: &str, machine: &crate::web::machines::MachineItem<'_
         <MenuPost action={format!("{base}/{}/service", machine.id)} csrf={csrf} icon_name="minus" label="Take out of service" hidden={&[("in_service", "no")]} />
       }}
     }}
-    <MenuPost action={format!("{base}/{}/remove", machine.id)} csrf={csrf} icon_name="trash" label="Remove" danger />
+    <MenuPost action={machine.remove_href.as_str()} csrf={csrf} icon_name="trash" label="Remove" danger />
   </Menu>
 }
 

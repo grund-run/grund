@@ -195,6 +195,34 @@ pub enum HostedRemove {
     Unavailable,
 }
 
+/// Private enrollment policy runs under the same transaction as token consumption.
+pub trait HostedEnrollment: Send + Sync {
+    fn eligible<'a>(
+        &'a self,
+        connection: &'a mut sqlx::PgConnection,
+        token: &'a TokenRow,
+    ) -> crate::services::capacity::CapacityFuture<'a, anyhow::Result<bool>>;
+    fn registered<'a>(
+        &'a self,
+        work: &'a mut Work<'_>,
+        token: &'a TokenRow,
+        machine_id: Uuid,
+        at: DateTime<Utc>,
+    ) -> crate::services::capacity::CapacityFuture<'a, anyhow::Result<()>>;
+}
+
+/// Optional transactional record accompanying a management-pool lease.
+pub trait LeaseRecorder: Send + Sync {
+    fn record<'a>(
+        &'a self,
+        connection: &'a mut sqlx::PgConnection,
+        organisation_id: Uuid,
+        machine_id: Uuid,
+        lease_id: Uuid,
+        at: DateTime<Utc>,
+    ) -> crate::services::capacity::CapacityFuture<'a, anyhow::Result<()>>;
+}
+
 /// Machine flows.
 #[derive(Clone)]
 pub struct Machines {
@@ -887,6 +915,14 @@ impl Machines {
     /// `EnrollMachine`). The proof is checked before the token is looked up,
     /// and the token is consumed only by a registration that commits.
     pub async fn enroll(&self, request: EnrollRequest) -> anyhow::Result<EnrollOutcome> {
+        self.enroll_with(None, request).await
+    }
+
+    pub async fn enroll_with(
+        &self,
+        hosted: Option<&dyn HostedEnrollment>,
+        request: EnrollRequest,
+    ) -> anyhow::Result<EnrollOutcome> {
         if !self
             .state
             .limits()
@@ -922,9 +958,12 @@ impl Machines {
         }
         if token.hosted_size.is_some()
             && token.consumed_key.is_none()
-            && machines::pending_hosted_token(&mut **work.sql(), token.token_id)
-                .await?
-                .is_none()
+            && !match hosted {
+                Some(policy) => policy.eligible(work.sql(), &token).await?,
+                None => machines::pending_hosted_token(&mut **work.sql(), token.token_id)
+                    .await?
+                    .is_some(),
+            }
         {
             return Ok(EnrollOutcome::TokenInvalid);
         }
@@ -988,57 +1027,66 @@ impl Machines {
                 });
             }
         }
-        if let (Some(size), Some(region)) =
-            (token.hosted_size.as_deref(), token.hosted_region.as_deref())
-        {
-            machines::set_machine_hosted_size(&mut **work.sql(), machine_id, size, region).await?;
-        }
-        if let Some(order) =
-            machines::pending_hosted_token(&mut **work.sql(), token.token_id).await?
-        {
-            let leased = work
-                .machine(
-                    machine_id,
-                    MachineCommand::Lease {
-                        actor: Uuid::nil(),
-                        lease_id: Uuid::now_v7(),
-                        organisation_id: order.organisation_id,
-                        name: MachineName::parse(&order.name)?,
-                        at: now,
-                    },
-                )
-                .await;
-            if let Some(outcome) = refused(leased)? {
-                anyhow::bail!(
-                    "hosted registration could not take its reserved machine: {outcome:?}"
-                );
+        if token.hosted_size.is_some() {
+            if let Some(policy) = hosted {
+                policy
+                    .registered(&mut work, &token, machine_id, now)
+                    .await?;
+            } else {
+                if let (Some(size), Some(region)) =
+                    (token.hosted_size.as_deref(), token.hosted_region.as_deref())
+                {
+                    machines::set_machine_hosted_size(&mut **work.sql(), machine_id, size, region)
+                        .await?;
+                }
+                if let Some(order) =
+                    machines::pending_hosted_token(&mut **work.sql(), token.token_id).await?
+                {
+                    let leased = work
+                        .machine(
+                            machine_id,
+                            MachineCommand::Lease {
+                                actor: Uuid::nil(),
+                                lease_id: Uuid::now_v7(),
+                                organisation_id: order.organisation_id,
+                                name: MachineName::parse(&order.name)?,
+                                at: now,
+                            },
+                        )
+                        .await;
+                    if let Some(outcome) = refused(leased)? {
+                        anyhow::bail!(
+                            "hosted registration could not take its reserved machine: {outcome:?}"
+                        );
+                    }
+                    self.keys()
+                        .ensure(work.sql(), KeyPurpose::Management, None)
+                        .await?;
+                    self.keys()
+                        .ensure(
+                            work.sql(),
+                            KeyPurpose::Organisation,
+                            Some(order.organisation_id),
+                        )
+                        .await?;
+                    machines::set_hosted_order(
+                        &mut **work.sql(),
+                        order.organisation_id,
+                        order.order_id,
+                        "active",
+                        Some(machine_id),
+                    )
+                    .await?;
+                    notify_hosted_order(
+                        work.sql(),
+                        order.organisation_id,
+                        order.order_id,
+                        &order.name,
+                        "hosted_machine.ready",
+                    )
+                    .await?;
+                }
             }
-            self.keys()
-                .ensure(work.sql(), KeyPurpose::Management, None)
-                .await?;
-            self.keys()
-                .ensure(
-                    work.sql(),
-                    KeyPurpose::Organisation,
-                    Some(order.organisation_id),
-                )
-                .await?;
-            machines::set_hosted_order(
-                &mut **work.sql(),
-                order.organisation_id,
-                order.order_id,
-                "active",
-                Some(machine_id),
-            )
-            .await?;
-            notify_hosted_order(
-                work.sql(),
-                order.organisation_id,
-                order.order_id,
-                &order.name,
-                "hosted_machine.ready",
-            )
-            .await?;
         }
         machines::consume_token(work.sql(), token.token_id, key.as_hex(), machine_id, now).await?;
         if let Some(vm_id) = token.vm_id {
@@ -1131,6 +1179,17 @@ impl Machines {
         slug: &str,
         name: &str,
     ) -> anyhow::Result<ChangeOutcome> {
+        self.lease_with(actor, machine_id, slug, name, None).await
+    }
+
+    pub async fn lease_with(
+        &self,
+        actor: Uuid,
+        machine_id: Uuid,
+        slug: &str,
+        name: &str,
+        recorder: Option<&dyn LeaseRecorder>,
+    ) -> anyhow::Result<ChangeOutcome> {
         let Some(row) = self.pool_machine(machine_id).await? else {
             return Ok(ChangeOutcome::NotFound);
         };
@@ -1175,14 +1234,20 @@ impl Machines {
         if let Some(outcome) = refused(leased)? {
             return Ok(outcome);
         }
-        machines::record_hosted_manual_lease(
-            &mut **work.sql(),
-            organisation_id,
-            machine_id,
-            lease_id,
-            now,
-        )
-        .await?;
+        if let Some(recorder) = recorder {
+            recorder
+                .record(work.sql(), organisation_id, machine_id, lease_id, now)
+                .await?;
+        } else {
+            machines::record_hosted_manual_lease(
+                &mut **work.sql(),
+                organisation_id,
+                machine_id,
+                lease_id,
+                now,
+            )
+            .await?;
+        }
         let keys = self.keys();
         keys.ensure(work.sql(), KeyPurpose::Management, None)
             .await?;
@@ -1324,24 +1389,32 @@ impl Machines {
         actor: Uuid,
         machine_id: Uuid,
     ) -> anyhow::Result<(ChangeOutcome, ProviderStep)> {
-        if self.pool_machine(machine_id).await?.is_none() {
-            return Ok((ChangeOutcome::NotFound, ProviderStep::NotNeeded));
-        }
-        let outcome = self
-            .change(
-                actor,
-                machine_id,
-                MachineCommand::EndLease {
-                    actor,
-                    at: Utc::now(),
-                },
-            )
-            .await?;
+        let outcome = self.end_lease_machine(actor, machine_id).await?;
         let step = match &outcome {
             ChangeOutcome::Done(row) => self.request_rebuild(actor, row).await?,
             _ => ProviderStep::NotNeeded,
         };
         Ok((outcome, step))
+    }
+
+    /// Ends a management lease without deciding how its provider rebuilds it.
+    pub async fn end_lease_machine(
+        &self,
+        actor: Uuid,
+        machine_id: Uuid,
+    ) -> anyhow::Result<ChangeOutcome> {
+        if self.pool_machine(machine_id).await?.is_none() {
+            return Ok(ChangeOutcome::NotFound);
+        }
+        self.change(
+            actor,
+            machine_id,
+            MachineCommand::EndLease {
+                actor,
+                at: Utc::now(),
+            },
+        )
+        .await
     }
 
     /// Asks the provider again to rebuild a returning machine (when the
@@ -1673,7 +1746,8 @@ async fn notify_hosted_order(
     )
     .await
 }
-fn refused(
+/// Converts machine-domain refusals into public change outcomes.
+pub fn refused(
     result: Result<Vec<grund_domain::machine::MachineEvent>, WorkError>,
 ) -> anyhow::Result<Option<ChangeOutcome>> {
     Ok(match result {
@@ -1970,6 +2044,15 @@ impl Component for HostedRecovery {
     }
 
     async fn run(&self, cancellation: CancellationToken) -> Result<(), MadError> {
+        if self
+            .state
+            .extensions
+            .iter()
+            .any(|extension| extension.replaces_builtin_hosted())
+        {
+            cancellation.cancelled().await;
+            return Ok(());
+        }
         let mut tick = tokio::time::interval(StdDuration::from_secs(5));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {

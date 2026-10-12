@@ -534,6 +534,16 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
 
 /// The API routes, to merge into the page router.
 pub fn router(state: State) -> axum::Router {
+    let replaces_builtin_hosted = state
+        .extensions
+        .iter()
+        .any(|extension| extension.replaces_builtin_hosted());
+    let extension_services: Vec<_> = state
+        .extensions
+        .iter()
+        .flat_map(|extension| extension.connect_service_names())
+        .copied()
+        .collect();
     let service = ConnectRpcService::new(connect_router(state.clone()))
         .with_limits(
             Limits::default()
@@ -546,7 +556,20 @@ pub fn router(state: State) -> axum::Router {
                 .with_max(Duration::from_secs(30))
                 .with_default_timeout(Duration::from_secs(10)),
         )
-        .with_interceptor(Authorize);
+        .with_interceptor(Authorize::new(&state));
+    let legacy_hosted = if replaces_builtin_hosted {
+        axum::Router::new()
+    } else {
+        axum::Router::new()
+            .route_service(
+                &format!("/{MANAGEMENT_POOL_SERVICE_SERVICE_NAME}/{{method}}"),
+                service.clone(),
+            )
+            .route_service(
+                &format!("/{OPERATOR_SERVICE_SERVICE_NAME}/{{method}}"),
+                service.clone(),
+            )
+    };
     axum::Router::new()
         .route_service(
             &format!("/{ACCOUNT_SERVICE_SERVICE_NAME}/{{method}}"),
@@ -557,15 +580,7 @@ pub fn router(state: State) -> axum::Router {
             service.clone(),
         )
         .route_service(
-            &format!("/{MANAGEMENT_POOL_SERVICE_SERVICE_NAME}/{{method}}"),
-            service.clone(),
-        )
-        .route_service(
             &format!("/{MACHINE_SERVICE_SERVICE_NAME}/{{method}}"),
-            service.clone(),
-        )
-        .route_service(
-            &format!("/{OPERATOR_SERVICE_SERVICE_NAME}/{{method}}"),
             service.clone(),
         )
         .route_service(
@@ -587,6 +602,14 @@ pub fn router(state: State) -> axum::Router {
         .route_service(
             &format!("/{REGISTRY_SERVICE_SERVICE_NAME}/{{method}}"),
             registry_service(state.clone()),
+        )
+        .merge(legacy_hosted)
+        .merge(
+            extension_services
+                .into_iter()
+                .fold(axum::Router::new(), |router, name| {
+                    router.route_service(&format!("/{name}/{{method}}"), service.clone())
+                }),
         )
         .layer(middleware::from_fn_with_state(state.clone(), authenticate))
         .merge(
@@ -651,6 +674,7 @@ pub const MAX_REGISTRY_REQUEST_BYTES: usize = 32 * 1024;
 /// The registry service, on a Connect service of its own: a login's
 /// password is larger than any other session call's message.
 pub fn registry_service(state: State) -> ConnectRpcService {
+    let authorize = Authorize::new(&state);
     ConnectRpcService::new(
         connectrpc::Router::new().add_service(Arc::new(registry::RegistryApi::new(state))),
     )
@@ -665,7 +689,7 @@ pub fn registry_service(state: State) -> ConnectRpcService {
             .with_max(Duration::from_secs(30))
             .with_default_timeout(Duration::from_secs(10)),
     )
-    .with_interceptor(Authorize)
+    .with_interceptor(authorize)
 }
 
 /// The largest app request: a deploy with its env and a grund.yaml.
@@ -676,6 +700,7 @@ pub const MAX_APP_REQUEST_BYTES: usize = 128 * 1024;
 /// up to 64 KiB). A deploy resolves the image at its registry, so it gets
 /// up to 30 s.
 pub fn app_service(state: State) -> ConnectRpcService {
+    let authorize = Authorize::new(&state);
     ConnectRpcService::new(connectrpc::Router::new().add_service(Arc::new(app::AppApi::new(state))))
         .with_limits(
             Limits::default()
@@ -688,7 +713,7 @@ pub fn app_service(state: State) -> ConnectRpcService {
                 .with_max(Duration::from_secs(30))
                 .with_default_timeout(Duration::from_secs(30)),
         )
-        .with_interceptor(Authorize)
+        .with_interceptor(authorize)
 }
 
 /// The largest control-link request: a status report of every VM a machine
@@ -703,6 +728,7 @@ pub const MAX_TERMINATOR_REQUEST_BYTES: usize = 16 * 1024;
 /// ([`certificates::WATCH_SPAN`]), so it gets a longer deadline than the
 /// rest of the API, enforced on streams too.
 pub fn certificate_service(state: State) -> ConnectRpcService {
+    let authorize = Authorize::new(&state);
     ConnectRpcService::new(
         connectrpc::Router::new().add_service(Arc::new(certificates::CertificatesApi::new(state))),
     )
@@ -718,7 +744,7 @@ pub fn certificate_service(state: State) -> ConnectRpcService {
             .with_default_timeout(Duration::from_secs(30))
             .with_enforce_on_streams(true),
     )
-    .with_interceptor(Authorize)
+    .with_interceptor(authorize)
 }
 
 /// The largest edge request: a usage report of up to 1000 addresses.
@@ -727,6 +753,7 @@ pub const MAX_EDGE_REQUEST_BYTES: usize = 256 * 1024;
 /// The edge service, on a Connect service of its own: WatchRoutes waits up
 /// to 10 s, so it gets up to 30 s.
 pub fn edge_service(state: State) -> ConnectRpcService {
+    let authorize = Authorize::new(&state);
     ConnectRpcService::new(
         connectrpc::Router::new().add_service(Arc::new(edge::EdgeApi::new(state))),
     )
@@ -741,7 +768,7 @@ pub fn edge_service(state: State) -> ConnectRpcService {
             .with_max(Duration::from_secs(30))
             .with_default_timeout(Duration::from_secs(30)),
     )
-    .with_interceptor(Authorize)
+    .with_interceptor(authorize)
 }
 
 /// Authenticates an edge-service request by the edge's key
@@ -963,16 +990,14 @@ pub async fn stamp_address(
 
 /// The Connect router with every service registered.
 pub fn connect_router(state: State) -> connectrpc::Router {
-    connectrpc::Router::new()
+    let router = connectrpc::Router::new()
         .add_service(Arc::new(account::AccountApi::new(state.clone())))
         .add_service(Arc::new(organisation::OrganisationApi::new(state.clone())))
         .add_service(Arc::new(notifications::NotificationsApi::new(
             state.clone(),
         )))
         .add_service(Arc::new(domain::DomainApi::new(state.clone())))
-        .add_service(Arc::new(machine::ManagementPoolApi::new(state.clone())))
         .add_service(Arc::new(machine::MachineApi::new(state.clone())))
-        .add_service(Arc::new(operator::OperatorApi::new(state.clone())))
         .add_service(Arc::new(enrollment::EnrollmentApi::new(state.clone())))
         .add_service(Arc::new(relay_enrollment::RelayEnrollmentApi::new(
             state.clone(),
@@ -980,7 +1005,21 @@ pub fn connect_router(state: State) -> connectrpc::Router {
         .add_service(Arc::new(edge::EdgeEnrollmentApi::new(state.clone())))
         .add_service(Arc::new(login::LoginApi::new(state.clone())))
         .add_service(Arc::new(token::TokenApi::new(state.clone())))
-        .add_service(Arc::new(agent::AgentApi::new(state)))
+        .add_service(Arc::new(agent::AgentApi::new(state.clone())));
+    let router = if state
+        .extensions
+        .iter()
+        .any(|extension| extension.replaces_builtin_hosted())
+    {
+        router
+    } else {
+        router
+            .add_service(Arc::new(machine::ManagementPoolApi::new(state.clone())))
+            .add_service(Arc::new(operator::OperatorApi::new(state.clone())))
+    };
+    state.extensions.iter().fold(router, |router, extension| {
+        extension.connect_services(router, &state)
+    })
 }
 
 fn refuse(error: ConnectError) -> Response {
@@ -1008,7 +1047,13 @@ pub async fn authenticate(
             .unwrap_or_default()
             .trim()
             .to_string();
-        if request.uri().path() == "/grund.machine.v1.ManagementPoolService/SetMigrationPause" {
+        if request.uri().path() == "/grund.machine.v1.ManagementPoolService/SetMigrationPause"
+            || state.extensions.iter().any(|extension| {
+                extension.authorization().iter().any(|(path, requirement)| {
+                    *path == request.uri().path() && *requirement == Requirement::Capacity
+                })
+            })
+        {
             let valid = state
                 .config
                 .capacity
@@ -1103,16 +1148,49 @@ fn finish(mut response: Response) -> Response {
 /// Authorizes each call against [`AUTHORIZATION`], denying by default:
 /// unary calls and streams alike, since connectrpc's default for a stream
 /// is to let it through.
-pub struct Authorize;
+pub struct Authorize(crate::extension::Extensions);
 
-/// Whether the caller stamped on `ctx` meets what [`AUTHORIZATION`] asks of
-/// the procedure it calls. A procedure with no entry is refused.
+impl Authorize {
+    pub fn new(state: &State) -> Self {
+        Self(state.extensions.clone())
+    }
+}
+
+/// Whether the caller stamped on `ctx` meets the public authorization table.
 pub fn authorized(ctx: &connectrpc::RequestContext) -> Result<(), ConnectError> {
+    authorized_with_extensions(ctx, &[])
+}
+
+/// Checks public and extension procedures, denying unlisted procedures.
+pub fn authorized_with_extensions(
+    ctx: &connectrpc::RequestContext,
+    contributed: &[Arc<dyn crate::extension::Extension>],
+) -> Result<(), ConnectError> {
     let path = ctx.path().unwrap_or_default();
+    if contributed
+        .iter()
+        .any(|extension| extension.replaces_builtin_hosted())
+        && matches!(
+            path,
+            "/grund.machine.v1.MachineService/ListHostedOffers"
+                | "/grund.machine.v1.MachineService/CreateHostedMachine"
+                | "/grund.machine.v1.MachineService/RemoveHostedMachine"
+        )
+    {
+        return Err(ConnectError::unimplemented(
+            "the built-in hosted machine API is not installed",
+        ));
+    }
     let requirement = AUTHORIZATION
         .iter()
+        .copied()
+        .chain(
+            contributed
+                .iter()
+                .flat_map(|extension| extension.authorization().iter().copied()),
+        )
         .find(|(procedure, _)| *procedure == path)
-        .map(|(_, r)| *r);
+        .map(|(_, requirement)| requirement);
     let extensions = ctx.extensions();
     match requirement {
         Some(Requirement::Session) if extensions.get::<Caller>().is_some() => Ok(()),
@@ -1180,7 +1258,7 @@ impl Interceptor for Authorize {
         next: InterceptNext<'_>,
     ) -> Result<UnaryResponse, ConnectError> {
         let response = async {
-            authorized(&request.ctx)?;
+            authorized_with_extensions(&request.ctx, &self.0)?;
             next.run(request).await
         }
         .await;
@@ -1195,7 +1273,7 @@ impl Interceptor for Authorize {
         next: connectrpc::interceptor::NextStream<'_>,
     ) -> Result<connectrpc::interceptor::StreamResponse, ConnectError> {
         let response = async {
-            authorized(&request.ctx)?;
+            authorized_with_extensions(&request.ctx, &self.0)?;
             next.run(request, inbound).await
         }
         .await;

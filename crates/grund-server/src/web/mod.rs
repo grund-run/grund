@@ -90,6 +90,28 @@ pub fn router(state: State) -> Router {
         .fold(Router::new(), |router, extension| {
             router.merge(extension.routes())
         });
+    let legacy_hosted = if state
+        .extensions
+        .iter()
+        .any(|extension| extension.replaces_builtin_hosted())
+    {
+        Router::new()
+    } else {
+        Router::new()
+            .route("/{org}/machines/hosted", post(machines::create_hosted))
+            .route("/{org}/admin", get(admin::admin_page))
+            .route("/{org}/admin/hosts/action", post(admin::host_action))
+            .route(
+                "/{org}/admin/organisations/entitlement",
+                post(admin::entitlement_action),
+            )
+            .route("/{org}/pool", get(pool::pool_page))
+            .route("/{org}/pool/provision", post(pool::provision))
+            .route("/{org}/pool/{machine}/lease", post(pool::lease))
+            .route("/{org}/pool/{machine}/end", post(pool::end_lease))
+            .route("/{org}/pool/{machine}/rebuild", post(pool::rebuild))
+            .route("/{org}/pool/{machine}/revoke", post(pool::revoke))
+    };
     let installer = if state.config.machine_defaults.serve_installer {
         Router::new()
             .route("/install", get(install::script))
@@ -210,24 +232,11 @@ pub fn router(state: State) -> Router {
             "/{org}/machines/add",
             get(machines::add_page).post(machines::add),
         )
-        .route("/{org}/machines/hosted", post(machines::create_hosted))
         .route("/{org}/machines/vms", post(machines::run_vm))
         .route("/{org}/machines/vms/{vm}/stop", post(machines::stop_vm))
         .route("/{org}/machines/{machine}/remove", post(machines::remove))
         .route("/{org}/machines/{machine}/service", post(machines::service))
         .route("/{org}/machines/{machine}/labels", post(machines::labels))
-        .route("/{org}/admin", get(admin::admin_page))
-        .route("/{org}/admin/hosts/action", post(admin::host_action))
-        .route(
-            "/{org}/admin/organisations/entitlement",
-            post(admin::entitlement_action),
-        )
-        .route("/{org}/pool", get(pool::pool_page))
-        .route("/{org}/pool/provision", post(pool::provision))
-        .route("/{org}/pool/{machine}/lease", post(pool::lease))
-        .route("/{org}/pool/{machine}/end", post(pool::end_lease))
-        .route("/{org}/pool/{machine}/rebuild", post(pool::rebuild))
-        .route("/{org}/pool/{machine}/revoke", post(pool::revoke))
         .route(
             "/{org}/settings/tokens",
             get(tokens::tokens_page).post(tokens::create),
@@ -253,6 +262,7 @@ pub fn router(state: State) -> Router {
             post(orgs::cancel_deletion),
         )
         .merge(installer)
+        .merge(legacy_hosted)
         .merge(extensions)
         .fallback(pages::not_found)
         .layer(middleware::from_fn_with_state(
@@ -265,10 +275,11 @@ pub fn router(state: State) -> Router {
         .with_state(state.clone())
         .merge(static_files)
         .merge(
-            crate::api::router(state)
+            crate::api::router(state.clone())
                 .layer(middleware::from_fn(secret_rpc_policy))
                 .layer(compression())
-                .layer(middleware::from_fn(prefer_compression)),
+                .layer(middleware::from_fn(prefer_compression))
+                .layer(axum::Extension(state.extensions.clone())),
         )
         .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
         .layer(TimeoutLayer::with_status_code(
@@ -383,7 +394,16 @@ async fn secret_rpc_policy(request: Request, next: Next) -> Response {
             | "/grund.agent.v1.AgentService/GetMachineJoinToken"
             | "/grund.agent.v1.AgentService/GetReplicaSecrets"
             | "/grund.agent.v1.AgentService/GetPullCredential"
-    );
+    ) || request
+        .extensions()
+        .get::<crate::extension::Extensions>()
+        .is_some_and(|extensions| {
+            extensions.iter().any(|extension| {
+                extension
+                    .secret_procedures()
+                    .contains(&request.uri().path())
+            })
+        });
     let mut response = next.run(request).await;
     if secret {
         response.headers_mut().insert(
