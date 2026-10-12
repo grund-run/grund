@@ -133,12 +133,30 @@
             }
           ],
           "description": "How a copy is stopped."
+        },
+        "volumes": {
+          "additionalProperties": {
+            "$ref": "#/definitions/FileVolume"
+          },
+          "description": "App-owned storage, by name. Omission only removes a mount from this\nrelease; it never deletes a volume. Volumes require exactly one copy.",
+          "propertyNames": {
+            "maxLength": 32,
+            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+          },
+          "type": "object"
         }
       },
       "required": [
         "image"
       ],
       "type": "object"
+    },
+    "FileBackup": {
+      "enum": [
+        "off",
+        "daily"
+      ],
+      "type": "string"
     },
     "FileCheck": {
       "additionalProperties": false,
@@ -428,6 +446,43 @@
           ]
         }
       },
+      "type": "object"
+    },
+    "FileVolume": {
+      "additionalProperties": false,
+      "description": "One volume mounted by this app. Local machine policy must allow an\nexisting source; an omitted source creates a managed directory instead.",
+      "properties": {
+        "backup": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/FileBackup"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`daily` opts into daily backups (requires a configured destination).\nOmitted or `off` means no scheduled backups."
+        },
+        "path": {
+          "description": "Absolute directory path in the container; paths must not overlap.",
+          "maxLength": 4096,
+          "minLength": 2,
+          "pattern": "^/(?!\\.\\.?(/|$))[^/\\u0000-\\u001f]+(?:/(?!\\.\\.?(/|$))[^/\\u0000-\\u001f]+)*$",
+          "type": "string"
+        },
+        "source": {
+          "description": "Existing absolute host directory on an own machine, allowed by its\nlocal policy. Leave out to use a grund-managed directory.",
+          "maxLength": 4096,
+          "pattern": "^/(?!\\.\\.?(/|$))[^/\\u0000-\\u001f]+(?:/(?!\\.\\.?(/|$))[^/\\u0000-\\u001f]+)*$",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path"
+      ],
       "type": "object"
     },
     "Memory": {

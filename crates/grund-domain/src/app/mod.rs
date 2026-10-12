@@ -549,6 +549,7 @@ mod tests {
             memory_mib: 64,
             cpu_millis: 100,
             env: Vec::new(),
+            volumes: Vec::new(),
             secrets: Vec::new(),
             check: None,
             stop: StopSpec::default(),

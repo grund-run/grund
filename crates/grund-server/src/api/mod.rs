@@ -23,10 +23,12 @@
 //! header is judged by the token alone, never by a cookie beside it.
 //!
 //! A token of scope `deploy` may call only the procedures [`AUTHORIZATION`]
-//! marks [`Requirement::SessionOrToken`]: the app procedures CI needs, and
-//! not DeleteApp. A token of scope `full` also calls those marked
-//! [`Requirement::SessionOrFullToken`]: DeleteApp, machines, custom domains,
-//! members, invitations and registry logins. Everything else stays
+//! marks [`Requirement::SessionOrToken`]: the app deploy and volume read/create
+//! procedures CI needs, but not DeleteApp or backup-key export. A token of
+//! scope `full` also calls those marked [`Requirement::SessionOrFullToken`]:
+//! DeleteApp, volume attach/detach/delete, backup configuration and key
+//! export, machines, custom domains, members, invitations and registry logins.
+//! Everything else stays
 //! session-only: the account and its sessions, creating, renaming and
 //! deleting organisations, tokens, and the management pool. A token acts
 //! only on its own organisation; any other is `not_found`, as for a
@@ -48,6 +50,7 @@ pub mod registry;
 pub mod relay_access;
 pub mod relay_enrollment;
 pub mod token;
+pub mod volume;
 
 use std::{sync::Arc, time::Duration};
 
@@ -61,6 +64,7 @@ use connectrpc::{
     ConnectError, ConnectRpcService, DeadlinePolicy, Limits,
     interceptor::{Interceptor, Next as InterceptNext, UnaryRequest, UnaryResponse},
 };
+use grund_proto::grund::volume::v1::VOLUME_SERVICE_SERVICE_NAME;
 use grund_proto::grund::{
     account::v1::ACCOUNT_SERVICE_SERVICE_NAME,
     agent::v1::{AGENT_SERVICE_SERVICE_NAME, MACHINE_ENROLLMENT_SERVICE_SERVICE_NAME},
@@ -365,6 +369,14 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
         Requirement::Machine,
     ),
     (
+        "/grund.agent.v1.AgentService/GetBackupWork",
+        Requirement::Machine,
+    ),
+    (
+        "/grund.agent.v1.AgentService/ReportBackupResult",
+        Requirement::Machine,
+    ),
+    (
         "/grund.agent.v1.AgentService/GetMembership",
         Requirement::Machine,
     ),
@@ -456,6 +468,54 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
     ),
     (
         "/grund.app.v1.AppService/DeleteApp",
+        Requirement::SessionOrFullToken,
+    ),
+    (
+        "/grund.volume.v1.VolumeService/ListVolumes",
+        Requirement::SessionOrToken,
+    ),
+    (
+        "/grund.volume.v1.VolumeService/GetVolume",
+        Requirement::SessionOrToken,
+    ),
+    (
+        "/grund.volume.v1.VolumeService/GetVolumeStatus",
+        Requirement::SessionOrToken,
+    ),
+    (
+        "/grund.volume.v1.VolumeService/CreateVolume",
+        Requirement::SessionOrToken,
+    ),
+    (
+        "/grund.volume.v1.VolumeService/AttachVolume",
+        Requirement::SessionOrFullToken,
+    ),
+    (
+        "/grund.volume.v1.VolumeService/DetachVolume",
+        Requirement::SessionOrFullToken,
+    ),
+    (
+        "/grund.volume.v1.VolumeService/DeleteVolume",
+        Requirement::SessionOrFullToken,
+    ),
+    (
+        "/grund.volume.v1.VolumeService/SetBackupDestination",
+        Requirement::SessionOrFullToken,
+    ),
+    (
+        "/grund.volume.v1.VolumeService/GetBackupDestination",
+        Requirement::SessionOrToken,
+    ),
+    (
+        "/grund.volume.v1.VolumeService/ListRecoveryPoints",
+        Requirement::SessionOrToken,
+    ),
+    (
+        "/grund.volume.v1.VolumeService/RestoreRecoveryPoint",
+        Requirement::SessionOrFullToken,
+    ),
+    (
+        "/grund.volume.v1.VolumeService/ExportBackupKey",
         Requirement::SessionOrFullToken,
     ),
     (
@@ -596,6 +656,10 @@ pub fn router(state: State) -> axum::Router {
             app_service(state.clone()),
         )
         .route_service(
+            &format!("/{VOLUME_SERVICE_SERVICE_NAME}/{{method}}"),
+            volume_service(state.clone()),
+        )
+        .route_service(
             &format!("/{DOMAIN_SERVICE_SERVICE_NAME}/{{method}}"),
             service.clone(),
         )
@@ -722,6 +786,25 @@ pub fn app_service(state: State) -> ConnectRpcService {
                 .with_default_timeout(Duration::from_secs(30)),
         )
         .with_interceptor(authorize)
+}
+
+pub fn volume_service(state: State) -> ConnectRpcService {
+    let authorize = Authorize::new(&state);
+    ConnectRpcService::new(
+        connectrpc::Router::new().add_service(Arc::new(volume::VolumeApi::new(state))),
+    )
+    .with_limits(
+        Limits::default()
+            .with_max_request_body_size(MAX_APP_REQUEST_BYTES)
+            .with_max_message_size(MAX_APP_REQUEST_BYTES),
+    )
+    .with_deadline_policy(
+        DeadlinePolicy::new()
+            .with_min(Duration::from_millis(5))
+            .with_max(Duration::from_secs(30))
+            .with_default_timeout(Duration::from_secs(30)),
+    )
+    .with_interceptor(authorize)
 }
 
 /// The largest control-link request: a status report of every VM a machine
@@ -1357,6 +1440,7 @@ mod tests {
     use grund_proto::grund::{
         agent::v1 as agent, app::v1 as app_proto, certificates::v1 as certificates_proto,
         machine::v1 as machine, operator::v1 as operator_proto, organisation::v1 as org,
+        volume::v1 as volume_proto,
     };
 
     use super::*;
@@ -1780,6 +1864,20 @@ mod tests {
         ) -> ServiceResult<agent::GetMachineJoinTokenResponse> {
             unreachable!()
         }
+        async fn get_backup_work(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, agent::GetBackupWorkRequest>,
+        ) -> ServiceResult<agent::GetBackupWorkResponse> {
+            unreachable!()
+        }
+        async fn report_backup_result(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, agent::ReportBackupResultRequest>,
+        ) -> ServiceResult<agent::ReportBackupResultResponse> {
+            unreachable!()
+        }
         async fn report_status(
             &self,
             _: RequestContext,
@@ -1877,6 +1975,58 @@ mod tests {
         ) -> ServiceResult<app_proto::DeleteAppResponse> {
             unreachable!()
         }
+    }
+
+    struct UnusedVolumes;
+    macro_rules! unused_volume_method {
+        ($method:ident, $request:ident, $response:ident) => {
+            async fn $method(
+                &self,
+                _: RequestContext,
+                _: ServiceRequest<'_, volume_proto::$request>,
+            ) -> ServiceResult<volume_proto::$response> {
+                unreachable!()
+            }
+        };
+    }
+    #[allow(refining_impl_trait)]
+    impl volume_proto::VolumeService for UnusedVolumes {
+        unused_volume_method!(list_volumes, ListVolumesRequest, ListVolumesResponse);
+        unused_volume_method!(get_volume, GetVolumeRequest, GetVolumeResponse);
+        unused_volume_method!(
+            get_volume_status,
+            GetVolumeStatusRequest,
+            GetVolumeStatusResponse
+        );
+        unused_volume_method!(create_volume, CreateVolumeRequest, CreateVolumeResponse);
+        unused_volume_method!(attach_volume, AttachVolumeRequest, AttachVolumeResponse);
+        unused_volume_method!(detach_volume, DetachVolumeRequest, DetachVolumeResponse);
+        unused_volume_method!(delete_volume, DeleteVolumeRequest, DeleteVolumeResponse);
+        unused_volume_method!(
+            set_backup_destination,
+            SetBackupDestinationRequest,
+            SetBackupDestinationResponse
+        );
+        unused_volume_method!(
+            get_backup_destination,
+            GetBackupDestinationRequest,
+            GetBackupDestinationResponse
+        );
+        unused_volume_method!(
+            list_recovery_points,
+            ListRecoveryPointsRequest,
+            ListRecoveryPointsResponse
+        );
+        unused_volume_method!(
+            restore_recovery_point,
+            RestoreRecoveryPointRequest,
+            RestoreRecoveryPointResponse
+        );
+        unused_volume_method!(
+            export_backup_key,
+            ExportBackupKeyRequest,
+            ExportBackupKeyResponse
+        );
     }
 
     struct UnusedEnrollment;
@@ -2224,7 +2374,7 @@ mod tests {
     }
 
     #[test]
-    fn a_token_reaches_the_app_procedures_ci_needs_and_its_own_description_and_nothing_else() {
+    fn a_token_reaches_app_and_volume_procedures_it_needs_and_its_own_description_only() {
         let for_tokens: BTreeSet<&str> = AUTHORIZATION
             .iter()
             .filter(|(_, r)| *r == Requirement::SessionOrToken)
@@ -2243,7 +2393,15 @@ mod tests {
         ]
         .into_iter()
         .map(|m| format!("/grund.app.v1.AppService/{m}").leak() as &str)
-        .chain(["/grund.token.v1.TokenService/GetCurrentToken"])
+        .chain([
+            "/grund.token.v1.TokenService/GetCurrentToken",
+            "/grund.volume.v1.VolumeService/CreateVolume",
+            "/grund.volume.v1.VolumeService/GetBackupDestination",
+            "/grund.volume.v1.VolumeService/GetVolume",
+            "/grund.volume.v1.VolumeService/GetVolumeStatus",
+            "/grund.volume.v1.VolumeService/ListRecoveryPoints",
+            "/grund.volume.v1.VolumeService/ListVolumes",
+        ])
         .collect();
         assert_eq!(for_tokens, expected);
         for path in &for_tokens {
@@ -2420,6 +2578,7 @@ mod tests {
             .add_service(Arc::new(UnusedCertificates))
             .add_service(Arc::new(UnusedAgent))
             .add_service(Arc::new(UnusedApps))
+            .add_service(Arc::new(UnusedVolumes))
             .add_service(Arc::new(UnusedDomains))
             .add_service(Arc::new(UnusedNotifications))
             .add_service(Arc::new(UnusedTokens))

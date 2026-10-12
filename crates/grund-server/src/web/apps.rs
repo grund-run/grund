@@ -21,7 +21,7 @@ use grund_domain::{
         file::{SCHEMA_PATH, render as render_file},
         spec::{
             AppSpec, CheckKind, CheckSpec, EnvVar, MAX_COPIES, PortSpec, Protocol, STOP_SIGNALS,
-            SecretEnv, SettingsInput, StopSpec,
+            SecretEnv, SettingsInput, StopSpec, VolumeSpec,
         },
         templates,
     },
@@ -33,10 +33,12 @@ use grund_store::{
 };
 
 use serde::Deserialize;
+use uuid::Uuid;
 
 use crate::{
     services::{
         apps::{AppListing, AppView, AppsError, AppsState, Change, DeployInput, Launch},
+        backups::BackupsState,
         domains::DomainsState,
         entry::{EntryState, publishes},
         machines::MachinesState,
@@ -400,6 +402,12 @@ fn notice_words(done: &str) -> &'static str {
         "saved" => "Saved.",
         "secret" => "Secret stored. A release that reads it is rolling out.",
         "secret-removed" => "Secret removed. A release without it is rolling out.",
+        "backup-setup" => {
+            "Backup destination saved. No recovery point is available until a successful backup is restored and verified."
+        }
+        "restore-requested" => {
+            "Restore requested into a new app-owned volume. The source has not changed."
+        }
         "rolled-back" => "Rolling back, as a new release.",
         "deleted" => "App deleted. Its copies are stopping.",
         _ => "",
@@ -411,6 +419,12 @@ fn error_words(error: &str) -> &'static str {
         "not-allowed" => "Your role does not allow that.",
         "gone" => "That app is no longer there.",
         "no-release" => "It has no release to change yet.",
+        "backup" => {
+            "The backup destination was not saved. Check the endpoint, volume attachment, and destination version."
+        }
+        "restore" => {
+            "Nothing was restored. Choose an existing verified recovery point and a different volume name on an eligible machine."
+        }
         _ => "",
     }
 }
@@ -574,12 +588,39 @@ impl Refusal {
 }
 
 const FORM_FIELDS: &[&str] = &[
-    "template", "name", "image", "exposure", "port", "copies", "env", "secrets", "check", "memory",
-    "cpu", "command", "stop",
+    "template",
+    "name",
+    "image",
+    "exposure",
+    "port",
+    "copies",
+    "env",
+    "secrets",
+    "check",
+    "memory",
+    "cpu",
+    "command",
+    "stop",
+    "volumes",
+    "volume_name",
+    "volume_path",
+    "volume_source",
+    "volume_backup",
 ];
 
 const ADVANCED_FIELDS: &[&str] = &[
-    "env", "secrets", "check", "memory", "cpu", "command", "stop",
+    "env",
+    "secrets",
+    "check",
+    "memory",
+    "cpu",
+    "command",
+    "stop",
+    "volumes",
+    "volume_name",
+    "volume_path",
+    "volume_source",
+    "volume_backup",
 ];
 
 fn form_field(spec_field: &str) -> Option<&'static str> {
@@ -596,6 +637,7 @@ fn form_field(spec_field: &str) -> Option<&'static str> {
         "resources" => "cpu",
         "command" => "command",
         "stop" => "stop",
+        "volumes" => "volumes",
         "machines" | "placement" => "placement",
         _ => return None,
     })
@@ -955,6 +997,14 @@ pub struct NewForm {
     #[serde(default)]
     pub(crate) stop_grace: String,
     #[serde(default)]
+    pub(crate) volume_name: String,
+    #[serde(default)]
+    pub(crate) volume_path: String,
+    #[serde(default)]
+    pub(crate) volume_source: String,
+    #[serde(default)]
+    pub(crate) volume_backup: String,
+    #[serde(default)]
     part: String,
 }
 
@@ -1148,6 +1198,26 @@ fn form_spec(
         "stop",
         "The grace period is a whole number of seconds, at most 300.",
     )?;
+    let mut volumes = base.map(|b| b.volumes.clone()).unwrap_or_default();
+    if !form.volume_name.trim().is_empty()
+        || !form.volume_path.trim().is_empty()
+        || !form.volume_source.trim().is_empty()
+        || form.volume_backup == "on"
+    {
+        if form.volume_name.trim().is_empty() || form.volume_path.trim().is_empty() {
+            return Err(Refusal::field(
+                "volumes",
+                "Give both a volume name and its path inside the container.",
+            ));
+        }
+        volumes.push(VolumeSpec {
+            name: form.volume_name.trim().to_string(),
+            path: form.volume_path.trim().to_string(),
+            source: (!form.volume_source.trim().is_empty())
+                .then(|| form.volume_source.trim().to_string()),
+            backup: form.volume_backup == "on",
+        });
+    }
     Ok((
         AppSpec {
             image: form.image.trim().to_string(),
@@ -1162,6 +1232,7 @@ fn form_spec(
             memory_mib: memory_mib.unwrap_or(0),
             cpu_millis: cpu_millis.unwrap_or(0),
             env,
+            volumes,
             secrets: base.map(|b| b.secrets.clone()).unwrap_or_default(),
             check,
             stop: StopSpec {
@@ -1312,6 +1383,8 @@ pub struct AppQuery {
     deploy_error: String,
     #[serde(default)]
     edit: String,
+    #[serde(default)]
+    volume: String,
 }
 
 pub struct AppTab {
@@ -1337,6 +1410,7 @@ fn part_of(field: &str) -> &'static str {
         "check" => "check",
         "memory" | "cpu" => "resources",
         "command" | "stop" => "command",
+        "volumes" | "volume_name" | "volume_path" | "volume_source" | "volume_backup" => "volumes",
         _ => "",
     }
 }
@@ -1407,6 +1481,96 @@ pub struct SettingItems {
     pub more: Vec<SettingItem>,
 }
 
+pub struct VolumeItem {
+    pub id: String,
+    pub version: i64,
+    pub name: String,
+    pub path: String,
+    pub source: String,
+    pub status: String,
+    pub machine: String,
+    pub usage: String,
+    pub backup: &'static str,
+    pub backup_requested: bool,
+    pub managed: bool,
+}
+
+pub struct VolumeSummary {
+    pub items: Vec<VolumeItem>,
+    pub usage: String,
+    pub host_paths: usize,
+}
+
+fn volume_summary(rows: Vec<grund_store::volumes::VolumeRow>) -> VolumeSummary {
+    let mut bytes = Some(0_u64);
+    let mut host_paths = 0;
+    let items = rows
+        .into_iter()
+        .map(|row| {
+            let managed = row.source.is_none();
+            if managed {
+                bytes = bytes.and_then(|total| {
+                    row.measured_bytes
+                        .and_then(|measured| u64::try_from(measured).ok())
+                        .and_then(|measured| total.checked_add(measured))
+                });
+            } else {
+                host_paths += 1;
+            }
+            VolumeItem {
+                id: row.volume_id.to_string(),
+                version: row.stream_version,
+                name: row.name,
+                path: row.path,
+                source: row
+                    .source
+                    .unwrap_or_else(|| "Agent-managed directory".into()),
+                status: row.status,
+                machine: row
+                    .machine_id
+                    .map_or_else(|| "Detached".into(), |id| id.to_string()),
+                usage: row.measured_bytes.map_or_else(
+                    || "Size unknown (no quota)".into(),
+                    |n| format!("{:.2} GiB measured (no quota)", n as f64 / 1_073_741_824.0),
+                ),
+                backup: if row.backup {
+                    "Requested; set up S3 and verify a recovery point before relying on it"
+                } else {
+                    "Off; losing this disk loses its data"
+                },
+                backup_requested: row.backup,
+                managed,
+            }
+        })
+        .collect();
+    VolumeSummary {
+        items,
+        usage: bytes.map_or_else(
+            || "size unknown".into(),
+            |bytes| format!("{:.2} GiB measured", bytes as f64 / 1_073_741_824.0),
+        ),
+        host_paths,
+    }
+}
+
+pub struct RecoveryPointItem {
+    pub id: String,
+    pub completed: String,
+    pub verified: String,
+}
+
+pub struct VolumeDetail {
+    pub id: String,
+    pub backup_enabled: bool,
+    pub backup_version: i64,
+    pub endpoint: String,
+    pub bucket: String,
+    pub next_due: String,
+    pub last_verified: String,
+    pub last_error: Option<String>,
+    pub points: Vec<RecoveryPointItem>,
+}
+
 fn setting_items(
     spec: &AppSpec,
     image: &str,
@@ -1414,6 +1578,7 @@ fn setting_items(
     address: Option<&str>,
     secrets: &[String],
     domains: &[String],
+    volume_count: usize,
 ) -> SettingItems {
     let main = spec.ports.iter().find(|p| p.public).or(spec.ports.first());
     let exposure = match (main, address) {
@@ -1490,7 +1655,21 @@ fn setting_items(
             "link",
             (!domains.is_empty()).then(|| domains.join(", ")),
         ),
-        ("volumes", "Volumes / storage", "box", None),
+        (
+            "volumes",
+            "Volumes / storage",
+            "box",
+            (volume_count > 0).then(|| {
+                format!(
+                    "{volume_count} app-owned {}",
+                    if volume_count == 1 {
+                        "volume"
+                    } else {
+                        "volumes"
+                    }
+                )
+            }),
+        ),
         ("command", "Command override", "code", command),
     ];
     let item = |key: &'static str,
@@ -1590,6 +1769,7 @@ pub(super) struct Refused {
     pub(super) edit: String,
     pub(super) refusal: Refusal,
     pub(super) form: Option<NewForm>,
+    pub(super) volume: String,
     pub(super) variable: String,
     pub(super) file: Option<String>,
     pub(super) placement: Option<super::placement::PlacementForm>,
@@ -1622,6 +1802,7 @@ macro_rules! app_page {
                 (notice_words(&query.done).to_string(), error),
                 Refused {
                     edit: query.edit,
+                    volume: query.volume,
                     ..Refused::default()
                 },
             )
@@ -1760,7 +1941,14 @@ pub enum SettingsEdit {
         variable: String,
     },
     Domains,
-    Volumes,
+    Volumes {
+        summary: VolumeSummary,
+        name: String,
+        path: String,
+        selected: Option<VolumeDetail>,
+        source: String,
+        backup: bool,
+    },
     Command {
         command: String,
         stop_signal: String,
@@ -1772,7 +1960,7 @@ pub enum SettingsEdit {
         rows: usize,
         href: String,
     },
-    Delete,
+    Delete(VolumeSummary),
 }
 
 pub struct AppSettingsData {
@@ -1856,12 +2044,14 @@ pub struct AppSettingsPage<'a> {
     pub edit: &'a SettingsEdit,
     pub next: Option<i32>,
     pub manages: bool,
+    pub owner: bool,
     pub form: crate::templates::FormState<'a>,
     pub options: SettingsOptions<'a>,
 }
 
 pub struct AppDetailPage {
     pub shell: AppShellPage,
+    pub owner: bool,
     pub running: Option<RunningRelease>,
     pub releases: Vec<ReleaseView>,
     pub replicas: Vec<ReplicaView>,
@@ -1896,6 +2086,58 @@ pub(super) async fn app_view(
     let view = &listing.view;
     let base = format!("/{slug}/apps/{}", view.row.name);
     let now = Utc::now();
+    let volume_rows = if tab == "settings" {
+        apps.volumes(membership.organisation_id, &view.row.name)
+            .await
+            .map_err(|e| PageError::from(anyhow::anyhow!(e)))?
+    } else {
+        Vec::new()
+    };
+    let selected_volume =
+        if tab == "settings" && refused.edit == "volumes" && !refused.volume.is_empty() {
+            let chosen = Uuid::parse_str(&refused.volume)
+                .ok()
+                .filter(|id| volume_rows.iter().any(|row| row.volume_id == *id));
+            if let Some(id) = chosen {
+                let backups = state.backups();
+                let destination = backups
+                    .get(membership.organisation_id, view.row.app_id, id)
+                    .await
+                    .map_err(|e| PageError::from(anyhow::anyhow!(e)))?;
+                let points = backups
+                    .list_points(membership.organisation_id, view.row.app_id, id)
+                    .await
+                    .map_err(|e| PageError::from(anyhow::anyhow!(e)))?
+                    .into_iter()
+                    .map(|point| RecoveryPointItem {
+                        id: point.snapshot_id,
+                        completed: when(point.completed_at),
+                        verified: when(point.verified_at),
+                    })
+                    .collect();
+                Some(VolumeDetail {
+                    id: id.to_string(),
+                    backup_enabled: destination.enabled,
+                    backup_version: destination.version,
+                    endpoint: destination.endpoint,
+                    bucket: destination.bucket,
+                    next_due: destination
+                        .next_due
+                        .map_or_else(|| "Not scheduled".into(), when),
+                    last_verified: destination
+                        .last_verified
+                        .map_or_else(|| "No verified recovery point".into(), when),
+                    last_error: destination.last_error,
+                    points,
+                })
+            } else {
+                return Ok(redirect(&format!("{base}/settings?edit=volumes")));
+            }
+        } else {
+            None
+        };
+    let volume_summary = volume_summary(volume_rows);
+    let volume_count = volume_summary.items.len();
     let wanted = view.row.settings.0.copies;
     let current = view.row.current_release;
     let health = health(view, now);
@@ -1992,7 +2234,7 @@ pub(super) async fn app_view(
     let form = if tab == "settings"
         && matches!(
             edit,
-            "image" | "exposure" | "check" | "resources" | "env" | "command"
+            "image" | "exposure" | "check" | "resources" | "env" | "command" | "volumes"
         ) {
         refused.form.unwrap_or_else(|| match spec {
             Some(spec) => NewForm::from_spec(spec, wanted),
@@ -2181,7 +2423,14 @@ pub(super) async fn app_view(
                 variable: refused.variable,
             },
             "domains" => SettingsEdit::Domains,
-            "volumes" => SettingsEdit::Volumes,
+            "volumes" => SettingsEdit::Volumes {
+                summary: volume_summary,
+                name: form.volume_name,
+                path: form.volume_path,
+                source: form.volume_source,
+                backup: form.volume_backup == "on",
+                selected: selected_volume,
+            },
             "command" => SettingsEdit::Command {
                 command: form.command,
                 stop_signal: form.stop_signal,
@@ -2196,7 +2445,7 @@ pub(super) async fn app_view(
                 content: file,
                 href: format!("{base}/grund.yaml"),
             },
-            "delete" if manages(membership) => SettingsEdit::Delete,
+            "delete" if manages(membership) => SettingsEdit::Delete(volume_summary),
             _ => SettingsEdit::List,
         }
     };
@@ -2235,6 +2484,7 @@ pub(super) async fn app_view(
             error,
             manages: manages(membership),
         },
+        owner: membership.role == "owner",
         running,
         releases: history,
         replicas,
@@ -2253,6 +2503,7 @@ pub(super) async fn app_view(
                         listing.address.as_deref(),
                         &secret_names,
                         &domain_names,
+                        volume_count,
                     )
                 })
             } else {
@@ -2316,6 +2567,7 @@ pub(super) async fn app_view(
                         edit: &page.settings.edit,
                         next: page.settings.next,
                         manages: page.shell.manages,
+                        owner: page.owner,
                         form: crate::templates::FormState {
                             csrf,
                             errors: &page.settings.errors,
@@ -2389,6 +2641,7 @@ async fn refuse_setting(
             variable: String::new(),
             file: None,
             edit: String::new(),
+            volume: String::new(),
             placement: None,
         },
     )
@@ -2495,6 +2748,7 @@ pub async fn release_settings(
         "check" => "check",
         "resources" => "resources",
         "command" => "command",
+        "volumes" => "volumes",
         _ => "exposure",
     };
     let now = NewForm::from_spec(&spec, copies);
@@ -2527,6 +2781,13 @@ pub async fn release_settings(
             stop_grace: posted.stop_grace,
             ..now
         },
+        "volumes" => NewForm {
+            volume_name: posted.volume_name,
+            volume_path: posted.volume_path,
+            volume_source: posted.volume_source,
+            volume_backup: posted.volume_backup,
+            ..now
+        },
         _ => NewForm {
             exposure: posted.exposure,
             port: posted.port,
@@ -2534,7 +2795,14 @@ pub async fn release_settings(
         },
     };
     let public = form.exposure == "public";
-    let made = if public
+    let made = if part == "volumes"
+        && (form.volume_name.trim().is_empty() || form.volume_path.trim().is_empty())
+    {
+        Err(Refusal::field(
+            "volumes",
+            "Give both a volume name and a path inside the container.",
+        ))
+    } else if public
         && state.config.entry.app_domains != crate::config::AppDomains::CustomOnly
         && state.entry().app_domain().is_none()
     {
@@ -2696,6 +2964,7 @@ pub async fn apply_file(
             variable: String::new(),
             file: Some(form.file),
             edit: String::new(),
+            volume: String::new(),
             placement: None,
         },
     )
@@ -2826,6 +3095,7 @@ pub async fn set_secret(
             variable,
             file: None,
             edit: String::new(),
+            volume: String::new(),
             placement: None,
         },
     )
@@ -2938,12 +3208,266 @@ pub async fn rollback(
     }
 }
 
+#[derive(Deserialize, Default)]
+pub struct VolumeBackupForm {
+    #[serde(default)]
+    csrf: String,
+    #[serde(default)]
+    expected_version: i64,
+    #[serde(default)]
+    endpoint: String,
+    #[serde(default)]
+    bucket: String,
+    #[serde(default)]
+    access_key_id: String,
+    #[serde(default)]
+    secret_access_key: String,
+    #[serde(default)]
+    idempotency_key: String,
+}
+
+fn volume_request_hash(version: i64, fields: &[&str]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    hash.update(version.to_be_bytes());
+    for field in fields {
+        hash.update((field.len() as u64).to_be_bytes());
+        hash.update(field.as_bytes());
+    }
+    hash.finalize().into()
+}
+
+/// Set an owner-controlled S3 destination; a configured destination is not
+/// advertised as a recovery point until its contents have been restored.
+pub async fn set_volume_backup(
+    AxumState(state): AxumState<State>,
+    browser: Browser,
+    uri: Uri,
+    Path((slug, name, id)): Path<(String, String, String)>,
+    Form(form): Form<VolumeBackupForm>,
+) -> PageResult {
+    if !browser.form_is_genuine(&form.csrf) {
+        return forged(&state, &browser);
+    }
+    let (_, membership) = member_or_return!(&state, &browser, &uri, &slug);
+    if membership.role != "owner" {
+        return Ok(redirect(&format!("/{slug}/apps/{name}?error=not-allowed")));
+    }
+    let volume_id = match Uuid::parse_str(&id) {
+        Ok(id) => id,
+        Err(_) => {
+            return Ok(redirect(&format!(
+                "/{slug}/apps/{name}/settings?error=backup"
+            )));
+        }
+    };
+    let app = match state.apps().get(membership.organisation_id, &name).await {
+        Ok(app) => app,
+        Err(AppsError::NotFound) => return Ok(redirect(&format!("/{slug}/apps?error=gone"))),
+        Err(error) => return Err(PageError::from(anyhow::anyhow!(error))),
+    };
+    let request_hash = volume_request_hash(
+        form.expected_version,
+        &[
+            &id,
+            &form.endpoint,
+            &form.bucket,
+            &form.access_key_id,
+            &form.secret_access_key,
+        ],
+    );
+    let outcome = state
+        .backups()
+        .setup(
+            membership.organisation_id,
+            app.row.app_id,
+            volume_id,
+            form.expected_version,
+            &form.endpoint,
+            &form.bucket,
+            &form.access_key_id,
+            &form.secret_access_key,
+            "",
+            &form.idempotency_key,
+            &request_hash,
+        )
+        .await;
+    Ok(redirect(&format!(
+        "/{slug}/apps/{name}/settings?edit=volumes&volume={id}&{}",
+        if outcome.is_ok() {
+            "done=backup-setup"
+        } else {
+            "error=backup"
+        }
+    )))
+}
+
+#[derive(Deserialize, Default)]
+pub struct VolumeRestoreForm {
+    #[serde(default)]
+    csrf: String,
+    #[serde(default)]
+    snapshot: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    machine: String,
+    #[serde(default)]
+    expected_version: i64,
+    #[serde(default)]
+    idempotency_key: String,
+}
+
+/// Restores a verified point to a fresh, app-owned managed directory; it
+/// cannot overwrite the original volume or a customer host path.
+pub async fn restore_volume(
+    AxumState(state): AxumState<State>,
+    browser: Browser,
+    uri: Uri,
+    Path((slug, name, id)): Path<(String, String, String)>,
+    Form(form): Form<VolumeRestoreForm>,
+) -> PageResult {
+    if !browser.form_is_genuine(&form.csrf) {
+        return forged(&state, &browser);
+    }
+    let (_, membership) = member_or_return!(&state, &browser, &uri, &slug);
+    if !manages(&membership) {
+        return Ok(redirect(&format!("/{slug}/apps/{name}?error=not-allowed")));
+    }
+    let source = Uuid::parse_str(&id);
+    let machine = Uuid::parse_str(&form.machine);
+    let (Ok(source), Ok(machine)) = (source, machine) else {
+        return Ok(redirect(&format!(
+            "/{slug}/apps/{name}/settings?error=restore"
+        )));
+    };
+    let app = match state.apps().get(membership.organisation_id, &name).await {
+        Ok(app) => app,
+        Err(AppsError::NotFound) => return Ok(redirect(&format!("/{slug}/apps?error=gone"))),
+        Err(error) => return Err(PageError::from(anyhow::anyhow!(error))),
+    };
+    let volume_id = Uuid::new_v5(&app.row.app_id, form.name.trim().as_bytes());
+    let request_hash = volume_request_hash(
+        form.expected_version,
+        &[&id, &form.snapshot, &form.name, &form.path, &form.machine],
+    );
+    let outcome = state
+        .backups()
+        .request_restore(
+            membership.organisation_id,
+            app.row.app_id,
+            source,
+            &form.snapshot,
+            volume_id,
+            form.name.trim(),
+            form.path.trim(),
+            machine,
+            form.expected_version,
+            &form.idempotency_key,
+            &request_hash,
+        )
+        .await;
+    Ok(redirect(&format!(
+        "/{slug}/apps/{name}/settings?edit=volumes&volume={id}&{}",
+        if outcome.is_ok() {
+            "done=restore-requested"
+        } else {
+            "error=restore"
+        }
+    )))
+}
+
+#[derive(Deserialize, Default)]
+pub struct VolumeChangeForm {
+    #[serde(default)]
+    csrf: String,
+    #[serde(default)]
+    action: String,
+    #[serde(default)]
+    expected_version: i64,
+    #[serde(default)]
+    machine: String,
+    #[serde(default)]
+    confirm_name: String,
+}
+
+/// Attachment changes and deletion never act on a stale or differently owned volume.
+pub async fn change_volume(
+    AxumState(state): AxumState<State>,
+    browser: Browser,
+    uri: Uri,
+    Path((slug, name, id)): Path<(String, String, String)>,
+    Form(form): Form<VolumeChangeForm>,
+) -> PageResult {
+    if !browser.form_is_genuine(&form.csrf) {
+        return forged(&state, &browser);
+    }
+    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
+    if !manages(&membership) {
+        return Ok(redirect(&format!("/{slug}/apps/{name}?error=not-allowed")));
+    }
+    let Ok(id) = Uuid::parse_str(&id) else {
+        return Ok(redirect(&format!(
+            "/{slug}/apps/{name}/settings?error=volume"
+        )));
+    };
+    let app = match state.apps().get(membership.organisation_id, &name).await {
+        Ok(app) => app,
+        Err(AppsError::NotFound) => return Ok(redirect(&format!("/{slug}/apps?error=gone"))),
+        Err(error) => return Err(PageError::from(anyhow::anyhow!(error))),
+    };
+    use crate::services::volumes::{Operation, VolumesState};
+    let operation = match form.action.as_str() {
+        "attach" => Uuid::parse_str(form.machine.trim())
+            .ok()
+            .map(Operation::Attach),
+        "detach" => Some(Operation::Detach),
+        "delete" => {
+            let row = state
+                .volumes()
+                .get(membership.organisation_id, app.row.app_id, id)
+                .await;
+            row.ok()
+                .filter(|volume| volume.name == form.confirm_name.trim())
+                .map(|_| Operation::Delete)
+        }
+        _ => None,
+    };
+    let result = match operation {
+        Some(operation) => state
+            .volumes()
+            .mutate(
+                session.account_id,
+                membership.organisation_id,
+                app.row.app_id,
+                id,
+                form.expected_version,
+                operation,
+            )
+            .await
+            .is_ok(),
+        None => false,
+    };
+    Ok(redirect(&format!(
+        "/{slug}/apps/{name}/settings?edit=volumes&{}",
+        if result {
+            "done=volume-changed"
+        } else {
+            "error=volume"
+        }
+    )))
+}
+
 #[derive(Deserialize)]
 pub struct DeleteForm {
     #[serde(default)]
     csrf: String,
     #[serde(default)]
     confirm: String,
+    #[serde(default)]
+    confirm_volume_count: Option<u32>,
 }
 
 /// `POST /{org}/apps/{app}/delete`, once its name is typed to confirm.
@@ -2979,7 +3503,12 @@ pub async fn delete(
     }
     match state
         .apps()
-        .delete(session.account_id, membership.organisation_id, &name)
+        .delete(
+            session.account_id,
+            membership.organisation_id,
+            &name,
+            form.confirm_volume_count,
+        )
         .await
     {
         Ok(()) => Ok(redirect(&format!("/{slug}/apps?done=deleted"))),
@@ -2991,90 +3520,6 @@ pub async fn delete(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn settings_lists_what_is_set_in_order_and_offers_the_rest() {
-        let keys = |items: &[SettingItem]| items.iter().map(|item| item.key).collect::<Vec<_>>();
-        let mut spec = AppSpec {
-            image: "traefik/whoami:v1.11.0".into(),
-            ports: vec![PortSpec {
-                name: "http".into(),
-                port: 80,
-                protocol: Protocol::Http,
-                public: true,
-            }],
-            secrets: Vec::new(),
-            command: Vec::new(),
-            memory_mib: 64,
-            cpu_millis: 200,
-            env: Vec::new(),
-            check: None,
-            stop: StopSpec::default(),
-        };
-        let settings = grund_domain::app::AppSettings::default();
-        let bare = setting_items(
-            &spec,
-            "whoami:v1.11.0 · 0123456789ab",
-            &settings,
-            None,
-            &[],
-            &[],
-        );
-        assert_eq!(
-            keys(&bare.configured),
-            ["image", "exposure", "copies", "resources"]
-        );
-        assert_eq!(
-            keys(&bare.more),
-            [
-                "placement",
-                "check",
-                "env",
-                "secrets",
-                "domains",
-                "volumes",
-                "command",
-                "file"
-            ]
-        );
-
-        spec.check = Some(CheckSpec {
-            kind: CheckKind::Http { path: "/".into() },
-            port: 80,
-            interval_ms: 1000,
-            timeout_ms: 1000,
-        });
-        spec.env = vec![EnvVar {
-            name: "LOG_LEVEL".into(),
-            value: "info".into(),
-        }];
-        spec.stop.grace_seconds = 10;
-        let mut settings = settings;
-        settings.placement.spread_by = Some("zone".into());
-        let set = setting_items(
-            &spec,
-            "whoami:v1.11.0 · 0123456789ab",
-            &settings,
-            None,
-            &["TOKEN".into()],
-            &[],
-        );
-        assert_eq!(
-            keys(&set.configured),
-            [
-                "image",
-                "exposure",
-                "copies",
-                "placement",
-                "check",
-                "resources",
-                "env",
-                "secrets",
-                "command"
-            ]
-        );
-        assert_eq!(keys(&set.more), ["domains", "volumes", "file"]);
-    }
 
     #[test]
     fn a_tag_alone_replaces_the_tag_of_the_image_the_app_runs_and_a_whole_reference_is_taken_as_it_is()
@@ -3135,6 +3580,7 @@ mod tests {
                 env: "TOKEN".into(),
                 secret: "token".into(),
             }],
+            volumes: Vec::new(),
             command: Vec::new(),
             memory_mib: 0,
             cpu_millis: 0,

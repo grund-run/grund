@@ -27,11 +27,13 @@
 #      instance's own executable, from <url>/install/grund-linux-<arch>:
 #      any build works, and the bytes are as trustworthy as the instance's
 #      TLS (nothing is signed yet)
-#   2. with /dev/kvm: Firecracker and its jailer (a pinned release, checked
+#   2. restic: pinned upstream encrypted backup executable, checked against
+#      its release SHA-256 before installation to /usr/local/bin
+#   3. with /dev/kvm: Firecracker and its jailer (a pinned release, checked
 #      against a pinned SHA-256) to /usr/local/bin, and nftables from the
 #      system's package manager if nft is missing
-#   3. `grund join`, unless /var/lib/grund/agent/machine.json exists
-#   4. grund-agent.service, enabled and started: `grund agent`, with
+#   4. `grund join`, unless /var/lib/grund/agent/machine.json exists
+#   5. grund-agent.service, enabled and started: `grund agent`, with
 #      Firecracker VMs where step 2 ran. KillMode=process, so restarting
 #      the agent leaves its VMs running; with systemd 254+, Delegate=yes
 #      and DelegateSubgroup=agent, so each VM gets a cgroup with CPU and
@@ -47,6 +49,9 @@ set -eu
 
 FIRECRACKER_VERSION=v1.17.0
 FIRECRACKER_TGZ_SHA256=06094a1108ae9e82aa4c23a775aa92758f53f1175d422270d9d6162cb9ade558
+RESTIC_VERSION=0.18.1
+# https://github.com/restic/restic/releases/download/v0.18.1/SHA256SUMS
+RESTIC_BZ2_SHA256=680838f19d67151adba227e1570cdd8af12c19cf1735783ed1ba928bc41f363d
 PACKAGES=https://git.kjuulh.io/api/packages/grund/generic/grund
 
 url="" code="" name="" vms=1 from_instance=
@@ -70,6 +75,7 @@ step() { echo "==> $*"; }
 command -v systemctl >/dev/null || fail "this installer needs systemd to run the agent"
 command -v curl >/dev/null || fail "curl is required"
 command -v sha256sum >/dev/null || fail "sha256sum is required (coreutils)"
+command -v bzip2 >/dev/null || fail "bzip2 is required to install the pinned backup engine"
 url="${url%/}"
 
 work="$(mktemp -d)"
@@ -101,6 +107,13 @@ echo "$sum" | grep -qx '[0-9a-f]\{64\}' || fail "the SHA-256 from $base is not 6
 verify "$work/grund" "$sum"
 install -m 0755 "$work/grund" /usr/local/bin/grund
 echo "    grund $revision from $base, sha256 $(echo "$sum" | cut -c1-12)"
+step "restic $RESTIC_VERSION, encrypted backups"
+archive="$work/restic.bz2"
+curl -fsSL -o "$archive" "https://github.com/restic/restic/releases/download/v$RESTIC_VERSION/restic_$RESTIC_VERSION_linux_amd64.bz2" ||
+  fail "could not download pinned restic $RESTIC_VERSION"
+verify "$archive" "$RESTIC_BZ2_SHA256"
+bzip2 -dc "$archive" > "$work/restic" || fail "could not unpack verified restic"
+install -m 0755 "$work/restic" /usr/local/bin/restic
 
 runtime=none
 if [ -n "$vms" ] && [ -c /dev/kvm ]; then

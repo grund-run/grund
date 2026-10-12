@@ -1,22 +1,20 @@
 //! The machine's own policy (grund-docs design/apps.md §6.4): what no
 //! document may ask of this machine, whoever signed it. The owner writes
-//! `/etc/grund/policy.toml`; the instance cannot change it, and learns it
+//! `/etc/grund/policy.yaml`; the instance cannot change it, and learns it
 //! only from the agent's heartbeat so it does not place what will be
 //! refused.
 //!
 //! The file was `/etc/grund/policy.toml` until 2026-10-06. An agent that
 //! finds only that file reads it, writes the same policy as `policy.yaml`
 //! beside it, logs that it did, and leaves the old file in place, so no
-//! machine loses its policy on upgrade. That fallback goes in a later
-//! release.
+//! machine loses its policy on upgrade.
 //!
-//! A document cannot ask for a privileged container, added capabilities,
-//! host namespaces, devices or host paths at all: the replica message has
-//! no field for any of them, and the runtime never grants them. What the
-//! policy checks is what a document can say: the image's pin, the
-//! resources, and the shape of the command and environment.
+//! A document cannot ask for privileged containers, capabilities, devices or
+//! host namespaces. Existing host directories are different: a signed mount
+//! is permitted only beneath a machine-local `volume_roots` entry, empty by
+//! default. The runtime checks both that policy and managed volume ownership.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use grund_proto::grund::agent::v1::Replica;
@@ -36,6 +34,9 @@ pub struct Policy {
     pub max_replica_memory_mib: u64,
     /// The most CPU one replica may reserve, thousandths; 0: no limit.
     pub max_replica_cpu_millis: u32,
+    /// Existing host directories may be bound only beneath these locally
+    /// configured absolute roots. Empty by default: no host-path access.
+    pub volume_roots: Vec<PathBuf>,
 }
 
 impl Default for Policy {
@@ -44,6 +45,7 @@ impl Default for Policy {
             apps: true,
             max_replica_memory_mib: 0,
             max_replica_cpu_millis: 0,
+            volume_roots: Vec::new(),
         }
     }
 }
@@ -53,15 +55,32 @@ impl Policy {
     /// `path` is missing and an older `policy.toml` sits beside it, that
     /// file's policy is the one used, and is written to `path`.
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        match std::fs::read_to_string(path) {
+        let policy = match std::fs::read_to_string(path) {
             Ok(text) => grund_domain::yaml::from_str(&text)
-                .with_context(|| format!("{} does not parse as grund's policy", path.display())),
+                .with_context(|| format!("{} does not parse as grund's policy", path.display()))?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => match legacy_file(path) {
-                Some(old) => Self::migrate(&old, path),
-                None => Ok(Self::default()),
+                Some(old) => Self::migrate(&old, path)?,
+                None => Self::default(),
             },
-            Err(error) => Err(error).with_context(|| format!("read {}", path.display())),
+            Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
+        };
+        policy.validate_roots()?;
+        Ok(policy)
+    }
+
+    fn validate_roots(&self) -> anyhow::Result<()> {
+        for root in &self.volume_roots {
+            anyhow::ensure!(
+                root.is_absolute()
+                    && root != Path::new("/")
+                    && root.components().all(|c| matches!(
+                        c,
+                        std::path::Component::RootDir | std::path::Component::Normal(_)
+                    )),
+                "volume_roots must contain only absolute non-root directory paths"
+            );
         }
+        Ok(())
     }
 
     fn migrate(old: &Path, path: &Path) -> anyhow::Result<Self> {

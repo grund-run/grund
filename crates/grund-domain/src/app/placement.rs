@@ -314,6 +314,7 @@ mod tests {
                 secrets: Vec::new(),
                 check: None,
                 stop: StopSpec::default(),
+                volumes: Vec::new(),
             },
             image_digest: String::new(),
             platforms: platforms.iter().map(|p| p.to_string()).collect(),

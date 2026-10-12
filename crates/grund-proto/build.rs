@@ -17,6 +17,7 @@ const FILES: &[&str] = &[
     "grund/registry/v1/registry.proto",
     "grund/relay/v1/relay.proto",
     "grund/token/v1/token.proto",
+    "grund/volume/v1/volume.proto",
 ];
 
 fn main() {

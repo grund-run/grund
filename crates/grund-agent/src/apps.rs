@@ -63,7 +63,7 @@ use grund_net::{
 use grund_proto::grund::agent::v1::{
     DesiredState, GetPullCredentialRequest, GetPullCredentialResponse, GetReplicaSecretsRequest,
     GetReplicaSecretsResponse, Replica, ReplicaObserved, ReplicaObservedState, ReplicaState,
-    replica_check,
+    VolumeDeleted, replica_check,
 };
 use sha2::{Digest, Sha256};
 use tokio::{sync::Notify, task::JoinHandle};
@@ -71,8 +71,10 @@ use tokio::{sync::Notify, task::JoinHandle};
 use crate::{
     agent::Link,
     policy::Policy,
-    runtime::{ContainerRuntime, ContainerSpec, ContainerStatus, ImageRef, Probe, TaskState},
-    secrets,
+    runtime::{
+        ContainerRuntime, ContainerSpec, ContainerStatus, ImageRef, Probe, TaskState, VolumeBind,
+    },
+    secrets, volume,
 };
 
 /// How often a pass runs when nothing wakes it.
@@ -183,6 +185,11 @@ pub struct Shared {
     pub changed: Notify,
     /// Why the agent refused a document, for the next status report.
     pub document_refusals: Mutex<Vec<String>>,
+    /// Successfully erased managed volumes; repeated until the signed
+    /// tombstone disappears, so report retries cannot lose the receipt.
+    pub volume_deletions: Mutex<Vec<VolumeDeleted>>,
+    /// Gate-confirmed idle draining replicas, refreshed by the status loop.
+    pub drain_idle: Mutex<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -199,6 +206,7 @@ struct Tracked {
     restarts: u32,
     exits_since_reset: u32,
     start_failures: u32,
+    draining_since: Option<Instant>,
     recreate_at: Option<Instant>,
     start_failure: String,
     started: Option<Instant>,
@@ -275,6 +283,12 @@ pub fn spec_hash(replica: &Replica) -> String {
         stop.map(|s| s.signal.as_bytes()).unwrap_or_default(),
     );
     part("grace", &stop.map_or(30, |s| s.grace_seconds).to_le_bytes());
+    for volume in &replica.volumes {
+        part("volume-id", volume.volume_id.as_bytes());
+        part("volume-name", volume.name.as_bytes());
+        part("volume-path", volume.path.as_bytes());
+        part("volume-source", volume.source.as_bytes());
+    }
     hex::encode(hasher.finalize())
 }
 
@@ -299,6 +313,8 @@ fn spec(
     replica: &Replica,
     secret_values: &[secrets::Cached],
     net: Option<&Net>,
+    volumes: Vec<VolumeBind>,
+    roots: &[PathBuf],
 ) -> Result<ContainerSpec, String> {
     let image = replica.image.as_option().ok_or("no image")?;
     let reference = grund_domain::app::spec::ImageReference::parse(&image.reference)
@@ -324,6 +340,11 @@ fn spec(
     labels.insert("grund.app-id".to_string(), replica.app_id.clone());
     labels.insert("grund.release".to_string(), replica.release.to_string());
     labels.insert("grund.slot".to_string(), replica.slot.to_string());
+    let volume_roots = if volumes.is_empty() {
+        Vec::new()
+    } else {
+        roots.to_vec()
+    };
     Ok(ContainerSpec {
         id: replica.replica_id.clone(),
         image: ImageRef {
@@ -346,6 +367,8 @@ fn spec(
         labels,
         spec_hash: container_hash(replica, net),
         resolv_conf: net.map(|n| format!("nameserver {}\n", n.resolver)),
+        volumes,
+        volume_roots,
     })
 }
 
@@ -356,6 +379,7 @@ pub struct Apps<C> {
     shared: Arc<Shared>,
     policy: Policy,
     data_dir: PathBuf,
+    volume_data_dir: PathBuf,
     cache_key: ring::aead::LessSafeKey,
     tracked: HashMap<String, Tracked>,
     pulls: HashMap<String, JoinHandle<Result<(), String>>>,
@@ -381,12 +405,14 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
     ) -> Self {
         let cache_key = secrets::key(machine_seed);
         let secrets = secrets::load(&data_dir, &cache_key);
+        let volume_data_dir = runtime.volume_data_dir();
         Self {
             runtime,
             link,
             shared,
             policy,
             data_dir,
+            volume_data_dir,
             cache_key,
             tracked: HashMap::new(),
             pulls: HashMap::new(),
@@ -625,6 +651,56 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
         self.stops.get(id).is_some_and(|h| !h.is_finished())
     }
 
+    fn erase_deleted(&self, desired: Option<&DesiredState>, mounted: &[(String, VolumeBind)]) {
+        volume::retain_deletions(desired);
+        let Some(desired) = desired else {
+            *self.shared.volume_deletions.lock().expect("shared lock") = Vec::new();
+            return;
+        };
+        let mut erased = Vec::new();
+        for tombstone in &desired.volume_deletions {
+            if mounted
+                .iter()
+                .any(|(_, bind)| bind.volume_id == tombstone.volume_id)
+                || desired
+                    .replicas
+                    .iter()
+                    .any(|r| r.volumes.iter().any(|v| v.volume_id == tombstone.volume_id))
+                || !self.stops.is_empty()
+            {
+                continue;
+            }
+            match volume::begin_delete(&tombstone.volume_id) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(error) => {
+                    tracing::warn!(volume_id = %tombstone.volume_id, error = %format!("{error:#}"), "could not fence volume workers");
+                    continue;
+                }
+            }
+            match volume::delete_managed(
+                &self.volume_data_dir,
+                &tombstone.app_id,
+                &tombstone.volume_id,
+            ) {
+                Ok(true) => erased.push(VolumeDeleted {
+                    app_id: tombstone.app_id.clone(),
+                    volume_id: tombstone.volume_id.clone(),
+                    ..Default::default()
+                }),
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::warn!(volume_id = %tombstone.volume_id, error = %format!("{error:#}"), "could not erase managed volume")
+                }
+            }
+        }
+        let mut current = self.shared.volume_deletions.lock().expect("shared lock");
+        if *current != erased {
+            *current = erased;
+            self.shared.changed.notify_one();
+        }
+    }
+
     /// One pass: observe, plan, act, check, report.
     pub async fn pass(&mut self) -> anyhow::Result<()> {
         self.stops.retain(|_, h| !h.is_finished());
@@ -635,11 +711,17 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
             .unwrap_or_default();
         let mut reports: BTreeMap<String, ReplicaObserved> = BTreeMap::new();
         let mut refusals = Vec::new();
-        if wanted.is_empty() && self.tracked.is_empty() {
+        if wanted.is_empty()
+            && self.tracked.is_empty()
+            && desired
+                .as_ref()
+                .is_none_or(|d| d.volume_deletions.is_empty())
+        {
             let containers: Vec<ContainerStatus> = self.runtime.list().await.unwrap_or_default();
             for container in &containers {
                 self.stop(container);
             }
+            self.erase_deleted(desired.as_ref(), &[]);
             self.publish(Vec::new(), Vec::new());
             return Ok(());
         }
@@ -659,6 +741,15 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
             return Ok(());
         }
         let containers = self.runtime.list().await?;
+        let mounted = if wanted.iter().any(|r| !r.volumes.is_empty())
+            || desired
+                .as_ref()
+                .is_some_and(|d| !d.volume_deletions.is_empty())
+        {
+            self.runtime.mounted_volumes().await?
+        } else {
+            Vec::new()
+        };
         let net = self.net();
         let wanted_ids: HashSet<&str> = wanted.iter().map(|r| r.replica_id.as_str()).collect();
         for container in &containers {
@@ -688,17 +779,147 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
         let mut probes = Vec::new();
         for replica in &wanted {
             let id = replica.replica_id.clone();
+            if !replica.volumes.is_empty()
+                && replica.state.as_known() == Some(ReplicaState::REPLICA_STATE_DRAINING)
+            {
+                let since = *self
+                    .tracked
+                    .entry(id.clone())
+                    .or_default()
+                    .draining_since
+                    .get_or_insert(now);
+                let idle = self
+                    .shared
+                    .drain_idle
+                    .lock()
+                    .expect("shared lock")
+                    .contains(&id);
+                if let Some(container) = containers.iter().find(|c| c.id == id) {
+                    if idle || now.duration_since(since) >= Duration::from_secs(30) {
+                        self.stop(container);
+                        reports.insert(
+                            id,
+                            report(
+                                replica,
+                                ReplicaObservedState::REPLICA_OBSERVED_STATE_STOPPING,
+                                "",
+                            ),
+                        );
+                    } else {
+                        reports.insert(
+                            id,
+                            report(
+                                replica,
+                                ReplicaObservedState::REPLICA_OBSERVED_STATE_RUNNING,
+                                "finishing in-flight requests before stopping its volume writer",
+                            ),
+                        );
+                    }
+                } else if self.stopping(&id) {
+                    reports.insert(
+                        id,
+                        report(
+                            replica,
+                            ReplicaObservedState::REPLICA_OBSERVED_STATE_STOPPING,
+                            "",
+                        ),
+                    );
+                } else {
+                    reports.insert(
+                        id,
+                        report(
+                            replica,
+                            ReplicaObservedState::REPLICA_OBSERVED_STATE_EXITED,
+                            "",
+                        ),
+                    );
+                }
+                continue;
+            }
+            if !replica.volumes.is_empty() {
+                self.tracked.entry(id.clone()).or_default().draining_since = None;
+            }
             if let Some(reason) = self.policy.refuses(replica) {
                 refusals.push(format!("replica {id} of {}: {reason}", replica.app));
-                if let Some(container) = containers.iter().find(|c| c.id == id) {
+                let current = containers.iter().find(|c| c.id == id);
+                if let Some(container) = current {
                     self.stop(container);
                 }
+                let state =
+                    if !replica.volumes.is_empty() && (current.is_some() || self.stopping(&id)) {
+                        ReplicaObservedState::REPLICA_OBSERVED_STATE_STOPPING
+                    } else {
+                        ReplicaObservedState::REPLICA_OBSERVED_STATE_REFUSED
+                    };
+                reports.insert(id, report(replica, state, &reason));
+                continue;
+            }
+            let binds = match volume::prepare(
+                &self.volume_data_dir,
+                &self.policy.volume_roots,
+                &replica.app_id,
+                &replica.volumes,
+            ) {
+                Ok(binds) => binds,
+                Err(error) => {
+                    let reason = format!("volume access refused: {error:#}");
+                    refusals.push(format!("replica {id} of {}: {reason}", replica.app));
+                    let current = containers.iter().find(|c| c.id == id);
+                    if let Some(container) = current {
+                        self.stop(container);
+                    }
+                    let state = if current.is_some() || self.stopping(&id) {
+                        ReplicaObservedState::REPLICA_OBSERVED_STATE_STOPPING
+                    } else {
+                        ReplicaObservedState::REPLICA_OBSERVED_STATE_REFUSED
+                    };
+                    reports.insert(id, report(replica, state, &reason));
+                    continue;
+                }
+            };
+            let shared_writer = binds.iter().any(|bind| {
+                wanted.iter().any(|other| {
+                    other.replica_id != id
+                        && other.volumes.iter().any(|v| {
+                            v.volume_id == bind.volume_id
+                                || (!v.source.is_empty()
+                                    && volume::overlaps(
+                                        std::path::Path::new(&v.source),
+                                        std::path::Path::new(&bind.source),
+                                    ))
+                        })
+                })
+            });
+            if shared_writer {
+                let reason = "another desired replica holds this writable volume";
+                let current = containers.iter().find(|c| c.id == id);
+                if let Some(container) = current {
+                    self.stop(container);
+                }
+                let state = if current.is_some() || self.stopping(&id) {
+                    ReplicaObservedState::REPLICA_OBSERVED_STATE_STOPPING
+                } else {
+                    ReplicaObservedState::REPLICA_OBSERVED_STATE_REFUSED
+                };
+                reports.insert(id, report(replica, state, reason));
+                continue;
+            }
+            if binds.iter().any(|bind| {
+                mounted.iter().any(|(owner, held)| {
+                    owner != &id
+                        && (bind.volume_id == held.volume_id
+                            || volume::overlaps(
+                                std::path::Path::new(&bind.source),
+                                std::path::Path::new(&held.source),
+                            ))
+                })
+            }) {
                 reports.insert(
-                    id,
+                    id.clone(),
                     report(
                         replica,
-                        ReplicaObservedState::REPLICA_OBSERVED_STATE_REFUSED,
-                        &reason,
+                        ReplicaObservedState::REPLICA_OBSERVED_STATE_STARTING,
+                        "waiting for the previous volume writer to stop",
                     ),
                 );
                 continue;
@@ -721,7 +942,7 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                 && now.duration_since(self.began) < NETWORK_GRACE;
             if let Some(container) = existing
                 && container.spec_hash != hash
-                && !network_coming
+                && (!network_coming || !replica.volumes.is_empty())
             {
                 self.stop(container);
                 reports.insert(
@@ -749,7 +970,7 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                         .map(|t| start_failed(replica, t));
                     let state = match waiting {
                         Some(state) => state,
-                        None => self.start(replica, now, net.as_ref()).await,
+                        None => self.start(replica, binds.clone(), now, net.as_ref()).await,
                     };
                     reports.insert(id.clone(), state);
                 }
@@ -760,7 +981,11 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                         continue;
                     }
                     tracked.started = Some(now);
-                    let state = match self.runtime.restart(&id).await {
+                    let state = match self
+                        .runtime
+                        .restart_with_volumes(&id, &binds, &self.policy.volume_roots)
+                        .await
+                    {
                         Ok(()) => report(
                             replica,
                             ReplicaObservedState::REPLICA_OBSERVED_STATE_STARTING,
@@ -836,7 +1061,11 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                         tracing::info!(replica = %id, code, wait_s = wait.as_secs(), "a replica exited; restarting after its back-off");
                     }
                     if tracked.restart_at.is_some_and(|at| now >= at) {
-                        match self.runtime.restart(&id).await {
+                        match self
+                            .runtime
+                            .restart_with_volumes(&id, &binds, &self.policy.volume_roots)
+                            .await
+                        {
                             Ok(()) => {
                                 let tracked = self.tracked.entry(id.clone()).or_default();
                                 tracked.restarts += 1;
@@ -1001,12 +1230,14 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
             changed
         });
         self.publish(reports.into_values().collect(), refusals);
+        self.erase_deleted(desired.as_ref(), &mounted);
         Ok(())
     }
 
     async fn start(
         &mut self,
         replica: &Replica,
+        volumes: Vec<VolumeBind>,
         now: Instant,
         net: Option<&Net>,
     ) -> ReplicaObserved {
@@ -1038,7 +1269,7 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                 );
             }
         };
-        let spec = match spec(replica, &values, net) {
+        let spec = match spec(replica, &values, net, volumes, &self.policy.volume_roots) {
             Ok(spec) => spec,
             Err(reason) => {
                 return report(
@@ -1571,6 +1802,121 @@ mod tests {
             "{:?}",
             reports[0]
         );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn two_replicas_cannot_start_with_the_same_writable_volume() {
+        let (mut apps, shared, dir) = harness("volume-fence");
+        apps.volume_data_dir = dir.clone();
+        let id = "11111111-1111-1111-1111-111111111111";
+        let mut first = replica("r1", &[]);
+        first.app_id = "app-a".into();
+        first
+            .volumes
+            .push(grund_proto::grund::agent::v1::VolumeMount {
+                volume_id: id.into(),
+                name: "data".into(),
+                path: "/data".into(),
+                ..Default::default()
+            });
+        let mut second = replica("r2", &[]);
+        second.app_id = "app-a".into();
+        second.volumes = first.volumes.clone();
+        set(&shared, vec![first, second]);
+        apps.pass().await.unwrap();
+        assert_eq!(
+            state_of(&shared, "r1").0,
+            Some(ReplicaObservedState::REPLICA_OBSERVED_STATE_REFUSED)
+        );
+        assert_eq!(
+            state_of(&shared, "r2").0,
+            Some(ReplicaObservedState::REPLICA_OBSERVED_STATE_REFUSED)
+        );
+        assert!(apps.runtime.list().await.unwrap().is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn stateful_draining_reports_terminal_only_after_the_writer_is_removed() {
+        let (mut apps, shared, dir) = harness("volume-drain");
+        apps.volume_data_dir = dir.clone();
+        let mut old = replica("old", &[]);
+        old.app_id = "app-a".into();
+        old.volumes
+            .push(grund_proto::grund::agent::v1::VolumeMount {
+                volume_id: "11111111-1111-1111-1111-111111111111".into(),
+                name: "data".into(),
+                path: "/data".into(),
+                ..Default::default()
+            });
+        set(&shared, vec![old.clone()]);
+        for _ in 0..4 {
+            apps.pass().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        assert_eq!(apps.runtime.list().await.unwrap().len(), 1);
+        old.state = ReplicaState::REPLICA_STATE_DRAINING.into();
+        set(&shared, vec![old]);
+        apps.pass().await.unwrap();
+        assert_eq!(
+            state_of(&shared, "old").0,
+            Some(ReplicaObservedState::REPLICA_OBSERVED_STATE_RUNNING)
+        );
+        apps.tracked.get_mut("old").unwrap().draining_since =
+            Some(Instant::now() - Duration::from_secs(31));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            apps.pass().await.unwrap();
+            let gone = apps.runtime.list().await.unwrap().is_empty();
+            let terminal = state_of(&shared, "old").0
+                == Some(ReplicaObservedState::REPLICA_OBSERVED_STATE_EXITED);
+            if gone && terminal {
+                break;
+            }
+            assert!(Instant::now() < deadline, "old writer did not stop");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        apps.pass().await.unwrap();
+        assert!(
+            apps.runtime.list().await.unwrap().is_empty(),
+            "draining writer was recreated"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_signed_tombstone_waits_for_the_old_writers_container_to_be_removed() {
+        let (mut apps, _, dir) = harness("volume-delete");
+        apps.volume_data_dir = dir.clone();
+        let id = "11111111-1111-1111-1111-111111111111";
+        let bind = volume::prepare(
+            &dir,
+            &[],
+            "app-a",
+            &[grund_proto::grund::agent::v1::VolumeMount {
+                volume_id: id.into(),
+                name: "data".into(),
+                path: "/data".into(),
+                ..Default::default()
+            }],
+        )
+        .unwrap()
+        .remove(0);
+        let file = std::path::Path::new(&bind.source).join("important");
+        std::fs::write(&file, b"durable").unwrap();
+        let desired = DesiredState {
+            volume_deletions: vec![grund_proto::grund::agent::v1::VolumeDeletion {
+                app_id: "app-a".into(),
+                volume_id: id.into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        apps.erase_deleted(Some(&desired), &[("r1".into(), bind)]);
+        assert_eq!(std::fs::read(&file).unwrap(), b"durable");
+        apps.erase_deleted(Some(&desired), &[]);
+        assert!(!file.exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

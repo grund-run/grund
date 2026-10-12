@@ -3,6 +3,7 @@
 //! signed desired state, the join tokens its VMs boot with, what it reports,
 //! and the VMs an organisation runs on its own machines.
 
+use anyhow::Context;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use buffa::Message;
 use chrono::{DateTime, Duration, Utc};
@@ -24,6 +25,7 @@ use crate::{
     keys::KeysState,
     services::entry::EntryState,
     services::machines::{MachinesState, MintOutcome, Minted},
+    services::volumes::VolumesState,
     state::State,
 };
 
@@ -274,6 +276,7 @@ impl Agents {
         observed: &[(Uuid, &'static str, Option<String>)],
         refusals: &[String],
         replicas: Option<&[ReplicaReport]>,
+        volume_deletions: &[(Uuid, Uuid)],
     ) -> anyhow::Result<()> {
         let now = Utc::now();
         if let Some(replicas) = replicas {
@@ -328,6 +331,14 @@ impl Agents {
             )
             .await?;
         }
+        if let Some(org) = caller.organisation_id {
+            for (app_id, volume_id) in volume_deletions.iter().take(400) {
+                self.state
+                    .volumes()
+                    .acknowledge(org, caller.machine_id, *app_id, *volume_id)
+                    .await?;
+            }
+        }
         if replicas.is_some() {
             self.finish_migration_settling(caller.machine_id).await?;
         }
@@ -372,6 +383,18 @@ impl Agents {
         let generation = agents::lock_generation(&mut *connection, host_machine_id).await? + 1;
         let vms = agents::hosted_vms(&mut *connection, host_machine_id).await?;
         let placed = grund_store::apps::machine_replicas(&mut *connection, host_machine_id).await?;
+        let mounts = grund_store::volumes::machine_mounts(
+            &mut *connection,
+            organisation_id,
+            host_machine_id,
+        )
+        .await?;
+        let cleanup = grund_store::volumes::pending_cleanup(
+            &mut *connection,
+            organisation_id,
+            host_machine_id,
+        )
+        .await?;
         let key = self
             .state
             .keys()
@@ -392,6 +415,30 @@ impl Agents {
         let mut replicas: Vec<agent::Replica> = Vec::with_capacity(placed.len());
         for row in &placed {
             let mut replica = replica_message(row);
+            for spec in &row.spec.0.volumes {
+                let mount = mounts
+                    .iter()
+                    .find(|v| v.app_id == row.app_id && v.name == spec.name)
+                    .with_context(|| {
+                        format!(
+                            "volume {} of app {} is not attached to its placement machine",
+                            spec.name, row.app_id
+                        )
+                    })?;
+                anyhow::ensure!(
+                    mount.path == spec.path && mount.source == spec.source,
+                    "volume {} of app {} does not match release mount",
+                    spec.name,
+                    row.app_id
+                );
+                replica.volumes.push(agent::VolumeMount {
+                    volume_id: mount.volume_id.to_string(),
+                    name: spec.name.clone(),
+                    path: spec.path.clone(),
+                    source: spec.source.clone().unwrap_or_default(),
+                    ..Default::default()
+                });
+            }
             if crate::services::entry::publishes(&row.spec.0) {
                 if let std::collections::hash_map::Entry::Vacant(slot) = addresses.entry(row.app_id)
                 {
@@ -422,6 +469,9 @@ impl Agents {
         if !replicas.is_empty() {
             required_features.push("replicas".to_string());
         }
+        if replicas.iter().any(|r| !r.volumes.is_empty()) || !cleanup.is_empty() {
+            required_features.push("volumes".to_string());
+        }
         let payload = agent::DesiredState {
             machine_id: host_machine_id.to_string(),
             organisation_id: organisation_id.to_string(),
@@ -431,6 +481,14 @@ impl Agents {
             machines,
             replicas,
             entry_keys,
+            volume_deletions: cleanup
+                .iter()
+                .map(|item| agent::VolumeDeletion {
+                    volume_id: item.volume_id.to_string(),
+                    app_id: item.app_id.to_string(),
+                    ..Default::default()
+                })
+                .collect(),
             ..Default::default()
         }
         .encode_to_vec();

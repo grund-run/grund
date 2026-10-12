@@ -968,7 +968,7 @@ pub async fn machine_replicas(
          FROM grund_replicas r \
          JOIN grund_apps a ON a.app_id = r.app_id \
          JOIN grund_releases rel ON rel.app_id = r.app_id AND rel.number = r.release \
-         WHERE r.machine_id = $1 ORDER BY r.replica_id",
+         WHERE r.machine_id = $1 AND a.deleted_at IS NULL ORDER BY r.replica_id",
     )
     .bind(machine_id)
     .fetch_all(executor)

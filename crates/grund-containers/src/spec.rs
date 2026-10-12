@@ -5,8 +5,8 @@
 //! memory, CPU and pids limits, and its own namespaces, the network one
 //! being the runtime's per-container namespace (with the agent's device on
 //! the private network in it, when it gave one). Never privileged, no host
-//! namespace, no device and no host path; the one file from the host is the
-//! agent's `/etc/resolv.conf`, read-only, added beside this spec.
+//! namespace or device. Only agent-verified volumes are bound read-write;
+//! the agent's `/etc/resolv.conf` is bound read-only beside this spec.
 //!
 //! What it leaves out, for now: a seccomp profile, user namespaces,
 //! AppArmor/SELinux labels and `/etc/hosts`.
@@ -262,7 +262,7 @@ pub fn oci_spec(
         cpu["quota"] = json!(quota);
     }
     let hostname: String = spec.id.chars().take(63).collect();
-    Ok(json!({
+    let mut oci = json!({
         "ociVersion": "1.2.0",
         "process": {
             "terminal": false,
@@ -321,7 +321,24 @@ pub fn oci_spec(
             "maskedPaths": MASKED_PATHS,
             "readonlyPaths": READONLY_PATHS,
         }
-    }))
+    });
+    for volume in &spec.volumes {
+        anyhow::ensure!(
+            Path::new(&volume.path).is_absolute() && Path::new(&volume.source).is_absolute(),
+            "volume {} has a non-absolute mount path",
+            volume.name
+        );
+        oci["mounts"]
+            .as_array_mut()
+            .expect("mounts are an array")
+            .push(json!({
+                "destination": volume.path,
+                "type": "bind",
+                "source": volume.source,
+                "options": ["bind", "rw", "nosuid", "nodev"],
+            }));
+    }
+    Ok(oci)
 }
 
 #[cfg(test)]
@@ -351,6 +368,8 @@ mod tests {
             labels: BTreeMap::new(),
             spec_hash: "h".into(),
             resolv_conf: None,
+            volumes: Vec::new(),
+            volume_roots: Vec::new(),
         }
     }
 
@@ -518,6 +537,30 @@ mod tests {
         assert_eq!(oci["linux"]["readonlyPaths"], json!(READONLY_PATHS));
         assert!(oci["linux"].get("devices").is_none());
         assert!(oci.get("hooks").is_none());
+    }
+
+    #[test]
+    fn a_volume_is_writable_only_at_its_requested_container_directory() {
+        let mut app = spec();
+        app.volumes.push(grund_agent::runtime::VolumeBind {
+            volume_id: "11111111-1111-1111-1111-111111111111".into(),
+            app_id: "app".into(),
+            name: "data".into(),
+            path: "/var/data".into(),
+            source: "/var/lib/grund/volumes/11111111-1111-1111-1111-111111111111".into(),
+            managed: true,
+        });
+        let oci = oci_spec(&app, &image(), &root(), Path::new("/n")).unwrap();
+        let mounts = oci["mounts"].as_array().unwrap();
+        let bind = mounts
+            .iter()
+            .find(|m| m["destination"] == "/var/data")
+            .unwrap();
+        assert_eq!(bind["source"], app.volumes[0].source);
+        assert_eq!(bind["type"], "bind");
+        assert!(bind["options"].as_array().unwrap().contains(&json!("rw")));
+        assert!(!bind["options"].as_array().unwrap().contains(&json!("ro")));
+        assert_eq!(mounts.iter().filter(|m| m["type"] == "bind").count(), 1);
     }
 
     #[test]

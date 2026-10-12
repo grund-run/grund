@@ -89,6 +89,22 @@ message AppSpec {
   // Unset: a copy is ready once its process has run for min_ready.
   Check check = 7;
   Stop stop = 8;
+  // App-owned volumes mounted by this release. Names retain their volume IDs
+  // across releases; leaving one out does not delete it. Requires one copy.
+  repeated VolumeSpec volumes = 9;
+}
+
+message VolumeSpec {
+  // Unique within its app, immutable identity across releases.
+  string name = 1;
+  // Absolute container directory; mounts may not overlap.
+  string path = 2;
+  // Existing absolute host directory, allowed by that own machine's local
+  // policy. Empty creates a grund-managed directory on the own machine.
+  // No directory quota is promised; size is not supported in M1.
+  string source = 3;
+  // Opt into daily backups; false means no scheduled backups.
+  bool backup = 4;
 }
 
 message Port {
@@ -474,6 +490,9 @@ message SetSecretResponse {
 message DeleteAppRequest {
   string organisation = 1;
   string name = 2;
+  // Required only when this app owns volumes: the current volume count shown
+  // in the deletion confirmation. Missing or stale counts are refused.
+  optional uint32 confirm_volume_count = 3;
 }
 
 message DeleteAppResponse {}

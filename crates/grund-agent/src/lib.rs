@@ -9,6 +9,7 @@
 
 pub mod agent;
 pub mod apps;
+pub mod backups;
 pub mod doctor;
 pub mod forward;
 pub mod gate;
@@ -23,3 +24,4 @@ pub mod runtime;
 pub mod secrets;
 pub mod simulated;
 pub mod vm;
+pub mod volume;

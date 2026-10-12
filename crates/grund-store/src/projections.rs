@@ -21,6 +21,7 @@ pub const ACCOUNT_SUBSCRIPTION: &str = "grund-account-read-model-v1";
 pub const ORGANISATION_SUBSCRIPTION: &str = "grund-organisation-read-model-v1";
 pub const MACHINE_SUBSCRIPTION: &str = "grund-machine-read-model-v1";
 pub const APP_SUBSCRIPTION: &str = "grund-app-read-model-v1";
+pub const VOLUME_SUBSCRIPTION: &str = "grund-volume-read-model-v1";
 
 /// Applies one account event at `version` to `grund_accounts`.
 pub async fn apply_account(
@@ -537,6 +538,22 @@ impl TransactionalEventHandler for AppProjection {
     ) -> anyhow::Result<()> {
         let id = stream_uuid(event.stream_id(), grund_domain::app::APP_CATEGORY)?;
         crate::apps::apply_app(id, event.stream_version(), &event.event, connection).await?;
+        Ok(())
+    }
+}
+
+pub struct VolumeProjection;
+
+impl TransactionalEventHandler for VolumeProjection {
+    type Aggregate = grund_domain::volume::Volume;
+
+    async fn handle(
+        &self,
+        event: HandledEvent<grund_domain::volume::VolumeEvent>,
+        connection: &mut PgConnection,
+    ) -> anyhow::Result<()> {
+        let id = stream_uuid(event.stream_id(), grund_domain::volume::VOLUME_CATEGORY)?;
+        crate::volumes::apply_volume(id, event.stream_version(), &event.event, connection).await?;
         Ok(())
     }
 }

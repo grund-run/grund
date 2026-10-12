@@ -15,7 +15,7 @@ use grund_domain::app::{
     AppSettings, ReleaseSource,
     spec::{
         AppSpec, CheckKind, CheckSpec, EnvVar, PortSpec, Protocol, SecretEnv, SettingsInput,
-        StopSpec,
+        StopSpec, VolumeSpec,
     },
 };
 use grund_proto::grund::app::v1::{
@@ -66,13 +66,23 @@ fn failed(error: AppsError) -> ConnectError {
     let message = error.to_string();
     let base = match &error {
         AppsError::NotFound | AppsError::ReleaseNotFound => ConnectError::not_found(message),
-        AppsError::NameTaken | AppsError::AppLimit | AppsError::DomainRequired => {
+        AppsError::NameTaken
+        | AppsError::AppLimit
+        | AppsError::DomainRequired
+        | AppsError::VolumeConfirmationRequired { .. } => {
             ConnectError::failed_precondition(message)
         }
         AppsError::Spec(_) | AppsError::ImageUnsupported(_) => {
             ConnectError::invalid_argument(message)
         }
         AppsError::ImageUnresolved(_) => ConnectError::failed_precondition(message),
+        AppsError::Volume(error) => match error {
+            crate::services::volumes::VolumesError::Internal(cause) => {
+                tracing::error!(error = %format!("{cause:#}"), "app volume operation failed");
+                ConnectError::internal("grund could not finish that")
+            }
+            _ => ConnectError::failed_precondition(message),
+        },
         AppsError::Internal(cause) => {
             tracing::error!(error = %format!("{cause:#}"), "app API call failed");
             ConnectError::internal("grund could not finish that")
@@ -184,6 +194,16 @@ pub fn spec_input(spec: &proto::AppSpec) -> AppSpec {
                 grace_seconds: s.grace_seconds,
             },
         ),
+        volumes: spec
+            .volumes
+            .iter()
+            .map(|v| VolumeSpec {
+                name: v.name.clone(),
+                path: v.path.clone(),
+                source: (!v.source.is_empty()).then(|| v.source.clone()),
+                backup: v.backup,
+            })
+            .collect(),
     }
 }
 
@@ -252,6 +272,17 @@ pub fn spec_message(spec: &AppSpec) -> proto::AppSpec {
             grace_seconds: spec.stop.grace_seconds,
             ..Default::default()
         }),
+        volumes: spec
+            .volumes
+            .iter()
+            .map(|v| proto::VolumeSpec {
+                name: v.name.clone(),
+                path: v.path.clone(),
+                source: v.source.clone().unwrap_or_default(),
+                backup: v.backup,
+                ..Default::default()
+            })
+            .collect(),
         ..Default::default()
     }
 }
@@ -810,7 +841,12 @@ impl AppService for AppApi {
             .await?;
         self.state
             .apps()
-            .delete(caller.account_id, membership.organisation_id, request.name)
+            .delete(
+                caller.account_id,
+                membership.organisation_id,
+                request.name,
+                request.confirm_volume_count,
+            )
             .await
             .map_err(failed)?;
         Response::ok(DeleteAppResponse::default())
@@ -849,6 +885,7 @@ mod tests {
                 timeout_ms: 1000,
             }),
             stop: StopSpec::default(),
+            volumes: Vec::new(),
         };
         assert_eq!(spec_input(&spec_message(&spec)), spec);
     }

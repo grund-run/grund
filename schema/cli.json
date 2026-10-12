@@ -62,6 +62,10 @@
         "root": {
           "description": "The VM runtime runs with root rather than in user namespaces.",
           "type": "boolean"
+        },
+        "volumes": {
+          "description": "This agent can verify app-owned volume identities and writable mounts. Absent on older agents: the scheduler must not place stateful apps there.",
+          "type": "boolean"
         }
       },
       "title": "grund.agent.v1.Capabilities",
@@ -284,6 +288,13 @@
         },
         "stop": {
           "$ref": "#/$defs/grund.app.v1.Stop"
+        },
+        "volumes": {
+          "description": "App-owned volumes mounted by this release. Names retain their volume IDs across releases; leaving one out does not delete it. Requires one copy.",
+          "items": {
+            "$ref": "#/$defs/grund.app.v1.VolumeSpec"
+          },
+          "type": "array"
         }
       },
       "title": "grund.app.v1.AppSpec",
@@ -767,6 +778,29 @@
         }
       },
       "title": "grund.app.v1.Stop",
+      "type": "object"
+    },
+    "grund.app.v1.VolumeSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "backup": {
+          "description": "Opt into daily backups; false means no scheduled backups.",
+          "type": "boolean"
+        },
+        "name": {
+          "description": "Unique within its app, immutable identity across releases.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Absolute container directory; mounts may not overlap.",
+          "type": "string"
+        },
+        "source": {
+          "description": "Existing absolute host directory, allowed by that own machine's local policy. Empty creates a grund-managed directory on the own machine. No directory quota is promised; size is not supported in M1.",
+          "type": "string"
+        }
+      },
+      "title": "grund.app.v1.VolumeSpec",
       "type": "object"
     },
     "grund.app.v1.Waiting": {
@@ -2344,6 +2378,226 @@
         }
       },
       "title": "grund.token.v1.Token",
+      "type": "object"
+    },
+    "grund.volume.v1.AttachVolumeResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "volume": {
+          "$ref": "#/$defs/grund.volume.v1.Volume"
+        }
+      },
+      "title": "grund.volume.v1.AttachVolumeResponse",
+      "type": "object"
+    },
+    "grund.volume.v1.BackupDestination": {
+      "additionalProperties": false,
+      "properties": {
+        "bucket": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "endpoint": {
+          "type": "string"
+        },
+        "lastError": {
+          "description": "Safe failure class, never backend exception text or credentials.",
+          "type": "string"
+        },
+        "lastVerifiedAt": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "nextDueAt": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "retentionCount": {
+          "type": "integer"
+        },
+        "version": {
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        }
+      },
+      "title": "grund.volume.v1.BackupDestination",
+      "type": "object"
+    },
+    "grund.volume.v1.CreateVolumeResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "volume": {
+          "$ref": "#/$defs/grund.volume.v1.Volume"
+        }
+      },
+      "title": "grund.volume.v1.CreateVolumeResponse",
+      "type": "object"
+    },
+    "grund.volume.v1.DetachVolumeResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "volume": {
+          "$ref": "#/$defs/grund.volume.v1.Volume"
+        }
+      },
+      "title": "grund.volume.v1.DetachVolumeResponse",
+      "type": "object"
+    },
+    "grund.volume.v1.GetBackupDestinationResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "destination": {
+          "$ref": "#/$defs/grund.volume.v1.BackupDestination"
+        }
+      },
+      "title": "grund.volume.v1.GetBackupDestinationResponse",
+      "type": "object"
+    },
+    "grund.volume.v1.GetVolumeStatusResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "volume": {
+          "$ref": "#/$defs/grund.volume.v1.Volume"
+        }
+      },
+      "title": "grund.volume.v1.GetVolumeStatusResponse",
+      "type": "object"
+    },
+    "grund.volume.v1.ListRecoveryPointsResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "nextPageToken": {
+          "type": "string"
+        },
+        "points": {
+          "items": {
+            "$ref": "#/$defs/grund.volume.v1.RecoveryPoint"
+          },
+          "type": "array"
+        }
+      },
+      "title": "grund.volume.v1.ListRecoveryPointsResponse",
+      "type": "object"
+    },
+    "grund.volume.v1.ListVolumesResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "volumes": {
+          "items": {
+            "$ref": "#/$defs/grund.volume.v1.Volume"
+          },
+          "type": "array"
+        }
+      },
+      "title": "grund.volume.v1.ListVolumesResponse",
+      "type": "object"
+    },
+    "grund.volume.v1.RecoveryPoint": {
+      "additionalProperties": false,
+      "properties": {
+        "completedAt": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "snapshotId": {
+          "type": "string"
+        },
+        "verifiedAt": {
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "title": "grund.volume.v1.RecoveryPoint",
+      "type": "object"
+    },
+    "grund.volume.v1.RestoreRecoveryPointResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "attemptId": {
+          "type": "string"
+        },
+        "newVolumeId": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "title": "grund.volume.v1.RestoreRecoveryPointResponse",
+      "type": "object"
+    },
+    "grund.volume.v1.SetBackupDestinationResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "destination": {
+          "$ref": "#/$defs/grund.volume.v1.BackupDestination"
+        }
+      },
+      "title": "grund.volume.v1.SetBackupDestinationResponse",
+      "type": "object"
+    },
+    "grund.volume.v1.Volume": {
+      "additionalProperties": false,
+      "properties": {
+        "appId": {
+          "type": "string"
+        },
+        "backup": {
+          "type": "boolean"
+        },
+        "machineId": {
+          "type": "string"
+        },
+        "measuredAt": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "measuredBytes": {
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "restoreFailureClass": {
+          "description": "Safe failure class, never a provider response or secret.",
+          "type": "string"
+        },
+        "restoreStatus": {
+          "description": "Restore into this new volume: pending, leased, completed, failed, or empty for an ordinary volume. Completion alone never attaches it.",
+          "type": "string"
+        },
+        "source": {
+          "description": "Empty for a grund-managed directory, not an arbitrary host root.",
+          "type": "string"
+        },
+        "status": {
+          "description": "requested, available, attached, deleting, deleted.",
+          "type": "string"
+        },
+        "version": {
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "volumeId": {
+          "type": "string"
+        }
+      },
+      "title": "grund.volume.v1.Volume",
       "type": "object"
     }
   },
@@ -11944,7 +12198,7 @@
       "rpcs": [
         "grund.app.v1.AppService/DeleteApp"
       ],
-      "summary": "Delete an app: its copies stop and its name is free again; its releases stay in the history"
+      "summary": "Delete an app and all its managed volumes; original customer host-path contents remain"
     },
     {
       "args": [
@@ -12172,6 +12426,1374 @@
       ],
       "stdin": "the secret's value; one final newline is dropped",
       "summary": "Store a new version of a secret, its value read from stdin. Releases name it with grund apps set APP secret-env"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "app",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "APP"
+        }
+      ],
+      "audience": "client",
+      "command": "grund volumes list",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund volumes list photos"
+      ],
+      "mutates": false,
+      "output": {
+        "$ref": "#/$defs/grund.volume.v1.ListVolumesResponse"
+      },
+      "path": "volumes list",
+      "rpcs": [
+        "grund.volume.v1.VolumeService/ListVolumes"
+      ],
+      "summary": "List an app's volumes, including detached ones"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "app",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "APP"
+        },
+        {
+          "name": "volume",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "VOLUME"
+        }
+      ],
+      "audience": "client",
+      "command": "grund volumes show",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund volumes show photos data"
+      ],
+      "mutates": false,
+      "output": {
+        "$ref": "#/$defs/grund.volume.v1.GetVolumeStatusResponse"
+      },
+      "path": "volumes show",
+      "rpcs": [
+        "grund.volume.v1.VolumeService/ListVolumes",
+        "grund.volume.v1.VolumeService/GetVolumeStatus"
+      ],
+      "summary": "Show a volume and its current attachment and measured usage"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "app",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "APP"
+        },
+        {
+          "name": "name",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
+          "flag": "--path",
+          "name": "path",
+          "required": true,
+          "type": "string",
+          "value_name": "PATH"
+        },
+        {
+          "description": "Existing absolute host directory; requires the machine owner's local allowlist",
+          "flag": "--source",
+          "name": "source",
+          "type": "string",
+          "value_name": "SOURCE"
+        },
+        {
+          "description": "Show the request instead of sending it",
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        },
+        {
+          "description": "Request daily backup; not protected until an S3 destination and verified recovery point exist",
+          "flag": "--backup",
+          "name": "backup",
+          "type": "boolean",
+          "value_name": "BACKUP"
+        },
+        {
+          "description": "Reuse this key to retry the same creation safely",
+          "flag": "--idempotency-key",
+          "name": "idempotency_key",
+          "type": "string",
+          "value_name": "IDEMPOTENCY_KEY"
+        }
+      ],
+      "audience": "client",
+      "command": "grund volumes create",
+      "destructive": false,
+      "dry_run": true,
+      "examples": [
+        "grund volumes create photos data --path /data --backup"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.volume.v1.CreateVolumeResponse"
+      },
+      "path": "volumes create",
+      "rpcs": [
+        "grund.volume.v1.VolumeService/CreateVolume"
+      ],
+      "summary": "Create an app-owned managed directory or register an allowed existing host directory"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "app",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "APP"
+        },
+        {
+          "name": "volume",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "VOLUME"
+        },
+        {
+          "name": "machine",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "MACHINE"
+        },
+        {
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund volumes attach",
+      "destructive": false,
+      "dry_run": true,
+      "examples": [
+        "grund volumes attach photos data 00000000-0000-0000-0000-000000000000"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.volume.v1.AttachVolumeResponse"
+      },
+      "path": "volumes attach",
+      "rpcs": [
+        "grund.volume.v1.VolumeService/ListVolumes",
+        "grund.volume.v1.VolumeService/AttachVolume"
+      ],
+      "summary": "Attach a detached app volume to an eligible machine after fencing the former writer"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "app",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "APP"
+        },
+        {
+          "name": "volume",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "VOLUME"
+        },
+        {
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund volumes detach",
+      "destructive": false,
+      "dry_run": true,
+      "examples": [
+        "grund volumes detach photos data"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.volume.v1.DetachVolumeResponse"
+      },
+      "path": "volumes detach",
+      "rpcs": [
+        "grund.volume.v1.VolumeService/ListVolumes",
+        "grund.volume.v1.VolumeService/DetachVolume"
+      ],
+      "summary": "Detach an app volume; the app waits rather than moving automatically"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "app",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "APP"
+        },
+        {
+          "name": "volume",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "VOLUME"
+        }
+      ],
+      "audience": "client",
+      "command": "grund volumes backups status",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund volumes backups photos data status"
+      ],
+      "mutates": false,
+      "output": {
+        "$ref": "#/$defs/grund.volume.v1.GetBackupDestinationResponse"
+      },
+      "path": "volumes backups status",
+      "rpcs": [
+        "grund.volume.v1.VolumeService/ListVolumes",
+        "grund.volume.v1.VolumeService/GetBackupDestination"
+      ],
+      "summary": "Show the S3 destination and latest successful verification (never credentials)"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "app",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "APP"
+        },
+        {
+          "name": "volume",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "VOLUME"
+        },
+        {
+          "flag": "--endpoint",
+          "name": "endpoint",
+          "required": true,
+          "type": "string",
+          "value_name": "ENDPOINT"
+        },
+        {
+          "flag": "--bucket",
+          "name": "bucket",
+          "required": true,
+          "type": "string",
+          "value_name": "BUCKET"
+        },
+        {
+          "flag": "--access-key-id",
+          "name": "access_key_id",
+          "required": true,
+          "type": "string",
+          "value_name": "ACCESS_KEY_ID"
+        },
+        {
+          "description": "Reuse this key for a safe retry",
+          "flag": "--idempotency-key",
+          "name": "idempotency_key",
+          "type": "string",
+          "value_name": "IDEMPOTENCY_KEY"
+        },
+        {
+          "description": "Show a redacted request without reading the secret or changing anything",
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund volumes backups set",
+      "destructive": false,
+      "dry_run": true,
+      "examples": [
+        "grund volumes backups photos data set --endpoint https://s3.example.com --bucket photos-backup --access-key-id KEY"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.volume.v1.SetBackupDestinationResponse"
+      },
+      "path": "volumes backups set",
+      "rpcs": [
+        "grund.volume.v1.VolumeService/ListVolumes",
+        "grund.volume.v1.VolumeService/GetBackupDestination",
+        "grund.volume.v1.VolumeService/SetBackupDestination"
+      ],
+      "stdin": "the S3 secret access key; one final newline is dropped",
+      "summary": "Set an app volume's S3-compatible destination; read the secret access key from stdin"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "app",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "APP"
+        },
+        {
+          "name": "volume",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "VOLUME"
+        }
+      ],
+      "audience": "client",
+      "command": "grund volumes backups points",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund volumes backups photos data points"
+      ],
+      "mutates": false,
+      "output": {
+        "$ref": "#/$defs/grund.volume.v1.ListRecoveryPointsResponse"
+      },
+      "path": "volumes backups points",
+      "rpcs": [
+        "grund.volume.v1.VolumeService/ListVolumes",
+        "grund.volume.v1.VolumeService/ListRecoveryPoints"
+      ],
+      "summary": "List only completed and verified recovery points"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "app",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "APP"
+        },
+        {
+          "name": "volume",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "VOLUME"
+        },
+        {
+          "flag": "--file",
+          "name": "file",
+          "required": true,
+          "type": "string",
+          "value_name": "PATH"
+        },
+        {
+          "description": "Do not ask; needed when nobody can be asked",
+          "flag": "--yes",
+          "name": "yes",
+          "type": "boolean",
+          "value_name": "YES"
+        },
+        {
+          "description": "Show the redacted request without reading or writing the key",
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund volumes backups export-key",
+      "destructive": true,
+      "dry_run": true,
+      "examples": [
+        "grund volumes backups photos data export-key --file ./photos-backup-key --yes"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.cli.v1.Done"
+      },
+      "path": "volumes backups export-key",
+      "rpcs": [
+        "grund.volume.v1.VolumeService/ListVolumes",
+        "grund.volume.v1.VolumeService/ExportBackupKey"
+      ],
+      "summary": "Export the repository password to a new private file for independent recovery"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "app",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "APP"
+        },
+        {
+          "name": "volume",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "VOLUME"
+        },
+        {
+          "name": "snapshot",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "SNAPSHOT"
+        },
+        {
+          "description": "New volume name, distinct from the source",
+          "flag": "--name",
+          "name": "name",
+          "required": true,
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
+          "description": "Container path of the new volume",
+          "flag": "--path",
+          "name": "path",
+          "required": true,
+          "type": "string",
+          "value_name": "PATH"
+        },
+        {
+          "description": "Target own-machine id",
+          "flag": "--machine",
+          "name": "machine",
+          "required": true,
+          "type": "string",
+          "value_name": "MACHINE"
+        },
+        {
+          "flag": "--yes",
+          "name": "yes",
+          "type": "boolean",
+          "value_name": "YES"
+        },
+        {
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund volumes restore",
+      "destructive": true,
+      "dry_run": true,
+      "examples": [
+        "grund volumes restore photos data SNAPSHOT --name recovered --path /recovered --machine MACHINE --yes"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.volume.v1.RestoreRecoveryPointResponse"
+      },
+      "path": "volumes restore",
+      "rpcs": [
+        "grund.volume.v1.VolumeService/ListVolumes",
+        "grund.volume.v1.VolumeService/RestoreRecoveryPoint"
+      ],
+      "summary": "Restore one verified recovery point into a NEW app-owned managed directory"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "app",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "APP"
+        },
+        {
+          "name": "volume",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "VOLUME"
+        },
+        {
+          "flag": "--yes",
+          "name": "yes",
+          "type": "boolean",
+          "value_name": "YES"
+        },
+        {
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund volumes delete",
+      "destructive": true,
+      "dry_run": true,
+      "examples": [
+        "grund volumes delete photos data --yes"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.cli.v1.Done"
+      },
+      "path": "volumes delete",
+      "rpcs": [
+        "grund.volume.v1.VolumeService/ListVolumes",
+        "grund.volume.v1.VolumeService/DeleteVolume"
+      ],
+      "summary": "Delete an unused volume; never erases an existing customer host path"
     },
     {
       "args": [

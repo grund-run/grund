@@ -48,7 +48,7 @@ use crate::{
 };
 
 /// Features this agent knows how to apply.
-pub const KNOWN_FEATURES: &[&str] = &["machines", "replicas"];
+pub const KNOWN_FEATURES: &[&str] = &["machines", "replicas", "volumes"];
 
 /// The largest document the agent decodes (apps.md §15).
 pub const MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
@@ -402,6 +402,13 @@ pub async fn run<R: VmRuntime, C: ContainerRuntime + 'static>(
             data_dir: args.data_dir.clone(),
         };
         tokio::spawn(watcher.run());
+        tokio::spawn(crate::backups::run(
+            link.clone(),
+            shared.clone(),
+            policy.clone(),
+            containers.volume_data_dir(),
+            record.machine_id.clone(),
+        ));
         tokio::spawn(keep_gate(
             gate.clone(),
             shared.clone(),
@@ -866,6 +873,7 @@ async fn round<R: VmRuntime, C: ContainerRuntime>(
                     free_vcpus: capabilities.free_vcpus,
                     free_memory_mib: capabilities.free_memory_mib,
                     apps: apps.apps && policy.apps,
+                    volumes: apps.apps && policy.apps,
                     arch: apps.arch.clone(),
                     memory_mib: apps.memory_mib,
                     cpu_millis: apps.cpu_millis,
@@ -907,9 +915,22 @@ async fn round<R: VmRuntime, C: ContainerRuntime>(
     refusals.extend(shared.refusals.lock().expect("shared lock").iter().cloned());
     let mut replicas = shared.reports.lock().expect("shared lock").clone();
     let idle = gate.idle(desired.as_ref());
+    let drain_changed = {
+        let mut draining = shared.drain_idle.lock().expect("shared lock");
+        if *draining == idle {
+            false
+        } else {
+            *draining = idle.clone();
+            true
+        }
+    };
+    if drain_changed {
+        shared.document.notify_one();
+    }
     for replica in &mut replicas {
         replica.idle = idle.contains(&replica.replica_id);
     }
+    let volume_deletions = { shared.volume_deletions.lock().expect("shared lock").clone() };
     let _: ReportStatusResponse = link
         .call(
             "ReportStatus",
@@ -918,6 +939,7 @@ async fn round<R: VmRuntime, C: ContainerRuntime>(
                 machines: observed.iter().map(observed_message).collect(),
                 refusals,
                 replicas,
+                volume_deletions,
                 reports_replicas: true,
                 ..Default::default()
             },
@@ -1238,11 +1260,11 @@ mod tests {
         );
 
         let mut newer = state(3);
-        newer.required_features.push("volumes".into());
+        newer.required_features.push("future-storage".into());
         let (bad, bad_signature) = signed(&key, &newer);
         assert_eq!(
             verify(&record, &trust, "k", &bad, &bad_signature, &none),
-            Err(Refusal::UnknownFeature("volumes".into()))
+            Err(Refusal::UnknownFeature("future-storage".into()))
         );
 
         let (mut bad, bad_signature) = signed(&key, &state(3));

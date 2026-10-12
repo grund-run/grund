@@ -15,11 +15,12 @@
 use std::borrow::Cow;
 
 use schemars::{JsonSchema, Schema, SchemaGenerator, generate::SchemaSettings, json_schema};
+use serde::de::{MapAccess, Visitor};
 use serde::{Deserialize, Serialize};
 
 use super::spec::{
     AppSettings, AppSpec, CheckKind, CheckSpec, EnvVar, MachineKind, PlacementRules, PortSpec,
-    Protocol, STOP_SIGNALS, SecretEnv, SettingsInput, SpecError, StopSpec,
+    Protocol, STOP_SIGNALS, SecretEnv, SettingsInput, SpecError, StopSpec, VolumeSpec,
 };
 use crate::yaml;
 
@@ -108,10 +109,71 @@ pub struct FileApp {
     /// How a new release replaces the copies of the one before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release: Option<FileRelease>,
-    /// Not supported yet; a file that declares volumes is refused.
-    #[serde(default, skip_serializing)]
-    #[schemars(skip)]
-    pub volumes: Option<serde::de::IgnoredAny>,
+    /// App-owned storage, by name. Omission only removes a mount from this
+    /// release; it never deletes a volume. Volumes require exactly one copy.
+    #[serde(default, skip_serializing_if = "indexmap::IndexMap::is_empty")]
+    #[schemars(extend("propertyNames" = {"pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$", "maxLength": 32}))]
+    #[serde(deserialize_with = "unique_volumes")]
+    pub volumes: indexmap::IndexMap<String, FileVolume>,
+}
+
+fn unique_volumes<'de, D>(
+    deserializer: D,
+) -> Result<indexmap::IndexMap<String, FileVolume>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct UniqueVolumes;
+
+    impl<'de> Visitor<'de> for UniqueVolumes {
+        type Value = indexmap::IndexMap<String, FileVolume>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("volumes keyed by distinct names")
+        }
+
+        fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+            let mut volumes = indexmap::IndexMap::new();
+            while let Some((name, volume)) = map.next_entry::<String, FileVolume>()? {
+                if volumes.contains_key(&name) {
+                    return Err(serde::de::Error::custom(format!(
+                        "duplicate volume name `{name}`"
+                    )));
+                }
+                volumes.insert(name, volume);
+            }
+            Ok(volumes)
+        }
+    }
+
+    deserializer.deserialize_map(UniqueVolumes)
+}
+
+/// One volume mounted by this app. Local machine policy must allow an
+/// existing source; an omitted source creates a managed directory instead.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FileVolume {
+    /// Absolute directory path in the container; paths must not overlap.
+    #[schemars(length(min = 2, max = 4096))]
+    #[schemars(extend("pattern" = "^/(?!\\.\\.?(/|$))[^/\\u0000-\\u001f]+(?:/(?!\\.\\.?(/|$))[^/\\u0000-\\u001f]+)*$"))]
+    pub path: String,
+    /// Existing absolute host directory on an own machine, allowed by its
+    /// local policy. Leave out to use a grund-managed directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("pattern" = "^/(?!\\.\\.?(/|$))[^/\\u0000-\\u001f]+(?:/(?!\\.\\.?(/|$))[^/\\u0000-\\u001f]+)*$", "maxLength" = 4096))]
+    pub source: Option<String>,
+    /// `daily` opts into daily backups (requires a configured destination).
+    /// Omitted or `off` means no scheduled backups.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup: Option<FileBackup>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FileBackup {
+    Off,
+    Daily,
 }
 
 /// A port the app listens on.
@@ -367,12 +429,6 @@ pub fn parse_app(text: &str, name: &str) -> Result<Declared, SpecError> {
             },
         );
     };
-    if app.volumes.is_some() {
-        return refuse(
-            format!("apps.{name}.volumes"),
-            "volumes are not supported yet",
-        );
-    }
     let ports = app
         .ports
         .iter()
@@ -421,6 +477,16 @@ pub fn parse_app(text: &str, name: &str) -> Result<Declared, SpecError> {
             timeout_ms: check.timeout_ms.unwrap_or(0),
         }),
     };
+    let volumes = app
+        .volumes
+        .iter()
+        .map(|(name, volume)| VolumeSpec {
+            name: name.clone(),
+            path: volume.path.clone(),
+            source: volume.source.clone(),
+            backup: matches!(volume.backup, Some(FileBackup::Daily)),
+        })
+        .collect();
     let spec = AppSpec {
         image: app.image.clone(),
         command: app.command.clone(),
@@ -454,6 +520,7 @@ pub fn parse_app(text: &str, name: &str) -> Result<Declared, SpecError> {
                 grace_seconds: stop.grace.unwrap_or(0),
             },
         ),
+        volumes,
     }
     .validate()
     .map_err(|e| SpecError {
@@ -477,6 +544,18 @@ pub fn parse_app(text: &str, name: &str) -> Result<Declared, SpecError> {
         field: format!("apps.{name}.{}", e.field),
         problem: e.problem,
     })?;
+    if !spec.volumes.is_empty() && settings.copies.unwrap_or(1) != 1 {
+        return refuse(
+            format!("apps.{name}.copies"),
+            "volumes require exactly one copy",
+        );
+    }
+    if !spec.volumes.is_empty() && settings.kind == "hosted" {
+        return refuse(
+            format!("apps.{name}.placement.kind"),
+            "volumes require an own machine; hosted storage is not available yet",
+        );
+    }
     Ok(Declared {
         name: name.to_string(),
         spec,
@@ -603,7 +682,20 @@ fn file_app(spec: &AppSpec, settings: &AppSettings) -> FileApp {
             grace: (spec.stop.grace_seconds != 30).then_some(spec.stop.grace_seconds),
         }),
         release: release_set.then_some(release),
-        volumes: None,
+        volumes: spec
+            .volumes
+            .iter()
+            .map(|v| {
+                (
+                    v.name.clone(),
+                    FileVolume {
+                        path: v.path.clone(),
+                        source: v.source.clone(),
+                        backup: v.backup.then_some(FileBackup::Daily),
+                    },
+                )
+            })
+            .collect(),
     }
 }
 
@@ -773,7 +865,7 @@ apps:
     }
 
     #[test]
-    fn a_missing_app_volumes_and_bad_values_are_refused_by_field() {
+    fn a_missing_app_and_bad_values_are_refused_by_field() {
         let error = parse_app(SHOP, "web").unwrap_err();
         assert!(error.problem.contains("shop, db"), "{error}");
         assert!(
@@ -787,11 +879,6 @@ apps:
                 .unwrap_err()
                 .problem
                 .contains("declares no apps")
-        );
-        let volumes = "apps:\n  db:\n    image: postgres\n    volumes:\n      data: {path: /d}\n";
-        assert_eq!(
-            parse_app(volumes, "db").unwrap_err().field,
-            "apps.db.volumes"
         );
         let bad = "apps:\n  web:\n    image: nginx\n    resources:\n      memory: lots\n";
         assert_eq!(
@@ -813,6 +900,108 @@ apps:
     }
 
     #[test]
+    fn own_machine_volumes_accept_managed_and_existing_directories_and_export() {
+        let text = "apps:\n  photos:\n    image: example/photos:1\n    volumes:\n      data:\n        path: /data\n      media:\n        path: /var/media\n        source: /srv/photos\n        backup: daily\n";
+        let photos = parse_app(text, "photos").unwrap();
+        assert_eq!(
+            photos.spec.volumes,
+            vec![
+                VolumeSpec {
+                    name: "data".into(),
+                    path: "/data".into(),
+                    source: None,
+                    backup: false,
+                },
+                VolumeSpec {
+                    name: "media".into(),
+                    path: "/var/media".into(),
+                    source: Some("/srv/photos".into()),
+                    backup: true,
+                },
+            ]
+        );
+        let exported = render(
+            "photos",
+            &photos.spec,
+            &AppSettings::validate(photos.settings).unwrap(),
+            "https://grund.example/schema/grund.json",
+        );
+        assert_eq!(parse_app(&exported, "photos").unwrap().spec, photos.spec);
+        assert!(schema_validator().is_valid(&as_json(text)), "{text}");
+        assert!(
+            schema_validator().is_valid(&as_json(&exported)),
+            "{exported}"
+        );
+        assert!(!exported.contains("backup: off"), "{exported}");
+        let off = text.replace("backup: daily", "backup: off");
+        assert!(!parse_app(&off, "photos").unwrap().spec.volumes[1].backup);
+    }
+
+    #[test]
+    fn volume_files_refuse_invalid_paths_quota_duplicates_and_multiple_copies() {
+        let prefix = "apps:\n  photos:\n    image: example/photos:1\n    volumes:\n";
+        for (body, field) in [
+            ("      x: {path: data}\n", "apps.photos.volumes[0].path"),
+            ("      x: {path: /}\n", "apps.photos.volumes[0].path"),
+            ("      x: {path: /a/../b}\n", "apps.photos.volumes[0].path"),
+            ("      x: {path: /a//b}\n", "apps.photos.volumes[0].path"),
+            ("      x: {path: /a/}\n", "apps.photos.volumes[0].path"),
+            (
+                "      x: {path: /data, source: relative}\n",
+                "apps.photos.volumes[0].source",
+            ),
+            (
+                "      x: {path: /data, source: /srv/../data}\n",
+                "apps.photos.volumes[0].source",
+            ),
+            (
+                "      x: {path: /data}\n      y: {path: /data/cache}\n",
+                "apps.photos.volumes[1].path",
+            ),
+            (
+                "      x: {path: /data, source: /srv/a}\n      y: {path: /other, source: /srv/a/b}\n",
+                "apps.photos.volumes[1].source",
+            ),
+            (
+                "      x: {path: /data}\n      X: {path: /other}\n",
+                "apps.photos.volumes[1].name",
+            ),
+        ] {
+            let file = format!("{prefix}{body}");
+            assert_eq!(
+                parse_app(&file, "photos").unwrap_err().field,
+                field,
+                "{file}"
+            );
+        }
+        let duplicate = format!("{prefix}      x: {{path: /data}}\n      x: {{path: /other}}\n");
+        assert!(parse_app(&duplicate, "photos").is_err(), "{duplicate}");
+        for body in [
+            "      x: {path: /data, size: 1 GiB}\n",
+            "      x: {path: /data, backup: weekly}\n",
+            "      x: {path: /data, backup: true}\n",
+            "      x: [invalid]\n",
+        ] {
+            let file = format!("{prefix}{body}");
+            assert!(parse_app(&file, "photos").is_err(), "{file}");
+        }
+        let many = format!("{prefix}      x: {{path: /data}}\n");
+        let many = many.replace("    volumes:", "    copies: 2\n    volumes:");
+        assert_eq!(
+            parse_app(&many, "photos").unwrap_err().field,
+            "apps.photos.copies"
+        );
+        let hosted = many.replace("copies: 2", "placement:\n      kind: hosted");
+        assert_eq!(
+            parse_app(&hosted, "photos").unwrap_err().field,
+            "apps.photos.placement.kind"
+        );
+        assert!(!schema_validator().is_valid(&as_json(&format!(
+            "{prefix}      x: {{path: /data, size: 1 GiB}}\n"
+        ))));
+    }
+
+    #[test]
     fn an_env_value_is_kept_as_written() {
         let text = "apps:\n  web:\n    image: nginx\n    env:\n      PORT: 8080\n      RATE: 1.50\n      DEBUG: true\n      MODE: 0x1F\n";
         let web = parse_app(text, "web").unwrap();
@@ -827,7 +1016,7 @@ apps:
         let b = parse_app(shared, "b").unwrap();
         assert_eq!(b.spec.env.len(), 2);
         let mut bomb = String::from(
-            "apps:\n  a:\n    image: x\n    volumes:\n      l0: &l0 [lol, lol, lol, lol, lol, lol, lol, lol, lol]\n",
+            "apps:\n  a:\n    image: x\n    env:\n      l0: &l0 [lol, lol, lol, lol, lol, lol, lol, lol, lol]\n",
         );
         for level in 1..10 {
             let prev = level - 1;
@@ -835,8 +1024,8 @@ apps:
             bomb.push_str(&format!("      l{level}: &l{level} [{row}]\n"));
         }
         let started = std::time::Instant::now();
-        let error = parse_app(&bomb, "a").unwrap_err();
-        assert!(error.problem.contains("alias"), "{error}");
+        let error = yaml::from_str::<serde_json::Value>(&bomb).unwrap_err();
+        assert!(error.message.contains("alias"), "{error}");
         assert!(started.elapsed() < std::time::Duration::from_secs(1));
     }
 
@@ -1028,7 +1217,7 @@ apps:
         assert_eq!(schema["additionalProperties"], false);
         assert!(text.contains("How many copies run. Default 1, at most 20."));
         assert!(text.contains("\"h2c\""));
-        assert!(!text.contains("volumes"));
+        assert!(text.contains("volumes"));
     }
 
     #[test]

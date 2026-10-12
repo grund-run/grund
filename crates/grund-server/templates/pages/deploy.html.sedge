@@ -1,5 +1,5 @@
 use crate::templates::FormState;
-use crate::templates::compiled::components::{ImageSprite, PageHead, ChoiceField, ChoiceCard, Form, HiddenField, Banner, Grid, Field, StepperField, PairsField, ChipsField, Expanders, Expander, CodeField, Actions, Button, Para, EmptyState, Icon};
+use crate::templates::compiled::components::{ImageSprite, PageHead, ChoiceField, ChoiceCard, Form, HiddenField, Banner, Grid, Field, StepperField, PairsField, ChipsField, Expanders, Expander, CodeField, ToggleField, Actions, Button, Para, EmptyState, Icon};
 props crate::web::apps::DeployPage { slug, manages, mode, modes, new, new_error, errors, advanced, secrets_dropped, exposures, public_hint, templates, image_keys, signals, memory_steps, cpu_steps, checks, action, csrf };
 {let back = format!("/{slug}/apps");}
 {let form_state = FormState { csrf, errors, banners: &std::collections::BTreeMap::new() };}
@@ -48,7 +48,7 @@ props crate::web::apps::DeployPage { slug, manages, mode, modes, new, new_error,
             <StepperField name="copies" label="Copies" value={if new.copies.is_empty() { "1" } else { &new.copies }} min="1" max="20" error={form_state.error("copies").unwrap_or("")} />
           </Grid>
         </Grid>
-        <Expanders><Expander title="Advanced options" summary="Environment variables, secrets, ready check, resources and command." icon_name="gear" open={*advanced}>
+        <Expanders><Expander title="Advanced options" summary="Storage, environment, secrets, ready check, resources and command." icon_name="gear" open={*advanced}>
           <PairsField name="env" label="Environment variables" pairs_owned={&new.env} blank={2} error={form_state.error("env").unwrap_or("")} hint="Shown in the clear." key_label="Name" value_label="Value" />
           <PairsField name="secrets" label="Secrets" blank={2} secret error={form_state.error("secrets").unwrap_or("")} hint={if *secrets_dropped { "Enter them again: a refused form never shows a secret. Never shown again." } else { "Never shown again." }} key_label="Name" value_label="Value" />
           <Grid>
@@ -60,7 +60,13 @@ props crate::web::apps::DeployPage { slug, manages, mode, modes, new, new_error,
             <Field name="stop_grace" label="Grace (seconds)" kind="number" value={&new.stop_grace} form={Some(&form_state)} hint="From the signal to a kill. Empty: 30." width={Some("sm")} />
           </Grid>
           <CodeField name="command" label="Command" value={&new.command} error={form_state.error("command").unwrap_or("")} hint="One argument per line. Empty: the image's own." rows={3} />
-          <Para kind="hint">Volumes are not available yet: a replaced copy keeps nothing on disk.</Para>
+          <Grid>
+            <Field name="volume_name" label="Volume name" value={&new.volume_name} hint="Optional app-owned managed directory; use with Container path. One volume on this form; use grund.yaml for more." autocomplete="off" form={Some(&form_state)} />
+            <Field name="volume_path" label="Container path" value={&new.volume_path} hint="Absolute path inside the container, such as /data." autocomplete="off" mono form={Some(&form_state)} />
+            <Field name="volume_source" label="Existing host directory" value={&new.volume_source} hint="Optional absolute path on an own machine. Its owner must explicitly allow the containing root in /etc/grund/policy.yaml; grund never deletes its files." autocomplete="off" mono form={Some(&form_state)} />
+          </Grid>
+          <ToggleField name="volume_backup" label="Request daily encrypted S3 backup" checked={new.volume_backup == "on"} hint="Configure your bucket after deploy. No data is protected until a recovery point is verified." />
+          <Para kind="hint">Own-machine directories have no enforced size quota or default at-rest encryption. Backup is off by default; losing an unbacked-up disk loses its data. An app with storage runs one copy.</Para>
         </Expander></Expanders>
       </section>
     }}

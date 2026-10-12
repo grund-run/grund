@@ -43,3 +43,16 @@ services:
     ports:
       - "127.0.0.1:51410:1025"
       - "127.0.0.1:58410:8025"
+
+  # Disposable customer-owned S3 fixture. SeaweedFS pre-creates the bucket.
+  # MinIO's public image registries no longer serve the pinned releases.
+  s3:
+    image: chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d
+    environment:
+      AWS_ACCESS_KEY_ID: grund-local
+      AWS_SECRET_ACCESS_KEY: grund-local-backup-test-only
+      S3_BUCKET: grund-backup-test
+    ports:
+      - "127.0.0.1:59010:8333"
+    tmpfs:
+      - /data

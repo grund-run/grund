@@ -62,6 +62,14 @@ service AgentService {
   // What actually runs, level-triggered: the whole picture every time.
   rpc ReportStatus(ReportStatusRequest) returns (ReportStatusResponse);
 
+  // Lease one pending backup/restore/probe/prune attempt for this signed
+  // machine only. Never place repository credentials in desired state.
+  rpc GetBackupWork(GetBackupWorkRequest) returns (GetBackupWorkResponse);
+
+  // CAS-ack an attempt using its id and placement generation; stale agents
+  // cannot mark a new machine's work complete.
+  rpc ReportBackupResult(ReportBackupResultRequest) returns (ReportBackupResultResponse);
+
   // The newest signed membership list of a private network the machine is a
   // member of, once its epoch is newer than since_epoch: at once if it
   // already is, otherwise when membership changes, or after at most 10 s
@@ -81,6 +89,74 @@ service AgentService {
   rpc GetLease(GetLeaseRequest) returns (GetLeaseResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
   }
+}
+
+message GetBackupWorkRequest {
+  // Must match the authenticated machine identity.
+  string machine_id = 1;
+}
+
+message GetBackupWorkResponse {
+  // Absent when there is no eligible work on this machine.
+  BackupWork work = 1;
+}
+
+message BackupWork {
+  string attempt_id = 1;
+  string volume_id = 2;
+  string app_id = 3;
+  uint64 placement_generation = 4;
+  BackupOperation operation = 5;
+  string source_volume_id = 6;
+  string destination_volume_id = 7;
+  // Exact recovery point to create, restore, probe or prune.
+  string snapshot_id = 8;
+  // Sent over the authenticated control link only, never a signed document.
+  string endpoint = 9;
+  string bucket = 10;
+  string repo_prefix = 11;
+  string access_key_id = 12;
+  string secret_access_key = 13;
+  string session_token = 14;
+  string repository_password = 15;
+  // Must match the organisation of the machine's pinned signed document.
+  string organisation_id = 16;
+  // For BACKUP of an existing host-path bind, the recorded source: the
+  // agent MUST match it to its signed mount and local policy before reading.
+  // For RESTORE or PROBE, the completed point's archived absolute path is
+  // only a selector inside the encrypted snapshot, never host-file access.
+  // Empty for a managed BACKUP: the agent resolves its own data directory.
+  string source_path = 17;
+}
+
+enum BackupOperation {
+  BACKUP_OPERATION_UNSPECIFIED = 0;
+  BACKUP_OPERATION_BACKUP = 1;
+  BACKUP_OPERATION_RESTORE = 2;
+  BACKUP_OPERATION_PROBE = 3;
+  BACKUP_OPERATION_PRUNE = 4;
+}
+
+message ReportBackupResultRequest {
+  string machine_id = 1;
+  string attempt_id = 2;
+  uint64 placement_generation = 3;
+  // Only a completed and verified operation reports success. An attempted
+  // upload is not a recovery point; failures carry a safe class, no secrets.
+  bool success = 4;
+  string snapshot_id = 5;
+  string failure_class = 6;
+  // Only on a successful BACKUP: the actual absolute source archived by the
+  // agent (including its managed data directory), so another machine can
+  // select the correct path in the completed snapshot. Never an attachment
+  // authorisation or a host path for future restore.
+  string source_path = 7;
+}
+
+message ReportBackupResultResponse {
+  // False for a stale or superseded attempt; no recovery point was published
+  // by this report.
+  bool accepted = 1;
 }
 
 message GetLeaseRequest {}
@@ -152,6 +228,9 @@ message Capabilities {
   // The size of the filesystem the agent keeps its data on, in GiB; 0:
   // not reported (agents before it, or unreadable).
   uint64 disk_gib = 13;
+  // This agent can verify app-owned volume identities and writable mounts.
+  // Absent on older agents: the scheduler must not place stateful apps there.
+  bool volumes = 14;
 }
 
 message HeartbeatResponse {
@@ -232,7 +311,8 @@ message DesiredState {
   int64 issued_at_unix = 4;
   // Features the agent must know to apply this document; it refuses the whole
   // document otherwise, rather than silently ignore a part. "machines" when
-  // machines is not empty.
+  // machines is not empty; "volumes" when any replica mounts a volume or
+  // volume_deletions is nonempty.
   repeated string required_features = 5;
   // Containers (apps.md §6.2). "replicas" is in required_features when this
   // is not empty.
@@ -253,6 +333,15 @@ message DesiredState {
   // (grund-docs design/traffic.md §7.1). Empty: no entry stream is
   // accepted.
   repeated string entry_keys = 11;
+  // Explicit app-owned grund-managed directories to erase. Omission of a
+  // mount NEVER implies deletion. The signature covers these tombstones,
+  // including their app owner; never erase an existing host-path source.
+  repeated VolumeDeletion volume_deletions = 12;
+}
+
+message VolumeDeletion {
+  string volume_id = 1;
+  string app_id = 2;
 }
 
 message NextKey {
@@ -294,6 +383,19 @@ message Replica {
   // The organisation's id for the app, so the agent can label and group
   // its replicas.
   string app_id = 20;
+  // Resolve these IDs on this machine before starting a copy. A missing or
+  // disallowed mount refuses the copy, never starts with an empty fallback.
+  repeated VolumeMount volumes = 21;
+}
+
+message VolumeMount {
+  string volume_id = 1;
+  string name = 2;
+  // Absolute directory in the container.
+  string path = 3;
+  // Existing host path, subject to machine-local policy. Empty uses the
+  // grund-managed directory /var/lib/grund/volumes/<volume_id>.
+  string source = 4;
 }
 
 message SecretEnv {
@@ -403,6 +505,15 @@ message ReportStatusRequest {
   // Whether this agent reports replicas at all; an older one leaves
   // replicas empty and this false.
   bool reports_replicas = 5;
+  // Successful physical deletion of grund-managed directories, repeated on
+  // each pass until the server stops sending their signed tombstones.
+  // A failure belongs in refusals, not here.
+  repeated VolumeDeleted volume_deletions = 6;
+}
+
+message VolumeDeleted {
+  string volume_id = 1;
+  string app_id = 2;
 }
 
 message ReplicaObserved {

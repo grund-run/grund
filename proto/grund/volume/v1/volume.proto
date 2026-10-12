@@ -1,0 +1,138 @@
+// SPDX-License-Identifier: Apache-2.0
+syntax = "proto3";
+package grund.volume.v1;
+import "google/protobuf/timestamp.proto";
+
+// Every lookup is scoped to an organisation AND one live app; a volume of
+// another app/organisation is indistinguishable from an absent one.
+service VolumeService {
+  rpc ListVolumes(ListVolumesRequest) returns (ListVolumesResponse) { option idempotency_level = NO_SIDE_EFFECTS; }
+  rpc GetVolume(GetVolumeRequest) returns (GetVolumeResponse) { option idempotency_level = NO_SIDE_EFFECTS; }
+  rpc GetVolumeStatus(GetVolumeStatusRequest) returns (GetVolumeStatusResponse) { option idempotency_level = NO_SIDE_EFFECTS; }
+  // Create reserves a stable name inside the app. An existing name with a
+  // different source is refused; a repeated identical request keeps its ID.
+  rpc CreateVolume(CreateVolumeRequest) returns (CreateVolumeResponse);
+  rpc AttachVolume(AttachVolumeRequest) returns (AttachVolumeResponse);
+  rpc DetachVolume(DetachVolumeRequest) returns (DetachVolumeResponse);
+  // Never deletes a customer's existing host path. A managed directory stays
+  // pending until its own machine acknowledges erasure.
+  rpc DeleteVolume(DeleteVolumeRequest) returns (DeleteVolumeResponse);
+  // Owner-only: the destination's credentials are sealed, never returned.
+  rpc SetBackupDestination(SetBackupDestinationRequest) returns (SetBackupDestinationResponse);
+  rpc GetBackupDestination(GetBackupDestinationRequest) returns (GetBackupDestinationResponse) { option idempotency_level = NO_SIDE_EFFECTS; }
+  rpc ListRecoveryPoints(ListRecoveryPointsRequest) returns (ListRecoveryPointsResponse) { option idempotency_level = NO_SIDE_EFFECTS; }
+  // A restore creates a different, app-owned managed volume; it never
+  // overwrites the sole source. The operation is asynchronous.
+  rpc RestoreRecoveryPoint(RestoreRecoveryPointRequest) returns (RestoreRecoveryPointResponse);
+  // Owner-only explicit export. The plaintext password is returned once on
+  // this request and must not be logged, cached or shown in ordinary views.
+  rpc ExportBackupKey(ExportBackupKeyRequest) returns (ExportBackupKeyResponse);
+}
+
+message Volume {
+  string volume_id = 1;
+  string app_id = 2;
+  string name = 3;
+  string path = 4;
+  // Empty for a grund-managed directory, not an arbitrary host root.
+  string source = 5;
+  bool backup = 6;
+  string machine_id = 7;
+  // requested, available, attached, deleting, deleted.
+  string status = 8;
+  optional uint64 measured_bytes = 9;
+  google.protobuf.Timestamp measured_at = 10;
+  int64 version = 11;
+  // Restore into this new volume: pending, leased, completed, failed, or
+  // empty for an ordinary volume. Completion alone never attaches it.
+  string restore_status = 12;
+  // Safe failure class, never a provider response or secret.
+  string restore_failure_class = 13;
+}
+message ListVolumesRequest { string organisation = 1; string app = 2; }
+message ListVolumesResponse { repeated Volume volumes = 1; }
+message GetVolumeRequest { string organisation = 1; string app = 2; string volume_id = 3; }
+message GetVolumeResponse { Volume volume = 1; }
+message GetVolumeStatusRequest { string organisation = 1; string app = 2; string volume_id = 3; }
+message GetVolumeStatusResponse { Volume volume = 1; }
+message CreateVolumeRequest {
+  string organisation = 1;
+  string app = 2;
+  string name = 3;
+  string path = 4;
+  // Empty requests a new managed directory; otherwise an existing absolute
+  // host directory, only when the machine owner allows it.
+  string source = 5;
+  bool backup = 6;
+  string idempotency_key = 7;
+}
+message CreateVolumeResponse { Volume volume = 1; }
+message AttachVolumeRequest {
+  string organisation = 1;
+  string app = 2;
+  string volume_id = 3;
+  string machine_id = 4;
+  int64 expected_version = 5;
+}
+message AttachVolumeResponse { Volume volume = 1; }
+message DetachVolumeRequest { string organisation = 1; string app = 2; string volume_id = 3; int64 expected_version = 4; }
+message DetachVolumeResponse { Volume volume = 1; }
+message DeleteVolumeRequest { string organisation = 1; string app = 2; string volume_id = 3; int64 expected_version = 4; }
+message DeleteVolumeResponse { Volume volume = 1; }
+
+message BackupDestination {
+  bool enabled = 1;
+  string endpoint = 2;
+  string bucket = 3;
+  uint32 retention_count = 4;
+  google.protobuf.Timestamp last_verified_at = 5;
+  google.protobuf.Timestamp next_due_at = 6;
+  int64 version = 7;
+  // Safe failure class, never backend exception text or credentials.
+  string last_error = 8;
+}
+message SetBackupDestinationRequest {
+  string organisation = 1;
+  string app = 2;
+  string volume_id = 3;
+  int64 expected_version = 4;
+  string idempotency_key = 5;
+  string endpoint = 6;
+  string bucket = 7;
+  string access_key_id = 8;
+  string secret_access_key = 9;
+  string session_token = 10;
+}
+message SetBackupDestinationResponse { BackupDestination destination = 1; }
+message GetBackupDestinationRequest { string organisation = 1; string app = 2; string volume_id = 3; }
+message GetBackupDestinationResponse { BackupDestination destination = 1; }
+message RecoveryPoint {
+  string snapshot_id = 1;
+  google.protobuf.Timestamp verified_at = 2;
+  google.protobuf.Timestamp completed_at = 3;
+}
+message ListRecoveryPointsRequest {
+  string organisation = 1;
+  string app = 2;
+  string volume_id = 3;
+  int32 page_size = 4;
+  string page_token = 5;
+}
+message ListRecoveryPointsResponse { repeated RecoveryPoint points = 1; string next_page_token = 2; }
+message RestoreRecoveryPointRequest {
+  string organisation = 1;
+  string app = 2;
+  string source_volume_id = 3;
+  string snapshot_id = 4;
+  string idempotency_key = 5;
+  int64 expected_version = 6;
+  string new_volume_name = 7;
+  string target_container_path = 8;
+  string target_machine_id = 9;
+  // Explicit acknowledgement: restore never overwrites its source or an
+  // existing name; only a fresh managed app-owned volume is allocated.
+  bool confirm_new_volume = 10;
+}
+message RestoreRecoveryPointResponse { string new_volume_id = 1; string attempt_id = 2; string status = 3; }
+message ExportBackupKeyRequest { string organisation = 1; string app = 2; string volume_id = 3; }
+message ExportBackupKeyResponse { string repository_password = 1; }

@@ -15,6 +15,7 @@ use grund_domain::{
     custom_domain::{Domain, DomainCommand, DomainError, DomainEvent},
     machine::{Machine, MachineCommand, MachineError, MachineEvent},
     organisation::{Organisation, OrganisationCommand, OrganisationError, OrganisationEvent},
+    volume::{Volume, VolumeCommand, VolumeError, VolumeEvent},
 };
 use mire::{AggregateRoot, EventMetadata, EventStore, EventStoreError, Snapshot, TransactionScope};
 use sqlx::{Postgres, Transaction};
@@ -35,6 +36,8 @@ pub enum WorkError {
     App(#[from] AppError),
     #[error(transparent)]
     Domain(#[from] DomainError),
+    #[error(transparent)]
+    Volume(#[from] VolumeError),
     #[error("event store: {0}")]
     Events(#[from] EventStoreError),
     #[error("database: {0}")]
@@ -60,6 +63,7 @@ enum Touched {
     Machine(Uuid, Machine, i64, i64),
     App(Uuid, App, i64, i64),
     Domain(Uuid, Domain, i64, i64),
+    Volume(Uuid, Volume, i64, i64),
 }
 
 /// A transaction spanning the event log, the read models and plain tables.
@@ -224,6 +228,39 @@ impl<'a> Work<'a> {
         Ok((events, found))
     }
 
+    /// Records and projects a volume decision in this app's transaction.
+    pub async fn volume(
+        &mut self,
+        volume_id: Uuid,
+        command: VolumeCommand,
+    ) -> Result<Vec<VolumeEvent>, WorkError> {
+        let mut root = self.load::<Volume>(volume_id).await?;
+        let base = root.version;
+        let events = mire::Command::handle(command, &root.state)?;
+        if events.is_empty() {
+            return Ok(events);
+        }
+        root.set_metadata(self.metadata.clone());
+        root.record_many(events.clone());
+        self.scope.save(&mut root).await?;
+        for (offset, event) in events.iter().enumerate() {
+            crate::volumes::apply_volume(
+                volume_id,
+                base + 1 + offset as i64,
+                event,
+                self.scope.tx(),
+            )
+            .await?;
+        }
+        self.touched
+            .push(Touched::Volume(volume_id, root.state, base, root.version));
+        Ok(events)
+    }
+
+    pub async fn load_volume(&mut self, volume_id: Uuid) -> Result<Volume, WorkError> {
+        Ok(self.load::<Volume>(volume_id).await?.state)
+    }
+
     /// As [`Work::account`], for a custom domain.
     pub async fn domain(
         &mut self,
@@ -317,6 +354,9 @@ impl<'a> Work<'a> {
                 }
                 Touched::Domain(id, state, before, after) => {
                     snapshot::<Domain>(store, id, state, before, after)
+                }
+                Touched::Volume(id, state, before, after) => {
+                    snapshot::<Volume>(store, id, state, before, after)
                 }
             }
         }

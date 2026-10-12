@@ -28,8 +28,9 @@
 //! a network namespace of its own ([`netns`]), loopback only unless the
 //! agent gives it a device on the private network first
 //! ([`ContainerRuntime::network_namespace`]), its
-//! memory, CPU and pids limits in `/sys/fs/cgroup/grund/<id>`, and nothing
-//! from the host. Containers outlive the agent and containerd: each runs
+//! memory, CPU and pids limits in `/sys/fs/cgroup/grund/<id>`, and only
+//! agent-verified volumes (plus the read-only resolver) from the host.
+//! Containers outlive the agent and containerd: each runs
 //! under its own shim.
 
 pub mod api {
@@ -59,9 +60,13 @@ use std::{
 use anyhow::Context;
 use buffa::Message;
 use buffa_types::google::protobuf::{Any, Empty};
-use grund_agent::runtime::{
-    AppsCapabilities, ContainerRuntime, ContainerSpec, ContainerStatus, ImageRef, Probe,
-    REPLICA_LABEL, SPEC_HASH_LABEL, STOP_GRACE_LABEL, STOP_SIGNAL_LABEL, TaskState,
+use grund_agent::{
+    runtime::{
+        AppsCapabilities, ContainerRuntime, ContainerSpec, ContainerStatus, ImageRef, Probe,
+        REPLICA_LABEL, SPEC_HASH_LABEL, STOP_GRACE_LABEL, STOP_SIGNAL_LABEL, TaskState,
+        VOLUMES_LABEL, VolumeBind,
+    },
+    volume,
 };
 
 use crate::{
@@ -299,6 +304,14 @@ pub fn container_labels(spec: &ContainerSpec) -> BTreeMap<String, String> {
         STOP_GRACE_LABEL.into(),
         spec.stop_grace.as_secs().to_string(),
     );
+    if !spec.volumes.is_empty() {
+        labels.insert(
+            VOLUMES_LABEL.into(),
+            serde_json::to_string(&spec.volumes).expect("serializable volume binds"),
+        );
+    } else {
+        labels.remove(VOLUMES_LABEL);
+    }
     labels
 }
 
@@ -536,7 +549,73 @@ impl Containerd {
         config.chain_id()
     }
 
-    async fn start_task(&self, container: &Container) -> anyhow::Result<()> {
+    fn check_volume_binds(
+        &self,
+        container: &Container,
+        expected: &[VolumeBind],
+        roots: &[PathBuf],
+    ) -> anyhow::Result<()> {
+        let recorded: Vec<VolumeBind> = match container.labels.get(VOLUMES_LABEL) {
+            Some(value) => serde_json::from_str(value).context("invalid persisted volume binds")?,
+            None => Vec::new(),
+        };
+        anyhow::ensure!(
+            recorded == expected,
+            "persisted container volumes differ from signed desired mounts"
+        );
+        if recorded.is_empty() {
+            return Ok(());
+        }
+        let raw = container
+            .spec
+            .as_option()
+            .context("container has no OCI spec")?;
+        let oci: serde_json::Value = serde_json::from_slice(&raw.value)?;
+        let uid = u32::try_from(
+            oci["process"]["user"]["uid"]
+                .as_u64()
+                .context("container has no numeric UID")?,
+        )?;
+        let gid = u32::try_from(
+            oci["process"]["user"]["gid"]
+                .as_u64()
+                .context("container has no numeric GID")?,
+        )?;
+        let groups: Vec<u32> = oci["process"]["user"]["additionalGids"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_u64().and_then(|v| u32::try_from(v).ok()))
+            .collect();
+        for bind in expected {
+            let present = oci["mounts"].as_array().is_some_and(|mounts| {
+                mounts.iter().any(|m| {
+                    m["source"] == bind.source
+                        && m["destination"] == bind.path
+                        && m["type"] == "bind"
+                        && m["options"]
+                            .as_array()
+                            .is_some_and(|opts| opts.iter().any(|o| o == "rw"))
+                })
+            });
+            anyhow::ensure!(
+                present,
+                "volume {} differs from container OCI mounts",
+                bind.name
+            );
+            let dir = volume::verify_bind(&self.config.data_dir, roots, bind)?;
+            volume::grant_access(&dir, bind, uid, gid, &groups)?;
+        }
+        Ok(())
+    }
+
+    async fn start_task(
+        &self,
+        container: &Container,
+        volumes: &[VolumeBind],
+        roots: &[PathBuf],
+    ) -> anyhow::Result<()> {
+        self.check_volume_binds(container, volumes, roots)?;
         let id = container.id.as_str();
         self.ensure_netns(id)?;
         if let Some(contents) = container.labels.get(RESOLV_CONF_LABEL) {
@@ -650,6 +729,9 @@ fn any(type_url: &str, message: &impl Message) -> Any {
 impl ContainerRuntime for Containerd {
     async fn capabilities(&self) -> AppsCapabilities {
         capabilities::assess(&capabilities::HostFacts::read())
+    }
+    fn volume_data_dir(&self) -> PathBuf {
+        self.config.data_dir.clone()
     }
 
     async fn prepare(&self) -> anyhow::Result<()> {
@@ -789,6 +871,10 @@ impl ContainerRuntime for Containerd {
         let user = self
             .resolve_user(&spec.id, config.config.user.as_deref().unwrap_or_default())
             .await?;
+        for bind in &spec.volumes {
+            let dir = volume::verify_bind(&self.config.data_dir, &spec.volume_roots, bind)?;
+            volume::grant_access(&dir, bind, user.uid, user.gid, &user.additional_gids)?;
+        }
         let netns = self.ensure_netns(&spec.id)?;
         let mut oci = spec::oci_spec(spec, &config, &user, &netns)?;
         if let Some(contents) = &spec.resolv_conf {
@@ -842,17 +928,28 @@ impl ContainerRuntime for Containerd {
             .create(request)
             .await
             .map_err(|e| failed("create the container", e))?;
-        self.start_task(&container).await
+        self.start_task(&container, &spec.volumes, &spec.volume_roots)
+            .await
     }
 
     async fn restart(&self, id: &str) -> anyhow::Result<()> {
+        self.restart_with_volumes(id, &[], &[]).await
+    }
+
+    async fn restart_with_volumes(
+        &self,
+        id: &str,
+        volumes: &[VolumeBind],
+        roots: &[PathBuf],
+    ) -> anyhow::Result<()> {
         let container = self
             .get_container(id)
             .await?
             .with_context(|| format!("no container {id}"))?;
+        self.check_volume_binds(&container, volumes, roots)?;
         let sigkill = u32::try_from(libc::SIGKILL).unwrap_or(9);
         self.stop_task(id, sigkill, Duration::ZERO).await?;
-        self.start_task(&container).await
+        self.start_task(&container, volumes, roots).await
     }
 
     async fn remove(&self, id: &str, signal: &str, grace: Duration) -> anyhow::Result<()> {
@@ -890,6 +987,30 @@ impl ContainerRuntime for Containerd {
 
     async fn network_namespace(&self, id: &str) -> anyhow::Result<Option<PathBuf>> {
         self.ensure_netns(id).map(Some)
+    }
+
+    async fn mounted_volumes(&self) -> anyhow::Result<Vec<(String, VolumeBind)>> {
+        let containers = self
+            .client()
+            .containers()
+            .list(ListContainersRequest {
+                filters: vec![format!("labels.\"{REPLICA_LABEL}\"")],
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| failed("list volume owners", e))?
+            .into_owned()
+            .containers;
+        let mut binds = Vec::new();
+        for container in containers {
+            if let Some(value) = container.labels.get(VOLUMES_LABEL) {
+                let volumes: Vec<VolumeBind> = serde_json::from_str(value).with_context(|| {
+                    format!("invalid volume record on container {}", container.id)
+                })?;
+                binds.extend(volumes.into_iter().map(|bind| (container.id.clone(), bind)));
+            }
+        }
+        Ok(binds)
     }
 
     async fn list(&self) -> anyhow::Result<Vec<ContainerStatus>> {
@@ -1001,6 +1122,8 @@ mod tests {
             ]),
             spec_hash: "abc".into(),
             resolv_conf: None,
+            volumes: Vec::new(),
+            volume_roots: Vec::new(),
         };
         let labels = container_labels(&spec);
         assert_eq!(labels[REPLICA_LABEL], "web-1");

@@ -17,7 +17,7 @@ use grund_domain::app::{
     SecretVersion,
     file::parse_app,
     placement::MachineView,
-    reconcile::{Observation, Observed, reconcile},
+    reconcile::{Observation, Observed, reconcile_with_volumes},
     spec::MachineKind,
     spec::{
         ImageReference, MAX_APPS_PER_ORGANISATION, MAX_SECRET_BYTES, PortSpec, SecretEnv,
@@ -40,6 +40,7 @@ use crate::{
         domains::DomainsState,
         entry::{EntryState, publishes},
         registry_credentials::RegistryCredentialsState,
+        volumes::{VolumesError, VolumesState},
     },
     state::State,
 };
@@ -72,6 +73,10 @@ pub enum AppsError {
     #[error("no such release")]
     ReleaseNotFound,
     #[error(transparent)]
+    Volume(#[from] VolumesError),
+    #[error("app deletion requires confirming its current {actual} volumes")]
+    VolumeConfirmationRequired { actual: usize },
+    #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
 
@@ -87,6 +92,8 @@ impl AppsError {
             AppsError::ImageUnsupported(_) => "image_unsupported",
             AppsError::DomainRequired => "domain_required",
             AppsError::ReleaseNotFound => "release_not_found",
+            AppsError::Volume(_) => "volume_invalid",
+            AppsError::VolumeConfirmationRequired { .. } => "volume_confirmation_required",
             AppsError::Internal(_) => "internal",
         }
     }
@@ -114,6 +121,7 @@ impl From<sqlx::Error> for AppsError {
 
 /// What a deploy carries.
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum DeployInput {
     Spec(AppSpec),
     /// A grund.yaml naming the app.
@@ -585,6 +593,12 @@ impl Apps {
             spec.ports.push(detected(port, &inspection.exposed_ports)?);
         }
         let spec = spec.validate()?;
+        if !spec.volumes.is_empty() && settings.copies != 1 {
+            return Err(AppsError::Spec(SpecError {
+                field: "copies".into(),
+                problem: "an app with volumes has exactly one copy".into(),
+            }));
+        }
         if !allows_public_release(self.state.config.entry.app_domains, &spec, false) {
             return Err(AppsError::DomainRequired);
         }
@@ -798,6 +812,23 @@ impl Apps {
             )
             .await?;
         }
+        let app = work.load_app(app_id).await?;
+        let org = app.organisation_id;
+        let specs = match &release {
+            AppCommand::Release { spec, .. } => &spec.volumes,
+            _ => unreachable!("record_release only makes releases"),
+        };
+        let current = grund_store::volumes::app_volumes(&mut **work.sql(), org, app_id).await?;
+        if (!specs.is_empty() || !current.is_empty()) && app.settings.copies != 1 {
+            return Err(AppsError::Spec(SpecError {
+                field: "copies".into(),
+                problem: "an app with volumes has exactly one copy".into(),
+            }));
+        }
+        self.state
+            .volumes()
+            .resolve_release_in(&mut work, org, app_id, specs)
+            .await?;
         let events = work.app(app_id, release).await?;
         work.commit().await?;
         self.state.wakes.apps_changed();
@@ -836,6 +867,24 @@ impl Apps {
             )
             .await?;
         }
+        let app = work.load_app(app_id).await?;
+        let specs = match &release {
+            AppCommand::Release { spec, .. } => &spec.volumes,
+            _ => unreachable!("preview_release only makes releases"),
+        };
+        let current =
+            grund_store::volumes::app_volumes(&mut **work.sql(), app.organisation_id, app_id)
+                .await?;
+        if (!specs.is_empty() || !current.is_empty()) && app.settings.copies != 1 {
+            return Err(AppsError::Spec(SpecError {
+                field: "copies".into(),
+                problem: "an app with volumes has exactly one copy".into(),
+            }));
+        }
+        self.state
+            .volumes()
+            .resolve_release_in(&mut work, app.organisation_id, app_id, specs)
+            .await?;
         let events = work.app(app_id, release).await?;
         drop(work);
         let release = events
@@ -1067,6 +1116,21 @@ impl Apps {
         settings: AppSettings,
     ) -> Result<AppView, AppsError> {
         let mut work = Work::begin(&self.state.events, Uuid::now_v7(), &actor.to_string()).await?;
+        let app = work.load_app(row.app_id).await?;
+        if settings.copies != 1
+            && !grund_store::volumes::app_volumes(
+                &mut **work.sql(),
+                app.organisation_id,
+                row.app_id,
+            )
+            .await?
+            .is_empty()
+        {
+            return Err(AppsError::Spec(SpecError {
+                field: "copies".into(),
+                problem: "an app with volumes has exactly one copy".into(),
+            }));
+        }
         work.app(
             row.app_id,
             AppCommand::Configure {
@@ -1146,6 +1210,29 @@ impl Apps {
         Ok((secret.to_string(), version, at))
     }
 
+    /// All live and pending volumes, including detached volumes absent from
+    /// the latest release. The deletion precondition uses this same query.
+    pub async fn volumes(
+        &self,
+        organisation_id: Uuid,
+        name: &str,
+    ) -> Result<Vec<grund_store::volumes::VolumeRow>, AppsError> {
+        let row = self.live(organisation_id, name).await?;
+        self.state
+            .volumes()
+            .list(organisation_id, row.app_id)
+            .await
+            .map_err(Into::into)
+    }
+
+    pub async fn deletion_preview(
+        &self,
+        organisation_id: Uuid,
+        name: &str,
+    ) -> Result<Vec<grund_store::volumes::VolumeRow>, AppsError> {
+        self.volumes(organisation_id, name).await
+    }
+
     /// Deletes the app: its copies leave every machine's document in the
     /// same transaction.
     pub async fn delete(
@@ -1153,10 +1240,23 @@ impl Apps {
         actor: Uuid,
         organisation_id: Uuid,
         name: &str,
+        confirm_volume_count: Option<u32>,
     ) -> Result<(), AppsError> {
         let row = self.live(organisation_id, name).await?;
         let mut work = Work::begin(&self.state.events, Uuid::now_v7(), &actor.to_string()).await?;
         let before = apps::app_machines(&mut **work.sql(), row.app_id).await?;
+        let app = work.load_app(row.app_id).await?;
+        if app.deleted || app.organisation_id != organisation_id {
+            return Err(AppsError::NotFound);
+        }
+        let owned =
+            grund_store::volumes::app_volumes(&mut **work.sql(), organisation_id, row.app_id)
+                .await?;
+        if !owned.is_empty() && confirm_volume_count != u32::try_from(owned.len()).ok() {
+            return Err(AppsError::VolumeConfirmationRequired {
+                actual: owned.len(),
+            });
+        }
         work.app(
             row.app_id,
             AppCommand::Delete {
@@ -1165,11 +1265,39 @@ impl Apps {
             },
         )
         .await?;
+        let volume_machines = self
+            .state
+            .volumes()
+            .delete_app_in(&mut work, organisation_id, row.app_id)
+            .await?;
+        sqlx::query(
+            "DELETE FROM grund_volume_backup_attempts WHERE organisation_id = $1 AND app_id = $2",
+        )
+        .bind(organisation_id)
+        .bind(row.app_id)
+        .execute(&mut **work.sql())
+        .await?;
+        sqlx::query(
+            "DELETE FROM grund_volume_backup_points WHERE organisation_id = $1 AND app_id = $2",
+        )
+        .bind(organisation_id)
+        .bind(row.app_id)
+        .execute(&mut **work.sql())
+        .await?;
+        sqlx::query(
+            "DELETE FROM grund_volume_backup_configs WHERE organisation_id = $1 AND app_id = $2",
+        )
+        .bind(organisation_id)
+        .bind(row.app_id)
+        .execute(&mut **work.sql())
+        .await?;
         self.state
             .domains()
             .unbind_app_in(&mut work, actor, row.app_id)
             .await?;
-        self.publish_machines(work.sql(), before).await?;
+        let mut touched = before;
+        touched.extend(volume_machines);
+        self.publish_machines(work.sql(), touched).await?;
         work.commit().await?;
         self.state.wakes.documents_changed();
         Ok(())
@@ -1231,11 +1359,53 @@ impl Apps {
             .await?;
         let before = apps::app_machines(&mut **work.sql(), app_id).await?;
         let reserved = apps::reservations(&mut **work.sql(), organisation_id, app_id).await?;
+        let owned_volumes =
+            grund_store::volumes::app_volumes(&mut **work.sql(), organisation_id, app_id).await?;
+        let stateful = !owned_volumes.is_empty();
+        let app = work.load_app(app_id).await?;
+        let target = app.target().and_then(|number| app.release(number));
+        let wanted = |name: &str| {
+            target.is_some_and(|release| {
+                release
+                    .spec
+                    .volumes
+                    .iter()
+                    .any(|volume| volume.name == name)
+            })
+        };
+        let pinned = owned_volumes
+            .iter()
+            .filter(|v| v.status == "attached")
+            .filter_map(|v| v.machine_id)
+            .next()
+            .or_else(|| {
+                owned_volumes
+                    .iter()
+                    .find(|v| v.status == "available" && wanted(&v.name))
+                    .and_then(|v| v.machine_id)
+            })
+            .or_else(|| stateful.then(|| before.first().copied()).flatten());
+        anyhow::ensure!(
+            owned_volumes
+                .iter()
+                .filter(|v| v.status == "attached" || (v.status == "available" && wanted(&v.name)))
+                .all(|v| v.machine_id.is_none() || v.machine_id == pinned),
+            "volumes requested by this release are on different machines; explicit recovery required"
+        );
         let machines: Vec<MachineView> =
             machines::organisation_machines(&mut **work.sql(), organisation_id)
                 .await?
                 .iter()
                 .filter(|m| matches!(m.state.as_str(), "active" | "leased"))
+                .filter(|m| {
+                    !stateful
+                        || (m.pool != "management"
+                            && m.minted_by.starts_with("account:")
+                            && m.capabilities
+                                .as_ref()
+                                .is_some_and(|c| c.0["volumes"].as_bool() == Some(true))
+                            && pinned.is_none_or(|id| id == m.machine_id))
+                })
                 .map(|m| {
                     let others = reserved.iter().find(|r| r.machine_id == m.machine_id);
                     let mut view = machine_view(m, others);
@@ -1251,10 +1421,43 @@ impl Apps {
         let now = Utc::now();
         let (events, waiting) = work
             .app_decide(app_id, |app: &App| {
-                let decision = reconcile(app, &observations, &machines, now, &mut Uuid::now_v7);
+                let decision = reconcile_with_volumes(
+                    app,
+                    &observations,
+                    &machines,
+                    now,
+                    stateful,
+                    &mut Uuid::now_v7,
+                );
                 Ok((decision.events, decision.waiting))
             })
             .await?;
+        if stateful {
+            let app = work.load_app(app_id).await?;
+            for event in &events {
+                if let AppEvent::ReplicaPlaced {
+                    release,
+                    machine_id,
+                    ..
+                } = event
+                {
+                    let spec = &app
+                        .release(*release)
+                        .context("a placed release exists")?
+                        .spec;
+                    self.state
+                        .volumes()
+                        .place_release_in(
+                            &mut work,
+                            organisation_id,
+                            app_id,
+                            *machine_id,
+                            &spec.volumes,
+                        )
+                        .await?;
+                }
+            }
+        }
         apps::set_waiting(
             &mut **work.sql(),
             app_id,
@@ -1361,6 +1564,7 @@ mod tests {
             secrets: Vec::new(),
             check: None,
             stop: Default::default(),
+            volumes: Vec::new(),
         };
         assert!(allows_public_release(
             crate::config::AppDomains::CustomOnly,

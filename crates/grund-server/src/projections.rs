@@ -44,6 +44,10 @@ impl Projections {
                 grund_store::projections::AppProjection,
             )
             .subscribe_transactional(
+                grund_store::projections::VOLUME_SUBSCRIPTION,
+                grund_store::projections::VolumeProjection,
+            )
+            .subscribe_transactional(
                 grund_store::domains::DOMAIN_SUBSCRIPTION,
                 grund_store::domains::DomainProjection,
             )

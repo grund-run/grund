@@ -1,15 +1,13 @@
 # grund
 
 grund takes an app from a bare machine to live for its users, on hardware
-you own. This repository is grund itself: the server (the dashboard, the API
-and the work behind them), and later the orchestrator and the agent that
-runs on each machine.
+you own. This repository is grund itself: the server (dashboard, API and
+background work), the orchestrator and the agent that runs on each machine.
 
-**In development. Not yet available.** What exists today is the skeleton and
-the first feature, accounts: sign up, confirm your email, sign in and out,
-reset a forgotten password, and see and end your sessions. Each account
-comes with its own organisation, which everything grund manages later will
-belong to. Nothing here deploys an app yet.
+grund.sh is live. The self-hosted instance runs the same account, machine,
+app deployment and storage paths described below; hosted block volumes remain
+planned. Follow the deployment and data-backup instructions before depending
+on an instance.
 
 ## What is open, and what is paid
 
@@ -215,8 +213,8 @@ grund domains add shop.example.com
 grund tokens create --name ci --scope deploy --json
 ```
 
-- Nouns: `login`, `logout`, `whoami`, `orgs`, `apps`, `machines`,
-  `domains`, `members`, `invitations`, `tokens`, `registries`.
+- Nouns: `login`, `logout`, `whoami`, `orgs`, `apps`, `volumes`,
+  `machines`, `domains`, `members`, `invitations`, `tokens`, `registries`.
 - `--json` (or `-o json`, or `GRUND_OUTPUT=json`) on every command prints one
   JSON document: the protobuf JSON of the API's answer, or of a
   `grund.cli.v1` message (`proto/grund/cli/v1/cli.proto`). A failure prints
@@ -306,6 +304,47 @@ editors using yaml-language-server) complete and check the file. In the
 dashboard, an app's Settings has its newest release as this file, to copy,
 download, or edit and apply. An unknown key is refused with its line,
 column and path.
+
+### App volumes on your own machines
+
+An app with a volume runs as one copy, pinned to the machine holding its
+directory. A release stops that copy before starting the next; an offline
+machine makes the app wait rather than writing somewhere else. Hosted machines
+do not offer app volumes yet. Declare named mounts in `grund.yaml`:
+
+```yaml
+apps:
+  photos:
+    image: example/photos:1
+    volumes:
+      data:
+        path: /data
+        backup: daily
+      media:
+        path: /var/media
+        source: /srv/photos
+```
+
+With no `source`, the agent makes an app-owned directory in its data directory.
+It survives releases and agent restarts; deleting the volume or app erases it.
+An existing `source` binds a customer-owned host directory, only if the
+machine owner's local agent policy allows it. grund never erases that host
+directory. Storage uses the host filesystem and its existing permissions and
+encryption; there is no volume size quota. Keep independent backups of the
+machine.
+
+`backup: daily` only requests backups; it does not protect data until an owner
+configures an HTTPS S3-compatible destination and a verified recovery point
+appears in Settings → Volumes. The agent encrypts backups with restic; the
+destination credentials and repository password are sealed in grund, and the
+repository password can be exported for independent recovery. Restore creates
+a *new* managed volume on a chosen own machine, never overwriting the source.
+Use `grund volumes list photos`, `grund volumes show photos data`,
+`grund volumes backups photos data status`, `grund volumes backups photos data
+points`, or `grund volumes restore --help`. Remove obsolete S3 data yourself
+after deleting an app; grund removes its credentials and point catalog, not
+your bucket. The backup does not include grund's own PostgreSQL or data
+volumes (see Self-hosting).
 
 Copies spread over machines, one per machine first, and a copy on a
 machine that stays unreachable for 2 minutes (`reschedule_after`) starts

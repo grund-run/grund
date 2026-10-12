@@ -23,6 +23,21 @@ pub const SPEC_HASH_LABEL: &str = "grund.spec-hash";
 pub const STOP_SIGNAL_LABEL: &str = "grund.stop-signal";
 /// The label holding its stop grace, in whole seconds.
 pub const STOP_GRACE_LABEL: &str = "grund.stop-grace";
+/// Local-only record of the volumes mounted by a container. Never accepted as
+/// authority: each source is checked against local policy and owner metadata.
+pub const VOLUMES_LABEL: &str = "grund.volume-binds";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VolumeBind {
+    pub volume_id: String,
+    pub app_id: String,
+    pub name: String,
+    /// Absolute path inside the container.
+    pub path: String,
+    /// Absolute host directory (already validated by the machine).
+    pub source: String,
+    pub managed: bool,
+}
 
 /// An image pinned by digest.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -65,6 +80,12 @@ pub struct ContainerSpec {
     /// the container. `None`: the image's own file, if any.
     #[serde(default)]
     pub resolv_conf: Option<String>,
+    /// Agent-verified writable binds; empty for existing stateless apps.
+    #[serde(default)]
+    pub volumes: Vec<VolumeBind>,
+    /// Machine-local roots; never supplied by the signed document.
+    #[serde(default)]
+    pub volume_roots: Vec<PathBuf>,
 }
 
 /// Where a container's process is.
@@ -132,6 +153,10 @@ pub trait ContainerRuntime: Send + Sync {
     /// Whether the image's content is all present, so a create will not
     /// fetch.
     fn has_image(&self, image: &ImageRef) -> impl Future<Output = anyhow::Result<bool>> + Send;
+    /// Persistent machine storage root, separate from agent identity/secrets.
+    fn volume_data_dir(&self) -> PathBuf {
+        "/var/lib/grund".into()
+    }
 
     /// Fetches the image by digest from its registry and unpacks it, for
     /// this machine's architecture. Present already: nothing.
@@ -166,6 +191,17 @@ pub trait ContainerRuntime: Send + Sync {
     /// Starts a new process for an existing container whose process exited
     /// or was never started, discarding the old one.
     fn restart(&self, id: &str) -> impl Future<Output = anyhow::Result<()>> + Send;
+    /// A restart of a stateful container must provide freshly validated
+    /// mounts from the currently signed document and machine-local policy.
+    fn restart_with_volumes(
+        &self,
+        id: &str,
+        volumes: &[VolumeBind],
+        roots: &[PathBuf],
+    ) -> impl Future<Output = anyhow::Result<()>> + Send {
+        let _ = (volumes, roots);
+        self.restart(id)
+    }
 
     /// Sends the stop signal, waits up to the grace, then kills, and removes
     /// the container with its snapshot and network namespace. An unknown id
@@ -180,6 +216,13 @@ pub trait ContainerRuntime: Send + Sync {
 
     /// Every container the runtime has in its namespace.
     fn list(&self) -> impl Future<Output = anyhow::Result<Vec<ContainerStatus>>> + Send;
+    /// Binds still held by runtime containers, including stopped-but-not-yet
+    /// removed containers. Used to fence deletion and another writer.
+    fn mounted_volumes(
+        &self,
+    ) -> impl Future<Output = anyhow::Result<Vec<(String, VolumeBind)>>> + Send {
+        async { Ok(Vec::new()) }
+    }
 
     /// Runs `probe` from inside the running container's network namespace,
     /// within `timeout`. `Err` says why it failed, for the user.

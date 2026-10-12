@@ -11,6 +11,7 @@
 //!       grund/health        nostatus checks                 keeps readiness honest while draining
 //!       grund/projections   read-model catch-up and rebuild
 //!       grund/sweeper       expired sessions, links, windows
+//!       grund/volume-backups due volume snapshots and weekly restore probes
 //!       grund/certificates  renewed certificates, ACME work  with HTTPS, or GRUND_ACME_DIRECTORY
 //!       grund/outbox        mail, resets, insights reports  drains last, up to 5 s
 //! ```
@@ -168,6 +169,7 @@ pub async fn serve(
         .add(health::Checks::new(&state))
         .add(projections::Projections::new(&state))
         .add(services::apps::AppReconciler::new(state.clone()))
+        .add(services::backups::BackupScheduler::new(state.clone()))
         .add(services::entry::EntryKeys::new(state.clone()))
         .add(services::maintenance::Sweeper::new(state.clone()))
         .add(services::machines::HostedRecovery::new(state.clone()))

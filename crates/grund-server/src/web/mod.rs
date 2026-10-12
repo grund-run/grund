@@ -220,6 +220,18 @@ pub fn router(state: State) -> Router {
             "/{org}/apps/{app}/settings/release",
             post(apps::release_settings),
         )
+        .route(
+            "/{org}/apps/{app}/volumes/{volume}/backup",
+            post(apps::set_volume_backup),
+        )
+        .route(
+            "/{org}/apps/{app}/volumes/{volume}/restore",
+            post(apps::restore_volume),
+        )
+        .route(
+            "/{org}/apps/{app}/volumes/{volume}/change",
+            post(apps::change_volume),
+        )
         .route("/{org}/apps/{app}/secrets", post(apps::set_secret))
         .route(
             "/{org}/apps/{app}/secrets/remove",

@@ -318,6 +318,108 @@ pub const LEAVES: &[Leaf] = &[
         "the secret's value; one final newline is dropped",
     ),
     read(
+        "volumes list",
+        "grund.volume.v1.ListVolumesResponse",
+        &["grund.volume.v1.VolumeService/ListVolumes"],
+        &["grund volumes list photos"],
+    ),
+    read(
+        "volumes show",
+        "grund.volume.v1.GetVolumeStatusResponse",
+        &[
+            "grund.volume.v1.VolumeService/ListVolumes",
+            "grund.volume.v1.VolumeService/GetVolumeStatus",
+        ],
+        &["grund volumes show photos data"],
+    ),
+    write(
+        "volumes create",
+        "grund.volume.v1.CreateVolumeResponse",
+        &["grund.volume.v1.VolumeService/CreateVolume"],
+        &["grund volumes create photos data --path /data --backup"],
+    ),
+    write(
+        "volumes attach",
+        "grund.volume.v1.AttachVolumeResponse",
+        &[
+            "grund.volume.v1.VolumeService/ListVolumes",
+            "grund.volume.v1.VolumeService/AttachVolume",
+        ],
+        &["grund volumes attach photos data 00000000-0000-0000-0000-000000000000"],
+    ),
+    write(
+        "volumes detach",
+        "grund.volume.v1.DetachVolumeResponse",
+        &[
+            "grund.volume.v1.VolumeService/ListVolumes",
+            "grund.volume.v1.VolumeService/DetachVolume",
+        ],
+        &["grund volumes detach photos data"],
+    ),
+    destroy(
+        "volumes delete",
+        &[
+            "grund.volume.v1.VolumeService/ListVolumes",
+            "grund.volume.v1.VolumeService/DeleteVolume",
+        ],
+        &["grund volumes delete photos data --yes"],
+    ),
+    read(
+        "volumes backups status",
+        "grund.volume.v1.GetBackupDestinationResponse",
+        &[
+            "grund.volume.v1.VolumeService/ListVolumes",
+            "grund.volume.v1.VolumeService/GetBackupDestination",
+        ],
+        &["grund volumes backups photos data status"],
+    ),
+    with_stdin(
+        write(
+            "volumes backups set",
+            "grund.volume.v1.SetBackupDestinationResponse",
+            &[
+                "grund.volume.v1.VolumeService/ListVolumes",
+                "grund.volume.v1.VolumeService/GetBackupDestination",
+                "grund.volume.v1.VolumeService/SetBackupDestination",
+            ],
+            &[
+                "grund volumes backups photos data set --endpoint https://s3.example.com --bucket photos-backup --access-key-id KEY",
+            ],
+        ),
+        "the S3 secret access key; one final newline is dropped",
+    ),
+    read(
+        "volumes backups points",
+        "grund.volume.v1.ListRecoveryPointsResponse",
+        &[
+            "grund.volume.v1.VolumeService/ListVolumes",
+            "grund.volume.v1.VolumeService/ListRecoveryPoints",
+        ],
+        &["grund volumes backups photos data points"],
+    ),
+    destroy(
+        "volumes backups export-key",
+        &[
+            "grund.volume.v1.VolumeService/ListVolumes",
+            "grund.volume.v1.VolumeService/ExportBackupKey",
+        ],
+        &["grund volumes backups photos data export-key --file ./photos-backup-key --yes"],
+    ),
+    Leaf {
+        destructive: true,
+        ..write(
+            "volumes restore",
+            "grund.volume.v1.RestoreRecoveryPointResponse",
+            &[
+                "grund.volume.v1.VolumeService/ListVolumes",
+                "grund.volume.v1.VolumeService/RestoreRecoveryPoint",
+            ],
+            &[
+                "grund volumes restore photos data SNAPSHOT --name recovered --path /recovered --machine MACHINE --yes",
+            ],
+        )
+    },
+    read(
         "machines list",
         "grund.machine.v1.ListMachinesResponse",
         &["grund.machine.v1.MachineService/ListMachines"],
@@ -736,6 +838,10 @@ pub const LEAVES: &[Leaf] = &[
 /// deliberately does not call, each with why. The parity test fails on a
 /// procedure that is in neither list.
 pub const NOT_IN_CLI: &[(&str, &str)] = &[
+    (
+        "grund.volume.v1.VolumeService/GetVolume",
+        "volumes show calls GetVolumeStatus, which includes the same volume fields and restore state",
+    ),
     (
         "grund.machine.v1.MachineService/DeclareMachinePorts",
         "private-network ports are not in the dashboard either; later with network.md",

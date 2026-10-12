@@ -12,6 +12,7 @@ pub mod orgs;
 pub mod registries;
 pub mod selfdesc;
 pub mod tokens;
+pub mod volumes;
 
 use clap::{Args, Subcommand};
 
@@ -29,6 +30,7 @@ pub const CLIENT_NOUNS: &[&str] = &[
     "whoami",
     "orgs",
     "apps",
+    "volumes",
     "machines",
     "domains",
     "members",
@@ -57,6 +59,8 @@ pub enum Command {
         about = "Apps: list, status, deploy from grund.yaml or flags, change a setting, roll back, delete. Operators: grund operator apps suspend|lift"
     )]
     Apps(Box<apps::AppsCommand>),
+    #[command(about = "App-owned volumes: list, show, create, attach, detach, delete")]
+    Volumes(volumes::VolumesCommand),
     #[command(
         about = "Machines: list, create hosted, add your own, labels, out of service, remove"
     )]
@@ -103,6 +107,7 @@ impl Command {
             Command::Whoami(a) => &a.global,
             Command::Orgs(c) => &c.global,
             Command::Apps(c) => &c.global,
+            Command::Volumes(c) => &c.global,
             Command::Machines(c) => &c.global,
             Command::Domains(c) => &c.global,
             Command::Members(c) => &c.global,
@@ -132,6 +137,7 @@ pub async fn execute(
         Command::Whoami(args) => auth::whoami(ctx, args).await?,
         Command::Orgs(command) => orgs::run(ctx, command.action).await?,
         Command::Apps(command) => apps::run(ctx, command.action).await?,
+        Command::Volumes(command) => volumes::run(ctx, command.action).await?,
         Command::Machines(command) => machines::run(ctx, command.action).await?,
         Command::Domains(command) => domains::run(ctx, command.action).await?,
         Command::Members(command) => members::run_members(ctx, command.action).await?,

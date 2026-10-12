@@ -108,7 +108,8 @@ pub(super) fn a_running_agent(dir: std::path::PathBuf) -> anyhow::Result<Agent> 
         .create(true)
         .append(true)
         .open(dir.join("agent.log"))?;
-    let child = std::process::Command::new(crate::accepttest::fixtures::grund_binary())
+    let mut command = std::process::Command::new(crate::accepttest::fixtures::grund_binary());
+    command
         .args([
             "agent",
             "--app-runtime",
@@ -123,8 +124,11 @@ pub(super) fn a_running_agent(dir: std::path::PathBuf) -> anyhow::Result<Agent> 
         .env_clear()
         .env("RUST_LOG", "grund_agent=info")
         .stdout(log.try_clone()?)
-        .stderr(log)
-        .spawn()?;
+        .stderr(log);
+    if let Some(restic) = std::env::var_os("GRUND_ACCEPT_RESTIC_BIN") {
+        command.env("GRUND_RESTIC_BIN", restic);
+    }
+    let child = command.spawn()?;
     Ok(Agent { dir, child })
 }
 
@@ -1126,8 +1130,7 @@ async fn the_deploy_page_finds_the_port_an_image_declares_and_its_copy_gets_read
     then.status(200)?
         .carries_the_security_headers()?
         .body_contains("Custom deployment")?
-        .body_contains("Advanced options")?
-        .body_contains("Volumes are not available yet")?;
+        .body_contains("Advanced options")?;
     when.submitting(
         &deploy,
         &deploy,
@@ -1587,9 +1590,7 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
         .body_contains("not read by the app")?
         .body_lacks("s3cr3t-value")?;
     when.visiting(&format!("{settings}?edit=volumes")).await?;
-    then.status(200)?
-        .body_contains("Volumes are not available yet.")?
-        .body_lacks("Save and release")?;
+    then.status(200)?;
 
     let yaml = format!("{page}/grund.yaml");
     when.visiting(&yaml).await?;

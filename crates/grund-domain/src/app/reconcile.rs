@@ -107,6 +107,7 @@ struct Pass<'a> {
     waiting: Vec<Waiting>,
     observations: &'a [Observation],
     machines: &'a [MachineView],
+    stateful: bool,
     now: DateTime<Utc>,
 }
 
@@ -274,6 +275,20 @@ pub fn reconcile(
     now: DateTime<Utc>,
     new_id: &mut dyn FnMut() -> Uuid,
 ) -> Decision {
+    reconcile_with_volumes(app, observations, machines, now, false, new_id)
+}
+
+/// Stateful apps keep their machine and must verify that the old writer
+/// stopped before placing a successor. Never interpret disconnection as a
+/// fence, or let a timeout silently remove the old writer.
+pub fn reconcile_with_volumes(
+    app: &App,
+    observations: &[Observation],
+    machines: &[MachineView],
+    now: DateTime<Utc>,
+    stateful: bool,
+    new_id: &mut dyn FnMut() -> Uuid,
+) -> Decision {
     let mut pass = Pass {
         work: app.clone(),
         events: Vec::new(),
@@ -281,11 +296,16 @@ pub fn reconcile(
         observations,
         machines,
         now,
+        stateful,
     };
     if !app.exists || app.deleted {
         return Decision::default();
     }
-    let lost_slots = lose_replicas(&mut pass);
+    let lost_slots = if stateful {
+        BTreeSet::new()
+    } else {
+        lose_replicas(&mut pass)
+    };
     finish_drains(&mut pass);
     if pass.work.halted {
         return pass.into_decision();
@@ -349,15 +369,25 @@ fn finish_drains(pass: &mut Pass<'_>) {
         .iter()
         .filter(|r| r.state == ReplicaState::Draining)
         .filter(|r| {
-            r.draining_since
-                .is_none_or(|since| pass.now - since >= drain)
-                || pass.observation(r.replica_id).is_some_and(|o| {
-                    o.idle
-                        || matches!(
+            if pass.stateful {
+                pass.connected(r.machine_id)
+                    && pass.observation(r.replica_id).is_some_and(|o| {
+                        matches!(
                             o.state,
                             Observed::Exited | Observed::Failed | Observed::Refused
                         )
-                })
+                    })
+            } else {
+                r.draining_since
+                    .is_none_or(|since| pass.now - since >= drain)
+                    || pass.observation(r.replica_id).is_some_and(|o| {
+                        o.idle
+                            || matches!(
+                                o.state,
+                                Observed::Exited | Observed::Failed | Observed::Refused
+                            )
+                    })
+            }
         })
         .map(|r| r.replica_id)
         .collect();
@@ -449,6 +479,16 @@ fn fail_rollout(pass: &mut Pass<'_>, reason: String) {
     if !rolled_back {
         return;
     }
+    if pass.stateful {
+        for replica in pass
+            .running()
+            .into_iter()
+            .filter(|r| r.release == rollout.to)
+        {
+            pass.drain(replica.replica_id, DrainReason::Replaced);
+        }
+        return;
+    }
     let never_ready: Vec<Uuid> = pass
         .running()
         .into_iter()
@@ -470,6 +510,9 @@ fn fail_rollout_on_a_bad_replica(pass: &mut Pass<'_>) {
     let Some(release) = pass.work.release(rollout.to).cloned() else {
         return;
     };
+    if pass.stateful && pass.running().iter().any(|r| !pass.connected(r.machine_id)) {
+        return;
+    }
     let reason = pass
         .running()
         .iter()
@@ -507,7 +550,23 @@ fn converge(pass: &mut Pass<'_>, lost_slots: &BTreeSet<u32>, new_id: &mut dyn Fn
             .collect();
         in_slot.sort_by_key(|r| std::cmp::Reverse(r.placement));
         let newest = in_slot.iter().find(|r| r.release == target.number).cloned();
+        if pass.stateful
+            && !pass.work.replicas.is_empty()
+            && pass
+                .work
+                .replicas
+                .iter()
+                .any(|r| r.state == ReplicaState::Draining)
+        {
+            continue;
+        }
         if let Some(newest) = newest {
+            if pass.stateful && !pass.connected(newest.machine_id) {
+                continue;
+            }
+            if pass.stateful && pass.misplaced(&newest) {
+                continue;
+            }
             if pass.misplaced(&newest) {
                 let running_in_range =
                     pass.running().iter().filter(|r| r.slot < copies).count() as u32;
@@ -567,6 +626,12 @@ fn converge(pass: &mut Pass<'_>, lost_slots: &BTreeSet<u32>, new_id: &mut dyn Fn
             continue;
         };
         let running_in_range = pass.running().iter().filter(|r| r.slot < copies).count() as u32;
+        if pass.stateful {
+            if pass.connected(old.machine_id) {
+                pass.drain(old.replica_id, DrainReason::Replaced);
+            }
+            continue;
+        }
         if running_in_range < copies + max_surge {
             match pass.place(
                 slot,
@@ -588,7 +653,9 @@ fn converge(pass: &mut Pass<'_>, lost_slots: &BTreeSet<u32>, new_id: &mut dyn Fn
             pass.drain(old.replica_id, DrainReason::Replaced);
         }
     }
-    if let Some(rollout) = pass.work.rollout.clone() {
+    if !pass.stateful
+        && let Some(rollout) = pass.work.rollout.clone()
+    {
         let deadline =
             Duration::seconds(i64::from(pass.work.settings.rollout.ready_deadline_seconds));
         if let Some(waiting) = pass.waiting.first().cloned()
@@ -637,6 +704,9 @@ fn finish_rollout(pass: &mut Pass<'_>) {
 }
 
 fn repair_spread(pass: &mut Pass<'_>, new_id: &mut dyn FnMut() -> Uuid) {
+    if pass.stateful {
+        return;
+    }
     if pass.work.rollout.is_some() || !pass.waiting.is_empty() || !pass.events.is_empty() {
         return;
     }
@@ -816,6 +886,7 @@ mod tests {
                 timeout_ms: 1000,
             }),
             stop: StopSpec::default(),
+            volumes: Vec::new(),
         }
     }
 

@@ -24,6 +24,7 @@ fn spec() -> AppSpec {
         memory_mib: 128,
         cpu_millis: 100,
         env: Vec::new(),
+        volumes: Vec::new(),
         secrets: Vec::new(),
         check: None,
         stop: StopSpec::default(),

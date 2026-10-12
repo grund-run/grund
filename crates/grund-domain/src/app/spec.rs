@@ -300,6 +300,39 @@ impl Default for StopSpec {
     }
 }
 
+/// One app-owned volume. The name resolves within its app to the same volume
+/// across releases; removing a mount from a release never deletes the volume.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VolumeSpec {
+    pub name: String,
+    /// Absolute path inside the container.
+    pub path: String,
+    /// An existing host directory; None uses a grund-managed directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Opt-in daily backup policy; false means no scheduled backups.
+    #[serde(default)]
+    pub backup: bool,
+}
+
+fn safe_volume_path(path: &str) -> bool {
+    path.len() <= 4096
+        && path.starts_with('/')
+        && path != "/"
+        && !path.bytes().any(|b| b.is_ascii_control())
+        && path
+            .split('/')
+            .skip(1)
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
+fn paths_overlap(a: &str, b: &str) -> bool {
+    a == b
+        || a.strip_prefix(b).is_some_and(|rest| rest.starts_with('/'))
+        || b.strip_prefix(a).is_some_and(|rest| rest.starts_with('/'))
+}
+
 /// Everything one release runs. A value from [`AppSpec::validate`] has every
 /// default filled in.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -314,6 +347,8 @@ pub struct AppSpec {
     pub secrets: Vec<SecretEnv>,
     pub check: Option<CheckSpec>,
     pub stop: StopSpec,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volumes: Vec<VolumeSpec>,
 }
 
 fn env_name_ok(name: &str) -> bool {
@@ -497,6 +532,47 @@ impl AppSpec {
             if !(100..=30_000).contains(&check.timeout_ms) || check.timeout_ms >= check.interval_ms
             {
                 return refuse("check.timeout_ms", "use 100 to 30000, below the interval");
+            }
+        }
+        for (i, volume) in self.volumes.iter().enumerate() {
+            if AppName::parse(&volume.name).map_or(true, |name| name.as_str() != volume.name) {
+                return refuse(
+                    format!("volumes[{i}].name"),
+                    "use 1 to 32 lowercase letters, digits and single hyphens between them",
+                );
+            }
+            if !safe_volume_path(&volume.path) {
+                return refuse(
+                    format!("volumes[{i}].path"),
+                    "use an absolute container directory without '.', '..', empty components or control bytes",
+                );
+            }
+            if let Some(source) = &volume.source
+                && !safe_volume_path(source)
+            {
+                return refuse(
+                    format!("volumes[{i}].source"),
+                    "use an absolute existing host directory without '.', '..', empty components or control bytes",
+                );
+            }
+            for prior in &self.volumes[..i] {
+                if volume.name == prior.name {
+                    return refuse(format!("volumes[{i}].name"), "each volume name only once");
+                }
+                if paths_overlap(&volume.path, &prior.path) {
+                    return refuse(
+                        format!("volumes[{i}].path"),
+                        "container mount paths cannot overlap",
+                    );
+                }
+                if let (Some(source), Some(other)) = (&volume.source, &prior.source)
+                    && paths_overlap(source, other)
+                {
+                    return refuse(
+                        format!("volumes[{i}].source"),
+                        "existing host directories cannot overlap within an app",
+                    );
+                }
             }
         }
         if self.stop.signal.is_empty() {
@@ -868,6 +944,7 @@ mod tests {
                 signal: String::new(),
                 grace_seconds: 0,
             },
+            volumes: Vec::new(),
         }
     }
 
@@ -967,6 +1044,57 @@ mod tests {
             path: "healthz".into(),
         };
         assert_eq!(field(s), "check.http_path");
+    }
+
+    #[test]
+    fn volume_mounts_refuse_alias_paths_duplicate_names_and_nested_directories() {
+        let mount = |name: &str, path: &str, source: Option<&str>| VolumeSpec {
+            name: name.into(),
+            path: path.into(),
+            source: source.map(str::to_string),
+            backup: false,
+        };
+        for (volume, field) in [
+            (mount("data", "data", None), "volumes[0].path"),
+            (mount("data", "/data/../root", None), "volumes[0].path"),
+            (mount("data", "/data/./cache", None), "volumes[0].path"),
+            (mount("data", "/data//cache", None), "volumes[0].path"),
+            (
+                mount("data", "/data", Some("/srv/../secret")),
+                "volumes[0].source",
+            ),
+            (mount("Bad", "/data", None), "volumes[0].name"),
+        ] {
+            let mut app = spec();
+            app.volumes.push(volume);
+            assert_eq!(app.validate().unwrap_err().field, field);
+        }
+        let mut app = spec();
+        app.volumes = vec![
+            mount("data", "/data", Some("/srv/data")),
+            mount("cache", "/database", Some("/srv/database")),
+        ];
+        assert!(app.clone().validate().is_ok());
+        app.volumes[1].path = "/data/cache".into();
+        assert_eq!(app.clone().validate().unwrap_err().field, "volumes[1].path");
+        app.volumes[1].path = "/database".into();
+        app.volumes[1].source = Some("/srv/data/cache".into());
+        assert_eq!(
+            app.clone().validate().unwrap_err().field,
+            "volumes[1].source"
+        );
+        app.volumes[1].source = Some("/srv/database".into());
+        app.volumes[1].name = "data".into();
+        assert_eq!(app.validate().unwrap_err().field, "volumes[1].name");
+    }
+
+    #[test]
+    fn old_stateless_release_json_decodes_without_a_volume_field() {
+        let original = spec().validate().unwrap();
+        let mut json = serde_json::to_value(&original).unwrap();
+        assert!(json.as_object_mut().unwrap().remove("volumes").is_none());
+        let decoded: AppSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(decoded, original);
     }
 
     #[test]

@@ -45,6 +45,8 @@ fn spec(id: &str, command: &[String]) -> ContainerSpec {
         labels: BTreeMap::from([("grund.app".into(), "lab".into())]),
         spec_hash: format!("hash-{id}"),
         resolv_conf: None,
+        volumes: Vec::new(),
+        volume_roots: Vec::new(),
     }
 }
 

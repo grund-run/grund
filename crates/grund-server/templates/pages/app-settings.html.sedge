@@ -7,7 +7,7 @@ component SettingsForm(id: &str, title: &str, action: &str, cancel: &str, part: 
     {if let Some(before) = before { {before} }}
     {if *manages {
       <Form action={action} form={Some(form)} autocomplete={*autocomplete}>
-        {if matches!(*part, "image" | "exposure" | "check" | "resources" | "env" | "command") { <HiddenField name="part" value={part} /> }}
+        {if matches!(*part, "image" | "exposure" | "check" | "resources" | "env" | "command" | "volumes") { <HiddenField name="part" value={part} /> }}
         <Banner part={Some(part)} form={Some(form)} fields={*fields} />
         {children}
         <Actions note={note} note_icon={icon}>
@@ -19,7 +19,7 @@ component SettingsForm(id: &str, title: &str, action: &str, cancel: &str, part: 
   </Panel>
 }
 
-props crate::web::apps::AppSettingsPage<'_> { app, items, edit, next, manages, form, options };
+props crate::web::apps::AppSettingsPage<'_> { app, items, edit, next, manages, owner, form, options };
 {let here = format!("{}/settings", app.base);}
 {let release_note = format!("Saving makes release v{}.", next.unwrap_or(0));}
 
@@ -139,7 +139,103 @@ props crate::web::apps::AppSettingsPage<'_> { app, items, edit, next, manages, f
           <Para kind="hint">Add and bind a verified domain on <a href={&app.domains_href}>Domains</a>. {if app.custom_only { A private app can be bound before you choose Public HTTP. }}</Para>
         </Panel>
       },
-      SettingsEdit::Volumes => { <Panel id="volumes" title="Volumes / storage"><Para kind="hint">Volumes are not available yet.</Para></Panel> },
+      SettingsEdit::Volumes { summary, name, path, source, selected, backup } => {
+        {if let Some(detail) = selected {
+          {if let Some(volume) = summary.items.iter().find(|volume| volume.id == detail.id) {
+            <Panel id="volume" title="Volume {volume.name}">
+              <Rows>
+                <Row name="Mount" sub={&volume.path} plain />
+                <Row name="Source" sub={&volume.source} plain />
+                <Row name="State" sub={&volume.status} plain />
+                <Row name="Machine" sub={&volume.machine} plain />
+                <Row name="Measured use" sub={&volume.usage} plain />
+                <Row name="Backup" sub={&volume.backup} plain />
+                <Row name="Last verified" sub={&detail.last_verified} plain />
+                <Row name="Next scheduled" sub={&detail.next_due} plain />
+                {if let Some(failure) = &detail.last_error {
+                  <Row name="Last backup problem" sub={failure} tone="danger" plain />
+                }}
+              </Rows>
+              <Button label="Back to volumes" href="{here}?edit=volumes" kind="secondary" />
+              {if *manages && matches!(volume.status.as_str(), "requested" | "available") {
+                <Form action="{app.base}/volumes/{detail.id}/change" form={Some(&form)}>
+                  <HiddenField name="action" value="attach" />
+                  <HiddenField name="expected_version" value={&volume.version.to_string()} />
+                  <Field name="machine" label="Own-machine ID" value={if volume.machine == "Detached" { "" } else { &volume.machine }} hint="The volume stays pinned to its first machine. Restore a verified point to a NEW volume to use another machine." required mono form={Some(&form)} />
+                  <Actions note="Attach this existing app-owned volume to its machine; release the app to mount it." note_icon="box"><Button label="Attach" kind="primary" /></Actions>
+                </Form>
+              }}
+              {if *manages && volume.status == "attached" {
+                <Form action="{app.base}/volumes/{detail.id}/change" form={Some(&form)}>
+                  <HiddenField name="action" value="detach" />
+                  <HiddenField name="expected_version" value={&volume.version.to_string()} />
+                  <Actions note="Stop every replica that mounts this volume first; detaching does not erase its bytes." note_icon="box"><Button label="Detach" kind="secondary" /></Actions>
+                </Form>
+              }}
+              {if *manages && !matches!(volume.status.as_str(), "deleting" | "deleted") {
+                <Form action="{app.base}/volumes/{detail.id}/change" form={Some(&form)}>
+                  <HiddenField name="action" value="delete" />
+                  <HiddenField name="expected_version" value={&volume.version.to_string()} />
+                  <Field name="confirm_name" label="Type volume name to delete" hint="Managed bytes are erased after the machine acknowledges. Existing host-path bytes and S3 objects are NOT erased; backup credentials and recovery point records are removed. Stop all writers first." required autocomplete="off" form={Some(&form)} />
+                  <Actions note="Irreversible managed-volume deletion. The app remains." note_icon="trash"><Button label="Delete volume" kind="danger" /></Actions>
+                </Form>
+              }}
+              {if *owner && volume.status == "attached" && volume.backup_requested && !detail.backup_enabled {
+                <Form action="{app.base}/volumes/{detail.id}/backup" form={Some(&form)} autocomplete={Some("off")}>
+                  <HiddenField name="expected_version" value={&detail.backup_version.to_string()} />
+                  <HiddenField name="idempotency_key" value={&uuid::Uuid::now_v7().to_string()} />
+                  <Grid>
+                    <Field name="endpoint" label="S3 endpoint" hint="HTTPS URL of your S3-compatible storage." required autocomplete="off" form={Some(&form)} />
+                    <Field name="bucket" label="Bucket" required autocomplete="off" form={Some(&form)} />
+                    <Field name="access_key_id" label="Access key ID" required autocomplete="off" form={Some(&form)} />
+                    <Field name="secret_access_key" label="Secret access key" kind="password" required autocomplete="new-password" form={Some(&form)} />
+                  </Grid>
+                  <Actions note="Credentials are sealed; a configured bucket is not a verified backup." note_icon="key"><Button label="Set up backup" kind="primary" /></Actions>
+                </Form>
+              }}
+              {if detail.backup_enabled {
+                <Para kind="hint">Destination {detail.endpoint} / {detail.bucket}. A configured destination is not a recovery point.</Para>
+                {if !detail.points.is_empty() {
+                  <Rows>{for point in &detail.points {
+                    <Row name={&point.id} sub="Completed {point.completed} · restore verified {point.verified}" icon_name="ok" tone="ok" />
+                  }}</Rows>
+                  {if *manages {
+                    <Form action="{app.base}/volumes/{detail.id}/restore" form={Some(&form)} autocomplete={Some("off")}>
+                      <HiddenField name="expected_version" value={&volume.version.to_string()} />
+                      <HiddenField name="idempotency_key" value={&uuid::Uuid::now_v7().to_string()} />
+                      <Grid>
+                        <Field name="snapshot" label="Verified snapshot ID" required autocomplete="off" mono form={Some(&form)} />
+                        <Field name="name" label="New volume name" required autocomplete="off" form={Some(&form)} />
+                        <Field name="path" label="New container path" required autocomplete="off" mono form={Some(&form)} />
+                        <Field name="machine" label="Target own-machine ID" required autocomplete="off" mono form={Some(&form)} />
+                      </Grid>
+                      <Actions note="Restores into a NEW app-owned directory. The source stays unchanged; switching the app needs a separate release." note_icon="box"><Button label="Request restore" kind="primary" /></Actions>
+                    </Form>
+                  }}
+                } else { <Para kind="hint">No verified recovery point yet. Losing this disk can lose its data.</Para> }}
+              }}
+              {if !volume.backup_requested { <Para kind="hint">Backup is off. Declare backup: daily in grund.yaml before setting a destination.</Para> }}
+            </Panel>
+          }}
+        } else {
+          <SettingsForm id="volumes" title="Volumes / storage" action="{here}/release" cancel={&here} part="volumes" note={&release_note} autocomplete={Some("off")} form={&form} manages={*manages}>
+            <:before>
+              {if !summary.items.is_empty() { <Rows>{for volume in &summary.items {
+                <Row name={&volume.name} sub="{volume.path} · {volume.usage}" icon_name="box" tone="violet" status_text={Some(volume.status.as_str())} status_tone="muted" href="{here}?edit=volumes&volume={volume.id}">
+                  <:sub_content>Path {volume.path} · Source {volume.source} · Machine {volume.machine} · {volume.usage} · Backup {volume.backup}</:sub_content>
+                </Row>
+              }}</Rows> }}
+            </:before>
+            <Grid>
+              <Field name="volume_name" label="New volume name" value={name} hint="Name stays with this app across releases. Add one here; use grund.yaml for more." autocomplete="off" error={form.error("volumes").unwrap_or("")} required form={Some(&form)} />
+              <Field name="volume_path" label="Container path" value={path} hint="Absolute path inside the container, such as /data." autocomplete="off" mono required form={Some(&form)} />
+              <Field name="volume_source" label="Existing host directory" value={source} hint="Optional. Its machine owner must allow the containing root in /etc/grund/policy.yaml. Grund never erases its files." autocomplete="off" mono form={Some(&form)} />
+            </Grid>
+            <ToggleField name="volume_backup" label="Request daily encrypted S3 backup for this volume" checked={*backup} hint="Requires separate bucket credentials and a verified recovery point before data is protected. Off by default." />
+            <Para kind="hint">Managed directories persist across releases and reboots. An existing host path stays the owner's. There is no enforced quota or default own-machine at-rest encryption. A volume needs one copy; losing an unbacked-up disk loses its data.</Para>
+          </SettingsForm>
+        }}
+      },
       SettingsEdit::Command { command, stop_signal, stop_grace, signals } => {
         <SettingsForm id="command-and-stop" title="Command override" action="{here}/release" cancel={&here} part="command" note={&release_note} autocomplete={Some("off")} form={&form} manages={*manages}>
           <CodeField name="command" label="Command" value={command} error={form.error("command").unwrap_or("")} hint="One argument per line. Empty: the image's own." rows={3} />
@@ -159,8 +255,13 @@ props crate::web::apps::AppSettingsPage<'_> { app, items, edit, next, manages, f
           <Panel id="as-file" title="grund.yaml"><Code text={content.as_deref().unwrap_or("")} filename="grund.yaml" download={href} copy /></Panel>
         }}
       },
-      SettingsEdit::Delete => {
+      SettingsEdit::Delete(preview) => {
         <SettingsForm id="danger" title="Delete {app.name}" action="{app.base}/delete" cancel={&here} part="delete" note="Cannot be undone." save="Delete {app.name}" kind="danger" icon="" autocomplete={Some("off")} form={&form} manages={*manages}>
+          <HiddenField name="confirm_volume_count" value={&preview.items.len().to_string()} />
+          <Para kind="hint">Deletes {preview.items.len()} volumes, {preview.usage}. Managed directories are erased when their machines reconnect; {preview.host_paths} existing customer host paths remain on their owners' disks. External customer-owned backups are not erased.</Para>
+          {if !preview.items.is_empty() { <Rows>{for volume in &preview.items {
+            <Row name={&volume.name} sub="{volume.path} · {volume.usage}" icon_name="box" tone="orange" detail={if volume.managed { "Managed data will be erased" } else { "Existing host-path files remain" }} />
+          }}</Rows> }}
           <Field name="confirm" label="Type {app.name} to confirm" autocomplete="off" required width={Some("md")} form={Some(&form)} />
         </SettingsForm>
       },

@@ -378,6 +378,9 @@ impl SimulatedContainers {
 }
 
 impl ContainerRuntime for SimulatedContainers {
+    fn volume_data_dir(&self) -> PathBuf {
+        self.dir.parent().unwrap_or(&self.dir).to_path_buf()
+    }
     async fn network_namespace(&self, id: &str) -> anyhow::Result<Option<PathBuf>> {
         if unsafe { libc::geteuid() } != 0 {
             return Ok(None);

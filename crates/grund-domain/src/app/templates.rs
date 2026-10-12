@@ -134,6 +134,7 @@ impl Template {
             memory_mib: self.memory_mib,
             cpu_millis: self.cpu_millis,
             env: Vec::new(),
+            volumes: Vec::new(),
             secrets: Vec::new(),
             check: self.check.map(|(port, path)| CheckSpec {
                 kind: CheckKind::Http {

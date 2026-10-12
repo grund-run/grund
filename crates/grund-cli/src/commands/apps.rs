@@ -84,7 +84,7 @@ pub enum AppsAction {
         dry_run: bool,
     },
     #[command(
-        about = "Delete an app: its copies stop and its name is free again; its releases stay in the history"
+        about = "Delete an app and all its managed volumes; original customer host-path contents remain"
     )]
     Delete {
         #[arg(value_name = "APP")]
@@ -541,16 +541,51 @@ pub async fn run(ctx: &Ctx, action: AppsAction) -> CliResult<Output> {
             yes,
             dry_run: preview,
         } => {
-            let request = json!({"organisation": org, "name": app});
+            let listed = api
+                .call(
+                    "grund.volume.v1.VolumeService/ListVolumes",
+                    json!({"organisation": org, "app": app}),
+                )
+                .await?;
+            let volumes = listed["volumes"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            let managed: Vec<&Value> = volumes
+                .iter()
+                .filter(|v| v["source"].as_str().is_none_or(str::is_empty))
+                .collect();
+            let known = managed.iter().try_fold(0u64, |total, volume| {
+                volume["measuredBytes"]
+                    .as_str()
+                    .and_then(|n| n.parse::<u64>().ok())
+                    .or_else(|| volume["measuredBytes"].as_u64())
+                    .and_then(|bytes| total.checked_add(bytes))
+            });
+            let bytes = known.map_or_else(
+                || "size unknown".to_string(),
+                |bytes| format!("{:.2} GiB measured", bytes as f64 / 1_073_741_824.0),
+            );
+            let mut request = json!({"organisation": org, "name": app});
+            if !volumes.is_empty() {
+                request["confirmVolumeCount"] = json!(volumes.len());
+            }
             if preview {
                 return Ok(dry_run(
                     &[(format!("{SERVICE}/DeleteApp"), request)],
                     vec![],
                 ));
             }
-            ctx.confirm(yes, &format!("Delete the app {app}; its copies stop"))?;
+            let host_paths = volumes.len() - managed.len();
+            ctx.confirm(
+                yes,
+                &format!(
+                    "Delete app {app}: deletes {} volumes, {bytes}; {host_paths} existing host paths remain on their owners' disks",
+                    volumes.len()
+                ),
+            )?;
             api.call(&format!("{SERVICE}/DeleteApp"), request).await?;
-            Ok(done(format!("Deleted {app}.")))
+            Ok(done(format!("Deletion requested for {app}.")))
         }
         AppsAction::Secrets { action } => match action {
             SecretsAction::List { app } => {

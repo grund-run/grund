@@ -7,11 +7,12 @@ use buffa::MessageField;
 use buffa_types::google::protobuf::Timestamp;
 use connectrpc::{ConnectError, RequestContext, Response, ServiceRequest, ServiceResult};
 use grund_proto::grund::agent::v1::{
-    AgentService, GetDesiredStateRequest, GetDesiredStateResponse, GetLeaseRequest,
-    GetLeaseResponse, GetMachineJoinTokenRequest, GetMachineJoinTokenResponse,
-    GetMembershipRequest, GetMembershipResponse, GetPullCredentialRequest,
-    GetPullCredentialResponse, GetReplicaSecretsRequest, GetReplicaSecretsResponse,
-    HeartbeatRequest, HeartbeatResponse, RegistryCredential, ReplicaObservedState,
+    AgentService, GetBackupWorkRequest, GetBackupWorkResponse, GetDesiredStateRequest,
+    GetDesiredStateResponse, GetLeaseRequest, GetLeaseResponse, GetMachineJoinTokenRequest,
+    GetMachineJoinTokenResponse, GetMembershipRequest, GetMembershipResponse,
+    GetPullCredentialRequest, GetPullCredentialResponse, GetReplicaSecretsRequest,
+    GetReplicaSecretsResponse, HeartbeatRequest, HeartbeatResponse, RegistryCredential,
+    ReplicaObservedState, ReportBackupResultRequest, ReportBackupResultResponse,
     ReportStatusRequest, ReportStatusResponse, SecretValue, SignedDesiredState, SignedLeaseGrant,
     SignedMembershipList, VmObservedState, WatchDesiredStateRequest, WatchDesiredStateResponse,
 };
@@ -21,6 +22,7 @@ use crate::{
     services::{
         agents::{AgentsState, HEARTBEAT_INTERVAL_SECONDS, MachineCaller, ReplicaReport},
         apps::AppsState,
+        backups::BackupsState,
         machines::MachinesState,
         networks::{MembershipOutcome, NetworksState},
         registry_credentials::RegistryCredentialsState,
@@ -83,6 +85,7 @@ impl AgentService for AgentApi {
                     "free_vcpus": c.free_vcpus,
                     "free_memory_mib": c.free_memory_mib,
                     "apps": c.apps,
+                    "volumes": c.volumes,
                     "arch": c.arch.chars().take(16).collect::<String>(),
                     "memory_mib": c.memory_mib,
                     "cpu_millis": c.cpu_millis,
@@ -228,6 +231,60 @@ impl AgentService for AgentApi {
         })
     }
 
+    async fn get_backup_work(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, GetBackupWorkRequest>,
+    ) -> ServiceResult<GetBackupWorkResponse> {
+        let caller = machine(&ctx)?;
+        if request.machine_id != caller.machine_id.to_string() {
+            return Err(ConnectError::not_found("no backup work on this machine"));
+        }
+        let work = self
+            .state
+            .backups()
+            .for_machine(caller.machine_id)
+            .await
+            .map_err(internal)?;
+        Response::ok(GetBackupWorkResponse {
+            work: work.map(MessageField::from).unwrap_or_default(),
+            ..Default::default()
+        })
+    }
+
+    async fn report_backup_result(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, ReportBackupResultRequest>,
+    ) -> ServiceResult<ReportBackupResultResponse> {
+        let caller = machine(&ctx)?;
+        if request.machine_id != caller.machine_id.to_string() {
+            return Err(ConnectError::not_found("no backup work on this machine"));
+        }
+        let attempt = Uuid::parse_str(request.attempt_id)
+            .map_err(|_| ConnectError::invalid_argument("attempt_id must be a UUID"))?;
+        let generation = i64::try_from(request.placement_generation)
+            .map_err(|_| ConnectError::invalid_argument("placement generation is out of range"))?;
+        let accepted = self
+            .state
+            .backups()
+            .ack(
+                caller.machine_id,
+                attempt,
+                generation,
+                request.success,
+                request.snapshot_id,
+                request.failure_class,
+                request.source_path,
+            )
+            .await
+            .map_err(internal)?;
+        Response::ok(ReportBackupResultResponse {
+            accepted,
+            ..Default::default()
+        })
+    }
+
     async fn report_status(
         &self,
         ctx: RequestContext,
@@ -280,6 +337,16 @@ impl AgentService for AgentApi {
                 })
             })
             .collect();
+        let volume_deletions: Vec<(Uuid, Uuid)> = request
+            .volume_deletions
+            .iter()
+            .filter_map(|item| {
+                Some((
+                    Uuid::parse_str(item.app_id).ok()?,
+                    Uuid::parse_str(item.volume_id).ok()?,
+                ))
+            })
+            .collect();
         self.state
             .agents()
             .report(
@@ -288,6 +355,7 @@ impl AgentService for AgentApi {
                 &observed,
                 &refusals,
                 request.reports_replicas.then_some(replicas.as_slice()),
+                &volume_deletions,
             )
             .await
             .map_err(internal)?;

@@ -9,6 +9,7 @@ pub mod accounts;
 pub mod agents;
 pub mod api_tokens;
 pub mod apps;
+pub mod backup;
 pub mod certificates;
 pub mod device_logins;
 pub mod doctor;
@@ -28,6 +29,7 @@ pub mod setup_links;
 pub mod social;
 pub mod throttle;
 pub mod tokens;
+pub mod volumes;
 pub mod work;
 
 use anyhow::Context;
