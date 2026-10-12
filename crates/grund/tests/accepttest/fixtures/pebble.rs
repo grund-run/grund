@@ -11,7 +11,7 @@ use rustls::pki_types::pem::PemObject;
 pub use super::free_port;
 use super::random_hex;
 
-pub const PEBBLE_VERSION: &str = "v2.10.1";
+pub const PEBBLE_REVISION: &str = "1fcb30cabf594e047cb92432b9392bc3dfa469f7";
 
 pub const SHORT_PROFILE_SECONDS: u64 = 30;
 
@@ -62,7 +62,7 @@ fn binaries() -> anyhow::Result<Option<PathBuf>> {
         dir.display()
     );
     eprintln!(
-        "skipped: needs Pebble {PEBBLE_VERSION} in {} (crates/grund/tests/pebble/fetch.sh)",
+        "skipped: needs Pebble {PEBBLE_REVISION} in {} (crates/grund/tests/pebble/fetch.sh)",
         dir.display()
     );
     Ok(None)

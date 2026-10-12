@@ -176,8 +176,9 @@ steps:
       GRUND_ACCEPT_NATS_URL: nats://nats:4222
       GRUND_ACCEPT_SMTP_URL: smtp://mailpit:1025
       GRUND_ACCEPT_MAILPIT_URL: http://mailpit:8025
-      # The certificate accepttests spawn Pebble (fetched below, pinned by
-      # version and SHA-256) and fail rather than skip when it is missing.
+      # The certificate accepttests build a SHA-pinned Pebble source commit
+      # with the ARI serial lookup fix (issue #550); go is only a test tool.
+      # They fail rather than skip when Pebble is missing.
       GRUND_ACCEPT_REQUIRE_PEBBLE: "1"
       # Guards account enumeration by timing, so it runs alone after the
       # rest: beside 128 other tests a sign-in took anything from 16 ms to
@@ -189,7 +190,7 @@ steps:
       # openssl (3.5 or later): the independent implementation grund-tls's
       # X25519MLKEM768 interop tests handshake against; they fail rather
       # than skip without it.
-      - apk add --no-cache musl-dev protobuf-dev sccache openssl
+      - apk add --no-cache musl-dev protobuf-dev sccache openssl go
       - crates/grund/tests/pebble/fetch.sh
       # The agent's own cache first, where it has one (agent 5: memcached in
       # the CI daemon's network namespace, so at every step's gateway, port

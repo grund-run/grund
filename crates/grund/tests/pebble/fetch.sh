@@ -1,18 +1,21 @@
 #!/bin/sh
-# Fetches Pebble, Let's Encrypt's ACME test server, and pebble-challtestsrv
-# (its DNS stand-in) for the certificate accepttests
-# (tests/accepttest/certificates.rs), into target/pebble unless a directory
-# is given. The tests spawn both per test; they never reach a real CA.
+# Fetches Pebble from a pinned upstream source commit and pebble-challtestsrv
+# from the pinned release. The former is built locally with Go for the ACME
+# accepttests, into target/pebble unless a directory is given.
 #
 #   crates/grund/tests/pebble/fetch.sh [dir]
 #
-# Pinned by version and by the SHA-256 of each release archive. Pebble
-# publishes no checksum file, so the digests are the archives' as downloaded
-# on 2026-09-28; a different archive under the same name is refused.
+# Pebble v2.10.1 intermittently refuses ARI replaces when a certificate's
+# serial has DER sign padding (https://github.com/letsencrypt/pebble/issues/550).
+# The source revision contains upstream's fix. Remove the pin when Pebble
+# releases past v2.10.1, and use release archives for both binaries again.
 set -eu
 version=v2.10.1
+revision=1fcb30cabf594e047cb92432b9392bc3dfa469f7
+source_sha=d80d1c4cfe9697ba4072e24a5cfb13fa1dc17e7f6d5a0e72a3546b712fb03e42
 dir=${1:-$(cd "$(dirname "$0")/../../../.." && pwd)/target/pebble}
 mkdir -p "$dir"
+dir=$(cd "$dir" && pwd)
 fetch() {
   name=$1 sha=$2
   if [ -x "$dir/$name" ] && [ "$(cat "$dir/$name.version" 2>/dev/null)" = "$version" ]; then
@@ -36,6 +39,22 @@ fetch() {
   rm -rf "$dir/$name-linux-amd64" "$archive"
   echo "$version" >"$dir/$name.version"
 }
-fetch pebble 4f2fcb5bca8c85c9cf73ad140fccfc0d2be40bd81ab99879c79b7b8a0b4f70ed
+if [ ! -x "$dir/pebble" ] || [ "$(cat "$dir/pebble.version" 2>/dev/null)" != "$revision" ]; then
+  archive="$dir/pebble-$revision.tar.gz"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL -o "$archive" "https://github.com/letsencrypt/pebble/archive/$revision.tar.gz"
+  else
+    wget -q -O "$archive" "https://github.com/letsencrypt/pebble/archive/$revision.tar.gz"
+  fi
+  echo "$source_sha  $archive" | sha256sum -c - >/dev/null || {
+    echo "fetch.sh: pebble $revision source does not match its pinned SHA-256" >&2
+    rm -f "$archive"
+    exit 1
+  }
+  tar -xzf "$archive" -C "$dir"
+  (cd "$dir/pebble-$revision" && GOTOOLCHAIN=local go build -trimpath -o "$dir/pebble" ./cmd/pebble)
+  rm -rf "$dir/pebble-$revision" "$archive"
+  echo "$revision" >"$dir/pebble.version"
+fi
 fetch pebble-challtestsrv e93a5aa25ecdf3af2f9fbb2de32b0173e64a2eae81002a4ccfe35fa6f4f60b92
-echo "pebble $version in $dir"
+echo "pebble $revision in $dir"
