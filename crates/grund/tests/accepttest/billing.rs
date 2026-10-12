@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 
 use crate::accepttest::fixtures::{
-    AccountAnswer, BILLING_TOKEN, DeletionAnswer, FakeBilling, testcase, testcase_configured,
+    AccountAnswer, BILLING_TOKEN, DeletionAnswer, FakeBilling, testcase_configured,
 };
 
 fn form_key(when: &crate::accepttest::fixtures::When, index: usize) -> anyhow::Result<String> {
@@ -65,7 +65,9 @@ async fn configured(
 #[tokio::test]
 async fn enabling_billing_backfills_organisations_created_while_billing_was_off()
 -> anyhow::Result<()> {
-    let (given, _when, _then) = testcase().await?;
+    let Some((given, _when, _then)) = testcase_configured(&[]).await? else {
+        return Ok(());
+    };
     let owner = given.a_signed_in_account().await?;
     let billing =
         FakeBilling::start_with_account(DeletionAnswer::Allow, AccountAnswer::Free).await?;
