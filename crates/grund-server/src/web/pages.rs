@@ -1286,17 +1286,22 @@ pub async fn licenses(AxumState(_state): AxumState<State>, browser: Browser) -> 
 /// The swatches the style guide shows: token and role.
 pub const SWATCHES: &[(&str, &str)] = &[
     ("bg", "page background"),
+    ("topbar-surface", "top bar"),
     ("bg-raised", "sidebar, inputs"),
-    ("surface", "boxes of rows, cards, callouts, menus"),
+    ("surface", "boxes of rows, cards, callouts"),
     ("surface-hover", "hover on surfaces and nav items"),
+    ("popover", "menus and popovers"),
     ("control", "boxed icon buttons"),
     (
         "active",
         "the selected nav item and view, marks, success banners",
     ),
-    ("border", "dividers between rows"),
+    ("border", "dividers between rows, 2.12:1 or more"),
     ("border-strong", "tags, dashed boxes, menus"),
-    ("border-control", "the edge of what you operate, 3:1"),
+    (
+        "border-control",
+        "the edge of what you operate, 3:1 or more",
+    ),
     ("text", "titles, names, body"),
     ("text-2", "secondary text"),
     ("muted", "counts, hints"),

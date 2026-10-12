@@ -34,19 +34,21 @@
 :root {
   color-scheme: dark;
 
-  --bg: #0f1914;
-  --bg-raised: #121c17;
-  --surface: #131e19;
-  --surface-hover: #1a2620;
-  --control: #19221e;
-  --border: #1d2722;
-  --border-strong: #29342e;
-  --border-control: #606d66;
-  --active: #213027;
+  --bg: #090f0b;
+  --topbar-surface: #101a14;
+  --bg-raised: #141f18;
+  --surface: #1f2d23;
+  --surface-hover: #2b3a2e;
+  --popover: #34473a;
+  --control: #243328;
+  --border: #66786a;
+  --border-strong: #859687;
+  --border-control: #96a899;
+  --active: #2b3a2e;
 
   --text: #eef3ef;
   --text-2: #c3ccc6;
-  --muted: #8f9a94;
+  --muted: #b7c6ba;
 
   --accent: #abe6b1;
   --accent-hover: #c0efc4;
@@ -393,6 +395,7 @@ code,
   display: flex;
   align-items: center;
   gap: var(--space-6);
+  background: var(--topbar-surface);
   height: var(--topbar);
   padding: 0 max(var(--gutter), (100% - var(--content)) / 2);
   border-bottom: 1px solid var(--border);
@@ -1459,7 +1462,7 @@ code.address-text {
   right: 0;
   min-width: 15rem;
   padding: 0.375rem;
-  background: var(--surface);
+  background: var(--popover);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   box-shadow: 0 12px 32px rgb(0 0 0 / 0.45);
@@ -2562,8 +2565,10 @@ a.endpoint-text:hover {
 }
 
 .sg-bg { background: var(--bg); }
+.sg-topbar-surface { background: var(--topbar-surface); }
 .sg-bg-raised { background: var(--bg-raised); }
 .sg-surface { background: var(--surface); }
+.sg-popover { background: var(--popover); }
 .sg-surface-hover { background: var(--surface-hover); }
 .sg-control { background: var(--control); }
 .sg-active { background: var(--active); }
