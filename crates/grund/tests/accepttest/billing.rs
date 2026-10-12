@@ -194,7 +194,7 @@ async fn only_operator_managers_can_grant_complimentary_billing() -> anyhow::Res
         &format!("/{operator}/admin/organisations/complimentary"),
         &[
             ("organisation", &target.username),
-            ("action", "grant"),
+            ("billing_action", "grant"),
             ("plan", "Pro"),
             ("reason", "test account"),
             ("expires_at", "2099-01-01T00:00:00Z"),
@@ -248,7 +248,7 @@ async fn paid_complimentary_grant_is_scheduled_until_provider_confirms_it() -> a
         &format!("/{operator}/admin/organisations/complimentary"),
         &[
             ("organisation", &target.username),
-            ("action", "grant"),
+            ("billing_action", "grant"),
             ("plan", "Business"),
             ("reason", "operator grant"),
             ("expires_at", "2099-12-01T00:00:00Z"),

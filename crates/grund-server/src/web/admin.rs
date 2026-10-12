@@ -678,7 +678,7 @@ pub struct ComplimentaryForm {
     #[serde(default)]
     organisation: String,
     #[serde(default)]
-    action: String,
+    billing_action: String,
     #[serde(default)]
     plan: String,
     #[serde(default)]
@@ -714,7 +714,7 @@ pub async fn complimentary_action(
             "not-allowed",
         )));
     }
-    let enabled = match form.action.as_str() {
+    let enabled = match form.billing_action.as_str() {
         "grant" => true,
         "revoke" => false,
         _ => {

@@ -158,7 +158,7 @@ props crate::web::admin::AdminPage<'_> { slug, csrf, manages, tab, host_filter, 
           }}
           <Form action="/{slug}/admin/organisations/complimentary" csrf={csrf}>
             <HiddenField name="organisation" value={organisation} />
-            <HiddenField name="action" value="grant" />
+            <HiddenField name="billing_action" value="grant" />
             <HiddenField name="idempotency_key" value={grant_key} />
             <ChoiceField name="plan" label="Complimentary plan">
               <ChoiceCard name="plan" value="Homelab" title="Homelab" selected />
@@ -172,7 +172,7 @@ props crate::web::admin::AdminPage<'_> { slug, csrf, manages, tab, host_filter, 
           {if account.details.complimentary || account.details.complimentary_scheduled {
             <Form action="/{slug}/admin/organisations/complimentary" csrf={csrf}>
               <HiddenField name="organisation" value={organisation} />
-              <HiddenField name="action" value="revoke" />
+              <HiddenField name="billing_action" value="revoke" />
               <HiddenField name="idempotency_key" value={revoke_key} />
               <Field name="reason" label="Reason for revocation" required />
               <Actions><Button label="Revoke complimentary billing" kind="secondary" /></Actions>
