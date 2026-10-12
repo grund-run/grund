@@ -2270,6 +2270,12 @@ legend.field-label {
   grid-column: 1 / -1;
 }
 
+.fact-wide .fact-value > span {
+  overflow: visible;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
 .fact dd {
   margin: 0;
 }

@@ -469,7 +469,7 @@ pub async fn admin_page(
                         }
                         if state.billing.enabled() {
                             billing = AccountView::from_billing_operator(
-                                state.billing.account(id),
+                                state.billing.account_for_page(id).await,
                                 &state.billing,
                             );
                         }

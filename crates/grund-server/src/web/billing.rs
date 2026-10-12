@@ -73,8 +73,12 @@ pub async fn page(
     if !state.billing.enabled() || member.membership.role != "owner" {
         return not_found_page(&state, &member.browser);
     }
-    let account =
-        AccountView::from_billing(state.billing.account(member.membership.organisation_id));
+    let account = AccountView::from_billing(
+        state
+            .billing
+            .account_for_page(member.membership.organisation_id)
+            .await,
+    );
     let notice = match query.done.as_str() {
         "changed" => "Plan change requested.",
         "cancelled" => "Cancellation requested for the end of the current period.",

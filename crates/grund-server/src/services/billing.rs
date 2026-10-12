@@ -5,9 +5,9 @@
 //!
 //! Without GRUND_BILLING_URL (every self-hosted instance) the shim is
 //! [`Billing::Free`]: every organisation is free, deleting is allowed, and
-//! nothing is queued. Settings use a process-local billing account cache:
-//! a missing or expired account refreshes in the background, never on an
-//! ordinary page's critical path. Billing actions and deletion fail closed.
+//! nothing is queued. Settings use a process-local billing account cache.
+//! Ordinary settings refresh in the background; billing pages wait up to two
+//! seconds when no usable account is cached. Actions and deletion fail closed.
 
 use std::{
     collections::HashMap,
@@ -264,6 +264,44 @@ impl Billing {
                 BillingView::Unavailable
             }
         }
+    }
+
+    /// Waits for one account read when a billing page has no usable cached value.
+    /// Warm accounts keep the background-refresh behaviour of ordinary settings.
+    pub async fn account_for_page(&self, organisation_id: Uuid) -> BillingView {
+        let Billing::Remote(remote) = self else {
+            return BillingView::Free;
+        };
+        let warm = remote
+            .accounts
+            .lock()
+            .get(&organisation_id)
+            .is_some_and(|account| {
+                account
+                    .fetched_at
+                    .is_some_and(|at| at.elapsed() <= ACCOUNT_MAX_STALE)
+                    && account
+                        .view
+                        .as_ref()
+                        .is_some_and(|view| !matches!(view, BillingView::Unavailable))
+            });
+        if warm {
+            return self.account(organisation_id);
+        }
+        let view = self.account_now(organisation_id).await;
+        if !matches!(view, BillingView::Unavailable) {
+            let now = Instant::now();
+            remote.accounts.lock().insert(
+                organisation_id,
+                CachedAccount {
+                    view: Some(view.clone()),
+                    fetched_at: Some(now),
+                    refresh_after: now + ACCOUNT_REFRESH,
+                    refreshing: false,
+                },
+            );
+        }
+        view
     }
 
     pub async fn checkout(

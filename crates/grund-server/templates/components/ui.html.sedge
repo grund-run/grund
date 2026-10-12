@@ -139,13 +139,13 @@ component Tabs(label: &str, tabs: &[(&str, &str, &str, &str)], active: &str, cou
 component Facts(children: Html) {
 <dl class="facts">{children}</dl>
 }
-component Fact(label: &str, value: &str, icon_name: &str, tone: &str, lines: &[(&str, &str)], wide: bool, after: &str, children: Option<Html>) {
+component Fact(label: &str, value: &str, icon_name: &str, tone: &str, lines: &[(&str, &str)], wide: bool, after: &str, children: Option<Html>, value_title: &str) {
 <div class={if *wide { "fact fact-wide" } else { "fact" }}>
   <dt class="fact-label">{label}</dt>
   {if let Some(children) = children {
     <dd class="fact-body">{children}</dd>
   } else {
-    <dd class="fact-value">{if !icon_name.is_empty() { <Icon name={icon_name} /> } else if !tone.is_empty() { <span class="dot dot-lg tone-{tone}" aria-hidden="true"></span> }}<span title={value}>{value}</span>{if !after.is_empty() { <span class="fact-after" title={after}>{after}</span> }}</dd>
+    <dd class="fact-value">{if !icon_name.is_empty() { <Icon name={icon_name} /> } else if !tone.is_empty() { <span class="dot dot-lg tone-{tone}" aria-hidden="true"></span> }}<span title={if value_title.is_empty() { value } else { value_title }}>{value}</span>{if !after.is_empty() { <span class="fact-after" title={after}>{after}</span> }}</dd>
     {for line in lines.iter() { <dd class="fact-line" title={if line.1.is_empty() { None } else { Some(line.1) }}>{line.0}</dd> }}
   }}
 </div>

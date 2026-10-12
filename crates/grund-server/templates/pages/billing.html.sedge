@@ -19,8 +19,11 @@ props crate::web::billing::BillingPage<'_> { viewer, csrf, account, notice, erro
       }}
       {if account.details.complimentary {
         <Fact label="Complimentary" value="Active" />
-        {if !account.details.complimentary_reason.is_empty() { <Fact label="Reason" value={&account.details.complimentary_reason} /> }}
-        {if let Some(expires) = &account.details.complimentary_expires_at { <Fact label="Until" value={expires} /> }}
+        {if !account.details.complimentary_reason.is_empty() { <Fact label="Reason" value={&account.details.complimentary_reason} wide /> }}
+        {if let Some(expires) = &account.details.complimentary_expires_at {
+          {let date = crate::web::time::date(expires);}
+          <Fact label="Until" value={&date} value_title={expires} />
+        }}
         <Fact label="Total" value="€0" />
       }}
     </Facts></Section>

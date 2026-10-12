@@ -179,7 +179,9 @@ appended). See [.env.example](.env.example).
   grund's hosted service. Without `GRUND_BILLING_URL` every organisation is
   free and nothing is sent anywhere. With `GRUND_BILLING_URL` and
   `GRUND_BILLING_TOKEN`, owners choose Homelab, Pro or Business in
-  Organisation settings → Billing. Set `GRUND_BILLING_REDIRECT_ORIGINS` to
+  Organisation settings → Billing. Owner and operator billing pages wait up
+  to two seconds for an account read when no usable account is cached; other
+  settings never wait for billing. Set `GRUND_BILLING_REDIRECT_ORIGINS` to
   comma-separated bare HTTPS origins allowed for checkout and portal redirects;
   without an allowed origin, a remote checkout or portal link is refused.
   The separate billing service owns payment state and checks it before changes.

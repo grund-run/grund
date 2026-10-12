@@ -111,7 +111,7 @@ async fn an_owner_can_begin_checkout_without_a_payment_return_marking_the_plan_p
     };
     let owner = given.a_signed_in_account().await?;
     let path = format!("/{}/settings/billing", owner.username);
-    eventually_account(&when, &then, &path, "First own machine free").await?;
+    when.visiting(&path).await?;
     then.status(200)?
         .body_contains("First own machine free")?
         .body_contains("€49 per month")?;
@@ -226,7 +226,9 @@ async fn only_operator_managers_can_grant_complimentary_billing() -> anyhow::Res
         "/{operator}/admin?tab=organisations&organisation={}",
         target.username
     );
-    eventually_account(&when, &then, &admin, "Grant complimentary billing").await?;
+    when.visiting(&admin).await?;
+    then.status(200)?
+        .body_contains("Grant complimentary billing")?;
     then.status(200)?.body_contains("Complimentary")?;
     let key = form_key(&when, 0)?;
     when.submitting_on_current_page(

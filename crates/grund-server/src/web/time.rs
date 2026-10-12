@@ -27,6 +27,12 @@ pub fn absolute(value: &str) -> String {
         .unwrap_or_else(|_| "Not reported".to_owned())
 }
 
+pub fn date(value: &str) -> String {
+    DateTime::parse_from_rfc3339(value)
+        .map(|at| at.with_timezone(&Utc).format("%-d %B %Y").to_string())
+        .unwrap_or_else(|_| "Not reported".to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -46,5 +52,10 @@ mod tests {
             assert_eq!(ago(now - chrono::Duration::seconds(seconds), now), words);
         }
         assert_eq!(display("", now), "Not reported");
+    }
+    #[test]
+    fn billing_expiry_uses_the_utc_calendar_date() {
+        assert_eq!(date("2027-01-01T00:00:00Z"), "1 January 2027");
+        assert_eq!(date("2026-12-31T23:30:00-02:00"), "1 January 2027");
     }
 }
