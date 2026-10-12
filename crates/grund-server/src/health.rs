@@ -117,7 +117,7 @@ pub fn registry(
         move || {
             let pool = outbox_pool.clone();
             async move {
-                let pending = grund_store::outbox::pending(&pool)
+                let pending = grund_store::outbox::pending_mail(&pool)
                     .await
                     .map_err(|error| StatusError::from(anyhow::Error::from(error)))?;
                 Ok(match (mail_configured, pending) {

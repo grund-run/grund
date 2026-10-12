@@ -116,10 +116,10 @@ pub enum MailError {
     /// GRUND_SMTP_URL is not set; the mail waits in the outbox.
     #[error("mail is not configured")]
     NotConfigured,
-    /// The address or message can never be sent; retrying will not help.
+    /// The address or message could not be constructed locally.
     #[error("undeliverable")]
     Permanent,
-    /// The server refused or was unreachable this time.
+    /// The SMTP server refused or was unreachable; keep the mail for retry.
     #[error("delivery failed; will retry")]
     Transient,
 }
@@ -179,20 +179,18 @@ impl Mailer {
             .multipart(MultiPart::alternative_plain_html(plain, html))
             .map_err(|_| MailError::Permanent)?;
         transport.send(message).await.map(|_| ()).map_err(|error| {
-            if error.is_permanent() {
-                MailError::Permanent
-            } else {
-                let code = error.status().map(|code| code.to_string());
-                tracing::warn!(smtp_code = ?code, "smtp delivery failed; will retry");
-                MailError::Transient
-            }
+            let code = error.status().map(|code| code.to_string());
+            tracing::warn!(smtp_code = ?code, "smtp delivery failed; will retry");
+            MailError::Transient
         })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Mail, MailError};
+    use super::{Mail, MailError, Mailer};
+    use lettre::{AsyncSmtpTransport, Tokio1Executor};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
     #[test]
     fn mail_html_escapes_people_and_urls_without_changing_plain_text() {
@@ -233,5 +231,61 @@ mod tests {
             Mail::SignupExisting.bodies(&serde_json::json!({"login_link": "/login"})),
             Err(MailError::Permanent)
         ));
+    }
+
+    #[tokio::test]
+    async fn smtp_refusal_keeps_a_verification_mail_retryable() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut stream = BufReader::new(stream);
+            stream
+                .get_mut()
+                .write_all(b"220 smtp ready\r\n")
+                .await
+                .unwrap();
+            let mut command = String::new();
+            loop {
+                command.clear();
+                if stream.read_line(&mut command).await.unwrap() == 0 {
+                    break;
+                }
+                let answer: &[u8] = if command.starts_with("EHLO ") || command.starts_with("HELO ")
+                {
+                    b"250 smtp ready\r\n"
+                } else if command.starts_with("MAIL FROM:") {
+                    b"250 sender accepted\r\n"
+                } else if command.starts_with("RCPT TO:") {
+                    b"550 recipient temporarily refused by policy\r\n"
+                } else {
+                    break;
+                };
+                stream.get_mut().write_all(answer).await.unwrap();
+            }
+        });
+        let mailer = Mailer {
+            transport: Some(
+                AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous("127.0.0.1")
+                    .port(port)
+                    .build(),
+            ),
+            from: "grund <sender@example.test>".parse().unwrap(),
+        };
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            mailer.send(
+                Mail::VerifyEmail,
+                "recipient@example.test",
+                &serde_json::json!({
+                    "username": "recipient",
+                    "link": "https://example.test/verify?token=secret"
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(result, Err(MailError::Transient)));
+        server.await.unwrap();
     }
 }

@@ -151,6 +151,15 @@ pub async fn pending(executor: impl PgExecutor<'_>) -> Result<i64, sqlx::Error> 
         .await
 }
 
+/// Mail awaiting delivery; non-mail outbox work does not depend on SMTP.
+pub async fn pending_mail(executor: impl PgExecutor<'_>) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM grund_outbox WHERE delivered_at IS NULL AND kind LIKE 'mail.%'",
+    )
+    .fetch_one(executor)
+    .await
+}
+
 /// Deletes rows delivered longer ago than `retention`. Bounded per pass.
 pub async fn prune(executor: impl PgExecutor<'_>, retention: Duration) -> Result<u64, sqlx::Error> {
     let result = sqlx::query(

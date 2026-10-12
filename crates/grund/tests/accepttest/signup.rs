@@ -1,4 +1,6 @@
-use crate::accepttest::fixtures::testcase_with_mail;
+use std::time::{Duration, Instant};
+
+use crate::accepttest::fixtures::{DEFAULT_SMTP_URL, testcase_configured, testcase_with_mail};
 
 #[tokio::test]
 async fn a_new_account_can_sign_in_only_after_confirming_its_email() -> anyhow::Result<()> {
@@ -33,6 +35,58 @@ async fn a_new_account_can_sign_in_only_after_confirming_its_email() -> anyhow::
         "aria-label=\"{}: account menu\"",
         account.username
     ))?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn smtp_outage_keeps_verification_queued_until_sending_recovers() -> anyhow::Result<()> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let smtp_url = format!("smtp://{}", listener.local_addr()?);
+    drop(listener);
+    let Some((given, when, then)) = testcase_configured(&[("GRUND_SMTP_URL", &smtp_url)]).await?
+    else {
+        return Ok(());
+    };
+    let account =
+        tokio::time::timeout(Duration::from_secs(10), given.an_unconfirmed_account()).await??;
+    then.redirects_to("/signup/sent")?;
+    let fixture = &given.testcase.fixture;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let waiting = fixture
+            .count("SELECT count(*) FROM grund_outbox WHERE kind = 'mail.verify_email' AND delivered_at IS NULL AND last_error IS NOT NULL AND recipient <> '' AND payload ? 'link'")
+            .await?;
+        if waiting == 1 {
+            break;
+        }
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "verification mail was not retained after SMTP refusal"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let smtp_url = std::env::var("GRUND_ACCEPT_SMTP_URL")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_SMTP_URL.to_string());
+    fixture
+        .restart_with(&[("GRUND_SMTP_URL", &smtp_url)])
+        .await?;
+    let link = when
+        .the_mailed_link(&account.email, "Confirm your email", "/verify?token=")
+        .await?;
+    when.visiting(&link).await?;
+    then.status(200)?.body_contains("Confirm email")?;
+    when.submitting_on_current_page("/verify", &[("token", &given.last_token()?)])
+        .await?;
+    then.status(200)?.body_contains("Your email is confirmed")?;
+    anyhow::ensure!(
+        fixture
+            .count("SELECT count(*) FROM grund_outbox WHERE kind = 'mail.verify_email' AND delivered_at IS NOT NULL AND recipient = '' AND payload = '{}'::jsonb")
+            .await? == 1,
+        "delivered verification mail was not scrubbed"
+    );
     Ok(())
 }
 

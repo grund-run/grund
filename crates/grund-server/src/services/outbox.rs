@@ -35,7 +35,7 @@ pub const RESET_LINK_TTL: Duration = Duration::from_secs(30 * 60);
 /// How long delivered rows are kept before deletion (skills D-11).
 pub const RETENTION: Duration = Duration::from_secs(7 * 24 * 3600);
 
-const BATCH: i64 = 20;
+const BATCH: i64 = 1;
 
 /// The subject a commit that queued outbox work publishes to.
 pub fn wake_subject(prefix: &str) -> String {
@@ -70,7 +70,7 @@ impl OutboxDrain {
 
     #[tracing::instrument(name = "outbox.drain", skip(self))]
     async fn drain(&self) {
-        for _ in 0..10 {
+        for _ in 0..200 {
             let claimed = match outbox::claim(&self.state.pool, BATCH, LEASE).await {
                 Ok(claimed) => claimed,
                 Err(error) => {
