@@ -3,7 +3,6 @@
 //! signed desired state, the join tokens its VMs boot with, what it reports,
 //! and the VMs an organisation runs on its own machines.
 
-use anyhow::Context;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use buffa::Message;
 use chrono::{DateTime, Duration, Utc};
@@ -413,18 +412,42 @@ impl Agents {
         let mut addresses: std::collections::HashMap<Uuid, Option<String>> = Default::default();
         let mut custom: std::collections::HashMap<Uuid, Vec<String>> = Default::default();
         let mut replicas: Vec<agent::Replica> = Vec::with_capacity(placed.len());
+        let volume_backend = self.state.volume_backend();
         for row in &placed {
             let mut replica = replica_message(row);
+            let mut awaiting_block_receipt = false;
             for spec in &row.spec.0.volumes {
-                let mount = mounts
+                let Some(mount) = mounts
                     .iter()
                     .find(|v| v.app_id == row.app_id && v.name == spec.name)
-                    .with_context(|| {
-                        format!(
-                            "volume {} of app {} is not attached to its placement machine",
-                            spec.name, row.app_id
-                        )
-                    })?;
+                else {
+                    if spec.size_gib.is_some() {
+                        awaiting_block_receipt = true;
+                        break;
+                    }
+                    anyhow::bail!(
+                        "volume {} of app {} is not attached to its placement machine",
+                        spec.name,
+                        row.app_id
+                    );
+                };
+                if spec.size_gib.is_some() {
+                    if mount.status != "attached"
+                        || mount.slot.is_none()
+                        || mount.size_gib != spec.size_gib.map(|size| size as i64)
+                    {
+                        awaiting_block_receipt = true;
+                        break;
+                    }
+                    let ready = match &volume_backend {
+                        Some(backend) => backend.mount_ready(connection, mount).await?,
+                        None => false,
+                    };
+                    if !ready {
+                        awaiting_block_receipt = true;
+                        break;
+                    }
+                }
                 anyhow::ensure!(
                     mount.path == spec.path && mount.source == spec.source,
                     "volume {} of app {} does not match release mount",
@@ -436,8 +459,12 @@ impl Agents {
                     name: spec.name.clone(),
                     path: spec.path.clone(),
                     source: spec.source.clone().unwrap_or_default(),
+                    block_device: spec.size_gib.is_some(),
                     ..Default::default()
                 });
+            }
+            if awaiting_block_receipt {
+                continue;
             }
             if crate::services::entry::publishes(&row.spec.0) {
                 if let std::collections::hash_map::Entry::Vacant(slot) = addresses.entry(row.app_id)
@@ -471,6 +498,12 @@ impl Agents {
         }
         if replicas.iter().any(|r| !r.volumes.is_empty()) || !cleanup.is_empty() {
             required_features.push("volumes".to_string());
+        }
+        if replicas
+            .iter()
+            .any(|r| r.volumes.iter().any(|v| v.block_device))
+        {
+            required_features.push("block-volumes".to_string());
         }
         let payload = agent::DesiredState {
             machine_id: host_machine_id.to_string(),

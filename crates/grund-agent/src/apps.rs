@@ -288,6 +288,9 @@ pub fn spec_hash(replica: &Replica) -> String {
         part("volume-name", volume.name.as_bytes());
         part("volume-path", volume.path.as_bytes());
         part("volume-source", volume.source.as_bytes());
+        if volume.block_device {
+            part("volume-block-device", &[1]);
+        }
     }
     hex::encode(hasher.finalize())
 }
@@ -701,6 +704,19 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
         }
     }
 
+    fn release_unused_blocks(
+        &self,
+        desired: Option<&DesiredState>,
+        mounted: &[(String, VolumeBind)],
+    ) {
+        if self.stops.is_empty()
+            && volume::has_block_owners(&self.volume_data_dir)
+            && let Err(error) = volume::release_unused(&self.volume_data_dir, desired, mounted)
+        {
+            tracing::warn!(error = %format!("{error:#}"), "could not release unused block mounts");
+        }
+    }
+
     /// One pass: observe, plan, act, check, report.
     pub async fn pass(&mut self) -> anyhow::Result<()> {
         self.stops.retain(|_, h| !h.is_finished());
@@ -717,9 +733,26 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                 .as_ref()
                 .is_none_or(|d| d.volume_deletions.is_empty())
         {
-            let containers: Vec<ContainerStatus> = self.runtime.list().await.unwrap_or_default();
+            let containers = match self.runtime.list().await {
+                Ok(containers) => containers,
+                Err(_) => {
+                    self.publish(Vec::new(), Vec::new());
+                    return Ok(());
+                }
+            };
             for container in &containers {
                 self.stop(container);
+            }
+            if containers.is_empty()
+                && self.stops.is_empty()
+                && volume::has_block_owners(&self.volume_data_dir)
+            {
+                match self.runtime.mounted_volumes().await {
+                    Ok(mounted) => self.release_unused_blocks(desired.as_ref(), &mounted),
+                    Err(error) => {
+                        tracing::warn!(error = %format!("{error:#}"), "could not inspect block volume holders")
+                    }
+                }
             }
             self.erase_deleted(desired.as_ref(), &[]);
             self.publish(Vec::new(), Vec::new());
@@ -745,6 +778,7 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
             || desired
                 .as_ref()
                 .is_some_and(|d| !d.volume_deletions.is_empty())
+            || volume::has_block_owners(&self.volume_data_dir)
         {
             self.runtime.mounted_volumes().await?
         } else {
@@ -1229,6 +1263,7 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
             }
             changed
         });
+        self.release_unused_blocks(desired.as_ref(), &mounted);
         self.publish(reports.into_values().collect(), refusals);
         self.erase_deleted(desired.as_ref(), &mounted);
         Ok(())

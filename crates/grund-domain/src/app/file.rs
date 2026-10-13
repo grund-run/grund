@@ -149,8 +149,8 @@ where
     deserializer.deserialize_map(UniqueVolumes)
 }
 
-/// One volume mounted by this app. Local machine policy must allow an
-/// existing source; an omitted source creates a managed directory instead.
+/// One volume mounted by this app. An omitted source uses an own-machine
+/// managed directory unless size_gib requests hosted block storage.
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FileVolume {
@@ -159,10 +159,15 @@ pub struct FileVolume {
     #[schemars(extend("pattern" = "^/(?!\\.\\.?(/|$))[^/\\u0000-\\u001f]+(?:/(?!\\.\\.?(/|$))[^/\\u0000-\\u001f]+)*$"))]
     pub path: String,
     /// Existing absolute host directory on an own machine, allowed by its
-    /// local policy. Leave out to use a grund-managed directory.
+    /// local policy. Leave out for a managed or hosted volume.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(extend("pattern" = "^/(?!\\.\\.?(/|$))[^/\\u0000-\\u001f]+(?:/(?!\\.\\.?(/|$))[^/\\u0000-\\u001f]+)*$", "maxLength" = 4096))]
     pub source: Option<String>,
+    /// Hosted block volume capacity in GiB (1 to 4096). Leave out for an
+    /// own-machine directory with no promised quota.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1, max = 4096))]
+    pub size_gib: Option<u64>,
     /// `daily` opts into daily backups (requires a configured destination).
     /// Omitted or `off` means no scheduled backups.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -484,6 +489,7 @@ pub fn parse_app(text: &str, name: &str) -> Result<Declared, SpecError> {
             name: name.clone(),
             path: volume.path.clone(),
             source: volume.source.clone(),
+            size_gib: volume.size_gib,
             backup: matches!(volume.backup, Some(FileBackup::Daily)),
         })
         .collect();
@@ -691,6 +697,7 @@ fn file_app(spec: &AppSpec, settings: &AppSettings) -> FileApp {
                     FileVolume {
                         path: v.path.clone(),
                         source: v.source.clone(),
+                        size_gib: v.size_gib,
                         backup: v.backup.then_some(FileBackup::Daily),
                     },
                 )
@@ -910,12 +917,14 @@ apps:
                     name: "data".into(),
                     path: "/data".into(),
                     source: None,
+                    size_gib: None,
                     backup: false,
                 },
                 VolumeSpec {
                     name: "media".into(),
                     path: "/var/media".into(),
                     source: Some("/srv/photos".into()),
+                    size_gib: None,
                     backup: true,
                 },
             ]
@@ -935,6 +944,36 @@ apps:
         assert!(!exported.contains("backup: off"), "{exported}");
         let off = text.replace("backup: daily", "backup: off");
         assert!(!parse_app(&off, "photos").unwrap().spec.volumes[1].backup);
+    }
+
+    #[test]
+    fn sized_volumes_roundtrip_and_refuse_out_of_range_capacity() {
+        let prefix = "apps:\n  photos:\n    image: example/photos:1\n    volumes:\n      data:\n        path: /data\n        size_gib: ";
+        for size in [1, 4096] {
+            let file = format!("{prefix}{size}\n");
+            let photos = parse_app(&file, "photos").unwrap();
+            assert_eq!(photos.spec.volumes[0].size_gib, Some(size));
+            let exported = render(
+                "photos",
+                &photos.spec,
+                &AppSettings::validate(photos.settings).unwrap(),
+                "https://grund.example/schema/grund.json",
+            );
+            assert_eq!(parse_app(&exported, "photos").unwrap().spec, photos.spec);
+            assert!(schema_validator().is_valid(&as_json(&file)), "{file}");
+            assert!(
+                schema_validator().is_valid(&as_json(&exported)),
+                "{exported}"
+            );
+        }
+        for size in [0, 4097] {
+            let file = format!("{prefix}{size}\n");
+            assert_eq!(
+                parse_app(&file, "photos").unwrap_err().field,
+                "apps.photos.volumes[0].size_gib"
+            );
+            assert!(!schema_validator().is_valid(&as_json(&file)), "{file}");
+        }
     }
 
     #[test]

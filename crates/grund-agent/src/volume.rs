@@ -1,6 +1,6 @@
-//! Agent-owned persistent volume directories and locally authorized host binds.
-//! Ownership records live outside container-writable directories, under a
-//! root-owned sibling. A missing or changed directory is never recreated.
+//! Agent-owned persistent volume directories, attached ext4 block volumes,
+//! and locally authorized host binds. Ownership records live outside
+//! container-writable directories; a missing source is never silently replaced.
 
 use std::{
     collections::HashMap,
@@ -11,7 +11,7 @@ use std::{
         fd::{AsRawFd, FromRawFd},
         unix::{
             ffi::OsStrExt,
-            fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+            fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
         },
     },
     path::{Component, Path, PathBuf},
@@ -21,6 +21,7 @@ use std::{
 use anyhow::{Context, ensure};
 use grund_proto::grund::agent::v1::{DesiredState, VolumeMount};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::runtime::VolumeBind;
 
@@ -242,6 +243,254 @@ pub fn managed_path(data_dir: &Path, volume_id: &str) -> anyhow::Result<PathBuf>
     Ok(data_dir.join("volumes").join(volume_id))
 }
 
+#[derive(Serialize, Deserialize)]
+struct BlockOwner {
+    app_id: String,
+    volume_id: String,
+    #[serde(default)]
+    deleting: bool,
+}
+
+fn block_roots(data_dir: &Path) -> anyhow::Result<(PathBuf, PathBuf)> {
+    let data = directory(data_dir)?;
+    let meta = data.metadata()?;
+    ensure!(
+        meta.uid() == unsafe { libc::geteuid() } && meta.permissions().mode() & 0o022 == 0,
+        "{} must be owned by the agent and not writable by other users",
+        data_dir.display()
+    );
+    for name in ["block-volumes", "block-owners"] {
+        mkdir_child(&data, name)?;
+        let dir = directory(&data_dir.join(name))?;
+        let meta = dir.metadata()?;
+        ensure!(
+            meta.uid() == unsafe { libc::geteuid() } && meta.permissions().mode() & 0o077 == 0,
+            "{name} must be private to the machine agent"
+        );
+    }
+    Ok((
+        data_dir.join("block-volumes"),
+        data_dir.join("block-owners"),
+    ))
+}
+
+fn read_block_owner(owners: &Path, id: &str) -> anyhow::Result<Option<BlockOwner>> {
+    let dir = directory(owners)?;
+    let name = CString::new(format!("{id}.json"))?;
+    let fd = unsafe {
+        libc::openat(
+            dir.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        let error = io::Error::last_os_error();
+        if error.kind() == io::ErrorKind::NotFound {
+            return Ok(None);
+        }
+        return Err(error).context("open block volume ownership record");
+    }
+    let file = unsafe { File::from_raw_fd(fd) };
+    ensure!(
+        file.metadata()?.is_file(),
+        "block owner record is not a file"
+    );
+    Ok(Some(serde_json::from_reader(file)?))
+}
+
+fn block_identity(app: &str, name: &str, id: &str) -> anyhow::Result<Uuid> {
+    let app = Uuid::parse_str(app).context("block volume app ID is not a UUID")?;
+    ensure!(!name.is_empty(), "block volume name is empty");
+    ensure!(valid_id(id), "block volume ID is not a canonical UUID");
+    let id = Uuid::parse_str(id)?;
+    ensure!(
+        Uuid::new_v5(&app, name.as_bytes()) == id,
+        "block volume ID does not match its app-scoped immutable name"
+    );
+    Ok(id)
+}
+
+const EXT4_SUPERBLOCK_OFFSET: u64 = 1024;
+const EXT4_MAGIC_OFFSET: usize = 56;
+const EXT4_UUID_OFFSET: usize = 104;
+fn ext4_uuid(file: &File) -> io::Result<Option<Uuid>> {
+    use std::os::unix::fs::FileExt;
+    let mut superblock = [0u8; EXT4_UUID_OFFSET + 16];
+    match file.read_exact_at(&mut superblock, EXT4_SUPERBLOCK_OFFSET) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(error) => return Err(error),
+    }
+    if superblock[EXT4_MAGIC_OFFSET..EXT4_MAGIC_OFFSET + 2] != [0x53, 0xef] {
+        return Ok(None);
+    }
+    Ok(Some(Uuid::from_bytes(
+        superblock[EXT4_UUID_OFFSET..EXT4_UUID_OFFSET + 16]
+            .try_into()
+            .expect("fixed superblock offset"),
+    )))
+}
+
+fn matches_ext4(file: &File, id: Uuid) -> io::Result<bool> {
+    Ok(ext4_uuid(file)? == Some(id))
+}
+
+fn open_block_device(path: &Path) -> io::Result<Option<File>> {
+    let device = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(path)?;
+    Ok(device
+        .metadata()?
+        .file_type()
+        .is_block_device()
+        .then_some(device))
+}
+
+const MAX_BLOCK_DEVICES: usize = 1024;
+
+fn find_block_device(id: Uuid) -> anyhow::Result<File> {
+    let mut found = None;
+    let mut examined = 0;
+    for entry in fs::read_dir("/sys/class/block").context("list attached block devices")? {
+        examined += 1;
+        ensure!(
+            examined <= MAX_BLOCK_DEVICES,
+            "too many attached block devices to safely identify a volume"
+        );
+        let name = entry?.file_name();
+        if name.as_bytes().is_empty()
+            || !name
+                .as_bytes()
+                .iter()
+                .all(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == b'-')
+        {
+            continue;
+        }
+        let path = Path::new("/dev").join(&name);
+        let device = match open_block_device(&path) {
+            Ok(Some(device)) => device,
+            Ok(None) | Err(_) => continue,
+        };
+        if matches_ext4(&device, id).unwrap_or(false) {
+            ensure!(found.is_none(), "more than one device has this ext4 UUID");
+            found = Some(device);
+        }
+    }
+    found.context("matching ext4 block device is not attached")
+}
+
+fn mount_id(dir: &File) -> anyhow::Result<u64> {
+    let mut stat: libc::statx = unsafe { std::mem::zeroed() };
+    let result = unsafe {
+        libc::statx(
+            dir.as_raw_fd(),
+            c"".as_ptr(),
+            libc::AT_EMPTY_PATH,
+            libc::STATX_MNT_ID,
+            &mut stat,
+        )
+    };
+    if result < 0 {
+        return Err(io::Error::last_os_error()).context("inspect volume mount identity");
+    }
+    ensure!(
+        stat.stx_mask & libc::STATX_MNT_ID != 0,
+        "kernel did not report volume mount identity"
+    );
+    Ok(stat.stx_mnt_id)
+}
+
+fn check_block_mount(dir: &File, root: &File, device: &File) -> anyhow::Result<bool> {
+    if mount_id(dir)? == mount_id(root)? {
+        return Ok(false);
+    }
+    let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstatfs(dir.as_raw_fd(), &mut stat) } < 0 {
+        return Err(io::Error::last_os_error()).context("inspect mounted filesystem");
+    }
+    let dev = device.metadata()?;
+    let mounted = dir.metadata()?;
+    ensure!(
+        stat.f_type == 0xef53 && mounted.dev() == dev.rdev(),
+        "mounted block filesystem does not match signed ext4 identity"
+    );
+    Ok(true)
+}
+
+fn block_source(data_dir: &Path, app: &str, name: &str, id: &str) -> anyhow::Result<PathBuf> {
+    let expected = block_identity(app, name, id)?;
+    let (root, owners) = block_roots(data_dir)?;
+    let (managed_root, managed_owners) = managed_roots(data_dir)?;
+    ensure!(
+        read_owner(&managed_owners, id)?.is_none()
+            && fs::symlink_metadata(managed_root.join(id))
+                .is_err_and(|error| error.kind() == io::ErrorKind::NotFound),
+        "block volume conflicts with an existing managed directory"
+    );
+    let parent = directory(&root)?;
+    lock_directory(&parent, true)?;
+    if let Some(record) = read_block_owner(&owners, id)? {
+        ensure!(
+            record.app_id == app && record.volume_id == id,
+            "block volume belongs to another app"
+        );
+        ensure!(!record.deleting, "block volume is being deleted");
+    } else {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(owner_path(&owners, id))
+            .context("record block volume ownership")?;
+        serde_json::to_writer(
+            &mut file,
+            &BlockOwner {
+                app_id: app.into(),
+                volume_id: id.into(),
+                deleting: false,
+            },
+        )?;
+        file.sync_all()?;
+        directory(&owners)?.sync_all()?;
+    }
+    mkdir_child(&parent, id)?;
+    parent.sync_all()?;
+    let path = root.join(id);
+    let device = find_block_device(expected)?;
+    let dir = directory(&path).context("block mountpoint is missing or unsafe")?;
+    if !check_block_mount(&dir, &parent, &device)? {
+        let meta = dir.metadata()?;
+        ensure!(
+            meta.uid() == unsafe { libc::geteuid() }
+                && meta.permissions().mode() & 0o077 == 0
+                && fs::read_dir(&path)?.next().is_none(),
+            "block mountpoint must be agent-owned, private and empty"
+        );
+        let device_fd = CString::new(format!("/proc/self/fd/{}", device.as_raw_fd()))?;
+        let target = CString::new(path.as_os_str().as_bytes())?;
+        if unsafe {
+            libc::mount(
+                device_fd.as_ptr(),
+                target.as_ptr(),
+                c"ext4".as_ptr(),
+                libc::MS_NOSUID | libc::MS_NODEV,
+                std::ptr::null(),
+            )
+        } < 0
+        {
+            return Err(io::Error::last_os_error()).context("mount matching ext4 block device");
+        }
+        let mounted = directory(&path)?;
+        ensure!(
+            check_block_mount(&mounted, &parent, &device)?,
+            "block device mount did not appear"
+        );
+    }
+    Ok(path)
+}
+
 fn owner_matches(record: &Owner, app: &str, id: &str, dir: &File) -> anyhow::Result<()> {
     let meta = dir.metadata()?;
     ensure!(
@@ -336,7 +585,13 @@ pub fn prepare(
                 .any(|v: &VolumeBind| overlaps(Path::new(&v.path), destination)),
             "overlapping writable container volume paths"
         );
-        let source = if mount.source.is_empty() {
+        let source = if mount.block_device {
+            ensure!(
+                mount.source.is_empty(),
+                "block volume cannot name a host path"
+            );
+            block_source(data_dir, app, &mount.name, &mount.volume_id)?
+        } else if mount.source.is_empty() {
             provision(data_dir, app, &mount.volume_id)?
         } else {
             let source = Path::new(&mount.source);
@@ -380,7 +635,8 @@ pub fn prepare(
             name: mount.name.clone(),
             path: mount.path.clone(),
             source: source.display().to_string(),
-            managed: mount.source.is_empty(),
+            managed: mount.source.is_empty() && !mount.block_device,
+            block_device: mount.block_device,
         });
     }
     Ok(binds)
@@ -398,6 +654,15 @@ pub fn verify_bind(data_dir: &Path, roots: &[PathBuf], bind: &VolumeBind) -> any
         "invalid volume identity"
     );
     let path = Path::new(&bind.source);
+    if bind.block_device {
+        ensure!(
+            path == data_dir.join("block-volumes").join(&bind.volume_id),
+            "block volume source is not agent-controlled"
+        );
+        ensure!(!bind.managed, "block volume cannot be a managed directory");
+        block_source(data_dir, &bind.app_id, &bind.name, &bind.volume_id)?;
+        return directory(path);
+    }
     if bind.managed {
         let (root, owners) = managed_roots(data_dir)?;
         ensure!(
@@ -473,6 +738,7 @@ pub fn restore_guard(
         path: "/restore".into(),
         source: path.display().to_string(),
         managed: true,
+        block_device: false,
     };
     let verified = verify_bind(data_dir, &[], &bind)?;
     let old = dir.metadata()?;
@@ -563,13 +829,135 @@ pub fn grant_access(
     Ok(())
 }
 
-/// Erase only a directory with a matching owner record, after its writer is
-/// stopped. Leave the deleting record as a durable replay receipt until the
-/// control plane removes the tombstone; this also prevents ID reuse.
+fn release_block(root: &Path, id: &str) -> anyhow::Result<()> {
+    let path = root.join(id);
+    let dir = match directory(&path) {
+        Ok(dir) => dir,
+        Err(error) => match fs::symlink_metadata(&path) {
+            Err(absent) if absent.kind() == io::ErrorKind::NotFound => return Ok(()),
+            _ => return Err(error),
+        },
+    };
+    let parent = directory(root)?;
+    lock_directory(&parent, true)?;
+    let mounted = mount_id(&dir)? != mount_id(&parent)?;
+    if mounted {
+        let expected = Uuid::parse_str(id)?;
+        let device = find_block_device(expected)?;
+        ensure!(
+            check_block_mount(&dir, &parent, &device)?,
+            "block filesystem is not mounted"
+        );
+    }
+    drop(dir);
+    if mounted {
+        let target = CString::new(path.as_os_str().as_bytes())?;
+        if unsafe { libc::umount2(target.as_ptr(), 0) } < 0 {
+            return Err(io::Error::last_os_error()).context("unmount unused block volume");
+        }
+    }
+    fs::remove_dir(&path).context("remove empty block mountpoint")?;
+    parent.sync_all()?;
+    Ok(())
+}
+
+pub fn has_block_owners(data_dir: &Path) -> bool {
+    data_dir.join("block-owners").exists()
+}
+
+/// Release a block mount only after its signed writer and every runtime
+/// container holding it are absent. Keep owner metadata for a future attach.
+pub fn release_unused(
+    data_dir: &Path,
+    desired: Option<&DesiredState>,
+    mounted: &[(String, VolumeBind)],
+) -> anyhow::Result<()> {
+    if !has_block_owners(data_dir) {
+        return Ok(());
+    }
+    let (root, owners) = block_roots(data_dir)?;
+    for (count, entry) in fs::read_dir(&owners)?.enumerate() {
+        ensure!(
+            count < MAX_BLOCK_DEVICES,
+            "too many block volume owner records"
+        );
+        let name = entry?.file_name();
+        let Some(id) = name.to_str().and_then(|name| name.strip_suffix(".json")) else {
+            continue;
+        };
+        if !valid_id(id)
+            || mounted.iter().any(|(_, bind)| bind.volume_id == id)
+            || desired.is_some_and(|state| {
+                state.replicas.iter().any(|replica| {
+                    replica
+                        .volumes
+                        .iter()
+                        .any(|volume| volume.block_device && volume.volume_id == id)
+                })
+            })
+        {
+            continue;
+        }
+        let record = read_block_owner(&owners, id)?.context("block volume owner is missing")?;
+        ensure!(
+            record.volume_id == id && !record.app_id.is_empty(),
+            "block volume owner record does not match its mountpoint"
+        );
+        release_block(&root, id)?;
+    }
+    Ok(())
+}
+
+fn delete_block(
+    root: &Path,
+    owners: &Path,
+    app: &str,
+    id: &str,
+    mut record: BlockOwner,
+) -> anyhow::Result<bool> {
+    ensure!(
+        record.app_id == app && record.volume_id == id,
+        "refusing to delete another app's block volume"
+    );
+    if !record.deleting {
+        record.deleting = true;
+        let temp = owners.join(format!("{id}.deleting"));
+        match fs::remove_file(&temp) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error).context("discard interrupted block deletion marker"),
+        }
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temp)
+            .context("record block volume deletion")?;
+        serde_json::to_writer(&mut file, &record)?;
+        file.sync_all()?;
+        fs::rename(temp, owner_path(owners, id))?;
+        directory(owners)?.sync_all()?;
+    }
+    release_block(root, id)?;
+    Ok(true)
+}
+
+/// Erase only a managed directory with a matching owner record, or unmount a
+/// matching block volume and remove its empty mountpoint. Never erase guest
+/// block bytes. Durable deleting records prevent ID reuse after a tombstone.
 pub fn delete_managed(data_dir: &Path, app: &str, id: &str) -> anyhow::Result<bool> {
     ensure!(
         valid_id(id) && !app.is_empty(),
         "invalid volume deletion identity"
+    );
+    let (block_root, block_owners) = block_roots(data_dir)?;
+    if let Some(record) = read_block_owner(&block_owners, id)? {
+        return delete_block(&block_root, &block_owners, app, id, record);
+    }
+    ensure!(
+        fs::symlink_metadata(block_root.join(id))
+            .is_err_and(|error| error.kind() == io::ErrorKind::NotFound),
+        "unowned block mountpoint cannot be deleted as a directory volume"
     );
     let (root, owners) = managed_roots(data_dir)?;
     let path = root.join(id);
@@ -775,6 +1163,123 @@ mod tests {
         fs::write(path.join("unowned"), b"do not erase").unwrap();
         assert!(delete_managed(&base, "app-a", ID).is_err());
         assert_eq!(fs::read(path.join("unowned")).unwrap(), b"do not erase");
+        fs::remove_dir_all(base).unwrap();
+    }
+    #[test]
+    fn block_identity_requires_ext4_magic_uuid_and_the_original_app_and_name() {
+        let base = scratch("block-identity");
+        let image = base.join("ext4-image");
+        let app = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+        let new_owner = Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap();
+        let id = Uuid::new_v5(&app, b"data");
+        let mut superblock = vec![0u8; 1024 + 120];
+        superblock[1024 + 56..1024 + 58].copy_from_slice(&[0x53, 0xef]);
+        superblock[1024 + 104..1024 + 120].copy_from_slice(id.as_bytes());
+        fs::write(&image, &superblock).unwrap();
+        assert!(matches_ext4(&File::open(&image).unwrap(), id).unwrap());
+        assert!(
+            open_block_device(&image).unwrap().is_none(),
+            "a regular file cannot be attached storage"
+        );
+        let link = base.join("device-link");
+        std::os::unix::fs::symlink(&image, &link).unwrap();
+        assert!(
+            open_block_device(&link).is_err(),
+            "a symlink cannot designate a device"
+        );
+
+        let original = id.to_string();
+        assert_eq!(
+            block_identity(&app.to_string(), "data", &original).unwrap(),
+            id
+        );
+        assert!(block_identity(&app.to_string(), "renamed", &original).is_err());
+        assert!(block_identity(&new_owner.to_string(), "data", &original).is_err());
+        let restored = Uuid::new_v5(&new_owner, b"data");
+        assert!(!matches_ext4(&File::open(&image).unwrap(), restored).unwrap());
+
+        superblock[1024 + 104..1024 + 120].copy_from_slice(restored.as_bytes());
+        fs::write(&image, &superblock).unwrap();
+        assert!(!matches_ext4(&File::open(&image).unwrap(), id).unwrap());
+        superblock[1024 + 56] = 0;
+        fs::write(&image, &superblock).unwrap();
+        assert!(!matches_ext4(&File::open(&image).unwrap(), restored).unwrap());
+
+        let mut signed = mount(&original, "/usr/lib");
+        signed.block_device = true;
+        assert!(prepare(&base, &[], &app.to_string(), &[signed]).is_err());
+        assert!(!managed_path(&base, &original).unwrap().exists());
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn a_previously_managed_directory_is_never_replaced_by_a_block_mount() {
+        let base = scratch("no-block-fallback");
+        let app = Uuid::parse_str("00000000-0000-0000-0000-000000000004").unwrap();
+        let id = Uuid::new_v5(&app, b"data").to_string();
+        let old = prepare(&base, &[], &app.to_string(), &[mount(&id, "")])
+            .unwrap()
+            .remove(0);
+        let bytes = Path::new(&old.source).join("important");
+        fs::write(&bytes, b"existing data").unwrap();
+        let mut signed = mount(&id, "");
+        signed.block_device = true;
+        let error = prepare(&base, &[], &app.to_string(), &[signed]).unwrap_err();
+        assert!(format!("{error:#}").contains("conflicts with an existing managed directory"));
+        assert_eq!(fs::read(&bytes).unwrap(), b"existing data");
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn releasing_a_block_mount_never_erases_guest_bytes_or_transfers_its_owner() {
+        let base = scratch("block-release");
+        let app = Uuid::parse_str("00000000-0000-0000-0000-000000000003").unwrap();
+        let id = Uuid::new_v5(&app, b"data").to_string();
+        let (root, owners) = block_roots(&base).unwrap();
+        let path = root.join(&id);
+        fs::create_dir(&path).unwrap();
+        let bytes = path.join("important");
+        fs::write(&bytes, b"do not erase").unwrap();
+        fs::write(
+            owner_path(&owners, &id),
+            serde_json::to_vec(&BlockOwner {
+                app_id: app.to_string(),
+                volume_id: id.clone(),
+                deleting: false,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let mut signed = mount(&id, "");
+        signed.block_device = true;
+        let desired = DesiredState {
+            replicas: vec![grund_proto::grund::agent::v1::Replica {
+                volumes: vec![signed],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        release_unused(&base, Some(&desired), &[]).unwrap();
+        assert_eq!(fs::read(&bytes).unwrap(), b"do not erase");
+        let bind = VolumeBind {
+            volume_id: id.clone(),
+            app_id: app.to_string(),
+            name: "data".into(),
+            path: "/data".into(),
+            source: path.display().to_string(),
+            managed: false,
+            block_device: true,
+        };
+        release_unused(&base, None, &[("replica".into(), bind)]).unwrap();
+        assert_eq!(fs::read(&bytes).unwrap(), b"do not erase");
+        assert!(release_unused(&base, None, &[]).is_err());
+        assert!(delete_managed(&base, "foreign-app", &id).is_err());
+        assert_eq!(fs::read(&bytes).unwrap(), b"do not erase");
+        fs::remove_file(&bytes).unwrap();
+        release_unused(&base, None, &[]).unwrap();
+        assert!(!path.exists());
+        assert!(delete_managed(&base, &app.to_string(), &id).unwrap());
+        assert!(block_source(&base, &app.to_string(), "data", &id).is_err());
         fs::remove_dir_all(base).unwrap();
     }
 }

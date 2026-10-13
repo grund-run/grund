@@ -16,6 +16,7 @@ use crate::{
     services::{
         capacity::CapacityProvider,
         machines::{HostedEnrollment, LeaseRecorder},
+        volumes::VolumeBackend,
     },
     state::State,
     web::pages::{NavLink, TypedViewer},
@@ -117,6 +118,11 @@ pub trait Extension: Send + Sync + 'static {
         _config: &ServeConfig,
     ) -> anyhow::Result<Option<Arc<dyn CapacityProvider>>> {
         Ok(None)
+    }
+    /// The hosted app-volume backend, when this instance can prove physical
+    /// placement and fenced host attachment. None keeps public own-only.
+    fn volume_backend(&self, _state: &State) -> Option<Arc<dyn VolumeBackend>> {
+        None
     }
 
     /// Handles an enrollment that requires extension-owned state.

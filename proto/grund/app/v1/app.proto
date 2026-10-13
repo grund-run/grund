@@ -112,11 +112,13 @@ message VolumeSpec {
   // Absolute container directory; mounts may not overlap.
   string path = 2;
   // Existing absolute host directory, allowed by that own machine's local
-  // policy. Empty creates a grund-managed directory on the own machine.
-  // No directory quota is promised; size is not supported in M1.
+  // policy. Empty uses a managed directory when size_gib is unset.
   string source = 3;
   // Opt into daily backups; false means no scheduled backups.
   bool backup = 4;
+  // 0 keeps the legacy own-machine directory. 1 to 4096 GiB requests a
+  // hosted block volume; source must be empty.
+  uint64 size_gib = 5;
 }
 
 message Port {

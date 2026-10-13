@@ -64,9 +64,10 @@ props crate::web::apps::DeployPage { slug, manages, mode, modes, new, new_error,
             <Field name="volume_name" label="Volume name" value={&new.volume_name} hint="Optional app-owned managed directory; use with Container path. One volume on this form; use grund.yaml for more." autocomplete="off" form={Some(&form_state)} />
             <Field name="volume_path" label="Container path" value={&new.volume_path} hint="Absolute path inside the container, such as /data." autocomplete="off" mono form={Some(&form_state)} />
             <Field name="volume_source" label="Existing host directory" value={&new.volume_source} hint="Optional absolute path on an own machine. Its owner must explicitly allow the containing root in /etc/grund/policy.yaml; grund never deletes its files." autocomplete="off" mono form={Some(&form_state)} />
+            <Field name="volume_size_gib" label="Hosted capacity" kind="number" value={&new.volume_size_gib} hint="Optional, 1 to 4096 GiB. Leave empty for an own-machine directory; cannot combine with an existing host directory." unit={Some("GiB")} min={Some("1")} max={Some("4096")} step={Some("1")} form={Some(&form_state)} />
           </Grid>
           <ToggleField name="volume_backup" label="Request daily encrypted S3 backup" checked={new.volume_backup == "on"} hint="Configure your bucket after deploy. No data is protected until a recovery point is verified." />
-          <Para kind="hint">Own-machine directories have no enforced size quota or default at-rest encryption. Backup is off by default; losing an unbacked-up disk loses its data. An app with storage runs one copy.</Para>
+          <Para kind="hint">Own-machine directories have no enforced size quota or default at-rest encryption. A hosted block volume has the requested capacity and is not mounted until its backend is ready. Backup is off by default; losing an unbacked-up disk loses its data. An app with storage runs one copy.</Para>
         </Expander></Expanders>
       </section>
     }}

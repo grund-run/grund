@@ -67,9 +67,7 @@ pub enum VolumesAction {
     List { app: String },
     #[command(about = "Show a volume and its current attachment and measured usage")]
     Show { app: String, volume: String },
-    #[command(
-        about = "Create an app-owned managed directory or register an allowed existing host directory"
-    )]
+    #[command(about = "Create an app-owned own-machine directory or a sized hosted block volume")]
     Create {
         app: String,
         name: String,
@@ -80,6 +78,8 @@ pub enum VolumesAction {
             help = "Existing absolute host directory; requires the machine owner's local allowlist"
         )]
         source: Option<String>,
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..=4096), help = "Hosted block volume capacity in GiB (1 to 4096); omit for an own-machine directory")]
+        size_gib: Option<u64>,
         #[arg(long, help = "Show the request instead of sending it")]
         dry_run: bool,
         #[arg(
@@ -160,6 +160,7 @@ const VOLUMES: &[(&str, &str)] = &[
     ("NAME", "/name"),
     ("ID", "/volumeId"),
     ("PATH", "/path"),
+    ("SIZE GiB (0=directory)", "/sizeGib"),
     ("STATE", "/status"),
     ("MACHINE", "/machineId"),
     ("MEASURED BYTES", "/measuredBytes"),
@@ -221,6 +222,7 @@ pub async fn run(ctx: &Ctx, action: VolumesAction) -> CliResult<Output> {
             backup,
             idempotency_key,
             source,
+            size_gib,
             dry_run: preview,
         } => {
             let request = json!({
@@ -230,6 +232,7 @@ pub async fn run(ctx: &Ctx, action: VolumesAction) -> CliResult<Output> {
                 "path": path,
                 "source": source.unwrap_or_default(),
                 "idempotencyKey": idempotency_key.unwrap_or_else(|| Uuid::now_v7().to_string()),
+                "sizeGib": size_gib.unwrap_or_default(),
                 "backup": backup,
             });
             if preview {

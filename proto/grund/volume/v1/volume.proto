@@ -39,11 +39,12 @@ message Volume {
   string app_id = 2;
   string name = 3;
   string path = 4;
-  // Empty for a grund-managed directory, not an arbitrary host root.
+  // Empty for an own-machine managed directory or hosted block volume.
   string source = 5;
   bool backup = 6;
   string machine_id = 7;
-  // requested, available, attached, pending_deletion, deleting, deleted.
+  // requested, available, attached, awaiting_backend, detaching_backend,
+  // pending_deletion, deleting, deleted. Awaiting backend is not mounted.
   string status = 8;
   optional uint64 measured_bytes = 9;
   google.protobuf.Timestamp measured_at = 10;
@@ -55,6 +56,9 @@ message Volume {
   string restore_failure_class = 13;
   // Present while pending deletion; after this time managed data may be erased.
   google.protobuf.Timestamp purge_after = 14;
+  // 0 is an own-machine directory without a promised quota. 1 to 4096 GiB
+  // is a hosted block volume's configured capacity, not its measured use.
+  uint64 size_gib = 15;
 }
 message ListVolumesRequest { string organisation = 1; string app = 2; }
 message ListVolumesResponse { repeated Volume volumes = 1; }
@@ -67,11 +71,14 @@ message CreateVolumeRequest {
   string app = 2;
   string name = 3;
   string path = 4;
-  // Empty requests a new managed directory; otherwise an existing absolute
-  // host directory, only when the machine owner allows it.
+  // Empty requests a managed directory or, with size_gib, a hosted block
+  // volume. Otherwise an existing absolute host directory on an own machine.
   string source = 5;
   bool backup = 6;
   string idempotency_key = 7;
+  // 0 requests a legacy own-machine directory; 1 to 4096 GiB requests a
+  // hosted block volume. An existing host-directory source cannot be sized.
+  uint64 size_gib = 8;
 }
 message CreateVolumeResponse { Volume volume = 1; }
 message AttachVolumeRequest {

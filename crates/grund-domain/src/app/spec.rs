@@ -311,6 +311,9 @@ pub struct VolumeSpec {
     /// An existing host directory; None uses a grund-managed directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// Fixed app-owned block capacity in GiB on a hosted machine; absent on own machines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_gib: Option<u64>,
     /// Opt-in daily backup policy; false means no scheduled backups.
     #[serde(default)]
     pub backup: bool,
@@ -534,6 +537,15 @@ impl AppSpec {
                 return refuse("check.timeout_ms", "use 100 to 30000, below the interval");
             }
         }
+        if self.volumes.iter().any(|volume| volume.size_gib.is_some())
+            && (self.volumes.len() > 4
+                || self.volumes.iter().any(|volume| volume.size_gib.is_none()))
+        {
+            return refuse(
+                "volumes",
+                "hosted releases require one to four block volumes and cannot mix own-machine directories",
+            );
+        }
         for (i, volume) in self.volumes.iter().enumerate() {
             if AppName::parse(&volume.name).map_or(true, |name| name.as_str() != volume.name) {
                 return refuse(
@@ -553,6 +565,16 @@ impl AppSpec {
                 return refuse(
                     format!("volumes[{i}].source"),
                     "use an absolute existing host directory without '.', '..', empty components or control bytes",
+                );
+            }
+            if volume
+                .size_gib
+                .is_some_and(|size| !(1..=4096).contains(&size))
+                || (volume.size_gib.is_some() && volume.source.is_some())
+            {
+                return refuse(
+                    format!("volumes[{i}].size_gib"),
+                    "use 1 to 4096 GiB for app-owned blocks, without an existing host source",
                 );
             }
             for prior in &self.volumes[..i] {
@@ -1053,6 +1075,7 @@ mod tests {
             path: path.into(),
             source: source.map(str::to_string),
             backup: false,
+            size_gib: None,
         };
         for (volume, field) in [
             (mount("data", "data", None), "volumes[0].path"),
@@ -1086,6 +1109,31 @@ mod tests {
         app.volumes[1].source = Some("/srv/database".into());
         app.volumes[1].name = "data".into();
         assert_eq!(app.validate().unwrap_err().field, "volumes[1].name");
+    }
+
+    #[test]
+    fn hosted_releases_require_only_block_drives_and_at_most_four_slots() {
+        let mut app = spec();
+        app.volumes = (0..4)
+            .map(|slot| VolumeSpec {
+                name: format!("disk{slot}"),
+                path: format!("/data/{slot}"),
+                source: None,
+                size_gib: Some(8),
+                backup: false,
+            })
+            .collect();
+        assert!(app.clone().validate().is_ok());
+        app.volumes.push(VolumeSpec {
+            name: "extra".into(),
+            path: "/extra".into(),
+            source: None,
+            size_gib: None,
+            backup: false,
+        });
+        assert_eq!(app.clone().validate().unwrap_err().field, "volumes");
+        app.volumes[4].size_gib = Some(8);
+        assert_eq!(app.validate().unwrap_err().field, "volumes");
     }
 
     #[test]

@@ -337,9 +337,42 @@ app can resume backup; it removes them after purge, not the external S3 data.
 Remove obsolete S3 data yourself. The backup does not include grund's own
 PostgreSQL or data volumes (see Self-hosting).
 
-Copies spread over machines, one per machine first, and a copy on a
-machine that stays unreachable for 2 minutes (`reschedule_after`) starts
-on another. On the Machines page, owners and admins label machines
+### Hosted block volumes (operator-enabled build)
+
+An instance with a hosted storage backend accepts a fixed block size in GiB
+instead of an own-machine directory or host path:
+
+```yaml
+apps:
+  photos:
+    image: example/photos:1
+    copies: 1
+    volumes:
+      data:
+        path: /data
+        size_gib: 200
+        backup: daily
+```
+
+One app may use up to four hosted drives, all on one eligible machine; do not
+mix block and own-machine mounts or combine `size_gib` with `source`. The
+generic public server includes this file/API contract but **not** a hosted
+storage backend: it rejects hosted creation rather than mounting an empty
+directory. On an operator-enabled instance, signed mounts require a fresh,
+exact host acknowledgement for that volume, machine lease and drive slot.
+The app waits when the acknowledgement or checked ext4 device is missing.
+Host-local bytes survive releases and a fenced lease-end detach, but moving
+to a different physical host requires a paused data-volume migration or an
+explicit restore into a new volume from a completed snapshot. Losing an
+unbacked-up host loses its data; `backup: daily` is a request, not a
+successful recovery point. Hosted provider snapshots do not use the
+customer's own-machine S3 destination.
+
+### Other app placement
+
+For apps without volumes, copies spread over machines, one per machine first;
+a copy on a machine that stays unreachable for 2 minutes (`reschedule_after`)
+starts on another. On the Machines page, owners and admins label machines
 (`zone=a`, `disk=ssd`) and take one out of service before maintenance: its
 copies move, each started and ready elsewhere before it stops. An app's
 `placement` picks machines by label and kind, and spreads over a label's

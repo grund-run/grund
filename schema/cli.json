@@ -808,8 +808,16 @@
           "description": "Absolute container directory; mounts may not overlap.",
           "type": "string"
         },
+        "sizeGib": {
+          "description": "0 keeps the legacy own-machine directory. 1 to 4096 GiB requests a hosted block volume; source must be empty.",
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
         "source": {
-          "description": "Existing absolute host directory, allowed by that own machine's local policy. Empty creates a grund-managed directory on the own machine. No directory quota is promised; size is not supported in M1.",
+          "description": "Existing absolute host directory, allowed by that own machine's local policy. Empty uses a managed directory when size_gib is unset.",
           "type": "string"
         }
       },
@@ -2042,12 +2050,20 @@
           "description": "Restore into this new volume: pending, leased, completed, failed, or empty for an ordinary volume. Completion alone never attaches it.",
           "type": "string"
         },
+        "sizeGib": {
+          "description": "0 is an own-machine directory without a promised quota. 1 to 4096 GiB is a hosted block volume's configured capacity, not its measured use.",
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
         "source": {
-          "description": "Empty for a grund-managed directory, not an arbitrary host root.",
+          "description": "Empty for an own-machine managed directory or hosted block volume.",
           "type": "string"
         },
         "status": {
-          "description": "requested, available, attached, pending_deletion, deleting, deleted.",
+          "description": "requested, available, attached, awaiting_backend, detaching_backend, pending_deletion, deleting, deleted. Awaiting backend is not mounted.",
           "type": "string"
         },
         "version": {
@@ -9673,6 +9689,13 @@
           "value_name": "SOURCE"
         },
         {
+          "description": "Hosted block volume capacity in GiB (1 to 4096); omit for an own-machine directory",
+          "flag": "--size-gib",
+          "name": "size_gib",
+          "type": "integer",
+          "value_name": "SIZE_GIB"
+        },
+        {
           "description": "Show the request instead of sending it",
           "flag": "--dry-run",
           "name": "dry_run",
@@ -9709,7 +9732,7 @@
       "rpcs": [
         "grund.volume.v1.VolumeService/CreateVolume"
       ],
-      "summary": "Create an app-owned managed directory or register an allowed existing host directory"
+      "summary": "Create an app-owned own-machine directory or a sized hosted block volume"
     },
     {
       "args": [

@@ -202,6 +202,7 @@ pub fn spec_input(spec: &proto::AppSpec) -> AppSpec {
                 name: v.name.clone(),
                 path: v.path.clone(),
                 source: (!v.source.is_empty()).then(|| v.source.clone()),
+                size_gib: (v.size_gib != 0).then_some(v.size_gib),
                 backup: v.backup,
             })
             .collect(),
@@ -280,6 +281,7 @@ pub fn spec_message(spec: &AppSpec) -> proto::AppSpec {
                 name: v.name.clone(),
                 path: v.path.clone(),
                 source: v.source.clone().unwrap_or_default(),
+                size_gib: v.size_gib.unwrap_or_default(),
                 backup: v.backup,
                 ..Default::default()
             })
@@ -950,9 +952,27 @@ mod tests {
                 timeout_ms: 1000,
             }),
             stop: StopSpec::default(),
-            volumes: Vec::new(),
+            volumes: vec![
+                VolumeSpec {
+                    name: "data".into(),
+                    path: "/data".into(),
+                    source: None,
+                    size_gib: Some(42),
+                    backup: false,
+                },
+                VolumeSpec {
+                    name: "cache".into(),
+                    path: "/cache".into(),
+                    source: None,
+                    size_gib: None,
+                    backup: false,
+                },
+            ],
         };
-        assert_eq!(spec_input(&spec_message(&spec)), spec);
+        let wire = spec_message(&spec);
+        assert_eq!(wire.volumes[0].size_gib, 42);
+        assert_eq!(wire.volumes[1].size_gib, 0);
+        assert_eq!(spec_input(&wire), spec);
     }
 
     #[test]

@@ -229,6 +229,7 @@ async fn deletion_retains_backup_and_name_until_test_clock_purges_it(pool: PgPoo
             path: "/data".into(),
             source: None,
             backup: true,
+            size_gib: None,
             at: start,
         },
     )

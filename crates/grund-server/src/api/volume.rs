@@ -170,6 +170,10 @@ fn message(row: &VolumeRow) -> proto::Volume {
         measured_at: row.measured_at.map(timestamp).unwrap_or_default(),
         purge_after: row.purge_after.map(timestamp).unwrap_or_default(),
         version: row.stream_version,
+        size_gib: row
+            .size_gib
+            .map(|size| u64::try_from(size).expect("stored volume capacity is non-negative"))
+            .unwrap_or_default(),
         ..Default::default()
     }
 }
@@ -278,10 +282,12 @@ impl VolumeService for VolumeApi {
             .await
             .map_err(failed)?;
         let mut volume = message(&row);
-        if let Some((status, failure)) =
-            grund_store::volumes::restore_status(&self.state.pool, org, app, row.volume_id)
-                .await
-                .map_err(|e| failed(VolumesError::Internal(e.into())))?
+        if let Some((status, failure)) = self
+            .state
+            .backups()
+            .restore_status(org, app, row.volume_id)
+            .await
+            .map_err(backup_failed)?
         {
             volume.restore_status = status;
             volume.restore_failure_class = failure.unwrap_or_default();
@@ -314,6 +320,7 @@ impl VolumeService for VolumeApi {
                     name: request.name,
                     path: request.path,
                     source: (!request.source.is_empty()).then_some(request.source),
+                    size_gib: (request.size_gib != 0).then_some(request.size_gib),
                     backup: request.backup,
                 },
                 &request.idempotency_key,
@@ -591,11 +598,13 @@ impl VolumeService for VolumeApi {
             )
             .await
             .map_err(backup_failed)?;
-        let status =
-            grund_store::volumes::restore_attempt_status(&self.state.pool, org, app, attempt)
-                .await
-                .map_err(|e| backup_failed(BackupError::Internal(e.into())))?
-                .unwrap_or_else(|| "pending".into());
+        let status = self
+            .state
+            .backups()
+            .restore_attempt_status(org, app, id(&request.source_volume_id)?, attempt)
+            .await
+            .map_err(backup_failed)?
+            .unwrap_or_else(|| "pending".into());
         Response::ok(RestoreRecoveryPointResponse {
             new_volume_id: new_volume.to_string(),
             attempt_id: attempt.to_string(),

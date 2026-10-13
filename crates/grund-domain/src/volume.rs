@@ -10,6 +10,8 @@ pub const VOLUME_CATEGORY: &str = "grund-volume";
 pub enum VolumeStatus {
     Requested,
     Available,
+    AwaitingBackend,
+    DetachingBackend,
     Attached,
     PendingDeletion,
     Deleting,
@@ -27,6 +29,8 @@ pub enum VolumeEvent {
         path: String,
         source: Option<String>,
         backup: bool,
+        #[serde(default)]
+        size_gib: Option<u64>,
         requested_at: DateTime<Utc>,
     },
     RestoreReserved {
@@ -41,6 +45,27 @@ pub enum VolumeEvent {
         machine_id: Uuid,
         path: String,
         attached_at: DateTime<Utc>,
+    },
+    BackendPlacementPrepared {
+        machine_id: Uuid,
+        slot: u8,
+        placed_at: DateTime<Utc>,
+    },
+    BackendAttached {
+        machine_id: Uuid,
+        attached_at: DateTime<Utc>,
+    },
+    BackendReceiptInvalidated {
+        machine_id: Uuid,
+        invalidated_at: DateTime<Utc>,
+    },
+    BackendDetachmentStarted {
+        machine_id: Uuid,
+        requested_at: DateTime<Utc>,
+    },
+    BackendDetached {
+        machine_id: Uuid,
+        detached_at: DateTime<Utc>,
     },
     Detached {
         detached_at: DateTime<Utc>,
@@ -74,6 +99,12 @@ pub struct Volume {
     pub name: String,
     pub path: String,
     pub source: Option<String>,
+    #[serde(default)]
+    pub size_gib: Option<u64>,
+    #[serde(default)]
+    pub slot: Option<u8>,
+    #[serde(default)]
+    pub detachment_pending: bool,
     pub backup: bool,
     pub machine_id: Option<Uuid>,
     pub status: Option<VolumeStatus>,
@@ -95,6 +126,7 @@ impl mire::Aggregate for Volume {
                 path,
                 source,
                 backup,
+                size_gib,
                 requested_at,
             } => {
                 self.organisation_id = Some(*organisation_id);
@@ -103,6 +135,7 @@ impl mire::Aggregate for Volume {
                 self.path = path.clone();
                 self.source = source.clone();
                 self.backup = *backup;
+                self.size_gib = *size_gib;
                 self.requested_at = Some(*requested_at);
                 self.status = Some(VolumeStatus::Requested);
             }
@@ -110,6 +143,36 @@ impl mire::Aggregate for Volume {
             VolumeEvent::Placed { machine_id, .. } => {
                 self.machine_id = Some(*machine_id);
                 self.status = Some(VolumeStatus::Available);
+            }
+            VolumeEvent::BackendPlacementPrepared {
+                machine_id, slot, ..
+            } => {
+                self.machine_id = Some(*machine_id);
+                self.slot = Some(*slot);
+                self.status = Some(VolumeStatus::AwaitingBackend);
+            }
+            VolumeEvent::BackendAttached { .. } => {
+                self.status = Some(VolumeStatus::Attached);
+            }
+            VolumeEvent::BackendReceiptInvalidated { .. } => {
+                self.status = Some(VolumeStatus::AwaitingBackend);
+            }
+            VolumeEvent::BackendDetachmentStarted { .. } => {
+                self.detachment_pending = true;
+                if self.status != Some(VolumeStatus::PendingDeletion)
+                    && self.status != Some(VolumeStatus::Deleting)
+                {
+                    self.status = Some(VolumeStatus::DetachingBackend);
+                }
+            }
+            VolumeEvent::BackendDetached { .. } => {
+                self.detachment_pending = false;
+                self.slot = None;
+                if self.status != Some(VolumeStatus::PendingDeletion)
+                    && self.status != Some(VolumeStatus::Deleting)
+                {
+                    self.status = Some(VolumeStatus::Available);
+                }
             }
             VolumeEvent::Attached {
                 machine_id, path, ..
@@ -155,6 +218,7 @@ pub enum VolumeCommand {
         path: String,
         source: Option<String>,
         backup: bool,
+        size_gib: Option<u64>,
         at: DateTime<Utc>,
     },
     ReserveRestore {
@@ -162,6 +226,27 @@ pub enum VolumeCommand {
         at: DateTime<Utc>,
     },
     Place {
+        machine_id: Uuid,
+        at: DateTime<Utc>,
+    },
+    PrepareBackend {
+        machine_id: Uuid,
+        slot: u8,
+        at: DateTime<Utc>,
+    },
+    ConfirmBackendAttachment {
+        machine_id: Uuid,
+        at: DateTime<Utc>,
+    },
+    InvalidateBackendAttachment {
+        machine_id: Uuid,
+        at: DateTime<Utc>,
+    },
+    BeginBackendDetachment {
+        machine_id: Uuid,
+        at: DateTime<Utc>,
+    },
+    ConfirmBackendDetachment {
         machine_id: Uuid,
         at: DateTime<Utc>,
     },
@@ -190,6 +275,10 @@ pub enum VolumeCommand {
         machine_id: Uuid,
         at: DateTime<Utc>,
     },
+    ConfirmBackendDeleted {
+        machine_id: Uuid,
+        at: DateTime<Utc>,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -212,6 +301,12 @@ pub enum VolumeError {
     Attached,
     #[error("volume deletion was not requested on this machine")]
     InvalidAcknowledgement,
+    #[error("a hosted volume has no acknowledged backend transition for this operation")]
+    BackendNotReady,
+    #[error("an app-owned block volume cannot change its capacity")]
+    SizeChanged,
+    #[error("hosted block size must be 1-4096 GiB without an existing host source")]
+    InvalidSize,
 }
 
 impl mire::Command for VolumeCommand {
@@ -230,8 +325,14 @@ impl mire::Command for VolumeCommand {
                 path,
                 source,
                 backup,
+                size_gib,
                 at,
             } => {
+                if size_gib.is_some_and(|size| !(1..=4096).contains(&size))
+                    || (size_gib.is_some() && source.is_some())
+                {
+                    return Err(VolumeError::InvalidSize);
+                }
                 if let Some(status) = state.status {
                     if matches!(status, S::PendingDeletion | S::Deleting | S::Deleted) {
                         return Err(VolumeError::Deleting);
@@ -245,6 +346,9 @@ impl mire::Command for VolumeCommand {
                     if state.source != source {
                         return Err(VolumeError::SourceChanged);
                     }
+                    if state.size_gib != size_gib {
+                        return Err(VolumeError::SizeChanged);
+                    }
                     if state.backup != backup {
                         vec![E::BackupPolicySet { backup, set_at: at }]
                     } else {
@@ -257,6 +361,7 @@ impl mire::Command for VolumeCommand {
                         name,
                         path,
                         source,
+                        size_gib,
                         backup,
                         requested_at: at,
                     }]
@@ -283,11 +388,113 @@ impl mire::Command for VolumeCommand {
                 }],
                 _ => vec![],
             },
+            C::PrepareBackend {
+                machine_id,
+                slot,
+                at,
+            } => {
+                if state.size_gib.is_none() || !(1..=4).contains(&slot) {
+                    return Err(VolumeError::BackendNotReady);
+                }
+                match state.status {
+                    Some(S::Available) if !state.detachment_pending => {
+                        vec![E::BackendPlacementPrepared {
+                            machine_id,
+                            slot,
+                            placed_at: at,
+                        }]
+                    }
+                    Some(S::AwaitingBackend | S::Attached)
+                        if state.machine_id == Some(machine_id) && state.slot == Some(slot) =>
+                    {
+                        vec![]
+                    }
+                    Some(S::AwaitingBackend | S::Attached | S::DetachingBackend) => {
+                        return Err(VolumeError::WriterPresent);
+                    }
+                    _ => return Err(VolumeError::BackendNotReady),
+                }
+            }
+            C::ConfirmBackendAttachment { machine_id, at } => {
+                if state.machine_id != Some(machine_id) || state.size_gib.is_none() {
+                    return Err(VolumeError::MachineChanged);
+                }
+                match state.status {
+                    Some(S::AwaitingBackend)
+                        if state.slot.is_some() && !state.detachment_pending =>
+                    {
+                        vec![E::BackendAttached {
+                            machine_id,
+                            attached_at: at,
+                        }]
+                    }
+                    Some(S::Attached) if state.slot.is_some() => vec![],
+                    _ => return Err(VolumeError::BackendNotReady),
+                }
+            }
+            C::InvalidateBackendAttachment { machine_id, at } => {
+                if state.machine_id != Some(machine_id) || state.size_gib.is_none() {
+                    return Err(VolumeError::MachineChanged);
+                }
+                match state.status {
+                    Some(S::Attached) if state.slot.is_some() && !state.detachment_pending => {
+                        vec![E::BackendReceiptInvalidated {
+                            machine_id,
+                            invalidated_at: at,
+                        }]
+                    }
+                    Some(S::AwaitingBackend) => vec![],
+                    _ => return Err(VolumeError::BackendNotReady),
+                }
+            }
+            C::BeginBackendDetachment { machine_id, at } => {
+                if state.machine_id != Some(machine_id) || state.size_gib.is_none() {
+                    return Err(VolumeError::MachineChanged);
+                }
+                match state.status {
+                    Some(S::Attached | S::AwaitingBackend | S::PendingDeletion | S::Deleting)
+                        if state.slot.is_some() && !state.detachment_pending =>
+                    {
+                        vec![E::BackendDetachmentStarted {
+                            machine_id,
+                            requested_at: at,
+                        }]
+                    }
+                    Some(S::DetachingBackend | S::PendingDeletion | S::Deleting)
+                        if state.detachment_pending || state.slot.is_none() =>
+                    {
+                        vec![]
+                    }
+                    _ => return Err(VolumeError::BackendNotReady),
+                }
+            }
+            C::ConfirmBackendDetachment { machine_id, at } => {
+                if state.machine_id != Some(machine_id) || state.size_gib.is_none() {
+                    return Err(VolumeError::MachineChanged);
+                }
+                match state.status {
+                    Some(S::DetachingBackend | S::PendingDeletion | S::Deleting)
+                        if state.detachment_pending && state.slot.is_some() =>
+                    {
+                        vec![E::BackendDetached {
+                            machine_id,
+                            detached_at: at,
+                        }]
+                    }
+                    Some(S::Available | S::PendingDeletion | S::Deleting)
+                        if state.slot.is_none() =>
+                    {
+                        vec![]
+                    }
+                    _ => return Err(VolumeError::BackendNotReady),
+                }
+            }
             C::Attach {
                 machine_id,
                 path,
                 at,
             } => match (state.status, state.machine_id) {
+                _ if state.size_gib.is_some() => return Err(VolumeError::BackendNotReady),
                 (None, _) => return Err(VolumeError::NotFound),
                 (Some(S::PendingDeletion | S::Deleting | S::Deleted), _) => {
                     return Err(VolumeError::Deleting);
@@ -308,6 +515,7 @@ impl mire::Command for VolumeCommand {
                 }],
             },
             C::Detach { at } => match state.status {
+                _ if state.size_gib.is_some() => return Err(VolumeError::BackendNotReady),
                 None => return Err(VolumeError::NotFound),
                 Some(S::PendingDeletion | S::Deleting | S::Deleted) => {
                     return Err(VolumeError::Deleting);
@@ -335,7 +543,11 @@ impl mire::Command for VolumeCommand {
                 (Some(S::PendingDeletion), Some(deadline)) if at < deadline => {
                     vec![E::Restored {
                         restored_at: at,
-                        status: if state.machine_id.is_some() {
+                        status: if state.detachment_pending {
+                            S::DetachingBackend
+                        } else if state.size_gib.is_some() && state.slot.is_some() {
+                            S::AwaitingBackend
+                        } else if state.machine_id.is_some() {
                             S::Available
                         } else {
                             S::Requested
@@ -352,7 +564,10 @@ impl mire::Command for VolumeCommand {
             },
             C::FinalizeWithoutErasure { at } => match state.status {
                 Some(S::Deleted) => vec![],
-                Some(S::Deleting) if state.machine_id.is_none() || state.source.is_some() => {
+                Some(S::Deleting)
+                    if state.machine_id.is_none()
+                        || (state.size_gib.is_none() && state.source.is_some()) =>
+                {
                     vec![E::Deleted { deleted_at: at }]
                 }
                 _ => return Err(VolumeError::InvalidAcknowledgement),
@@ -360,7 +575,21 @@ impl mire::Command for VolumeCommand {
             C::ConfirmDeleted { machine_id, at } => match state.status {
                 Some(S::Deleted) => vec![],
                 Some(S::Deleting)
-                    if state.machine_id == Some(machine_id) && state.source.is_none() =>
+                    if state.machine_id == Some(machine_id)
+                        && state.source.is_none()
+                        && state.size_gib.is_none() =>
+                {
+                    vec![E::Deleted { deleted_at: at }]
+                }
+                _ => return Err(VolumeError::InvalidAcknowledgement),
+            },
+            C::ConfirmBackendDeleted { machine_id, at } => match state.status {
+                Some(S::Deleted) => vec![],
+                Some(S::Deleting)
+                    if state.size_gib.is_some()
+                        && state.machine_id == Some(machine_id)
+                        && state.slot.is_none()
+                        && !state.detachment_pending =>
                 {
                     vec![E::Deleted { deleted_at: at }]
                 }
@@ -387,6 +616,7 @@ mod tests {
             path: "/data".into(),
             source: None,
             backup: true,
+            size_gib: None,
             at,
         })
         .handle(&volume)
@@ -500,5 +730,149 @@ mod tests {
         }
         assert_eq!(volume.status, Some(VolumeStatus::Deleted));
         assert!(VolumeCommand::Restore { at }.handle(&volume).is_err());
+    }
+    #[test]
+    fn hosted_volume_never_mounts_before_backend_receipt_or_deletes_before_detach() {
+        let at = DateTime::from_timestamp(1_790_000_000, 0).unwrap();
+        let machine = Uuid::from_u128(1);
+        let other = Uuid::from_u128(2);
+        let mut volume = Volume::default();
+        let decide = |volume: &mut Volume, command: VolumeCommand| {
+            for event in command.handle(volume)? {
+                volume.apply(&event);
+            }
+            Ok::<_, VolumeError>(())
+        };
+        decide(
+            &mut volume,
+            VolumeCommand::Request {
+                organisation_id: Uuid::nil(),
+                app_id: Uuid::nil(),
+                name: "data".into(),
+                path: "/data".into(),
+                source: None,
+                backup: true,
+                size_gib: Some(16),
+                at,
+            },
+        )
+        .unwrap();
+        decide(
+            &mut volume,
+            VolumeCommand::Place {
+                machine_id: machine,
+                at,
+            },
+        )
+        .unwrap();
+        decide(
+            &mut volume,
+            VolumeCommand::PrepareBackend {
+                machine_id: machine,
+                slot: 1,
+                at,
+            },
+        )
+        .unwrap();
+        assert_eq!(volume.status, Some(VolumeStatus::AwaitingBackend));
+        assert!(
+            VolumeCommand::Attach {
+                machine_id: machine,
+                path: "/data".into(),
+                at
+            }
+            .handle(&volume)
+            .is_err()
+        );
+        assert!(
+            VolumeCommand::ConfirmBackendAttachment {
+                machine_id: other,
+                at
+            }
+            .handle(&volume)
+            .is_err()
+        );
+        decide(
+            &mut volume,
+            VolumeCommand::ConfirmBackendAttachment {
+                machine_id: machine,
+                at,
+            },
+        )
+        .unwrap();
+        assert_eq!(volume.status, Some(VolumeStatus::Attached));
+        decide(
+            &mut volume,
+            VolumeCommand::Delete {
+                at,
+                purge_after: at + chrono::Duration::days(7),
+            },
+        )
+        .unwrap();
+        decide(
+            &mut volume,
+            VolumeCommand::Restore {
+                at: at + chrono::Duration::days(1),
+            },
+        )
+        .unwrap();
+        assert_eq!(volume.status, Some(VolumeStatus::AwaitingBackend));
+        decide(
+            &mut volume,
+            VolumeCommand::Delete {
+                at,
+                purge_after: at + chrono::Duration::days(7),
+            },
+        )
+        .unwrap();
+        decide(
+            &mut volume,
+            VolumeCommand::Purge {
+                at: at + chrono::Duration::days(7),
+            },
+        )
+        .unwrap();
+        assert!(
+            VolumeCommand::ConfirmBackendDeleted {
+                machine_id: machine,
+                at
+            }
+            .handle(&volume)
+            .is_err()
+        );
+        decide(
+            &mut volume,
+            VolumeCommand::BeginBackendDetachment {
+                machine_id: machine,
+                at,
+            },
+        )
+        .unwrap();
+        assert!(
+            VolumeCommand::ConfirmBackendDeleted {
+                machine_id: machine,
+                at
+            }
+            .handle(&volume)
+            .is_err()
+        );
+        decide(
+            &mut volume,
+            VolumeCommand::ConfirmBackendDetachment {
+                machine_id: machine,
+                at,
+            },
+        )
+        .unwrap();
+        assert_eq!(volume.slot, None);
+        decide(
+            &mut volume,
+            VolumeCommand::ConfirmBackendDeleted {
+                machine_id: machine,
+                at,
+            },
+        )
+        .unwrap();
+        assert_eq!(volume.status, Some(VolumeStatus::Deleted));
     }
 }

@@ -371,6 +371,8 @@ fn reconcile_machine_view(
     row: &machines::MachineRow,
     others: Option<&apps::Reservation>,
     stateful: bool,
+    hosted_storage: bool,
+    backend_eligible: bool,
     pinned: Option<Uuid>,
     placed: bool,
 ) -> Option<MachineView> {
@@ -378,13 +380,17 @@ fn reconcile_machine_view(
         return None;
     }
     let eligible = !stateful
-        || (row.pool != "management"
-            && row.minted_by.starts_with("account:")
-            && row
-                .capabilities
-                .as_ref()
-                .is_some_and(|c| c.0["volumes"].as_bool() == Some(true))
-            && pinned.is_none_or(|id| id == row.machine_id));
+        || ((if hosted_storage {
+            row.pool == "management" && row.state == "leased" && backend_eligible
+        } else {
+            row.pool != "management"
+                && row.state == "active"
+                && row.minted_by.starts_with("account:")
+                && row
+                    .capabilities
+                    .as_ref()
+                    .is_some_and(|c| c.0["volumes"].as_bool() == Some(true))
+        }) && pinned.is_none_or(|id| id == row.machine_id));
     if !eligible && !placed {
         return None;
     }
@@ -1458,6 +1464,7 @@ impl Apps {
         let owned_volumes =
             grund_store::volumes::app_volumes(&mut **work.sql(), organisation_id, app_id).await?;
         let stateful = !owned_volumes.is_empty();
+        let hosted_storage = owned_volumes.iter().any(|v| v.size_gib.is_some());
         let app = work.load_app(app_id).await?;
         let target = app.target().and_then(|number| app.release(number));
         let wanted = |name: &str| {
@@ -1469,41 +1476,63 @@ impl Apps {
                     .any(|volume| volume.name == name)
             })
         };
+        let pins_writer = |v: &grund_store::volumes::VolumeRow| {
+            v.status == "attached"
+                || (v.size_gib.is_some()
+                    && v.slot.is_some()
+                    && matches!(v.status.as_str(), "awaiting_backend" | "detaching_backend"))
+        };
         let pinned = owned_volumes
             .iter()
-            .filter(|v| v.status == "attached")
-            .filter_map(|v| v.machine_id)
-            .next()
+            .find(|v| pins_writer(v))
+            .and_then(|v| v.machine_id)
             .or_else(|| {
                 owned_volumes
                     .iter()
-                    .find(|v| v.status == "available" && wanted(&v.name))
+                    .find(|v| v.status == "available" && v.size_gib.is_none() && wanted(&v.name))
                     .and_then(|v| v.machine_id)
             });
         anyhow::ensure!(
             owned_volumes
                 .iter()
-                .filter(|v| v.status == "attached" || (v.status == "available" && wanted(&v.name)))
+                .filter(|v| pins_writer(v)
+                    || (v.status == "available" && v.size_gib.is_none() && wanted(&v.name)))
                 .all(|v| v.machine_id.is_none() || v.machine_id == pinned),
             "volumes requested by this release are on different machines; explicit recovery required"
         );
-        let machines: Vec<MachineView> =
-            machines::organisation_machines(&mut **work.sql(), organisation_id)
-                .await?
+        let volume_backend = self.state.volume_backend();
+        let candidates =
+            machines::organisation_machines(&mut **work.sql(), organisation_id).await?;
+        let mut machines = Vec::with_capacity(candidates.len());
+        for candidate in &candidates {
+            let backend_eligible = if hosted_storage && candidate.pool == "management" {
+                match &volume_backend {
+                    Some(backend) => {
+                        backend
+                            .eligible(work.sql(), candidate, &owned_volumes)
+                            .await?
+                    }
+                    None => false,
+                }
+            } else {
+                false
+            };
+            let others = reserved
                 .iter()
-                .filter_map(|m| {
-                    let others = reserved.iter().find(|r| r.machine_id == m.machine_id);
-                    let mut view = reconcile_machine_view(
-                        m,
-                        others,
-                        stateful,
-                        pinned,
-                        before.contains(&m.machine_id),
-                    )?;
-                    view.last_seen = self.state.hearing.seen(view.last_seen);
-                    Some(view)
-                })
-                .collect();
+                .find(|r| r.machine_id == candidate.machine_id);
+            if let Some(mut view) = reconcile_machine_view(
+                candidate,
+                others,
+                stateful,
+                hosted_storage,
+                backend_eligible,
+                pinned,
+                before.contains(&candidate.machine_id),
+            ) {
+                view.last_seen = self.state.hearing.seen(view.last_seen);
+                machines.push(view);
+            }
+        }
         let observations: Vec<Observation> = apps::app_statuses(&mut **work.sql(), app_id)
             .await?
             .iter()
@@ -1705,6 +1734,7 @@ mod tests {
                     path: "/data".into(),
                     source: None,
                     backup: false,
+                    size_gib: None,
                 }]
             } else {
                 Vec::new()
@@ -1721,7 +1751,7 @@ mod tests {
                             .replicas
                             .iter()
                             .any(|r| r.machine_id == machine.machine_id);
-                        reconcile_machine_view(machine, None, true, None, placed)
+                        reconcile_machine_view(machine, None, true, false, false, None, placed)
                     })
                     .collect::<Vec<_>>()
             };

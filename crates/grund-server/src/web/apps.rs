@@ -606,7 +606,7 @@ pub async fn deploy_page(
     .await
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(super) struct Refusal {
     pub(super) banner: String,
     pub(super) fields: std::collections::BTreeMap<&'static str, String>,
@@ -652,6 +652,7 @@ const FORM_FIELDS: &[&str] = &[
     "volume_name",
     "volume_path",
     "volume_source",
+    "volume_size_gib",
     "volume_backup",
 ];
 
@@ -667,6 +668,7 @@ const ADVANCED_FIELDS: &[&str] = &[
     "volume_name",
     "volume_path",
     "volume_source",
+    "volume_size_gib",
     "volume_backup",
 ];
 
@@ -1050,6 +1052,8 @@ pub struct NewForm {
     #[serde(default)]
     pub(crate) volume_source: String,
     #[serde(default)]
+    pub(crate) volume_size_gib: String,
+    #[serde(default)]
     pub(crate) volume_backup: String,
     #[serde(default)]
     part: String,
@@ -1245,10 +1249,28 @@ fn form_spec(
         "stop",
         "The grace period is a whole number of seconds, at most 300.",
     )?;
+    let size_gib: Option<u64> = number(
+        &form.volume_size_gib,
+        "volume_size_gib",
+        "Hosted volume capacity is a whole number of GiB from 1 to 4096.",
+    )?;
+    if size_gib.is_some_and(|size| !(1..=4096).contains(&size)) {
+        return Err(Refusal::field(
+            "volume_size_gib",
+            "Hosted volume capacity is a whole number of GiB from 1 to 4096.",
+        ));
+    }
+    if size_gib.is_some() && !form.volume_source.trim().is_empty() {
+        return Err(Refusal::field(
+            "volume_size_gib",
+            "Hosted capacity cannot be combined with an existing host directory.",
+        ));
+    }
     let mut volumes = base.map(|b| b.volumes.clone()).unwrap_or_default();
     if !form.volume_name.trim().is_empty()
         || !form.volume_path.trim().is_empty()
         || !form.volume_source.trim().is_empty()
+        || size_gib.is_some()
         || form.volume_backup == "on"
     {
         if form.volume_name.trim().is_empty() || form.volume_path.trim().is_empty() {
@@ -1262,6 +1284,7 @@ fn form_spec(
             path: form.volume_path.trim().to_string(),
             source: (!form.volume_source.trim().is_empty())
                 .then(|| form.volume_source.trim().to_string()),
+            size_gib,
             backup: form.volume_backup == "on",
         });
     }
@@ -1457,7 +1480,8 @@ fn part_of(field: &str) -> &'static str {
         "check" => "check",
         "memory" | "cpu" => "resources",
         "command" | "stop" => "command",
-        "volumes" | "volume_name" | "volume_path" | "volume_source" | "volume_backup" => "volumes",
+        "volumes" | "volume_name" | "volume_path" | "volume_source" | "volume_size_gib"
+        | "volume_backup" => "volumes",
         _ => "",
     }
 }
@@ -1534,11 +1558,13 @@ pub struct VolumeItem {
     pub name: String,
     pub path: String,
     pub source: String,
+    pub size: String,
     pub status: String,
     pub machine: String,
     pub usage: String,
     pub backup: &'static str,
     pub backup_requested: bool,
+    pub hosted: bool,
     pub managed: bool,
     pub pending_deletion: bool,
 }
@@ -1573,9 +1599,17 @@ fn volume_summary(rows: Vec<grund_store::volumes::VolumeRow>, now: DateTime<Utc>
                 version: row.stream_version,
                 name: row.name,
                 path: row.path,
-                source: row
-                    .source
-                    .unwrap_or_else(|| "Agent-managed directory".into()),
+                source: row.source.unwrap_or_else(|| {
+                    if row.size_gib.is_some() {
+                        "Hosted block volume".into()
+                    } else {
+                        "Agent-managed directory".into()
+                    }
+                }),
+                size: row.size_gib.map_or_else(
+                    || "No quota (own-machine directory)".into(),
+                    |size| format!("{size} GiB"),
+                ),
                 status: if pending_deletion {
                     row.purge_after.map_or_else(
                         || "Pending deletion".into(),
@@ -1588,15 +1622,31 @@ fn volume_summary(rows: Vec<grund_store::volumes::VolumeRow>, now: DateTime<Utc>
                     .machine_id
                     .map_or_else(|| "Detached".into(), |id| id.to_string()),
                 usage: row.measured_bytes.filter(|n| *n >= 0).map_or_else(
-                    || "Size unknown (no quota)".into(),
-                    |n| format!("{:.2} GiB measured (no quota)", n as f64 / 1_073_741_824.0),
+                    || {
+                        if row.size_gib.is_some() {
+                            "Size unknown".into()
+                        } else {
+                            "Size unknown (no quota)".into()
+                        }
+                    },
+                    |n| {
+                        let measured = format!("{:.2} GiB measured", n as f64 / 1_073_741_824.0);
+                        if row.size_gib.is_some() {
+                            measured
+                        } else {
+                            format!("{measured} (no quota)")
+                        }
+                    },
                 ),
-                backup: if row.backup {
+                backup: if row.backup && row.size_gib.is_some() {
+                    "Requested; provider-managed encrypted daily snapshots need a verified recovery point"
+                } else if row.backup {
                     "Requested; set up S3 and verify a recovery point before relying on it"
                 } else {
                     "Off; losing this disk loses its data"
                 },
                 backup_requested: row.backup,
+                hosted: row.size_gib.is_some(),
                 managed,
                 pending_deletion,
             }
@@ -2007,6 +2057,7 @@ pub enum SettingsEdit {
         path: String,
         selected: Option<VolumeDetail>,
         source: String,
+        size_gib: String,
         backup: bool,
     },
     Command {
@@ -2494,6 +2545,7 @@ pub(super) async fn app_view(
                 name: form.volume_name,
                 path: form.volume_path,
                 source: form.volume_source,
+                size_gib: form.volume_size_gib,
                 backup: form.volume_backup == "on",
                 selected: selected_volume,
             },
@@ -2851,6 +2903,7 @@ pub async fn release_settings(
             volume_name: posted.volume_name,
             volume_path: posted.volume_path,
             volume_source: posted.volume_source,
+            volume_size_gib: posted.volume_size_gib,
             volume_backup: posted.volume_backup,
             ..now
         },
@@ -2939,6 +2992,7 @@ pub async fn release_settings(
         .map(|field| part_of(field))
         .find(|p| !p.is_empty())
         .unwrap_or(part);
+    let Refusal { banner, fields } = refusal;
     refuse_setting(
         &state,
         &browser,
@@ -2947,8 +3001,12 @@ pub async fn release_settings(
         &name,
         part,
         Refusal {
-            banner: "Nothing was released. Check the field marked below.".into(),
-            ..refusal
+            banner: if fields.is_empty() {
+                banner
+            } else {
+                "Nothing was released. Check the field marked below.".into()
+            },
+            fields,
         },
         Some(match part {
             "image" => NewForm {
@@ -3735,6 +3793,53 @@ mod tests {
     }
 
     #[test]
+    fn storage_form_accepts_only_explicit_hosted_capacity_in_range() {
+        for (value, capacity) in [("", None), ("1", Some(1)), ("4096", Some(4096))] {
+            let form = NewForm {
+                image: "nginx:1.27".into(),
+                volume_name: "data".into(),
+                volume_path: "/data".into(),
+                volume_size_gib: value.into(),
+                ..Default::default()
+            };
+            assert_eq!(
+                form_spec(&form, None, false).unwrap().0.volumes[0].size_gib,
+                capacity
+            );
+        }
+        for value in ["0", "4097", "1.5", "18446744073709551616"] {
+            let form = NewForm {
+                image: "nginx:1.27".into(),
+                volume_name: "data".into(),
+                volume_path: "/data".into(),
+                volume_size_gib: value.into(),
+                ..Default::default()
+            };
+            assert!(
+                form_spec(&form, None, false)
+                    .expect_err("capacity must be refused")
+                    .fields
+                    .contains_key("volume_size_gib"),
+                "{value}"
+            );
+        }
+        let form = NewForm {
+            image: "nginx:1.27".into(),
+            volume_name: "data".into(),
+            volume_path: "/data".into(),
+            volume_source: "/srv/data".into(),
+            volume_size_gib: "10".into(),
+            ..Default::default()
+        };
+        assert!(
+            form_spec(&form, None, false)
+                .expect_err("existing host paths cannot have hosted capacity")
+                .fields
+                .contains_key("volume_size_gib")
+        );
+    }
+
+    #[test]
     fn a_change_keeps_the_ports_and_secrets_the_form_does_not_show() {
         let port = |name: &str, port, public| PortSpec {
             name: name.into(),
@@ -3769,7 +3874,7 @@ mod tests {
             port: "9222".into(),
             ..NewForm::from_spec(&base, 1)
         };
-        let (spec, detect) = form_spec(&form, Some(&base), false).ok().expect("a spec");
+        let (spec, detect) = form_spec(&form, Some(&base), false).expect("a spec");
         assert!(detect.is_none());
         assert_eq!(
             spec.ports,
@@ -3784,7 +3889,6 @@ mod tests {
             Some(&base),
             true,
         )
-        .ok()
         .expect("a spec");
         assert_eq!(spec.ports, vec![port("client", 4222, false)]);
         assert_eq!(detect, Some(port("monitor", 8222, true)));

@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::{Context, ensure};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
-use grund_domain::volume::VolumeCommand;
+use grund_domain::{app::spec::VolumeSpec, volume::VolumeCommand};
 use grund_proto::grund::agent::v1::{BackupOperation, BackupWork};
 use grund_store::{
     backup::{self, BackupConfig, RecoveryPoint},
@@ -17,7 +17,10 @@ use grund_store::{
 use ring::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
 use uuid::Uuid;
 
-use crate::{services::agents::AgentsState, state::State};
+use crate::{
+    services::{agents::AgentsState, volumes::VolumesState},
+    state::State,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum BackupError {
@@ -203,11 +206,11 @@ impl Backups {
     ) -> Result<BackupView, BackupError> {
         destination(endpoint, bucket, access, secret, session)?;
         let mut tx = self.state.pool.begin().await.map_err(anyhow::Error::from)?;
-        let row: Option<(bool,)> = sqlx::query_as("SELECT backup FROM grund_volumes WHERE organisation_id=$1 AND app_id=$2 AND volume_id=$3 AND status='attached' AND machine_id IS NOT NULL FOR UPDATE")
+        let row: Option<(bool, Option<i64>)> = sqlx::query_as("SELECT backup,size_gib FROM grund_volumes WHERE organisation_id=$1 AND app_id=$2 AND volume_id=$3 AND status='attached' AND machine_id IS NOT NULL FOR UPDATE")
             .bind(org).bind(app).bind(volume).fetch_optional(&mut *tx).await.map_err(anyhow::Error::from)?;
         match row {
             None => return Err(BackupError::NotFound),
-            Some((false,)) => return Err(BackupError::Ineligible),
+            Some((false, _)) | Some((_, Some(_))) => return Err(BackupError::Ineligible),
             _ => {}
         }
         if idempotency_key.is_empty()
@@ -326,10 +329,19 @@ impl Backups {
     }
 
     pub async fn get(&self, org: Uuid, app: Uuid, volume: Uuid) -> Result<BackupView, BackupError> {
-        volumes::volume(&self.state.pool, org, app, volume)
+        let volume_row = volumes::volume(&self.state.pool, org, app, volume)
             .await
             .map_err(anyhow::Error::from)?
             .ok_or(BackupError::NotFound)?;
+        if volume_row.size_gib.is_some() {
+            return self
+                .state
+                .volume_backend()
+                .ok_or(BackupError::Ineligible)?
+                .backup_view(&self.state.pool, org, app, volume)
+                .await
+                .map_err(BackupError::Internal);
+        }
         let configured = backup::config(&self.state.pool, org, app, volume)
             .await
             .map_err(anyhow::Error::from)?;
@@ -350,12 +362,18 @@ impl Backups {
         app: Uuid,
         volume: Uuid,
     ) -> Result<Vec<RecoveryPoint>, BackupError> {
-        if volumes::volume(&self.state.pool, org, app, volume)
+        let row = volumes::volume(&self.state.pool, org, app, volume)
             .await
             .map_err(anyhow::Error::from)?
-            .is_none()
-        {
-            return Err(BackupError::NotFound);
+            .ok_or(BackupError::NotFound)?;
+        if row.size_gib.is_some() {
+            return self
+                .state
+                .volume_backend()
+                .ok_or(BackupError::Ineligible)?
+                .recovery_points(&self.state.pool, org, app, volume)
+                .await
+                .map_err(BackupError::Internal);
         }
         Ok(backup::points(&self.state.pool, org, app, volume)
             .await
@@ -371,6 +389,13 @@ impl Backups {
         app: Uuid,
         volume: Uuid,
     ) -> Result<String, BackupError> {
+        if volumes::volume(&self.state.pool, org, app, volume)
+            .await
+            .map_err(anyhow::Error::from)?
+            .is_some_and(|row| row.size_gib.is_some())
+        {
+            return Err(BackupError::Ineligible);
+        }
         let config = backup::config(&self.state.pool, org, app, volume)
             .await
             .map_err(anyhow::Error::from)?
@@ -384,8 +409,58 @@ impl Backups {
         .map_err(BackupError::Internal)
     }
 
-    /// Reserve a new app-owned managed directory identity. No writer is
-    /// attached to it before a restored probe of this *exact* point succeeds.
+    pub async fn restore_status(
+        &self,
+        org: Uuid,
+        app: Uuid,
+        volume: Uuid,
+    ) -> Result<Option<(String, Option<String>)>, BackupError> {
+        let row = volumes::volume(&self.state.pool, org, app, volume)
+            .await
+            .map_err(anyhow::Error::from)?
+            .ok_or(BackupError::NotFound)?;
+        if row.size_gib.is_some() {
+            return self
+                .state
+                .volume_backend()
+                .ok_or(BackupError::Ineligible)?
+                .restore_status(&self.state.pool, org, app, volume)
+                .await
+                .map_err(BackupError::Internal);
+        }
+        volumes::restore_status(&self.state.pool, org, app, volume)
+            .await
+            .map_err(|error| BackupError::Internal(error.into()))
+    }
+
+    pub async fn restore_attempt_status(
+        &self,
+        org: Uuid,
+        app: Uuid,
+        source: Uuid,
+        attempt: Uuid,
+    ) -> Result<Option<String>, BackupError> {
+        let row = volumes::volume(&self.state.pool, org, app, source)
+            .await
+            .map_err(anyhow::Error::from)?
+            .ok_or(BackupError::NotFound)?;
+        if row.size_gib.is_some() {
+            return self
+                .state
+                .volume_backend()
+                .ok_or(BackupError::Ineligible)?
+                .restore_attempt_status(&self.state.pool, org, app, attempt)
+                .await
+                .map_err(BackupError::Internal);
+        }
+        volumes::restore_attempt_status(&self.state.pool, org, app, attempt)
+            .await
+            .map_err(|error| BackupError::Internal(error.into()))
+    }
+
+    /// Reserve a new app-owned volume for an exact recovery point. Own-machine
+    /// directories wait for a verified probe; hosted drives wait for a fenced
+    /// same-host snapshot restore before attachment is confirmed.
     #[allow(clippy::too_many_arguments)]
     pub async fn request_restore(
         &self,
@@ -401,7 +476,10 @@ impl Backups {
         idempotency_key: &str,
         request_hash: &[u8],
     ) -> Result<Uuid, BackupError> {
-        if snapshot.len() != 64 || !snapshot.bytes().all(|b| b.is_ascii_hexdigit()) {
+        let snapshot_uuid = Uuid::parse_str(snapshot).ok();
+        if (snapshot.len() != 64 || !snapshot.bytes().all(|b| b.is_ascii_hexdigit()))
+            && snapshot_uuid.is_none()
+        {
             return Err(BackupError::Invalid(
                 "an exact recovery-point ID is required".into(),
             ));
@@ -477,14 +555,6 @@ impl Backups {
         if source_row.stream_version != expected_source_version {
             return Err(BackupError::Conflict);
         }
-        let eligible: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM grund_machines m JOIN grund_machine_presence p ON p.machine_id = m.machine_id WHERE m.machine_id=$1 AND m.pool_organisation_id=$2 AND m.state='active' AND m.pool <> 'management' AND m.minted_by LIKE 'account:%' AND m.cordoned_at IS NULL AND p.capabilities->>'volumes' = 'true')")
-            .bind(machine).bind(org).fetch_one(&mut **work.sql()).await.map_err(anyhow::Error::from)?;
-        if !eligible {
-            return Err(BackupError::NotFound);
-        }
-        if !matches!(source_row.status.as_str(), "attached" | "available") {
-            return Err(BackupError::Ineligible);
-        }
         let already_named: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM grund_volumes WHERE app_id=$1 AND name=$2)",
         )
@@ -495,6 +565,74 @@ impl Backups {
         .map_err(anyhow::Error::from)?;
         if already_named {
             return Err(BackupError::Conflict);
+        }
+        if let Some(size_gib) = source_row.size_gib {
+            let snapshot_id = snapshot_uuid.ok_or_else(|| {
+                BackupError::Invalid("a hosted recovery-point ID must be a snapshot UUID".into())
+            })?;
+            if !source_row.backup || !matches!(source_row.status.as_str(), "attached" | "available")
+            {
+                return Err(BackupError::Ineligible);
+            }
+            let backend = self.state.volume_backend().ok_or(BackupError::Ineligible)?;
+            let spec = VolumeSpec {
+                name: name.to_owned(),
+                path: path.to_owned(),
+                source: None,
+                size_gib: Some(size_gib as u64),
+                backup: false,
+            };
+            work.volume(
+                new_volume,
+                VolumeCommand::Request {
+                    organisation_id: org,
+                    app_id: app,
+                    name: spec.name.clone(),
+                    path: spec.path.clone(),
+                    source: None,
+                    backup: false,
+                    size_gib: spec.size_gib,
+                    at: Utc::now(),
+                },
+            )
+            .await
+            .map_err(|e| BackupError::Internal(e.into()))?;
+            self.state
+                .volumes()
+                .place_release_in(&mut work, org, app, machine, &[spec])
+                .await
+                .map_err(|e| BackupError::Internal(e.into()))?;
+            backend
+                .reserve_restore(
+                    work.sql(),
+                    org,
+                    app,
+                    source,
+                    snapshot_id,
+                    new_volume,
+                    machine,
+                    attempt_id,
+                )
+                .await
+                .map_err(BackupError::Internal)?;
+            self.state
+                .agents()
+                .publish_in(work.sql(), machine)
+                .await
+                .map_err(BackupError::Internal)?;
+            work.commit()
+                .await
+                .map_err(|e| BackupError::Internal(e.into()))?;
+            self.state.wakes.documents_changed();
+            return Ok(attempt_id);
+        }
+        let eligible: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM grund_machines m JOIN grund_machine_presence p ON p.machine_id = m.machine_id WHERE m.machine_id=$1 AND m.pool_organisation_id=$2 AND m.state='active' AND m.pool <> 'management' AND m.minted_by LIKE 'account:%' AND m.cordoned_at IS NULL AND p.capabilities->>'volumes' = 'true')")
+            .bind(machine).bind(org).fetch_one(&mut **work.sql()).await.map_err(anyhow::Error::from)?;
+        if !eligible {
+            return Err(BackupError::NotFound);
+        }
+        if !matches!(source_row.status.as_str(), "attached" | "available") {
+            return Err(BackupError::Ineligible);
         }
         let present: Option<i32> = sqlx::query_scalar("SELECT 1 FROM grund_volume_backup_points WHERE organisation_id=$1 AND app_id=$2 AND volume_id=$3 AND snapshot_id=$4 FOR UPDATE")
             .bind(org).bind(app).bind(source).bind(snapshot).fetch_optional(&mut **work.sql()).await.map_err(anyhow::Error::from)?;
@@ -522,6 +660,7 @@ impl Backups {
                 path: path.to_owned(),
                 source: None,
                 backup: false,
+                size_gib: None,
                 at: Utc::now(),
             },
         )

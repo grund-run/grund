@@ -48,7 +48,7 @@ use crate::{
 };
 
 /// Features this agent knows how to apply.
-pub const KNOWN_FEATURES: &[&str] = &["machines", "replicas", "volumes"];
+pub const KNOWN_FEATURES: &[&str] = &["machines", "replicas", "volumes", "block-volumes"];
 
 /// The largest document the agent decodes (apps.md §15).
 pub const MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
@@ -111,6 +111,7 @@ pub enum Refusal {
     WrongMachine,
     Older,
     UnknownFeature(String),
+    MissingBlockFeature,
     NoTrustKey,
     /// Signed by a key other than the one pinned.
     UnknownKey,
@@ -132,6 +133,7 @@ impl std::fmt::Display for Refusal {
             Refusal::WrongMachine => f.write_str("document is for another machine or organisation"),
             Refusal::Older => f.write_str("document is not newer than the one applied"),
             Refusal::UnknownFeature(name) => write!(f, "document requires unknown feature {name}"),
+            Refusal::MissingBlockFeature => f.write_str("document mounts a block volume without requiring block-volumes"),
             Refusal::NoTrustKey => f.write_str("this machine pinned no organisation key"),
             Refusal::UnknownKey => f.write_str("document is signed by a key this machine did not pin"),
             Refusal::Same => f.write_str("document is the one applied"),
@@ -189,6 +191,14 @@ pub fn verify(
         .find(|f| !KNOWN_FEATURES.contains(&f.as_str()))
     {
         return Err(Refusal::UnknownFeature(unknown.clone()));
+    }
+    if state
+        .replicas
+        .iter()
+        .any(|r| r.volumes.iter().any(|v| v.block_device))
+        && !state.required_features.iter().any(|f| f == "block-volumes")
+    {
+        return Err(Refusal::MissingBlockFeature);
     }
     Ok(state)
 }
@@ -1272,6 +1282,48 @@ mod tests {
         assert_eq!(
             verify(&record, &trust, "k", &bad, &bad_signature, &none),
             Err(Refusal::BadSignature)
+        );
+    }
+
+    #[test]
+    fn a_signed_block_mount_requires_an_explicit_agent_feature() {
+        use grund_proto::grund::agent::v1::{Replica, VolumeMount};
+
+        let key = SigningKey::from_bytes(&[5; 32]);
+        let record = record(&key);
+        let trust = key.verifying_key();
+        let mut document = state(4);
+        document.replicas.push(Replica {
+            volumes: vec![VolumeMount {
+                block_device: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let (payload, signature) = signed(&key, &document);
+        assert_eq!(
+            verify(
+                &record,
+                &trust,
+                "k",
+                &payload,
+                &signature,
+                &Applied::default()
+            ),
+            Err(Refusal::MissingBlockFeature)
+        );
+        document.required_features.push("block-volumes".into());
+        let (payload, signature) = signed(&key, &document);
+        assert_eq!(
+            verify(
+                &record,
+                &trust,
+                "k",
+                &payload,
+                &signature,
+                &Applied::default()
+            ),
+            Ok(document)
         );
     }
 

@@ -549,6 +549,7 @@ mod tests {
             path: "/var/data".into(),
             source: "/var/lib/grund/volumes/11111111-1111-1111-1111-111111111111".into(),
             managed: true,
+            block_device: false,
         });
         let oci = oci_spec(&app, &image(), &root(), Path::new("/n")).unwrap();
         let mounts = oci["mounts"].as_array().unwrap();

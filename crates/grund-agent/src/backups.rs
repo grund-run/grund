@@ -413,6 +413,10 @@ fn signed_source(
         .flat_map(|replica| &replica.volumes)
         .find(|volume| volume.volume_id == work.volume_id && volume.source == work.source_path)
         .context("volume source not attached in current signed document")?;
+    ensure!(
+        !mount.block_device,
+        "block volume backup must be performed by the block storage provider"
+    );
     let managed = mount.source.is_empty();
     Ok(VolumeBind {
         volume_id: mount.volume_id.clone(),
@@ -427,6 +431,7 @@ fn signed_source(
             mount.source.clone()
         },
         managed,
+        block_device: false,
     })
 }
 
@@ -556,6 +561,7 @@ pub async fn run(
                                 path: "/restore".into(),
                                 source: path.display().to_string(),
                                 managed: true,
+                                block_device: false,
                             };
                             crate::volume::verify_bind(&volume_root, &[], &bind)?;
                         }

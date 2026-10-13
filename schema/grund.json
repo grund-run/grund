@@ -450,7 +450,7 @@
     },
     "FileVolume": {
       "additionalProperties": false,
-      "description": "One volume mounted by this app. Local machine policy must allow an\nexisting source; an omitted source creates a managed directory instead.",
+      "description": "One volume mounted by this app. An omitted source uses an own-machine\nmanaged directory unless size_gib requests hosted block storage.",
       "properties": {
         "backup": {
           "anyOf": [
@@ -470,8 +470,18 @@
           "pattern": "^/(?!\\.\\.?(/|$))[^/\\u0000-\\u001f]+(?:/(?!\\.\\.?(/|$))[^/\\u0000-\\u001f]+)*$",
           "type": "string"
         },
+        "size_gib": {
+          "description": "Hosted block volume capacity in GiB (1 to 4096). Leave out for an\nown-machine directory with no promised quota.",
+          "format": "uint64",
+          "maximum": 4096,
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "source": {
-          "description": "Existing absolute host directory on an own machine, allowed by its\nlocal policy. Leave out to use a grund-managed directory.",
+          "description": "Existing absolute host directory on an own machine, allowed by its\nlocal policy. Leave out for a managed or hosted volume.",
           "maxLength": 4096,
           "pattern": "^/(?!\\.\\.?(/|$))[^/\\u0000-\\u001f]+(?:/(?!\\.\\.?(/|$))[^/\\u0000-\\u001f]+)*$",
           "type": [

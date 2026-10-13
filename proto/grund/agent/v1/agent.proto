@@ -394,8 +394,14 @@ message VolumeMount {
   // Absolute directory in the container.
   string path = 3;
   // Existing host path, subject to machine-local policy. Empty uses the
-  // grund-managed directory /var/lib/grund/volumes/<volume_id>.
+  // grund-managed directory /var/lib/grund/volumes/<volume_id> unless
+  // block_device is true.
   string source = 4;
+  // App-owned block volume already attached to this machine. The agent
+  // accepts only ext4 whose filesystem UUID equals volume_id and whose ID is
+  // UUIDv5(app_id, UTF8 name). source must be empty; no directory is created
+  // as a fallback.
+  bool block_device = 5;
 }
 
 message SecretEnv {

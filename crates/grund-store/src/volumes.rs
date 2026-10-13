@@ -12,8 +12,11 @@ pub struct VolumeRow {
     pub name: String,
     pub path: String,
     pub source: Option<String>,
+    pub size_gib: Option<i64>,
     pub backup: bool,
     pub machine_id: Option<Uuid>,
+    pub slot: Option<i32>,
+    pub detachment_pending: bool,
     pub status: String,
     pub purge_after: Option<DateTime<Utc>>,
     pub measured_bytes: Option<i64>,
@@ -25,7 +28,7 @@ pub struct VolumeRow {
 
 macro_rules! select_volumes {
     ($where:literal) => {
-        concat!("SELECT organisation_id, app_id, volume_id, name, path, source, backup, machine_id, status, measured_bytes, measured_at, created_at, deleted_at, purge_after, stream_version FROM grund_volumes ", $where)
+        concat!("SELECT organisation_id, app_id, volume_id, name, path, source, size_gib, backup, machine_id, slot, detachment_pending, status, measured_bytes, measured_at, created_at, deleted_at, purge_after, stream_version FROM grund_volumes ", $where)
     };
 }
 
@@ -89,12 +92,30 @@ pub async fn volume(
     .await
 }
 
+/// Includes tombstones so backend erasure acknowledgements can be retried
+/// after a committed response was lost.
+pub async fn any_volume(
+    executor: impl PgExecutor<'_>,
+    organisation_id: Uuid,
+    app_id: Uuid,
+    volume_id: Uuid,
+) -> Result<Option<VolumeRow>, sqlx::Error> {
+    sqlx::query_as(select_volumes!(
+        "WHERE organisation_id = $1 AND app_id = $2 AND volume_id = $3"
+    ))
+    .bind(organisation_id)
+    .bind(app_id)
+    .bind(volume_id)
+    .fetch_optional(executor)
+    .await
+}
+
 pub async fn machine_mounts(
     executor: impl PgExecutor<'_>,
     organisation_id: Uuid,
     machine_id: Uuid,
 ) -> Result<Vec<VolumeRow>, sqlx::Error> {
-    sqlx::query_as(select_volumes!("WHERE organisation_id = $1 AND machine_id = $2 AND status = 'attached' ORDER BY app_id, name"))
+    sqlx::query_as(select_volumes!("WHERE organisation_id = $1 AND machine_id = $2 AND status IN ('attached','awaiting_backend','detaching_backend') ORDER BY app_id, name"))
         .bind(organisation_id).bind(machine_id).fetch_all(executor).await
 }
 
@@ -207,10 +228,11 @@ pub async fn apply_volume(
             path,
             source,
             backup,
+            size_gib,
             requested_at,
         } => {
-            sqlx::query("INSERT INTO grund_volumes (organisation_id, app_id, volume_id, name, path, source, backup, status, created_at, stream_version) VALUES ($1,$2,$3,$4,$5,$6,$7,'requested',$8,$9) ON CONFLICT (organisation_id, volume_id) DO UPDATE SET stream_version = EXCLUDED.stream_version WHERE grund_volumes.stream_version < EXCLUDED.stream_version")
-                .bind(organisation_id).bind(app_id).bind(volume_id).bind(name).bind(path).bind(source).bind(backup).bind(requested_at).bind(version).execute(&mut *conn).await?;
+            sqlx::query("INSERT INTO grund_volumes (organisation_id, app_id, volume_id, name, path, source, size_gib, backup, status, created_at, stream_version) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'requested',$9,$10) ON CONFLICT (organisation_id, volume_id) DO UPDATE SET stream_version = EXCLUDED.stream_version WHERE grund_volumes.stream_version < EXCLUDED.stream_version")
+                .bind(organisation_id).bind(app_id).bind(volume_id).bind(name).bind(path).bind(source).bind(size_gib.map(|size| size as i64)).bind(backup).bind(requested_at).bind(version).execute(&mut *conn).await?;
         }
         VolumeEvent::RestoreReserved { machine_id, .. } => {
             sqlx::query("UPDATE grund_volumes SET machine_id = $2, stream_version = $3 WHERE volume_id = $1 AND stream_version < $3")
@@ -219,6 +241,28 @@ pub async fn apply_volume(
         VolumeEvent::Placed { machine_id, .. } => {
             sqlx::query("UPDATE grund_volumes SET machine_id = $2, status = 'available', stream_version = $3 WHERE volume_id = $1 AND stream_version < $3")
                 .bind(volume_id).bind(machine_id).bind(version).execute(&mut *conn).await?;
+        }
+        VolumeEvent::BackendPlacementPrepared {
+            machine_id, slot, ..
+        } => {
+            sqlx::query("UPDATE grund_volumes SET machine_id = $2, slot = $3, status = 'awaiting_backend', stream_version = $4 WHERE volume_id = $1 AND stream_version < $4")
+                .bind(volume_id).bind(machine_id).bind(i32::from(*slot)).bind(version).execute(&mut *conn).await?;
+        }
+        VolumeEvent::BackendAttached { .. } => {
+            sqlx::query("UPDATE grund_volumes SET status = 'attached', stream_version = $2 WHERE volume_id = $1 AND stream_version < $2")
+                .bind(volume_id).bind(version).execute(&mut *conn).await?;
+        }
+        VolumeEvent::BackendReceiptInvalidated { .. } => {
+            sqlx::query("UPDATE grund_volumes SET status = 'awaiting_backend', stream_version = $2 WHERE volume_id = $1 AND stream_version < $2")
+                .bind(volume_id).bind(version).execute(&mut *conn).await?;
+        }
+        VolumeEvent::BackendDetachmentStarted { .. } => {
+            sqlx::query("UPDATE grund_volumes SET detachment_pending = true, status = CASE WHEN status IN ('pending_deletion','deleting') THEN status ELSE 'detaching_backend' END, stream_version = $2 WHERE volume_id = $1 AND stream_version < $2")
+                .bind(volume_id).bind(version).execute(&mut *conn).await?;
+        }
+        VolumeEvent::BackendDetached { .. } => {
+            sqlx::query("UPDATE grund_volumes SET detachment_pending = false, slot = NULL, status = CASE WHEN status IN ('pending_deletion','deleting') THEN status ELSE 'available' END, stream_version = $2 WHERE volume_id = $1 AND stream_version < $2")
+                .bind(volume_id).bind(version).execute(&mut *conn).await?;
         }
         VolumeEvent::Attached {
             machine_id, path, ..
@@ -242,13 +286,15 @@ pub async fn apply_volume(
             let updated: Option<Uuid> = sqlx::query_scalar("UPDATE grund_volumes SET status = CASE WHEN $2::timestamptz IS NULL THEN 'deleting' ELSE 'pending_deletion' END, purge_after = $2, stream_version = $3 WHERE volume_id = $1 AND stream_version < $3 RETURNING organisation_id")
                 .bind(volume_id).bind(purge_after).bind(version).fetch_optional(&mut *conn).await?;
             if let (Some(org), Some(machine_id), None) = (updated, machine_id, purge_after) {
-                sqlx::query("INSERT INTO grund_volume_cleanup (organisation_id, app_id, volume_id, machine_id, requested_at, stream_version) SELECT $1, app_id, $2, $3, $4, $5 FROM grund_volumes WHERE volume_id = $2 AND source IS NULL ON CONFLICT (organisation_id, volume_id) DO UPDATE SET stream_version = EXCLUDED.stream_version WHERE grund_volume_cleanup.stream_version < EXCLUDED.stream_version")
+                sqlx::query("INSERT INTO grund_volume_cleanup (organisation_id, app_id, volume_id, machine_id, requested_at, stream_version) SELECT $1, app_id, $2, $3, $4, $5 FROM grund_volumes WHERE volume_id = $2 AND source IS NULL AND size_gib IS NULL ON CONFLICT (organisation_id, volume_id) DO UPDATE SET stream_version = EXCLUDED.stream_version WHERE grund_volume_cleanup.stream_version < EXCLUDED.stream_version")
                     .bind(org).bind(volume_id).bind(machine_id).bind(requested_at).bind(version).execute(&mut *conn).await?;
             }
         }
         VolumeEvent::Restored { status, .. } => {
             let next = match status {
                 grund_domain::volume::VolumeStatus::Available => "available",
+                grund_domain::volume::VolumeStatus::AwaitingBackend => "awaiting_backend",
+                grund_domain::volume::VolumeStatus::DetachingBackend => "detaching_backend",
                 _ => "requested",
             };
             sqlx::query("UPDATE grund_volumes SET status = $2, purge_after = NULL, stream_version = $3 WHERE volume_id = $1 AND stream_version < $3")
@@ -258,7 +304,7 @@ pub async fn apply_volume(
             let updated: Option<(Uuid, Option<Uuid>)> = sqlx::query_as("UPDATE grund_volumes SET status = 'deleting', purge_after = NULL, stream_version = $2 WHERE volume_id = $1 AND stream_version < $2 RETURNING organisation_id, machine_id")
                 .bind(volume_id).bind(version).fetch_optional(&mut *conn).await?;
             if let Some((org, Some(machine))) = updated {
-                sqlx::query("INSERT INTO grund_volume_cleanup (organisation_id, app_id, volume_id, machine_id, requested_at, stream_version) SELECT $1, app_id, $2, $3, $4, $5 FROM grund_volumes WHERE volume_id = $2 AND source IS NULL ON CONFLICT (organisation_id, volume_id) DO UPDATE SET stream_version = EXCLUDED.stream_version WHERE grund_volume_cleanup.stream_version < EXCLUDED.stream_version")
+                sqlx::query("INSERT INTO grund_volume_cleanup (organisation_id, app_id, volume_id, machine_id, requested_at, stream_version) SELECT $1, app_id, $2, $3, $4, $5 FROM grund_volumes WHERE volume_id = $2 AND source IS NULL AND size_gib IS NULL ON CONFLICT (organisation_id, volume_id) DO UPDATE SET stream_version = EXCLUDED.stream_version WHERE grund_volume_cleanup.stream_version < EXCLUDED.stream_version")
                     .bind(org).bind(volume_id).bind(machine).bind(requested_at).bind(version).execute(&mut *conn).await?;
             }
         }

@@ -1943,6 +1943,7 @@ dependencies = [
  "toml",
  "tower-service",
  "tracing",
+ "uuid",
  "webpki-roots 1.0.9",
  "zbus",
 ]

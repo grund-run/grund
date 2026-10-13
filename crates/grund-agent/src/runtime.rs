@@ -37,6 +37,9 @@ pub struct VolumeBind {
     /// Absolute host directory (already validated by the machine).
     pub source: String,
     pub managed: bool,
+    /// An attached ext4 device, never an agent-provisioned directory.
+    #[serde(default)]
+    pub block_device: bool,
 }
 
 /// An image pinned by digest.

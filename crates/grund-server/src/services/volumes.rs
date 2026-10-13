@@ -7,9 +7,11 @@ use grund_domain::{
     volume::{VolumeCommand, VolumeError},
 };
 use grund_store::{
+    machines::MachineRow,
     volumes::{self, VolumeRow},
     work::Work,
 };
+use std::{future::Future, pin::Pin};
 use uuid::Uuid;
 
 #[derive(Debug, thiserror::Error)]
@@ -38,6 +40,74 @@ pub enum VolumesError {
     Internal(#[from] anyhow::Error),
 }
 
+pub type BackendFuture<'a, T> = Pin<Box<dyn Future<Output = anyhow::Result<T>> + Send + 'a>>;
+
+/// Physical placement and current writer receipts are supplied only by the
+/// hosted extension. Public own-machine volumes never call this backend.
+pub trait VolumeBackend: Send + Sync {
+    fn eligible<'a>(
+        &'a self,
+        conn: &'a mut sqlx::PgConnection,
+        machine: &'a MachineRow,
+        owned: &'a [VolumeRow],
+    ) -> BackendFuture<'a, bool>;
+
+    /// A signed block mount is withheld unless this exact physical writer
+    /// still has an acknowledged host attachment on the current placement.
+    fn mount_ready<'a>(
+        &'a self,
+        conn: &'a mut sqlx::PgConnection,
+        volume: &'a VolumeRow,
+    ) -> BackendFuture<'a, bool>;
+    /// Recovery points come from the hosted snapshot ledger, not the own
+    /// machine's restic repository or the host's private bucket credentials.
+    fn recovery_points<'a>(
+        &'a self,
+        pool: &'a sqlx::PgPool,
+        org: Uuid,
+        app: Uuid,
+        volume: Uuid,
+    ) -> BackendFuture<'a, Vec<grund_store::backup::RecoveryPoint>>;
+
+    fn backup_view<'a>(
+        &'a self,
+        pool: &'a sqlx::PgPool,
+        org: Uuid,
+        app: Uuid,
+        volume: Uuid,
+    ) -> BackendFuture<'a, crate::services::backups::BackupView>;
+
+    /// Called in the same Work transaction that reserves the new app-owned
+    /// volume. The backend must prove this point's owner and target locality.
+    #[allow(clippy::too_many_arguments)]
+    fn reserve_restore<'a>(
+        &'a self,
+        conn: &'a mut sqlx::PgConnection,
+        org: Uuid,
+        app: Uuid,
+        source: Uuid,
+        snapshot: Uuid,
+        new_volume: Uuid,
+        machine: Uuid,
+        attempt: Uuid,
+    ) -> BackendFuture<'a, ()>;
+
+    fn restore_status<'a>(
+        &'a self,
+        pool: &'a sqlx::PgPool,
+        org: Uuid,
+        app: Uuid,
+        volume: Uuid,
+    ) -> BackendFuture<'a, Option<(String, Option<String>)>>;
+
+    fn restore_attempt_status<'a>(
+        &'a self,
+        pool: &'a sqlx::PgPool,
+        org: Uuid,
+        app: Uuid,
+        attempt: Uuid,
+    ) -> BackendFuture<'a, Option<String>>;
+}
 #[derive(Clone)]
 pub struct Volumes {
     state: State,
@@ -79,6 +149,12 @@ impl Volumes {
         app: Uuid,
         specs: &[VolumeSpec],
     ) -> Result<(), VolumesError> {
+        if specs.iter().any(|spec| spec.size_gib.is_some()) && self.state.volume_backend().is_none()
+        {
+            return Err(VolumesError::Invalid(
+                "hosted block volumes require an installed storage backend".into(),
+            ));
+        }
         for spec in specs {
             let existing = volumes::by_name(&mut **work.sql(), org, app, &spec.name)
                 .await
@@ -92,6 +168,14 @@ impl Volumes {
                 .is_some_and(|row| row.source != spec.source)
             {
                 return Err(VolumesError::SourceChanged(spec.name.clone()));
+            }
+            if existing
+                .as_ref()
+                .is_some_and(|row| row.size_gib != spec.size_gib.map(|size| size as i64))
+            {
+                return Err(VolumesError::Invalid(
+                    "an app-owned volume cannot change its block capacity".into(),
+                ));
             }
             if existing.as_ref().is_some_and(|row| {
                 matches!(
@@ -115,6 +199,7 @@ impl Volumes {
                     path: spec.path.clone(),
                     source: spec.source.clone(),
                     backup: spec.backup,
+                    size_gib: spec.size_gib,
                     at: Utc::now(),
                 },
             )
@@ -123,8 +208,8 @@ impl Volumes {
         }
         Ok(())
     }
-    /// Bind all volumes in this release to its sole machine under the same
-    /// placement decision. Existing placement is immutable in M1.
+    /// Bind each app-owned volume to its sole machine in the placement
+    /// transaction. Hosted blocks wait for a fenced physical host receipt.
     pub async fn place_release_in(
         &self,
         work: &mut Work<'_>,
@@ -133,12 +218,95 @@ impl Volumes {
         machine: Uuid,
         specs: &[VolumeSpec],
     ) -> Result<(), VolumesError> {
+        if specs.is_empty() {
+            return Ok(());
+        }
+        let holder = grund_store::machines::machine(&mut **work.sql(), machine)
+            .await
+            .map_err(anyhow::Error::from)?
+            .ok_or(VolumesError::InvalidMachine)?;
+        let hosted = holder.pool == "management";
+        if holder.pool_organisation_id != Some(org)
+            || holder.cordoned_at.is_some()
+            || (hosted && holder.state != "leased")
+            || (!hosted && holder.state != "active")
+        {
+            return Err(VolumesError::InvalidMachine);
+        }
+        if hosted {
+            if self.state.volume_backend().is_none() {
+                return Err(VolumesError::InvalidMachine);
+            }
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+                .bind(format!("grund-volume-slot:{machine}"))
+                .execute(&mut **work.sql())
+                .await
+                .map_err(anyhow::Error::from)?;
+        }
         for spec in specs {
             let row = volumes::by_name(&mut **work.sql(), org, app, &spec.name)
                 .await
                 .map_err(anyhow::Error::from)?
                 .ok_or(VolumesError::NotFound)?;
             self.restore_ready(work.sql(), org, app, &row).await?;
+            if hosted {
+                if spec.size_gib.is_none()
+                    || spec.source.is_some()
+                    || row.size_gib != spec.size_gib.map(|size| size as i64)
+                {
+                    return Err(VolumesError::Invalid(
+                        "hosted volumes require a fixed block size and no host directory source"
+                            .into(),
+                    ));
+                }
+                let slot = match (row.machine_id, row.slot) {
+                    (Some(existing), Some(slot)) if existing == machine => slot,
+                    _ => {
+                        let occupied: Vec<i32> = sqlx::query_scalar(
+                            "SELECT slot FROM grund_volumes WHERE machine_id = $1 AND slot IS NOT NULL AND status <> 'deleted'",
+                        )
+                        .bind(machine)
+                        .fetch_all(&mut **work.sql())
+                        .await
+                        .map_err(anyhow::Error::from)?;
+                        (1..=4)
+                            .find(|slot| !occupied.contains(slot))
+                            .ok_or_else(|| {
+                                VolumesError::Invalid(
+                                    "this machine has no free block drive slots (maximum four)"
+                                        .into(),
+                                )
+                            })?
+                    }
+                };
+                if row.status == "requested" {
+                    work.volume(
+                        row.volume_id,
+                        VolumeCommand::Place {
+                            machine_id: machine,
+                            at: Utc::now(),
+                        },
+                    )
+                    .await
+                    .map_err(volume_work)?;
+                }
+                work.volume(
+                    row.volume_id,
+                    VolumeCommand::PrepareBackend {
+                        machine_id: machine,
+                        slot: slot as u8,
+                        at: Utc::now(),
+                    },
+                )
+                .await
+                .map_err(volume_work)?;
+                continue;
+            }
+            if spec.size_gib.is_some() {
+                return Err(VolumesError::Invalid(
+                    "app-owned block volumes require a hosted machine".into(),
+                ));
+            }
             work.volume(
                 row.volume_id,
                 VolumeCommand::Place {
@@ -161,6 +329,151 @@ impl Volumes {
         }
         Ok(())
     }
+    async fn backend_change(
+        &self,
+        org: Uuid,
+        app: Uuid,
+        volume_id: Uuid,
+        machine: Uuid,
+        command: VolumeCommand,
+        publish: bool,
+    ) -> Result<(), VolumesError> {
+        let mut work = Work::begin(&self.state.events, Uuid::now_v7(), "grund/hosted-storage")
+            .await
+            .map_err(volume_work)?;
+        let row = volumes::any_volume(&mut **work.sql(), org, app, volume_id)
+            .await
+            .map_err(anyhow::Error::from)?
+            .ok_or(VolumesError::NotFound)?;
+        if row.size_gib.is_none() || row.machine_id != Some(machine) {
+            return Err(VolumesError::NotFound);
+        }
+        if publish {
+            let holder = grund_store::machines::machine(&mut **work.sql(), machine)
+                .await
+                .map_err(anyhow::Error::from)?
+                .ok_or(VolumesError::InvalidMachine)?;
+            if holder.pool != "management"
+                || holder.pool_organisation_id != Some(org)
+                || holder.state != "leased"
+            {
+                return Err(VolumesError::InvalidMachine);
+            }
+        }
+        work.volume(volume_id, command).await.map_err(volume_work)?;
+        if publish {
+            self.state.agents().publish_in(work.sql(), machine).await?;
+        }
+        work.commit().await.map_err(volume_work)?;
+        self.state.wakes.documents_changed();
+        Ok(())
+    }
+
+    pub async fn confirm_backend_attachment(
+        &self,
+        org: Uuid,
+        app: Uuid,
+        volume_id: Uuid,
+        machine: Uuid,
+    ) -> Result<(), VolumesError> {
+        self.backend_change(
+            org,
+            app,
+            volume_id,
+            machine,
+            VolumeCommand::ConfirmBackendAttachment {
+                machine_id: machine,
+                at: Utc::now(),
+            },
+            true,
+        )
+        .await
+    }
+
+    pub async fn invalidate_backend_attachment(
+        &self,
+        org: Uuid,
+        app: Uuid,
+        volume_id: Uuid,
+        machine: Uuid,
+    ) -> Result<(), VolumesError> {
+        self.backend_change(
+            org,
+            app,
+            volume_id,
+            machine,
+            VolumeCommand::InvalidateBackendAttachment {
+                machine_id: machine,
+                at: Utc::now(),
+            },
+            true,
+        )
+        .await
+    }
+
+    pub async fn begin_backend_detachment(
+        &self,
+        org: Uuid,
+        app: Uuid,
+        volume_id: Uuid,
+        machine: Uuid,
+    ) -> Result<(), VolumesError> {
+        self.backend_change(
+            org,
+            app,
+            volume_id,
+            machine,
+            VolumeCommand::BeginBackendDetachment {
+                machine_id: machine,
+                at: Utc::now(),
+            },
+            true,
+        )
+        .await
+    }
+
+    pub async fn confirm_backend_detachment(
+        &self,
+        org: Uuid,
+        app: Uuid,
+        volume_id: Uuid,
+        machine: Uuid,
+    ) -> Result<(), VolumesError> {
+        self.backend_change(
+            org,
+            app,
+            volume_id,
+            machine,
+            VolumeCommand::ConfirmBackendDetachment {
+                machine_id: machine,
+                at: Utc::now(),
+            },
+            true,
+        )
+        .await
+    }
+
+    pub async fn confirm_backend_deletion(
+        &self,
+        org: Uuid,
+        app: Uuid,
+        volume_id: Uuid,
+        machine: Uuid,
+    ) -> Result<(), VolumesError> {
+        self.backend_change(
+            org,
+            app,
+            volume_id,
+            machine,
+            VolumeCommand::ConfirmBackendDeleted {
+                machine_id: machine,
+                at: Utc::now(),
+            },
+            false,
+        )
+        .await
+    }
+
     async fn restore_ready(
         &self,
         conn: &mut sqlx::PgConnection,
@@ -168,6 +481,20 @@ impl Volumes {
         app: Uuid,
         row: &VolumeRow,
     ) -> Result<(), VolumesError> {
+        if row.size_gib.is_some() {
+            if let Some((status, _)) = self
+                .state
+                .volume_backend()
+                .ok_or(VolumesError::RestoreNotReady)?
+                .restore_status(&self.state.pool, org, app, row.volume_id)
+                .await
+                .map_err(VolumesError::Internal)?
+                && status != "completed"
+            {
+                return Err(VolumesError::RestoreNotReady);
+            }
+            return Ok(());
+        }
         if let Some((attempt, _)) = volumes::restore_status(conn, org, app, row.volume_id)
             .await
             .map_err(anyhow::Error::from)?
@@ -270,6 +597,11 @@ impl Volumes {
             .ok_or(VolumesError::NotFound)?;
         if row.stream_version != version {
             return Err(VolumesError::Conflict);
+        }
+        if row.size_gib.is_some() && matches!(operation, Operation::Attach(_) | Operation::Detach) {
+            return Err(VolumesError::Invalid(
+                "hosted block attachment is managed by the fenced storage backend".into(),
+            ));
         }
         let active_writer: bool = sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM grund_replicas r \
@@ -416,7 +748,7 @@ impl Volumes {
                 .bind(org).bind(app).bind(id).execute(&mut **work.sql()).await.map_err(anyhow::Error::from)?;
             sqlx::query("DELETE FROM grund_volume_backup_configs WHERE organisation_id = $1 AND app_id = $2 AND volume_id = $3")
                 .bind(org).bind(app).bind(id).execute(&mut **work.sql()).await.map_err(anyhow::Error::from)?;
-            if row.source.is_some() || row.machine_id.is_none() {
+            if row.machine_id.is_none() || (row.size_gib.is_none() && row.source.is_some()) {
                 work.volume(id, VolumeCommand::FinalizeWithoutErasure { at })
                     .await
                     .map_err(volume_work)?;
@@ -477,6 +809,15 @@ fn volume_work(error: grund_store::work::WorkError) -> VolumesError {
         grund_store::work::WorkError::Volume(VolumeError::SourceChanged) => {
             VolumesError::SourceChanged("volume".into())
         }
+        grund_store::work::WorkError::Volume(VolumeError::SizeChanged) => {
+            VolumesError::Invalid("an app-owned volume cannot change its block capacity".into())
+        }
+        grund_store::work::WorkError::Volume(VolumeError::InvalidSize) => VolumesError::Invalid(
+            "hosted block size must be 1-4096 GiB without a host source".into(),
+        ),
+        grund_store::work::WorkError::Volume(VolumeError::BackendNotReady) => {
+            VolumesError::Conflict
+        }
         grund_store::work::WorkError::Volume(VolumeError::Deleting) => VolumesError::Conflict,
         grund_store::work::WorkError::Volume(VolumeError::MachineChanged) => {
             VolumesError::MachineChanged
@@ -520,6 +861,15 @@ fn validate_spec(spec: VolumeSpec) -> Result<VolumeSpec, VolumesError> {
     {
         return Err(VolumesError::Invalid(
             "existing source must be a canonical absolute host directory".into(),
+        ));
+    }
+    if spec
+        .size_gib
+        .is_some_and(|size| !(1..=4096).contains(&size))
+        || (spec.size_gib.is_some() && spec.source.is_some())
+    {
+        return Err(VolumesError::Invalid(
+            "hosted block size must be 1-4096 GiB without a host source".into(),
         ));
     }
     Ok(spec)

@@ -52,6 +52,13 @@ impl State {
         }
         Ok(None)
     }
+    pub fn volume_backend(
+        &self,
+    ) -> Option<std::sync::Arc<dyn crate::services::volumes::VolumeBackend>> {
+        self.extensions
+            .iter()
+            .find_map(|extension| extension.volume_backend(self))
+    }
     /// Resolves a public machine identifier without crossing its organisation.
     pub async fn machine_id(
         &self,
