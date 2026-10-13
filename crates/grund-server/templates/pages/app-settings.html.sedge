@@ -157,6 +157,12 @@ props crate::web::apps::AppSettingsPage<'_> { app, items, edit, next, manages, o
                 }}
               </Rows>
               <Button label="Back to volumes" href="{here}?edit=volumes" kind="secondary" />
+              {if *owner && volume.pending_deletion {
+                <Form action="{app.base}/volumes/{detail.id}/undo-delete" form={Some(&form)}>
+                  <HiddenField name="expected_version" value={&volume.version.to_string()} />
+                  <Button label="Restore volume" kind="secondary" />
+                </Form>
+              }}
               {if *manages && matches!(volume.status.as_str(), "requested" | "available") {
                 <Form action="{app.base}/volumes/{detail.id}/change" form={Some(&form)}>
                   <HiddenField name="action" value="attach" />
@@ -172,12 +178,12 @@ props crate::web::apps::AppSettingsPage<'_> { app, items, edit, next, manages, o
                   <Actions note="Stop every replica that mounts this volume first; detaching does not erase its bytes." note_icon="box"><Button label="Detach" kind="secondary" /></Actions>
                 </Form>
               }}
-              {if *manages && !matches!(volume.status.as_str(), "deleting" | "deleted") {
+              {if *manages && !volume.pending_deletion && !matches!(volume.status.as_str(), "deleting" | "deleted") {
                 <Form action="{app.base}/volumes/{detail.id}/change" form={Some(&form)}>
                   <HiddenField name="action" value="delete" />
                   <HiddenField name="expected_version" value={&volume.version.to_string()} />
-                  <Field name="confirm_name" label="Type volume name to delete" hint="Managed bytes are erased after the machine acknowledges. Existing host-path bytes and S3 objects are NOT erased; backup credentials and recovery point records are removed. Stop all writers first." required autocomplete="off" form={Some(&form)} />
-                  <Actions note="Irreversible managed-volume deletion. The app remains." note_icon="trash"><Button label="Delete volume" kind="danger" /></Actions>
+                  <Field name="confirm_name" label="Type volume name to delete" hint="Managed bytes are erased after 7 days, once the machine acknowledges. Existing host-path bytes and external backups are not erased. Stop all writers first." required autocomplete="off" form={Some(&form)} />
+                  <Actions note="Restore within 7 days. The app remains." note_icon="trash"><Button label="Delete volume" kind="danger" /></Actions>
                 </Form>
               }}
               {if *owner && volume.status == "attached" && volume.backup_requested && !detail.backup_enabled {
@@ -256,11 +262,11 @@ props crate::web::apps::AppSettingsPage<'_> { app, items, edit, next, manages, o
         }}
       },
       SettingsEdit::Delete(preview) => {
-        <SettingsForm id="danger" title="Delete {app.name}" action="{app.base}/delete" cancel={&here} part="delete" note="Cannot be undone." save="Delete {app.name}" kind="danger" icon="" autocomplete={Some("off")} form={&form} manages={*manages}>
+        <SettingsForm id="danger" title="Delete {app.name}" action="{app.base}/delete" cancel={&here} part="delete" note="Restore within {preview.window}." save="Delete {app.name}" kind="danger" icon="" autocomplete={Some("off")} form={&form} manages={*manages}>
           <HiddenField name="confirm_volume_count" value={&preview.items.len().to_string()} />
-          <Para kind="hint">Deletes {preview.items.len()} volumes, {preview.usage}. Managed directories are erased when their machines reconnect; {preview.host_paths} existing customer host paths remain on their owners' disks. External customer-owned backups are not erased.</Para>
+          <Para kind="hint">Deletes {preview.items.len()} volumes, {preview.usage}, after {preview.window}. Managed directories are erased when their machines reconnect after the recovery window; {preview.host_paths} existing customer host paths remain on their owners' disks. External customer-owned backups are not erased.</Para>
           {if !preview.items.is_empty() { <Rows>{for volume in &preview.items {
-            <Row name={&volume.name} sub="{volume.path} · {volume.usage}" icon_name="box" tone="orange" detail={if volume.managed { "Managed data will be erased" } else { "Existing host-path files remain" }} />
+            <Row name={&volume.name} sub="{volume.path} · {volume.usage}" icon_name="box" tone="orange" detail={if volume.managed { "Managed data scheduled for erasure after the recovery window" } else { "Existing host-path files remain" }} />
           }}</Rows> }}
           <Field name="confirm" label="Type {app.name} to confirm" autocomplete="off" required width={Some("md")} form={Some(&form)} />
         </SettingsForm>

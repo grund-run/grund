@@ -11,6 +11,7 @@ pub enum VolumeStatus {
     Requested,
     Available,
     Attached,
+    PendingDeletion,
     Deleting,
     Deleted,
 }
@@ -51,6 +52,15 @@ pub enum VolumeEvent {
     DeleteRequested {
         machine_id: Option<Uuid>,
         requested_at: DateTime<Utc>,
+        #[serde(default)]
+        purge_after: Option<DateTime<Utc>>,
+    },
+    Restored {
+        restored_at: DateTime<Utc>,
+        status: VolumeStatus,
+    },
+    PurgeRequested {
+        requested_at: DateTime<Utc>,
     },
     Deleted {
         deleted_at: DateTime<Utc>,
@@ -68,6 +78,7 @@ pub struct Volume {
     pub machine_id: Option<Uuid>,
     pub status: Option<VolumeStatus>,
     pub requested_at: Option<DateTime<Utc>>,
+    pub purge_after: Option<DateTime<Utc>>,
 }
 
 impl mire::Aggregate for Volume {
@@ -109,7 +120,22 @@ impl mire::Aggregate for Volume {
             }
             VolumeEvent::Detached { .. } => self.status = Some(VolumeStatus::Available),
             VolumeEvent::BackupPolicySet { backup, .. } => self.backup = *backup,
-            VolumeEvent::DeleteRequested { .. } => self.status = Some(VolumeStatus::Deleting),
+            VolumeEvent::DeleteRequested { purge_after, .. } => {
+                self.purge_after = *purge_after;
+                self.status = Some(if purge_after.is_some() {
+                    VolumeStatus::PendingDeletion
+                } else {
+                    VolumeStatus::Deleting
+                });
+            }
+            VolumeEvent::Restored { status, .. } => {
+                self.status = Some(*status);
+                self.purge_after = None;
+            }
+            VolumeEvent::PurgeRequested { .. } => {
+                self.status = Some(VolumeStatus::Deleting);
+                self.purge_after = None;
+            }
             VolumeEvent::Deleted { .. } => self.status = Some(VolumeStatus::Deleted),
         }
     }
@@ -148,6 +174,13 @@ pub enum VolumeCommand {
         at: DateTime<Utc>,
     },
     Delete {
+        at: DateTime<Utc>,
+        purge_after: DateTime<Utc>,
+    },
+    Restore {
+        at: DateTime<Utc>,
+    },
+    Purge {
         at: DateTime<Utc>,
     },
     FinalizeWithoutErasure {
@@ -200,7 +233,7 @@ impl mire::Command for VolumeCommand {
                 at,
             } => {
                 if let Some(status) = state.status {
-                    if status == S::Deleting || status == S::Deleted {
+                    if matches!(status, S::PendingDeletion | S::Deleting | S::Deleted) {
                         return Err(VolumeError::Deleting);
                     }
                     if state.organisation_id != Some(organisation_id)
@@ -238,7 +271,9 @@ impl mire::Command for VolumeCommand {
                 _ => return Err(VolumeError::MachineChanged),
             },
             C::Place { machine_id, at } => match (state.status, state.machine_id) {
-                (None | Some(S::Deleting | S::Deleted), _) => return Err(VolumeError::Deleting),
+                (None | Some(S::PendingDeletion | S::Deleting | S::Deleted), _) => {
+                    return Err(VolumeError::Deleting);
+                }
                 (_, Some(existing)) if existing != machine_id => {
                     return Err(VolumeError::MachineChanged);
                 }
@@ -254,7 +289,9 @@ impl mire::Command for VolumeCommand {
                 at,
             } => match (state.status, state.machine_id) {
                 (None, _) => return Err(VolumeError::NotFound),
-                (Some(S::Deleting | S::Deleted), _) => return Err(VolumeError::Deleting),
+                (Some(S::PendingDeletion | S::Deleting | S::Deleted), _) => {
+                    return Err(VolumeError::Deleting);
+                }
                 (_, Some(existing)) if existing != machine_id => {
                     return Err(VolumeError::MachineChanged);
                 }
@@ -272,17 +309,46 @@ impl mire::Command for VolumeCommand {
             },
             C::Detach { at } => match state.status {
                 None => return Err(VolumeError::NotFound),
-                Some(S::Deleting | S::Deleted) => return Err(VolumeError::Deleting),
+                Some(S::PendingDeletion | S::Deleting | S::Deleted) => {
+                    return Err(VolumeError::Deleting);
+                }
                 Some(S::Attached) => vec![E::Detached { detached_at: at }],
                 _ => vec![],
             },
-            C::Delete { at } => match state.status {
+            C::Delete { at, purge_after } => match state.status {
                 None => return Err(VolumeError::NotFound),
                 Some(S::Deleting | S::Deleted) => vec![],
+                Some(S::PendingDeletion)
+                    if state
+                        .purge_after
+                        .is_some_and(|deadline| deadline >= purge_after) =>
+                {
+                    vec![]
+                }
                 _ => vec![E::DeleteRequested {
                     machine_id: state.machine_id,
                     requested_at: at,
+                    purge_after: Some(purge_after),
                 }],
+            },
+            C::Restore { at } => match (state.status, state.purge_after) {
+                (Some(S::PendingDeletion), Some(deadline)) if at < deadline => {
+                    vec![E::Restored {
+                        restored_at: at,
+                        status: if state.machine_id.is_some() {
+                            S::Available
+                        } else {
+                            S::Requested
+                        },
+                    }]
+                }
+                _ => return Err(VolumeError::Deleting),
+            },
+            C::Purge { at } => match (state.status, state.purge_after) {
+                (Some(S::PendingDeletion), Some(deadline)) if at >= deadline => {
+                    vec![E::PurgeRequested { requested_at: at }]
+                }
+                _ => return Err(VolumeError::InvalidAcknowledgement),
             },
             C::FinalizeWithoutErasure { at } => match state.status {
                 Some(S::Deleted) => vec![],
@@ -301,5 +367,138 @@ impl mire::Command for VolumeCommand {
                 _ => return Err(VolumeError::InvalidAcknowledgement),
             },
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mire::{Aggregate, Command};
+
+    #[test]
+    fn deletion_waits_until_due_and_restoration_recovers_same_volume() {
+        let at = DateTime::from_timestamp(1_790_000_000, 0).unwrap();
+        let deadline = at + chrono::Duration::days(7);
+        let mut volume = Volume::default();
+        for event in (VolumeCommand::Request {
+            organisation_id: Uuid::nil(),
+            app_id: Uuid::nil(),
+            name: "data".into(),
+            path: "/data".into(),
+            source: None,
+            backup: true,
+            at,
+        })
+        .handle(&volume)
+        .unwrap()
+        {
+            volume.apply(&event);
+        }
+        volume.apply(&VolumeEvent::Placed {
+            machine_id: Uuid::nil(),
+            placed_at: at,
+        });
+        for event in (VolumeCommand::Delete {
+            at,
+            purge_after: deadline,
+        })
+        .handle(&volume)
+        .unwrap()
+        {
+            volume.apply(&event);
+        }
+        assert_eq!(volume.status, Some(VolumeStatus::PendingDeletion));
+        assert_eq!(
+            VolumeCommand::Purge {
+                at: deadline - chrono::Duration::seconds(1)
+            }
+            .handle(&volume)
+            .unwrap_err()
+            .to_string(),
+            VolumeError::InvalidAcknowledgement.to_string()
+        );
+        assert!(
+            VolumeCommand::Attach {
+                machine_id: Uuid::nil(),
+                path: "/data".into(),
+                at
+            }
+            .handle(&volume)
+            .is_err()
+        );
+        for event in (VolumeCommand::Restore {
+            at: deadline - chrono::Duration::seconds(1),
+        })
+        .handle(&volume)
+        .unwrap()
+        {
+            volume.apply(&event);
+        }
+        assert_eq!(volume.status, Some(VolumeStatus::Available));
+        assert!(volume.backup);
+        assert_eq!(volume.purge_after, None);
+    }
+
+    #[test]
+    fn deleting_an_app_extends_an_already_pending_volume_to_the_app_deadline() {
+        let at = DateTime::from_timestamp(1_790_000_000, 0).unwrap();
+        let existing_deadline = at + chrono::Duration::days(1);
+        let app_deadline = at + chrono::Duration::days(7);
+        let mut volume = Volume {
+            organisation_id: Some(Uuid::nil()),
+            app_id: Some(Uuid::nil()),
+            status: Some(VolumeStatus::PendingDeletion),
+            purge_after: Some(existing_deadline),
+            ..Volume::default()
+        };
+        for event in (VolumeCommand::Delete {
+            at,
+            purge_after: app_deadline,
+        })
+        .handle(&volume)
+        .unwrap()
+        {
+            volume.apply(&event);
+        }
+        assert_eq!(volume.purge_after, Some(app_deadline));
+        assert!(
+            VolumeCommand::Purge {
+                at: existing_deadline
+            }
+            .handle(&volume)
+            .is_err()
+        );
+        assert!(
+            VolumeCommand::Restore {
+                at: app_deadline - chrono::Duration::seconds(1)
+            }
+            .handle(&volume)
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn purge_is_final_and_an_expired_volume_cannot_be_restored() {
+        let at = DateTime::from_timestamp(1_790_000_000, 0).unwrap();
+        let mut volume = Volume {
+            organisation_id: Some(Uuid::nil()),
+            app_id: Some(Uuid::nil()),
+            status: Some(VolumeStatus::PendingDeletion),
+            purge_after: Some(at),
+            ..Volume::default()
+        };
+        assert!(VolumeCommand::Restore { at }.handle(&volume).is_err());
+        for event in (VolumeCommand::Purge { at }).handle(&volume).unwrap() {
+            volume.apply(&event);
+        }
+        assert_eq!(volume.status, Some(VolumeStatus::Deleting));
+        for event in (VolumeCommand::FinalizeWithoutErasure { at })
+            .handle(&volume)
+            .unwrap()
+        {
+            volume.apply(&event);
+        }
+        assert_eq!(volume.status, Some(VolumeStatus::Deleted));
+        assert!(VolumeCommand::Restore { at }.handle(&volume).is_err());
     }
 }

@@ -1,6 +1,7 @@
 //! App-owned, own-machine volumes over `grund.volume.v1.VolumeService`.
 //! A volume's identity survives releases and machine detachment. Deleting
-//! an app deletes its managed directories, not customer-owned host paths.
+//! an app stops its volumes immediately; managed data is erased after the
+//! recovery window, never customer-owned host paths.
 
 use clap::Subcommand;
 use serde_json::{Value, json};
@@ -113,7 +114,9 @@ pub enum VolumesAction {
         #[command(subcommand)]
         action: BackupsAction,
     },
-    #[command(about = "Restore one verified recovery point into a NEW app-owned managed directory")]
+    #[command(
+        about = "Restore one verified backup recovery point into a NEW app-owned managed directory"
+    )]
     Restore {
         app: String,
         volume: String,
@@ -133,7 +136,16 @@ pub enum VolumesAction {
         #[arg(long)]
         dry_run: bool,
     },
-    #[command(about = "Delete an unused volume; never erases an existing customer host path")]
+    #[command(about = "Restore the SAME pending-deletion volume before its purge deadline")]
+    RestoreDeleted {
+        app: String,
+        volume: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    #[command(
+        about = "Stop an unused volume now; recoverable until its configured deadline (seven days by default)"
+    )]
     Delete {
         app: String,
         volume: String,
@@ -151,6 +163,7 @@ const VOLUMES: &[(&str, &str)] = &[
     ("STATE", "/status"),
     ("MACHINE", "/machineId"),
     ("MEASURED BYTES", "/measuredBytes"),
+    ("RESTORABLE UNTIL", "/purgeAfter"),
 ];
 
 const POINTS: &[(&str, &str)] = &[
@@ -434,6 +447,29 @@ pub async fn run(ctx: &Ctx, action: VolumesAction) -> CliResult<Output> {
                 .await?;
             Ok(Output::fields(answer))
         }
+        VolumesAction::RestoreDeleted {
+            app,
+            volume,
+            dry_run: preview,
+        } => {
+            let row = find(&api, &org, &app, &volume).await?;
+            let request = json!({
+                "organisation": org,
+                "app": app,
+                "volumeId": row["volumeId"],
+                "expectedVersion": row["version"],
+            });
+            if preview {
+                return Ok(dry_run(
+                    &[(format!("{SERVICE}/RestoreVolume"), request)],
+                    vec![],
+                ));
+            }
+            let answer = api
+                .call(&format!("{SERVICE}/RestoreVolume"), request)
+                .await?;
+            Ok(Output::fields(answer["volume"].clone()))
+        }
         VolumesAction::Delete {
             app,
             volume,
@@ -454,14 +490,15 @@ pub async fn run(ctx: &Ctx, action: VolumesAction) -> CliResult<Output> {
                 ));
             }
             let effect = if row["source"].as_str().is_some_and(|path| !path.is_empty()) {
-                "its access is removed; your original host files remain"
+                "its access is removed now; your original host files remain untouched"
             } else {
-                "its managed directory and its data will be deleted"
+                "it stops now; its managed directory and data remain restorable until the configured deadline (seven days by default)"
             };
             ctx.confirm(yes, &format!("Delete {app}/{volume}; {effect}"))?;
-            api.call(&format!("{SERVICE}/DeleteVolume"), request)
+            let answer = api
+                .call(&format!("{SERVICE}/DeleteVolume"), request)
                 .await?;
-            Ok(done(format!("Deletion requested for {app}/{volume}.")))
+            Ok(Output::fields(answer["volume"].clone()))
         }
     }
 }

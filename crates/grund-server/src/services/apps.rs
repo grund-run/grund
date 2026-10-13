@@ -1259,15 +1259,15 @@ impl Apps {
         self.volumes(organisation_id, name).await
     }
 
-    /// Deletes the app: its copies leave every machine's document in the
-    /// same transaction.
+    /// Deletes the app immediately from every signed machine document, but
+    /// retains its volumes and recovery points until the recorded deadline.
     pub async fn delete(
         &self,
         actor: Uuid,
         organisation_id: Uuid,
         name: &str,
         confirm_volume_count: Option<u32>,
-    ) -> Result<(), AppsError> {
+    ) -> Result<DateTime<Utc>, AppsError> {
         let row = self.live(organisation_id, name).await?;
         let mut work = Work::begin(&self.state.events, Uuid::now_v7(), &actor.to_string()).await?;
         let before = apps::app_machines(&mut **work.sql(), row.app_id).await?;
@@ -1283,40 +1283,28 @@ impl Apps {
                 actual: owned.len(),
             });
         }
+        let at: DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(&mut **work.sql())
+            .await?;
+        let purge_after = at
+            + chrono::Duration::from_std(self.state.config.volume_delete_window)
+                .map_err(anyhow::Error::from)?;
         work.app(
             row.app_id,
             AppCommand::Delete {
                 actor,
-                at: Utc::now(),
+                at,
+                purge_after,
             },
         )
         .await?;
         let volume_machines = self
             .state
             .volumes()
-            .delete_app_in(&mut work, organisation_id, row.app_id)
+            .delete_app_in(&mut work, organisation_id, row.app_id, purge_after)
             .await?;
-        sqlx::query(
-            "DELETE FROM grund_volume_backup_attempts WHERE organisation_id = $1 AND app_id = $2",
-        )
-        .bind(organisation_id)
-        .bind(row.app_id)
-        .execute(&mut **work.sql())
-        .await?;
-        sqlx::query(
-            "DELETE FROM grund_volume_backup_points WHERE organisation_id = $1 AND app_id = $2",
-        )
-        .bind(organisation_id)
-        .bind(row.app_id)
-        .execute(&mut **work.sql())
-        .await?;
-        sqlx::query(
-            "DELETE FROM grund_volume_backup_configs WHERE organisation_id = $1 AND app_id = $2",
-        )
-        .bind(organisation_id)
-        .bind(row.app_id)
-        .execute(&mut **work.sql())
-        .await?;
+        sqlx::query("DELETE FROM grund_volume_backup_attempts WHERE organisation_id = $1 AND app_id = $2 AND status IN ('pending','leased')")
+            .bind(organisation_id).bind(row.app_id).execute(&mut **work.sql()).await?;
         self.state
             .domains()
             .unbind_app_in(&mut work, actor, row.app_id)
@@ -1326,7 +1314,89 @@ impl Apps {
         self.publish_machines(work.sql(), touched).await?;
         work.commit().await?;
         self.state.wakes.documents_changed();
+        Ok(purge_after)
+    }
+
+    /// Apps are addressable by name while the name and data are reserved.
+    pub async fn restorable(&self, organisation_id: Uuid) -> Result<Vec<AppRow>, AppsError> {
+        Ok(apps::restorable_apps(&self.state.pool, organisation_id).await?)
+    }
+
+    /// Restoring the app keeps its UUID, releases and backup points. Old
+    /// replicas were removed on deletion; reconciliation places fresh ones.
+    pub async fn restore(
+        &self,
+        actor: Uuid,
+        organisation_id: Uuid,
+        name: &str,
+    ) -> Result<(), AppsError> {
+        let row = apps::app_by_name_including_deleted(&self.state.pool, organisation_id, name)
+            .await?
+            .ok_or(AppsError::NotFound)?;
+        let mut work = Work::begin(&self.state.events, Uuid::now_v7(), &actor.to_string()).await?;
+        let app = work.load_app(row.app_id).await?;
+        let at: DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(&mut **work.sql())
+            .await?;
+        if app.organisation_id != organisation_id
+            || !app.deleted
+            || !app.purge_after.is_some_and(|due| at < due)
+        {
+            return Err(AppsError::NotFound);
+        }
+        let rows =
+            grund_store::volumes::app_volumes(&mut **work.sql(), organisation_id, row.app_id)
+                .await?;
+        let mut machines = Vec::new();
+        for volume in rows {
+            if volume.status == "pending_deletion" && volume.purge_after == app.purge_after {
+                work.volume(
+                    volume.volume_id,
+                    grund_domain::volume::VolumeCommand::Restore { at },
+                )
+                .await?;
+                if let Some(machine) = volume.machine_id {
+                    machines.push(machine);
+                }
+            }
+        }
+        work.app(row.app_id, AppCommand::Restore { actor, at })
+            .await?;
+        self.publish_machines(work.sql(), machines).await?;
+        work.commit().await?;
+        self.state.wakes.documents_changed();
+        self.state.wakes.apps_changed();
         Ok(())
+    }
+    /// Records final expiry after every owned volume has left recovery.
+    pub async fn purge_due(&self, at: DateTime<Utc>) -> Result<usize, AppsError> {
+        let due: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT a.app_id FROM grund_apps a WHERE a.deleted_at IS NOT NULL \
+             AND a.purge_after <= $1 AND NOT EXISTS (SELECT 1 FROM grund_volumes v \
+             WHERE v.app_id = a.app_id AND v.status = 'pending_deletion') \
+             ORDER BY a.purge_after, a.app_id LIMIT 100",
+        )
+        .bind(at)
+        .fetch_all(&self.state.pool)
+        .await?;
+        let mut count = 0;
+        for id in due {
+            let mut work = Work::begin(&self.state.events, Uuid::now_v7(), "grund/purge").await?;
+            let app = work.load_app(id).await?;
+            if !app.deleted || !app.purge_after.is_some_and(|due| at >= due) {
+                continue;
+            }
+            let pending: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM grund_volumes WHERE app_id = $1 AND status = 'pending_deletion')"
+            ).bind(id).fetch_one(&mut **work.sql()).await?;
+            if pending {
+                continue;
+            }
+            work.app(id, AppCommand::Purge { at }).await?;
+            work.commit().await?;
+            count += 1;
+        }
+        Ok(count)
     }
 
     async fn publish_machines(

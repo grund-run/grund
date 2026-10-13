@@ -398,6 +398,19 @@
       "title": "grund.app.v1.ListReleasesResponse",
       "type": "object"
     },
+    "grund.app.v1.ListRestorableAppsResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "apps": {
+          "items": {
+            "$ref": "#/$defs/grund.app.v1.RestorableApp"
+          },
+          "type": "array"
+        }
+      },
+      "title": "grund.app.v1.ListRestorableAppsResponse",
+      "type": "object"
+    },
     "grund.app.v1.Placement": {
       "additionalProperties": false,
       "description": "An app's placement rules (apps.md §5.6). A copy on a machine that stops matching them, or is taken out of service, moves off (§5.7).",
@@ -645,6 +658,26 @@
         }
       },
       "title": "grund.app.v1.Resources",
+      "type": "object"
+    },
+    "grund.app.v1.RestorableApp": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "purgeAfter": {
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "title": "grund.app.v1.RestorableApp",
+      "type": "object"
+    },
+    "grund.app.v1.RestoreAppResponse": {
+      "additionalProperties": false,
+      "properties": {},
+      "title": "grund.app.v1.RestoreAppResponse",
       "type": "object"
     },
     "grund.app.v1.Rollout": {
@@ -2570,6 +2603,11 @@
         "path": {
           "type": "string"
         },
+        "purgeAfter": {
+          "description": "Present while pending deletion; after this time managed data may be erased.",
+          "format": "date-time",
+          "type": "string"
+        },
         "restoreFailureClass": {
           "description": "Safe failure class, never a provider response or secret.",
           "type": "string"
@@ -2583,7 +2621,7 @@
           "type": "string"
         },
         "status": {
-          "description": "requested, available, attached, deleting, deleted.",
+          "description": "requested, available, attached, pending_deletion, deleting, deleted.",
           "type": "string"
         },
         "version": {
@@ -2766,6 +2804,15 @@
           "name": "work_poll_interval",
           "type": "string",
           "value_name": "WORK_POLL_INTERVAL"
+        },
+        {
+          "default": "168",
+          "description": "How long a deleted app or volume can be restored before final purge. At most 30 days to bound stored data and the occupied app name",
+          "env": "GRUND_VOLUME_DELETE_WINDOW",
+          "flag": "--volume-delete-window",
+          "name": "volume_delete_window",
+          "type": "string",
+          "value_name": "VOLUME_DELETE_WINDOW"
         },
         {
           "description": "Image registries (host[:port], comma-separated) grund may speak to over plain HTTP when it resolves an app's image. For tests against a local registry; every other registry is HTTPS only",
@@ -3659,6 +3706,15 @@
           "value_name": "WORK_POLL_INTERVAL"
         },
         {
+          "default": "168",
+          "description": "How long a deleted app or volume can be restored before final purge. At most 30 days to bound stored data and the occupied app name",
+          "env": "GRUND_VOLUME_DELETE_WINDOW",
+          "flag": "--volume-delete-window",
+          "name": "volume_delete_window",
+          "type": "string",
+          "value_name": "VOLUME_DELETE_WINDOW"
+        },
+        {
           "description": "Image registries (host[:port], comma-separated) grund may speak to over plain HTTP when it resolves an app's image. For tests against a local registry; every other registry is HTTPS only",
           "env": "GRUND_INSECURE_REGISTRIES",
           "flag": "--insecure-registries",
@@ -4410,6 +4466,15 @@
           "name": "work_poll_interval",
           "type": "string",
           "value_name": "WORK_POLL_INTERVAL"
+        },
+        {
+          "default": "168",
+          "description": "How long a deleted app or volume can be restored before final purge. At most 30 days to bound stored data and the occupied app name",
+          "env": "GRUND_VOLUME_DELETE_WINDOW",
+          "flag": "--volume-delete-window",
+          "name": "volume_delete_window",
+          "type": "string",
+          "value_name": "VOLUME_DELETE_WINDOW"
         },
         {
           "description": "Image registries (host[:port], comma-separated) grund may speak to over plain HTTP when it resolves an app's image. For tests against a local registry; every other registry is HTTPS only",
@@ -9847,6 +9912,210 @@
           "name": "json",
           "type": "boolean",
           "value_name": "JSON"
+        }
+      ],
+      "audience": "client",
+      "command": "grund apps list-restorable",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund apps list-restorable"
+      ],
+      "mutates": false,
+      "output": {
+        "$ref": "#/$defs/grund.app.v1.ListRestorableAppsResponse"
+      },
+      "path": "apps list-restorable",
+      "rpcs": [
+        "grund.app.v1.AppService/ListRestorableApps"
+      ],
+      "summary": "Deleted apps still recoverable by the organisation owner"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "app",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "APP"
+        },
+        {
+          "description": "Show the request instead of sending it",
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund apps restore",
+      "destructive": false,
+      "dry_run": true,
+      "examples": [
+        "grund apps restore web"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.app.v1.RestoreAppResponse"
+      },
+      "path": "apps restore",
+      "rpcs": [
+        "grund.app.v1.AppService/RestoreApp"
+      ],
+      "summary": "Restore a deleted app and volumes deleted with it before expiry"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
         },
         {
           "name": "app",
@@ -12198,7 +12467,7 @@
       "rpcs": [
         "grund.app.v1.AppService/DeleteApp"
       ],
-      "summary": "Delete an app and all its managed volumes; original customer host-path contents remain"
+      "summary": "Stop an app now; managed volumes remain recoverable until the configured deadline (seven days by default)"
     },
     {
       "args": [
@@ -13671,7 +13940,123 @@
         "grund.volume.v1.VolumeService/ListVolumes",
         "grund.volume.v1.VolumeService/RestoreRecoveryPoint"
       ],
-      "summary": "Restore one verified recovery point into a NEW app-owned managed directory"
+      "summary": "Restore one verified backup recovery point into a NEW app-owned managed directory"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "app",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "APP"
+        },
+        {
+          "name": "volume",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "VOLUME"
+        },
+        {
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund volumes restore-deleted",
+      "destructive": false,
+      "dry_run": true,
+      "examples": [
+        "grund volumes restore-deleted photos data"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.volume.v1.Volume"
+      },
+      "path": "volumes restore-deleted",
+      "rpcs": [
+        "grund.volume.v1.VolumeService/ListVolumes",
+        "grund.volume.v1.VolumeService/RestoreVolume"
+      ],
+      "summary": "Restore the SAME pending-deletion volume before its purge deadline"
     },
     {
       "args": [
@@ -13786,14 +14171,14 @@
       ],
       "mutates": true,
       "output": {
-        "$ref": "#/$defs/grund.cli.v1.Done"
+        "$ref": "#/$defs/grund.volume.v1.Volume"
       },
       "path": "volumes delete",
       "rpcs": [
         "grund.volume.v1.VolumeService/ListVolumes",
         "grund.volume.v1.VolumeService/DeleteVolume"
       ],
-      "summary": "Delete an unused volume; never erases an existing customer host path"
+      "summary": "Stop an unused volume now; recoverable until its configured deadline (seven days by default)"
     },
     {
       "args": [

@@ -29,6 +29,15 @@ pub type AppsCommand = Noun<AppsAction>;
 pub enum AppsAction {
     #[command(about = "The organisation's apps, by name")]
     List,
+    #[command(about = "Deleted apps still recoverable by the organisation owner")]
+    ListRestorable,
+    #[command(about = "Restore a deleted app and volumes deleted with it before expiry")]
+    Restore {
+        #[arg(value_name = "APP")]
+        app: String,
+        #[arg(long, help = "Show the request instead of sending it")]
+        dry_run: bool,
+    },
     #[command(about = "One app: settings, rollout, every copy and where it runs, secrets' names")]
     Get {
         #[arg(value_name = "APP")]
@@ -84,7 +93,7 @@ pub enum AppsAction {
         dry_run: bool,
     },
     #[command(
-        about = "Delete an app and all its managed volumes; original customer host-path contents remain"
+        about = "Stop an app now; managed volumes remain recoverable until the configured deadline (seven days by default)"
     )]
     Delete {
         #[arg(value_name = "APP")]
@@ -446,6 +455,8 @@ const APPS: &[(&str, &str)] = &[
     ("ROLLOUT", "/rollout/state"),
 ];
 
+const RESTORABLE_APPS: &[(&str, &str)] = &[("NAME", "/name"), ("RESTORABLE UNTIL", "/purgeAfter")];
+
 const RELEASES: &[(&str, &str)] = &[
     ("RELEASE", "/number"),
     ("OUTCOME", "/outcome"),
@@ -471,6 +482,29 @@ pub async fn run(ctx: &Ctx, action: AppsAction) -> CliResult<Output> {
                 .call(&format!("{SERVICE}/ListApps"), json!({"organisation": org}))
                 .await?;
             Ok(Output::table(answer, "/apps", APPS))
+        }
+        AppsAction::ListRestorable => {
+            let answer = api
+                .call(
+                    &format!("{SERVICE}/ListRestorableApps"),
+                    json!({"organisation": org}),
+                )
+                .await?;
+            Ok(Output::table(answer, "/apps", RESTORABLE_APPS))
+        }
+        AppsAction::Restore {
+            app,
+            dry_run: preview,
+        } => {
+            let request = json!({"organisation": org, "name": app});
+            if preview {
+                return Ok(dry_run(
+                    &[(format!("{SERVICE}/RestoreApp"), request)],
+                    vec![],
+                ));
+            }
+            api.call(&format!("{SERVICE}/RestoreApp"), request).await?;
+            Ok(done(format!("Restored {app}.")))
         }
         AppsAction::Get { app } => Ok(Output::fields(get_app(&api, &org, &app).await?)),
         AppsAction::Status { app } => {
@@ -580,12 +614,17 @@ pub async fn run(ctx: &Ctx, action: AppsAction) -> CliResult<Output> {
             ctx.confirm(
                 yes,
                 &format!(
-                    "Delete app {app}: deletes {} volumes, {bytes}; {host_paths} existing host paths remain on their owners' disks",
+                    "Delete app {app}: stops it now; {} volumes, {bytes} will be erased after the configured window (seven days by default); {host_paths} existing host paths remain on their owners' disks",
                     volumes.len()
                 ),
             )?;
-            api.call(&format!("{SERVICE}/DeleteApp"), request).await?;
-            Ok(done(format!("Deletion requested for {app}.")))
+            let answer = api.call(&format!("{SERVICE}/DeleteApp"), request).await?;
+            Ok(done(format!(
+                "Deletion scheduled for {app}; restore before {}.",
+                answer["purgeAfter"]
+                    .as_str()
+                    .unwrap_or("the configured deadline")
+            )))
         }
         AppsAction::Secrets { action } => match action {
             SecretsAction::List { app } => {

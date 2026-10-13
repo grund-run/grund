@@ -229,6 +229,10 @@ pub fn router(state: State) -> Router {
             post(apps::restore_volume),
         )
         .route(
+            "/{org}/apps/{app}/volumes/{volume}/undo-delete",
+            post(apps::undo_volume_deletion),
+        )
+        .route(
             "/{org}/apps/{app}/volumes/{volume}/change",
             post(apps::change_volume),
         )
@@ -242,6 +246,7 @@ pub fn router(state: State) -> Router {
             post(apps::rollback),
         )
         .route("/{org}/apps/{app}/delete", post(apps::delete))
+        .route("/{org}/apps/{app}/restore", post(apps::restore_app))
         .route("/{org}/apps/{app}/grund.yaml", get(apps::file))
         .route("/{org}/apps/{app}/settings/file", post(apps::apply_file))
         .route("/{org}/machines", get(machines::machines_page))

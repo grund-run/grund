@@ -157,6 +157,18 @@ pub const LEAVES: &[Leaf] = &[
         &["grund apps list --json"],
     ),
     read(
+        "apps list-restorable",
+        "grund.app.v1.ListRestorableAppsResponse",
+        &["grund.app.v1.AppService/ListRestorableApps"],
+        &["grund apps list-restorable"],
+    ),
+    write(
+        "apps restore",
+        "grund.app.v1.RestoreAppResponse",
+        &["grund.app.v1.AppService/RestoreApp"],
+        &["grund apps restore web"],
+    ),
+    read(
         "apps get",
         "grund.app.v1.GetAppResponse",
         &["grund.app.v1.AppService/GetApp"],
@@ -356,13 +368,26 @@ pub const LEAVES: &[Leaf] = &[
         ],
         &["grund volumes detach photos data"],
     ),
-    destroy(
-        "volumes delete",
+    Leaf {
+        destructive: true,
+        ..write(
+            "volumes delete",
+            "grund.volume.v1.Volume",
+            &[
+                "grund.volume.v1.VolumeService/ListVolumes",
+                "grund.volume.v1.VolumeService/DeleteVolume",
+            ],
+            &["grund volumes delete photos data --yes"],
+        )
+    },
+    write(
+        "volumes restore-deleted",
+        "grund.volume.v1.Volume",
         &[
             "grund.volume.v1.VolumeService/ListVolumes",
-            "grund.volume.v1.VolumeService/DeleteVolume",
+            "grund.volume.v1.VolumeService/RestoreVolume",
         ],
-        &["grund volumes delete photos data --yes"],
+        &["grund volumes restore-deleted photos data"],
     ),
     read(
         "volumes backups status",

@@ -441,12 +441,16 @@ pub async fn apply_app(
         AppEvent::Deleted {
             deleted_by,
             deleted_at,
+            purge_after,
         } => {
-            sqlx::query("UPDATE grund_apps SET deleted_at = $2 WHERE app_id = $1")
-                .bind(app_id)
-                .bind(deleted_at)
-                .execute(&mut *connection)
-                .await?;
+            sqlx::query(
+                "UPDATE grund_apps SET deleted_at = $2, purge_after = $3 WHERE app_id = $1",
+            )
+            .bind(app_id)
+            .bind(deleted_at)
+            .bind(purge_after)
+            .execute(&mut *connection)
+            .await?;
             activity(
                 connection,
                 app_id,
@@ -456,6 +460,29 @@ pub async fn apply_app(
                 json!({ "by": deleted_by }),
             )
             .await?;
+        }
+        AppEvent::Restored {
+            restored_by,
+            restored_at,
+        } => {
+            sqlx::query("UPDATE grund_apps SET deleted_at = NULL, purge_after = NULL, halted = false WHERE app_id = $1")
+                .bind(app_id).execute(&mut *connection).await?;
+            activity(
+                connection,
+                app_id,
+                version,
+                *restored_at,
+                "restored",
+                json!({ "by": restored_by }),
+            )
+            .await?;
+        }
+        AppEvent::Purged { purged_at } => {
+            sqlx::query("UPDATE grund_apps SET purge_after = NULL WHERE app_id = $1")
+                .bind(app_id)
+                .execute(&mut *connection)
+                .await?;
+            activity(connection, app_id, version, *purged_at, "purged", json!({})).await?;
         }
     }
     Ok(())
@@ -576,6 +603,7 @@ pub struct AppRow {
     pub halted: bool,
     pub created_at: DateTime<Utc>,
     pub deleted_at: Option<DateTime<Utc>>,
+    pub purge_after: Option<DateTime<Utc>>,
     pub waiting: Value,
 }
 
@@ -583,7 +611,7 @@ macro_rules! select_apps {
     ($tail:literal) => {
         concat!(
             "SELECT app_id, organisation_id, name, settings, current_release, rollout, halted, \
-               created_at, deleted_at, waiting FROM grund_apps ",
+               created_at, deleted_at, purge_after, waiting FROM grund_apps ",
             $tail
         )
     };
@@ -603,6 +631,29 @@ pub async fn app_by_name(
     .bind(name)
     .fetch_optional(executor)
     .await
+}
+
+/// A deleted app remains name-addressable only during its recovery window.
+pub async fn app_by_name_including_deleted(
+    executor: impl PgExecutor<'_>,
+    organisation_id: Uuid,
+    name: &str,
+) -> Result<Option<AppRow>, sqlx::Error> {
+    sqlx::query_as(select_apps!(
+        "WHERE organisation_id = $1 AND name = $2 AND (deleted_at IS NULL OR purge_after > clock_timestamp())"
+    ))
+    .bind(organisation_id).bind(name).fetch_optional(executor).await
+}
+
+/// Deleted apps offered only to an owner, never in ordinary app lists.
+pub async fn restorable_apps(
+    executor: impl PgExecutor<'_>,
+    organisation_id: Uuid,
+) -> Result<Vec<AppRow>, sqlx::Error> {
+    sqlx::query_as(select_apps!(
+        "WHERE organisation_id = $1 AND deleted_at IS NOT NULL AND purge_after > clock_timestamp() ORDER BY name LIMIT 500"
+    ))
+    .bind(organisation_id).fetch_all(executor).await
 }
 
 #[tracing::instrument(name = "store.apps.app", skip_all)]

@@ -93,10 +93,12 @@ impl Volumes {
             {
                 return Err(VolumesError::SourceChanged(spec.name.clone()));
             }
-            if existing
-                .as_ref()
-                .is_some_and(|row| matches!(row.status.as_str(), "deleting" | "deleted"))
-            {
+            if existing.as_ref().is_some_and(|row| {
+                matches!(
+                    row.status.as_str(),
+                    "pending_deletion" | "deleting" | "deleted"
+                )
+            }) {
                 return Err(VolumesError::Invalid(
                     "a deleted volume name cannot be reused in this app".into(),
                 ));
@@ -182,25 +184,24 @@ impl Volumes {
         work: &mut Work<'_>,
         org: Uuid,
         app: Uuid,
+        purge_after: chrono::DateTime<Utc>,
     ) -> Result<Vec<Uuid>, VolumesError> {
         let rows = volumes::app_volumes(&mut **work.sql(), org, app)
             .await
             .map_err(anyhow::Error::from)?;
         let mut machines = Vec::new();
         for row in rows {
-            work.volume(row.volume_id, VolumeCommand::Delete { at: Utc::now() })
-                .await
-                .map_err(volume_work)?;
+            work.volume(
+                row.volume_id,
+                VolumeCommand::Delete {
+                    at: Utc::now(),
+                    purge_after,
+                },
+            )
+            .await
+            .map_err(volume_work)?;
             if let Some(machine) = row.machine_id {
                 machines.push(machine);
-            }
-            if row.source.is_some() || row.machine_id.is_none() {
-                work.volume(
-                    row.volume_id,
-                    VolumeCommand::FinalizeWithoutErasure { at: Utc::now() },
-                )
-                .await
-                .map_err(volume_work)?;
             }
         }
         Ok(machines)
@@ -304,24 +305,24 @@ impl Volumes {
                 }
             }
             Operation::Detach => VolumeCommand::Detach { at: Utc::now() },
-            Operation::Delete => VolumeCommand::Delete { at: Utc::now() },
+            Operation::Delete => {
+                let at: chrono::DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+                    .fetch_one(&mut **work.sql())
+                    .await
+                    .map_err(anyhow::Error::from)?;
+                VolumeCommand::Delete {
+                    at,
+                    purge_after: at
+                        + chrono::Duration::from_std(self.state.config.volume_delete_window)
+                            .map_err(anyhow::Error::from)?,
+                }
+            }
         };
         if matches!(operation, Operation::Delete) {
-            sqlx::query("DELETE FROM grund_volume_backup_attempts WHERE organisation_id = $1 AND app_id = $2 AND volume_id = $3")
-                .bind(org).bind(app).bind(id).execute(&mut **work.sql()).await.map_err(anyhow::Error::from)?;
-            sqlx::query("DELETE FROM grund_volume_backup_points WHERE organisation_id = $1 AND app_id = $2 AND volume_id = $3")
-                .bind(org).bind(app).bind(id).execute(&mut **work.sql()).await.map_err(anyhow::Error::from)?;
-            sqlx::query("DELETE FROM grund_volume_backup_configs WHERE organisation_id = $1 AND app_id = $2 AND volume_id = $3")
+            sqlx::query("DELETE FROM grund_volume_backup_attempts WHERE organisation_id = $1 AND app_id = $2 AND volume_id = $3 AND status IN ('pending','leased')")
                 .bind(org).bind(app).bind(id).execute(&mut **work.sql()).await.map_err(anyhow::Error::from)?;
         }
         work.volume(id, command).await.map_err(volume_work)?;
-        if matches!(operation, Operation::Delete)
-            && (row.source.is_some() || row.machine_id.is_none())
-        {
-            work.volume(id, VolumeCommand::FinalizeWithoutErasure { at: Utc::now() })
-                .await
-                .map_err(volume_work)?;
-        }
         if let Some(machine) = row.machine_id.or(match operation {
             Operation::Attach(machine) => Some(machine),
             _ => None,
@@ -336,6 +337,100 @@ impl Volumes {
             .into_iter()
             .find(|v| v.volume_id == id)
             .ok_or(VolumesError::NotFound)
+    }
+    /// Re-activates an app-owned volume while its pending-deletion deadline holds.
+    pub async fn restore(
+        &self,
+        actor: Uuid,
+        org: Uuid,
+        app: Uuid,
+        id: Uuid,
+        version: i64,
+    ) -> Result<VolumeRow, VolumesError> {
+        let mut work = Work::begin(&self.state.events, Uuid::now_v7(), &actor.to_string())
+            .await
+            .map_err(volume_work)?;
+        let owner = work.load_app(app).await.map_err(volume_work)?;
+        if !owner.exists || owner.deleted || owner.organisation_id != org {
+            return Err(VolumesError::NotFound);
+        }
+        let row = volumes::volume(&mut **work.sql(), org, app, id)
+            .await
+            .map_err(anyhow::Error::from)?
+            .ok_or(VolumesError::NotFound)?;
+        if row.stream_version != version {
+            return Err(VolumesError::Conflict);
+        }
+        let at: chrono::DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(&mut **work.sql())
+            .await
+            .map_err(anyhow::Error::from)?;
+        if row.status != "pending_deletion" || !row.purge_after.is_some_and(|due| at < due) {
+            return Err(VolumesError::NotFound);
+        }
+        work.volume(id, VolumeCommand::Restore { at })
+            .await
+            .map_err(volume_work)?;
+        if let Some(machine) = row.machine_id {
+            self.state.agents().publish_in(work.sql(), machine).await?;
+        }
+        work.commit().await.map_err(volume_work)?;
+        self.state.wakes.documents_changed();
+        self.get(org, app, id).await
+    }
+    /// A bounded purge pass uses an injectable instant so expiry boundaries can
+    /// be exercised deterministically; production supplies PostgreSQL time.
+    pub async fn purge_due(&self, at: chrono::DateTime<Utc>) -> Result<usize, VolumesError> {
+        let due: Vec<(Uuid, Uuid, Uuid)> = sqlx::query_as(
+            "SELECT organisation_id, app_id, volume_id FROM grund_volumes \
+             WHERE status = 'pending_deletion' AND purge_after <= $1 \
+             ORDER BY purge_after, volume_id LIMIT 100",
+        )
+        .bind(at)
+        .fetch_all(&self.state.pool)
+        .await
+        .map_err(anyhow::Error::from)?;
+        let mut count = 0;
+        for (org, app, id) in due {
+            let mut work = Work::begin(&self.state.events, Uuid::now_v7(), "grund/purge")
+                .await
+                .map_err(volume_work)?;
+            let state = work.load_volume(id).await.map_err(volume_work)?;
+            if state.organisation_id != Some(org)
+                || state.app_id != Some(app)
+                || !state.purge_after.is_some_and(|due| at >= due)
+                || state.status != Some(grund_domain::volume::VolumeStatus::PendingDeletion)
+            {
+                continue;
+            }
+            let row = volumes::volume(&mut **work.sql(), org, app, id)
+                .await
+                .map_err(anyhow::Error::from)?
+                .ok_or(VolumesError::NotFound)?;
+            work.volume(id, VolumeCommand::Purge { at })
+                .await
+                .map_err(volume_work)?;
+            sqlx::query("DELETE FROM grund_volume_backup_attempts WHERE organisation_id = $1 AND app_id = $2 AND volume_id = $3")
+                .bind(org).bind(app).bind(id).execute(&mut **work.sql()).await.map_err(anyhow::Error::from)?;
+            sqlx::query("DELETE FROM grund_volume_backup_points WHERE organisation_id = $1 AND app_id = $2 AND volume_id = $3")
+                .bind(org).bind(app).bind(id).execute(&mut **work.sql()).await.map_err(anyhow::Error::from)?;
+            sqlx::query("DELETE FROM grund_volume_backup_configs WHERE organisation_id = $1 AND app_id = $2 AND volume_id = $3")
+                .bind(org).bind(app).bind(id).execute(&mut **work.sql()).await.map_err(anyhow::Error::from)?;
+            if row.source.is_some() || row.machine_id.is_none() {
+                work.volume(id, VolumeCommand::FinalizeWithoutErasure { at })
+                    .await
+                    .map_err(volume_work)?;
+            }
+            if let Some(machine) = row.machine_id {
+                self.state.agents().publish_in(work.sql(), machine).await?;
+            }
+            work.commit().await.map_err(volume_work)?;
+            count += 1;
+        }
+        if count > 0 {
+            self.state.wakes.documents_changed();
+        }
+        Ok(count)
     }
     /// An authenticated machine acknowledges only its own pending erasure.
     pub async fn acknowledge(

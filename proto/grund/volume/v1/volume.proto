@@ -3,8 +3,9 @@ syntax = "proto3";
 package grund.volume.v1;
 import "google/protobuf/timestamp.proto";
 
-// Every lookup is scoped to an organisation AND one live app; a volume of
-// another app/organisation is indistinguishable from an absent one.
+// Every lookup is scoped to an organisation AND one app; a volume of another
+// app/organisation is indistinguishable from an absent one. Only owners can
+// inspect pending volumes on a deleted app during its recovery window.
 service VolumeService {
   rpc ListVolumes(ListVolumesRequest) returns (ListVolumesResponse) { option idempotency_level = NO_SIDE_EFFECTS; }
   rpc GetVolume(GetVolumeRequest) returns (GetVolumeResponse) { option idempotency_level = NO_SIDE_EFFECTS; }
@@ -14,9 +15,13 @@ service VolumeService {
   rpc CreateVolume(CreateVolumeRequest) returns (CreateVolumeResponse);
   rpc AttachVolume(AttachVolumeRequest) returns (AttachVolumeResponse);
   rpc DetachVolume(DetachVolumeRequest) returns (DetachVolumeResponse);
-  // Never deletes a customer's existing host path. A managed directory stays
-  // pending until its own machine acknowledges erasure.
+  // Deletion immediately stops use; managed data remains recoverable during
+  // the configured window (seven days by default), then erasure waits for
+  // its machine's acknowledgement. Existing host paths are never erased.
   rpc DeleteVolume(DeleteVolumeRequest) returns (DeleteVolumeResponse);
+  // Owner-only. Restores the same pending volume before its purge deadline,
+  // with optimistic concurrency; unrelated backup restores are separate.
+  rpc RestoreVolume(RestoreVolumeRequest) returns (RestoreVolumeResponse);
   // Owner-only: the destination's credentials are sealed, never returned.
   rpc SetBackupDestination(SetBackupDestinationRequest) returns (SetBackupDestinationResponse);
   rpc GetBackupDestination(GetBackupDestinationRequest) returns (GetBackupDestinationResponse) { option idempotency_level = NO_SIDE_EFFECTS; }
@@ -38,7 +43,7 @@ message Volume {
   string source = 5;
   bool backup = 6;
   string machine_id = 7;
-  // requested, available, attached, deleting, deleted.
+  // requested, available, attached, pending_deletion, deleting, deleted.
   string status = 8;
   optional uint64 measured_bytes = 9;
   google.protobuf.Timestamp measured_at = 10;
@@ -48,6 +53,8 @@ message Volume {
   string restore_status = 12;
   // Safe failure class, never a provider response or secret.
   string restore_failure_class = 13;
+  // Present while pending deletion; after this time managed data may be erased.
+  google.protobuf.Timestamp purge_after = 14;
 }
 message ListVolumesRequest { string organisation = 1; string app = 2; }
 message ListVolumesResponse { repeated Volume volumes = 1; }
@@ -79,6 +86,8 @@ message DetachVolumeRequest { string organisation = 1; string app = 2; string vo
 message DetachVolumeResponse { Volume volume = 1; }
 message DeleteVolumeRequest { string organisation = 1; string app = 2; string volume_id = 3; int64 expected_version = 4; }
 message DeleteVolumeResponse { Volume volume = 1; }
+message RestoreVolumeRequest { string organisation = 1; string app = 2; string volume_id = 3; int64 expected_version = 4; }
+message RestoreVolumeResponse { Volume volume = 1; }
 
 message BackupDestination {
   bool enabled = 1;

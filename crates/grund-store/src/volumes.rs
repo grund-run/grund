@@ -15,6 +15,7 @@ pub struct VolumeRow {
     pub backup: bool,
     pub machine_id: Option<Uuid>,
     pub status: String,
+    pub purge_after: Option<DateTime<Utc>>,
     pub measured_bytes: Option<i64>,
     pub measured_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
@@ -24,7 +25,7 @@ pub struct VolumeRow {
 
 macro_rules! select_volumes {
     ($where:literal) => {
-        concat!("SELECT organisation_id, app_id, volume_id, name, path, source, backup, machine_id, status, measured_bytes, measured_at, created_at, deleted_at, stream_version FROM grund_volumes ", $where)
+        concat!("SELECT organisation_id, app_id, volume_id, name, path, source, backup, machine_id, status, measured_bytes, measured_at, created_at, deleted_at, purge_after, stream_version FROM grund_volumes ", $where)
     };
 }
 
@@ -236,12 +237,29 @@ pub async fn apply_volume(
         VolumeEvent::DeleteRequested {
             machine_id,
             requested_at,
+            purge_after,
         } => {
-            let updated: Option<Uuid> = sqlx::query_scalar("UPDATE grund_volumes SET status = 'deleting', stream_version = $2 WHERE volume_id = $1 AND stream_version < $2 RETURNING organisation_id")
-                .bind(volume_id).bind(version).fetch_optional(&mut *conn).await?;
-            if let (Some(org), Some(machine_id)) = (updated, machine_id) {
+            let updated: Option<Uuid> = sqlx::query_scalar("UPDATE grund_volumes SET status = CASE WHEN $2::timestamptz IS NULL THEN 'deleting' ELSE 'pending_deletion' END, purge_after = $2, stream_version = $3 WHERE volume_id = $1 AND stream_version < $3 RETURNING organisation_id")
+                .bind(volume_id).bind(purge_after).bind(version).fetch_optional(&mut *conn).await?;
+            if let (Some(org), Some(machine_id), None) = (updated, machine_id, purge_after) {
                 sqlx::query("INSERT INTO grund_volume_cleanup (organisation_id, app_id, volume_id, machine_id, requested_at, stream_version) SELECT $1, app_id, $2, $3, $4, $5 FROM grund_volumes WHERE volume_id = $2 AND source IS NULL ON CONFLICT (organisation_id, volume_id) DO UPDATE SET stream_version = EXCLUDED.stream_version WHERE grund_volume_cleanup.stream_version < EXCLUDED.stream_version")
                     .bind(org).bind(volume_id).bind(machine_id).bind(requested_at).bind(version).execute(&mut *conn).await?;
+            }
+        }
+        VolumeEvent::Restored { status, .. } => {
+            let next = match status {
+                grund_domain::volume::VolumeStatus::Available => "available",
+                _ => "requested",
+            };
+            sqlx::query("UPDATE grund_volumes SET status = $2, purge_after = NULL, stream_version = $3 WHERE volume_id = $1 AND stream_version < $3")
+                .bind(volume_id).bind(next).bind(version).execute(&mut *conn).await?;
+        }
+        VolumeEvent::PurgeRequested { requested_at } => {
+            let updated: Option<(Uuid, Option<Uuid>)> = sqlx::query_as("UPDATE grund_volumes SET status = 'deleting', purge_after = NULL, stream_version = $2 WHERE volume_id = $1 AND stream_version < $2 RETURNING organisation_id, machine_id")
+                .bind(volume_id).bind(version).fetch_optional(&mut *conn).await?;
+            if let Some((org, Some(machine))) = updated {
+                sqlx::query("INSERT INTO grund_volume_cleanup (organisation_id, app_id, volume_id, machine_id, requested_at, stream_version) SELECT $1, app_id, $2, $3, $4, $5 FROM grund_volumes WHERE volume_id = $2 AND source IS NULL ON CONFLICT (organisation_id, volume_id) DO UPDATE SET stream_version = EXCLUDED.stream_version WHERE grund_volume_cleanup.stream_version < EXCLUDED.stream_version")
+                    .bind(org).bind(volume_id).bind(machine).bind(requested_at).bind(version).execute(&mut *conn).await?;
             }
         }
         VolumeEvent::Deleted { deleted_at } => {

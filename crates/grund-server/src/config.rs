@@ -119,6 +119,11 @@ pub struct ServeConfig {
     #[arg(long, env = "GRUND_WORK_POLL_INTERVAL", value_parser = secs, default_value = "5")]
     pub work_poll_interval: Duration,
 
+    /// How long a deleted app or volume can be restored before final purge.
+    /// At most 30 days to bound stored data and the occupied app name.
+    #[arg(long, env = "GRUND_VOLUME_DELETE_WINDOW", value_parser = hours, default_value = "168")]
+    pub volume_delete_window: Duration,
+
     /// Image registries (host[:port], comma-separated) grund may speak to
     /// over plain HTTP when it resolves an app's image. For tests against a
     /// local registry; every other registry is HTTPS only.
@@ -1208,6 +1213,11 @@ impl ServeConfig {
             !self.work_poll_interval.is_zero()
                 && self.work_poll_interval <= Duration::from_secs(60),
             "GRUND_WORK_POLL_INTERVAL must be between 1 and 60 seconds"
+        );
+        anyhow::ensure!(
+            self.volume_delete_window >= Duration::from_secs(3600)
+                && self.volume_delete_window <= Duration::from_secs(30 * 24 * 3600),
+            "GRUND_VOLUME_DELETE_WINDOW must be between 1 and 720 hours"
         );
         anyhow::ensure!(
             !self.health_interval.is_zero() && self.health_interval <= Duration::from_secs(60),

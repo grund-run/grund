@@ -1,5 +1,5 @@
-use crate::templates::compiled::components::{ImageSprite, PageHead, ListTools, Banner, Para, Items, AppRow, EmptyState, AddCard};
-props crate::web::apps::AppsPage { slug, list_href, grid_href, all_href, icons, apps, total, list, sorts, notice, error, manages };
+use crate::templates::compiled::components::{ImageSprite, PageHead, ListTools, Banner, Para, Items, AppRow, EmptyState, AddCard, Panel, Rows, Row, PostButton};
+props crate::web::apps::AppsPage<'_> { slug, list_href, grid_href, all_href, icons, apps, restorable, total, list, sorts, notice, error, manages, csrf };
 
 <ImageSprite icons={icons} />
 <PageHead title="Apps">
@@ -7,15 +7,24 @@ props crate::web::apps::AppsPage { slug, list_href, grid_href, all_href, icons, 
 </PageHead>
 <Banner text={error} ok={Some(notice)} />
 {if !list.q.is_empty() {
-  <Para kind="note">{apps.len()} of {total} app{if *total != 1 { s }} match “{list.q}”. <a href={all_href}>Show all</a></Para>
+  <Para kind="note">{apps.len() + restorable.len()} of {total} app{if *total != 1 { s }} match “{list.q}”. <a href={all_href}>Show all</a></Para>
 }}
 {if !apps.is_empty() {
   <Items view={&list.view}>{for app in apps { <AppRow slug={slug} manages={*manages} app={app} /> }}</Items>
   <Para kind="note" hidden filter_empty>No app matches that.</Para>
-} else if !list.q.is_empty() {
+} else if !list.q.is_empty() && restorable.is_empty() {
   <Para kind="note">No app matches that.</Para>
-} else if *manages {
+} else if *manages && restorable.is_empty() {
   <AddCard href="/{slug}/deploy" title="Deploy your first app" />
-} else {
+} else if restorable.is_empty() {
   <EmptyState title="No apps yet" text="Owners and admins deploy them." />
+}}
+{if !restorable.is_empty() {
+  <Panel id="restorable-apps" title="Deleted apps">
+    <Rows>{for app in restorable {
+      <Row name={&app.name} sub={&app.status} icon_name="box" tone="muted">
+        <:end><PostButton action="/{slug}/apps/{app.name}/restore" csrf={csrf} label="Restore" kind="secondary" size="sm" /></:end>
+      </Row>
+    }}</Rows>
+  </Panel>
 }}

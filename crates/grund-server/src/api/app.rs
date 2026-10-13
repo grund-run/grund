@@ -22,8 +22,9 @@ use grund_proto::grund::app::v1::{
     self as proto, AppService, ConfigureAppRequest, ConfigureAppResponse, CreateAppRequest,
     CreateAppResponse, DeleteAppRequest, DeleteAppResponse, DeployRequest, DeployResponse,
     ErrorReason, GetAppRequest, GetAppResponse, ListAppsRequest, ListAppsResponse,
-    ListReleasesRequest, ListReleasesResponse, RollbackRequest, RollbackResponse, ScaleRequest,
-    ScaleResponse, SetSecretRequest, SetSecretResponse,
+    ListReleasesRequest, ListReleasesResponse, ListRestorableAppsRequest,
+    ListRestorableAppsResponse, RestoreAppRequest, RestoreAppResponse, RollbackRequest,
+    RollbackResponse, ScaleRequest, ScaleResponse, SetSecretRequest, SetSecretResponse,
 };
 use grund_store::{apps::ReleaseRow, organisations::Membership};
 
@@ -649,6 +650,39 @@ impl AppService for AppApi {
         })
     }
 
+    async fn list_restorable_apps(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, ListRestorableAppsRequest>,
+    ) -> ServiceResult<ListRestorableAppsResponse> {
+        let caller = principal(&ctx)?;
+        let membership = self
+            .member(&caller, request.organisation, Access::Read)
+            .await?;
+        if membership.role != "owner" {
+            return Err(ConnectError::permission_denied(
+                "only the organisation owner may view deleted apps",
+            ));
+        }
+        let rows = self
+            .state
+            .apps()
+            .restorable(membership.organisation_id)
+            .await
+            .map_err(failed)?;
+        Response::ok(ListRestorableAppsResponse {
+            apps: rows
+                .into_iter()
+                .map(|row| proto::RestorableApp {
+                    name: row.name,
+                    purge_after: row.purge_after.map(timestamp).unwrap_or_default(),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        })
+    }
+
     async fn deploy(
         &self,
         ctx: RequestContext,
@@ -839,7 +873,8 @@ impl AppService for AppApi {
         let membership = self
             .member(&caller, request.organisation, Access::Manage)
             .await?;
-        self.state
+        let purge_after = self
+            .state
             .apps()
             .delete(
                 caller.account_id,
@@ -849,7 +884,31 @@ impl AppService for AppApi {
             )
             .await
             .map_err(failed)?;
-        Response::ok(DeleteAppResponse::default())
+        Response::ok(DeleteAppResponse {
+            purge_after: timestamp(purge_after),
+            ..Default::default()
+        })
+    }
+    async fn restore_app(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, RestoreAppRequest>,
+    ) -> ServiceResult<RestoreAppResponse> {
+        let caller = principal(&ctx)?;
+        let membership = self
+            .member(&caller, request.organisation, Access::Manage)
+            .await?;
+        if membership.role != "owner" {
+            return Err(ConnectError::permission_denied(
+                "only the organisation owner may restore deleted apps",
+            ));
+        }
+        self.state
+            .apps()
+            .restore(caller.account_id, membership.organisation_id, request.name)
+            .await
+            .map_err(failed)?;
+        Response::ok(RestoreAppResponse::default())
     }
 }
 

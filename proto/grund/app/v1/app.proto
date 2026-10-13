@@ -7,10 +7,11 @@ package grund.app.v1;
 import "google/protobuf/timestamp.proto";
 
 // An organisation's apps (grund-docs design/apps.md): what each one runs,
-// its releases, and where its copies run. Members get and list; owners and
-// admins create, deploy, roll back, scale, configure, set secrets and
-// delete. An organisation the caller is not a member of, and an app that is
-// not the organisation's, are not_found alike.
+// its releases, and where its copies run. Members get and list live apps;
+// owners and admins create, deploy, roll back, scale, configure, set secrets
+// and delete. Only owners list/restore deleted apps. An organisation the caller
+// is not a member of, and an app that is not the organisation's, are
+// not_found alike.
 //
 // A deploy makes a release: an immutable, numbered snapshot of what every
 // copy runs, with the image resolved from its tag to a digest once, by
@@ -34,6 +35,12 @@ service AppService {
 
   // By name.
   rpc ListApps(ListAppsRequest) returns (ListAppsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // Owner-only. Lists deleted apps still within their recovery window
+  // (seven days by default); these apps do not appear in ListApps.
+  rpc ListRestorableApps(ListRestorableAppsRequest) returns (ListRestorableAppsResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
   }
 
@@ -68,9 +75,14 @@ service AppService {
   // rollback) uses the newest version.
   rpc SetSecret(SetSecretRequest) returns (SetSecretResponse);
 
-  // Owners and admins. Its copies stop and its name is free again. Its
-  // releases stay in the history.
+  // Owners and admins. Stops copies now; app-owned volumes and the app remain
+  // restorable during the configured window (seven days by default), then
+  // managed data is erased. Existing host paths are never erased.
   rpc DeleteApp(DeleteAppRequest) returns (DeleteAppResponse);
+
+  // Owner-only. Restores the same app and volumes deleted along with it
+  // before expiry; separately deleted volumes remain pending.
+  rpc RestoreApp(RestoreAppRequest) returns (RestoreAppResponse);
 }
 
 // Everything one release runs (apps.md §3.1, §3.4).
@@ -410,6 +422,13 @@ message ListAppsResponse {
   repeated App apps = 1;
 }
 
+message ListRestorableAppsRequest { string organisation = 1; }
+message RestorableApp {
+  string name = 1;
+  google.protobuf.Timestamp purge_after = 2;
+}
+message ListRestorableAppsResponse { repeated RestorableApp apps = 1; }
+
 message DeployRequest {
   string organisation = 1;
   string name = 2;
@@ -495,7 +514,10 @@ message DeleteAppRequest {
   optional uint32 confirm_volume_count = 3;
 }
 
-message DeleteAppResponse {}
+message DeleteAppResponse { google.protobuf.Timestamp purge_after = 1; }
+
+message RestoreAppRequest { string organisation = 1; string name = 2; }
+message RestoreAppResponse {}
 
 // Attached to errors as a detail: the stable reason a client can act on.
 message ErrorReason {

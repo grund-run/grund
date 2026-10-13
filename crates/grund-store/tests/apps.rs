@@ -209,6 +209,166 @@ async fn two_live_apps_of_one_organisation_cannot_share_a_name(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
+async fn deletion_retains_backup_and_name_until_test_clock_purges_it(pool: PgPool) {
+    use grund_domain::volume::VolumeCommand;
+    use grund_store::volumes;
+
+    let events = store(&pool).await;
+    let org = Uuid::now_v7();
+    let app = create(&events, org, "photos").await;
+    let volume = Uuid::now_v7();
+    let start = Utc::now();
+    let due = start + Duration::days(7);
+    let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();
+    work.volume(
+        volume,
+        VolumeCommand::Request {
+            organisation_id: org,
+            app_id: app,
+            name: "data".into(),
+            path: "/data".into(),
+            source: None,
+            backup: true,
+            at: start,
+        },
+    )
+    .await
+    .unwrap();
+    work.commit().await.unwrap();
+    sqlx::query("INSERT INTO grund_volume_backup_points (organisation_id,app_id,volume_id,snapshot_id,archived_path,completed_at,verified_at) VALUES ($1,$2,$3,'point-a','/data',$4,$4)")
+        .bind(org).bind(app).bind(volume).bind(start).execute(&pool).await.unwrap();
+    let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();
+    work.app(
+        app,
+        AppCommand::Delete {
+            actor: Uuid::nil(),
+            at: start,
+            purge_after: due,
+        },
+    )
+    .await
+    .unwrap();
+    work.volume(
+        volume,
+        VolumeCommand::Delete {
+            at: start,
+            purge_after: due,
+        },
+    )
+    .await
+    .unwrap();
+    work.commit().await.unwrap();
+
+    assert!(
+        apps::app_by_name(&pool, org, "photos")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(apps::restorable_apps(&pool, org).await.unwrap().len(), 1);
+    assert_eq!(
+        volumes::app_volumes(&pool, org, app).await.unwrap()[0].status,
+        "pending_deletion"
+    );
+    let point_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM grund_volume_backup_points WHERE volume_id=$1")
+            .bind(volume)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(point_count, 1);
+    let early: i64 = sqlx::query_scalar("SELECT count(*) FROM grund_volumes WHERE volume_id=$1 AND status='pending_deletion' AND purge_after <= $2")
+        .bind(volume).bind(due - Duration::seconds(1)).fetch_one(&pool).await.unwrap();
+    assert_eq!(early, 0);
+    let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();
+    work.volume(
+        volume,
+        VolumeCommand::Restore {
+            at: due - Duration::seconds(1),
+        },
+    )
+    .await
+    .unwrap();
+    work.app(
+        app,
+        AppCommand::Restore {
+            actor: Uuid::nil(),
+            at: due - Duration::seconds(1),
+        },
+    )
+    .await
+    .unwrap();
+    work.commit().await.unwrap();
+    assert!(
+        apps::app_by_name(&pool, org, "photos")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        volumes::app_volumes(&pool, org, app).await.unwrap()[0].status,
+        "requested"
+    );
+    let retained: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM grund_volume_backup_points WHERE volume_id=$1")
+            .bind(volume)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(retained, 1);
+
+    let next_due = due + Duration::days(7);
+    let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();
+    work.app(
+        app,
+        AppCommand::Delete {
+            actor: Uuid::nil(),
+            at: due,
+            purge_after: next_due,
+        },
+    )
+    .await
+    .unwrap();
+    work.volume(
+        volume,
+        VolumeCommand::Delete {
+            at: due,
+            purge_after: next_due,
+        },
+    )
+    .await
+    .unwrap();
+    work.commit().await.unwrap();
+    let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();
+    work.volume(volume, VolumeCommand::Purge { at: next_due })
+        .await
+        .unwrap();
+    work.volume(
+        volume,
+        VolumeCommand::FinalizeWithoutErasure { at: next_due },
+    )
+    .await
+    .unwrap();
+    sqlx::query("DELETE FROM grund_volume_backup_points WHERE volume_id=$1")
+        .bind(volume)
+        .execute(&mut **work.sql())
+        .await
+        .unwrap();
+    work.app(app, AppCommand::Purge { at: next_due })
+        .await
+        .unwrap();
+    work.commit().await.unwrap();
+    assert!(
+        volumes::app_volumes(&pool, org, app)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(apps::restorable_apps(&pool, org).await.unwrap().is_empty());
+    create(&events, org, "photos").await;
+}
+
+#[sqlx::test(migrations = false)]
 async fn a_report_counts_only_from_the_machine_a_replica_is_placed_on(pool: PgPool) {
     let events = store(&pool).await;
     let app_id = create(&events, Uuid::now_v7(), "web").await;

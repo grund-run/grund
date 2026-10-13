@@ -43,6 +43,7 @@ use crate::{
         entry::{EntryState, publishes},
         machines::MachinesState,
         sessions::Session,
+        volumes::VolumesState,
     },
     state::State,
     web::{
@@ -54,6 +55,10 @@ use crate::{
 
 pub(super) fn manages(membership: &Membership) -> bool {
     Role::parse(&membership.role).is_some_and(|role| role.manages_members())
+}
+
+fn days_remaining(deadline: DateTime<Utc>, now: DateTime<Utc>) -> i64 {
+    (deadline - now).num_seconds().max(0).saturating_add(86_399) / 86_400
 }
 
 fn when(at: DateTime<Utc>) -> String {
@@ -394,6 +399,11 @@ pub struct ListQuery {
     view: String,
 }
 
+pub struct RestorableApp {
+    pub name: String,
+    pub status: String,
+}
+
 fn notice_words(done: &str) -> &'static str {
     match done {
         "created" => "App made. Its first release is rolling out.",
@@ -409,7 +419,9 @@ fn notice_words(done: &str) -> &'static str {
             "Restore requested into a new app-owned volume. The source has not changed."
         }
         "rolled-back" => "Rolling back, as a new release.",
-        "deleted" => "App deleted. Its copies are stopping.",
+        "deleted" => "App deleted. Its copies are stopping; restore before the displayed deadline.",
+        "app-restored" => "App restored.",
+        "volume-restored" => "Volume restored.",
         _ => "",
     }
 }
@@ -418,6 +430,7 @@ fn error_words(error: &str) -> &'static str {
     match error {
         "not-allowed" => "Your role does not allow that.",
         "gone" => "That app is no longer there.",
+        "restore-unavailable" => "Nothing was restored. The recovery window may have closed.",
         "no-release" => "It has no release to change yet.",
         "backup" => {
             "The backup destination was not saved. Check the endpoint, volume attachment, and destination version."
@@ -431,19 +444,21 @@ fn error_words(error: &str) -> &'static str {
 
 /// `/{org}/apps`, searched by `q`, ordered by `sort` and drawn as `view`
 /// (`list` or `grid`).
-pub struct AppsPage {
+pub struct AppsPage<'a> {
     pub slug: String,
     pub list_href: String,
     pub grid_href: String,
     pub all_href: String,
     pub icons: Vec<&'static str>,
     pub apps: Vec<ListingView>,
+    pub restorable: Vec<RestorableApp>,
     pub total: usize,
-    pub list: AppSearch,
+    pub list: &'a AppSearch,
     pub sorts: &'static [(&'static str, &'static str)],
     pub notice: &'static str,
     pub error: &'static str,
     pub manages: bool,
+    pub csrf: &'a str,
 }
 
 pub async fn apps_page(
@@ -460,6 +475,29 @@ pub async fn apps_page(
         .listings(membership.organisation_id, &membership.slug)
         .await
         .map_err(|e| PageError::from(anyhow::anyhow!(e)))?;
+    let restorable = if membership.role == "owner" {
+        let now = Utc::now();
+        let mut rows: Vec<RestorableApp> = state
+            .apps()
+            .restorable(membership.organisation_id)
+            .await
+            .map_err(|e| PageError::from(anyhow::anyhow!(e)))?
+            .into_iter()
+            .filter_map(|row| {
+                row.purge_after.map(|deadline| RestorableApp {
+                    name: row.name,
+                    status: format!(
+                        "Deleted · restorable for {} days",
+                        days_remaining(deadline, now)
+                    ),
+                })
+            })
+            .collect();
+        rows.sort_by(|a, b| a.name.cmp(&b.name));
+        rows
+    } else {
+        Vec::new()
+    };
     let q: String = query
         .q
         .trim()
@@ -486,23 +524,10 @@ pub async fn apps_page(
             serde_urlencoded::to_string(pairs).unwrap_or_default()
         )
     };
-    let page = AppsPage {
-        slug: membership.slug.clone(),
-        list_href: href(&q, "list"),
-        grid_href: href(&q, "grid"),
-        all_href: href("", view),
-        icons: icons_of(&shown),
-        apps: shown.iter().map(|l| listing_view(l)).collect(),
-        total: listings.len(),
-        list: AppSearch {
-            q,
-            sort: sort.into(),
-            view: view.into(),
-        },
-        sorts: SORTS,
-        notice: notice_words(&query.done),
-        error: error_words(&query.error),
-        manages: manages(&membership),
+    let list = AppSearch {
+        q,
+        sort: sort.into(),
+        view: view.into(),
     };
     signed_in_typed(
         &state,
@@ -512,10 +537,32 @@ pub async fn apps_page(
         StatusCode::OK,
         "Apps",
         "apps",
-        Some(&page.list),
+        Some(&list),
         None,
         None,
-        |_, _| crate::templates::compiled::pages::apps::render(&page),
+        |_, csrf| {
+            let total = listings.len() + restorable.len();
+            let page = AppsPage {
+                slug: membership.slug.clone(),
+                list_href: href(&list.q, "list"),
+                grid_href: href(&list.q, "grid"),
+                all_href: href("", view),
+                icons: icons_of(&shown),
+                apps: shown.iter().map(|l| listing_view(l)).collect(),
+                restorable: restorable
+                    .into_iter()
+                    .filter(|row| list.q.is_empty() || row.name.contains(&list.q))
+                    .collect(),
+                total,
+                list: &list,
+                sorts: SORTS,
+                notice: notice_words(&query.done),
+                error: error_words(&query.error),
+                manages: manages(&membership),
+                csrf,
+            };
+            crate::templates::compiled::pages::apps::render(&page)
+        },
     )
     .await
 }
@@ -1493,15 +1540,17 @@ pub struct VolumeItem {
     pub backup: &'static str,
     pub backup_requested: bool,
     pub managed: bool,
+    pub pending_deletion: bool,
 }
 
 pub struct VolumeSummary {
     pub items: Vec<VolumeItem>,
     pub usage: String,
     pub host_paths: usize,
+    pub window: String,
 }
 
-fn volume_summary(rows: Vec<grund_store::volumes::VolumeRow>) -> VolumeSummary {
+fn volume_summary(rows: Vec<grund_store::volumes::VolumeRow>, now: DateTime<Utc>) -> VolumeSummary {
     let mut bytes = Some(0_u64);
     let mut host_paths = 0;
     let items = rows
@@ -1516,7 +1565,9 @@ fn volume_summary(rows: Vec<grund_store::volumes::VolumeRow>) -> VolumeSummary {
                 });
             } else {
                 host_paths += 1;
+                bytes = None;
             }
+            let pending_deletion = row.status == "pending_deletion";
             VolumeItem {
                 id: row.volume_id.to_string(),
                 version: row.stream_version,
@@ -1525,11 +1576,18 @@ fn volume_summary(rows: Vec<grund_store::volumes::VolumeRow>) -> VolumeSummary {
                 source: row
                     .source
                     .unwrap_or_else(|| "Agent-managed directory".into()),
-                status: row.status,
+                status: if pending_deletion {
+                    row.purge_after.map_or_else(
+                        || "Pending deletion".into(),
+                        |deadline| format!("Deleting in {} days", days_remaining(deadline, now)),
+                    )
+                } else {
+                    row.status
+                },
                 machine: row
                     .machine_id
                     .map_or_else(|| "Detached".into(), |id| id.to_string()),
-                usage: row.measured_bytes.map_or_else(
+                usage: row.measured_bytes.filter(|n| *n >= 0).map_or_else(
                     || "Size unknown (no quota)".into(),
                     |n| format!("{:.2} GiB measured (no quota)", n as f64 / 1_073_741_824.0),
                 ),
@@ -1540,6 +1598,7 @@ fn volume_summary(rows: Vec<grund_store::volumes::VolumeRow>) -> VolumeSummary {
                 },
                 backup_requested: row.backup,
                 managed,
+                pending_deletion,
             }
         })
         .collect();
@@ -1550,6 +1609,7 @@ fn volume_summary(rows: Vec<grund_store::volumes::VolumeRow>) -> VolumeSummary {
             |bytes| format!("{:.2} GiB measured", bytes as f64 / 1_073_741_824.0),
         ),
         host_paths,
+        window: String::new(),
     }
 }
 
@@ -2136,7 +2196,13 @@ pub(super) async fn app_view(
         } else {
             None
         };
-    let volume_summary = volume_summary(volume_rows);
+    let mut volume_summary = volume_summary(volume_rows, now);
+    let window = state.config.volume_delete_window.as_secs();
+    volume_summary.window = if window.is_multiple_of(86_400) {
+        format!("{} days", window / 86_400)
+    } else {
+        format!("{} hours", window / 3_600)
+    };
     let volume_count = volume_summary.items.len();
     let wanted = view.row.settings.0.copies;
     let current = view.row.current_release;
@@ -3379,6 +3445,62 @@ pub async fn restore_volume(
     )))
 }
 
+#[derive(Deserialize)]
+pub struct UndoVolumeDeletionForm {
+    #[serde(default)]
+    csrf: String,
+    expected_version: i64,
+}
+
+/// Restores an app-owned volume before its scheduled erasure.
+pub async fn undo_volume_deletion(
+    AxumState(state): AxumState<State>,
+    browser: Browser,
+    uri: Uri,
+    Path((slug, name, id)): Path<(String, String, String)>,
+    Form(form): Form<UndoVolumeDeletionForm>,
+) -> PageResult {
+    if !browser.form_is_genuine(&form.csrf) {
+        return forged(&state, &browser);
+    }
+    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
+    if membership.role != "owner" {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    }
+    let Ok(id) = Uuid::parse_str(&id) else {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    };
+    let app = match state.apps().get(membership.organisation_id, &name).await {
+        Ok(app) => app,
+        Err(AppsError::NotFound) => return Ok(StatusCode::NOT_FOUND.into_response()),
+        Err(error) => return Err(PageError::from(anyhow::anyhow!(error))),
+    };
+    let result = state
+        .volumes()
+        .restore(
+            session.account_id,
+            membership.organisation_id,
+            app.row.app_id,
+            id,
+            form.expected_version,
+        )
+        .await;
+    if matches!(
+        &result,
+        Err(crate::services::volumes::VolumesError::NotFound)
+    ) {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    }
+    Ok(redirect(&format!(
+        "/{slug}/apps/{name}/settings?edit=volumes&volume={id}&{}",
+        if result.is_ok() {
+            "done=volume-restored"
+        } else {
+            "error=restore-unavailable"
+        }
+    )))
+}
+
 #[derive(Deserialize, Default)]
 pub struct VolumeChangeForm {
     #[serde(default)]
@@ -3461,6 +3583,38 @@ pub async fn change_volume(
 }
 
 #[derive(Deserialize)]
+pub struct RestoreAppForm {
+    #[serde(default)]
+    csrf: String,
+}
+
+/// Restores a deleted app while its name and volumes remain reserved.
+pub async fn restore_app(
+    AxumState(state): AxumState<State>,
+    browser: Browser,
+    uri: Uri,
+    Path((slug, name)): Path<(String, String)>,
+    Form(form): Form<RestoreAppForm>,
+) -> PageResult {
+    if !browser.form_is_genuine(&form.csrf) {
+        return forged(&state, &browser);
+    }
+    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
+    if membership.role != "owner" {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    }
+    match state
+        .apps()
+        .restore(session.account_id, membership.organisation_id, &name)
+        .await
+    {
+        Ok(()) => Ok(redirect(&format!("/{slug}/apps?done=app-restored"))),
+        Err(AppsError::NotFound) => Ok(StatusCode::NOT_FOUND.into_response()),
+        Err(error) => Err(PageError::from(anyhow::anyhow!(error))),
+    }
+}
+
+#[derive(Deserialize)]
 pub struct DeleteForm {
     #[serde(default)]
     csrf: String,
@@ -3511,7 +3665,7 @@ pub async fn delete(
         )
         .await
     {
-        Ok(()) => Ok(redirect(&format!("/{slug}/apps?done=deleted"))),
+        Ok(_) => Ok(redirect(&format!("/{slug}/apps?done=deleted"))),
         Err(AppsError::NotFound) => Ok(redirect(&format!("/{slug}/apps?error=gone"))),
         Err(error) => Err(PageError::from(anyhow::anyhow!(error))),
     }
@@ -3520,6 +3674,21 @@ pub async fn delete(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_recovery_window_shows_every_remaining_partial_day() {
+        let now = Utc::now();
+        assert_eq!(days_remaining(now + chrono::Duration::days(7), now), 7);
+        assert_eq!(
+            days_remaining(
+                now + chrono::Duration::days(1) + chrono::Duration::seconds(1),
+                now
+            ),
+            2
+        );
+        assert_eq!(days_remaining(now + chrono::Duration::seconds(1), now), 1);
+        assert_eq!(days_remaining(now, now), 0);
+    }
 
     #[test]
     fn a_tag_alone_replaces_the_tag_of_the_image_the_app_runs_and_a_whole_reference_is_taken_as_it_is()

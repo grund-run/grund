@@ -24,10 +24,11 @@
 //!
 //! A token of scope `deploy` may call only the procedures [`AUTHORIZATION`]
 //! marks [`Requirement::SessionOrToken`]: the app deploy and volume read/create
-//! procedures CI needs, but not DeleteApp or backup-key export. A token of
-//! scope `full` also calls those marked [`Requirement::SessionOrFullToken`]:
-//! DeleteApp, volume attach/detach/delete, backup configuration and key
-//! export, machines, custom domains, members, invitations and registry logins.
+//! procedures CI needs, but not deletion, restoration or backup-key export.
+//! A token of scope `full` also calls those marked
+//! [`Requirement::SessionOrFullToken`]: app deletion and restoration, volume
+//! attach/detach/delete/restore, backup configuration and key export, machines,
+//! custom domains, members, invitations and registry logins.
 //! Everything else stays
 //! session-only: the account and its sessions, creating, renaming and
 //! deleting organisations, tokens, and the management pool. A token acts
@@ -443,6 +444,10 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
         Requirement::SessionOrToken,
     ),
     (
+        "/grund.app.v1.AppService/ListRestorableApps",
+        Requirement::SessionOrFullToken,
+    ),
+    (
         "/grund.app.v1.AppService/Deploy",
         Requirement::SessionOrToken,
     ),
@@ -471,6 +476,10 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
         Requirement::SessionOrFullToken,
     ),
     (
+        "/grund.app.v1.AppService/RestoreApp",
+        Requirement::SessionOrFullToken,
+    ),
+    (
         "/grund.volume.v1.VolumeService/ListVolumes",
         Requirement::SessionOrToken,
     ),
@@ -496,6 +505,10 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
     ),
     (
         "/grund.volume.v1.VolumeService/DeleteVolume",
+        Requirement::SessionOrFullToken,
+    ),
+    (
+        "/grund.volume.v1.VolumeService/RestoreVolume",
         Requirement::SessionOrFullToken,
     ),
     (
@@ -1926,6 +1939,13 @@ mod tests {
         ) -> ServiceResult<app_proto::ListAppsResponse> {
             unreachable!()
         }
+        async fn list_restorable_apps(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, app_proto::ListRestorableAppsRequest>,
+        ) -> ServiceResult<app_proto::ListRestorableAppsResponse> {
+            unreachable!()
+        }
         async fn deploy(
             &self,
             _: RequestContext,
@@ -1975,6 +1995,13 @@ mod tests {
         ) -> ServiceResult<app_proto::DeleteAppResponse> {
             unreachable!()
         }
+        async fn restore_app(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, app_proto::RestoreAppRequest>,
+        ) -> ServiceResult<app_proto::RestoreAppResponse> {
+            unreachable!()
+        }
     }
 
     struct UnusedVolumes;
@@ -2002,6 +2029,7 @@ mod tests {
         unused_volume_method!(attach_volume, AttachVolumeRequest, AttachVolumeResponse);
         unused_volume_method!(detach_volume, DetachVolumeRequest, DetachVolumeResponse);
         unused_volume_method!(delete_volume, DeleteVolumeRequest, DeleteVolumeResponse);
+        unused_volume_method!(restore_volume, RestoreVolumeRequest, RestoreVolumeResponse);
         unused_volume_method!(
             set_backup_destination,
             SetBackupDestinationRequest,
@@ -2462,6 +2490,9 @@ mod tests {
             .collect();
         for required in [
             "/grund.app.v1.AppService/DeleteApp",
+            "/grund.app.v1.AppService/ListRestorableApps",
+            "/grund.app.v1.AppService/RestoreApp",
+            "/grund.volume.v1.VolumeService/RestoreVolume",
             "/grund.organisation.v1.OrganisationService/InviteMember",
             "/grund.organisation.v1.OrganisationService/ListMembers",
             "/grund.machine.v1.MachineService/CreateJoinToken",

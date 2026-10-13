@@ -328,12 +328,18 @@ apps:
 ```
 
 With no `source`, the agent makes an app-owned directory in its data directory.
-It survives releases and agent restarts; deleting the volume or app erases it.
-An existing `source` binds a customer-owned host directory, only if the
-machine owner's local agent policy allows it. grund never erases that host
-directory. Storage uses the host filesystem and its existing permissions and
-encryption; there is no volume size quota. Keep independent backups of the
-machine.
+It survives releases and agent restarts. Deleting its volume or app stops use
+immediately; the owner can restore the same identity and data before the
+configured purge deadline (seven days by default; `GRUND_VOLUME_DELETE_WINDOW`
+in hours). Deleted apps remain visible to owners on Apps. After the deadline,
+grund requests physical erasure; an offline machine may not acknowledge it
+until it reconnects. Use `grund apps list-restorable` and `grund apps restore
+photos`, or `grund volumes restore-deleted photos data` for an individually
+deleted volume. An existing `source` binds a customer-owned host directory,
+only if the machine owner's local agent policy allows it. grund never erases
+that host directory. Storage uses the host filesystem and its existing
+permissions and encryption; there is no volume size quota. Keep independent
+backups of the machine.
 
 Every ancestor of an existing host directory must be root-owned and not
 writable by non-root users; a user-writable home directory cannot be a source.
@@ -348,10 +354,11 @@ repository password can be exported for independent recovery. Restore creates
 a *new* managed volume on a chosen own machine, never overwriting the source.
 Use `grund volumes list photos`, `grund volumes show photos data`,
 `grund volumes backups photos data status`, `grund volumes backups photos data
-points`, or `grund volumes restore --help`. Remove obsolete S3 data yourself
-after deleting an app; grund removes its credentials and point catalog, not
-your bucket. The backup does not include grund's own PostgreSQL or data
-volumes (see Self-hosting).
+points`, or `grund volumes restore --help`. On deletion grund retains its
+backup credentials and point catalog until the purge deadline so a restored
+app can resume backup; it removes them after purge, not the external S3 data.
+Remove obsolete S3 data yourself. The backup does not include grund's own
+PostgreSQL or data volumes (see Self-hosting).
 
 Copies spread over machines, one per machine first, and a copy on a
 machine that stays unreachable for 2 minutes (`reschedule_after`) starts

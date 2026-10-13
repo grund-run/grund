@@ -217,6 +217,15 @@ pub enum AppEvent {
     Deleted {
         deleted_by: Uuid,
         deleted_at: DateTime<Utc>,
+        #[serde(default)]
+        purge_after: Option<DateTime<Utc>>,
+    },
+    Restored {
+        restored_by: Uuid,
+        restored_at: DateTime<Utc>,
+    },
+    Purged {
+        purged_at: DateTime<Utc>,
     },
 }
 
@@ -225,6 +234,7 @@ pub enum AppEvent {
 pub struct App {
     pub exists: bool,
     pub deleted: bool,
+    pub purge_after: Option<DateTime<Utc>>,
     pub organisation_id: Uuid,
     pub name: Option<AppName>,
     pub settings: AppSettings,
@@ -351,16 +361,23 @@ impl mire::Aggregate for App {
                 self.halted = !rolled_back;
             }
             AppEvent::CurrentReleaseSet { release, .. } => self.current_release = Some(*release),
-            AppEvent::Deleted { .. } => {
+            AppEvent::Deleted { purge_after, .. } => {
                 self.deleted = true;
+                self.purge_after = *purge_after;
                 self.rollout = None;
             }
+            AppEvent::Restored { .. } => {
+                self.deleted = false;
+                self.purge_after = None;
+                self.halted = false;
+            }
+            AppEvent::Purged { .. } => self.purge_after = None,
         }
     }
 }
 
 impl mire::Snapshot for App {
-    const SNAPSHOT_VERSION: i32 = 1;
+    const SNAPSHOT_VERSION: i32 = 2;
     const SNAPSHOT_FREQUENCY: i64 = 100;
 }
 
@@ -398,6 +415,14 @@ pub enum AppCommand {
     },
     Delete {
         actor: Uuid,
+        at: DateTime<Utc>,
+        purge_after: DateTime<Utc>,
+    },
+    Restore {
+        actor: Uuid,
+        at: DateTime<Utc>,
+    },
+    Purge {
         at: DateTime<Utc>,
     },
 }
@@ -439,8 +464,24 @@ impl mire::Command for AppCommand {
                 created_at: at,
             }]);
         }
-        if !app.exists || app.deleted {
+        if !app.exists {
             return Err(AppError::NotFound);
+        }
+        if app.deleted {
+            return match self {
+                AppCommand::Restore { actor, at }
+                    if app.purge_after.is_some_and(|due| at < due) =>
+                {
+                    Ok(vec![AppEvent::Restored {
+                        restored_by: actor,
+                        restored_at: at,
+                    }])
+                }
+                AppCommand::Purge { at } if app.purge_after.is_some_and(|due| at >= due) => {
+                    Ok(vec![AppEvent::Purged { purged_at: at }])
+                }
+                _ => Err(AppError::NotFound),
+            };
         }
         match self {
             AppCommand::Create { .. } => unreachable!("handled above"),
@@ -508,10 +549,15 @@ impl mire::Command for AppCommand {
                 });
                 Ok(events)
             }
-            AppCommand::Delete { actor, at } => {
+            AppCommand::Delete {
+                actor,
+                at,
+                purge_after,
+            } => {
                 let mut events = vec![AppEvent::Deleted {
                     deleted_by: actor,
                     deleted_at: at,
+                    purge_after: Some(purge_after),
                 }];
                 for replica in &app.replicas {
                     events.push(AppEvent::ReplicaRemoved {
@@ -521,6 +567,7 @@ impl mire::Command for AppCommand {
                 }
                 Ok(events)
             }
+            AppCommand::Restore { .. } | AppCommand::Purge { .. } => Err(AppError::NotFound),
         }
     }
 }
@@ -677,6 +724,7 @@ mod tests {
         let events = AppCommand::Delete {
             actor: Uuid::nil(),
             at: at(),
+            purge_after: at() + chrono::Duration::days(7),
         }
         .handle(&app)
         .unwrap();
@@ -688,7 +736,76 @@ mod tests {
         assert_eq!(
             AppCommand::Delete {
                 actor: Uuid::nil(),
-                at: at()
+                at: at(),
+                purge_after: at() + chrono::Duration::days(7),
+            }
+            .handle(&app),
+            Err(AppError::NotFound)
+        );
+    }
+
+    #[test]
+    fn a_deleted_app_can_be_restored_only_before_its_deadline() {
+        let mut app = created();
+        let deadline = at() + chrono::Duration::days(7);
+        for event in (AppCommand::Delete {
+            actor: Uuid::nil(),
+            at: at(),
+            purge_after: deadline,
+        })
+        .handle(&app)
+        .unwrap()
+        {
+            app.apply(&event);
+        }
+        assert_eq!(
+            AppCommand::Restore {
+                actor: Uuid::nil(),
+                at: deadline
+            }
+            .handle(&app),
+            Err(AppError::NotFound)
+        );
+        let restored = AppCommand::Restore {
+            actor: Uuid::nil(),
+            at: deadline - chrono::Duration::seconds(1),
+        }
+        .handle(&app)
+        .unwrap();
+        for event in &restored {
+            app.apply(event);
+        }
+        assert!(!app.deleted);
+        assert_eq!(app.purge_after, None);
+        assert_eq!(
+            AppCommand::Purge { at: deadline }.handle(&app),
+            Err(AppError::NotFound)
+        );
+    }
+
+    #[test]
+    fn a_purged_app_cannot_be_restored() {
+        let mut app = created();
+        let deadline = at() + chrono::Duration::days(7);
+        for event in (AppCommand::Delete {
+            actor: Uuid::nil(),
+            at: at(),
+            purge_after: deadline,
+        })
+        .handle(&app)
+        .unwrap()
+        {
+            app.apply(&event);
+        }
+        for event in (AppCommand::Purge { at: deadline }).handle(&app).unwrap() {
+            app.apply(&event);
+        }
+        assert!(app.deleted);
+        assert_eq!(app.purge_after, None);
+        assert_eq!(
+            AppCommand::Restore {
+                actor: Uuid::nil(),
+                at: deadline
             }
             .handle(&app),
             Err(AppError::NotFound)

@@ -7,7 +7,10 @@ use std::time::Duration;
 use notmad::{Component, ComponentInfo, MadError};
 use tokio_util::sync::CancellationToken;
 
-use crate::{services::entry::EntryState, state::State};
+use crate::{
+    services::{apps::AppsState, entry::EntryState, volumes::VolumesState},
+    state::State,
+};
 
 /// How often the sweeper runs.
 pub const INTERVAL: Duration = Duration::from_secs(600);
@@ -55,6 +58,19 @@ impl Component for Sweeper {
                     }
                     if let Err(error) = self.state.entry().expire_migration_pauses().await {
                         tracing::warn!(error = %error, "migration pause expiry failed; retrying next tick");
+                    }
+                    let at: Result<chrono::DateTime<chrono::Utc>, _> = sqlx::query_scalar("SELECT clock_timestamp()")
+                        .fetch_one(&self.state.pool).await;
+                    match at {
+                        Ok(at) => {
+                            if let Err(error) = self.state.volumes().purge_due(at).await {
+                                tracing::warn!(error = %error, "volume purge failed; retrying next tick");
+                            }
+                            if let Err(error) = self.state.apps().purge_due(at).await {
+                                tracing::warn!(error = %error, "app purge failed; retrying next tick");
+                            }
+                        }
+                        Err(error) => tracing::warn!(error = %error, "purge clock unavailable; retrying next tick"),
                     }
                 },
                 _ = tick.tick() => match self.pass().await {

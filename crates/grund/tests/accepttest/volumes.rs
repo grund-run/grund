@@ -71,12 +71,101 @@ async fn an_admin_cannot_restore_an_owners_backup_into_their_machine() -> anyhow
         )
         .await?;
     guest_then.status(403)?.connect_code("permission_denied")?;
+    when.calling(
+        &format!("{VOLUMES}/CreateVolume"),
+        &json!({
+            "organisation": org,
+            "app": "safebox",
+            "name": "pending",
+            "path": "/data",
+            "idempotencyKey": uuid::Uuid::now_v7().to_string()
+        })
+        .to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    let created = then.json()?;
+    let id = created["volume"]["volumeId"]
+        .as_str()
+        .context("created volume ID")?;
+    when.calling(
+        &format!("{VOLUMES}/DeleteVolume"),
+        &json!({
+            "organisation": org,
+            "app": "safebox",
+            "volumeId": id,
+            "expectedVersion": created["volume"]["version"]
+        })
+        .to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    let pending = then.json()?;
+    ensure!(
+        pending["volume"]["status"] == "pending_deletion"
+            && pending["volume"]["purgeAfter"]
+                .as_str()
+                .is_some_and(|deadline| !deadline.is_empty()),
+        "standalone volume is recoverable until its deadline: {pending}"
+    );
+    guest_when
+        .calling(
+            &format!("{VOLUMES}/RestoreVolume"),
+            &json!({
+                "organisation": org,
+                "app": "safebox",
+                "volumeId": id,
+                "expectedVersion": pending["volume"]["version"]
+            })
+            .to_string(),
+        )
+        .await?;
+    guest_then.status(403)?.connect_code("permission_denied")?;
+    when.calling(
+        &format!("{VOLUMES}/RestoreVolume"),
+        &json!({
+            "organisation": org,
+            "app": "safebox",
+            "volumeId": id,
+            "expectedVersion": pending["volume"]["version"]
+        })
+        .to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    let restored = then.json()?;
+    ensure!(
+        restored["volume"]["volumeId"] == id && restored["volume"]["status"] == "requested",
+        "volume restoration retains identity: {restored}"
+    );
+    call(
+        &when,
+        &then,
+        "DeleteApp",
+        json!({"organisation": org, "name": "safebox", "confirmVolumeCount": 1}),
+    )
+    .await?;
+    then.status(200)?;
+    guest_when
+        .calling(
+            "/grund.app.v1.AppService/ListRestorableApps",
+            &json!({"organisation": org}).to_string(),
+        )
+        .await?;
+    guest_then.status(403)?.connect_code("permission_denied")?;
+    guest_when
+        .calling(
+            "/grund.app.v1.AppService/RestoreApp",
+            &json!({"organisation": org, "name": "safebox"}).to_string(),
+        )
+        .await?;
+    guest_then.status(403)?.connect_code("permission_denied")?;
     Ok(())
 }
 
 #[tokio::test]
-async fn an_app_owned_directory_survives_release_and_agent_restart_then_erases_on_app_delete()
--> anyhow::Result<()> {
+async fn an_app_owned_directory_survives_release_restart_and_deletion_restore() -> anyhow::Result<()>
+{
     let registry = FakeRegistry::start().await?;
     let Some((given, when, then)) =
         testcase_configured(&[("GRUND_INSECURE_REGISTRIES", &registry.host)]).await?
@@ -220,13 +309,42 @@ async fn an_app_owned_directory_survives_release_and_agent_restart_then_erases_o
     )
     .await?;
     then.status(200)?;
-    let deadline = Instant::now() + Duration::from_secs(45);
-    while root.exists() && Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+    when.calling(
+        "/grund.app.v1.AppService/ListRestorableApps",
+        &json!({"organisation":org}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    let recovery = then.json()?;
     ensure!(
-        !root.exists(),
-        "signed machine tombstone erased the managed directory"
+        recovery["apps"][0]["name"] == "storage",
+        "deleted app remains recoverable: {recovery}"
+    );
+    ensure!(
+        root.exists() && std::fs::read(&marker)? == b"written before release",
+        "deletion fences the app without erasing its volume before expiry"
+    );
+    call(
+        &when,
+        &then,
+        "RestoreApp",
+        json!({"organisation":org,"name":"storage"}),
+    )
+    .await?;
+    then.status(200)?;
+    until(
+        &when,
+        &then,
+        org,
+        "storage",
+        Duration::from_secs(45),
+        "restored app resumes using original bytes",
+        |app| live(app, 2),
+    )
+    .await?;
+    ensure!(
+        std::fs::read(&marker)? == b"written before release",
+        "restored app retained the original volume"
     );
     drop(agent);
     Ok(())
@@ -465,13 +583,22 @@ async fn a_verified_s3_point_restores_its_bytes_to_a_different_own_machine() -> 
     )
     .await?;
     then.status(200)?;
-    let deadline = Instant::now() + Duration::from_secs(45);
-    while (original.exists() || marker.exists()) && Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
     ensure!(
-        !original.exists() && !marker.exists(),
-        "both app-owned managed directories were erased after deletion"
+        original.exists() && marker.exists(),
+        "deletion does not erase either volume in its recovery window"
+    );
+    when.calling(
+        &format!("{VOLUMES}/ListRecoveryPoints"),
+        &json!({"organisation":org,"app":"backup","volumeId":volume_id}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    let points = then.json()?;
+    ensure!(
+        points["points"]
+            .as_array()
+            .is_some_and(|points| !points.is_empty()),
+        "verified backup remains available during the delete window: {points}"
     );
     Ok(())
 }

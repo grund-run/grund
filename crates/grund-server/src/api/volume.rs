@@ -1,5 +1,6 @@
-//! VolumeService: every call resolves both organisation membership and a live
-//! app before touching an app-owned volume. Foreign ids are not_found.
+//! VolumeService: every call resolves organisation membership and an app before
+//! touching an app-owned volume. Only owners see deleted apps in their recovery
+//! window. Foreign ids are not_found.
 use crate::{
     api::{Principal, principal},
     services::{
@@ -22,8 +23,9 @@ use grund_proto::grund::volume::v1::{
     GetBackupDestinationRequest, GetBackupDestinationResponse, GetVolumeRequest, GetVolumeResponse,
     GetVolumeStatusRequest, GetVolumeStatusResponse, ListRecoveryPointsRequest,
     ListRecoveryPointsResponse, ListVolumesRequest, ListVolumesResponse,
-    RestoreRecoveryPointRequest, RestoreRecoveryPointResponse, SetBackupDestinationRequest,
-    SetBackupDestinationResponse, VolumeService,
+    RestoreRecoveryPointRequest, RestoreRecoveryPointResponse, RestoreVolumeRequest,
+    RestoreVolumeResponse, SetBackupDestinationRequest, SetBackupDestinationResponse,
+    VolumeService,
 };
 use grund_store::{apps, organisations::Membership, volumes::VolumeRow};
 use ring::{digest, hmac};
@@ -70,7 +72,7 @@ impl VolumeApi {
         }
         if access == Access::Owner && membership.role != "owner" {
             return Err(ConnectError::permission_denied(
-                "only the organisation owner may configure backup credentials, restore, or export the backup key",
+                "only the organisation owner may configure backup credentials or restore deleted volumes, or export the backup key",
             ));
         }
         Ok(membership)
@@ -88,9 +90,23 @@ impl VolumeApi {
             .map_err(|e| {
                 tracing::error!(error = %e, "volume app lookup failed");
                 ConnectError::internal("app lookup failed")
-            })?
-            .ok_or_else(|| ConnectError::not_found("no such app"))?;
-        Ok((member.organisation_id, row.app_id))
+            })?;
+        if let Some(row) = row {
+            return Ok((member.organisation_id, row.app_id));
+        }
+        if member.role == "owner"
+            && access == Access::Read
+            && let Some(row) =
+                apps::app_by_name_including_deleted(&self.state.pool, member.organisation_id, app)
+                    .await
+                    .map_err(|e| {
+                        tracing::error!(error = %e, "restorable app lookup failed");
+                        ConnectError::internal("app lookup failed")
+                    })?
+        {
+            return Ok((member.organisation_id, row.app_id));
+        }
+        Err(ConnectError::not_found("no such app"))
     }
 }
 
@@ -152,6 +168,7 @@ fn message(row: &VolumeRow) -> proto::Volume {
         status: row.status.clone(),
         measured_bytes: row.measured_bytes.map(|n| n as u64),
         measured_at: row.measured_at.map(timestamp).unwrap_or_default(),
+        purge_after: row.purge_after.map(timestamp).unwrap_or_default(),
         version: row.stream_version,
         ..Default::default()
     }
@@ -386,6 +403,32 @@ impl VolumeService for VolumeApi {
             .await
             .map_err(failed)?;
         Response::ok(DeleteVolumeResponse {
+            volume: MessageField::from(message(&row)),
+            ..Default::default()
+        })
+    }
+    async fn restore_volume(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, RestoreVolumeRequest>,
+    ) -> ServiceResult<RestoreVolumeResponse> {
+        let caller = principal(&ctx)?;
+        let (org, app) = self
+            .app(&caller, request.organisation, request.app, Access::Owner)
+            .await?;
+        let row = self
+            .state
+            .volumes()
+            .restore(
+                caller.account_id,
+                org,
+                app,
+                id(request.volume_id)?,
+                request.expected_version,
+            )
+            .await
+            .map_err(failed)?;
+        Response::ok(RestoreVolumeResponse {
             volume: MessageField::from(message(&row)),
             ..Default::default()
         })
