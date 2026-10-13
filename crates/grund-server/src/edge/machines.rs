@@ -221,13 +221,18 @@ impl Pool {
     pub fn endpoint(&self) -> Endpoint {
         self.endpoint.lock().expect("pool lock").0.clone()
     }
+    #[cfg(test)]
+    pub(super) fn generation(&self) -> u64 {
+        self.endpoint.lock().map_or(0, |current| current.1)
+    }
 
-    /// Opens new connections from `endpoint` from now on, and returns the
-    /// one it replaces, whose open streams carry on until it is closed.
-    pub fn replace_endpoint(&self, endpoint: Endpoint) -> Endpoint {
+    /// Opens new connections from `endpoint` only after the previous
+    /// endpoint has closed its relay registration for the same edge key.
+    pub fn replace_closed_endpoint(&self, endpoint: Endpoint) {
         let mut current = self.endpoint.lock().expect("pool lock");
-        let generation = current.1 + 1;
-        std::mem::replace(&mut *current, (endpoint, generation)).0
+        debug_assert!(current.0.is_closed(), "old edge endpoint must be closed");
+        current.1 += 1;
+        current.0 = endpoint;
     }
 
     /// Whether every open connection goes direct, and there is one: then a
@@ -255,6 +260,14 @@ impl Pool {
             }
         }
         any
+    }
+
+    pub(super) fn has_open_streams(&self) -> bool {
+        self.machines.lock().map_or(true, |machines| {
+            machines
+                .values()
+                .any(|machine| machine.streams.load(Relaxed) != 0)
+        })
     }
 
     /// The machines for `name` in the order to try them: ready healthy

@@ -92,6 +92,12 @@ every call with a key of its own, kept in `GRUND_RELAY_DATA_DIR`.
 `grund relays revoke relay.example.com` shuts it out. Every setting is in
 `grund relay --help`.
 
+An edge that loses its relay path waits until the relay answers again, then
+closes its old endpoint before reconnecting with the same identity. It keeps
+working direct machine streams open. Without a reachable relay or a direct
+machine path, app traffic remains unavailable; a cached TLS certificate alone
+does not mean the machine is reachable.
+
 What compose deliberately does not do:
 
 - **Backups.** Nothing backs up the `grund-postgres` and `grund-data`

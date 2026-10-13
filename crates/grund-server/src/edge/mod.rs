@@ -536,8 +536,6 @@ pub const RELAY_REVIVE_POLL: Duration = Duration::from_millis(250);
 pub const RELAY_REVIVE_AFTER: Duration = Duration::from_secs(1);
 /// The least time between two new endpoints.
 pub const RELAY_REVIVE_COOLDOWN: Duration = Duration::from_secs(5);
-/// How long streams on a replaced endpoint may carry on.
-pub const REPLACED_ENDPOINT_GRACE: Duration = Duration::from_secs(60);
 
 async fn revive_relay(
     pool: machines::Pool,
@@ -558,6 +556,7 @@ async fn revive_relay(
         if since.elapsed() < RELAY_REVIVE_AFTER
             || last_revival.is_some_and(|at| at.elapsed() < RELAY_REVIVE_COOLDOWN)
             || pool.all_direct()
+            || pool.has_open_streams()
         {
             continue;
         }
@@ -570,25 +569,26 @@ async fn revive_relay(
         if !answered {
             continue;
         }
+        if pool.has_open_streams() {
+            continue;
+        }
         last_revival = Some(tokio::time::Instant::now());
         lost_since = None;
-        if binder.iroh_listen.is_some_and(|a| a.port() != 0) {
-            pool.endpoint().close().await;
-        }
-        match binder
-            .bind(relay_urls(&routes, override_url.as_ref()))
-            .await
-        {
-            Ok(endpoint) => {
-                let old = pool.replace_endpoint(endpoint);
-                tracing::info!(relay = %home, "edge: the home relay answers again; dialing machines from a new endpoint rather than waiting out iroh's backoff");
-                tokio::spawn(async move {
-                    tokio::time::sleep(REPLACED_ENDPOINT_GRACE).await;
-                    old.close().await;
-                });
-            }
-            Err(error) => {
-                tracing::warn!(error = %format!("{error:#}"), "edge: could not bind a new endpoint; keeping the one it has");
+        pool.endpoint().close().await;
+        loop {
+            match binder
+                .bind(relay_urls(&routes, override_url.as_ref()))
+                .await
+            {
+                Ok(endpoint) => {
+                    pool.replace_closed_endpoint(endpoint);
+                    tracing::info!(relay = %home, "edge: the home relay answers again; dialing machines from a new endpoint rather than waiting out iroh's backoff");
+                    break;
+                }
+                Err(error) => {
+                    tracing::warn!(error = %format!("{error:#}"), "edge: could not rebind after closing the old endpoint; retrying");
+                    tokio::time::sleep(RELAY_REVIVE_COOLDOWN).await;
+                }
             }
         }
     }
@@ -628,4 +628,92 @@ fn relay_roots() -> anyhow::Result<Option<Vec<rustls::pki_types::CertificateDer<
         .filter_map(Result::ok)
         .collect();
     Ok((!roots.is_empty()).then_some(roots))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn reviving_a_slow_relay_closes_the_old_edge_before_rebinding() -> anyhow::Result<()> {
+        grund_tls::install_default();
+        let ping = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let relay: iroh::RelayUrl = format!("http://{}/", ping.local_addr()?).parse()?;
+        let ping_task = tokio::spawn(async move {
+            while let Ok((mut socket, _)) = ping.accept().await {
+                tokio::spawn(async move {
+                    let mut request = [0; 1024];
+                    if let Ok(size) = socket.read(&mut request).await {
+                        let status = if request[..size].starts_with(b"GET /ping ") {
+                            "200 OK"
+                        } else {
+                            "503 Service Unavailable"
+                        };
+                        let reply = format!(
+                            "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        );
+                        let _ = socket.write_all(reply.as_bytes()).await;
+                    }
+                });
+            }
+        });
+        let dir = std::env::temp_dir().join(format!("grund-edge-revival-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir)?;
+        let routes = routes::Routes::load(&dir);
+        routes.install(&grund_proto::grund::edge::v1::RouteTable {
+            version: "first".into(),
+            relay_urls: vec![relay.to_string()],
+            ..Default::default()
+        })?;
+        let binder = Binder {
+            key: iroh::SecretKey::from_bytes(&[7; 32]),
+            iroh_listen: None,
+            relay_roots: None,
+        };
+        let old = binder.bind(vec![relay.clone()]).await?;
+        let pool = machines::Pool::new(old.clone(), None);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while grund_net::endpoint::unanswering_home(&old).is_none() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await?;
+        let http = reqwest::Client::new();
+        anyhow::ensure!(
+            http.get(grund_net::endpoint::relay_ping_url(&relay))
+                .send()
+                .await?
+                .status()
+                .is_success()
+        );
+        let revival = tokio::spawn(revive_relay(pool.clone(), routes, binder, None, http));
+        let switched = tokio::time::timeout(Duration::from_secs(5), async {
+            while pool.generation() == 0 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok();
+        let old_closed_before_switch = old.is_closed();
+        let replacement_running = !pool.endpoint().is_closed();
+        revival.abort();
+        pool.endpoint().close().await;
+        old.close().await;
+        ping_task.abort();
+        std::fs::remove_dir_all(dir)?;
+        anyhow::ensure!(
+            switched,
+            "a recovered relay did not get a fresh edge endpoint"
+        );
+        anyhow::ensure!(
+            old_closed_before_switch,
+            "the edge registered its new endpoint before closing the old one"
+        );
+        anyhow::ensure!(
+            replacement_running,
+            "the replacement edge endpoint is not live"
+        );
+        Ok(())
+    }
 }
