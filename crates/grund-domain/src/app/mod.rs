@@ -47,6 +47,17 @@ pub struct SecretVersion {
     pub name: String,
     pub version: u32,
 }
+/// The durable origin of one externally requested release. The request
+/// fingerprint contains no credentials or raw artifact contents.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternalRelease {
+    pub forest_organisation: String,
+    pub destination: String,
+    pub project: String,
+    pub intent_id: uuid::Uuid,
+    pub artifact_id: uuid::Uuid,
+    pub request_digest: [u8; 32],
+}
 
 /// An immutable, numbered snapshot of what every copy runs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,6 +79,8 @@ pub struct Release {
     pub note: String,
     pub created_by: Uuid,
     pub created_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_release: Option<ExternalRelease>,
 }
 
 /// Why a replica was placed.
@@ -237,6 +250,8 @@ pub struct App {
     pub purge_after: Option<DateTime<Utc>>,
     pub organisation_id: Uuid,
     pub name: Option<AppName>,
+    #[serde(default)]
+    pub external_owner: Option<(String, String, String)>,
     pub settings: AppSettings,
     pub releases: Vec<Release>,
     pub current_release: Option<u32>,
@@ -295,6 +310,15 @@ impl mire::Aggregate for App {
             }
             AppEvent::Configured { settings, .. } => self.settings = settings.clone(),
             AppEvent::ReleaseCreated { release } => {
+                if let Some(origin) = &release.external_release {
+                    self.external_owner.get_or_insert_with(|| {
+                        (
+                            origin.forest_organisation.clone(),
+                            origin.destination.clone(),
+                            origin.project.clone(),
+                        )
+                    });
+                }
                 self.releases.push(release.clone());
                 self.halted = false;
             }
@@ -377,7 +401,7 @@ impl mire::Aggregate for App {
 }
 
 impl mire::Snapshot for App {
-    const SNAPSHOT_VERSION: i32 = 2;
+    const SNAPSHOT_VERSION: i32 = 3;
     const SNAPSHOT_FREQUENCY: i64 = 100;
 }
 
@@ -408,6 +432,7 @@ pub enum AppCommand {
         exposed_ports: Option<Vec<u16>>,
         secret_versions: Vec<SecretVersion>,
         source: ReleaseSource,
+        external_release: Option<ExternalRelease>,
         rollback_of: Option<u32>,
         note: String,
         rollout_id: Uuid,
@@ -437,6 +462,8 @@ pub enum AppError {
     ReleaseNotFound,
     #[error("an app has at most 100000 releases")]
     TooManyReleases,
+    #[error("this app belongs to another external project")]
+    ExternalOwnerConflict,
 }
 
 impl mire::Command for AppCommand {
@@ -507,11 +534,21 @@ impl mire::Command for AppCommand {
                 exposed_ports,
                 secret_versions,
                 source,
+                external_release,
                 rollback_of,
                 note,
                 rollout_id,
                 at,
             } => {
+                if let Some(origin) = &external_release
+                    && app.external_owner.as_ref().is_some_and(|owner| {
+                        owner.0 != origin.forest_organisation
+                            || owner.1 != origin.destination
+                            || owner.2 != origin.project
+                    })
+                {
+                    return Err(AppError::ExternalOwnerConflict);
+                }
                 if rollback_of.is_some_and(|n| app.release(n).is_none()) {
                     return Err(AppError::ReleaseNotFound);
                 }
@@ -531,6 +568,7 @@ impl mire::Command for AppCommand {
                         rollback_of,
                         note,
                         created_by: actor,
+                        external_release,
                         created_at: at,
                     },
                 }];
@@ -633,6 +671,7 @@ mod tests {
             secret_versions: Vec::new(),
             exposed_ports: Some(vec![80]),
             source: ReleaseSource::Api,
+            external_release: None,
             rollback_of: None,
             note: String::new(),
             rollout_id: Uuid::from_u128(9),
@@ -700,6 +739,7 @@ mod tests {
             exposed_ports: None,
             secret_versions: Vec::new(),
             source: ReleaseSource::Rollback,
+            external_release: None,
             rollback_of: Some(4),
             note: String::new(),
             rollout_id: Uuid::nil(),

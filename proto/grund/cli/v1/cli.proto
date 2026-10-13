@@ -125,6 +125,8 @@ message AppDeploy {
   grund.app.v1.RolloutStatus rollout = 6;
   // For --dry-run: each procedure it would call, in order.
   repeated Call calls = 7;
+  // The app version checked by the plan; pass with --expected-version.
+  int64 expected_version = 8;
 }
 
 // `grund apps secrets list`.

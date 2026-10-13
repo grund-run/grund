@@ -354,6 +354,10 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
         Requirement::SessionOrToken,
     ),
     (
+        "/grund.app.v1.AppService/PreviewDeploy",
+        Requirement::SessionOrToken,
+    ),
+    (
         "/grund.app.v1.AppService/ListReleases",
         Requirement::SessionOrToken,
     ),
@@ -435,11 +439,11 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
     ),
     (
         "/grund.domain.v1.DomainService/ListDomains",
-        Requirement::SessionOrFullToken,
+        Requirement::SessionOrToken,
     ),
     (
         "/grund.domain.v1.DomainService/GetDomain",
-        Requirement::SessionOrFullToken,
+        Requirement::SessionOrToken,
     ),
     (
         "/grund.domain.v1.DomainService/AddDomain",
@@ -1153,6 +1157,15 @@ pub fn authorized_with_extensions(
         .find(|(procedure, _)| *procedure == path)
         .map(|(_, requirement)| requirement);
     let extensions = ctx.extensions();
+    if path.starts_with("/grund.volume.v1.VolumeService/")
+        && extensions
+            .get::<TokenCaller>()
+            .is_some_and(|token| token.apps.is_some())
+    {
+        return Err(ConnectError::permission_denied(
+            "an app-limited deploy token cannot manage volumes",
+        ));
+    }
     match requirement {
         Some(Requirement::Session) if extensions.get::<Caller>().is_some() => Ok(()),
         Some(Requirement::Session) if extensions.get::<TokenCaller>().is_some() => {
@@ -1253,11 +1266,13 @@ pub fn caller(ctx: &connectrpc::RequestContext) -> Result<Caller, ConnectError> 
 
 /// Who a call for a [`Requirement::SessionOrToken`] procedure acts as: an
 /// account, and for a token the one organisation it may act on.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Principal {
     pub account_id: Uuid,
     /// `Some` for a token: every other organisation is `not_found` to it.
     pub organisation_id: Option<Uuid>,
+    /// `None` is a session or an unrestricted legacy token.
+    pub apps: Option<std::sync::Arc<[String]>>,
 }
 
 impl From<Caller> for Principal {
@@ -1265,6 +1280,7 @@ impl From<Caller> for Principal {
         Principal {
             account_id: caller.account_id,
             organisation_id: None,
+            apps: None,
         }
     }
 }
@@ -1276,6 +1292,21 @@ impl Principal {
         self.organisation_id
             .is_none_or(|own| own == organisation_id)
     }
+
+    /// A foreign app looks exactly like a missing app to a bounded token.
+    pub fn check_app(&self, name: &str) -> Result<(), ConnectError> {
+        if !self.reaches_app(name) {
+            return Err(ConnectError::not_found("no such app"));
+        }
+        Ok(())
+    }
+
+    /// Whether a bound token can see the named app.
+    pub fn reaches_app(&self, name: &str) -> bool {
+        self.apps
+            .as_ref()
+            .is_none_or(|apps| apps.binary_search_by(|app| app.as_str().cmp(name)).is_ok())
+    }
 }
 
 /// The session or token caller [`authenticate`] stamped on the request.
@@ -1285,6 +1316,7 @@ pub fn principal(ctx: &connectrpc::RequestContext) -> Result<Principal, ConnectE
         return Ok(Principal {
             account_id: caller.account_id,
             organisation_id: None,
+            apps: None,
         });
     }
     extensions
@@ -1292,6 +1324,7 @@ pub fn principal(ctx: &connectrpc::RequestContext) -> Result<Principal, ConnectE
         .map(|token| Principal {
             account_id: token.account_id,
             organisation_id: Some(token.organisation_id),
+            apps: token.apps.clone(),
         })
         .ok_or_else(|| ConnectError::unauthenticated("sign in first"))
 }
@@ -1627,6 +1660,13 @@ mod tests {
             _: RequestContext,
             _: ServiceRequest<'_, app_proto::DeployRequest>,
         ) -> ServiceResult<app_proto::DeployResponse> {
+            unreachable!()
+        }
+        async fn preview_deploy(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, app_proto::PreviewDeployRequest>,
+        ) -> ServiceResult<app_proto::PreviewDeployResponse> {
             unreachable!()
         }
         async fn list_releases(
@@ -2037,6 +2077,7 @@ mod tests {
                         } else {
                             TokenScope::Full
                         },
+                        apps: None,
                     });
                 }
                 "edge" => {
@@ -2089,6 +2130,7 @@ mod tests {
             "GetApp",
             "ListApps",
             "Deploy",
+            "PreviewDeploy",
             "ListReleases",
             "Rollback",
             "Scale",
@@ -2099,6 +2141,8 @@ mod tests {
         .map(|m| format!("/grund.app.v1.AppService/{m}").leak() as &str)
         .chain([
             "/grund.token.v1.TokenService/GetCurrentToken",
+            "/grund.domain.v1.DomainService/GetDomain",
+            "/grund.domain.v1.DomainService/ListDomains",
             "/grund.volume.v1.VolumeService/CreateVolume",
             "/grund.volume.v1.VolumeService/GetBackupDestination",
             "/grund.volume.v1.VolumeService/GetVolume",
@@ -2220,12 +2264,14 @@ mod tests {
         let token = Principal {
             account_id: Uuid::now_v7(),
             organisation_id: Some(own),
+            apps: None,
         };
         assert!(token.reaches(own));
         assert!(!token.reaches(Uuid::now_v7()));
         let session = Principal {
             account_id: Uuid::now_v7(),
             organisation_id: None,
+            apps: None,
         };
         assert!(session.reaches(Uuid::now_v7()));
     }

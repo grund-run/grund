@@ -170,6 +170,14 @@
           ],
           "description": "The settings in force, with every default filled in."
         },
+        "version": {
+          "description": "Mire stream version, including rollout decisions; pass to Deploy to refuse a plan whose observed app state changed.",
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
         "waiting": {
           "description": "Copies that cannot be placed now, and why.",
           "items": {
@@ -868,6 +876,14 @@
         },
         "dryRun": {
           "type": "boolean"
+        },
+        "expectedVersion": {
+          "description": "The app version checked by the plan; pass with --expected-version.",
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
         },
         "release": {
           "allOf": [
@@ -1811,6 +1827,13 @@
     "grund.token.v1.Token": {
       "additionalProperties": false,
       "properties": {
+        "apps": {
+          "description": "App names this deploy token can reach in its organisation. Empty means unrestricted, including tokens created before app allowlists existed.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "createdAt": {
           "format": "date-time",
           "type": "string"
@@ -7319,6 +7342,13 @@
           "value_name": "NO_CREATE"
         },
         {
+          "description": "Refuse a deploy if the app changed since this GetApp/preview version",
+          "flag": "--expected-version",
+          "name": "expected_version",
+          "type": "integer",
+          "value_name": "VERSION"
+        },
+        {
           "description": "Wait until the rollout is live or failed; exit 9 when it failed",
           "flag": "--wait",
           "name": "wait",
@@ -7370,6 +7400,7 @@
         "grund.app.v1.AppService/CreateApp",
         "grund.app.v1.AppService/Scale",
         "grund.app.v1.AppService/Deploy",
+        "grund.app.v1.AppService/PreviewDeploy",
         "grund.app.v1.AppService/ListReleases"
       ],
       "summary": "Deploy from grund.yaml (every app it declares, or APP) or from flags (--image …): a new release, rolled out. Makes an app that does not exist yet"
@@ -13594,6 +13625,14 @@
           "value_name": "SCOPE"
         },
         {
+          "description": "Limit this deploy token to these app names; repeat --apps or separate names with commas",
+          "flag": "--apps",
+          "name": "apps",
+          "repeated": true,
+          "type": "string",
+          "value_name": "APP"
+        },
+        {
           "description": "Show the request instead of sending it",
           "flag": "--dry-run",
           "name": "dry_run",
@@ -13606,7 +13645,7 @@
       "destructive": false,
       "dry_run": true,
       "examples": [
-        "grund tokens create --name ci-deploy --days 90",
+        "grund tokens create --name ci-deploy --apps shop,worker --days 90",
         "grund tokens create --name agent --scope full --json | jq -r .secret"
       ],
       "mutates": true,

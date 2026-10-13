@@ -229,6 +229,45 @@ async fn an_agent_with_a_token_deploys_from_grund_yaml_reads_status_scales_rolls
         "{status:#}"
     );
 
+    let stale = shell
+        .run(&[
+            "apps",
+            "deploy",
+            "shop",
+            "-f",
+            "grund.yaml",
+            "--expected-version",
+            "0",
+            "--json",
+        ])
+        .await?;
+    anyhow::ensure!(
+        stale.status == 6 && stale.error()?["reason"] == "version_conflict",
+        "stale version was accepted: {}{}",
+        stale.stdout,
+        stale.stderr
+    );
+    let mixed = shell
+        .run(&[
+            "apps",
+            "deploy",
+            "shop",
+            "-f",
+            "grund.yaml",
+            "--expected-version",
+            "1",
+            "--copies",
+            "2",
+            "--json",
+        ])
+        .await?;
+    anyhow::ensure!(
+        mixed.status == 2 && mixed.error()?["field"] == "expected_version",
+        "precondition with a pre-deploy scale was accepted: {}{}",
+        mixed.stdout,
+        mixed.stderr
+    );
+
     let scaled = shell.json("apps set copies", &["shop", "2"]).await?;
     anyhow::ensure!(scaled["app"]["settings"]["copies"] == 2, "{scaled:#}");
     let mut ready = Value::Null;
@@ -516,12 +555,32 @@ async fn grund_login_is_approved_once_in_the_browser_and_logout_revokes_the_sess
             && made["token"]["scope"] == "TOKEN_SCOPE_FULL",
         "{made:#}"
     );
+    let bounded = shell
+        .json(
+            "tokens create",
+            &[
+                "--name",
+                "app deployer",
+                "--scope",
+                "deploy",
+                "--apps",
+                "shop,worker",
+            ],
+        )
+        .await?;
+    anyhow::ensure!(
+        bounded["token"]["apps"] == json!(["shop", "worker"]),
+        "CLI token creation did not return its app restriction"
+    );
     let listed = shell.json("tokens list", &[]).await?;
     anyhow::ensure!(
-        listed["tokens"]
-            .as_array()
-            .is_some_and(|t| t.iter().any(|t| t["name"] == "from the cli")),
-        "{listed:#}"
+        listed["tokens"].as_array().is_some_and(|tokens| {
+            tokens.iter().any(|token| token["name"] == "from the cli")
+                && tokens.iter().any(|token| {
+                    token["name"] == "app deployer" && token["apps"] == json!(["shop", "worker"])
+                })
+        }),
+        "the token list did not include both tokens with the restriction"
     );
     shell.json("orgs list", &[]).await?;
     when.visiting("/settings/sessions").await?;

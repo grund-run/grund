@@ -253,6 +253,12 @@ pub struct DeployArgs {
 
     #[arg(long, help = "Refuse an app that does not exist instead of making it")]
     pub no_create: bool,
+    #[arg(
+        long,
+        value_name = "VERSION",
+        help = "Refuse a deploy if the app changed since this GetApp/preview version"
+    )]
+    pub expected_version: Option<i64>,
 
     #[command(flatten)]
     pub follow: Follow,
@@ -947,9 +953,22 @@ async fn deploy(ctx: &Ctx, api: &Api, org: &str, args: DeployArgs) -> CliResult<
             targets.push((app, json!({"grundYaml": text})));
         }
     }
+    if args.expected_version.is_some() && (targets.len() != 1 || args.copies.is_some()) {
+        return Err(CliError::usage(
+            "--expected-version needs one app and cannot be combined with --copies",
+        )
+        .field("expected_version"));
+    }
     let mut results = Vec::new();
     for (app, source) in targets {
         let present = exists(api, org, &app).await?;
+        if args.expected_version.is_some() && !present {
+            return Err(CliError::new(
+                Code::NotFound,
+                format!("no existing app {app} in {org} for --expected-version"),
+            )
+            .field("expected_version"));
+        }
         if !present && args.no_create {
             return Err(
                 CliError::new(Code::NotFound, format!("no app {app} in {org}"))
@@ -961,6 +980,9 @@ async fn deploy(ctx: &Ctx, api: &Api, org: &str, args: DeployArgs) -> CliResult<
             request[key] = value.clone();
         }
         set_if(&mut request, "note", note.clone());
+        if let Some(expected) = args.expected_version {
+            request["expectedVersion"] = json!(expected.to_string());
+        }
         let mut create = json!({"organisation": org, "name": app});
         if let Some(copies) = args.copies {
             create["settings"] = json!({"copies": copies});
@@ -968,31 +990,40 @@ async fn deploy(ctx: &Ctx, api: &Api, org: &str, args: DeployArgs) -> CliResult<
         if args.dry_run {
             let mut calls = Vec::new();
             let mut entry = json!({"app": app, "dryRun": true});
-            if present {
-                if let Some(copies) = args.copies {
-                    calls.push((
-                        format!("{SERVICE}/Scale"),
-                        json!({"organisation": org, "name": app, "copies": copies}),
-                    ));
-                }
-                let mut preview = request.clone();
-                preview["dryRun"] = json!(true);
-                let answer = api.call(&format!("{SERVICE}/Deploy"), preview).await?;
-                let newest = releases(api, org, &app)
-                    .await?
-                    .into_iter()
-                    .next()
-                    .unwrap_or(Value::Null);
-                entry["release"] = answer["release"].clone();
-                set_if(
-                    &mut entry,
-                    "changes",
-                    changes("/spec", &newest["spec"], &answer["release"]["spec"]),
-                );
-            } else {
+            if !present {
                 entry["created"] = json!(true);
                 calls.push((format!("{SERVICE}/CreateApp"), create));
+            } else if let Some(copies) = args.copies {
+                calls.push((
+                    format!("{SERVICE}/Scale"),
+                    json!({"organisation": org, "name": app, "copies": copies}),
+                ));
             }
+            let mut preview = json!({
+                "organisation": org,
+                "name": app,
+                "createIfMissing": !args.no_create,
+            });
+            for (key, value) in source.as_object().into_iter().flatten() {
+                preview[key] = value.clone();
+            }
+            let answer = api
+                .call(&format!("{SERVICE}/PreviewDeploy"), preview)
+                .await?;
+            entry["release"] = answer["release"].clone();
+            entry["expectedVersion"] = answer["expectedVersion"].clone();
+            entry["changes"] = json!(answer["changes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|change| {
+                    json!({
+                        "path": format!("/{}", change["field"].as_str().unwrap_or_default()),
+                        "before": change["beforeJson"].as_str().and_then(|s| serde_json::from_str::<Value>(s).ok()),
+                        "after": change["afterJson"].as_str().and_then(|s| serde_json::from_str::<Value>(s).ok()),
+                    })
+                })
+                .collect::<Vec<_>>());
             calls.push((format!("{SERVICE}/Deploy"), request));
             entry["calls"] = calls
                 .into_iter()

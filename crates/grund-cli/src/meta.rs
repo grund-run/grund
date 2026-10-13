@@ -199,6 +199,7 @@ pub const LEAVES: &[Leaf] = &[
             "grund.app.v1.AppService/CreateApp",
             "grund.app.v1.AppService/Scale",
             "grund.app.v1.AppService/Deploy",
+            "grund.app.v1.AppService/PreviewDeploy",
             "grund.app.v1.AppService/ListReleases",
         ],
         &[
@@ -623,7 +624,7 @@ pub const LEAVES: &[Leaf] = &[
         "grund.token.v1.CreateTokenResponse",
         &["grund.token.v1.TokenService/CreateToken"],
         &[
-            "grund tokens create --name ci-deploy --days 90",
+            "grund tokens create --name ci-deploy --apps shop,worker --days 90",
             "grund tokens create --name agent --scope full --json | jq -r .secret",
         ],
     ),

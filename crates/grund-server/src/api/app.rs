@@ -12,7 +12,7 @@ use connectrpc::{
     ConnectError, ErrorDetail, RequestContext, Response, ServiceRequest, ServiceResult,
 };
 use grund_domain::app::{
-    AppSettings, ReleaseSource,
+    AppSettings, ExternalRelease, ReleaseSource,
     spec::{
         AppSpec, CheckKind, CheckSpec, EnvVar, PortSpec, Protocol, SecretEnv, SettingsInput,
         StopSpec, VolumeSpec,
@@ -23,8 +23,9 @@ use grund_proto::grund::app::v1::{
     CreateAppResponse, DeleteAppRequest, DeleteAppResponse, DeployRequest, DeployResponse,
     ErrorReason, GetAppRequest, GetAppResponse, ListAppsRequest, ListAppsResponse,
     ListReleasesRequest, ListReleasesResponse, ListRestorableAppsRequest,
-    ListRestorableAppsResponse, RestoreAppRequest, RestoreAppResponse, RollbackRequest,
-    RollbackResponse, ScaleRequest, ScaleResponse, SetSecretRequest, SetSecretResponse,
+    ListRestorableAppsResponse, PreviewDeployRequest, PreviewDeployResponse, RestoreAppRequest,
+    RestoreAppResponse, RollbackRequest, RollbackResponse, ScaleRequest, ScaleResponse,
+    SetSecretRequest, SetSecretResponse,
 };
 use grund_store::{apps::ReleaseRow, organisations::Membership};
 
@@ -67,9 +68,12 @@ fn failed(error: AppsError) -> ConnectError {
     let message = error.to_string();
     let base = match &error {
         AppsError::NotFound | AppsError::ReleaseNotFound => ConnectError::not_found(message),
+        AppsError::VersionConflict => ConnectError::aborted(message),
+        AppsError::ExternalReleaseConflict => ConnectError::already_exists(message),
         AppsError::NameTaken
         | AppsError::AppLimit
         | AppsError::DomainRequired
+        | AppsError::ExternalOwnerConflict
         | AppsError::VolumeConfirmationRequired { .. } => {
             ConnectError::failed_precondition(message)
         }
@@ -468,6 +472,7 @@ pub fn app_message(
             .collect(),
         created_at: timestamp(row.created_at),
         halted: row.halted,
+        version: row.stream_version,
         ..Default::default()
     }
 }
@@ -512,6 +517,22 @@ pub fn release_message(row: &ReleaseRow) -> proto::Release {
         reason: row.reason.clone().unwrap_or_default(),
         ended_at: row.ended_at.map(timestamp).unwrap_or_default(),
         ..Default::default()
+    }
+}
+
+fn deploy_change(
+    changes: &mut Vec<proto::DeployChange>,
+    field: &str,
+    before: serde_json::Value,
+    after: serde_json::Value,
+) {
+    if before != after {
+        changes.push(proto::DeployChange {
+            field: field.to_string(),
+            before_json: before.to_string(),
+            after_json: after.to_string(),
+            ..Default::default()
+        });
     }
 }
 
@@ -591,6 +612,7 @@ impl AppService for AppApi {
         let membership = self
             .member(&caller, &request.organisation, Access::Manage)
             .await?;
+        caller.check_app(&request.name)?;
         let view = self
             .state
             .apps()
@@ -617,6 +639,7 @@ impl AppService for AppApi {
         let membership = self
             .member(&caller, request.organisation, Access::Read)
             .await?;
+        caller.check_app(request.name)?;
         let view = self
             .state
             .apps()
@@ -638,12 +661,15 @@ impl AppService for AppApi {
         let membership = self
             .member(&caller, request.organisation, Access::Read)
             .await?;
-        let views = self
+        let views: Vec<_> = self
             .state
             .apps()
             .list(membership.organisation_id)
             .await
-            .map_err(failed)?;
+            .map_err(failed)?
+            .into_iter()
+            .filter(|view| caller.reaches_app(&view.row.name))
+            .collect();
         let history = if views.iter().any(|view| !view.replicas.is_empty()) {
             self.machine_aliases(membership.organisation_id).await?
         } else {
@@ -672,12 +698,15 @@ impl AppService for AppApi {
                 "only the organisation owner may view deleted apps",
             ));
         }
-        let rows = self
+        let rows: Vec<_> = self
             .state
             .apps()
             .restorable(membership.organisation_id)
             .await
-            .map_err(failed)?;
+            .map_err(failed)?
+            .into_iter()
+            .filter(|row| caller.reaches_app(&row.name))
+            .collect();
         Response::ok(ListRestorableAppsResponse {
             apps: rows
                 .into_iter()
@@ -687,6 +716,117 @@ impl AppService for AppApi {
                     ..Default::default()
                 })
                 .collect(),
+            ..Default::default()
+        })
+    }
+
+    async fn preview_deploy(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, PreviewDeployRequest>,
+    ) -> ServiceResult<PreviewDeployResponse> {
+        let caller = principal(&ctx)?;
+        let request: PreviewDeployRequest = owned(&*request)?;
+        let membership = self
+            .member(&caller, &request.organisation, Access::Manage)
+            .await?;
+        caller.check_app(&request.name)?;
+        let input = match &request.source {
+            Some(proto::preview_deploy_request::Source::Spec(spec)) => {
+                DeployInput::Spec(spec_input(spec))
+            }
+            Some(proto::preview_deploy_request::Source::GrundYaml(text)) => {
+                DeployInput::File(text.clone())
+            }
+            None => {
+                return Err(refusal(
+                    ConnectError::invalid_argument("give a spec or a grund.yaml"),
+                    "spec_invalid",
+                ));
+            }
+        };
+        let plan = self
+            .state
+            .apps()
+            .plan_deploy(
+                caller.account_id,
+                membership.organisation_id,
+                &request.name,
+                input,
+                request.create_if_missing,
+            )
+            .await
+            .map_err(failed)?;
+        let old = plan.previous.as_ref();
+        let desired = &plan.release;
+        let mut changes = Vec::new();
+        deploy_change(
+            &mut changes,
+            "image",
+            serde_json::json!(old.map(|r| (&r.spec.0.image, &r.image_digest))),
+            serde_json::json!((&desired.spec.0.image, &desired.image_digest)),
+        );
+        deploy_change(
+            &mut changes,
+            "env",
+            serde_json::json!(old.map(|r| &r.spec.0.env)),
+            serde_json::json!(&desired.spec.0.env),
+        );
+        deploy_change(
+            &mut changes,
+            "secrets",
+            serde_json::json!(old.map(|r| &r.secret_versions.0)),
+            serde_json::json!(&desired.secret_versions.0),
+        );
+        deploy_change(
+            &mut changes,
+            "copies",
+            serde_json::json!(plan.old_settings.as_ref().map(|s| s.copies)),
+            serde_json::json!(plan.settings.copies),
+        );
+        deploy_change(
+            &mut changes,
+            "placement",
+            serde_json::json!(plan.old_settings.as_ref().map(|s| &s.placement)),
+            serde_json::json!(&plan.settings.placement),
+        );
+        deploy_change(
+            &mut changes,
+            "volumes",
+            serde_json::json!(old.map(|r| &r.spec.0.volumes)),
+            serde_json::json!(&desired.spec.0.volumes),
+        );
+        deploy_change(
+            &mut changes,
+            "ports",
+            serde_json::json!(old.map(|r| &r.spec.0.ports)),
+            serde_json::json!(&desired.spec.0.ports),
+        );
+        deploy_change(
+            &mut changes,
+            "check",
+            serde_json::json!(old.and_then(|r| r.spec.0.check.as_ref())),
+            serde_json::json!(&desired.spec.0.check),
+        );
+        let mut expected_domains = request.domains;
+        expected_domains.sort();
+        if expected_domains.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(refusal(
+                ConnectError::invalid_argument("duplicate desired domain"),
+                "spec_invalid",
+            ));
+        }
+        deploy_change(
+            &mut changes,
+            "domains",
+            serde_json::json!(plan.domains),
+            serde_json::json!(expected_domains),
+        );
+        Response::ok(PreviewDeployResponse {
+            creates_app: plan.creates_app,
+            expected_version: plan.expected_version,
+            release: MessageField::from(release_message(desired)),
+            changes,
             ..Default::default()
         })
     }
@@ -701,6 +841,48 @@ impl AppService for AppApi {
         let membership = self
             .member(&caller, &request.organisation, Access::Manage)
             .await?;
+        caller.check_app(&request.name)?;
+        let origin = request
+            .external_release
+            .as_option()
+            .map(|external| {
+                let valid = |value: &str| {
+                    (1..=128).contains(&value.len())
+                        && value
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte))
+                };
+                if !valid(&external.forest_organisation)
+                    || !valid(&external.destination)
+                    || !valid(&external.project)
+                {
+                    return Err(refusal(
+                        ConnectError::invalid_argument("invalid external release identity"),
+                        "external_release_invalid",
+                    ));
+                }
+                let intent_id = uuid::Uuid::parse_str(&external.intent_id).map_err(|_| {
+                    refusal(
+                        ConnectError::invalid_argument("invalid external intent_id"),
+                        "external_release_invalid",
+                    )
+                })?;
+                let artifact_id = uuid::Uuid::parse_str(&external.artifact_id).map_err(|_| {
+                    refusal(
+                        ConnectError::invalid_argument("invalid external artifact_id"),
+                        "external_release_invalid",
+                    )
+                })?;
+                Ok(ExternalRelease {
+                    forest_organisation: external.forest_organisation.clone(),
+                    destination: external.destination.clone(),
+                    project: external.project.clone(),
+                    intent_id,
+                    artifact_id,
+                    request_digest: [0; 32],
+                })
+            })
+            .transpose()?;
         let input = match &request.source {
             Some(proto::deploy_request::Source::Spec(spec)) => DeployInput::Spec(spec_input(spec)),
             Some(proto::deploy_request::Source::GrundYaml(text)) => DeployInput::File(text.clone()),
@@ -713,6 +895,12 @@ impl AppService for AppApi {
         };
         let apps = self.state.apps();
         let release = if request.dry_run {
+            if origin.is_some() {
+                return Err(refusal(
+                    ConnectError::invalid_argument("use PreviewDeploy for an external plan"),
+                    "external_release_invalid",
+                ));
+            }
             apps.preview_deploy(
                 caller.account_id,
                 membership.organisation_id,
@@ -720,6 +908,28 @@ impl AppService for AppApi {
                 input,
                 ReleaseSource::Api,
                 &request.note,
+            )
+            .await
+        } else if let Some(origin) = origin {
+            apps.deploy_external(
+                caller.account_id,
+                membership.organisation_id,
+                &request.name,
+                input,
+                &request.note,
+                origin,
+                request.expected_version,
+            )
+            .await
+        } else if let Some(expected) = request.expected_version {
+            apps.deploy_expected(
+                caller.account_id,
+                membership.organisation_id,
+                &request.name,
+                input,
+                ReleaseSource::Api,
+                &request.note,
+                expected,
             )
             .await
         } else {
@@ -749,6 +959,7 @@ impl AppService for AppApi {
         let membership = self
             .member(&caller, request.organisation, Access::Read)
             .await?;
+        caller.check_app(request.name)?;
         let releases = self
             .state
             .apps()
@@ -770,6 +981,7 @@ impl AppService for AppApi {
         let membership = self
             .member(&caller, request.organisation, Access::Manage)
             .await?;
+        caller.check_app(request.name)?;
         let release = self
             .state
             .apps()
@@ -796,6 +1008,7 @@ impl AppService for AppApi {
         let membership = self
             .member(&caller, request.organisation, Access::Manage)
             .await?;
+        caller.check_app(request.name)?;
         let view = self
             .state
             .apps()
@@ -823,6 +1036,7 @@ impl AppService for AppApi {
         let membership = self
             .member(&caller, &request.organisation, Access::Manage)
             .await?;
+        caller.check_app(&request.name)?;
         let view = self
             .state
             .apps()
@@ -849,6 +1063,7 @@ impl AppService for AppApi {
         let membership = self
             .member(&caller, request.organisation, Access::Manage)
             .await?;
+        caller.check_app(request.name)?;
         let (name, version, at) = self
             .state
             .apps()
@@ -881,6 +1096,7 @@ impl AppService for AppApi {
         let membership = self
             .member(&caller, request.organisation, Access::Manage)
             .await?;
+        caller.check_app(request.name)?;
         let purge_after = self
             .state
             .apps()
@@ -906,6 +1122,7 @@ impl AppService for AppApi {
         let membership = self
             .member(&caller, request.organisation, Access::Manage)
             .await?;
+        caller.check_app(request.name)?;
         if membership.role != "owner" {
             return Err(ConnectError::permission_denied(
                 "only the organisation owner may restore deleted apps",

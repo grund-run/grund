@@ -10,6 +10,8 @@
 //! `deploy` (the default) or `full` (Kasper may overrule `full`; auth.md
 //! §6).
 
+use std::sync::Arc;
+
 use chrono::{DateTime, Utc};
 use grund_domain::organisation::Role;
 use grund_store::{
@@ -62,12 +64,14 @@ impl TokenScope {
 
 /// Who a token-authenticated API call is from: the account that made the
 /// token, limited to the token's organisation and scope.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct TokenCaller {
     pub account_id: Uuid,
     pub token_id: Uuid,
     pub organisation_id: Uuid,
     pub scope: TokenScope,
+    /// `None` is an existing organisation-wide token.
+    pub apps: Option<Arc<[String]>>,
 }
 
 /// A token just made: its secret, shown once and never again.
@@ -84,6 +88,7 @@ pub struct Minted {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CreateRefusal {
     Invalid(String),
+    InvalidApps(String),
     TooMany,
 }
 
@@ -129,6 +134,7 @@ impl Tokens {
         name: &str,
         lifetime_days: u32,
         scope: TokenScope,
+        mut apps: Vec<String>,
     ) -> anyhow::Result<Result<Minted, CreateRefusal>> {
         let name = match valid_name(name) {
             Ok(name) => name,
@@ -137,6 +143,24 @@ impl Tokens {
         if !LIFETIMES_DAYS.contains(&lifetime_days) {
             return Ok(Err(CreateRefusal::Invalid(
                 "Choose one of the lifetimes offered.".into(),
+            )));
+        }
+        if apps.len() > 64 || (!apps.is_empty() && scope != TokenScope::Deploy) {
+            return Ok(Err(CreateRefusal::InvalidApps(
+                "Choose at most 64 apps, and only for a deploy token.".into(),
+            )));
+        }
+        let count = apps.len();
+        apps.sort_unstable();
+        apps.dedup();
+        if apps.len() != count
+            || apps.iter().any(|name| {
+                grund_domain::app::spec::AppName::parse(name)
+                    .map_or(true, |parsed| parsed.as_str() != name)
+            })
+        {
+            return Ok(Err(CreateRefusal::InvalidApps(
+                "Use distinct, lowercase app names (1–32 characters, letters, digits and single hyphens).".into(),
             )));
         }
         let token = format!("{PREFIX}{}", crypto::random_base62());
@@ -152,6 +176,7 @@ impl Tokens {
                 name: &name,
                 lifetime_days,
                 scope: scope.as_str(),
+                apps: (!apps.is_empty()).then_some(apps.as_slice()),
             },
             MAX_LIVE_PER_ORGANISATION,
         )
@@ -190,6 +215,7 @@ impl Tokens {
                 token_id: live.token_id,
                 organisation_id: live.organisation_id,
                 scope: TokenScope::parse(&live.scope),
+                apps: live.apps.map(Arc::from),
             }))
     }
 

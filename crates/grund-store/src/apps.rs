@@ -107,6 +107,78 @@ pub async fn apply_app(
             .bind(release.created_at)
             .execute(&mut *connection)
             .await?;
+            if let Some(origin) = &release.external_release {
+                let (organisation_id, app_name): (Uuid, String) = sqlx::query_as(
+                    "SELECT organisation_id, name FROM grund_apps WHERE app_id = $1",
+                )
+                .bind(app_id)
+                .fetch_one(&mut *connection)
+                .await?;
+                sqlx::query(
+                    "INSERT INTO grund_app_external_owners \
+                     (organisation_id, app_id, forest_organisation, destination, project, stream_version) \
+                     VALUES ($1, $2, $3, $4, $5, $6) \
+                     ON CONFLICT (organisation_id, app_id) DO UPDATE SET stream_version = EXCLUDED.stream_version \
+                     WHERE grund_app_external_owners.forest_organisation = EXCLUDED.forest_organisation \
+                       AND grund_app_external_owners.destination = EXCLUDED.destination \
+                       AND grund_app_external_owners.project = EXCLUDED.project \
+                       AND grund_app_external_owners.stream_version < EXCLUDED.stream_version",
+                )
+                .bind(organisation_id)
+                .bind(app_id)
+                .bind(&origin.forest_organisation)
+                .bind(&origin.destination)
+                .bind(&origin.project)
+                .bind(version)
+                .execute(&mut *connection)
+                .await?;
+                let inserted = sqlx::query(
+                    "INSERT INTO grund_app_external_releases \
+                     (organisation_id, forest_organisation, destination, intent_id, app_name, app_id, \
+                      artifact_id, request_digest, release_number, stream_version) \
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
+                     ON CONFLICT (organisation_id, forest_organisation, destination, intent_id, app_name) DO NOTHING",
+                )
+                .bind(organisation_id)
+                .bind(&origin.forest_organisation)
+                .bind(&origin.destination)
+                .bind(origin.intent_id)
+                .bind(&app_name)
+                .bind(app_id)
+                .bind(origin.artifact_id)
+                .bind(origin.request_digest.as_slice())
+                .bind(release.number as i32)
+                .bind(version)
+                .execute(&mut *connection)
+                .await?;
+                if inserted.rows_affected() == 0 {
+                    let existing: (Uuid, Uuid, Vec<u8>, i32) = sqlx::query_as(
+                        "SELECT app_id, artifact_id, request_digest, release_number \
+                         FROM grund_app_external_releases WHERE organisation_id = $1 \
+                         AND forest_organisation = $2 AND destination = $3 \
+                         AND intent_id = $4 AND app_name = $5",
+                    )
+                    .bind(organisation_id)
+                    .bind(&origin.forest_organisation)
+                    .bind(&origin.destination)
+                    .bind(origin.intent_id)
+                    .bind(&app_name)
+                    .fetch_one(&mut *connection)
+                    .await?;
+                    if existing
+                        != (
+                            app_id,
+                            origin.artifact_id,
+                            origin.request_digest.to_vec(),
+                            release.number as i32,
+                        )
+                    {
+                        return Err(sqlx::Error::Protocol(
+                            "external release key conflicts with its app event".into(),
+                        ));
+                    }
+                }
+            }
             sqlx::query("UPDATE grund_apps SET halted = false WHERE app_id = $1")
                 .bind(app_id)
                 .execute(&mut *connection)
@@ -601,6 +673,7 @@ pub struct AppRow {
     pub current_release: Option<i32>,
     pub rollout: Option<Value>,
     pub halted: bool,
+    pub stream_version: i64,
     pub created_at: DateTime<Utc>,
     pub deleted_at: Option<DateTime<Utc>>,
     pub purge_after: Option<DateTime<Utc>>,
@@ -611,7 +684,7 @@ macro_rules! select_apps {
     ($tail:literal) => {
         concat!(
             "SELECT app_id, organisation_id, name, settings, current_release, rollout, halted, \
-               created_at, deleted_at, purge_after, waiting FROM grund_apps ",
+               stream_version, created_at, deleted_at, purge_after, waiting FROM grund_apps ",
             $tail
         )
     };
@@ -765,6 +838,25 @@ pub async fn releases(
     .bind(app_id)
     .bind(limit)
     .fetch_all(executor)
+    .await
+}
+/// One numbered release, including an older external release no longer in
+/// the normal 100-item history window.
+pub async fn release(
+    executor: impl PgExecutor<'_>,
+    app_id: Uuid,
+    number: i32,
+) -> Result<Option<ReleaseRow>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT r.app_id, r.number, r.spec, r.image_digest, r.platforms, r.exposed_ports, \
+           r.secret_versions, r.source, r.rollback_of, r.note, r.created_by, \
+           a.username AS created_by_name, r.created_at, r.outcome, r.reason, r.ended_at \
+         FROM grund_releases r LEFT JOIN grund_accounts a ON a.account_id = r.created_by \
+         WHERE r.app_id = $1 AND r.number = $2",
+    )
+    .bind(app_id)
+    .bind(number)
+    .fetch_optional(executor)
     .await
 }
 

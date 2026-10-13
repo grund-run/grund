@@ -929,6 +929,127 @@ async fn a_grund_yaml_deploys_and_an_unknown_tag_is_refused_with_its_reason() ->
 }
 
 #[tokio::test]
+async fn an_external_release_replays_once_and_refuses_changed_content_or_owner()
+-> anyhow::Result<()> {
+    let registry = FakeRegistry::start().await?;
+    let Some((given, when, then)) =
+        testcase_configured(&[("GRUND_INSECURE_REGISTRIES", &registry.host)]).await?
+    else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let org = owner.username.as_str();
+    registry.publish("acme/forest", "one");
+    registry.publish("acme/forest", "two");
+    let image = registry.image("acme/forest", "one");
+    let desired = spec(&image, json!([]));
+    let missing = call(
+        &when,
+        &then,
+        "PreviewDeploy",
+        json!({"organisation":org,"name":"forest","spec":desired,"createIfMissing":true}),
+    )
+    .await?;
+    then.status(200)?;
+    anyhow::ensure!(
+        missing["createsApp"] == true
+            && missing
+                .get("expectedVersion")
+                .is_none_or(|version| version == "0"),
+        "{missing}"
+    );
+    call(
+        &when,
+        &then,
+        "GetApp",
+        json!({"organisation":org,"name":"forest"}),
+    )
+    .await?;
+    then.status(404)?;
+    call(
+        &when,
+        &then,
+        "CreateApp",
+        json!({"organisation":org,"name":"forest"}),
+    )
+    .await?;
+    then.status(200)?;
+    let plan = call(
+        &when,
+        &then,
+        "PreviewDeploy",
+        json!({"organisation":org,"name":"forest","spec":desired,"domains":["app.example.test"]}),
+    )
+    .await?;
+    then.status(200)?;
+    anyhow::ensure!(
+        plan["createsApp"] != true
+            && plan["changes"]
+                .as_array()
+                .is_some_and(|changes| changes.iter().any(|c| c["field"] == "image")
+                    && changes.iter().any(|c| c["field"] == "domains")),
+        "{plan}"
+    );
+    let origin = json!({
+        "forestOrganisation":"acme", "destination":"dev-primary", "project":"pilot",
+        "intentId":uuid::Uuid::now_v7().to_string(),
+        "artifactId":uuid::Uuid::now_v7().to_string()
+    });
+    let deploy = json!({
+        "organisation":org,"name":"forest","spec":desired,
+        "externalRelease":origin,"expectedVersion":plan["expectedVersion"],
+    });
+    let made = call(&when, &then, "Deploy", deploy.clone()).await?;
+    then.status(200)?;
+    let replayed = call(&when, &then, "Deploy", deploy.clone()).await?;
+    then.status(200)?;
+    anyhow::ensure!(
+        replayed["release"]["number"] == made["release"]["number"],
+        "{replayed}"
+    );
+    let history = call(
+        &when,
+        &then,
+        "ListReleases",
+        json!({"organisation":org,"name":"forest"}),
+    )
+    .await?;
+    then.status(200)?;
+    anyhow::ensure!(
+        history["releases"]
+            .as_array()
+            .is_some_and(|rows| rows.len() == 1),
+        "{history}"
+    );
+    let changed = json!({"organisation":org,"name":"forest",
+        "spec":spec(&registry.image("acme/forest","two"),json!([])),
+        "externalRelease":origin});
+    let refused = call(&when, &then, "Deploy", changed).await?;
+    then.status(409)?.connect_code("already_exists")?;
+    anyhow::ensure!(reason(&refused) == "external_release_conflict", "{refused}");
+    let another = json!({"organisation":org,"name":"forest","spec":desired,
+    "externalRelease":{
+        "forestOrganisation":"acme","destination":"dev-primary","project":"intruder",
+        "intentId":uuid::Uuid::now_v7().to_string(),
+        "artifactId":uuid::Uuid::now_v7().to_string()
+    }});
+    let refused = call(&when, &then, "Deploy", another).await?;
+    then.status(400)?.connect_code("failed_precondition")?;
+    anyhow::ensure!(reason(&refused) == "external_owner_conflict", "{refused}");
+    let stale = call(
+        &when,
+        &then,
+        "Deploy",
+        json!({"organisation":org,"name":"forest",
+        "spec":desired,"expectedVersion":"0"}),
+    )
+    .await?;
+    then.status(409)?.connect_code("aborted")?;
+    anyhow::ensure!(reason(&stale) == "version_conflict", "{stale}");
+    Ok(())
+}
+
+#[tokio::test]
 async fn an_app_made_on_the_dashboard_shows_its_copies_ready_and_its_versions() -> anyhow::Result<()>
 {
     let registry = FakeRegistry::start().await?;

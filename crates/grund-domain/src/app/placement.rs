@@ -321,6 +321,7 @@ mod tests {
             exposed_ports: None,
             secret_versions: Vec::new(),
             source: ReleaseSource::Api,
+            external_release: None,
             rollback_of: None,
             note: String::new(),
             created_by: Uuid::nil(),

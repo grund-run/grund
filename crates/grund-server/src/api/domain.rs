@@ -1,7 +1,7 @@
 //! `grund.domain.v1.DomainService`: an organisation's custom domains
 //! (grund-docs website/design/app-domains.md §3). Members get and list;
-//! owners and admins add, verify, bind, unbind and remove. A person's
-//! session, or a token of scope full in its own organisation (auth.md §6).
+//! owners and admins add, verify, bind, unbind and remove. Deploy tokens
+//! read only domains bound to their allowed apps; unbound domains stay hidden.
 //! An organisation the caller is not a member of, an organisation a token
 //! is not for, and a domain that is not the organisation's, are not_found
 //! alike.
@@ -126,13 +126,23 @@ impl DomainService for DomainApi {
         ctx: RequestContext,
         request: ServiceRequest<'_, ListDomainsRequest>,
     ) -> ServiceResult<ListDomainsResponse> {
+        let caller = principal(&ctx)?;
         let (_, membership) = self.member(&ctx, request.organisation).await?;
-        let domains = self
+        let domains: Vec<_> = self
             .state
             .domains()
             .list(membership.organisation_id)
             .await
-            .map_err(failed)?;
+            .map_err(failed)?
+            .into_iter()
+            .filter(|domain| {
+                caller.apps.is_none()
+                    || domain
+                        .app_name
+                        .as_deref()
+                        .is_some_and(|app| caller.reaches_app(app))
+            })
+            .collect();
         Response::ok(ListDomainsResponse {
             domains: domains.iter().map(message).collect(),
             ..Default::default()
@@ -144,6 +154,7 @@ impl DomainService for DomainApi {
         ctx: RequestContext,
         request: ServiceRequest<'_, GetDomainRequest>,
     ) -> ServiceResult<GetDomainResponse> {
+        let caller = principal(&ctx)?;
         let (_, membership) = self.member(&ctx, request.organisation).await?;
         let domain = self
             .state
@@ -151,6 +162,14 @@ impl DomainService for DomainApi {
             .get(membership.organisation_id, request.name)
             .await
             .map_err(failed)?;
+        if caller.apps.is_some()
+            && !domain
+                .app_name
+                .as_deref()
+                .is_some_and(|app| caller.reaches_app(app))
+        {
+            return Err(ConnectError::not_found("no such domain"));
+        }
         Response::ok(GetDomainResponse {
             domain: MessageField::some(message(&domain)),
             ..Default::default()

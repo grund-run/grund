@@ -84,6 +84,7 @@ fn token_message(view: TokenView) -> proto::Token {
         created_at: timestamp(view.created_at),
         expires_at: timestamp(view.expires_at),
         last_used_at: view.last_used_at.map(timestamp).unwrap_or_default(),
+        apps: view.apps.unwrap_or_default(),
         ..Default::default()
     }
 }
@@ -134,7 +135,14 @@ impl TokenService for TokenApi {
         let minted = match self
             .state
             .tokens()
-            .create(caller.account_id, &membership, request.name, days, scope)
+            .create(
+                caller.account_id,
+                &membership,
+                request.name,
+                days,
+                scope,
+                request.apps.iter().map(|name| name.to_string()).collect(),
+            )
             .await
             .map_err(internal)?
         {
@@ -143,6 +151,12 @@ impl TokenService for TokenApi {
                 return Err(refusal(
                     ConnectError::invalid_argument(problem),
                     "name_invalid",
+                ));
+            }
+            Err(CreateRefusal::InvalidApps(problem)) => {
+                return Err(refusal(
+                    ConnectError::invalid_argument(problem),
+                    "apps_invalid",
                 ));
             }
             Err(CreateRefusal::TooMany) => {
@@ -194,7 +208,7 @@ impl TokenService for TokenApi {
         ctx: RequestContext,
         _request: ServiceRequest<'_, GetCurrentTokenRequest>,
     ) -> ServiceResult<GetCurrentTokenResponse> {
-        let Some(token) = ctx.extensions().get::<TokenCaller>().copied() else {
+        let Some(token) = ctx.extensions().get::<TokenCaller>() else {
             return Err(refusal(
                 ConnectError::failed_precondition("this call presents a session, not a token"),
                 "not_a_token",

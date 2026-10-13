@@ -13,8 +13,8 @@ use std::sync::{LazyLock, Mutex};
 use anyhow::Context;
 use chrono::{DateTime, Utc};
 use grund_domain::app::{
-    App, AppCommand, AppError, AppEvent, AppName, AppSettings, AppSpec, ReleaseSource,
-    SecretVersion,
+    App, AppCommand, AppError, AppEvent, AppName, AppSettings, AppSpec, ExternalRelease,
+    ReleaseSource, SecretVersion,
     file::parse_app,
     placement::MachineView,
     reconcile::{Observation, Observed, reconcile_with_volumes},
@@ -72,6 +72,12 @@ pub enum AppsError {
     DomainRequired,
     #[error("no such release")]
     ReleaseNotFound,
+    #[error("the external release key was already used for a different artifact or spec")]
+    ExternalReleaseConflict,
+    #[error("the app changed since the approved plan")]
+    VersionConflict,
+    #[error("this app belongs to another external project")]
+    ExternalOwnerConflict,
     #[error(transparent)]
     Volume(#[from] VolumesError),
     #[error("app deletion requires confirming its current {actual} volumes")]
@@ -92,6 +98,9 @@ impl AppsError {
             AppsError::ImageUnsupported(_) => "image_unsupported",
             AppsError::DomainRequired => "domain_required",
             AppsError::ReleaseNotFound => "release_not_found",
+            AppsError::ExternalReleaseConflict => "external_release_conflict",
+            AppsError::VersionConflict => "version_conflict",
+            AppsError::ExternalOwnerConflict => "external_owner_conflict",
             AppsError::Volume(_) => "volume_invalid",
             AppsError::VolumeConfirmationRequired { .. } => "volume_confirmation_required",
             AppsError::Internal(_) => "internal",
@@ -108,6 +117,7 @@ impl From<WorkError> for AppsError {
             WorkError::App(AppError::NotFound) => AppsError::NotFound,
             WorkError::App(AppError::ReleaseNotFound) => AppsError::ReleaseNotFound,
             WorkError::App(AppError::AlreadyExists) => AppsError::NameTaken,
+            WorkError::App(AppError::ExternalOwnerConflict) => AppsError::ExternalOwnerConflict,
             other => AppsError::Internal(other.into()),
         }
     }
@@ -266,10 +276,42 @@ pub struct SecretValue {
     pub value: Vec<u8>,
 }
 
+/// The checked desired release and the live state observed for an approval.
+pub struct DeployPreview {
+    pub release: ReleaseRow,
+    pub previous: Option<ReleaseRow>,
+    pub settings: AppSettings,
+    pub old_settings: Option<AppSettings>,
+    pub domains: Vec<String>,
+    pub expected_version: i64,
+    pub creates_app: bool,
+}
+
 /// App flows.
 #[derive(Clone)]
 pub struct Apps {
     state: State,
+}
+
+fn merged_file_settings(
+    current: &AppSettings,
+    file: SettingsInput,
+) -> Result<AppSettings, SpecError> {
+    let mut input = current.as_input();
+    input.copies = file.copies.or(input.copies);
+    input.max_surge = file.max_surge.or(input.max_surge);
+    input.max_unavailable = file.max_unavailable.or(input.max_unavailable);
+    input.min_ready_seconds = file.min_ready_seconds.or(input.min_ready_seconds);
+    input.ready_deadline_seconds = file.ready_deadline_seconds.or(input.ready_deadline_seconds);
+    input.drain_seconds = file.drain_seconds.or(input.drain_seconds);
+    input.reschedule_after_seconds = file
+        .reschedule_after_seconds
+        .or(input.reschedule_after_seconds);
+    input.auto_rollback = file.auto_rollback.or(input.auto_rollback);
+    if !file.machines.is_empty() {
+        input.machines = file.machines;
+    }
+    AppSettings::validate(input)
 }
 
 fn sealing_key(state: &State) -> LessSafeKey {
@@ -671,6 +713,7 @@ impl Apps {
                     exposed_ports: Some(inspection.exposed_ports),
                     secret_versions,
                     source: ReleaseSource::Dashboard,
+                    external_release: None,
                     rollback_of: None,
                     note: String::new(),
                     rollout_id: Uuid::now_v7(),
@@ -773,6 +816,7 @@ impl Apps {
                 exposed_ports,
                 secret_versions,
                 source: ReleaseSource::Dashboard,
+                external_release: None,
                 rollback_of: None,
                 note: String::new(),
                 rollout_id: Uuid::now_v7(),
@@ -823,6 +867,52 @@ impl Apps {
         Ok(versions)
     }
 
+    async fn external_receipt_in(
+        &self,
+        connection: &mut PgConnection,
+        organisation_id: Uuid,
+        app_name: &str,
+        origin: &ExternalRelease,
+    ) -> Result<Option<ReleaseRow>, AppsError> {
+        let receipt: Option<(Uuid, Uuid, Vec<u8>, i32)> = sqlx::query_as(
+            "SELECT app_id, artifact_id, request_digest, release_number FROM grund_app_external_releases \
+             WHERE organisation_id = $1 AND forest_organisation = $2 AND destination = $3 \
+               AND intent_id = $4 AND app_name = $5",
+        )
+        .bind(organisation_id)
+        .bind(&origin.forest_organisation)
+        .bind(&origin.destination)
+        .bind(origin.intent_id)
+        .bind(app_name)
+        .fetch_optional(&mut *connection)
+        .await?;
+        let Some((app_id, artifact, digest, number)) = receipt else {
+            return Ok(None);
+        };
+        if artifact != origin.artifact_id || digest != origin.request_digest {
+            return Err(AppsError::ExternalReleaseConflict);
+        }
+        let owner: Option<(String, String, String)> = sqlx::query_as(
+            "SELECT forest_organisation, destination, project FROM grund_app_external_owners \
+             WHERE organisation_id = $1 AND app_id = $2",
+        )
+        .bind(organisation_id)
+        .bind(app_id)
+        .fetch_optional(&mut *connection)
+        .await?;
+        if owner.as_ref().is_none_or(|owner| {
+            owner.0 != origin.forest_organisation
+                || owner.1 != origin.destination
+                || owner.2 != origin.project
+        }) {
+            return Err(AppsError::ExternalOwnerConflict);
+        }
+        apps::release(&mut *connection, app_id, number)
+            .await?
+            .ok_or(AppsError::ReleaseNotFound)
+            .map(Some)
+    }
+
     async fn record_release(
         &self,
         actor: Uuid,
@@ -830,8 +920,42 @@ impl Apps {
         release: AppCommand,
         settings: Option<AppSettings>,
     ) -> Result<ReleaseRow, AppsError> {
+        self.record_release_guarded(actor, app_id, release, settings, None)
+            .await
+    }
+
+    async fn record_release_guarded(
+        &self,
+        actor: Uuid,
+        app_id: Uuid,
+        release: AppCommand,
+        settings: Option<AppSettings>,
+        expected_version: Option<i64>,
+    ) -> Result<ReleaseRow, AppsError> {
         let mut work = Work::begin(&self.state.events, Uuid::now_v7(), &actor.to_string()).await?;
         lock_app_domain_policy(work.sql(), app_id).await?;
+        let app = work.load_app(app_id).await?;
+        let app_name = app.name.as_ref().ok_or(AppsError::NotFound)?;
+        if let AppCommand::Release {
+            external_release: Some(origin),
+            ..
+        } = &release
+            && let Some(previous) = self
+                .external_receipt_in(work.sql(), app.organisation_id, app_name.as_str(), origin)
+                .await?
+        {
+            return Ok(previous);
+        }
+        if let Some(expected) = expected_version {
+            let actual: i64 =
+                sqlx::query_scalar("SELECT stream_version FROM grund_apps WHERE app_id = $1")
+                    .bind(app_id)
+                    .fetch_one(&mut **work.sql())
+                    .await?;
+            if actual != expected {
+                return Err(AppsError::VersionConflict);
+            }
+        }
         self.require_domain(work.sql(), app_id, &release).await?;
         if let Some(settings) = settings {
             work.app(
@@ -946,6 +1070,119 @@ impl Apps {
         })
     }
 
+    /// Validates the desired release and returns the old state without writing.
+    pub async fn plan_deploy(
+        &self,
+        actor: Uuid,
+        organisation_id: Uuid,
+        name: &str,
+        input: DeployInput,
+        create_if_missing: bool,
+    ) -> Result<DeployPreview, AppsError> {
+        let name = AppName::parse(name)?;
+        let existing = apps::app_by_name(&self.state.pool, organisation_id, name.as_str()).await?;
+        if let Some(row) = existing {
+            let settings = match &input {
+                DeployInput::Spec(_) => row.settings.0.clone(),
+                DeployInput::File(text) => {
+                    merged_file_settings(&row.settings.0, parse_app(text, name.as_str())?.settings)?
+                }
+            };
+            let previous = apps::releases(&self.state.pool, row.app_id, 1)
+                .await?
+                .into_iter()
+                .next();
+            let release = self
+                .preview_deploy(
+                    actor,
+                    organisation_id,
+                    name.as_str(),
+                    input,
+                    ReleaseSource::Api,
+                    "",
+                )
+                .await?;
+            let domains = domains::bound_to(&self.state.pool, row.app_id)
+                .await?
+                .into_iter()
+                .map(|domain| domain.name)
+                .collect();
+            let after = self.live(organisation_id, name.as_str()).await?;
+            if after.stream_version != row.stream_version {
+                return Err(AppsError::VersionConflict);
+            }
+            return Ok(DeployPreview {
+                release,
+                previous,
+                settings,
+                old_settings: Some(row.settings.0),
+                domains,
+                expected_version: row.stream_version,
+                creates_app: false,
+            });
+        }
+        if !create_if_missing {
+            return Err(AppsError::NotFound);
+        }
+        if apps::count_live_apps(&self.state.pool, organisation_id).await?
+            >= MAX_APPS_PER_ORGANISATION
+        {
+            return Err(AppsError::AppLimit);
+        }
+        let (spec, settings, source) = match input {
+            DeployInput::Spec(spec) => {
+                (spec.validate()?, AppSettings::default(), ReleaseSource::Api)
+            }
+            DeployInput::File(text) => {
+                let declared = parse_app(&text, name.as_str())?;
+                (
+                    declared.spec,
+                    AppSettings::validate(declared.settings)?,
+                    ReleaseSource::File,
+                )
+            }
+        };
+        if !spec.secrets.is_empty() {
+            return Err(AppsError::Spec(SpecError {
+                field: "secrets".into(),
+                problem: "create the app and set its named secrets before deploying".into(),
+            }));
+        }
+        let inspection = self.inspect(organisation_id, &spec.image).await?;
+        if apps::app_by_name(&self.state.pool, organisation_id, name.as_str())
+            .await?
+            .is_some()
+        {
+            return Err(AppsError::VersionConflict);
+        }
+        Ok(DeployPreview {
+            release: ReleaseRow {
+                app_id: Uuid::nil(),
+                number: 1,
+                spec: sqlx::types::Json(spec),
+                image_digest: inspection.resolved.digest,
+                platforms: sqlx::types::Json(inspection.resolved.platforms),
+                exposed_ports: Some(sqlx::types::Json(inspection.exposed_ports)),
+                secret_versions: sqlx::types::Json(Vec::new()),
+                source: source.as_str().to_string(),
+                rollback_of: None,
+                note: String::new(),
+                created_by: actor,
+                created_by_name: None,
+                created_at: Utc::now(),
+                outcome: None,
+                reason: None,
+                ended_at: None,
+            },
+            previous: None,
+            settings,
+            old_settings: None,
+            domains: Vec::new(),
+            expected_version: 0,
+            creates_app: true,
+        })
+    }
+
     /// Makes the next release from `input` and rolls it out.
     pub async fn deploy(
         &self,
@@ -956,8 +1193,44 @@ impl Apps {
         source: ReleaseSource,
         note: &str,
     ) -> Result<ReleaseRow, AppsError> {
-        self.deploy_or_preview(actor, organisation_id, name, input, source, note, false)
-            .await
+        self.deploy_or_preview(
+            actor,
+            organisation_id,
+            name,
+            input,
+            source,
+            note,
+            false,
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// Deploys an ordinary request only while the observed app version holds.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn deploy_expected(
+        &self,
+        actor: Uuid,
+        organisation_id: Uuid,
+        name: &str,
+        input: DeployInput,
+        source: ReleaseSource,
+        note: &str,
+        expected_version: i64,
+    ) -> Result<ReleaseRow, AppsError> {
+        self.deploy_or_preview(
+            actor,
+            organisation_id,
+            name,
+            input,
+            source,
+            note,
+            false,
+            None,
+            Some(expected_version),
+        )
+        .await
     }
 
     /// The release [`Apps::deploy`] would make from `input`, after every
@@ -972,8 +1245,44 @@ impl Apps {
         source: ReleaseSource,
         note: &str,
     ) -> Result<ReleaseRow, AppsError> {
-        self.deploy_or_preview(actor, organisation_id, name, input, source, note, true)
-            .await
+        self.deploy_or_preview(
+            actor,
+            organisation_id,
+            name,
+            input,
+            source,
+            note,
+            true,
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// Deploys with a durable forest key and an app-version precondition.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn deploy_external(
+        &self,
+        actor: Uuid,
+        organisation_id: Uuid,
+        name: &str,
+        input: DeployInput,
+        note: &str,
+        origin: ExternalRelease,
+        expected_version: Option<i64>,
+    ) -> Result<ReleaseRow, AppsError> {
+        self.deploy_or_preview(
+            actor,
+            organisation_id,
+            name,
+            input,
+            ReleaseSource::File,
+            note,
+            false,
+            Some(origin),
+            expected_version,
+        )
+        .await
     }
 
     #[tracing::instrument(name = "apps.deploy_or_preview", skip_all)]
@@ -987,33 +1296,40 @@ impl Apps {
         source: ReleaseSource,
         note: &str,
         preview: bool,
+        mut external_release: Option<ExternalRelease>,
+        expected_version: Option<i64>,
     ) -> Result<ReleaseRow, AppsError> {
-        let row = self.live(organisation_id, name).await?;
+        let name = AppName::parse(name)?;
+        if let Some(origin) = &mut external_release {
+            let digest = match &input {
+                DeployInput::Spec(spec) => ring::digest::digest(
+                    &ring::digest::SHA256,
+                    &serde_json::to_vec(spec).map_err(anyhow::Error::from)?,
+                ),
+                DeployInput::File(text) => {
+                    ring::digest::digest(&ring::digest::SHA256, text.as_bytes())
+                }
+            };
+            origin.request_digest.copy_from_slice(digest.as_ref());
+            if let Some(previous) = self
+                .external_receipt_in(
+                    &mut *self.state.pool.acquire().await?,
+                    organisation_id,
+                    name.as_str(),
+                    origin,
+                )
+                .await?
+            {
+                return Ok(previous);
+            }
+        }
+        let row = self.live(organisation_id, name.as_str()).await?;
         let (spec, settings, source) = match input {
             DeployInput::Spec(spec) => (spec.validate()?, None, source),
             DeployInput::File(text) => {
                 let declared = parse_app(&text, &row.name)?;
-                let mut input = row.settings.0.as_input();
-                let file = declared.settings;
-                input.copies = file.copies.or(input.copies);
-                input.max_surge = file.max_surge.or(input.max_surge);
-                input.max_unavailable = file.max_unavailable.or(input.max_unavailable);
-                input.min_ready_seconds = file.min_ready_seconds.or(input.min_ready_seconds);
-                input.ready_deadline_seconds =
-                    file.ready_deadline_seconds.or(input.ready_deadline_seconds);
-                input.drain_seconds = file.drain_seconds.or(input.drain_seconds);
-                input.reschedule_after_seconds = file
-                    .reschedule_after_seconds
-                    .or(input.reschedule_after_seconds);
-                input.auto_rollback = file.auto_rollback.or(input.auto_rollback);
-                if !file.machines.is_empty() {
-                    input.machines = file.machines;
-                }
-                (
-                    declared.spec,
-                    Some(AppSettings::validate(input)?),
-                    ReleaseSource::File,
-                )
+                let settings = merged_file_settings(&row.settings.0, declared.settings)?;
+                (declared.spec, Some(settings), ReleaseSource::File)
             }
         };
         let note: String = note.chars().take(200).collect();
@@ -1027,6 +1343,7 @@ impl Apps {
             exposed_ports: Some(inspection.exposed_ports),
             secret_versions,
             source,
+            external_release,
             rollback_of: None,
             note,
             rollout_id: Uuid::now_v7(),
@@ -1037,7 +1354,7 @@ impl Apps {
                 .preview_release(actor, row.app_id, command, settings)
                 .await;
         }
-        self.record_release(actor, row.app_id, command, settings)
+        self.record_release_guarded(actor, row.app_id, command, settings, expected_version)
             .await
     }
 
@@ -1069,6 +1386,7 @@ impl Apps {
                 exposed_ports: earlier.exposed_ports.map(|ports| ports.0),
                 secret_versions,
                 source: ReleaseSource::Rollback,
+                external_release: None,
                 rollback_of: Some(number),
                 note: String::new(),
                 rollout_id: Uuid::now_v7(),
@@ -1775,6 +2093,7 @@ mod tests {
                         exposed_ports: None,
                         secret_versions: Vec::new(),
                         source: ReleaseSource::Api,
+                        external_release: None,
                         rollback_of: None,
                         note: String::new(),
                         created_by: Uuid::nil(),
@@ -1803,6 +2122,7 @@ mod tests {
                         exposed_ports: None,
                         secret_versions: Vec::new(),
                         source: ReleaseSource::Api,
+                        external_release: None,
                         rollback_of: None,
                         note: String::new(),
                         created_by: Uuid::nil(),

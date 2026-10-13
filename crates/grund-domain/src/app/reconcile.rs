@@ -1003,6 +1003,7 @@ mod tests {
                 exposed_ports: None,
                 secret_versions: Vec::new(),
                 source: ReleaseSource::Api,
+                external_release: None,
                 rollback_of: None,
                 note: String::new(),
                 rollout_id: Uuid::from_u128(u128::from(number)),

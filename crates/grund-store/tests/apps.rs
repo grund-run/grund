@@ -1,6 +1,6 @@
 use chrono::{Duration, Utc};
 use grund_domain::app::{
-    AppCommand, AppEvent, AppName, AppSettings, PlaceReason, ReleaseSource,
+    AppCommand, AppEvent, AppName, AppSettings, ExternalRelease, PlaceReason, ReleaseSource,
     spec::{AppSpec, StopSpec},
 };
 use grund_store::{
@@ -63,6 +63,7 @@ async fn release(events: &EventStore, app_id: Uuid) -> u32 {
                 exposed_ports: Some(vec![80, 443]),
                 secret_versions: Vec::new(),
                 source: ReleaseSource::Api,
+                external_release: None,
                 rollback_of: None,
                 note: String::new(),
                 rollout_id: Uuid::now_v7(),
@@ -180,6 +181,168 @@ async fn a_release_is_rolling_out_then_live_and_the_one_before_is_replaced(pool:
             .map(|r| r.outcome.clone())
             .collect::<Vec<_>>()
     );
+}
+
+#[sqlx::test(migrations = false)]
+async fn external_release_identity_and_owner_rebuild_from_app_events(pool: PgPool) {
+    let events = store(&pool).await;
+    let organisation_id = Uuid::now_v7();
+    let app_id = create(&events, organisation_id, "forest").await;
+    let origin = ExternalRelease {
+        forest_organisation: "customer".into(),
+        destination: "dev".into(),
+        project: "shop".into(),
+        intent_id: Uuid::now_v7(),
+        artifact_id: Uuid::now_v7(),
+        request_digest: [7; 32],
+    };
+    let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();
+    work.app(
+        app_id,
+        AppCommand::Release {
+            actor: Uuid::nil(),
+            spec: spec(),
+            image_digest: format!("sha256:{}", "d".repeat(64)),
+            platforms: Vec::new(),
+            exposed_ports: None,
+            secret_versions: Vec::new(),
+            source: ReleaseSource::File,
+            external_release: Some(origin.clone()),
+            rollback_of: None,
+            note: String::new(),
+            rollout_id: Uuid::now_v7(),
+            at: Utc::now(),
+        },
+    )
+    .await
+    .unwrap();
+    work.commit().await.unwrap();
+
+    let expected: (Uuid, Vec<u8>, i32) = sqlx::query_as(
+        "SELECT artifact_id, request_digest, release_number FROM grund_app_external_releases WHERE app_id = $1",
+    )
+    .bind(app_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        expected,
+        (origin.artifact_id, origin.request_digest.to_vec(), 1)
+    );
+
+    sqlx::query("DELETE FROM grund_app_external_releases WHERE app_id = $1")
+        .bind(app_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM grund_app_external_owners WHERE app_id = $1")
+        .bind(app_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE grund_apps SET stream_version = 0 WHERE app_id = $1")
+        .bind(app_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut connection = pool.acquire().await.unwrap();
+    let stream: Vec<(i64, serde_json::Value)> = sqlx::query_as(
+        "SELECT stream_version, data FROM es_events WHERE stream_id = $1 ORDER BY stream_version",
+    )
+    .bind(format!("grund-app-{app_id}"))
+    .fetch_all(&mut *connection)
+    .await
+    .unwrap();
+    for (version, data) in stream {
+        let event: AppEvent = serde_json::from_value(data).unwrap();
+        apps::apply_app(app_id, version, &event, &mut connection)
+            .await
+            .unwrap();
+    }
+    let restored: (Uuid, Vec<u8>, i32) = sqlx::query_as(
+        "SELECT artifact_id, request_digest, release_number FROM grund_app_external_releases WHERE app_id = $1",
+    )
+    .bind(app_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let owner: (String, String, String) = sqlx::query_as(
+        "SELECT forest_organisation, destination, project FROM grund_app_external_owners WHERE app_id = $1",
+    )
+    .bind(app_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(restored, expected);
+    assert_eq!(owner, ("customer".into(), "dev".into(), "shop".into()));
+
+    let at = Utc::now();
+    let due = at + Duration::days(7);
+    let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();
+    work.app(
+        app_id,
+        AppCommand::Delete {
+            actor: Uuid::nil(),
+            at,
+            purge_after: due,
+        },
+    )
+    .await
+    .unwrap();
+    work.commit().await.unwrap();
+    let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();
+    work.app(app_id, AppCommand::Purge { at: due })
+        .await
+        .unwrap();
+    work.commit().await.unwrap();
+    let replacement = create(&events, organisation_id, "forest").await;
+    let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();
+    let refusal = work
+        .app(
+            replacement,
+            AppCommand::Release {
+                actor: Uuid::nil(),
+                spec: spec(),
+                image_digest: format!("sha256:{}", "d".repeat(64)),
+                platforms: Vec::new(),
+                exposed_ports: None,
+                secret_versions: Vec::new(),
+                source: ReleaseSource::File,
+                external_release: Some(origin.clone()),
+                rollback_of: None,
+                note: String::new(),
+                rollout_id: Uuid::now_v7(),
+                at: Utc::now(),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        refusal
+            .to_string()
+            .contains("external release key conflicts with its app event"),
+        "{refusal}"
+    );
+    drop(work);
+    assert!(
+        apps::releases(&pool, replacement, 10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let owner_app: Uuid = sqlx::query_scalar(
+        "SELECT app_id FROM grund_app_external_releases WHERE organisation_id = $1 \
+         AND forest_organisation = $2 AND destination = $3 AND intent_id = $4 AND app_name = $5",
+    )
+    .bind(organisation_id)
+    .bind("customer")
+    .bind("dev")
+    .bind(origin.intent_id)
+    .bind("forest")
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(owner_app, app_id);
 }
 
 #[sqlx::test(migrations = false)]

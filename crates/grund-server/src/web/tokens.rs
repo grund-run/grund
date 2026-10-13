@@ -236,7 +236,14 @@ pub async fn create(
     };
     let outcome = state
         .tokens()
-        .create(session.account_id, &membership, &form.name, days, scope)
+        .create(
+            session.account_id,
+            &membership,
+            &form.name,
+            days,
+            scope,
+            Vec::new(),
+        )
         .await?;
     let (status, form) = match outcome {
         Ok(minted) => (
@@ -247,7 +254,7 @@ pub async fn create(
                 ..Default::default()
             },
         ),
-        Err(CreateRefusal::Invalid(problem)) => (
+        Err(CreateRefusal::Invalid(problem) | CreateRefusal::InvalidApps(problem)) => (
             StatusCode::OK,
             TokensForm {
                 create_error: problem,

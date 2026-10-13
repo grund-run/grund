@@ -25,11 +25,10 @@ import "google/protobuf/timestamp.proto";
 // cool-down (7 days by default) before another organisation can add it.
 //
 // Members get and list; owners and admins add, verify, bind, unbind and
-// remove. Dashboard sessions only: an API token is refused with
-// permission_denied (auth.md §6), because a domain is a claim on a name
-// on the internet, which a person makes. An organisation the caller is not
-// a member of, and a domain that is not the organisation's, are not_found
-// alike.
+// remove. A deploy token may get and list, but an app-limited deploy token
+// sees only domains bound to its allowed apps; unbound domains stay hidden.
+// Only a person's session or full token may write domains. An organisation
+// the caller cannot reach, and a domain it cannot reach, are not_found alike.
 //
 // Errors carry a stable reason in an ErrorReason detail: name_invalid,
 // name_reserved (the instance's own names), domain_exists, domain_taken

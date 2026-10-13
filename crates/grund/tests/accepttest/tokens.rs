@@ -1,6 +1,8 @@
 use serde_json::{Value, json};
 
-use crate::accepttest::fixtures::{FakeRegistry, Given, Then, When, testcase_configured};
+use crate::accepttest::fixtures::{
+    FakeRegistry, Given, Then, When, random_hex, testcase_configured,
+};
 
 const APPS: &str = "/grund.app.v1.AppService";
 const GET_VIEWER: &str = "/grund.account.v1.AccountService/GetViewer";
@@ -172,6 +174,253 @@ async fn ci_deploys_with_a_token_and_no_session_in_the_tokens_organisation_only(
     then.status(200)?
         .body_contains("github actions")?
         .body_lacks(&token)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn app_limited_deploy_token_cannot_read_or_change_sibling_apps_or_domains()
+-> anyhow::Result<()> {
+    let registry = FakeRegistry::start().await?;
+    let Some((given, when, then)) =
+        testcase_configured(&[("GRUND_INSECURE_REGISTRIES", &registry.host)]).await?
+    else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let org = owner.username.as_str();
+    let second_org = given.a_fresh_name("team");
+    when.submitting("/orgs/new", "/orgs/new", &[("slug", &second_org)])
+        .await?;
+    then.status(303)?;
+    for name in ["shop", "worker"] {
+        when.calling(
+            &format!("{APPS}/CreateApp"),
+            &json!({"organisation": org, "name": name}).to_string(),
+        )
+        .await?;
+        then.status(200)?;
+    }
+    when.calling(
+        "/grund.token.v1.TokenService/CreateToken",
+        &json!({"organisation": org, "name": "shop deployer", "apps": ["shop"]}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    let created = then.json()?;
+    let token = created["secret"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("CreateToken omitted its secret"))?
+        .to_string();
+    anyhow::ensure!(
+        created["token"]["apps"] == json!(["shop"]),
+        "CreateToken did not report its app restriction"
+    );
+    when.calling(
+        "/grund.token.v1.TokenService/ListTokens",
+        &json!({"organisation": org}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    anyhow::ensure!(
+        then.json()?["tokens"].as_array().is_some_and(|tokens| {
+            tokens
+                .iter()
+                .any(|entry| entry["name"] == "shop deployer" && entry["apps"] == json!(["shop"]))
+        }),
+        "ListTokens did not report the restriction"
+    );
+    for apps in [json!(["shop", "shop"]), json!(["shop-"]), json!(["SHOP"])] {
+        when.calling(
+            "/grund.token.v1.TokenService/CreateToken",
+            &json!({"organisation": org, "name": "invalid app scope", "apps": apps}).to_string(),
+        )
+        .await?;
+        then.status(400)?.connect_code("invalid_argument")?;
+    }
+    when.calling(
+        "/grund.token.v1.TokenService/CreateToken",
+        &json!({"organisation": org, "name": "not bounded full", "scope": "TOKEN_SCOPE_FULL", "apps": ["shop"]}).to_string(),
+    )
+    .await?;
+    then.status(400)?.connect_code("invalid_argument")?;
+    let (ci_when, ci_then) = ci(&given);
+    let bearer = format!("Bearer {token}");
+    ci_when
+        .calling_with(
+            "/grund.token.v1.TokenService/GetCurrentToken",
+            "{}",
+            &[("Authorization", &bearer)],
+        )
+        .await?;
+    ci_then.status(200)?;
+    anyhow::ensure!(
+        ci_then.json()?["token"]["apps"] == json!(["shop"]),
+        "GetCurrentToken did not report the restriction"
+    );
+    calling_with_token(&ci_when, &token, "ListApps", json!({"organisation": org})).await?;
+    ci_then.status(200)?;
+    let apps = ci_then.json()?;
+    anyhow::ensure!(
+        apps["apps"]
+            .as_array()
+            .is_some_and(|apps| { apps.len() == 1 && apps[0]["name"] == "shop" }),
+        "ListApps exposed a sibling app"
+    );
+    for (procedure, body) in [
+        ("GetApp", json!({"organisation": org, "name": "worker"})),
+        (
+            "ListReleases",
+            json!({"organisation": org, "name": "worker"}),
+        ),
+        (
+            "Scale",
+            json!({"organisation": org, "name": "worker", "copies": 2}),
+        ),
+        (
+            "Rollback",
+            json!({"organisation": org, "name": "worker", "release": 1}),
+        ),
+        (
+            "SetSecret",
+            json!({"organisation": org, "name": "worker", "secret": "private", "value": "bm90LXdyaXR0ZW4="}),
+        ),
+        (
+            "ConfigureApp",
+            json!({"organisation": org, "name": "worker", "settings": {"copies": 2}}),
+        ),
+    ] {
+        calling_with_token(&ci_when, &token, procedure, body).await?;
+        ci_then.status(404)?.connect_code("not_found")?;
+    }
+    calling_with_token(
+        &ci_when,
+        &token,
+        "CreateApp",
+        json!({"organisation": org, "name": "another"}),
+    )
+    .await?;
+    ci_then.status(404)?.connect_code("not_found")?;
+    calling_with_token(
+        &ci_when,
+        &token,
+        "Deploy",
+        json!({"organisation": org, "name": "worker", "dryRun": true, "spec": spec("does-not-exist")}),
+    )
+    .await?;
+    ci_then.status(404)?.connect_code("not_found")?;
+    let image = registry.image("acme/shop", "1");
+    registry.publish("acme/shop", "1");
+    calling_with_token(
+        &ci_when,
+        &token,
+        "Deploy",
+        json!({"organisation": org, "name": "shop", "spec": spec(&image)}),
+    )
+    .await?;
+    ci_then.status(200)?;
+    calling_with_token(
+        &ci_when,
+        &token,
+        "GetApp",
+        json!({"organisation": org, "name": "shop"}),
+    )
+    .await?;
+    ci_then.status(200)?;
+    calling_with_token(
+        &ci_when,
+        &token,
+        "ListReleases",
+        json!({"organisation": org, "name": "shop"}),
+    )
+    .await?;
+    ci_then.status(200)?;
+    anyhow::ensure!(
+        ci_then.json()?["releases"]
+            .as_array()
+            .is_some_and(|rows| rows.len() == 1),
+        "the token could not read its own release"
+    );
+    calling_with_token(
+        &ci_when,
+        &token,
+        "CreateApp",
+        json!({"organisation": second_org, "name": "shop"}),
+    )
+    .await?;
+    ci_then.status(404)?.connect_code("not_found")?;
+
+    let domains = "/grund.domain.v1.DomainService";
+    let shop_domain = format!("shop-{}.example.com", random_hex(4));
+    let worker_domain = format!("worker-{}.example.com", random_hex(4));
+    let unbound_domain = format!("unbound-{}.example.com", random_hex(4));
+    for name in [&shop_domain, &worker_domain, &unbound_domain] {
+        when.calling(
+            &format!("{domains}/AddDomain"),
+            &json!({"organisation": org, "name": name}).to_string(),
+        )
+        .await?;
+        then.status(200)?;
+    }
+    for (domain, app) in [(&shop_domain, "shop"), (&worker_domain, "worker")] {
+        given.testcase.fixture.sql(&format!(
+            "UPDATE grund_domains SET state = 'bound', verified_at = clock_timestamp(), \
+             bound_at = clock_timestamp(), app_id = (SELECT app_id FROM grund_apps WHERE \
+             organisation_id = (SELECT organisation_id FROM grund_organisations WHERE slug = '{org}') \
+             AND name = '{app}') WHERE name = '{domain}' AND organisation_id = \
+             (SELECT organisation_id FROM grund_organisations WHERE slug = '{org}')"
+        )).await?;
+    }
+    ci_when
+        .calling_with(
+            &format!("{domains}/ListDomains"),
+            &json!({"organisation": org}).to_string(),
+            &[("Authorization", &bearer)],
+        )
+        .await?;
+    ci_then.status(200)?;
+    anyhow::ensure!(
+        ci_then.json()?["domains"]
+            .as_array()
+            .is_some_and(|domains| { domains.len() == 1 && domains[0]["name"] == shop_domain }),
+        "domain list exposed an unbound or sibling-app domain"
+    );
+    for (name, expected) in [
+        (&shop_domain, 200),
+        (&worker_domain, 404),
+        (&unbound_domain, 404),
+    ] {
+        ci_when
+            .calling_with(
+                &format!("{domains}/GetDomain"),
+                &json!({"organisation": org, "name": name}).to_string(),
+                &[("Authorization", &bearer)],
+            )
+            .await?;
+        ci_then.status(expected)?;
+        if expected == 404 {
+            ci_then.connect_code("not_found")?;
+        }
+    }
+    ci_when
+        .calling_with(
+            &format!("{domains}/UnbindDomain"),
+            &json!({"organisation": org, "name": shop_domain}).to_string(),
+            &[("Authorization", &bearer)],
+        )
+        .await?;
+    ci_then.status(403)?.connect_code("permission_denied")?;
+    ci_when
+        .calling_with(
+            "/grund.volume.v1.VolumeService/ListVolumes",
+            &json!({"organisation": org}).to_string(),
+            &[("Authorization", &bearer)],
+        )
+        .await?;
+    ci_then.status(403)?.connect_code("permission_denied")?;
+    anyhow::ensure!(
+        !given.testcase.fixture.log().contains(&token),
+        "the server logged an app-limited token"
+    );
     Ok(())
 }
 

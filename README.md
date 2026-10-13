@@ -195,7 +195,7 @@ grund apps set shop copies 3
 grund apps rollback shop 4 --wait
 grund machines add web-2               # prints the command to run on the new machine
 grund domains add shop.example.com
-grund tokens create --name ci --scope deploy --json
+grund tokens create --name ci --scope deploy --apps shop --json
 ```
 
 - Nouns: `login`, `logout`, `whoami`, `orgs`, `apps`, `volumes`,
@@ -212,6 +212,12 @@ grund tokens create --name ci --scope deploy --json
   verify`, which only looks the record up now); one that makes a release is
   checked by the instance as a deploy is, image resolved, and nothing is
   written.
+  `apps deploy --dry-run` also previews a missing app without creating it
+  and reports structured desired-versus-live changes and the observed
+  `expectedVersion`; `apps deploy shop --expected-version N` refuses a
+  stale single-app release. The API exposes the same through
+  `AppService.PreviewDeploy`, `GetApp.version` and
+  `DeployRequest.expected_version`.
 - `GRUND_INSTANCE` and `GRUND_TOKEN` (a personal access token) for CI and
   agents; otherwise `grund login` writes `~/.config/grund/credentials.yaml`
   (mode 0600; a file others can read is refused). `--org`/`GRUND_ORG`, else
@@ -242,6 +248,15 @@ GRUND_INSTANCE=https://grund.example.com GRUND_TOKEN=$GRUND_TOKEN \
    stores only its SHA-256.
 2. Each build deploys the image it just pushed, from the repository's
    `grund.yaml` or from flags (`--image`, `--port`, `--env`).
+
+A deploy token limited with `--apps shop` can exercise its deploy-scope
+app operations only on that named app and read its bound domains. It cannot
+bind or verify domains. CI or a release provider can pass
+`DeployRequest.external_release` (forest organisation, destination,
+project, intent UUID and artifact UUID) with an expected stream version:
+the same key and request replay the original numbered release; a different
+artifact/spec or forest owner is refused. Domain binding and a public
+origin readiness check are separate from making a release.
 
 The CLI is a client of the API; without it, `Deploy` takes the same:
 

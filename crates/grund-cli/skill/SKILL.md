@@ -76,11 +76,16 @@ before and after) without changing anything.
 
 ## Tokens for CI and other agents
 
-`grund tokens create --name ci --scope deploy --json` prints `secret`
-once; give it to CI as `GRUND_TOKEN`. Scope `deploy` creates, deploys and
-changes apps; `full` does everything its maker's role allows in the
-organisation (delete apps, machines, domains, members) but never tokens or
-the account. Making tokens needs `grund login`, not a token.
+`grund tokens create --name ci --scope deploy --apps web --json` prints
+`secret` once; give it to CI as `GRUND_TOKEN`. `--apps` accepts up to 64
+distinct app names (repeat the flag or comma-separate names), restricting
+the token to those apps in its own organisation. It can get/list only their
+apps and bound domains, deploy and change those apps, but not write domains
+or use VolumeService. Leaving out `--apps` preserves organisation-wide
+deploy access for existing workflows. `full` does everything its maker's
+role allows in the organisation (delete apps, machines, domains, members)
+but never tokens or the account; it cannot be combined with `--apps`.
+Making tokens needs `grund login`, not a token.
 
 ## When something fails
 

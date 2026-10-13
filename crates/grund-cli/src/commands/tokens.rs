@@ -41,6 +41,13 @@ pub enum TokensAction {
             help = "deploy: create, deploy and change apps. full: everything your role allows in the organisation, but never tokens, the account, or creating, renaming or deleting organisations"
         )]
         scope: String,
+        #[arg(
+            long,
+            value_name = "APP",
+            value_delimiter = ',',
+            help = "Limit this deploy token to these app names; repeat --apps or separate names with commas"
+        )]
+        apps: Vec<String>,
         #[arg(long, help = "Show the request instead of sending it")]
         dry_run: bool,
     },
@@ -61,6 +68,7 @@ pub enum TokensAction {
 const TOKENS: &[(&str, &str)] = &[
     ("NAME", "/name"),
     ("SCOPE", "/scope"),
+    ("APPS", "/apps"),
     ("BY", "/createdBy"),
     ("EXPIRES", "/expiresAt"),
     ("LAST USED", "/lastUsedAt"),
@@ -85,6 +93,7 @@ pub async fn run(ctx: &Ctx, action: TokensAction) -> CliResult<Output> {
             name,
             days,
             scope,
+            apps,
             dry_run: preview,
         } => {
             let request = json!({
@@ -92,6 +101,7 @@ pub async fn run(ctx: &Ctx, action: TokensAction) -> CliResult<Output> {
                 "name": name,
                 "lifetimeDays": days.parse::<u32>().unwrap_or(30),
                 "scope": if scope == "full" { "TOKEN_SCOPE_FULL" } else { "TOKEN_SCOPE_DEPLOY" },
+                "apps": apps,
             });
             if preview {
                 return Ok(dry_run(
