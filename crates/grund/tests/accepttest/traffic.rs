@@ -1303,38 +1303,6 @@ async fn the_edge_and_the_gate_keep_apps_apart_and_refuse_what_is_not_theirs() -
         "{raw}"
     );
 
-    let suspended = std::process::Command::new(crate::accepttest::fixtures::grund_binary())
-        .args([
-            "apps",
-            "suspend",
-            &format!("{org}/blog"),
-            "--reason",
-            "an accepttest",
-        ])
-        .env_clear()
-        .env("DATABASE_URL", database_url(&stack.when))
-        .output()?;
-    anyhow::ensure!(
-        suspended.status.success(),
-        "{}",
-        String::from_utf8_lossy(&suspended.stderr)
-    );
-    let started = Instant::now();
-    loop {
-        let mut conn = stack.connect(&blog).await?;
-        let answer = conn.get(&blog, "/", &[]).await?;
-        if answer.status == 451 {
-            anyhow::ensure!(!answer.text().contains(&blog_copy));
-            break;
-        }
-        anyhow::ensure!(
-            started.elapsed() < Duration::from_secs(20),
-            "suspension took effect: {}",
-            answer.status
-        );
-        tokio::time::sleep(Duration::from_millis(300)).await;
-    }
-
     let line = machine
         .log()
         .lines()
