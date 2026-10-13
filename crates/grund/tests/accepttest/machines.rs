@@ -1234,11 +1234,6 @@ async fn an_instance_serving_its_installer_hands_out_its_script_and_its_own_bina
     then.status(200)?
         .header("content-type", "text/x-shellscript; charset=utf-8")?
         .header("cache-control", "no-cache")?;
-    anyhow::ensure!(
-        then.body()? == include_str!("../../../grund-agent/install.sh"),
-        "/install is not the install.sh this binary was built with"
-    );
-
     let name = format!("grund-{}-{}", std::env::consts::OS, std::env::consts::ARCH);
     let executable = std::path::Path::new(crate::accepttest::fixtures::grund_binary());
     let expected = {

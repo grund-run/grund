@@ -19,14 +19,14 @@
 #                    package registry
 #
 # What it does, as root, each step checked:
-#   1. grund: the build the instance itself runs, checked against a SHA-256,
-#      to /usr/local/bin/grund. By default from grund's package registry, by
-#      the full 40-character commit the instance's /health/ready names, so
-#      the instance chooses only among builds grund's CI published; a build
-#      from source names none and is refused. With --from-instance, the
-#      instance's own executable, from <url>/install/grund-linux-<arch>:
-#      any build works, and the bytes are as trustworthy as the instance's
-#      TLS (nothing is signed yet)
+#   1. grund: the build this instance selects for a device, checked against a
+#      SHA-256 and installed to /usr/local/bin/grund. By default the full
+#      40-character public commit from /health/ready names a build in grund's
+#      package registry. For <server>+<public>, the second commit selects that
+#      public build. A build from source names none and is refused. With
+#      --from-instance, the instance's own executable is fetched from
+#      <url>/install/grund-linux-<arch>: any build works, and the bytes are as
+#      trustworthy as the instance's TLS (nothing is signed yet)
 #   2. restic: pinned upstream encrypted backup executable, checked against
 #      its release SHA-256 before installation to /usr/local/bin, and bzip2
 #      from the system's package manager if it is missing, to unpack it
@@ -96,11 +96,12 @@ verify() { # file sha256
   echo "$2  $1" | sha256sum -c --quiet >/dev/null 2>&1 || fail "$(basename "$1") does not match its SHA-256; nothing was installed from it"
 }
 
-step "grund, the build $url runs"
+step "grund, the build $url selects"
 ready="$(curl -fsS "$url/health/ready")" ||
   fail "$url/health/ready did not answer 200; is the instance up and ready, and is this its address?"
 revision="$(echo "$ready" | sed -n 's/.*"revision":"\([^"]*\)".*/\1/p')"
 [ -n "$revision" ] || fail "$url/health/ready names no revision; is it a grund instance?"
+artifact_revision="$revision"
 if [ -n "$from_instance" ]; then
   base="$url/install"
   file="grund-linux-$(uname -m)"
@@ -108,16 +109,24 @@ if [ -n "$from_instance" ]; then
     fail "$url serves no $file: it does not serve its installer (GRUND_SERVE_INSTALLER), or runs grund for another architecture"
   sum="$(curl -fsSL "$base/$file.sha256")" || fail "$url serves no SHA-256 for $file"
 else
-  echo "$revision" | grep -qx '[0-9a-f]\{40\}' ||
+  case "$revision" in
+    *+*)
+      server_revision=${revision%%+*}
+      artifact_revision=${revision#*+}
+      echo "$server_revision" | grep -qx '[0-9a-f]\{40\}' ||
+        fail "$url names an invalid server revision \"$revision\"; expected <server commit>+<public commit>"
+      ;;
+  esac
+  echo "$artifact_revision" | grep -qx '[0-9a-f]\{40\}' ||
     fail "$url runs a grund build that was not published (revision \"$revision\"; a build from source, such as compose from a clone, has none). Install from the instance itself: its Machines page offers the command when it serves its installer (GRUND_SERVE_INSTALLER=true, compose.yaml's default), or add --from-instance to this one. Or run a published image, git.kjuulh.io/grund/grund:main-<the full 40-character commit>"
-  base="$PACKAGES/main-$revision"
-  curl -fsSL -o "$work/grund" "$base/grund" || fail "no published grund for revision $revision ($base/grund)"
-  sum="$(curl -fsSL "$base/grund.sha256")" || fail "no published SHA-256 for grund $revision"
+  base="$PACKAGES/main-$artifact_revision"
+  curl -fsSL -o "$work/grund" "$base/grund" || fail "no published grund for revision $artifact_revision ($base/grund)"
+  sum="$(curl -fsSL "$base/grund.sha256")" || fail "no published SHA-256 for grund $artifact_revision"
 fi
 echo "$sum" | grep -qx '[0-9a-f]\{64\}' || fail "the SHA-256 from $base is not 64 hex characters"
 verify "$work/grund" "$sum"
 install -m 0755 "$work/grund" /usr/local/bin/grund
-echo "    grund $revision from $base, sha256 $(echo "$sum" | cut -c1-12)"
+echo "    grund $artifact_revision from $base, sha256 $(echo "$sum" | cut -c1-12)"
 step "restic $RESTIC_VERSION, encrypted backups"
 if ! command -v bzip2 >/dev/null; then
   echo "    bzip2, to unpack it"
