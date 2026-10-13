@@ -1,7 +1,5 @@
-//! What clap cannot say about client and Connect-backed operator commands:
-//! their protobuf JSON output, procedures, mutations, and examples.
-//! Every runnable client leaf has one entry; the binary checks operator
-//! leaves against its complete command tree too.
+//! What clap cannot say about client commands: their protobuf JSON output,
+//! procedures, mutations, and examples. Every runnable client leaf has one entry.
 
 /// One Connect-backed command.
 #[derive(Debug, Clone, Copy)]
@@ -76,7 +74,7 @@ const fn with_stdin(leaf: Leaf, stdin: &'static str) -> Leaf {
     Leaf { stdin, ..leaf }
 }
 
-/// Every client and Connect-backed operator command.
+/// Every client command.
 pub const LEAVES: &[Leaf] = &[
     with_stdin(
         write(
@@ -451,18 +449,6 @@ pub const LEAVES: &[Leaf] = &[
         &["grund machines list --json"],
     ),
     read(
-        "machines offers",
-        "grund.machine.v1.ListHostedOffersResponse",
-        &["grund.machine.v1.MachineService/ListHostedOffers"],
-        &["grund machines offers --json"],
-    ),
-    write(
-        "machines create",
-        "grund.machine.v1.CreateHostedMachineResponse",
-        &["grund.machine.v1.MachineService/CreateHostedMachine"],
-        &["grund machines create --size small --region eu --json"],
-    ),
-    read(
         "machines get",
         "grund.machine.v1.GetMachineResponse",
         &[
@@ -512,7 +498,6 @@ pub const LEAVES: &[Leaf] = &[
         &[
             "grund.machine.v1.MachineService/ListMachines",
             "grund.machine.v1.MachineService/RevokeMachine",
-            "grund.machine.v1.MachineService/RemoveHostedMachine",
         ],
         &["grund machines remove web-1 --yes"],
     ),
@@ -671,166 +656,6 @@ pub const LEAVES: &[Leaf] = &[
         &["grund registries remove ghcr.io --yes"],
     ),
     read(
-        "operator hosts list",
-        "grund.operator.v1.ListHostsResponse",
-        &["grund.operator.v1.OperatorService/ListHosts"],
-        &["grund operator hosts list --json"],
-    ),
-    read(
-        "operator hosts machines",
-        "grund.operator.v1.ListFleetMachinesResponse",
-        &["grund.operator.v1.OperatorService/ListFleetMachines"],
-        &["grund operator hosts machines --host HOST"],
-    ),
-    read(
-        "operator hosts failures",
-        "grund.operator.v1.ListFailuresResponse",
-        &["grund.operator.v1.OperatorService/ListFailures"],
-        &["grund operator hosts failures"],
-    ),
-    write(
-        "operator hosts cordon",
-        "grund.operator.v1.CordonHostResponse",
-        &["grund.operator.v1.OperatorService/CordonHost"],
-        &["grund operator hosts cordon HOST --reason maintenance"],
-    ),
-    write(
-        "operator hosts uncordon",
-        "grund.operator.v1.UncordonHostResponse",
-        &["grund.operator.v1.OperatorService/UncordonHost"],
-        &["grund operator hosts uncordon HOST"],
-    ),
-    Leaf {
-        output: "grund.operator.v1.DrainHostResponse",
-        ..destroy(
-            "operator hosts drain",
-            &["grund.operator.v1.OperatorService/DrainHost"],
-            &["grund operator hosts drain HOST --yes"],
-        )
-    },
-    read(
-        "operator pool list",
-        "grund.operator.v1.ListPoolsResponse",
-        &["grund.operator.v1.OperatorService/ListPools"],
-        &["grund operator pool list"],
-    ),
-    read(
-        "operator pool machines",
-        "grund.machine.v1.ListPoolMachinesResponse",
-        &["grund.machine.v1.ManagementPoolService/ListPoolMachines"],
-        &["grund operator pool machines"],
-    ),
-    read(
-        "operator pool get",
-        "grund.machine.v1.GetPoolMachineResponse",
-        &["grund.machine.v1.ManagementPoolService/GetPoolMachine"],
-        &["grund operator pool get MACHINE"],
-    ),
-    write(
-        "operator pool provision",
-        "grund.machine.v1.ProvisionPoolMachineResponse",
-        &["grund.machine.v1.ManagementPoolService/ProvisionPoolMachine"],
-        &["grund operator pool provision --size small"],
-    ),
-    write(
-        "operator pool lease",
-        "grund.machine.v1.LeaseMachineResponse",
-        &["grund.machine.v1.ManagementPoolService/LeaseMachine"],
-        &["grund operator pool lease MACHINE ORGANISATION"],
-    ),
-    Leaf {
-        output: "grund.machine.v1.EndLeaseResponse",
-        ..destroy(
-            "operator pool end",
-            &["grund.machine.v1.ManagementPoolService/EndLease"],
-            &["grund operator pool end MACHINE --yes"],
-        )
-    },
-    Leaf {
-        output: "grund.machine.v1.RevokePoolMachineResponse",
-        ..destroy(
-            "operator pool revoke",
-            &["grund.machine.v1.ManagementPoolService/RevokePoolMachine"],
-            &["grund operator pool revoke MACHINE --yes"],
-        )
-    },
-    Leaf {
-        output: "grund.machine.v1.RebuildPoolMachineResponse",
-        ..destroy(
-            "operator pool rebuild",
-            &["grund.machine.v1.ManagementPoolService/RebuildPoolMachine"],
-            &["grund operator pool rebuild MACHINE --yes"],
-        )
-    },
-    write(
-        "operator pool register",
-        "grund.machine.v1.CreateRegistrationTokenResponse",
-        &["grund.machine.v1.ManagementPoolService/CreateRegistrationToken"],
-        &["grund operator pool register --name node-1"],
-    ),
-    write(
-        "operator pool reregister",
-        "grund.machine.v1.CreateReregistrationTokenResponse",
-        &["grund.machine.v1.ManagementPoolService/CreateReregistrationToken"],
-        &["grund operator pool reregister MACHINE"],
-    ),
-    read(
-        "operator leases list",
-        "grund.machine.v1.ListPoolMachinesResponse",
-        &["grund.machine.v1.ManagementPoolService/ListPoolMachines"],
-        &["grund operator leases list"],
-    ),
-    Leaf {
-        output: "grund.machine.v1.EndLeaseResponse",
-        ..destroy(
-            "operator leases end",
-            &["grund.machine.v1.ManagementPoolService/EndLease"],
-            &["grund operator leases end MACHINE --yes"],
-        )
-    },
-    read(
-        "operator entitlements list",
-        "grund.operator.v1.ListEntitlementsResponse",
-        &["grund.operator.v1.OperatorService/ListEntitlements"],
-        &["grund operator entitlements list"],
-    ),
-    write(
-        "operator entitlements grant",
-        "grund.operator.v1.SetHostedEntitlementResponse",
-        &["grund.operator.v1.OperatorService/SetHostedEntitlement"],
-        &["grund operator entitlements grant acme"],
-    ),
-    Leaf {
-        output: "grund.operator.v1.SetHostedEntitlementResponse",
-        ..destroy(
-            "operator entitlements revoke",
-            &["grund.operator.v1.OperatorService/SetHostedEntitlement"],
-            &["grund operator entitlements revoke acme --yes"],
-        )
-    },
-    read(
-        "operator billing get",
-        "grund.operator.v1.GetBillingAccountResponse",
-        &["grund.operator.v1.OperatorService/GetBillingAccount"],
-        &["grund operator billing get acme"],
-    ),
-    write(
-        "operator billing grant",
-        "grund.operator.v1.SetComplimentaryResponse",
-        &["grund.operator.v1.OperatorService/SetComplimentary"],
-        &[
-            "grund operator billing grant acme --plan Pro --reason internal --expires-at 2027-01-01T00:00:00Z",
-        ],
-    ),
-    Leaf {
-        output: "grund.operator.v1.SetComplimentaryResponse",
-        ..destroy(
-            "operator billing revoke",
-            &["grund.operator.v1.OperatorService/SetComplimentary"],
-            &["grund operator billing revoke acme --reason expired --yes"],
-        )
-    },
-    read(
         "describe",
         "",
         &[],
@@ -919,7 +744,7 @@ mod tests {
         }
         for leaf in LEAVES {
             assert!(
-                leaf.path.starts_with("operator ") || paths.iter().any(|p| p == leaf.path),
+                paths.iter().any(|p| p == leaf.path),
                 "meta::LEAVES has {} which is no command",
                 leaf.path
             );

@@ -144,43 +144,13 @@ impl Entry {
             .collect()
     }
 
-    /// Removes elapsed migration pauses and records failed settling for operators.
+    /// Removes elapsed migration pauses and reports failed settling to extensions.
     pub async fn expire_migration_pauses(&self) -> anyhow::Result<()> {
-        let operator = self.state.operator_organisation().await?;
         let mut tx = self.state.pool.begin().await?;
         let expired = grund_store::entry::expire_migration_pauses(&mut *tx).await?;
         for (machine_id, migration_id, settling, expired_at) in expired {
             if settling {
                 tracing::warn!(%machine_id, %migration_id, "migration settling deadline expired");
-                if let Some(operator_id) = operator.filter(|_| {
-                    !self
-                        .state
-                        .extensions
-                        .iter()
-                        .any(|extension| extension.replaces_builtin_hosted())
-                }) {
-                    let machine: Option<(String, String)> = sqlx::query_as(
-                        "SELECT m.name, o.slug FROM grund_machines m \
-                         JOIN grund_organisations o ON o.organisation_id = $2 \
-                         WHERE m.machine_id = $1",
-                    )
-                    .bind(machine_id)
-                    .bind(operator_id)
-                    .fetch_optional(&mut *tx)
-                    .await?;
-                    if let Some((name, slug)) = machine {
-                        grund_store::notifications::emit_operator(
-                            &mut tx,
-                            operator_id,
-                            "operator.migration_timeout",
-                            Uuid::new_v5(&machine_id, migration_id.as_bytes()),
-                            &name,
-                            &format!("/{slug}/pool"),
-                            expired_at,
-                        )
-                        .await?;
-                    }
-                }
                 for extension in self.state.extensions.iter() {
                     extension
                         .migration_timeout(
@@ -292,7 +262,7 @@ impl Entry {
         }
     }
 
-    /// Fleet's short-lived warning before a management machine migrates.
+    /// An extension's short-lived warning before a managed machine migrates.
     /// A later migration cannot be cleared by an earlier completion.
     pub async fn set_migration_pause(
         &self,

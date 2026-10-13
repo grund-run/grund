@@ -24,7 +24,7 @@ use uuid::Uuid;
 use crate::{
     services::{
         agents::{AgentsState, VmOutcome, VmRequest, cannot_host, connected},
-        machines::{ChangeOutcome, HostedCreate, HostedRemove, MachinesState, MintOutcome},
+        machines::{ChangeOutcome, MachinesState, MintOutcome},
         sessions::Session,
     },
     state::State,
@@ -84,7 +84,6 @@ pub struct MachinesPage<'a> {
     pub disconnected: usize,
     pub shown: usize,
     pub tabs: Vec<(&'static str, String, &'static str)>,
-    pub operator: bool,
     pub run_open: bool,
     pub tab: &'a str,
     pub q: String,
@@ -110,19 +109,7 @@ pub struct MachineAddPage<'a> {
     pub name: String,
     pub minutes: i64,
     pub mode: &'a str,
-    pub hosted_enabled: bool,
-    pub offers: Vec<HostedOption>,
-    pub selected_offer: String,
-    pub retry_key: String,
-    pub regions_multiple: bool,
     pub options: Vec<crate::extension::MachineAddOption>,
-}
-
-pub struct HostedOption {
-    pub id: String,
-    pub title: String,
-    pub detail: String,
-    pub available: bool,
 }
 
 fn manages(membership: &Membership) -> bool {
@@ -382,28 +369,7 @@ async fn machines_view(
         .machines()
         .organisation_machines(membership.organisation_id)
         .await?;
-    let mut orders: Vec<crate::extension::ExternalMachine> = if state
-        .extensions
-        .iter()
-        .any(|extension| extension.replaces_builtin_hosted())
-    {
-        Vec::new()
-    } else {
-        state
-            .machines()
-            .hosted_orders(membership.organisation_id)
-            .await?
-            .into_iter()
-            .map(|order| crate::extension::ExternalMachine {
-                id: order.order_id,
-                machine_id: order.machine_id,
-                name: order.name,
-                state: order.status,
-                remove_href: format!("/{}/machines/{}/remove", membership.slug, order.order_id),
-                os: Some("Linux"),
-            })
-            .collect()
-    };
+    let mut orders = Vec::new();
     for extension in state.extensions.iter() {
         orders.extend(
             extension
@@ -535,18 +501,10 @@ async fn machines_view(
             query => format!("{base}?{query}"),
         }
     };
-    let operator = state.operator_organisation().await? == Some(membership.organisation_id);
-    let mut tabs = vec![
+    let tabs = vec![
         ("", href(""), "All machines"),
         (DISCONNECTED, href(DISCONNECTED), "Disconnected"),
     ];
-    if operator {
-        tabs.push((
-            "pool",
-            format!("/{}/pool", membership.slug),
-            "Management pool",
-        ));
-    }
     let hosts: Vec<(String, &str)> = rows
         .iter()
         .filter(|row| cannot_host(row).is_none() && connected(row.last_seen_at, now))
@@ -611,7 +569,6 @@ async fn machines_view(
                 disconnected,
                 shown,
                 tabs,
-                operator,
                 run_open,
                 tab: form.tab,
                 q: form.q,
@@ -637,8 +594,6 @@ struct AddViewInput<'a> {
     setup: Option<MachineSetup>,
     add_error: String,
     name: String,
-    selected_offer: String,
-    retry_key: String,
 }
 
 async fn add_view(
@@ -654,17 +609,7 @@ async fn add_view(
         setup,
         add_error,
         name,
-        selected_offer,
-        retry_key,
     } = input;
-    let enabled = !state
-        .extensions
-        .iter()
-        .any(|extension| extension.replaces_builtin_hosted())
-        && state
-            .machines()
-            .hosted_enabled(membership.organisation_id)
-            .await?;
     let mut options = Vec::new();
     if setup.is_none() {
         for extension in state.extensions.iter() {
@@ -676,54 +621,11 @@ async fn add_view(
             }
         }
     }
-    let mode = if mode == "hosted" && enabled {
-        "hosted"
-    } else if mode == "own" || setup.is_some() {
+    let mode = if mode == "own" || setup.is_some() {
         "own"
     } else {
         ""
     };
-    let mut add_error = add_error;
-    let offers = if mode == "hosted" {
-        match state
-            .machines()
-            .hosted_offers(membership.organisation_id)
-            .await
-        {
-            Ok(Some(offers)) => offers,
-            _ => {
-                add_error = "Available sizes could not be loaded. Try again.".into();
-                Vec::new()
-            }
-        }
-    } else {
-        Vec::new()
-    };
-    let regions_multiple = offers
-        .iter()
-        .map(|offer| offer.region.as_str())
-        .collect::<BTreeSet<_>>()
-        .len()
-        > 1;
-    let offers = offers
-        .into_iter()
-        .map(|offer| HostedOption {
-            id: format!("{}|{}", offer.size, offer.region),
-            title: offer.size.clone(),
-            detail: format!(
-                "{} vCPU · {} MiB RAM · {} GiB disk{}",
-                offer.vcpus,
-                offer.memory_mib,
-                offer.disk_gib,
-                if regions_multiple {
-                    format!(" · {}", offer.region)
-                } else {
-                    String::new()
-                }
-            ),
-            available: offer.can_place,
-        })
-        .collect();
     signed_in_typed(
         state,
         browser,
@@ -744,11 +646,6 @@ async fn add_view(
                 name,
                 minutes: TOKEN_TTL.num_minutes(),
                 mode,
-                hosted_enabled: enabled,
-                offers,
-                selected_offer,
-                retry_key,
-                regions_multiple,
                 options,
             })
         },
@@ -777,8 +674,6 @@ pub async fn add_page(
             setup: None,
             add_error: String::new(),
             name: String::new(),
-            selected_offer: String::new(),
-            retry_key: Uuid::now_v7().to_string(),
         },
     )
     .await
@@ -870,11 +765,6 @@ pub async fn add(
                 name,
                 minutes: TOKEN_TTL.num_minutes(),
                 mode: "own",
-                hosted_enabled: false,
-                offers: Vec::new(),
-                selected_offer: String::new(),
-                retry_key: String::new(),
-                regions_multiple: false,
                 options: Vec::new(),
             })
         },
@@ -884,90 +774,6 @@ pub async fn add(
         response = crate::web::pages::no_transform(response);
     }
     Ok(response)
-}
-
-#[derive(Deserialize)]
-pub struct HostedForm {
-    #[serde(default)]
-    csrf: String,
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    offer: String,
-    #[serde(default)]
-    idempotency_key: String,
-}
-
-/// `POST /{org}/machines/hosted`: reserves a selected hosted size immediately.
-pub async fn create_hosted(
-    AxumState(state): AxumState<State>,
-    browser: Browser,
-    uri: Uri,
-    Path(slug): Path<String>,
-    Form(form): Form<HostedForm>,
-) -> PageResult {
-    if !browser.form_is_genuine(&form.csrf) {
-        return forged(&state, &browser);
-    }
-    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
-    if !manages(&membership) {
-        return Ok(redirect(&format!("/{slug}/machines?error=not-allowed")));
-    }
-    if !state
-        .machines()
-        .hosted_enabled(membership.organisation_id)
-        .await?
-    {
-        return Ok(redirect(&format!("/{slug}/machines?error=not-allowed")));
-    }
-    let selected = state
-        .machines()
-        .hosted_offers(membership.organisation_id)
-        .await?;
-    let offer = selected
-        .unwrap_or_default()
-        .into_iter()
-        .find(|offer| format!("{}|{}", offer.size, offer.region) == form.offer);
-    let result = if let Some(offer) = offer {
-        state
-            .machines()
-            .create_hosted(
-                session.account_id,
-                membership.organisation_id,
-                &form.name,
-                &offer.size,
-                &offer.region,
-                &form.idempotency_key,
-            )
-            .await?
-    } else {
-        HostedCreate::Invalid
-    };
-    let error = match result {
-        HostedCreate::Created(_) => return Ok(redirect(&format!("/{slug}/machines?done=added"))),
-        HostedCreate::Denied => "Hosted machines are not enabled for this organisation.",
-        HostedCreate::Invalid => "Choose a valid name and available size.",
-        HostedCreate::NameTaken => "That machine name is already in use.",
-        HostedCreate::PoolFull => "This organisation has reached its machine limit.",
-        HostedCreate::NoCapacity => "No capacity in this size.",
-        HostedCreate::Unavailable => "Hosted machines are temporarily unavailable.",
-    };
-    add_view(
-        &state,
-        &browser,
-        &session,
-        &membership,
-        AddViewInput {
-            status: StatusCode::UNPROCESSABLE_ENTITY,
-            mode: "hosted",
-            setup: None,
-            add_error: error.to_string(),
-            name: form.name,
-            selected_offer: form.offer,
-            retry_key: form.idempotency_key,
-        },
-    )
-    .await
 }
 
 #[derive(Deserialize)]
@@ -993,22 +799,6 @@ pub async fn remove(
         return Ok(redirect(&format!("/{slug}/machines?error=not-allowed")));
     }
     let machines = state.machines();
-    if machines
-        .hosted_orders(membership.organisation_id)
-        .await?
-        .iter()
-        .any(|order| order.order_id == machine_id)
-    {
-        let result = machines
-            .remove_hosted(session.account_id, membership.organisation_id, machine_id)
-            .await?;
-        let query = match result {
-            HostedRemove::Removed => "done=hosted",
-            HostedRemove::NotFound => "error=gone",
-            HostedRemove::Unavailable => "error=unavailable",
-        };
-        return Ok(redirect(&format!("/{slug}/machines?{query}")));
-    }
     if machines
         .organisation_machine(membership.organisation_id, machine_id)
         .await?
@@ -1057,6 +847,9 @@ pub async fn service(
         return Ok(redirect(&format!("/{slug}/machines?error=not-allowed")));
     }
     let machines = state.machines();
+    let machine_id = state
+        .machine_id(membership.organisation_id, machine_id)
+        .await?;
     let Some(row) = machines
         .organisation_machine(membership.organisation_id, machine_id)
         .await?
@@ -1128,6 +921,9 @@ pub async fn labels(
         }
     };
     let machines = state.machines();
+    let machine_id = state
+        .machine_id(membership.organisation_id, machine_id)
+        .await?;
     let Some(row) = machines
         .organisation_machine(membership.organisation_id, machine_id)
         .await?
@@ -1215,12 +1011,7 @@ pub async fn run_vm(
         number(&form.disk_gib),
     ) {
         (Some(id), Some(vcpus), Some(memory_mib), Some(disk_gib)) => VmRequest {
-            host_machine_id: state
-                .machines()
-                .organisation_machine(membership.organisation_id, id)
-                .await?
-                .map(|row| row.machine_id)
-                .unwrap_or(id),
+            host_machine_id: state.machine_id(membership.organisation_id, id).await?,
             name: form.vm_name.trim().to_string(),
             vcpus,
             memory_mib,

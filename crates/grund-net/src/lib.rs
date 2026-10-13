@@ -1,5 +1,4 @@
-//! grund's network layer: the base of network.md (grund/fleet
-//! `docs/design/network.md`, §14.1).
+//! grund's network layer (grund-docs `design/network.md`, §14.1).
 //!
 //! - [`key`]: the machine key `grund join` makes is the machine's iroh key,
 //!   so one Ed25519 key proves who a machine is to grund, to the relay and to

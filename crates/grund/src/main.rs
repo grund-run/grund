@@ -1,5 +1,3 @@
-//! The public grund binary, including its existing hosted operator commands.
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     grund::run_with_extensions(

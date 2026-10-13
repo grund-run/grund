@@ -55,7 +55,7 @@ message MachineFacts {
   string os = 7;
   string kernel = 8;
   string agent_version = 9;
-  // Set by fleet guests; informational only.
+  // Set by provider-managed guests; informational only.
   string fleet_machine_id = 10;
 }
 

@@ -22,7 +22,7 @@ use crate::{
     crypto,
     services::{
         account_events::{ReportError, Reporter},
-        billing::{self, RecordError},
+        billing::RecordError,
         mail::{Mail, MailError, Mailer},
     },
     state::State,
@@ -251,10 +251,12 @@ impl Component for OutboxDrain {
                 }
                 _ = tick.tick() => self.drain().await,
                 _ = meter.tick(), if self.state.billing.enabled() => {
-                    if let Err(error) = billing::sample_machine_counts(&self.state).await {
-                        tracing::warn!(%error, "billing machine sample failed; retrying next minute");
-                    } else {
-                        wake(&self.state).await;
+                    for extension in self.state.extensions.iter() {
+                        if let Err(error) = extension.sample_machine_counts(&self.state).await {
+                            tracing::warn!(%error, "billing machine sample failed; retrying next minute");
+                        } else {
+                            wake(&self.state).await;
+                        }
                     }
                 }
                 alive = woken => {

@@ -8,67 +8,6 @@ import "google/protobuf/timestamp.proto";
 import "grund/agent/v1/agent.proto";
 import "grund/agent/v1/enrollment.proto";
 
-// The management pool (grund-docs design/machines.md): the instance's own
-// machines, run by the operator organisation (GRUND_OPERATOR_ORGANISATION,
-// or the instance's organisation in single mode), leased to organisations.
-// Owners and admins of the operator organisation act; its members list and
-// get. Anyone else gets not_found for every call, as for an organisation they
-// are not a member of; an instance with no operator organisation answers
-// not_found too.
-service ManagementPoolService {
-  // A one-time grund_reg_ token for one new machine. Shown once. ttl_seconds
-  // 0 means 600; at most 900.
-  rpc CreateRegistrationToken(CreateRegistrationTokenRequest) returns (CreateRegistrationTokenResponse);
-
-  // A one-time grund_reg_ token that brings back this returning machine,
-  // wiped, under a new key.
-  rpc CreateReregistrationToken(CreateReregistrationTokenRequest) returns (CreateReregistrationTokenResponse);
-
-  // Newest first; state MACHINE_STATE_UNSPECIFIED lists every state.
-  rpc ListPoolMachines(ListPoolMachinesRequest) returns (ListPoolMachinesResponse) {
-    option idempotency_level = NO_SIDE_EFFECTS;
-  }
-
-  rpc GetPoolMachine(GetPoolMachineRequest) returns (GetPoolMachineResponse) {
-    option idempotency_level = NO_SIDE_EFFECTS;
-  }
-
-  // Leases an available machine to an organisation, under name in that
-  // organisation's pool (empty: the machine's own name). Returns the lease
-  // grant the management key signed. failed_precondition if the machine is
-  // not available, the organisation's pool is full, or the name is taken
-  // there.
-  rpc LeaseMachine(LeaseMachineRequest) returns (LeaseMachineResponse);
-
-  // The machine leaves the organisation's pool at once and is returning:
-  // wipe it and bring it back with CreateReregistrationToken.
-  rpc EndLease(EndLeaseRequest) returns (EndLeaseResponse);
-
-  // For good. Its key is refused from now on. A machine that came from a
-  // capacity provider is then given back to it; revoking again asks again.
-  rpc RevokePoolMachine(RevokePoolMachineRequest) returns (RevokePoolMachineResponse);
-
-  // Asks the capacity provider (GRUND_CAPACITY_URL) for a new machine: grund
-  // mints a registration token and hands it to the provider, never to the
-  // caller, and the machine registers by itself. failed_precondition when no
-  // provider is configured: register machines by hand with
-  // CreateRegistrationToken. unavailable when the provider cannot act now.
-  rpc ProvisionPoolMachine(ProvisionPoolMachineRequest) returns (ProvisionPoolMachineResponse);
-
-  // Asks the provider again to wipe a returning machine and boot it with a
-  // re-registration token, when the request EndLease made failed or its token
-  // expired unused. failed_precondition for a machine that is not returning
-  // or did not come from a provider.
-  rpc RebuildPoolMachine(RebuildPoolMachineRequest) returns (RebuildPoolMachineResponse);
-  // Fleet alone, authenticated with GRUND_CAPACITY_TOKEN: stop routing new
-  // entry connections to this provider machine before a planned VM pause.
-  // Repeating the same migration refreshes its 120-second expiry; clearing
-  // another migration has no effect. No app copies are stopped.
-  rpc SetMigrationPause(SetMigrationPauseRequest) returns (SetMigrationPauseResponse) {
-    option idempotency_level = IDEMPOTENT;
-  }
-
-}
 
 // An organisation's machines: its own, and the ones leased to it. Members list
 // and get; owners and admins mint join tokens and revoke own machines. An
@@ -78,19 +17,6 @@ service MachineService {
   // A one-time grund_join_ token for one machine the organisation brings.
   // Shown once. ttl_seconds 0 means 600; at most 900.
   rpc CreateJoinToken(CreateJoinTokenRequest) returns (CreateJoinTokenResponse);
-
-  // Lists actual hosted sizes and regions only when this organisation is entitled.
-  rpc ListHostedOffers(ListHostedOffersRequest) returns (ListHostedOffersResponse) {
-    option idempotency_level = NO_SIDE_EFFECTS;
-  }
-
-  // Reserves an available machine or places a new one immediately; no capacity
-  // refuses the request instead of silently waiting. A retry key identifies
-  // one name, size and region for this organisation.
-  rpc CreateHostedMachine(CreateHostedMachineRequest) returns (CreateHostedMachineResponse);
-
-  // Ends this organisation's hosted lease and requests a wipe and new key.
-  rpc RemoveHostedMachine(RemoveHostedMachineRequest) returns (RemoveHostedMachineResponse);
 
   // By name.
   rpc ListMachines(ListMachinesRequest) returns (ListMachinesResponse) {
@@ -153,8 +79,8 @@ service MachineService {
 
 message Machine {
   string machine_id = 1;
-  // In the organisation view, its name in that organisation's pool; in the
-  // management view, its name in the management pool.
+  // In an organisation view, its name in that organisation's pool; in a
+  // capacity provider's view, its name in the provider pool.
   string name = 2;
   MachineState state = 3;
   grund.agent.v1.Pool pool = 4;
@@ -185,7 +111,8 @@ message Machine {
   map<string, string> labels = 17;
   // Set while it is out of service: since when.
   google.protobuf.Timestamp out_of_service_since = 18;
-  // True for a hosted machine, including one still joining.
+  // Existing wire field: true for a leased or extension-provisioned machine,
+  // including one still joining. The field name is retained for clients.
   bool hosted = 19;
 }
 
@@ -223,18 +150,6 @@ message Vm {
   google.protobuf.Timestamp created_at = 13;
 }
 
-// What asking the capacity provider to act on a machine came to.
-enum ProviderStep {
-  PROVIDER_STEP_UNSPECIFIED = 0;
-  // The machine did not come from a provider: nothing to ask.
-  PROVIDER_STEP_NOT_NEEDED = 1;
-  // The provider took the request.
-  PROVIDER_STEP_REQUESTED = 2;
-  // The provider could not be asked, or refused (provider_message says
-  // why); the change itself stands. Ask again with RebuildPoolMachine or
-  // RevokePoolMachine.
-  PROVIDER_STEP_FAILED = 3;
-}
 
 message Lease {
   string lease_id = 1;
@@ -256,111 +171,6 @@ enum MachineState {
   MACHINE_STATE_FAILED = 7;
 }
 
-message CreateRegistrationTokenRequest {
-  // Binds the machine's name; empty lets the machine choose.
-  string name = 1;
-  int32 ttl_seconds = 2;
-}
-
-message CreateRegistrationTokenResponse {
-  string token = 1;
-  google.protobuf.Timestamp expires_at = 2;
-}
-
-message CreateReregistrationTokenRequest {
-  string machine_id = 1;
-  int32 ttl_seconds = 2;
-}
-
-message CreateReregistrationTokenResponse {
-  string token = 1;
-  google.protobuf.Timestamp expires_at = 2;
-}
-
-message SetMigrationPauseRequest {
-  // Fleet's UUID, matched to a management machine's provider_machine_id.
-  string provider_machine_id = 1;
-  // Fleet's migration UUID, guards a later migration against a stale clear.
-  string migration_id = 2;
-  bool paused = 3;
-}
-
-message SetMigrationPauseResponse {}
-
-message ListPoolMachinesRequest {
-  MachineState state = 1;
-}
-
-message ListPoolMachinesResponse {
-  repeated Machine machines = 1;
-}
-
-message GetPoolMachineRequest {
-  string machine_id = 1;
-}
-
-message GetPoolMachineResponse {
-  Machine machine = 1;
-}
-
-message LeaseMachineRequest {
-  string machine_id = 1;
-  // The lessee's slug.
-  string organisation = 2;
-  string name = 3;
-}
-
-message LeaseMachineResponse {
-  Machine machine = 1;
-  grund.agent.v1.SignedLeaseGrant grant = 2;
-}
-
-message EndLeaseRequest {
-  string machine_id = 1;
-}
-
-message EndLeaseResponse {
-  Machine machine = 1;
-  // Whether the provider was asked to rebuild the machine.
-  ProviderStep provider_step = 2;
-  string provider_message = 3;
-}
-
-message RevokePoolMachineRequest {
-  string machine_id = 1;
-}
-
-message RevokePoolMachineResponse {
-  Machine machine = 1;
-  // Whether the provider was asked to take the machine back.
-  ProviderStep provider_step = 2;
-  string provider_message = 3;
-}
-
-message ProvisionPoolMachineRequest {
-  // Binds the machine's name; empty lets the machine choose.
-  string name = 1;
-  // The provider's size name; empty for its default.
-  string size = 2;
-}
-
-message ProvisionPoolMachineResponse {
-  string provider_machine_id = 1;
-  // When the registration token the provider holds expires: the machine must
-  // register before then.
-  google.protobuf.Timestamp token_expires_at = 2;
-}
-
-message RebuildPoolMachineRequest {
-  string machine_id = 1;
-}
-
-message RebuildPoolMachineResponse {
-  Machine machine = 1;
-  ProviderStep provider_step = 2;
-  string provider_message = 3;
-}
-
 message CreateJoinTokenRequest {
   string organisation = 1;
   string name = 2;
@@ -375,44 +185,6 @@ message CreateJoinTokenResponse {
   // Empty when the instance names no installer (GRUND_AGENT_INSTALL_URL,
   // GRUND_SERVE_INSTALLER).
   string install_command = 3;
-}
-
-message ListHostedOffersRequest {
-  string organisation = 1;
-}
-
-message HostedOffer {
-  string size = 1;
-  string region = 2;
-  int32 vcpus = 3;
-  int64 memory_mib = 4;
-  int64 disk_gib = 5;
-  bool available = 6;
-}
-
-message ListHostedOffersResponse {
-  repeated HostedOffer offers = 1;
-}
-
-message CreateHostedMachineRequest {
-  string organisation = 1;
-  string name = 2;
-  string size = 3;
-  string region = 4;
-  string idempotency_key = 5;
-}
-
-message CreateHostedMachineResponse {
-  Machine machine = 1;
-}
-
-message RemoveHostedMachineRequest {
-  string organisation = 1;
-  string machine_id = 2;
-}
-
-message RemoveHostedMachineResponse {
-  bool removed = 1;
 }
 
 message ListMachinesRequest {

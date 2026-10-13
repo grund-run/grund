@@ -13,7 +13,6 @@ const FILES: &[&str] = &[
     "grund/machine/v1/machine.proto",
     "grund/notification/v1/notification.proto",
     "grund/organisation/v1/organisation.proto",
-    "grund/operator/v1/operator.proto",
     "grund/registry/v1/registry.proto",
     "grund/relay/v1/relay.proto",
     "grund/token/v1/token.proto",

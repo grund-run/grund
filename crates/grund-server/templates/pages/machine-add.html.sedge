@@ -1,5 +1,5 @@
-use crate::templates::compiled::components::{PageHead, Panel, Banner, Button, Code, Para, Field, Tiles, Tile, ChipsField};
-props crate::web::machines::MachineAddPage<'_> { slug, csrf, setup, add_error, name, minutes, mode, hosted_enabled, offers, selected_offer, retry_key, regions_multiple, options };
+use crate::templates::compiled::components::{PageHead, Panel, Banner, Button, Code, Para, Field, Tiles, Tile};
+props crate::web::machines::MachineAddPage<'_> { slug, csrf, setup, add_error, name, minutes, mode, options };
 {let back = format!("/{slug}/machines");}
 
 <PageHead title="Add machine" back={Some((back.as_str(), "Machines"))} />
@@ -20,29 +20,7 @@ props crate::web::machines::MachineAddPage<'_> { slug, csrf, setup, add_error, n
       {for option in options {
         <Tile href={option.href.as_str()} title={option.title} state="" />
       }}
-      {if *hosted_enabled {
-        <Tile href="/{slug}/machines/add?mode=hosted" title="Hosted" state="" />
-      }}
     </Tiles>
-  </Panel>
-} else if *mode == "hosted" {
-  <Panel id="hosted" title="Hosted machine">
-    {if !add_error.is_empty() { <Banner text={add_error.as_str()} /> }}
-    {if offers.is_empty() {
-      <Para kind="aside">No hosted sizes are available.</Para>
-    } else {
-      {let options = offers.iter().filter(|offer| offer.available).map(|offer| (offer.id.as_str(), offer.detail.as_str())).collect::<Vec<_>>();}
-      <form class="form" method="post" action="/{slug}/machines/hosted" novalidate><input type="hidden" name="csrf" value={csrf}><input type="hidden" name="idempotency_key" value={retry_key}>
-        <Field name="name" label="Name" value={name} autocomplete="off" required error={add_error.as_str()} />
-        <ChipsField name="offer" label="Size" options={options.as_slice()} selected={selected_offer} selected_many={&[]} multiple={false} hint="" error="" optional={false} search="" empty="No capacity in this size." />
-        {for offer in offers.iter().filter(|offer| !offer.available) {
-          <Para kind="aside">{offer.title}{if *regions_multiple { {" · "}{offer.id.split_once('|').map(|(_, region)| region).unwrap_or("")} }}: No capacity in this size.</Para>
-        }}
-        {if !options.is_empty() {
-          <div class="form-actions"><Button label="Create" kind="primary" /></div>
-        }}
-      </form>
-    }}
   </Panel>
 } else {
   <Panel id="add" title="Your machine">

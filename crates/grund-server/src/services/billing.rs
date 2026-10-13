@@ -1,13 +1,13 @@
-//! The optional billing service receives organisation lifecycle changes and
-//! own-machine transitions and hourly counts through the durable outbox.
-//! Account changes and redirects are requested only from owner or operator
-//! handlers; the contract is `proto/grund/billing/v1`.
+//! The optional billing service receives organisation lifecycle changes through
+//! the durable outbox.
+//! Extensions own customer actions and operator UI. The public contract is
+//! `proto/grund/billing/v1`.
 //!
 //! Without GRUND_BILLING_URL (every self-hosted instance) the shim is
 //! [`Billing::Free`]: every organisation is free, deleting is allowed, and
 //! nothing is queued. Settings use a process-local billing account cache.
-//! Ordinary settings refresh in the background; billing pages wait up to two
-//! seconds when no usable account is cached. Actions and deletion fail closed.
+//! Ordinary settings refresh in the background; an extension-owned billing
+//! page may wait up to two seconds. Actions and deletion fail closed.
 
 use std::{
     collections::HashMap,
@@ -16,7 +16,7 @@ use std::{
 };
 
 use anyhow::Context;
-use chrono::{DateTime, Timelike, Utc};
+use chrono::{DateTime, Utc};
 use grund_store::outbox::{self, Claimed, Kind};
 use parking_lot::Mutex;
 use sqlx::{PgConnection, PgPool};
@@ -105,26 +105,6 @@ pub enum BillingError {
     InvalidRedirect,
 }
 
-pub struct Complimentary<'a> {
-    pub organisation_id: Uuid,
-    pub enabled: bool,
-    pub plan: &'a str,
-    pub reason: &'a str,
-    pub expires_at: Option<&'a str>,
-    pub actor_id: Uuid,
-    pub key: Uuid,
-}
-
-pub struct HostedChange<'a> {
-    pub organisation_id: Uuid,
-    pub order_id: Uuid,
-    pub machine_id: Uuid,
-    pub size: &'a str,
-    pub region: &'a str,
-    pub change: &'a str,
-    pub at: DateTime<Utc>,
-}
-
 /// The billing seam: free, or a billing service.
 #[derive(Clone)]
 pub enum Billing {
@@ -181,12 +161,6 @@ impl Billing {
     /// Whether a billing service is configured.
     pub fn enabled(&self) -> bool {
         matches!(self, Billing::Remote(_))
-    }
-
-    /// Only an exact configured HTTPS origin may be linked from operator UI.
-    pub fn trusted_operator_url(&self, url: &str, subscription_id: &str) -> bool {
-        matches!(self, Billing::Remote(remote)
-            if Uuid::parse_str(subscription_id).is_ok() && remote.allows_redirect(url))
     }
 
     /// Returns the last recent account without waiting for the billing service.
@@ -304,102 +278,40 @@ impl Billing {
         view
     }
 
-    pub async fn checkout(
-        &self,
-        organisation_id: Uuid,
-        plan: &str,
-        success_url: &str,
-        key: Uuid,
-    ) -> Result<String, BillingError> {
-        let Billing::Remote(remote) = self else {
-            return Err(BillingError::Unavailable);
-        };
-        let response = remote
-            .call(
-                "BeginCheckout",
-                &serde_json::json!({
-                    "organisationId": organisation_id.to_string(), "plan": plan,
-                    "successUrl": success_url, "idempotencyKey": key.to_string(),
-                }),
-                None,
-            )
-            .await
-            .map_err(|error| {
-                tracing::warn!(%error, "billing checkout unavailable");
-                BillingError::Unavailable
-            })?;
-        remote.redirect(&response["url"])
-    }
-
-    pub async fn change_plan(
-        &self,
-        organisation_id: Uuid,
-        plan: &str,
-        key: Uuid,
-    ) -> Result<(), BillingError> {
-        self.mutate("ChangePlan", serde_json::json!({
-            "organisationId": organisation_id.to_string(), "plan": plan, "idempotencyKey": key.to_string()
-        }), organisation_id).await
-    }
-
-    pub async fn cancel(&self, organisation_id: Uuid, key: Uuid) -> Result<(), BillingError> {
-        self.mutate(
-            "CancelSubscription",
-            serde_json::json!({
-                "organisationId": organisation_id.to_string(), "idempotencyKey": key.to_string()
-            }),
-            organisation_id,
-        )
-        .await
-    }
-
-    pub async fn portal(
-        &self,
-        organisation_id: Uuid,
-        return_url: &str,
-        key: Uuid,
-    ) -> Result<String, BillingError> {
-        let Billing::Remote(remote) = self else {
-            return Err(BillingError::Unavailable);
-        };
-        let response = remote.call("OpenPortal", &serde_json::json!({
-            "organisationId": organisation_id.to_string(), "returnUrl": return_url, "idempotencyKey": key.to_string()
-        }), None).await.map_err(|error| {
-            tracing::warn!(%error, "billing portal unavailable");
-            BillingError::Unavailable
-        })?;
-        remote.redirect(&response["url"])
-    }
-
-    pub async fn complimentary(&self, params: Complimentary<'_>) -> Result<(), BillingError> {
-        self.mutate(
-            "SetComplimentary",
-            serde_json::json!({
-                "organisationId": params.organisation_id.to_string(),
-                "enabled": params.enabled, "plan": params.plan,
-                "reason": params.reason, "expiresAt": params.expires_at,
-                "actorId": params.actor_id.to_string(), "idempotencyKey": params.key.to_string()
-            }),
-            params.organisation_id,
-        )
-        .await
-    }
-
-    async fn mutate(
+    /// Calls a method of the optional external billing service. Business
+    /// actions and their payloads belong to the extension using this seam.
+    pub async fn request(
         &self,
         method: &str,
-        body: serde_json::Value,
-        organisation_id: Uuid,
-    ) -> Result<(), BillingError> {
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, BillingError> {
         let Billing::Remote(remote) = self else {
             return Err(BillingError::Unavailable);
         };
-        remote.call(method, &body, None).await.map_err(|error| {
-            tracing::warn!(%error, method, "billing change unavailable");
+        remote.call(method, body, None).await.map_err(|error| {
+            tracing::warn!(%error, method, "billing request unavailable");
             BillingError::Unavailable
-        })?;
-        remote.accounts.lock().remove(&organisation_id);
-        Ok(())
+        })
+    }
+
+    /// Accepts only redirects to a configured HTTPS origin.
+    pub fn redirect(&self, value: &serde_json::Value) -> Result<String, BillingError> {
+        let Billing::Remote(remote) = self else {
+            return Err(BillingError::Unavailable);
+        };
+        remote.redirect(value)
+    }
+
+    /// Checks a link from the external billing service without following it.
+    pub fn allows_redirect(&self, url: &str) -> bool {
+        matches!(self, Billing::Remote(remote) if remote.allows_redirect(url))
+    }
+
+    /// Invalidates an account after an extension changes its billing state.
+    pub fn invalidate_account(&self, organisation_id: Uuid) {
+        if let Billing::Remote(remote) = self {
+            remote.accounts.lock().remove(&organisation_id);
+        }
     }
 
     /// Whether billing lets the organisation be deleted now.
@@ -627,143 +539,4 @@ pub async fn queue_change(
         at,
     )
     .await
-}
-
-pub async fn sample_machine_counts(state: &State) -> Result<(), sqlx::Error> {
-    if !state.billing.enabled() {
-        return Ok(());
-    }
-    let sampled_at = (Utc::now() - chrono::Duration::hours(1))
-        .with_minute(0)
-        .and_then(|at| at.with_second(0))
-        .and_then(|at| at.with_nanosecond(0))
-        .expect("UTC hour");
-    enqueue_completed_hour(&state.pool, sampled_at).await
-}
-
-/// Records own-machine inventory as of the end of a completed UTC hour.
-/// Registration and revocation timestamps preserve historical inventory even
-/// when machines change again before the sampler runs.
-pub async fn enqueue_completed_hour(
-    pool: &PgPool,
-    sampled_at: DateTime<Utc>,
-) -> Result<(), sqlx::Error> {
-    let mut transaction = pool.begin().await?;
-    let boundary = sampled_at + chrono::Duration::hours(1);
-    let counts: Vec<(Uuid, i64)> = sqlx::query_as(
-        "SELECT o.organisation_id, count(m.machine_id) \
-         FROM grund_organisations o LEFT JOIN grund_machines m \
-         ON m.home_organisation_id = o.organisation_id \
-         AND m.pool = 'organisation' AND m.registered_at < $1 \
-         AND (m.revoked_at IS NULL OR m.revoked_at >= $1) \
-         WHERE o.created_at < $1 AND (o.deleted_at IS NULL OR o.deleted_at >= $1) \
-         GROUP BY o.organisation_id",
-    )
-    .bind(boundary)
-    .fetch_all(&mut *transaction)
-    .await?;
-    for (organisation_id, count) in counts {
-        let event_id = Uuid::new_v5(&organisation_id, sampled_at.to_rfc3339().as_bytes());
-        let payload = serde_json::json!({
-            "eventId": event_id.to_string(), "idempotencyKey": event_id.to_string(),
-            "organisationId": organisation_id.to_string(),
-            "sampledAt": sampled_at.to_rfc3339(), "machines": count
-        });
-        outbox::enqueue(
-            &mut transaction,
-            event_id,
-            Kind::BillingMachineCount,
-            "",
-            &payload,
-        )
-        .await?;
-    }
-    transaction.commit().await?;
-    Ok(())
-}
-
-pub async fn queue_machine_change(
-    state: &State,
-    connection: &mut PgConnection,
-    machine_id: Uuid,
-    change: &str,
-    at: DateTime<Utc>,
-) -> Result<(), sqlx::Error> {
-    if !state.billing.enabled() {
-        return Ok(());
-    }
-    let row: Option<(Uuid, i64)> = sqlx::query_as(
-        "SELECT home_organisation_id, stream_version FROM grund_machines \
-         WHERE machine_id = $1 AND pool = 'organisation'",
-    )
-    .bind(machine_id)
-    .fetch_optional(&mut *connection)
-    .await?;
-    if let Some((organisation_id, version)) = row {
-        let event_id = Uuid::new_v5(&machine_id, version.to_string().as_bytes());
-        let payload = serde_json::json!({
-            "eventId": event_id.to_string(), "idempotencyKey": event_id.to_string(),
-            "organisationId": organisation_id.to_string(), "machineId": machine_id.to_string(),
-            "change": change, "changedAt": at.to_rfc3339(), "machineKind": "MACHINE_KIND_OWN"
-        });
-        outbox::enqueue(
-            connection,
-            event_id,
-            Kind::BillingMachineChange,
-            "",
-            &payload,
-        )
-        .await?;
-    }
-    Ok(())
-}
-
-/// Queue a hosted lease transition for rental reconciliation, never the
-/// own-machine licence meter. A lease order has one start and one end.
-pub async fn queue_hosted_change(
-    state: &State,
-    connection: &mut PgConnection,
-    event: HostedChange<'_>,
-) -> Result<(), sqlx::Error> {
-    if !state.billing.enabled() {
-        return Ok(());
-    }
-    let event_id = Uuid::new_v5(&event.order_id, event.change.as_bytes());
-    let payload = serde_json::json!({
-        "eventId": event_id.to_string(), "idempotencyKey": event_id.to_string(),
-        "organisationId": event.organisation_id.to_string(), "machineId": event.machine_id.to_string(),
-        "orderId": event.order_id.to_string(), "size": event.size, "region": event.region,
-        "change": event.change, "changedAt": event.at.to_rfc3339(), "machineKind": "MACHINE_KIND_HOSTED"
-    });
-    outbox::enqueue(
-        connection,
-        event_id,
-        Kind::BillingMachineChange,
-        "",
-        &payload,
-    )
-    .await
-}
-
-pub fn validate_complimentary(
-    enabled: bool,
-    plan: &str,
-    reason: &str,
-    expiry: &str,
-) -> Result<(), &'static str> {
-    if reason.trim().is_empty() || reason.len() > 500 {
-        return Err("A reason of at most 500 characters is required.");
-    }
-    if enabled {
-        if !matches!(plan, "Homelab" | "Pro" | "Business") {
-            return Err("Choose an available plan.");
-        }
-        let at = expiry
-            .parse::<DateTime<Utc>>()
-            .map_err(|_| "Enter an expiry date and time.")?;
-        if at <= Utc::now() {
-            return Err("Expiry must be in the future.");
-        }
-    }
-    Ok(())
 }

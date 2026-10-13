@@ -1,5 +1,4 @@
 mod billing;
-mod capacity;
 pub mod client;
 mod fixture;
 mod insights;
@@ -14,7 +13,6 @@ mod then;
 mod when;
 
 pub use billing::{AccountAnswer, DeletionAnswer, FakeBilling, TOKEN as BILLING_TOKEN};
-pub use capacity::{FakeCapacity, TOKEN as CAPACITY_TOKEN};
 pub use fixture::*;
 pub use given::mail_count;
 pub use insights::{FakeInsights, TOKEN as INSIGHTS_TOKEN};

@@ -21,7 +21,6 @@
 
 pub mod acme;
 pub mod api;
-pub mod apps_command;
 pub mod certificates;
 pub mod config;
 pub mod crypto;
@@ -68,6 +67,9 @@ pub async fn serve(
     let secret = secrets::SecretKey::load(&config)?;
     let pool = db::connect_waiting(&config.database, config.database_wait, config.listen).await?;
     grund_store::migrate(&pool).await?;
+    for extension in &extensions {
+        extension.migrate(&pool).await?;
+    }
     if config.billing.enabled() {
         services::billing::queue_existing(&pool)
             .await
@@ -123,10 +125,14 @@ pub async fn serve(
             );
         }
     }
-    let capacity = match extension_capacity {
-        Some(provider) => services::capacity::Capacity::Provider(provider),
-        None => services::capacity::Capacity::new(&config.capacity)?,
-    };
+    anyhow::ensure!(
+        extension_capacity.is_some() || !config.capacity.enabled(),
+        "GRUND_CAPACITY_URL requires a capacity-provider extension in this build"
+    );
+    let capacity = extension_capacity.map_or(
+        services::capacity::Capacity::None,
+        services::capacity::Capacity::Provider,
+    );
     let deletions = sagas::Deletions::new(events.clone());
     let state = State {
         config: std::sync::Arc::new(config),
@@ -172,7 +178,6 @@ pub async fn serve(
         .add(services::backups::BackupScheduler::new(state.clone()))
         .add(services::entry::EntryKeys::new(state.clone()))
         .add(services::maintenance::Sweeper::new(state.clone()))
-        .add(services::machines::HostedRecovery::new(state.clone()))
         .add(extension::ExtensionWork(state.clone()))
         .add(certificates::CertificateWork::new(&state))
         .add(sagas::DeletionWorker::new(&state))

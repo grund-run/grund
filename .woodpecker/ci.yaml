@@ -25,16 +25,14 @@
 # runs, and the rootfs RunVm names by URL and SHA-256 (grund-docs
 # design/vm-runtime.md).
 #
-# One immutable tag, main-${CI_COMMIT_SHA}. kjuulh/woodpecker-forest computes
-# exactly that tag from the commit and pins the release to it, so a rollout
-# cannot find its image if this tag stops being published. There is no latest
-# or main tag: a moving tag gives a rollback nothing to roll back to.
-
-# A push or pull request that changes only documentation (*.md)
-# runs nothing: no build reads those files. Woodpecker then also drops
-# rollout.yaml, which depends on this workflow, so no release is staged for
-# an image that was not built (checked on grund/fleet branch ci/pathtest,
-# 2026-09-26). The next change to anything else tests the whole tree.
+# One immutable tag, main-${CI_COMMIT_SHA}. The public image is published
+# for self-hosted deployments and rollback; this repository no longer
+# annotates releases or owns the grund.sh Forest deployment. There is no
+# latest or main tag, because a moving tag gives a rollback nothing to
+# roll back to.
+#
+# A push or pull request that changes only documentation (*.md) runs nothing:
+# no build reads those files. The next code change tests the whole tree.
 when:
   - event: push
     branch: main

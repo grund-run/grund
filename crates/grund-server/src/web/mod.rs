@@ -18,10 +18,8 @@ macro_rules! member_or_return {
 }
 
 pub mod about;
-pub mod admin;
 pub mod apps;
 pub mod assets;
-pub mod billing;
 pub mod browser;
 pub mod device;
 pub mod domains;
@@ -31,7 +29,6 @@ pub mod notifications;
 pub mod orgs;
 pub mod pages;
 pub mod placement;
-pub mod pool;
 pub mod registries;
 pub mod resources;
 pub mod time;
@@ -91,32 +88,7 @@ pub fn router(state: State) -> Router {
         .fold(Router::new(), |router, extension| {
             router.merge(extension.routes())
         });
-    let legacy_hosted = if state
-        .extensions
-        .iter()
-        .any(|extension| extension.replaces_builtin_hosted())
-    {
-        Router::new()
-    } else {
-        Router::new()
-            .route("/{org}/machines/hosted", post(machines::create_hosted))
-            .route("/{org}/admin", get(admin::admin_page))
-            .route("/{org}/admin/hosts/action", post(admin::host_action))
-            .route(
-                "/{org}/admin/organisations/entitlement",
-                post(admin::entitlement_action),
-            )
-            .route(
-                "/{org}/admin/organisations/complimentary",
-                post(admin::complimentary_action),
-            )
-            .route("/{org}/pool", get(pool::pool_page))
-            .route("/{org}/pool/provision", post(pool::provision))
-            .route("/{org}/pool/{machine}/lease", post(pool::lease))
-            .route("/{org}/pool/{machine}/end", post(pool::end_lease))
-            .route("/{org}/pool/{machine}/rebuild", post(pool::rebuild))
-            .route("/{org}/pool/{machine}/revoke", post(pool::revoke))
-    };
+
     let installer = if state.config.machine_defaults.serve_installer {
         Router::new()
             .route("/install", get(install::script))
@@ -277,10 +249,6 @@ pub fn router(state: State) -> Router {
         )
         .route("/{org}/settings/about", get(about::about_page))
         .route("/{org}/settings", get(orgs::settings_page))
-        .route("/{org}/settings/billing", get(billing::page))
-        .route("/{org}/settings/billing/choose", post(billing::choose))
-        .route("/{org}/settings/billing/cancel", post(billing::cancel))
-        .route("/{org}/settings/billing/portal", post(billing::portal))
         .route("/{org}/settings/rename", post(orgs::rename))
         .route("/{org}/settings/delete", post(orgs::delete))
         .route(
@@ -288,7 +256,6 @@ pub fn router(state: State) -> Router {
             post(orgs::cancel_deletion),
         )
         .merge(installer)
-        .merge(legacy_hosted)
         .merge(extensions)
         .fallback(pages::not_found)
         .layer(middleware::from_fn_with_state(
@@ -414,22 +381,22 @@ async fn secret_rpc_policy(request: Request, next: Next) -> Response {
         "/grund.token.v1.TokenService/CreateToken"
             | "/grund.login.v1.DeviceLoginService/StartDeviceLogin"
             | "/grund.login.v1.DeviceLoginService/PollDeviceLogin"
-            | "/grund.machine.v1.ManagementPoolService/CreateRegistrationToken"
-            | "/grund.machine.v1.ManagementPoolService/CreateReregistrationToken"
             | "/grund.machine.v1.MachineService/CreateJoinToken"
             | "/grund.agent.v1.AgentService/GetMachineJoinToken"
             | "/grund.agent.v1.AgentService/GetReplicaSecrets"
             | "/grund.agent.v1.AgentService/GetPullCredential"
-    ) || request
-        .extensions()
-        .get::<crate::extension::Extensions>()
-        .is_some_and(|extensions| {
-            extensions.iter().any(|extension| {
-                extension
-                    .secret_procedures()
-                    .contains(&request.uri().path())
-            })
-        });
+    );
+    let secret = secret
+        || request
+            .extensions()
+            .get::<crate::extension::Extensions>()
+            .is_some_and(|extensions| {
+                extensions.iter().any(|extension| {
+                    extension
+                        .secret_procedures()
+                        .contains(&request.uri().path())
+                })
+            });
     let mut response = next.run(request).await;
     if secret {
         response.headers_mut().insert(

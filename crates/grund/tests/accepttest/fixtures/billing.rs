@@ -11,8 +11,6 @@ use tokio::{
 
 pub const TOKEN: &str = "accept-billing-token-0123456789abcdef";
 
-pub const MANAGE_URL: &str = "https://billing.accept.test/manage";
-
 #[derive(Clone, Debug)]
 pub struct Call {
     pub method: String,
@@ -40,11 +38,6 @@ struct Shared {
     deletion: DeletionAnswer,
     account: AccountAnswer,
     plan: String,
-    provider_subscription: bool,
-    complimentary: bool,
-    scheduled: bool,
-    scheduled_plan: String,
-    redirect_url: String,
 }
 
 pub struct FakeBilling {
@@ -80,11 +73,6 @@ impl FakeBilling {
                 "Pro"
             }
             .to_owned(),
-            provider_subscription: !matches!(account, AccountAnswer::Free),
-            complimentary: false,
-            scheduled: false,
-            scheduled_plan: String::new(),
-            redirect_url: "https://billing.accept.test/checkout".to_owned(),
         }));
         let handle = shared.clone();
         let task = tokio::spawn(async move {
@@ -100,16 +88,6 @@ impl FakeBilling {
 
     pub fn answer_deletions(&self, answer: DeletionAnswer) {
         self.shared.lock().deletion = answer;
-    }
-    pub fn checkout_redirect(&self, url: &str) {
-        self.shared.lock().redirect_url = url.to_owned();
-    }
-
-    pub fn confirm_scheduled_discount(&self) {
-        let mut shared = self.shared.lock();
-        shared.complimentary = true;
-        shared.scheduled = false;
-        shared.plan = shared.scheduled_plan.clone();
     }
 
     pub fn calls(&self, method: &str) -> Vec<Call> {
@@ -196,15 +174,7 @@ async fn serve(mut stream: TcpStream, shared: Arc<Mutex<Shared>>) -> anyhow::Res
                 AccountAnswer::Available | AccountAnswer::Delayed(_) | AccountAnswer::Free => (
                     200,
                     serde_json::json!({"account": {
-                        "plan": shared.plan, "status": "ACCOUNT_STATUS_ACTIVE",
-                        "manageUrl": MANAGE_URL, "complimentary": shared.complimentary,
-                        "complimentaryScheduled": shared.scheduled,
-                        "complimentaryScheduledPlan": shared.scheduled_plan,
-                        "complimentaryEffectiveAt": if shared.scheduled { "2099-02-01T00:00:00Z" } else { "" },
-                        "operatorUrl": if shared.provider_subscription { "https://billing.accept.test/dashboard" } else { "" },
-                        "providerSubscriptionId": if shared.provider_subscription { "11111111-1111-4111-8111-111111111111" } else { "" },
-                        "totalAmountCents": if shared.complimentary || shared.plan == "Free" { "0" } else { "1000" },
-                        "currency": "EUR"
+                        "plan": shared.plan, "status": "ACCOUNT_STATUS_ACTIVE"
                     }}),
                     match shared.account {
                         AccountAnswer::Delayed(delay) => delay,
@@ -234,69 +204,6 @@ async fn serve(mut stream: TcpStream, shared: Arc<Mutex<Shared>>) -> anyhow::Res
             },
             "RecordOrganisation" | "RecordMachineCount" | "RecordMachineChange" => {
                 (200, serde_json::json!({}), Duration::ZERO)
-            }
-            "BeginCheckout" => (
-                200,
-                serde_json::json!({"url": shared.redirect_url}),
-                Duration::ZERO,
-            ),
-            "OpenPortal" => (
-                200,
-                serde_json::json!({"url": "https://billing.accept.test/portal"}),
-                Duration::ZERO,
-            ),
-            "ChangePlan" => {
-                shared.plan = shared
-                    .calls
-                    .last()
-                    .and_then(|call| call.body["plan"].as_str())
-                    .unwrap_or("Pro")
-                    .to_owned();
-                (
-                    200,
-                    serde_json::json!({"account": {"plan": shared.plan}}),
-                    Duration::ZERO,
-                )
-            }
-            "CancelSubscription" => (
-                200,
-                serde_json::json!({"account": {"plan": shared.plan}}),
-                Duration::ZERO,
-            ),
-            "SetComplimentary" => {
-                let enabled = shared
-                    .calls
-                    .last()
-                    .and_then(|call| call.body["enabled"].as_bool())
-                    .unwrap_or(false);
-                if enabled && shared.plan != "Free" {
-                    shared.scheduled = true;
-                    shared.scheduled_plan = shared
-                        .calls
-                        .last()
-                        .and_then(|call| call.body["plan"].as_str())
-                        .unwrap_or("Pro")
-                        .to_owned();
-                } else {
-                    shared.scheduled = false;
-                    shared.complimentary = enabled;
-                    if enabled {
-                        shared.plan = shared
-                            .calls
-                            .last()
-                            .and_then(|call| call.body["plan"].as_str())
-                            .filter(|plan| !plan.is_empty())
-                            .unwrap_or("Homelab")
-                            .to_owned();
-                    } else {
-                        shared.plan = "Free".to_owned();
-                    }
-                }
-                (
-                    200,
-                    serde_json::json!({"account": {"plan": shared.plan, "complimentary": shared.complimentary}}),
-                    Duration::ZERO,
-                )
             }
             _ => (
                 404,

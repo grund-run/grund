@@ -7,20 +7,19 @@ package grund.capacity.v1;
 import "google/protobuf/timestamp.proto";
 
 // What grund asks of a capacity provider: somewhere its management pool gets
-// machines from (grund-docs design/machines.md). grund's hosted service uses
-// fleet, which implements this service; a self-hosted grund has no provider
-// and never calls one, and adds machines to its pool by hand. Calls carry
+// machines from (grund-docs design/machines.md). An instance without a provider
+// adds machines to its pool by hand and never calls this service. Calls carry
 // `Authorization: Bearer <token>`, the token grund is configured with
 // (GRUND_CAPACITY_TOKEN), and come from grund's servers only.
 //
 // The enrollment tokens in machine requests are one-time grund_reg_ tokens
-// valid for at most 15 minutes. Fleet holds them only for delivery to the
-// guest, deleting them on confirmation or expiry; they are never returned in
+// valid for at most 15 minutes. The provider holds them only for delivery to
+// the machine, deleting them on confirmation or expiry; they are never returned in
 // inventory or logged. The machine registers itself with grund (`grund join`).
 //
 // Machine lifecycle requests carry idempotency_key; a repeat of the same
 // request returns its first answer. Read requests have no side effects.
-// unavailable means fleet cannot act now; failed_precondition means capacity
+// unavailable means the provider cannot act now; failed_precondition means capacity
 // is unplaceable or the requested machine cannot be acted on.
 service CapacityService {
   // Boots a new machine that will register into grund's management pool
@@ -47,12 +46,12 @@ service CapacityService {
     option idempotency_level = IDEMPOTENT;
   }
 
-  // Configured hosted size/region offers; READY is immediately assignable.
+  // Configured provider size/region offers; READY is immediately assignable.
   rpc ListOffers(ListOffersRequest) returns (ListOffersResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
   }
 
-  // Operator inventory through grund's server only, not a browser fleet token.
+  // Provider inventory through grund's server only, not a browser token.
   rpc ListInventoryHosts(ListInventoryHostsRequest) returns (ListInventoryHostsResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
   }
@@ -69,7 +68,7 @@ service CapacityService {
     option idempotency_level = NO_SIDE_EFFECTS;
   }
 
-  // These actions use fleet's HostService lifecycle decisions.
+  // These actions follow the provider's host lifecycle decisions.
   rpc CordonInventoryHost(CordonInventoryHostRequest) returns (CordonInventoryHostResponse);
   rpc UncordonInventoryHost(UncordonInventoryHostRequest) returns (UncordonInventoryHostResponse);
   rpc DrainInventoryHost(DrainInventoryHostRequest) returns (DrainInventoryHostResponse);

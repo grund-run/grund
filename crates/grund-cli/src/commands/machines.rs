@@ -23,25 +23,6 @@ pub type MachinesCommand = Noun<MachinesAction>;
 pub enum MachinesAction {
     #[command(about = "The organisation's machines, connected or not")]
     List,
-    #[command(about = "List hosted machine sizes and regions available to your organisation")]
-    Offers,
-    #[command(about = "Create a hosted machine in your organisation")]
-    Create {
-        #[arg(value_name = "NAME", help = "Machine name; generated when omitted")]
-        name: Option<String>,
-        #[arg(long, required = true, value_name = "SIZE")]
-        size: String,
-        #[arg(long, value_name = "REGION")]
-        region: Option<String>,
-        #[arg(
-            long,
-            value_name = "KEY",
-            help = "Reuse this key to retry the same creation safely"
-        )]
-        idempotency_key: Option<String>,
-        #[arg(long, help = "Show the request instead of sending it")]
-        dry_run: bool,
-    },
     #[command(about = "One machine: facts, capabilities, labels, whether it is connected")]
     Get {
         #[arg(value_name = "MACHINE", help = "Its name or id")]
@@ -93,9 +74,7 @@ pub enum MachinesAction {
         #[arg(long, help = "Show the request instead of sending it")]
         dry_run: bool,
     },
-    #[command(
-        about = "Remove a machine from the organisation; hosted machines are returned to the service"
-    )]
+    #[command(about = "Remove a machine from the organisation")]
     Remove {
         #[arg(value_name = "MACHINE")]
         machine: String,
@@ -115,33 +94,13 @@ const MACHINES: &[(&str, &str)] = &[
     ("LABELS", "/labels"),
 ];
 
-fn customer_machine(machine: &mut Value) {
-    if let Some(fields) = machine.as_object_mut() {
-        fields.remove("pool");
-        fields.remove("lease");
-        fields.remove("providerMachineId");
-        if let Some(facts) = fields.get_mut("facts").and_then(Value::as_object_mut) {
-            facts.remove("fleetMachineId");
-        }
-    }
-}
-
-fn customer_machines(answer: &mut Value) {
-    if let Some(machines) = answer["machines"].as_array_mut() {
-        for machine in machines {
-            customer_machine(machine);
-        }
-    }
-}
-
 async fn find(api: &Api, org: &str, machine: &str) -> CliResult<Value> {
-    let mut answer = api
+    let answer = api
         .call(
             &format!("{SERVICE}/ListMachines"),
             json!({"organisation": org}),
         )
         .await?;
-    customer_machines(&mut answer);
     answer["machines"]
         .as_array()
         .into_iter()
@@ -160,74 +119,22 @@ pub async fn run(ctx: &Ctx, action: MachinesAction) -> CliResult<Output> {
     let org = ctx.org(&api).await?;
     match action {
         MachinesAction::List => {
-            let mut answer = api
+            let answer = api
                 .call(
                     &format!("{SERVICE}/ListMachines"),
                     json!({"organisation": org}),
                 )
                 .await?;
-            customer_machines(&mut answer);
             Ok(Output::table(answer, "/machines", MACHINES))
-        }
-        MachinesAction::Offers => {
-            let answer = api
-                .call(
-                    &format!("{SERVICE}/ListHostedOffers"),
-                    json!({"organisation": org}),
-                )
-                .await?;
-            Ok(Output::table(
-                answer,
-                "/offers",
-                &[
-                    ("SIZE", "/size"),
-                    ("REGION", "/region"),
-                    ("VCPUS", "/vcpus"),
-                    ("MEMORY (MiB)", "/memoryMib"),
-                    ("DISK (GiB)", "/diskGib"),
-                    ("AVAILABLE", "/available"),
-                ],
-            ))
-        }
-        MachinesAction::Create {
-            name,
-            size,
-            region,
-            idempotency_key,
-            dry_run: preview,
-        } => {
-            let key = idempotency_key.unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
-            let generated = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, key.as_bytes())
-                .simple()
-                .to_string();
-            let request = json!({
-                "organisation": org,
-                "name": name.unwrap_or_else(|| format!("hosted-{}", &generated[..12])),
-                "size": size,
-                "region": region.unwrap_or_default(),
-                "idempotencyKey": key,
-            });
-            if preview {
-                return Ok(dry_run(
-                    &[(format!("{SERVICE}/CreateHostedMachine"), request)],
-                    vec![],
-                ));
-            }
-            let mut answer = api
-                .call(&format!("{SERVICE}/CreateHostedMachine"), request)
-                .await?;
-            customer_machine(&mut answer["machine"]);
-            Ok(Output::fields(answer))
         }
         MachinesAction::Get { machine } => {
             let found = find(&api, &org, &machine).await?;
-            let mut answer = api
+            let answer = api
                 .call(
                     &format!("{SERVICE}/GetMachine"),
                     json!({"organisation": org, "machineId": found["machineId"]}),
                 )
                 .await?;
-            customer_machine(&mut answer["machine"]);
             Ok(Output::fields(answer))
         }
         MachinesAction::Add {
@@ -310,21 +217,19 @@ pub async fn run(ctx: &Ctx, action: MachinesAction) -> CliResult<Output> {
             dry_run: preview,
         } => {
             let found = find(&api, &org, &machine).await?;
-            let hosted = found["hosted"].as_bool().unwrap_or(false);
-            let rpc = if hosted {
-                "RemoveHostedMachine"
-            } else {
-                "RevokeMachine"
-            };
             let request = json!({"organisation": org, "machineId": found["machineId"]});
             if preview {
-                return Ok(dry_run(&[(format!("{SERVICE}/{rpc}"), request)], vec![]));
+                return Ok(dry_run(
+                    &[(format!("{SERVICE}/RevokeMachine"), request)],
+                    vec![],
+                ));
             }
             ctx.confirm(
                 yes,
                 &format!("Remove machine {machine} from the organisation"),
             )?;
-            api.call(&format!("{SERVICE}/{rpc}"), request).await?;
+            api.call(&format!("{SERVICE}/RevokeMachine"), request)
+                .await?;
             Ok(done(format!("Removed {machine}.")))
         }
     }

@@ -1,4 +1,4 @@
-use crate::accepttest::fixtures::{random_hex, testcase, testcase_configured};
+use crate::accepttest::fixtures::testcase;
 
 const PAGES: &[&str] = &[
     "/login",
@@ -111,33 +111,6 @@ async fn every_signed_in_page_renders_in_the_shell_with_nothing_the_csp_forbids(
         .header_contains("content-type", "text/javascript")?
         .header("cache-control", "public, max-age=31536000, immutable")?
         .body_contains("data-copy")?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn build_and_timing_footer_is_only_sent_to_instance_operators() -> anyhow::Result<()> {
-    let operator_name = format!("operator-{}", random_hex(5));
-    let Some((given, when, then)) =
-        testcase_configured(&[("GRUND_OPERATOR_ORGANISATION", &operator_name)]).await?
-    else {
-        return Ok(());
-    };
-    let operator = given.a_signed_in_account_named(&operator_name).await?;
-    when.visiting(&format!("/{}/apps", operator.username))
-        .await?;
-    then.status(200)?
-        .body_contains("id=\"server-timing\"")?
-        .body_contains("id=\"paint-timing\"")?;
-    let (other_given, other_when, other_then) = given.testcase.another_browser();
-    let other = other_given.a_signed_in_account().await?;
-    other_when
-        .visiting(&format!("/{}/apps", other.username))
-        .await?;
-    other_then
-        .status(200)?
-        .body_lacks("id=\"server-timing\"")?
-        .body_lacks("id=\"paint-timing\"")?
-        .body_lacks("admin-timing")?;
     Ok(())
 }
 

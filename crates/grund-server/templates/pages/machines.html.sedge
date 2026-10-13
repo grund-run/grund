@@ -1,5 +1,5 @@
 use crate::templates::compiled::components::{PageHead, Banner, Panel, Button, Icon, MachineRow, EmptyState, Field};
-props crate::web::machines::MachinesPage<'_> { csrf, slug, manages, machines, hosts, vms, editing, disconnected, shown, tabs, operator, run_open, tab, q, notice, error, run_error, run, label_keys, label_values };
+props crate::web::machines::MachinesPage<'_> { csrf, slug, manages, machines, hosts, vms, editing, disconnected, shown, tabs, run_open, tab, q, notice, error, run_error, run, label_keys, label_values };
 
 <PageHead title="Machines" />
 {if !notice.is_empty() { <Banner text={notice} tone="ok" /> }}
@@ -44,7 +44,7 @@ props crate::web::machines::MachinesPage<'_> { csrf, slug, manages, machines, ho
     </form>
   </Panel>
 }}
-{if !machines.is_empty() || *operator {
+{if !machines.is_empty() {
   <div class="tabs-bar"><nav class="tabs" aria-label="Machines">{for (key, href, label) in tabs { <a class={if *tab == *key { "tab is-active" } else { "tab" }} href={href.as_str()} aria-current={if *tab == *key { Some("page") } else { None }} data-tab={key}>{label}{if *key == "disconnected" { <span class="tab-count">{disconnected}</span> }}</a> }}</nav><div class="tabs-tools">
     <form class="search" role="search" method="get" action="/{slug}/machines"><label class="visually-hidden" for="machine-search">Search machines</label><Icon name="search" class="icon-sm search-icon" /><input id="machine-search" name="q" type="search" placeholder="Search machines…" autocomplete="off" value={q} data-filter>{if !tab.is_empty() { <input type="hidden" name="tab" value={tab}> }}</form>
   </div></div>

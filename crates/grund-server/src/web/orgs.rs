@@ -650,7 +650,7 @@ async fn settings_view(
             state: "account",
             plan: details.plan.clone(),
             past_due: details.past_due,
-            manage_url: Some(format!("/{}/settings/billing", membership.slug)),
+            manage_url: None,
         },
         BillingView::Unavailable => BillingPage {
             state: "unavailable",
@@ -676,6 +676,15 @@ async fn settings_view(
         membership.deletion_requested_at.as_ref().map(|_| 3),
         None,
         |viewer, csrf| {
+            let mut billing = billing;
+            if billing.state == "account"
+                && viewer
+                    .navigation
+                    .iter()
+                    .any(|link| link.section == "billing")
+            {
+                billing.manage_url = Some(format!("/{}/settings/billing", membership.slug));
+            }
             crate::templates::compiled::pages::org_settings::render(&SettingsPage {
                 viewer,
                 csrf,

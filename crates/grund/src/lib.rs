@@ -18,8 +18,6 @@
 //! - `edge`: the entry edge, which terminates TLS for app addresses and
 //!   hands each connection to a machine's gate;
 //! - `edges`: mint enrollment tokens for edges, revoke and list them;
-//! - `operator apps`: suspend an app's address, or lift its suspension
-//!   (`grund apps suspend|lift` still works, hidden).
 //!
 //! The rest are the client commands of `grund-cli` (grund-docs
 //! design/cli.md): `login`, `whoami`, `orgs`, `apps`, `machines`, `domains`,
@@ -118,58 +116,8 @@ enum Command {
         about = "Mint a one-time enrollment token for a grund edge, revoke an edge, or list them"
     )]
     Edges(grund_server::relays_command::EdgesCommand),
-    #[command(
-        about = "Operator commands: apps against the database, hosts, pool, leases and entitlements over the instance API"
-    )]
-    Operator(OperatorCommand),
     #[command(flatten)]
     Client(grund_cli::Command),
-}
-
-#[derive(clap::Args)]
-struct OperatorCommand {
-    #[command(subcommand)]
-    action: OperatorAction,
-}
-
-#[derive(Subcommand)]
-enum OperatorAction {
-    #[command(about = "Suspend an app's address, or lift its suspension")]
-    Apps(grund_server::apps_command::AppsCommand),
-    #[command(about = "Hosts: inventory, failures, cordon, uncordon and drain")]
-    Hosts(grund_cli::commands::operator::HostsCommand),
-    #[command(about = "Pool: inventory and direct machine operations")]
-    Pool(grund_cli::commands::operator::PoolCommand),
-    #[command(about = "Leases: list and end current pool leases")]
-    Leases(grund_cli::commands::operator::LeasesCommand),
-    #[command(about = "Hosted access: list, grant and revoke")]
-    Entitlements(grund_cli::commands::operator::EntitlementsCommand),
-    #[command(about = "Billing: inspect and grant or revoke complimentary access")]
-    Billing(grund_cli::commands::operator::BillingCommand),
-}
-
-fn operator_alias(mut args: Vec<String>) -> Vec<String> {
-    let mut words = Vec::new();
-    let mut skip_value = false;
-    for (i, arg) in args.iter().enumerate().skip(1) {
-        if skip_value {
-            skip_value = false;
-        } else if arg == "--log" || arg == "--log-format" {
-            skip_value = true;
-        } else if !arg.starts_with('-') {
-            words.push(i);
-            if words.len() == 2 {
-                break;
-            }
-        }
-    }
-    if let [noun, verb] = words[..]
-        && args[noun] == "apps"
-        && matches!(args[verb].as_str(), "suspend" | "lift")
-    {
-        args.insert(noun, "operator".into());
-    }
-    args
 }
 
 #[derive(clap::Args)]
@@ -321,15 +269,12 @@ async fn agent<R: grund_agent::vm::VmRuntime>(
     }
 }
 
-/// The public command tree for binaries that add their own commands.
+/// The public command tree for a binary that adds optional commands.
 pub fn command() -> clap::Command {
     Cli::command()
 }
 
-/// Runs the public binary with extensions supplied by this distribution.
-///
-/// The factory is only called for `serve`, after validating its configuration;
-/// the installed public binary supplies its existing extension set.
+/// Runs the common grund binary with extensions supplied by this build.
 pub async fn run_with_extensions(
     extensions_for: impl FnOnce(
         &grund_server::config::ServeConfig,
@@ -342,7 +287,7 @@ pub async fn run_with_extensions(
     grund_server::health::set_revision(revision);
     grund_server::health::set_build_time(built);
     grund_tls::install_default();
-    let args = operator_alias(std::env::args().collect());
+    let args: Vec<String> = std::env::args().collect();
     let cli = match Cli::try_parse_from(&args) {
         Ok(cli) => cli,
         Err(error) => match grund_cli::usage_error(&error, &args) {
@@ -353,44 +298,6 @@ pub async fn run_with_extensions(
     if let Command::Client(command) = cli.command {
         let status = grund_cli::run(command, Cli::command(), revision).await;
         std::process::exit(status);
-    }
-    if matches!(
-        &cli.command,
-        Command::Operator(OperatorCommand {
-            action: OperatorAction::Hosts(_)
-                | OperatorAction::Pool(_)
-                | OperatorAction::Leases(_)
-                | OperatorAction::Entitlements(_)
-                | OperatorAction::Billing(_)
-        })
-    ) {
-        let Command::Operator(OperatorCommand { action }) = cli.command else {
-            unreachable!("checked above")
-        };
-        let (global, action) = match action {
-            OperatorAction::Hosts(command) => (
-                command.global,
-                grund_cli::commands::operator::OperatorClientAction::Hosts(command.action),
-            ),
-            OperatorAction::Pool(command) => (
-                command.global,
-                grund_cli::commands::operator::OperatorClientAction::Pool(command.action),
-            ),
-            OperatorAction::Leases(command) => (
-                command.global,
-                grund_cli::commands::operator::OperatorClientAction::Leases(command.action),
-            ),
-            OperatorAction::Entitlements(command) => (
-                command.global,
-                grund_cli::commands::operator::OperatorClientAction::Entitlements(command.action),
-            ),
-            OperatorAction::Billing(command) => (
-                command.global,
-                grund_cli::commands::operator::OperatorClientAction::Billing(command.action),
-            ),
-            OperatorAction::Apps(_) => unreachable!("operator apps remains database-only"),
-        };
-        std::process::exit(grund_cli::commands::operator::run(global, action).await);
     }
     let to_stderr = matches!(cli.command, Command::Doctor(_) | Command::SetupLink(_));
     let service = match &cli.command {
@@ -423,10 +330,6 @@ pub async fn run_with_extensions(
         Command::Relays(command) => grund_server::relays_command::run(command).await,
         Command::Edge(command) => grund_server::edge::run(command).await,
         Command::Edges(command) => grund_server::relays_command::run_edges(command).await,
-        Command::Operator(OperatorCommand {
-            action: OperatorAction::Apps(command),
-        }) => grund_server::apps_command::run(command).await,
-        Command::Operator(_) => unreachable!("Connect-backed operator commands returned above"),
         Command::Client(_) => unreachable!("client commands returned above"),
         Command::Agent(command) => match command.vm_runtime.as_str() {
             "simulated" => {
@@ -454,46 +357,6 @@ mod tests {
     #[test]
     fn the_command_definition_is_internally_consistent() {
         Cli::command().debug_assert();
-    }
-
-    #[test]
-    fn operator_connect_commands_are_described_and_destructive_ones_require_confirmation() {
-        let paths = grund_cli::describe::leaves(&Cli::command());
-        for (path, _, _) in paths.iter().filter(|(path, _, _)| {
-            path.starts_with("operator ") && !path.starts_with("operator apps ")
-        }) {
-            assert_eq!(
-                grund_cli::meta::LEAVES
-                    .iter()
-                    .filter(|leaf| leaf.path == path.as_str())
-                    .count(),
-                1,
-                "grund {path} needs exactly one metadata entry"
-            );
-        }
-        for leaf in grund_cli::meta::LEAVES
-            .iter()
-            .filter(|leaf| leaf.path.starts_with("operator "))
-        {
-            let (_, _, args) = paths
-                .iter()
-                .find(|(path, _, _)| path == leaf.path)
-                .unwrap_or_else(|| panic!("grund {} has metadata but no command", leaf.path));
-            if leaf.destructive {
-                assert!(
-                    args.iter().any(|arg| arg.get_id() == "yes"),
-                    "grund {} requires --yes",
-                    leaf.path
-                );
-            }
-            if leaf.mutates {
-                assert!(
-                    args.iter().any(|arg| arg.get_id() == "dry_run"),
-                    "grund {} requires --dry-run",
-                    leaf.path
-                );
-            }
-        }
     }
 
     #[test]
@@ -551,29 +414,6 @@ mod tests {
             stored == text,
             "schema/cli.json is not what grund describe --json prints; regenerate it with \
              GRUND_WRITE_SCHEMA=1 cargo test -p grund describe_json"
-        );
-    }
-
-    #[test]
-    fn the_old_operator_spelling_still_reaches_the_operator_command() {
-        let args = |line: &str| line.split(' ').map(str::to_string).collect::<Vec<_>>();
-        assert_eq!(
-            operator_alias(args("grund apps suspend acme/shop --reason x")),
-            args("grund operator apps suspend acme/shop --reason x")
-        );
-        assert_eq!(
-            operator_alias(args("grund --log warn apps lift acme/shop")),
-            args("grund --log warn operator apps lift acme/shop")
-        );
-        assert_eq!(
-            operator_alias(args("grund apps list")),
-            args("grund apps list")
-        );
-        assert!(
-            Cli::try_parse_from(operator_alias(args(
-                "grund apps suspend acme/shop --reason x"
-            )))
-            .is_ok()
         );
     }
 

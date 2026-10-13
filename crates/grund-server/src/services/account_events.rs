@@ -85,14 +85,9 @@ impl Reporter {
             .user_agent("grund")
             .build()
             .context("build the HTTP client for account events")?;
-        let target = config.endpoint().map(|(url, token)| {
-            let url = if config.url.is_some() {
-                url.to_owned()
-            } else {
-                format!("{url}/v1/accounts")
-            };
-            (url, token.to_owned())
-        });
+        let target = config
+            .endpoint()
+            .map(|(url, token)| (url.to_owned(), token.to_owned()));
         Ok(Self { target, http })
     }
 

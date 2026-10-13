@@ -1,13 +1,13 @@
 //! Optional features attach routes, services and capacity providers through
-//! this seam without changing the public server's default hosted behavior.
+//! this seam without changing the open core's behavior.
 
 use std::{future::Future, pin::Pin, sync::Arc};
 
+use notmad::{Component, ComponentInfo, MadError};
+use tokio_util::sync::CancellationToken;
+
 use chrono::{DateTime, Utc};
 use connectrpc::Router as ConnectRouter;
-use notmad::{Component, ComponentInfo, MadError};
-use sqlx::PgConnection;
-use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::{
@@ -20,6 +20,7 @@ use crate::{
     state::State,
     web::pages::{NavLink, TypedViewer},
 };
+use sqlx::{PgConnection, PgPool};
 
 /// A way to sign in that an extension offers on the sign-in page.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -34,7 +35,6 @@ pub struct MachineAddOption {
     pub title: &'static str,
     pub href: String,
 }
-
 /// An extension-owned machine visible in an organisation's machine list.
 pub struct ExternalMachine {
     pub id: Uuid,
@@ -46,10 +46,10 @@ pub struct ExternalMachine {
     pub os: Option<&'static str>,
 }
 
-/// Public virtual-machine identifier, underlying machine identifier and lease start.
+/// A virtual machine's public ID, physical machine ID and lease timestamp.
 pub type VmAlias = (Uuid, Uuid, DateTime<Utc>);
 
-/// A worker owned by an optional extension and drained with the server.
+/// Long-running work owned by an extension.
 pub type ExtensionWorker = Pin<Box<dyn Future<Output = Result<(), MadError>> + Send>>;
 
 /// A feature built outside the core.
@@ -60,18 +60,20 @@ pub trait Extension: Send + Sync + 'static {
     /// Routes to merge into the page router, under the same middleware as
     /// the core's pages.
     fn routes(&self) -> axum::Router<State>;
-
-    /// Opt out of the legacy provider's routes and services when this extension
-    /// supplies replacements. The default keeps public hosted behavior intact.
-    fn replaces_builtin_hosted(&self) -> bool {
-        false
+    /// Apply extension-owned migrations after the public migration chain.
+    fn migrate<'a>(
+        &'a self,
+        _pool: &'a PgPool,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
     }
 
-    /// Connect services contributed by this extension.
+    /// Connect services contributed by this extension, on the session-authenticated API.
     fn connect_services(&self, router: ConnectRouter, _state: &State) -> ConnectRouter {
         router
     }
 
+    /// Names of the Connect services this extension registers.
     fn connect_service_names(&self) -> &'static [&'static str] {
         &[]
     }
@@ -80,16 +82,16 @@ pub trait Extension: Send + Sync + 'static {
     fn authorization(&self) -> &'static [(&'static str, Requirement)] {
         &[]
     }
-
     /// Procedures returning one-time secrets that must not be cached or compressed.
     fn secret_procedures(&self) -> &'static [&'static str] {
         &[]
     }
 
+    /// Navigation links visible to this viewer.
     fn navigation(&self, _viewer: &TypedViewer) -> Vec<NavLink> {
         Vec::new()
     }
-
+    /// The organisation allowed to operate extension-owned infrastructure.
     fn operator_organisation<'a>(
         &'a self,
         _state: &'a State,
@@ -97,6 +99,7 @@ pub trait Extension: Send + Sync + 'static {
         Box::pin(async { Ok(None) })
     }
 
+    /// Records an extension-owned migration timeout in the current transaction.
     fn migration_timeout<'a>(
         &'a self,
         _state: &'a State,
@@ -108,6 +111,7 @@ pub trait Extension: Send + Sync + 'static {
         Box::pin(async { Ok(()) })
     }
 
+    /// A capacity provider for this instance, if this extension supplies one.
     fn capacity_provider(
         &self,
         _config: &ServeConfig,
@@ -115,14 +119,17 @@ pub trait Extension: Send + Sync + 'static {
         Ok(None)
     }
 
+    /// Handles an enrollment that requires extension-owned state.
     fn hosted_enrollment(&self, _state: &State) -> Option<Box<dyn HostedEnrollment>> {
         None
     }
 
+    /// Records a provider-managed lease in the same machine transaction.
     fn lease_recorder(&self, _state: &State) -> Option<Box<dyn LeaseRecorder>> {
         None
     }
 
+    /// An optional machine-creation path for the given organisation.
     fn machine_add_option<'a>(
         &'a self,
         _state: &'a State,
@@ -131,7 +138,7 @@ pub trait Extension: Send + Sync + 'static {
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<MachineAddOption>>> + Send + 'a>> {
         Box::pin(async { Ok(None) })
     }
-
+    /// Lists extension-owned machines alongside the organisation's own machines.
     fn machine_listings<'a>(
         &'a self,
         _state: &'a State,
@@ -140,7 +147,7 @@ pub trait Extension: Send + Sync + 'static {
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<ExternalMachine>>> + Send + 'a>> {
         Box::pin(async { Ok(Vec::new()) })
     }
-
+    /// Resolves an extension-owned identifier within its organisation.
     fn machine_alias<'a>(
         &'a self,
         _state: &'a State,
@@ -150,12 +157,33 @@ pub trait Extension: Send + Sync + 'static {
         Box::pin(async { Ok(None) })
     }
 
+    /// Public identifiers for virtual machines running on extension-owned machines.
     fn vm_aliases<'a>(
         &'a self,
         _state: &'a State,
         _organisation_id: Uuid,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<VmAlias>>> + Send + 'a>> {
         Box::pin(async { Ok(Vec::new()) })
+    }
+
+    /// Queue a machine transition inside the transaction that changed it.
+    fn queue_machine_change<'a>(
+        &'a self,
+        _state: &'a State,
+        _connection: &'a mut PgConnection,
+        _machine_id: Uuid,
+        _change: &'a str,
+        _at: DateTime<Utc>,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    /// Sample the completed UTC hour, including missed hours after downtime.
+    fn sample_machine_counts<'a>(
+        &'a self,
+        _state: &'a State,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
     }
 
     /// Long-running work drained before the outbox.
@@ -169,8 +197,7 @@ pub trait Extension: Send + Sync + 'static {
         Vec::new()
     }
 }
-
-/// Runs extension workers under the same shutdown lifecycle as the core.
+/// Runs all extension workers under the same shutdown lifecycle as the core.
 pub struct ExtensionWork(pub State);
 
 impl Component for ExtensionWork {

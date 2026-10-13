@@ -2,15 +2,15 @@
 //!
 //! The token and the instance's URL come from the command line (a customer's
 //! machine, `grund join --url https://grund.example.com grund_join_…`) or from
-//! fleet's metadata service (`grund join --mmds`, in a grund machine's guest:
-//! MMDS V2 at 169.254.169.254, `{ grund: { url, enrollment_token }, fleet: {
-//! machine_id } }`). Nothing else differs between the two.
+//! a provider's metadata service (`grund join --mmds`, in a machine's guest:
+//! MMDS V2 at 169.254.169.254). The `fleet.machine_id` JSON key remains for
+//! compatibility with existing metadata producers. Nothing else differs.
 //!
 //! The machine key is written before the instance is asked, so a response
 //! lost on the way back is not a stranded machine: running `grund join` again
 //! with the same token and the same key gets the same answer (the instance
 //! replays it). Once registered, `grund join` changes nothing and says so,
-//! which is what lets fleet's guest supervise it with restarts.
+//! which lets a guest supervisor restart it safely.
 
 use std::{
     io::Write,
@@ -53,8 +53,8 @@ pub struct JoinArgs {
     #[arg(long, env = "GRUND_URL")]
     pub url: Option<String>,
 
-    /// Read the URL and the setup code from fleet's metadata service (a grund
-    /// machine's guest).
+    /// Read the URL and setup code from the machine provider's metadata
+    /// service.
     #[arg(long)]
     pub mmds: bool,
 

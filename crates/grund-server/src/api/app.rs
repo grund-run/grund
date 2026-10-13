@@ -542,14 +542,20 @@ impl AppApi {
         Ok(membership)
     }
 
-    async fn hosted_ids(
+    async fn machine_aliases(
         &self,
         organisation_id: uuid::Uuid,
     ) -> Result<Vec<(uuid::Uuid, uuid::Uuid, DateTime<Utc>)>, ConnectError> {
-        self.state
-            .vm_aliases(organisation_id)
-            .await
-            .map_err(|error| failed(AppsError::Internal(error)))
+        let mut aliases = Vec::new();
+        for extension in self.state.extensions.iter() {
+            aliases.extend(
+                extension
+                    .vm_aliases(&self.state, organisation_id)
+                    .await
+                    .map_err(|error| failed(AppsError::Internal(error)))?,
+            );
+        }
+        Ok(aliases)
     }
 
     async fn customer_app(
@@ -560,7 +566,7 @@ impl AppApi {
         let history = if view.replicas.is_empty() {
             Vec::new()
         } else {
-            self.hosted_ids(organisation_id).await?
+            self.machine_aliases(organisation_id).await?
         };
         Ok(app_message(view, &history))
     }
@@ -637,7 +643,7 @@ impl AppService for AppApi {
             .await
             .map_err(failed)?;
         let history = if views.iter().any(|view| !view.replicas.is_empty()) {
-            self.hosted_ids(membership.organisation_id).await?
+            self.machine_aliases(membership.organisation_id).await?
         } else {
             Vec::new()
         };

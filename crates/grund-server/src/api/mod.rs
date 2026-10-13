@@ -31,7 +31,7 @@
 //! custom domains, members, invitations and registry logins.
 //! Everything else stays
 //! session-only: the account and its sessions, creating, renaming and
-//! deleting organisations, tokens, and the management pool. A token acts
+//! deleting organisations, and tokens. A token acts
 //! only on its own organisation; any other is `not_found`, as for a
 //! non-member.
 
@@ -45,7 +45,6 @@ pub mod enrollment;
 pub mod login;
 pub mod machine;
 pub mod notifications;
-pub mod operator;
 pub mod organisation;
 pub mod registry;
 pub mod relay_access;
@@ -74,9 +73,8 @@ use grund_proto::grund::{
     domain::v1::DOMAIN_SERVICE_SERVICE_NAME,
     edge::v1::{EDGE_ENROLLMENT_SERVICE_SERVICE_NAME, EDGE_SERVICE_SERVICE_NAME},
     login::v1::DEVICE_LOGIN_SERVICE_SERVICE_NAME,
-    machine::v1::{MACHINE_SERVICE_SERVICE_NAME, MANAGEMENT_POOL_SERVICE_SERVICE_NAME},
+    machine::v1::MACHINE_SERVICE_SERVICE_NAME,
     notification::v1::NOTIFICATION_SERVICE_SERVICE_NAME,
-    operator::v1::OPERATOR_SERVICE_SERVICE_NAME,
     organisation::v1::ORGANISATION_SERVICE_SERVICE_NAME,
     registry::v1::REGISTRY_SERVICE_SERVICE_NAME,
     relay::v1::RELAY_ENROLLMENT_SERVICE_SERVICE_NAME,
@@ -146,7 +144,7 @@ pub enum Requirement {
     /// An enrolled `grund edge`, proven by its key's signature
     /// ([`authenticate_edge`]): its route table and usage.
     Edge,
-    /// Fleet, authenticated by GRUND_CAPACITY_TOKEN for a management machine.
+    /// A configured capacity provider, authenticated by GRUND_CAPACITY_TOKEN.
     Capacity,
 }
 
@@ -212,102 +210,6 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
     (
         "/grund.agent.v1.MachineEnrollmentService/EnrollMachine",
         Requirement::Token,
-    ),
-    (
-        "/grund.operator.v1.OperatorService/ListHosts",
-        Requirement::Session,
-    ),
-    (
-        "/grund.operator.v1.OperatorService/ListFleetMachines",
-        Requirement::Session,
-    ),
-    (
-        "/grund.operator.v1.OperatorService/ListPools",
-        Requirement::Session,
-    ),
-    (
-        "/grund.operator.v1.OperatorService/ListFailures",
-        Requirement::Session,
-    ),
-    (
-        "/grund.operator.v1.OperatorService/CordonHost",
-        Requirement::Session,
-    ),
-    (
-        "/grund.operator.v1.OperatorService/UncordonHost",
-        Requirement::Session,
-    ),
-    (
-        "/grund.operator.v1.OperatorService/DrainHost",
-        Requirement::Session,
-    ),
-    (
-        "/grund.operator.v1.OperatorService/ListEntitlements",
-        Requirement::Session,
-    ),
-    (
-        "/grund.operator.v1.OperatorService/SetHostedEntitlement",
-        Requirement::Session,
-    ),
-    (
-        "/grund.operator.v1.OperatorService/GetBillingAccount",
-        Requirement::Session,
-    ),
-    (
-        "/grund.operator.v1.OperatorService/SetComplimentary",
-        Requirement::Session,
-    ),
-    (
-        "/grund.machine.v1.MachineService/ListHostedOffers",
-        Requirement::SessionOrFullToken,
-    ),
-    (
-        "/grund.machine.v1.MachineService/CreateHostedMachine",
-        Requirement::SessionOrFullToken,
-    ),
-    (
-        "/grund.machine.v1.MachineService/RemoveHostedMachine",
-        Requirement::SessionOrFullToken,
-    ),
-    (
-        "/grund.machine.v1.ManagementPoolService/CreateRegistrationToken",
-        Requirement::Session,
-    ),
-    (
-        "/grund.machine.v1.ManagementPoolService/CreateReregistrationToken",
-        Requirement::Session,
-    ),
-    (
-        "/grund.machine.v1.ManagementPoolService/ListPoolMachines",
-        Requirement::Session,
-    ),
-    (
-        "/grund.machine.v1.ManagementPoolService/GetPoolMachine",
-        Requirement::Session,
-    ),
-    (
-        "/grund.machine.v1.ManagementPoolService/LeaseMachine",
-        Requirement::Session,
-    ),
-    (
-        "/grund.machine.v1.ManagementPoolService/EndLease",
-        Requirement::Session,
-    ),
-    (
-        "/grund.machine.v1.ManagementPoolService/RevokePoolMachine",
-        Requirement::Session,
-    ),
-    (
-        "/grund.machine.v1.ManagementPoolService/ProvisionPoolMachine",
-        Requirement::Session,
-    ),
-    (
-        "/grund.machine.v1.ManagementPoolService/RebuildPoolMachine",
-        Requirement::Session,
-    ),
-    (
-        "/grund.machine.v1.ManagementPoolService/SetMigrationPause",
-        Requirement::Capacity,
     ),
     (
         "/grund.machine.v1.MachineService/CreateJoinToken",
@@ -615,10 +517,6 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
 
 /// The API routes, to merge into the page router.
 pub fn router(state: State) -> axum::Router {
-    let replaces_builtin_hosted = state
-        .extensions
-        .iter()
-        .any(|extension| extension.replaces_builtin_hosted());
     let extension_services: Vec<_> = state
         .extensions
         .iter()
@@ -638,19 +536,6 @@ pub fn router(state: State) -> axum::Router {
                 .with_default_timeout(Duration::from_secs(10)),
         )
         .with_interceptor(Authorize::new(&state));
-    let legacy_hosted = if replaces_builtin_hosted {
-        axum::Router::new()
-    } else {
-        axum::Router::new()
-            .route_service(
-                &format!("/{MANAGEMENT_POOL_SERVICE_SERVICE_NAME}/{{method}}"),
-                service.clone(),
-            )
-            .route_service(
-                &format!("/{OPERATOR_SERVICE_SERVICE_NAME}/{{method}}"),
-                service.clone(),
-            )
-    };
     axum::Router::new()
         .route_service(
             &format!("/{ACCOUNT_SERVICE_SERVICE_NAME}/{{method}}"),
@@ -688,7 +573,6 @@ pub fn router(state: State) -> axum::Router {
             &format!("/{REGISTRY_SERVICE_SERVICE_NAME}/{{method}}"),
             registry_service(state.clone()),
         )
-        .merge(legacy_hosted)
         .merge(
             extension_services
                 .into_iter()
@@ -1110,17 +994,6 @@ pub fn connect_router(state: State) -> connectrpc::Router {
         .add_service(Arc::new(login::LoginApi::new(state.clone())))
         .add_service(Arc::new(token::TokenApi::new(state.clone())))
         .add_service(Arc::new(agent::AgentApi::new(state.clone())));
-    let router = if state
-        .extensions
-        .iter()
-        .any(|extension| extension.replaces_builtin_hosted())
-    {
-        router
-    } else {
-        router
-            .add_service(Arc::new(machine::ManagementPoolApi::new(state.clone())))
-            .add_service(Arc::new(operator::OperatorApi::new(state.clone())))
-    };
     state.extensions.iter().fold(router, |router, extension| {
         extension.connect_services(router, &state)
     })
@@ -1151,13 +1024,11 @@ pub async fn authenticate(
             .unwrap_or_default()
             .trim()
             .to_string();
-        if request.uri().path() == "/grund.machine.v1.ManagementPoolService/SetMigrationPause"
-            || state.extensions.iter().any(|extension| {
-                extension.authorization().iter().any(|(path, requirement)| {
-                    *path == request.uri().path() && *requirement == Requirement::Capacity
-                })
+        if state.extensions.iter().any(|extension| {
+            extension.authorization().iter().any(|(path, requirement)| {
+                *path == request.uri().path() && *requirement == Requirement::Capacity
             })
-        {
+        }) {
             let valid = state
                 .config
                 .capacity
@@ -1260,7 +1131,7 @@ impl Authorize {
     }
 }
 
-/// Whether the caller stamped on `ctx` meets the public authorization table.
+/// Whether the caller stamped on `ctx` meets the public contract.
 pub fn authorized(ctx: &connectrpc::RequestContext) -> Result<(), ConnectError> {
     authorized_with_extensions(ctx, &[])
 }
@@ -1268,28 +1139,14 @@ pub fn authorized(ctx: &connectrpc::RequestContext) -> Result<(), ConnectError> 
 /// Checks public and extension procedures, denying unlisted procedures.
 pub fn authorized_with_extensions(
     ctx: &connectrpc::RequestContext,
-    contributed: &[Arc<dyn crate::extension::Extension>],
+    extensions: &[Arc<dyn crate::extension::Extension>],
 ) -> Result<(), ConnectError> {
     let path = ctx.path().unwrap_or_default();
-    if contributed
-        .iter()
-        .any(|extension| extension.replaces_builtin_hosted())
-        && matches!(
-            path,
-            "/grund.machine.v1.MachineService/ListHostedOffers"
-                | "/grund.machine.v1.MachineService/CreateHostedMachine"
-                | "/grund.machine.v1.MachineService/RemoveHostedMachine"
-        )
-    {
-        return Err(ConnectError::unimplemented(
-            "the built-in hosted machine API is not installed",
-        ));
-    }
     let requirement = AUTHORIZATION
         .iter()
         .copied()
         .chain(
-            contributed
+            extensions
                 .iter()
                 .flat_map(|extension| extension.authorization().iter().copied()),
         )
@@ -1452,8 +1309,7 @@ mod tests {
 
     use grund_proto::grund::{
         agent::v1 as agent, app::v1 as app_proto, certificates::v1 as certificates_proto,
-        machine::v1 as machine, operator::v1 as operator_proto, organisation::v1 as org,
-        volume::v1 as volume_proto,
+        machine::v1 as machine, organisation::v1 as org, volume::v1 as volume_proto,
     };
 
     use super::*;
@@ -1568,82 +1424,6 @@ mod tests {
         }
     }
 
-    struct UnusedPool;
-
-    #[allow(refining_impl_trait)]
-    impl machine::ManagementPoolService for UnusedPool {
-        async fn create_registration_token(
-            &self,
-            _: RequestContext,
-            _: ServiceRequest<'_, machine::CreateRegistrationTokenRequest>,
-        ) -> ServiceResult<machine::CreateRegistrationTokenResponse> {
-            unreachable!()
-        }
-        async fn create_reregistration_token(
-            &self,
-            _: RequestContext,
-            _: ServiceRequest<'_, machine::CreateReregistrationTokenRequest>,
-        ) -> ServiceResult<machine::CreateReregistrationTokenResponse> {
-            unreachable!()
-        }
-        async fn list_pool_machines(
-            &self,
-            _: RequestContext,
-            _: ServiceRequest<'_, machine::ListPoolMachinesRequest>,
-        ) -> ServiceResult<machine::ListPoolMachinesResponse> {
-            unreachable!()
-        }
-        async fn get_pool_machine(
-            &self,
-            _: RequestContext,
-            _: ServiceRequest<'_, machine::GetPoolMachineRequest>,
-        ) -> ServiceResult<machine::GetPoolMachineResponse> {
-            unreachable!()
-        }
-        async fn lease_machine(
-            &self,
-            _: RequestContext,
-            _: ServiceRequest<'_, machine::LeaseMachineRequest>,
-        ) -> ServiceResult<machine::LeaseMachineResponse> {
-            unreachable!()
-        }
-        async fn end_lease(
-            &self,
-            _: RequestContext,
-            _: ServiceRequest<'_, machine::EndLeaseRequest>,
-        ) -> ServiceResult<machine::EndLeaseResponse> {
-            unreachable!()
-        }
-        async fn revoke_pool_machine(
-            &self,
-            _: RequestContext,
-            _: ServiceRequest<'_, machine::RevokePoolMachineRequest>,
-        ) -> ServiceResult<machine::RevokePoolMachineResponse> {
-            unreachable!()
-        }
-        async fn provision_pool_machine(
-            &self,
-            _: RequestContext,
-            _: ServiceRequest<'_, machine::ProvisionPoolMachineRequest>,
-        ) -> ServiceResult<machine::ProvisionPoolMachineResponse> {
-            unreachable!()
-        }
-        async fn rebuild_pool_machine(
-            &self,
-            _: RequestContext,
-            _: ServiceRequest<'_, machine::RebuildPoolMachineRequest>,
-        ) -> ServiceResult<machine::RebuildPoolMachineResponse> {
-            unreachable!()
-        }
-        async fn set_migration_pause(
-            &self,
-            _: RequestContext,
-            _: ServiceRequest<'_, machine::SetMigrationPauseRequest>,
-        ) -> ServiceResult<machine::SetMigrationPauseResponse> {
-            unreachable!()
-        }
-    }
-
     struct UnusedMachines;
 
     #[allow(refining_impl_trait)]
@@ -1653,27 +1433,6 @@ mod tests {
             _: RequestContext,
             _: ServiceRequest<'_, machine::CreateJoinTokenRequest>,
         ) -> ServiceResult<machine::CreateJoinTokenResponse> {
-            unreachable!()
-        }
-        async fn list_hosted_offers(
-            &self,
-            _: RequestContext,
-            _: ServiceRequest<'_, machine::ListHostedOffersRequest>,
-        ) -> ServiceResult<machine::ListHostedOffersResponse> {
-            unreachable!()
-        }
-        async fn create_hosted_machine(
-            &self,
-            _: RequestContext,
-            _: ServiceRequest<'_, machine::CreateHostedMachineRequest>,
-        ) -> ServiceResult<machine::CreateHostedMachineResponse> {
-            unreachable!()
-        }
-        async fn remove_hosted_machine(
-            &self,
-            _: RequestContext,
-            _: ServiceRequest<'_, machine::RemoveHostedMachineRequest>,
-        ) -> ServiceResult<machine::RemoveHostedMachineResponse> {
             unreachable!()
         }
         async fn list_machines(
@@ -1744,89 +1503,6 @@ mod tests {
             _: RequestContext,
             _: ServiceRequest<'_, machine::ListVmsRequest>,
         ) -> ServiceResult<machine::ListVmsResponse> {
-            unreachable!()
-        }
-    }
-
-    struct UnusedOperator;
-
-    #[allow(refining_impl_trait)]
-    impl operator_proto::OperatorService for UnusedOperator {
-        async fn list_hosts(
-            &self,
-            _: RequestContext,
-            _: ServiceRequest<'_, operator_proto::ListHostsRequest>,
-        ) -> ServiceResult<operator_proto::ListHostsResponse> {
-            unreachable!()
-        }
-        async fn list_fleet_machines(
-            &self,
-            _: RequestContext,
-            _: ServiceRequest<'_, operator_proto::ListFleetMachinesRequest>,
-        ) -> ServiceResult<operator_proto::ListFleetMachinesResponse> {
-            unreachable!()
-        }
-        async fn list_pools(
-            &self,
-            _: RequestContext,
-            _: ServiceRequest<'_, operator_proto::ListPoolsRequest>,
-        ) -> ServiceResult<operator_proto::ListPoolsResponse> {
-            unreachable!()
-        }
-        async fn list_failures(
-            &self,
-            _: RequestContext,
-            _: ServiceRequest<'_, operator_proto::ListFailuresRequest>,
-        ) -> ServiceResult<operator_proto::ListFailuresResponse> {
-            unreachable!()
-        }
-        async fn cordon_host(
-            &self,
-            _: RequestContext,
-            _: ServiceRequest<'_, operator_proto::CordonHostRequest>,
-        ) -> ServiceResult<operator_proto::CordonHostResponse> {
-            unreachable!()
-        }
-        async fn uncordon_host(
-            &self,
-            _: RequestContext,
-            _: ServiceRequest<'_, operator_proto::UncordonHostRequest>,
-        ) -> ServiceResult<operator_proto::UncordonHostResponse> {
-            unreachable!()
-        }
-        async fn drain_host(
-            &self,
-            _: RequestContext,
-            _: ServiceRequest<'_, operator_proto::DrainHostRequest>,
-        ) -> ServiceResult<operator_proto::DrainHostResponse> {
-            unreachable!()
-        }
-        async fn list_entitlements(
-            &self,
-            _: RequestContext,
-            _: ServiceRequest<'_, operator_proto::ListEntitlementsRequest>,
-        ) -> ServiceResult<operator_proto::ListEntitlementsResponse> {
-            unreachable!()
-        }
-        async fn set_hosted_entitlement(
-            &self,
-            _: RequestContext,
-            _: ServiceRequest<'_, operator_proto::SetHostedEntitlementRequest>,
-        ) -> ServiceResult<operator_proto::SetHostedEntitlementResponse> {
-            unreachable!()
-        }
-        async fn get_billing_account(
-            &self,
-            _: RequestContext,
-            _: ServiceRequest<'_, operator_proto::GetBillingAccountRequest>,
-        ) -> ServiceResult<operator_proto::GetBillingAccountResponse> {
-            unreachable!()
-        }
-        async fn set_complimentary(
-            &self,
-            _: RequestContext,
-            _: ServiceRequest<'_, operator_proto::SetComplimentaryRequest>,
-        ) -> ServiceResult<operator_proto::SetComplimentaryResponse> {
             unreachable!()
         }
     }
@@ -2455,7 +2131,6 @@ mod tests {
             "/grund.organisation.v1.OrganisationService/DeleteOrganisation",
             "/grund.token.v1.TokenService/CreateToken",
             "/grund.token.v1.TokenService/RevokeToken",
-            "/grund.machine.v1.ManagementPoolService/LeaseMachine",
         ] {
             assert!(session_only.contains(&required), "{required}");
         }
@@ -2504,9 +2179,7 @@ mod tests {
         }
         for path in &for_full {
             assert!(
-                !path.contains("TokenService")
-                    && !path.contains("AccountService")
-                    && !path.contains("ManagementPoolService"),
+                !path.contains("TokenService") && !path.contains("AccountService"),
                 "{path}"
             );
             authorized(&context(path, &["full_token"])).unwrap();
@@ -2599,9 +2272,7 @@ mod tests {
         let router = connectrpc::Router::new()
             .add_service(Arc::new(Unused))
             .add_service(Arc::new(UnusedOrganisations))
-            .add_service(Arc::new(UnusedPool))
             .add_service(Arc::new(UnusedMachines))
-            .add_service(Arc::new(UnusedOperator))
             .add_service(Arc::new(UnusedEnrollment))
             .add_service(Arc::new(UnusedRelayEnrollment))
             .add_service(Arc::new(UnusedEdges))

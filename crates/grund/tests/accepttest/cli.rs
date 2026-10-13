@@ -329,17 +329,6 @@ async fn an_agent_with_a_token_deploys_from_grund_yaml_reads_status_scales_rolls
         listed["machines"].as_array().map(Vec::len) == Some(2),
         "{listed:#}"
     );
-    anyhow::ensure!(
-        listed["machines"]
-            .as_array()
-            .is_some_and(
-                |machines| machines.iter().all(|machine| machine.get("pool").is_none()
-                    && machine.get("lease").is_none()
-                    && machine.get("providerMachineId").is_none()
-                    && machine["facts"].get("fleetMachineId").is_none())
-            ),
-        "customer machine listing exposed management details: {listed:#}"
-    );
     let tokens = shell.run(&["tokens", "list", "--json"]).await?;
     anyhow::ensure!(
         tokens.status == 4,
@@ -612,16 +601,18 @@ async fn the_cli_describes_itself_and_refuses_a_bad_line_as_json_without_an_inst
     anyhow::ensure!(
         document["commands"].as_array().is_some_and(|commands| {
             commands.iter().any(|command| {
-                command["path"] == "machines create"
-                    && command["output"]["$ref"]
-                        == "#/$defs/grund.machine.v1.CreateHostedMachineResponse"
+                command["path"] == "machines add"
+                    && command["output"]["$ref"] == "#/$defs/grund.cli.v1.MachineAdded"
             }) && commands.iter().any(|command| {
-                command["path"] == "operator entitlements revoke"
-                    && command["output"]["$ref"]
-                        == "#/$defs/grund.operator.v1.SetHostedEntitlementResponse"
+                command["path"] == "machines remove"
+                    && command["rpcs"].as_array().is_some_and(|rpcs| {
+                        matches!(rpcs.as_slice(), [listed, revoked]
+                            if listed == "grund.machine.v1.MachineService/ListMachines"
+                                && revoked == "grund.machine.v1.MachineService/RevokeMachine")
+                    })
             })
         }),
-        "describe omitted hosted or operator CLI output contracts"
+        "describe must expose generic machine commands"
     );
     let bad = shell
         .run(&["apps", "deploy", "--frobnicate", "--json"])
@@ -732,129 +723,6 @@ async fn approved_cli_session(shell: &Shell, when: &When, then: &Then) -> anyhow
 }
 
 #[tokio::test]
-async fn operator_cli_controls_hosted_entitlements_and_denies_other_accounts() -> anyhow::Result<()>
-{
-    let capacity = crate::accepttest::fixtures::FakeCapacity::start().await?;
-    capacity.set_inventory_hosts(vec![
-        json!({"id":"retired-1","name":"retired-first","state":"retired"}),
-        json!({"id":"retired-2","name":"retired-second","state":"retired"}),
-        json!({"id":"live-3","name":"live-after-retired","state":"ready"}),
-    ]);
-    let operator = format!("ops-{}", crate::accepttest::fixtures::random_hex(4));
-    let Some((given, when, then)) = testcase_configured(&[
-        ("GRUND_OPERATOR_ORGANISATION", &operator),
-        ("GRUND_CAPACITY_URL", &capacity.url),
-        (
-            "GRUND_CAPACITY_TOKEN",
-            crate::accepttest::fixtures::CAPACITY_TOKEN,
-        ),
-    ])
-    .await?
-    else {
-        return Ok(());
-    };
-    given.a_signed_in_account_named(&operator).await?;
-    let shell = Shell::fresh(&[])?;
-    approved_cli_session(&shell, &when, &then).await?;
-    let hosts = shell.json("operator hosts list", &[]).await?;
-    anyhow::ensure!(
-        hosts["hosts"]
-            .as_array()
-            .is_some_and(|items| items.len() == 3
-                && items
-                    .iter()
-                    .any(|host| host["name"] == "live-after-retired")),
-        "default host list hid a later page: {hosts}"
-    );
-    let first_page = shell
-        .json("operator hosts list", &["--page-size", "2"])
-        .await?;
-    anyhow::ensure!(
-        first_page["hosts"]
-            .as_array()
-            .is_some_and(|items| items.len() == 2)
-            && first_page["nextPageToken"] == "2",
-        "explicit host page did not preserve its cursor: {first_page}"
-    );
-
-    let (tenant, tenant_when, tenant_then) = given.testcase.another_browser();
-    let account = tenant.a_signed_in_account().await?;
-    let slug = account.username;
-    let dry_run = shell
-        .json("operator entitlements grant", &[&slug, "--dry-run"])
-        .await?;
-    anyhow::ensure!(
-        dry_run["calls"][0]["rpc"] == "grund.operator.v1.OperatorService/SetHostedEntitlement",
-        "{dry_run}"
-    );
-    let initially = shell.json("operator entitlements list", &[]).await?;
-    anyhow::ensure!(
-        !initially["organisations"]
-            .as_array()
-            .is_some_and(|items| items
-                .iter()
-                .any(|item| item["organisation"] == slug && item["enabled"] == true)),
-        "dry run changed hosted access: {initially}"
-    );
-    let granted = shell.json("operator entitlements grant", &[&slug]).await?;
-    anyhow::ensure!(
-        granted["organisation"]["organisation"] == slug
-            && granted["organisation"]["enabled"] == true,
-        "{granted}"
-    );
-    let enabled = shell.json("operator entitlements list", &[]).await?;
-    anyhow::ensure!(
-        enabled["organisations"]
-            .as_array()
-            .is_some_and(|items| items
-                .iter()
-                .any(|item| item["organisation"] == slug && item["enabled"] == true)),
-        "grant did not enable hosted access: {enabled}"
-    );
-
-    let tenant_shell = Shell::fresh(&[])?;
-    approved_cli_session(&tenant_shell, &tenant_when, &tenant_then).await?;
-    let forbidden = tenant_shell
-        .run(&["operator", "entitlements", "list", "--json"])
-        .await?;
-    anyhow::ensure!(
-        forbidden.status == 5 && forbidden.error()?["code"] == "not_found",
-        "non-operator access: {}",
-        forbidden.stderr
-    );
-
-    let confirmation = shell
-        .run(&["operator", "entitlements", "revoke", &slug, "--json"])
-        .await?;
-    anyhow::ensure!(
-        confirmation.status == 2 && confirmation.error()?["code"] == "confirmation_required",
-        "missing confirmation: {}",
-        confirmation.stderr
-    );
-    let revoked = shell
-        .json("operator entitlements revoke", &[&slug, "--yes"])
-        .await?;
-    anyhow::ensure!(
-        revoked["organisation"]["organisation"] == slug
-            && !revoked["organisation"]["enabled"]
-                .as_bool()
-                .unwrap_or(false),
-        "{revoked}"
-    );
-    let disabled = shell.json("operator entitlements list", &[]).await?;
-    anyhow::ensure!(
-        disabled["organisations"]
-            .as_array()
-            .is_some_and(|items| items
-                .iter()
-                .any(|item| item["organisation"] == slug
-                    && !item["enabled"].as_bool().unwrap_or(false))),
-        "revoke did not disable hosted access: {disabled}"
-    );
-    Ok(())
-}
-
-#[tokio::test]
 async fn the_notifications_cli_lists_json_and_marks_only_its_own_items_read() -> anyhow::Result<()>
 {
     let Some((given, when, then)) = crate::accepttest::fixtures::testcase_with_mail().await? else {
@@ -892,64 +760,6 @@ async fn the_notifications_cli_lists_json_and_marks_only_its_own_items_read() ->
             .as_array()
             .is_some_and(|items| items.len() == 1),
         "read item vanished from all items: {all}"
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn operator_billing_cli_grants_and_revokes_a_complimentary_account() -> anyhow::Result<()> {
-    use crate::accepttest::fixtures::{AccountAnswer, BILLING_TOKEN, DeletionAnswer, FakeBilling};
-    let billing =
-        FakeBilling::start_with_account(DeletionAnswer::Allow, AccountAnswer::Free).await?;
-    let operator = format!("ops-{}", crate::accepttest::fixtures::random_hex(4));
-    let Some((given, when, then)) = testcase_configured(&[
-        ("GRUND_OPERATOR_ORGANISATION", &operator),
-        ("GRUND_BILLING_URL", &billing.url),
-        ("GRUND_BILLING_TOKEN", BILLING_TOKEN),
-    ])
-    .await?
-    else {
-        return Ok(());
-    };
-    given.a_signed_in_account_named(&operator).await?;
-    let (other, _, _) = given.testcase.another_browser();
-    let target = other.a_signed_in_account().await?;
-    let shell = Shell::fresh(&[])?;
-    approved_cli_session(&shell, &when, &then).await?;
-    let before = shell
-        .json("operator billing get", &[&target.username])
-        .await?;
-    anyhow::ensure!(
-        before["plan"] == "Free" && before["complimentary"] != true,
-        "{before}"
-    );
-    let granted = shell
-        .json(
-            "operator billing grant",
-            &[
-                &target.username,
-                "--plan",
-                "Pro",
-                "--reason",
-                "test organisation",
-                "--expires-at",
-                "2099-01-01T00:00:00Z",
-            ],
-        )
-        .await?;
-    anyhow::ensure!(
-        granted["account"]["complimentary"] == true && granted["account"]["plan"] == "Pro",
-        "{granted}"
-    );
-    let revoked = shell
-        .json(
-            "operator billing revoke",
-            &[&target.username, "--reason", "access ended", "--yes"],
-        )
-        .await?;
-    anyhow::ensure!(
-        revoked["account"]["complimentary"] != true && revoked["account"]["plan"] == "Free",
-        "{revoked}"
     );
     Ok(())
 }

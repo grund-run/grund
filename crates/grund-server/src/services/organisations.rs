@@ -468,7 +468,10 @@ impl Organisations {
         if organisations::instance(&self.state.pool).await? == Some(organisation.organisation_id) {
             return Ok(DeleteOutcome::Instance);
         }
-        if self.state.operator_organisation().await? == Some(organisation.organisation_id) {
+        if (self.state.config.organisations == OrganisationMode::Multi
+            && organisation.slug == "admin")
+            || self.state.operator_organisation().await? == Some(organisation.organisation_id)
+        {
             return Ok(DeleteOutcome::Operator);
         }
         let mut work = Work::begin(&self.state.events, meta.request_id, "request-deletion").await?;

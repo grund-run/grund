@@ -318,19 +318,13 @@ async fn a_form_that_does_not_validate_keeps_the_setup_link() -> anyhow::Result<
 }
 
 #[tokio::test]
-async fn a_multi_instance_requires_operator_setup_before_open_signup() -> anyhow::Result<()> {
+async fn a_multi_instance_requires_owner_setup_before_open_signup() -> anyhow::Result<()> {
     let Some((given, when, then)) = testcase_configured(&[]).await? else {
         return Ok(());
     };
     when.visiting("/signup").await?;
     then.status(403)?.body_contains("no owner yet")?;
     let owner = given.the_owner().await?;
-    when.calling(
-        "/grund.machine.v1.ManagementPoolService/ListPoolMachines",
-        "{}",
-    )
-    .await?;
-    then.status(200)?;
     anyhow::ensure!(
         given
             .testcase
@@ -363,7 +357,7 @@ async fn a_multi_instance_requires_operator_setup_before_open_signup() -> anyhow
 }
 
 #[tokio::test]
-async fn closed_multi_signup_still_allows_the_operator_setup_link() -> anyhow::Result<()> {
+async fn closed_multi_signup_still_allows_the_owner_setup_link() -> anyhow::Result<()> {
     let Some((given, when, then)) =
         testcase_configured(&[("GRUND_SIGNUP_ENABLED", "false")]).await?
     else {
@@ -372,12 +366,6 @@ async fn closed_multi_signup_still_allows_the_operator_setup_link() -> anyhow::R
     let owner = given.the_owner().await?;
     when.visiting(&format!("/{}", owner.username)).await?;
     then.status(200)?;
-    when.calling(
-        "/grund.machine.v1.ManagementPoolService/ListPoolMachines",
-        "{}",
-    )
-    .await?;
-    then.status(200)?;
     let (_, visitor, visitor_result) = given.testcase.another_browser();
     visitor.visiting("/signup").await?;
     visitor_result.status(403)?.body_contains("invite-only")?;
@@ -385,7 +373,7 @@ async fn closed_multi_signup_still_allows_the_operator_setup_link() -> anyhow::R
 }
 
 #[tokio::test]
-async fn competing_multi_setup_requests_create_one_operator_owner() -> anyhow::Result<()> {
+async fn competing_multi_setup_requests_create_one_owner() -> anyhow::Result<()> {
     let Some((given, _, _)) = testcase_configured(&[]).await? else {
         return Ok(());
     };
@@ -410,51 +398,5 @@ async fn competing_multi_setup_requests_create_one_operator_owner() -> anyhow::R
             .await?
             == 1
     );
-    Ok(())
-}
-
-#[tokio::test]
-async fn an_operator_override_prevents_competing_admin_bootstrap() -> anyhow::Result<()> {
-    let Some((given, when, then)) =
-        testcase_configured(&[("GRUND_OPERATOR_ORGANISATION", "existing-operator")]).await?
-    else {
-        return Ok(());
-    };
-    let minted = given.testcase.fixture.running(&["setup-link"]).await?;
-    anyhow::ensure!(!minted.success);
-    anyhow::ensure!(!minted.stdout.contains("grund_setup_"));
-    anyhow::ensure!(
-        minted.stderr.contains("GRUND_OPERATOR_ORGANISATION"),
-        "expected the override refusal"
-    );
-    when.visiting("/signup").await?;
-    then.status(200)?.body_contains("Create an account")?;
-    anyhow::ensure!(
-        given
-            .testcase
-            .fixture
-            .count("SELECT count(*) FROM grund_organisations WHERE slug = 'admin'")
-            .await?
-            == 0
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn an_explicit_admin_override_bootstraps_the_same_reserved_operator() -> anyhow::Result<()> {
-    let Some((given, when, then)) =
-        testcase_configured(&[("GRUND_OPERATOR_ORGANISATION", "admin")]).await?
-    else {
-        return Ok(());
-    };
-    when.visiting("/signup").await?;
-    then.status(403)?.body_contains("no owner yet")?;
-    given.the_owner().await?;
-    when.calling(
-        "/grund.machine.v1.ManagementPoolService/ListPoolMachines",
-        "{}",
-    )
-    .await?;
-    then.status(200)?;
     Ok(())
 }

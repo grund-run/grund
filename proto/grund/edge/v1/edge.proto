@@ -133,7 +133,7 @@ message RouteMachine {
   // Ready running copies on this machine, from the latest agent report.
   // Zero still leaves it as a fallback if no ready machine answers.
   uint32 ready_copies = 4;
-  // Fleet warned the instance of an imminent planned pause. The edge
+  // The provider warned the instance of an imminent planned pause. The edge
   // drains its open client streams and selects another machine.
   bool migration_paused = 5;
 }

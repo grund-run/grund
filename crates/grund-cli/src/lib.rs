@@ -73,12 +73,7 @@ pub fn usage_error(error: &clap::Error, args: &[String]) -> Option<i32> {
         return None;
     }
     let first = args.iter().skip(1).find(|a| !a.starts_with('-'))?;
-    if !commands::CLIENT_NOUNS.contains(&first.as_str())
-        && !(first == "operator"
-            && args
-                .iter()
-                .any(|a| matches!(a.as_str(), "hosts" | "pool" | "leases" | "entitlements")))
-    {
+    if !commands::CLIENT_NOUNS.contains(&first.as_str()) {
         return None;
     }
     let wants_json = args.iter().enumerate().any(|(i, a)| {

@@ -1,5 +1,5 @@
-//! The machine's side of its organisation's private network (grund/fleet
-//! docs/design/network.md §5, §6; grund-net).
+//! The machine's side of its organisation's private network
+//! (grund-docs `design/network.md` §5, §6; grund-net).
 //!
 //! When `grund join` pinned a network ([`crate::join::NetworkRecord`]), the
 //! agent binds an iroh endpoint with the machine key, runs grund-net's mesh on

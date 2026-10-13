@@ -73,10 +73,11 @@ pub(crate) fn short_image(reference: &str) -> String {
     }
 }
 
-pub(crate) fn short_id(value: &str) -> &str {
-    let id = ["fleet-host-", "fleet-machine-", "fleet-pool-"]
-        .iter()
-        .find_map(|prefix| value.strip_prefix(prefix))
+/// An identifier shortened for display; the full value remains copyable.
+pub fn short_id(value: &str) -> &str {
+    let id = value
+        .get(value.len().saturating_sub(36)..)
+        .filter(|suffix| uuid::Uuid::try_parse(suffix).is_ok())
         .unwrap_or(value);
     id.get(..8).unwrap_or(id)
 }

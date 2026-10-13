@@ -156,9 +156,8 @@ async fn owners_see_their_billing_account_in_organisation_settings() -> anyhow::
     loop {
         when.visiting(&path).await?;
         then.status(200)?;
-        if then.body_contains("Manage billing").is_ok() {
-            then.body_contains("Pro")?
-                .body_contains(&format!("/{}/settings/billing", account.username))?;
+        if then.body_contains("Pro").is_ok() {
+            then.body_lacks(&format!("/{}/settings/billing", account.username))?;
             break;
         }
         anyhow::ensure!(Instant::now() < deadline, "billing plan never showed");
@@ -195,8 +194,7 @@ async fn settings_does_not_wait_for_billing_and_refreshes_one_account_at_a_time(
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         when.visiting(&path).await?;
-        if then.body_contains("Manage billing").is_ok() {
-            then.body_contains("Pro")?;
+        if then.body_contains("Pro").is_ok() {
             break;
         }
         anyhow::ensure!(Instant::now() < deadline, "billing plan never showed");

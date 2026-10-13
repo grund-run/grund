@@ -145,12 +145,10 @@ pub struct ServeConfig {
     )]
     pub mail_from: String,
 
-    /// How the instance hands out organisations. `single` (the default, for
-    /// self-hosting): one organisation, created with the first account, which
-    /// owns it and is made with `grund setup-link`; everyone after that joins
-    /// by invitation. `multi` (grund's
-    /// hosted instance): every sign-up gets an organisation named after it,
-    /// and anyone signed in may create more.
+    /// How the instance hands out organisations. `single` (the default):
+    /// one organisation, created with the first account using `grund setup-link`;
+    /// further members join by invitation. `multi`: new sign-ups
+    /// each receive an organisation and signed-in people may create more.
     #[arg(
         long,
         env = "GRUND_ORGANISATIONS",
@@ -159,13 +157,10 @@ pub struct ServeConfig {
     )]
     pub organisations: OrganisationMode,
 
-    /// The organisation whose owners and admins run the management pool: the
-    /// instance's own machines, leased to organisations (grund-docs
-    /// design/machines.md). Its id (a UUID), or its slug. Prefer the id on an
-    /// instance with open sign-up: a slug names whoever holds it, so a slug
-    /// set before its organisation exists could be taken by anyone signing
-    /// up. Unset: the instance's organisation in `single` mode, and no
-    /// management pool in `multi` mode.
+    /// An optional operator organisation retained for instances that used
+    /// this setting for reserved `admin` bootstrap. Its UUID (preferred) or
+    /// slug is checked when claiming that name. Hosted management routes
+    /// require an extension and are not part of this build.
     #[arg(long, env = "GRUND_OPERATOR_ORGANISATION")]
     pub operator_organisation: Option<String>,
 
@@ -407,17 +402,6 @@ pub struct AccountEventArgs {
         hide_env_values = true
     )]
     pub token: Option<String>,
-
-    #[arg(long = "insights-url", env = "GRUND_INSIGHTS_URL", hide = true)]
-    legacy_url: Option<String>,
-
-    #[arg(
-        long = "insights-token",
-        env = "GRUND_INSIGHTS_TOKEN",
-        hide = true,
-        hide_env_values = true
-    )]
-    legacy_token: Option<String>,
 }
 
 impl AccountEventArgs {
@@ -427,28 +411,13 @@ impl AccountEventArgs {
     }
 
     pub fn endpoint(&self) -> Option<(&str, &str)> {
-        match (
-            self.url.as_deref().zip(self.token.as_deref()),
-            self.legacy_url.as_deref().zip(self.legacy_token.as_deref()),
-        ) {
-            (Some((url, token)), None) | (None, Some((url, token))) => Some((url, token)),
-            _ => None,
-        }
+        self.url.as_deref().zip(self.token.as_deref())
     }
 
     fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
-            !((self.url.is_some() || self.token.is_some())
-                && (self.legacy_url.is_some() || self.legacy_token.is_some())),
-            "GRUND_ACCOUNT_EVENT_URL/TOKEN cannot be mixed with deprecated GRUND_INSIGHTS_URL/TOKEN"
-        );
-        anyhow::ensure!(
             self.url.is_some() == self.token.is_some(),
             "GRUND_ACCOUNT_EVENT_URL and GRUND_ACCOUNT_EVENT_TOKEN must be set together"
-        );
-        anyhow::ensure!(
-            self.legacy_url.is_some() == self.legacy_token.is_some(),
-            "GRUND_INSIGHTS_URL and GRUND_INSIGHTS_TOKEN must be set together"
         );
         if let Some((url, token)) = self.endpoint() {
             anyhow::ensure!(
@@ -466,9 +435,8 @@ impl AccountEventArgs {
     }
 }
 
-/// A billing service for this instance (grund-docs design/billing.md). Only
-/// grund's hosted service has one; without it every organisation is free and
-/// nothing is charged.
+/// The optional billing contract for an external service. Without a
+/// configured service, every organisation is free and nothing is charged.
 #[derive(Clone, Debug, Default, Args)]
 pub struct BillingArgs {
     /// The billing service, e.g. http://billing:8080, reached from grund's
@@ -918,10 +886,8 @@ impl TlsArgs {
     }
 }
 
-/// A capacity provider for the management pool (grund-docs
-/// design/machines.md): where grund gets machines from. Only grund's hosted
-/// service has one (fleet); a self-hosted instance adds machines to its pool
-/// by hand.
+/// Configuration for an extension-supplied capacity provider. The public
+/// self-hosted build has no provider or management-pool admin surface.
 #[derive(Clone, Debug, Args)]
 pub struct CapacityArgs {
     /// The capacity provider, e.g. http://fleet:8080, reached from grund's
@@ -1040,8 +1006,6 @@ impl ServeConfig {
             &mut self.social.oidc_client_secret,
             &mut self.account_events.url,
             &mut self.account_events.token,
-            &mut self.account_events.legacy_url,
-            &mut self.account_events.legacy_token,
             &mut self.billing.billing_url,
             &mut self.billing.billing_token,
             &mut self.capacity.capacity_url,
@@ -1146,10 +1110,6 @@ impl ServeConfig {
                 (
                     "GRUND_ACCOUNT_EVENT_TOKEN",
                     self.account_events.token.as_deref(),
-                ),
-                (
-                    "GRUND_INSIGHTS_TOKEN",
-                    self.account_events.legacy_token.as_deref(),
                 ),
             ] {
                 if let Some(value) = value {
@@ -1576,7 +1536,7 @@ mod tests {
     }
 
     #[test]
-    fn account_event_endpoint_needs_its_token_and_refuses_mixed_config() {
+    fn account_event_endpoint_needs_its_token() {
         let token = "0123456789abcdef0123456789abcdef";
         let error = parse(&["--account-event-url", "http://receiver:8081/v1/accounts"])
             .unwrap_err()
@@ -1603,34 +1563,6 @@ mod tests {
         ])
         .unwrap();
         assert!(config.account_events.enabled());
-        let error = parse(&[
-            "--account-event-url",
-            "http://receiver:8081/v1/accounts",
-            "--account-event-token",
-            token,
-            "--insights-url",
-            "http://receiver:8081",
-            "--insights-token",
-            token,
-        ])
-        .unwrap_err()
-        .to_string();
-        assert!(error.contains("cannot be mixed"), "{error}");
-    }
-
-    #[test]
-    fn deprecated_reporting_settings_work_for_one_release() {
-        let token = "0123456789abcdef0123456789abcdef";
-        let config = parse(&[
-            "--insights-url",
-            "http://receiver:8081",
-            "--insights-token",
-            token,
-        ])
-        .unwrap();
-        assert!(config.account_events.enabled());
-        let config = parse(&["--insights-url", "", "--insights-token", " "]).unwrap();
-        assert!(!config.account_events.enabled());
     }
 
     #[test]

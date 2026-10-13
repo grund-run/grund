@@ -4,18 +4,18 @@ grund takes an app from a bare machine to live for its users, on hardware
 you own. This repository is grund itself: the server (dashboard, API and
 background work), the orchestrator and the agent that runs on each machine.
 
-grund.sh is live. The self-hosted instance runs the same account, machine,
-app deployment and storage paths described below; hosted block volumes remain
-planned. Follow the deployment and data-backup instructions before depending
-on an instance.
+grund.sh is live. This checkout's self-hosted instance runs the account,
+machine, app deployment and own-machine storage paths described below.
+Follow the deployment and data-backup instructions before depending on an
+instance.
 
 ## What is open, and what is paid
 
 grund is open source. The self-hosted edition is free, and it is the real
 product: deploying, releases, data, domains, and a whole team signing in
 with passwords, with nothing held back to make the paid plans look better.
-A few features on top are commercial. They are in `ee/`, where the source
-can be read. They are not in any release yet.
+A few features on top are commercial. Their source is in `ee/`, where
+it can be read. They are not in the public self-hosted build.
 
 | | Where | License |
 |---|---|---|
@@ -24,19 +24,17 @@ can be read. They are not in any release yet.
 | Sign in with GitHub or Google (planned for the Homelab plan) | `ee/` | all rights reserved for now |
 | Single sign-on with your own provider, audit log (planned for Business) | `ee/` | all rights reserved for now *(not built)* |
 
-The grund.sh-hosted capacity provider is not needed to self-host grund.
-Its implementation is being separated from the open-source binary; the
-current public build still contains the already published hosted code
-until a coordinated release. Moving that code does not change the rights
-granted under its existing AGPL license.
+The hosted capacity provider and customer billing pages are supplied by
+a separate private build. Neither is needed to self-host grund; this
+checkout builds the public server, CLI and machine agent on their own.
 
 Where things stand, plainly: nothing is for sale yet. The commercial
-features are published so you can read them, but they are not licensed for
-use and no official build or image contains them. Commercial terms come
-when grund has a company to offer them, and the pricing on grund.sh is
-planned pricing. [LICENSE](LICENSE) says which license covers what, and
-what the AGPL asks of you. Contributions are welcome under Apache-2.0 with
-a sign-off ([CONTRIBUTING.md](CONTRIBUTING.md)).
+features in `ee/` are published so you can read them, but they are not
+licensed for use and the public self-hosted build and image do not include
+them. Commercial terms come when grund has a company to offer them; the
+pricing on grund.sh is planned pricing. [LICENSE](LICENSE) says which
+license covers what, and what the AGPL asks of you. Contributions are
+welcome under Apache-2.0 with a sign-off ([CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ## Self-hosting
 
@@ -63,17 +61,6 @@ gives installs grund and its agent on a Linux machine (root, systemd,
 x86_64) and connects it. This instance serves the installer and its own
 binary at `/install`. On the machine running compose, the command works as
 given. A machine on another host needs https, below.
-
-On an instance with a configured capacity provider, an organisation granted
-hosted access by the operator can instead choose **Hosted** on Add machine,
-select an offered size (and region when there is a choice), and create it.
-It appears as Joining until registered, then Connected. The CLI offers
-`grund machines offers`, `grund machines create --size …`, and
-`grund machines remove` from a signed-in account.
-The customer sees neither physical hosts
-nor provider identifiers. Removing ends the lease; the machine is wiped and
-re-registered with a new key before it can be rented again. Hosted access is
-off by default and unavailable without a capacity provider.
 
 **HTTPS.** With `GRUND_DOMAIN` set, grund terminates TLS itself on 443, with
 no proxy in front. It orders the certificate by ACME from Let's Encrypt
@@ -126,8 +113,8 @@ One binary, `grund`, with subcommands: `serve` (the control plane),
 `migrate`, `init` (generate the instance's secrets), `setup-link` (the
 owner's one-time link, run with `serve`'s settings), `doctor` and `probe`
 (a health check for the scratch image), `join` and `agent` (a machine),
-`relay(s)` and `edge(s)`, and `operator apps suspend|lift`. The same binary
-is the client for people, scripts and coding agents: see "The CLI" below.
+`relay(s)` and `edge(s)`. The same binary is the client for people, scripts
+and coding agents: see "The CLI" below.
 
 `grund doctor instance` (in compose: `docker compose exec grund /grund
 doctor instance`) and `grund doctor machine` (on a machine, as root) check
@@ -142,21 +129,19 @@ an instance queues one account event after the owner's email is confirmed and
 POSTs it to the operator's configured endpoint. The event includes the account
 ID, username, address, sign-in method and registration/verification times;
 the endpoint chooses what to retain or notify. Without both settings, nothing
-is queued or sent. The legacy `GRUND_INSIGHTS_URL` and `GRUND_INSIGHTS_TOKEN`
-settings are accepted for one release (their URL is a base; `/v1/accounts` is
-appended). See [.env.example](.env.example).
+is queued or sent. See [.env.example](.env.example).
 
 - `GET /health/live` answers `{"status":"ok"}` and checks nothing.
 - `GET /health/ready` answers 200 or 503 from the last dependency checks,
   with the build `revision` and each check's state.
-- Everything grund manages belongs to an organisation, and so does billing.
-  A self-hosted instance has one (`GRUND_ORGANISATIONS=single`, the default):
-  the first account, made with the setup link, owns it, and everyone after
-  joins by invitation. A fresh `multi` instance also starts with a setup link:
-  its first owner owns both `admin` (the operator organisation) and a personal
-  organisation. Later sign-ups get their own organisations while open signup
-  is enabled. Reserved names, including `admin` and `grund`, cannot be claimed
-  by an ordinary organisation create or rename.
+- Everything grund manages belongs to an organisation. A self-hosted
+  instance has one (`GRUND_ORGANISATIONS=single`, the default): the first
+  account, made with the setup link, owns it, and everyone after joins by
+  invitation. A fresh `multi` instance also starts with a setup link: its
+  first owner owns both `admin` and a personal organisation. Later sign-ups
+  get their own organisations while open signup is enabled. Reserved names,
+  including `admin` and `grund`, cannot be claimed by an ordinary
+  organisation create or rename.
 - Pages: `/signup`, `/signup/owner` (the setup link), `/verify`, `/login`, `/reset`, `/` (which opens your
   organisation), `/{org}`, `/{org}/members`, `/{org}/settings`,
   `/{org}/settings/tokens`, `/{org}/settings/registries`, `/orgs/new`,
@@ -175,23 +160,15 @@ appended). See [.env.example](.env.example).
 - Organisations can be renamed (the old name redirects members and stays
   reserved) and deleted by their owners. A deletion is a mire saga: billing
   answers first, and while it cannot be reached grund keeps asking.
-- Billing is a separate service (`proto/grund/billing/v1`), run only by
-  grund's hosted service. Without `GRUND_BILLING_URL` every organisation is
-  free and nothing is sent anywhere. With `GRUND_BILLING_URL` and
-  `GRUND_BILLING_TOKEN`, owners choose Homelab, Pro or Business in
-  Organisation settings → Billing. Owner and operator billing pages wait up
-  to two seconds for an account read when no usable account is cached; other
-  settings never wait for billing. Set `GRUND_BILLING_REDIRECT_ORIGINS` to
-  comma-separated bare HTTPS origins allowed for checkout and portal redirects;
-  without an allowed origin, a remote checkout or portal link is refused.
-  The separate billing service owns payment state and checks it before changes.
-  Enabling billing on an existing instance queues its live organisations for
-  registration at startup; restart retries are idempotent.
-  Grund reports own-machine creation and removal and sends one durable count
-  (including zero and disconnected machines, excluding hosted machines) per
-  completed UTC hour. Missing hours are not invented after downtime. Only an
-  operator owner or admin can grant or revoke complimentary billing in the
-  Organisations admin panel or with `grund operator billing`.
+- Billing is an optional external service (`proto/grund/billing/v1`).
+  Without `GRUND_BILLING_URL`, every organisation is free and nothing is
+  sent. When configured, grund queues organisation creation, rename and
+  deletion in the durable outbox, and consults billing before completing a
+  deletion. An unavailable billing service delays deletion; it never
+  grants deletion by default. Enabling billing on an existing instance
+  queues its live organisations for registration at startup with stable
+  event IDs. Customer checkout, payment portal, complimentary grants,
+  machine usage and hourly metering are not part of the public build.
 
 ```bash
 curl -s -X POST -H 'Content-Type: application/json' -d '{}' \
@@ -311,8 +288,8 @@ column and path.
 
 An app with a volume runs as one copy, pinned to the machine holding its
 directory. A release stops that copy before starting the next; an offline
-machine makes the app wait rather than writing somewhere else. Hosted machines
-do not offer app volumes yet. Declare named mounts in `grund.yaml`:
+machine makes the app wait rather than writing somewhere else. Volumes are
+available on your own machines. Declare named mounts in `grund.yaml`:
 
 ```yaml
 apps:

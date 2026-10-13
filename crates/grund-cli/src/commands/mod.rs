@@ -7,7 +7,6 @@ pub mod domains;
 pub mod machines;
 pub mod members;
 pub mod notifications;
-pub mod operator;
 pub mod orgs;
 pub mod registries;
 pub mod selfdesc;
@@ -56,14 +55,12 @@ pub enum Command {
     #[command(about = "Organisations: list, show, choose the default, create, rename, delete")]
     Orgs(orgs::OrgsCommand),
     #[command(
-        about = "Apps: list, status, deploy from grund.yaml or flags, change a setting, roll back, delete. Operators: grund operator apps suspend|lift"
+        about = "Apps: list, status, deploy from grund.yaml or flags, change a setting, roll back, delete"
     )]
     Apps(Box<apps::AppsCommand>),
     #[command(about = "App-owned volumes: list, show, create, attach, detach, delete")]
     Volumes(volumes::VolumesCommand),
-    #[command(
-        about = "Machines: list, create hosted, add your own, labels, out of service, remove"
-    )]
+    #[command(about = "Machines: list, add your own, labels, out of service, remove")]
     Machines(machines::MachinesCommand),
     #[command(about = "Custom domains: add, verify, bind to an app, unbind, remove")]
     Domains(domains::DomainsCommand),
