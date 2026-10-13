@@ -28,7 +28,8 @@
 #      any build works, and the bytes are as trustworthy as the instance's
 #      TLS (nothing is signed yet)
 #   2. restic: pinned upstream encrypted backup executable, checked against
-#      its release SHA-256 before installation to /usr/local/bin
+#      its release SHA-256 before installation to /usr/local/bin, and bzip2
+#      from the system's package manager if it is missing, to unpack it
 #   3. with /dev/kvm: Firecracker and its jailer (a pinned release, checked
 #      against a pinned SHA-256) to /usr/local/bin, and nftables from the
 #      system's package manager if nft is missing
@@ -68,6 +69,17 @@ done
 
 fail() { echo "install.sh: $*" >&2; exit 1; }
 step() { echo "==> $*"; }
+pkg() { # package, what to do without a known package manager
+  if command -v apt-get >/dev/null; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -q "$1" >/dev/null 2>&1 || { apt-get update -q >/dev/null && DEBIAN_FRONTEND=noninteractive apt-get install -y -q "$1" >/dev/null; }
+  elif command -v dnf >/dev/null; then
+    dnf install -y -q "$1"
+  elif command -v pacman >/dev/null; then
+    pacman -S --noconfirm --needed "$1" >/dev/null
+  else
+    fail "$2"
+  fi
+}
 [ -n "$url" ] || fail "give the instance: --url https://grund.example.com"
 [ "$(id -u)" = 0 ] || fail "run as root (sudo sh -s -- ...): it installs to /usr/local/bin and a systemd unit"
 [ "$(uname -s)" = Linux ] || fail "grund agent runs on Linux; this is $(uname -s)"
@@ -75,7 +87,6 @@ step() { echo "==> $*"; }
 command -v systemctl >/dev/null || fail "this installer needs systemd to run the agent"
 command -v curl >/dev/null || fail "curl is required"
 command -v sha256sum >/dev/null || fail "sha256sum is required (coreutils)"
-command -v bzip2 >/dev/null || fail "bzip2 is required to install the pinned backup engine"
 url="${url%/}"
 
 work="$(mktemp -d)"
@@ -108,8 +119,12 @@ verify "$work/grund" "$sum"
 install -m 0755 "$work/grund" /usr/local/bin/grund
 echo "    grund $revision from $base, sha256 $(echo "$sum" | cut -c1-12)"
 step "restic $RESTIC_VERSION, encrypted backups"
+if ! command -v bzip2 >/dev/null; then
+  echo "    bzip2, to unpack it"
+  pkg bzip2 "install bzip2: it unpacks the pinned backup engine"
+fi
 archive="$work/restic.bz2"
-curl -fsSL -o "$archive" "https://github.com/restic/restic/releases/download/v$RESTIC_VERSION/restic_$RESTIC_VERSION_linux_amd64.bz2" ||
+curl -fsSL -o "$archive" "https://github.com/restic/restic/releases/download/v$RESTIC_VERSION/restic_${RESTIC_VERSION}_linux_amd64.bz2" ||
   fail "could not download pinned restic $RESTIC_VERSION"
 verify "$archive" "$RESTIC_BZ2_SHA256"
 bzip2 -dc "$archive" > "$work/restic" || fail "could not unpack verified restic"
@@ -127,15 +142,7 @@ if [ -n "$vms" ] && [ -c /dev/kvm ]; then
   install -m 0755 "$release/jailer-$FIRECRACKER_VERSION-x86_64" /usr/local/bin/jailer
   if ! command -v nft >/dev/null && [ ! -x /usr/sbin/nft ]; then
     step "nftables, for the VMs' bridge"
-    if command -v apt-get >/dev/null; then
-      DEBIAN_FRONTEND=noninteractive apt-get install -y -q nftables >/dev/null 2>&1 || { apt-get update -q >/dev/null && DEBIAN_FRONTEND=noninteractive apt-get install -y -q nftables >/dev/null; }
-    elif command -v dnf >/dev/null; then
-      dnf install -y -q nftables
-    elif command -v pacman >/dev/null; then
-      pacman -S --noconfirm --needed nftables >/dev/null
-    else
-      fail "install nftables (nft) for VMs, or rerun with --no-vms"
-    fi
+    pkg nftables "install nftables (nft) for VMs, or rerun with --no-vms"
   fi
   runtime=firecracker
 elif [ -n "$vms" ]; then
