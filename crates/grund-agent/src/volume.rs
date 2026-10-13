@@ -382,21 +382,12 @@ fn find_block_device(id: Uuid) -> anyhow::Result<File> {
 }
 
 fn mount_id(dir: &File) -> anyhow::Result<u64> {
-    let mut stat: libc::statx = unsafe { std::mem::zeroed() };
-    let result = unsafe {
-        libc::statx(
-            dir.as_raw_fd(),
-            c"".as_ptr(),
-            libc::AT_EMPTY_PATH,
-            libc::STATX_MNT_ID,
-            &mut stat,
-        )
-    };
-    if result < 0 {
-        return Err(io::Error::last_os_error()).context("inspect volume mount identity");
-    }
+    use rustix::fs::{AtFlags, StatxFlags, statx};
+
+    let stat = statx(dir, c"", AtFlags::EMPTY_PATH, StatxFlags::MNT_ID)
+        .context("inspect volume mount identity")?;
     ensure!(
-        stat.stx_mask & libc::STATX_MNT_ID != 0,
+        stat.stx_mask & StatxFlags::MNT_ID.bits() != 0,
         "kernel did not report volume mount identity"
     );
     Ok(stat.stx_mnt_id)
@@ -1035,6 +1026,15 @@ mod tests {
         }
     }
     const ID: &str = "11111111-1111-1111-1111-111111111111";
+    #[test]
+    fn mount_identity_distinguishes_the_proc_filesystem_from_the_root() {
+        let root = File::open("/").unwrap();
+        let same_root = File::open("/").unwrap();
+        let proc = File::open("/proc").unwrap();
+        assert_eq!(mount_id(&root).unwrap(), mount_id(&same_root).unwrap());
+        assert_ne!(mount_id(&root).unwrap(), mount_id(&proc).unwrap());
+    }
+
     #[test]
     fn managed_bytes_survive_restarts_and_replacement_is_refused() {
         let base = scratch("durable");

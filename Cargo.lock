@@ -1932,6 +1932,7 @@ dependencies = [
  "libc",
  "reqwest",
  "ring",
+ "rustix",
  "rustls",
  "serde",
  "serde_json",
