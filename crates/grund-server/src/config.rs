@@ -450,7 +450,7 @@ pub struct BillingArgs {
     #[arg(long, env = "GRUND_BILLING_TOKEN", hide_env_values = true)]
     pub billing_token: Option<String>,
 
-    /// HTTPS origins allowed for checkout and payment portal redirects, separated by commas.
+    /// HTTPS origins allowed for checkout, payment portal and invoice document redirects, separated by commas.
     #[arg(long, env = "GRUND_BILLING_REDIRECT_ORIGINS")]
     pub billing_redirect_origins: Option<String>,
 
@@ -1009,8 +1009,10 @@ impl BillingArgs {
                 );
                 anyhow::ensure!(
                     self.mode() != BillingMode::Live
-                        || parsed.host_str() != Some("sandbox.polar.sh"),
-                    "GRUND_BILLING_MODE=live cannot use a sandbox GRUND_BILLING_REDIRECT_ORIGINS"
+                        || !parsed
+                            .host_str()
+                            .is_some_and(|host| host.contains("sandbox")),
+                    "GRUND_BILLING_MODE=live cannot use sandbox GRUND_BILLING_REDIRECT_ORIGINS"
                 );
             }
         }
@@ -1546,6 +1548,34 @@ mod tests {
         let live = parse(&[&args[..], &["live"]].concat()).unwrap();
         assert!(live.billing.checkout_allowed());
         assert!(parse(&["--billing-mode", "live"]).is_err());
+        for sandbox_origin in [
+            "https://sandbox.polar.sh",
+            "https://polar-sandbox-customer-invoices.s3.amazonaws.com",
+            "https://new-sandbox-documents.example.org",
+        ] {
+            assert!(
+                parse(
+                    &[
+                        &args[..],
+                        &["sandbox", "--billing-redirect-origins", sandbox_origin]
+                    ]
+                    .concat()
+                )
+                .is_ok(),
+                "sandbox mode must allow {sandbox_origin}"
+            );
+            assert!(
+                parse(
+                    &[
+                        &args[..],
+                        &["live", "--billing-redirect-origins", sandbox_origin]
+                    ]
+                    .concat()
+                )
+                .is_err(),
+                "live mode must reject {sandbox_origin}"
+            );
+        }
         assert!(
             parse(
                 &[
@@ -1553,12 +1583,12 @@ mod tests {
                     &[
                         "live",
                         "--billing-redirect-origins",
-                        "https://sandbox.polar.sh"
-                    ],
+                        "https://customer-invoices.example.com"
+                    ]
                 ]
                 .concat()
             )
-            .is_err()
+            .is_ok()
         );
     }
 

@@ -2534,7 +2534,7 @@
           "value_name": "BILLING_TOKEN"
         },
         {
-          "description": "HTTPS origins allowed for checkout and payment portal redirects, separated by commas",
+          "description": "HTTPS origins allowed for checkout, payment portal and invoice document redirects, separated by commas",
           "env": "GRUND_BILLING_REDIRECT_ORIGINS",
           "flag": "--billing-redirect-origins",
           "name": "billing_redirect_origins",
@@ -3460,7 +3460,7 @@
           "value_name": "BILLING_TOKEN"
         },
         {
-          "description": "HTTPS origins allowed for checkout and payment portal redirects, separated by commas",
+          "description": "HTTPS origins allowed for checkout, payment portal and invoice document redirects, separated by commas",
           "env": "GRUND_BILLING_REDIRECT_ORIGINS",
           "flag": "--billing-redirect-origins",
           "name": "billing_redirect_origins",
@@ -4248,7 +4248,7 @@
           "value_name": "BILLING_TOKEN"
         },
         {
-          "description": "HTTPS origins allowed for checkout and payment portal redirects, separated by commas",
+          "description": "HTTPS origins allowed for checkout, payment portal and invoice document redirects, separated by commas",
           "env": "GRUND_BILLING_REDIRECT_ORIGINS",
           "flag": "--billing-redirect-origins",
           "name": "billing_redirect_origins",
