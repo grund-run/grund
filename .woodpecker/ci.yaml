@@ -104,29 +104,21 @@ steps:
     depends_on: []
     environment:
       CARGO_TERM_COLOR: always
-      # Ratchet uses isolated public WebDAV; agent 5 keeps local memcached.
-      # Elsewhere the shared endpoint is secret. sccache keys each compile on inputs,
-      # the compiler and the environment variables rustc reads (build.rs's
-      # revision too), so a hit is the output that compile would give; bin
-      # crates, linking and build scripts are never cached. Memcached needs no
-      # credentials; public WebDAV is authenticated on trusted pushes only.
-      RUSTC_WRAPPER: sccache
-      # From a secret: this repository is public and mirrored, and names no
-      # internal address.
-      SCCACHE_MEMCACHED_ENDPOINT:
-        from_secret: sccache_memcached_endpoint
-      CI_CACHE_PUBLIC_ENDPOINT:
-        from_secret: ci_cache_public_endpoint
-      SCCACHE_WEBDAV_PASSWORD:
-        from_secret: ci_cache_public_password
+      # The shared CI cache (grund-docs design/ci-cache.md): build steps read
+      # the public cache without any key; only the push-only cache-save step
+      # holds ci_cache_public. The release revision check still guards the
+      # shipped binary.
       CARGO_INCREMENTAL: "0"
       CARGO_TARGET_DIR: target/lint
     commands:
       # protobuf-dev: protoc and the well-known types, for the API codegen.
       - apk add --no-cache musl-dev protobuf-dev sccache
+      - 'command -v ci-cache >/dev/null || { (curl -fsS --connect-timeout 5 --max-time 60 -o /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.2.0/ci-cache-0.2.0-x86_64-linux-musl 2>/dev/null || { if command -v timeout >/dev/null; then timeout 60 wget -q -T 5 -O /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.2.0/ci-cache-0.2.0-x86_64-linux-musl; else wget -q -T 5 -O /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.2.0/ci-cache-0.2.0-x86_64-linux-musl; fi; } 2>/dev/null) && echo "9a8b7b692aaf73f6499de5bca19f15f7609783db03b65bdca252127fea17d36a  /usr/local/bin/.ci-cache.part" | sha256sum -c - >/dev/null 2>&1 && chmod 0755 /usr/local/bin/.ci-cache.part && mv /usr/local/bin/.ci-cache.part /usr/local/bin/ci-cache; rm -f /usr/local/bin/.ci-cache.part; command -v ci-cache >/dev/null || echo "ci-cache client unavailable, building uncached"; }'  # ci-cache: managed by kjuulh/woodpecker-forest
+      - 'if command -v ci-cache >/dev/null; then ci-cache restore lint --preset cargo; fi'  # ci-cache: managed by kjuulh/woodpecker-forest
+      - 'if command -v ci-cache >/dev/null; then eval "$$(ci-cache env)"; fi'  # ci-cache: managed by kjuulh/woodpecker-forest
       # Ratchet first, then the existing agent-5 gateway memcached probe,
       # then the shared memcached secret or a direct compile.
-      - . .woodpecker/cache.sh
+      - . .woodpecker/jobs.sh
       - rustup component add rustfmt clippy
       - cargo fmt --all --check
       # Kasper's rule: in Rust, the only comments are docs on public items.
@@ -138,7 +130,7 @@ steps:
       # --workspace, not -p grund: -p resolves features differently and
       # rebuilds most of the dependency tree instead of the crates ee touches.
       - cargo clippy --workspace --features grund/ee --all-targets --locked -- -D warnings
-      - if [ -n "$${RUSTC_WRAPPER:-}" ]; then sccache --show-stats; fi
+      - 'if command -v ci-cache >/dev/null; then ci-cache stats; fi'  # ci-cache: managed by kjuulh/woodpecker-forest
 
   proto:
     # The API contract is linted on every change, and a pull request may not
@@ -158,27 +150,19 @@ steps:
       # and fetch clippy and rustfmt over the network in a step that never
       # lints (mail pipeline 7 failed on exactly that download).
       RUSTUP_TOOLCHAIN: 1.98.1-x86_64-unknown-linux-musl
-      # Ratchet uses isolated public WebDAV; agent 5 keeps local memcached.
-      # Elsewhere the shared endpoint is secret. sccache keys each compile on inputs,
-      # the compiler and the environment variables rustc reads (build.rs's
-      # revision too), so a hit is the output that compile would give; bin
-      # crates, linking and build scripts are never cached. Memcached needs no
-      # credentials; public WebDAV is authenticated on trusted pushes only.
-      RUSTC_WRAPPER: sccache
-      # From a secret: this repository is public and mirrored, and names no
-      # internal address.
-      SCCACHE_MEMCACHED_ENDPOINT:
-        from_secret: sccache_memcached_endpoint
-      CI_CACHE_PUBLIC_ENDPOINT:
-        from_secret: ci_cache_public_endpoint
-      SCCACHE_WEBDAV_PASSWORD:
-        from_secret: ci_cache_public_password
+      # The shared CI cache (grund-docs design/ci-cache.md): build steps read
+      # the public cache without any key; only the push-only cache-save step
+      # holds ci_cache_public. The release revision check still guards the
+      # shipped binary.
       # A CI build is never rebuilt incrementally, so writing incremental
       # state is pure cost; and full debuginfo makes the test binaries
       # slower to compile and link, while line tables keep file:line in a
       # panic's backtrace. Neither changes what the code does, and neither
       # reaches `release`.
       CARGO_INCREMENTAL: "0"
+      # Its own target directory: test and release run side by side, and
+      # each restores and saves its own snapshot.
+      CARGO_TARGET_DIR: target/test
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
       # The store's #[sqlx::test]s create a database per test from this one.
       DATABASE_URL: postgres://grund:grund@postgres:5432/grund
@@ -202,6 +186,9 @@ steps:
       # X25519MLKEM768 interop tests handshake against; they fail rather
       # than skip without it.
       - apk add --no-cache musl-dev protobuf-dev sccache openssl go curl bzip2 coreutils
+      - 'command -v ci-cache >/dev/null || { (curl -fsS --connect-timeout 5 --max-time 60 -o /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.2.0/ci-cache-0.2.0-x86_64-linux-musl 2>/dev/null || { if command -v timeout >/dev/null; then timeout 60 wget -q -T 5 -O /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.2.0/ci-cache-0.2.0-x86_64-linux-musl; else wget -q -T 5 -O /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.2.0/ci-cache-0.2.0-x86_64-linux-musl; fi; } 2>/dev/null) && echo "9a8b7b692aaf73f6499de5bca19f15f7609783db03b65bdca252127fea17d36a  /usr/local/bin/.ci-cache.part" | sha256sum -c - >/dev/null 2>&1 && chmod 0755 /usr/local/bin/.ci-cache.part && mv /usr/local/bin/.ci-cache.part /usr/local/bin/ci-cache; rm -f /usr/local/bin/.ci-cache.part; command -v ci-cache >/dev/null || echo "ci-cache client unavailable, building uncached"; }'  # ci-cache: managed by kjuulh/woodpecker-forest
+      - 'if command -v ci-cache >/dev/null; then ci-cache restore test --preset cargo; fi'  # ci-cache: managed by kjuulh/woodpecker-forest
+      - 'if command -v ci-cache >/dev/null; then eval "$$(ci-cache env)"; fi'  # ci-cache: managed by kjuulh/woodpecker-forest
       - crates/grund/tests/pebble/fetch.sh
       - curl -fsSL -o .accept-restic.bz2 https://github.com/restic/restic/releases/download/v0.18.1/restic_0.18.1_linux_amd64.bz2
       - echo '680838f19d67151adba227e1570cdd8af12c19cf1735783ed1ba928bc41f363d  .accept-restic.bz2' | sha256sum -c -
@@ -209,7 +196,7 @@ steps:
       - export GRUND_ACCEPT_RESTIC_BIN="$$PWD/.accept/restic"
       # Ratchet first, then the existing agent-5 gateway memcached probe,
       # then the shared memcached secret or a direct compile.
-      - . .woodpecker/cache.sh
+      - . .woodpecker/jobs.sh
       # Build every test binary first, and keep the path of the accepttest
       # binary: `contract` runs that same file against the release binary.
       # The same invocation as the run below, so the run compiles nothing.
@@ -217,12 +204,12 @@ steps:
       - cargo test --workspace --locked --no-run --message-format=json-render-diagnostics > .accept/build.json
       - grep '"reason":"compiler-artifact"' .accept/build.json | grep '/crates/grund#' | grep '"name":"tests"' | sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' > .accept/path
       - test "$$(wc -l < .accept/path)" -eq 1 || { echo "expected one grund accepttest binary, found:"; cat .accept/path; exit 1; }
-      - cp "$$(cat .accept/path)" .accept/tests && cp target/debug/grund .accept/grund
+      - cp "$$(cat .accept/path)" .accept/tests && cp target/test/debug/grund .accept/grund
       # The ee build of the same accepttests, built now so both suites can run
       # side by side: their run is bounded by their slowest tests, not by
       # CPU (53-63 CPU seconds over 98 s, pipeline 106), so running them one
       # after the other cost 65 s for nothing. The ee build overwrites
-      # target/debug/grund, which both suites would spawn, so each runs its
+      # target/test/debug/grund, which both suites would spawn, so each runs its
       # own copy (GRUND_ACCEPT_GRUND_BIN), and each test binary claims a port
       # block of its own. Not `cargo test -p grund --features ee`: -p
       # resolves features differently and rebuilt 104 crates (pipeline 32);
@@ -230,7 +217,7 @@ steps:
       - cargo test --workspace --features grund/ee --locked --no-run --message-format=json-render-diagnostics > .accept/build-ee.json
       - grep '"reason":"compiler-artifact"' .accept/build-ee.json | grep '/crates/grund#' | grep '"name":"tests"' | sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' > .accept/path-ee
       - test "$$(wc -l < .accept/path-ee)" -eq 1 || { echo "expected one grund ee accepttest binary, found:"; cat .accept/path-ee; exit 1; }
-      - cp "$$(cat .accept/path-ee)" .accept/tests-ee && cp target/debug/grund .accept/grund-ee
+      - cp "$$(cat .accept/path-ee)" .accept/tests-ee && cp target/test/debug/grund .accept/grund-ee
       # Fail with the cause, not with thirty accepttests timing out.
       - for i in $(seq 1 60); do nc -z postgres 5432 && nc -z nats 4222 && nc -z mailpit 1025 && nc -z s3 8333 && break; sleep 1; done
       - nc -z postgres 5432 || { echo "postgres never accepted connections"; exit 1; }
@@ -249,7 +236,7 @@ steps:
       # (~60 s in pipeline 250) just to select this one timing test.
       - (cd crates/grund && GRUND_ACCEPT_GRUND_BIN="$$PWD/../../.accept/grund" ../../.accept/tests --exact "$${TIMING_TEST}")
       - cd crates/grund && GRUND_ACCEPT_GRUND_BIN="$$PWD/../../.accept/grund-ee" ../../.accept/tests-ee --exact "$${TIMING_TEST}"
-      - if [ -n "$${RUSTC_WRAPPER:-}" ]; then sccache --show-stats; fi
+      - 'if command -v ci-cache >/dev/null; then ci-cache stats; fi'  # ci-cache: managed by kjuulh/woodpecker-forest
 
   release:
     # rust:*-alpine targets musl natively: the release binary is static, which
@@ -263,41 +250,35 @@ steps:
       # and fetch clippy and rustfmt over the network in a step that never
       # lints (mail pipeline 7 failed on exactly that download).
       RUSTUP_TOOLCHAIN: 1.98.1-x86_64-unknown-linux-musl
-      # Ratchet uses isolated public WebDAV; agent 5 keeps local memcached.
-      # Elsewhere the shared endpoint is secret. sccache keys each compile on inputs,
-      # the compiler and the environment variables rustc reads (build.rs's
-      # revision too), so a hit is the output that compile would give; bin
-      # crates, linking and build scripts are never cached. Memcached needs no
-      # credentials; public WebDAV is authenticated on trusted pushes only.
-      RUSTC_WRAPPER: sccache
-      # From a secret: this repository is public and mirrored, and names no
-      # internal address.
-      SCCACHE_MEMCACHED_ENDPOINT:
-        from_secret: sccache_memcached_endpoint
-      CI_CACHE_PUBLIC_ENDPOINT:
-        from_secret: ci_cache_public_endpoint
-      SCCACHE_WEBDAV_PASSWORD:
-        from_secret: ci_cache_public_password
+      # The shared CI cache (grund-docs design/ci-cache.md): build steps read
+      # the public cache without any key; only the push-only cache-save step
+      # holds ci_cache_public. The release revision check still guards the
+      # shipped binary.
       CARGO_INCREMENTAL: "0"
+      # Its own target directory, as for test.
+      CARGO_TARGET_DIR: target/release-build
     commands:
       # ca-certificates: the CA bundle the image ships (Dockerfile.prebuilt),
       # brought up to date here so the image build fetches nothing.
       - apk add --no-cache musl-dev binutils protobuf-dev sccache ca-certificates
+      - 'command -v ci-cache >/dev/null || { (curl -fsS --connect-timeout 5 --max-time 60 -o /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.2.0/ci-cache-0.2.0-x86_64-linux-musl 2>/dev/null || { if command -v timeout >/dev/null; then timeout 60 wget -q -T 5 -O /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.2.0/ci-cache-0.2.0-x86_64-linux-musl; else wget -q -T 5 -O /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.2.0/ci-cache-0.2.0-x86_64-linux-musl; fi; } 2>/dev/null) && echo "9a8b7b692aaf73f6499de5bca19f15f7609783db03b65bdca252127fea17d36a  /usr/local/bin/.ci-cache.part" | sha256sum -c - >/dev/null 2>&1 && chmod 0755 /usr/local/bin/.ci-cache.part && mv /usr/local/bin/.ci-cache.part /usr/local/bin/ci-cache; rm -f /usr/local/bin/.ci-cache.part; command -v ci-cache >/dev/null || echo "ci-cache client unavailable, building uncached"; }'  # ci-cache: managed by kjuulh/woodpecker-forest
+      - 'if command -v ci-cache >/dev/null; then ci-cache restore release --preset cargo; fi'  # ci-cache: managed by kjuulh/woodpecker-forest
+      - 'if command -v ci-cache >/dev/null; then eval "$$(ci-cache env)"; fi'  # ci-cache: managed by kjuulh/woodpecker-forest
       # Ratchet first, then the existing agent-5 gateway memcached probe,
       # then the shared memcached secret or a direct compile.
-      - . .woodpecker/cache.sh
+      - . .woodpecker/jobs.sh
       - export GRUND_BUILD_TIME="$$(date -u '+%Y-%m-%d %H:%M UTC')"
       - cargo build --locked --release -p grund -p grund-guest
-      - if [ -n "$${RUSTC_WRAPPER:-}" ]; then sccache --show-stats; fi
-      - if readelf -d target/release/grund | grep -q NEEDED; then echo "grund is dynamically linked; scratch cannot run it"; exit 1; fi
-      - if readelf -d target/release/grund-guest | grep -q NEEDED; then echo "grund-guest is dynamically linked; the guest has no libc"; exit 1; fi
+      - if readelf -d target/release-build/release/grund | grep -q NEEDED; then echo "grund is dynamically linked; scratch cannot run it"; exit 1; fi
+      - if readelf -d target/release-build/release/grund-guest | grep -q NEEDED; then echo "grund-guest is dynamically linked; the guest has no libc"; exit 1; fi
       # A compile cache must never ship another commit's build: the binary
       # has to carry this commit's revision (build.rs, /health/ready).
-      - tr -c 0-9a-f "\n" < target/release/grund | grep -q "$${CI_COMMIT_SHA}" || { echo "grund does not carry revision $${CI_COMMIT_SHA}"; exit 1; }
+      - tr -c 0-9a-f "\n" < target/release-build/release/grund | grep -q "$${CI_COMMIT_SHA}" || { echo "grund does not carry revision $${CI_COMMIT_SHA}"; exit 1; }
       # Stage the binary first and run the staged file, so the process the
       # accepttests assert against is byte for byte the one that gets packaged.
-      - mkdir -p .image/var/lib/grund .dist && cp target/release/grund .image/grund && cp target/release/grund-guest .dist/grund-guest
+      - mkdir -p .image/var/lib/grund .dist && cp target/release-build/release/grund .image/grund && cp target/release-build/release/grund-guest .dist/grund-guest
       - cp /etc/ssl/certs/ca-certificates.crt .image/ca-certificates.crt
+      - 'if command -v ci-cache >/dev/null; then ci-cache stats; fi'  # ci-cache: managed by kjuulh/woodpecker-forest
 
   contract:
     # Assert against the real binary, not a mock of it: the accepttest binary
@@ -406,3 +387,19 @@ steps:
       auto_tag: false
       tags:
         - main-${CI_COMMIT_SHA}
+
+  cache-save:  # ci-cache: managed by kjuulh/woodpecker-forest
+    # Saves every wired step's snapshot from the shared workspace (grund-docs design/ci-cache.md).  # ci-cache: managed by kjuulh/woodpecker-forest
+    image: alpine:3.22  # ci-cache: managed by kjuulh/woodpecker-forest
+    depends_on: [lint, test, release]  # ci-cache: managed by kjuulh/woodpecker-forest
+    failure: ignore  # ci-cache: managed by kjuulh/woodpecker-forest
+    when:  # ci-cache: managed by kjuulh/woodpecker-forest
+      - event: push  # ci-cache: managed by kjuulh/woodpecker-forest
+        branch: main  # ci-cache: managed by kjuulh/woodpecker-forest
+      - event: manual  # ci-cache: managed by kjuulh/woodpecker-forest
+    environment:  # ci-cache: managed by kjuulh/woodpecker-forest
+      CICACHE_PASSWORD:  # ci-cache: managed by kjuulh/woodpecker-forest
+        from_secret: ci_cache_public  # ci-cache: managed by kjuulh/woodpecker-forest
+    commands:  # ci-cache: managed by kjuulh/woodpecker-forest
+      - 'command -v ci-cache >/dev/null || { (curl -fsS --connect-timeout 5 --max-time 60 -o /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.2.0/ci-cache-0.2.0-x86_64-linux-musl 2>/dev/null || { if command -v timeout >/dev/null; then timeout 60 wget -q -T 5 -O /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.2.0/ci-cache-0.2.0-x86_64-linux-musl; else wget -q -T 5 -O /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.2.0/ci-cache-0.2.0-x86_64-linux-musl; fi; } 2>/dev/null) && echo "9a8b7b692aaf73f6499de5bca19f15f7609783db03b65bdca252127fea17d36a  /usr/local/bin/.ci-cache.part" | sha256sum -c - >/dev/null 2>&1 && chmod 0755 /usr/local/bin/.ci-cache.part && mv /usr/local/bin/.ci-cache.part /usr/local/bin/ci-cache; rm -f /usr/local/bin/.ci-cache.part; command -v ci-cache >/dev/null || echo "ci-cache client unavailable, building uncached"; }'  # ci-cache: managed by kjuulh/woodpecker-forest
+      - 'if command -v ci-cache >/dev/null; then ci-cache save-all; fi'  # ci-cache: managed by kjuulh/woodpecker-forest
