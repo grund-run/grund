@@ -593,6 +593,46 @@ async fn a_lease_moves_a_machine_into_the_lessee_pool_and_back_out(pool: PgPool)
     let row = machines::machine(&pool, machine_id).await.unwrap().unwrap();
     assert_eq!(row.state, "returning");
     assert_eq!(row.lease_id, None);
+    let returning_owner: Option<Uuid> = sqlx::query_scalar(
+        "SELECT returning_organisation_id FROM grund_machines WHERE machine_id=$1",
+    )
+    .bind(machine_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(returning_owner, Some(organisation_id));
+    let persisted_owner: Option<Uuid> = sqlx::query_scalar(
+        "SELECT (data->>'organisation_id')::uuid FROM es_events \
+         WHERE stream_id=$1 AND data->>'type'='lease_ended' \
+         ORDER BY stream_version DESC LIMIT 1",
+    )
+    .bind(format!("grund-machine-{machine_id}"))
+    .fetch_optional(&pool)
+    .await
+    .unwrap()
+    .flatten();
+    assert_eq!(persisted_owner, Some(organisation_id));
+    let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();
+    work.machine(
+        machine_id,
+        MachineCommand::Reregister {
+            key: machine_key(3),
+            token_id: Uuid::now_v7(),
+            facts: grund_domain::machine::MachineFacts::default(),
+            at: Utc::now(),
+        },
+    )
+    .await
+    .unwrap();
+    work.commit().await.unwrap();
+    let cleared: Option<Uuid> = sqlx::query_scalar(
+        "SELECT returning_organisation_id FROM grund_machines WHERE machine_id=$1",
+    )
+    .bind(machine_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(cleared, None);
 }
 
 #[sqlx::test(migrations = false)]

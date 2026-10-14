@@ -123,6 +123,26 @@ impl VolumesState for State {
     }
 }
 
+async fn backend_holder_allowed(
+    connection: &mut sqlx::PgConnection,
+    org: Uuid,
+    machine: Uuid,
+    detachment: bool,
+) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query_scalar(
+        "SELECT pool='management' AND ( \
+           (state='leased' AND pool_organisation_id=$2) \
+           OR ($3 AND state='returning' AND returning_organisation_id=$2)) \
+         FROM grund_machines WHERE machine_id=$1",
+    )
+    .bind(machine)
+    .bind(org)
+    .bind(detachment)
+    .fetch_optional(connection)
+    .await?
+    .unwrap_or(false))
+}
+
 impl Volumes {
     pub async fn list(&self, org: Uuid, app: Uuid) -> Result<Vec<VolumeRow>, VolumesError> {
         Ok(volumes::app_volumes(&self.state.pool, org, app)
@@ -349,13 +369,14 @@ impl Volumes {
             return Err(VolumesError::NotFound);
         }
         if publish {
-            let holder = grund_store::machines::machine(&mut **work.sql(), machine)
+            let detachment = matches!(
+                &command,
+                VolumeCommand::BeginBackendDetachment { .. }
+                    | VolumeCommand::ConfirmBackendDetachment { .. }
+            );
+            if !backend_holder_allowed(work.sql(), org, machine, detachment)
                 .await
                 .map_err(anyhow::Error::from)?
-                .ok_or(VolumesError::InvalidMachine)?;
-            if holder.pool != "management"
-                || holder.pool_organisation_id != Some(org)
-                || holder.state != "leased"
             {
                 return Err(VolumesError::InvalidMachine);
             }
@@ -873,4 +894,45 @@ fn validate_spec(spec: VolumeSpec) -> Result<VolumeSpec, VolumesError> {
         ));
     }
     Ok(spec)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[sqlx::test(migrations = false)]
+    async fn returning_machine_can_only_detach_for_its_former_organisation(
+        pool: sqlx::PgPool,
+    ) -> anyhow::Result<()> {
+        grund_store::migrate(&pool).await?;
+        let org = Uuid::new_v4();
+        let foreign = Uuid::new_v4();
+        let machine = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO grund_machines \
+             (machine_id,pool,name,state,public_key,returning_organisation_id,minted_by, \
+              registered_at,key_registered_at,stream_version) \
+             VALUES ($1,'management','returning','returning',repeat('a',64),$2,'test', \
+                     clock_timestamp(),clock_timestamp(),1)",
+        )
+        .bind(machine)
+        .bind(org)
+        .execute(&pool)
+        .await?;
+        let mut conn = pool.acquire().await?;
+        assert!(backend_holder_allowed(&mut conn, org, machine, true).await?);
+        assert!(!backend_holder_allowed(&mut conn, foreign, machine, true).await?);
+        assert!(!backend_holder_allowed(&mut conn, org, machine, false).await?);
+        sqlx::query(
+            "UPDATE grund_machines SET state='leased', returning_organisation_id=NULL, \
+             pool_organisation_id=$2, pool_name='new' WHERE machine_id=$1",
+        )
+        .bind(machine)
+        .bind(foreign)
+        .execute(&mut *conn)
+        .await?;
+        assert!(!backend_holder_allowed(&mut conn, org, machine, true).await?);
+        assert!(backend_holder_allowed(&mut conn, foreign, machine, false).await?);
+        Ok(())
+    }
 }

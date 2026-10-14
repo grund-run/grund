@@ -346,7 +346,7 @@ pub async fn apply_machine(
             sqlx::query(
                 "UPDATE grund_machines SET state = 'leased', lease_id = $2, \
                    lessee_organisation_id = $3, lease_name = $4, leased_at = $5, \
-                   pool_organisation_id = $3, pool_name = $4 \
+                   pool_organisation_id = $3, pool_name = $4, returning_organisation_id = NULL \
                  WHERE machine_id = $1",
             )
             .bind(machine_id)
@@ -357,15 +357,18 @@ pub async fn apply_machine(
             .execute(&mut *connection)
             .await?;
         }
-        MachineEvent::LeaseEnded { .. } => {
+        MachineEvent::LeaseEnded {
+            organisation_id, ..
+        } => {
             sqlx::query(
                 "UPDATE grund_machines SET state = 'returning', lease_id = NULL, \
                    lessee_organisation_id = NULL, lease_name = NULL, leased_at = NULL, \
                    pool_organisation_id = NULL, pool_name = NULL, network_ports = '[]', \
-                   labels = '{}', cordoned_at = NULL \
+                   labels = '{}', cordoned_at = NULL, returning_organisation_id = $2 \
                  WHERE machine_id = $1",
             )
             .bind(machine_id)
+            .bind(organisation_id)
             .execute(&mut *connection)
             .await?;
         }
@@ -377,7 +380,7 @@ pub async fn apply_machine(
         } => {
             sqlx::query(
                 "UPDATE grund_machines SET state = 'available', public_key = $2, facts = $3, \
-                   key_registered_at = $4 \
+                   key_registered_at = $4, returning_organisation_id = NULL \
                  WHERE machine_id = $1",
             )
             .bind(machine_id)
@@ -450,7 +453,7 @@ pub async fn apply_machine(
                 "UPDATE grund_machines SET state = 'revoked', public_key = NULL, revoked_at = $2, \
                    lease_id = NULL, lessee_organisation_id = NULL, lease_name = NULL, \
                    leased_at = NULL, pool_organisation_id = NULL, pool_name = NULL, \
-                   network_ports = '[]' \
+                   returning_organisation_id = NULL, network_ports = '[]' \
                  WHERE machine_id = $1",
             )
             .bind(machine_id)
