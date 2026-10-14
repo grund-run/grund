@@ -244,7 +244,10 @@ steps:
         wait
         echo "--- the ee accepttests"; cat .accept/ee.log
         [ "$$core" -eq 0 ] && [ "$$(cat .accept/ee.status)" -eq 0 ] || { echo "workspace tests exited $$core, the ee accepttests $$(cat .accept/ee.status)"; exit 1; }
-      - GRUND_ACCEPT_GRUND_BIN="$$PWD/.accept/grund" cargo test --workspace --locked -- --exact "$${TIMING_TEST}"
+      # The saved default accepttest binary already ran with the workspace;
+      # calling cargo again after the EE build recompiles the default tree
+      # (~60 s in pipeline 250) just to select this one timing test.
+      - (cd crates/grund && GRUND_ACCEPT_GRUND_BIN="$$PWD/../../.accept/grund" ../../.accept/tests --exact "$${TIMING_TEST}")
       - cd crates/grund && GRUND_ACCEPT_GRUND_BIN="$$PWD/../../.accept/grund-ee" ../../.accept/tests-ee --exact "$${TIMING_TEST}"
       - if [ -n "$${RUSTC_WRAPPER:-}" ]; then sccache --show-stats; fi
 
