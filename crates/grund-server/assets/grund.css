@@ -1679,6 +1679,32 @@ legend.field-label {
   grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
 }
 
+.choices-wide > .panel {
+  gap: var(--space-3);
+  padding: var(--space-5);
+}
+
+.choices-wide > .panel .panel-head {
+  flex-direction: row;
+  align-items: center;
+}
+
+.choices-wide > .panel .row {
+  min-height: 0;
+  padding: var(--space-2) 0;
+}
+
+.choices-wide > .panel .row-name {
+  font-size: var(--text-md);
+  font-weight: 400;
+}
+
+.choices-wide > .panel > form,
+.choices-wide > .panel > .pill {
+  align-self: flex-start;
+  margin-top: auto;
+}
+
 .choices-lg {
   grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
   gap: var(--space-4);

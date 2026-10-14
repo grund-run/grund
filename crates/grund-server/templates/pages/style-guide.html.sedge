@@ -124,6 +124,20 @@ props crate::web::pages::StyleGuidePage { viewer, csrf, swatches, sprite_icons, 
       </Grid></Panel>
       <Actions note="Deploying makes the app and its first release." note_icon="layers"><Button label="Cancel" kind="secondary" href="#sg-choices" /><ButtonAdvanced label="Deploy app" kind="primary" button_type="button" /></Actions>
     </Specimen>
+    <Specimen title="Panels as choices" code={r#"<div class="choices choices-wide"><Panel id="home" title="Home"><Para kind="choice-line">First machine free</Para><Rows><Row name="Hosted dashboard" sub="" plain /></Rows><Pill text="Current plan" tone="ok" /></Panel><Panel id="pro" title="Pro" tag={Some("Recommended")}><Para kind="choice-line">€10 per machine per month</Para><Rows><Row name="Email support" sub="" plain /></Rows><PostButton action={url} csrf={csrf} label="Choose Pro" kind="secondary" /></Panel></div>"#} note="Panels in a wide choice grid have compact feature rows, with controls aligned at the bottom of each grid row. tag puts a small label beside the title.">
+      <div class="choices choices-wide">
+        <Panel id="sg-choice-home" title="Home">
+          <Para kind="choice-line">First machine free</Para>
+          <Rows><Row name="Hosted dashboard" sub="" plain /><Row name="Phone alerts" sub="" plain /></Rows>
+          <Pill text="Current plan" tone="ok" />
+        </Panel>
+        <Panel id="sg-choice-pro" title="Pro" tag={Some("Recommended")}>
+          <Para kind="choice-line">€10 per machine per month</Para>
+          <Rows><Row name="Whole team" sub="" plain /><Row name="Email support" sub="" plain /></Rows>
+          <PostButton action="#sg-choices" csrf={csrf} label="Choose Pro" kind="secondary" />
+        </Panel>
+      </div>
+    </Specimen>
     <Specimen title="Panel with an action, and facts" code={r#"<Panel id="status" title="Application status" action={Some((url, "All releases"))}><Facts><Fact label="Reachable at" wide={true}><Endpoint text={address} href={address} /></Fact><Fact label="Status" value="Live" tone="ok" /></Facts></Panel>"#} note={r#"action puts one secondary button at the right of a panel's title. facts() is fact()s divided by lines: a wide one on a row of its own, the rest three across (two below 900 px): a label, the value large with an icon or a state's dot (after: quieter words on its line, "· kjuulh"), and at most a quieter line, each on one line, cut with an ellipsis, the whole in its title. Each fact says one thing once (Kasper, 2026-10-06: the version appears once). endpoint() is an address with a copy button: a link when public, code when internal."#}>
       <Panel id="sg-facts" title="Application status" action={Some(("#sg-choices", "All releases"))}><Facts>
         <Fact label="Reachable at" wide><Endpoint text="https://storefront-nord-studio.example.run" href="#sg-choices" /></Fact>
