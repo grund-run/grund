@@ -175,6 +175,11 @@ is queued or sent. See [.env.example](.env.example).
   queues its live organisations for registration at startup with stable
   event IDs. Customer checkout, payment portal, complimentary grants,
   machine usage and hourly metering are not part of the public build.
+  `GRUND_BILLING_MODE` is `off` without that service and defaults to
+  `sandbox` when it is configured; live mode requires `live` explicitly.
+  Customer checkout in sandbox is disabled unless
+  `GRUND_BILLING_SANDBOX_CHECKOUT=true` is set for testing. The production
+  `app.grund.sh` origin refuses that sandbox test setting at startup.
 
 ```bash
 curl -s -X POST -H 'Content-Type: application/json' -d '{}' \

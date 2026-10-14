@@ -453,6 +453,41 @@ pub struct BillingArgs {
     /// HTTPS origins allowed for checkout and payment portal redirects, separated by commas.
     #[arg(long, env = "GRUND_BILLING_REDIRECT_ORIGINS")]
     pub billing_redirect_origins: Option<String>,
+
+    /// Billing environment. Defaults to sandbox when a billing service is configured,
+    /// or off when it is not. Live requires an explicit choice.
+    #[arg(long, env = "GRUND_BILLING_MODE", value_enum)]
+    pub billing_mode: Option<BillingMode>,
+
+    /// Permit test checkout and plan changes against sandbox outside production.
+    #[arg(long = "billing-sandbox-checkout", env = "GRUND_BILLING_SANDBOX_CHECKOUT", default_value_t = false, action = clap::ArgAction::Set)]
+    pub sandbox_checkout: bool,
+}
+
+/// The provider environment behind the billing service.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum BillingMode {
+    Off,
+    #[default]
+    Sandbox,
+    Live,
+}
+
+impl BillingArgs {
+    /// The effective billing environment; unconfigured instances stay free.
+    pub fn mode(&self) -> BillingMode {
+        self.billing_mode.unwrap_or(if self.enabled() {
+            BillingMode::Sandbox
+        } else {
+            BillingMode::Off
+        })
+    }
+
+    /// Whether customer-initiated checkout or plan changes may reach billing.
+    pub fn checkout_allowed(&self) -> bool {
+        matches!(self.mode(), BillingMode::Live)
+            || matches!(self.mode(), BillingMode::Sandbox) && self.sandbox_checkout
+    }
 }
 
 /// What the Machines page offers by default: the script that installs the
@@ -943,6 +978,15 @@ impl BillingArgs {
             "GRUND_BILLING_URL and GRUND_BILLING_TOKEN must be set together"
         );
         anyhow::ensure!(
+            (self.enabled() && self.mode() != BillingMode::Off)
+                || (!self.enabled() && self.mode() == BillingMode::Off),
+            "GRUND_BILLING_MODE must be off without GRUND_BILLING_URL, or sandbox/live with it"
+        );
+        anyhow::ensure!(
+            !self.sandbox_checkout || self.mode() == BillingMode::Sandbox,
+            "GRUND_BILLING_SANDBOX_CHECKOUT requires GRUND_BILLING_MODE=sandbox"
+        );
+        anyhow::ensure!(
             self.billing_redirect_origins.is_none() || self.enabled(),
             "GRUND_BILLING_REDIRECT_ORIGINS requires GRUND_BILLING_URL"
         );
@@ -962,6 +1006,11 @@ impl BillingArgs {
                         && parsed.fragment().is_none()
                         && !origin.ends_with('/'),
                     "GRUND_BILLING_REDIRECT_ORIGINS must contain bare HTTPS origins"
+                );
+                anyhow::ensure!(
+                    self.mode() != BillingMode::Live
+                        || parsed.host_str() != Some("sandbox.polar.sh"),
+                    "GRUND_BILLING_MODE=live cannot use a sandbox GRUND_BILLING_REDIRECT_ORIGINS"
                 );
             }
         }
@@ -1042,6 +1091,10 @@ impl ServeConfig {
                  host, an optional port, no path or trailing slash; got {public_url:?}"
             )
         })?;
+        anyhow::ensure!(
+            origin.host != "app.grund.sh" || !self.billing.sandbox_checkout,
+            "GRUND_BILLING_SANDBOX_CHECKOUT cannot be enabled on app.grund.sh"
+        );
         if let Some(domain) = &self.tls.domain {
             anyhow::ensure!(
                 origin.https && &origin.host == domain,
@@ -1453,6 +1506,59 @@ mod tests {
         assert!(
             !config.account_events.enabled(),
             "nothing is reported by default"
+        );
+    }
+
+    #[test]
+    fn sandbox_checkout_is_opt_in_and_never_allowed_on_the_production_origin() {
+        let billing = [
+            "--billing-url",
+            "http://billing:8080",
+            "--billing-token",
+            "0123456789abcdef0123456789abcdef",
+        ];
+        assert_eq!(parse(&[]).unwrap().billing.mode(), BillingMode::Off);
+        let sandbox = parse(&billing).unwrap();
+        assert_eq!(sandbox.billing.mode(), BillingMode::Sandbox);
+        assert!(!sandbox.billing.checkout_allowed());
+        let mut dev = billing.to_vec();
+        dev.extend(["--billing-sandbox-checkout", "true"]);
+        assert!(parse(&dev).unwrap().billing.checkout_allowed());
+        dev.extend(["--public-url", "https://app.grund.sh"]);
+        assert!(
+            parse(&dev)
+                .unwrap_err()
+                .to_string()
+                .contains("GRUND_BILLING_SANDBOX_CHECKOUT")
+        );
+    }
+
+    #[test]
+    fn live_billing_is_explicit_and_off_refuses_a_configured_backend() {
+        let args = [
+            "--billing-url",
+            "http://billing:8080",
+            "--billing-token",
+            "0123456789abcdef0123456789abcdef",
+            "--billing-mode",
+        ];
+        assert!(parse(&[&args[..], &["off"]].concat()).is_err());
+        let live = parse(&[&args[..], &["live"]].concat()).unwrap();
+        assert!(live.billing.checkout_allowed());
+        assert!(parse(&["--billing-mode", "live"]).is_err());
+        assert!(
+            parse(
+                &[
+                    &args[..],
+                    &[
+                        "live",
+                        "--billing-redirect-origins",
+                        "https://sandbox.polar.sh"
+                    ],
+                ]
+                .concat()
+            )
+            .is_err()
         );
     }
 

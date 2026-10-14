@@ -1,8 +1,8 @@
 use crate::templates::compiled::components::{OrganisationTabs, Rows, Row, Section, Form, Field, Button, Banner, PostButton, Expander, Expanders, Actions, Callout, Para, LinkMore, FieldError};
-props crate::web::orgs::SettingsPage<'_> { viewer, csrf, owners, billing, rename_value, deleting, refusal, notice, rename_error, delete_error };
+props crate::web::orgs::SettingsPage<'_> { viewer, csrf, owners, billing, billing_enabled, rename_value, deleting, refusal, notice, rename_error, delete_error };
 
 {if let Some(org) = &viewer.current {
-  <OrganisationTabs slug={&org.slug} active="general" billing={org.owner && viewer.navigation.iter().any(|link| link.section == "billing")} />
+  <OrganisationTabs slug={&org.slug} active="general" billing={org.owner && *billing_enabled} />
   {if !notice.is_empty() { <Banner text={notice} tone="ok" /> }}
   <Rows>
     <Row name="Name" sub={&org.slug} tone="ok" status_tone="ok" plain end_active={Some(!org.owner)}><:end>{if !org.owner { <Para kind="hint">Owners can rename it.</Para> }}</:end></Row>
@@ -18,7 +18,7 @@ props crate::web::orgs::SettingsPage<'_> { viewer, csrf, owners, billing, rename
       </Row>
     }}
     <Row name="Managed by" sub={&owners.join(", ")} tone="ok" status_tone="ok" plain>
-      <:end>{if let Some(url) = billing.manage_url.as_deref().filter(|_| org.owner) { <LinkMore href={url} label="Manage billing" /> } else { <Para kind="hint">Owners manage billing.</Para> }}</:end>
+      <:end>{if org.owner && *billing_enabled { <LinkMore href="/{org.slug}/settings/billing" label="Manage billing" /> } else { <Para kind="hint">Owners manage billing.</Para> }}</:end>
     </Row>
   </Rows></Section>
   {if org.owner {

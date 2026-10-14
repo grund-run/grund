@@ -91,7 +91,6 @@ pub struct BillingPage {
     pub state: &'static str,
     pub plan: String,
     pub past_due: bool,
-    pub manage_url: Option<String>,
 }
 
 pub struct SettingsPage<'a> {
@@ -99,6 +98,7 @@ pub struct SettingsPage<'a> {
     pub csrf: &'a str,
     pub owners: Vec<String>,
     pub billing: BillingPage,
+    pub billing_enabled: bool,
     pub rename_value: String,
     pub deleting: bool,
     pub refusal: String,
@@ -644,21 +644,22 @@ async fn settings_view(
             state: "free",
             plan: "Free".into(),
             past_due: false,
-            manage_url: None,
         },
         BillingView::Account(details) => BillingPage {
             state: "account",
             plan: details.plan.clone(),
             past_due: details.past_due,
-            manage_url: None,
         },
         BillingView::Unavailable => BillingPage {
             state: "unavailable",
             plan: String::new(),
             past_due: false,
-            manage_url: None,
         },
     };
+    let billing_enabled = state
+        .extensions
+        .iter()
+        .any(|extension| extension.billing_enabled());
     let rename_value = if form.rename_value.is_empty() {
         membership.slug.clone()
     } else {
@@ -676,20 +677,12 @@ async fn settings_view(
         membership.deletion_requested_at.as_ref().map(|_| 3),
         None,
         |viewer, csrf| {
-            let mut billing = billing;
-            if billing.state == "account"
-                && viewer
-                    .navigation
-                    .iter()
-                    .any(|link| link.section == "billing")
-            {
-                billing.manage_url = Some(format!("/{}/settings/billing", membership.slug));
-            }
             crate::templates::compiled::pages::org_settings::render(&SettingsPage {
                 viewer,
                 csrf,
                 owners,
                 billing,
+                billing_enabled,
                 rename_value,
                 deleting: membership.deletion_requested_at.is_some(),
                 refusal: membership.deletion_refusal.clone().unwrap_or_default(),
@@ -1156,6 +1149,86 @@ pub async fn decline_account_invitation(
         }
         crate::services::organisations::DeclineOutcome::Expired => {
             super::pages::not_found_page(&state, &browser)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::web::pages::{NavLink, TypedOrg, TypedViewer};
+
+    fn settings_html(owner: bool, billing_enabled: bool, state: &'static str) -> String {
+        let viewer = TypedViewer {
+            username: "ada".into(),
+            email: "ada@example.test".into(),
+            initials: "A".into(),
+            pending_invitations: Vec::new(),
+            unread_notifications: 0,
+            orgs: Vec::new(),
+            current: Some(TypedOrg {
+                slug: "acme".into(),
+                role: if owner { "owner" } else { "member" }.into(),
+                kind: "shared".into(),
+                manages: owner,
+                owner,
+                since: String::new(),
+                current: true,
+            }),
+            can_create: false,
+            admin_footer: false,
+            operator: false,
+            registered_on: String::new(),
+            navigation: if billing_enabled {
+                Vec::new()
+            } else {
+                vec![NavLink {
+                    suffix: "/settings/billing".into(),
+                    icon_name: "gear",
+                    label: "Billing",
+                    section: "billing",
+                }]
+            },
+        };
+        crate::templates::compiled::pages::org_settings::render(&SettingsPage {
+            viewer: &viewer,
+            csrf: "csrf",
+            owners: vec!["ada".into()],
+            billing: BillingPage {
+                state,
+                plan: "Free".into(),
+                past_due: false,
+            },
+            billing_enabled,
+            rename_value: "acme".into(),
+            deleting: false,
+            refusal: String::new(),
+            notice: "",
+            rename_error: String::new(),
+            delete_error: String::new(),
+        })
+    }
+
+    #[test]
+    fn billing_capability_shows_owner_controls_even_without_an_account() {
+        for state in ["free", "unavailable", "account"] {
+            let html = settings_html(true, true, state);
+            assert!(
+                html.contains("<a class=\"tab\" href=\"/acme/settings/billing\""),
+                "billing tab missing for {state}"
+            );
+            assert!(html.contains("Manage billing"));
+        }
+    }
+
+    #[test]
+    fn billing_summary_remains_but_management_is_hidden_without_capability_or_ownership() {
+        for (owner, billing_enabled) in [(true, false), (false, true), (false, false)] {
+            let html = settings_html(owner, billing_enabled, "account");
+            assert!(html.contains("Managed by"));
+            assert!(html.contains("Owners manage billing."));
+            assert!(!html.contains("href=\"/acme/settings/billing\""));
+            assert!(!html.contains("Manage billing"));
         }
     }
 }

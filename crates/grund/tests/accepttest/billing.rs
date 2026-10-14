@@ -38,3 +38,25 @@ async fn enabling_billing_backfills_organisations_created_while_billing_was_off(
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn a_billing_service_without_a_billing_page_keeps_the_owners_settings_link_hidden()
+-> anyhow::Result<()> {
+    let billing =
+        FakeBilling::start_with_account(DeletionAnswer::Allow, AccountAnswer::Free).await?;
+    let Some((given, when, then)) = testcase_configured(&[
+        ("GRUND_BILLING_URL", &billing.url),
+        ("GRUND_BILLING_TOKEN", BILLING_TOKEN),
+    ])
+    .await?
+    else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    when.visiting(&format!("/{}/settings", owner.username))
+        .await?;
+    then.status(200)?
+        .body_contains("Managed by")?
+        .body_lacks(&format!("href=\"/{}/settings/billing\"", owner.username))?;
+    Ok(())
+}

@@ -92,6 +92,10 @@ pub trait Extension: Send + Sync + 'static {
     fn navigation(&self, _viewer: &TypedViewer) -> Vec<NavLink> {
         Vec::new()
     }
+    /// Whether this extension provides the organisation billing page.
+    fn billing_enabled(&self) -> bool {
+        false
+    }
     /// The organisation allowed to operate extension-owned infrastructure.
     fn operator_organisation<'a>(
         &'a self,

@@ -2487,6 +2487,10 @@ a.endpoint-text:hover {
   margin-top: var(--space-6);
 }
 
+.choices > .panel {
+  margin-top: 0;
+}
+
 /* ------------------------------------------------------------ style guide
  * The catalogue's own layout (templates/components/catalogue.html.sedge). No
  * product page uses these. */

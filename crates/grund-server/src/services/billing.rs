@@ -47,6 +47,7 @@ pub struct AccountDetails {
     pub plan: String,
     pub pending_plan: String,
     pub past_due: bool,
+    pub cancelled: bool,
     pub complimentary: bool,
     pub complimentary_reason: String,
     pub complimentary_expires_at: Option<String>,
@@ -445,6 +446,7 @@ fn view_from_response(answer: &serde_json::Value) -> BillingView {
         plan: plan.to_owned(),
         pending_plan: account["pendingPlan"].as_str().unwrap_or("").to_owned(),
         past_due: account["status"].as_str() == Some("ACCOUNT_STATUS_PAST_DUE"),
+        cancelled: account["status"].as_str() == Some("ACCOUNT_STATUS_CANCELLED"),
         complimentary: account["complimentary"].as_bool().unwrap_or(false),
         complimentary_reason: account["complimentaryReason"]
             .as_str()
