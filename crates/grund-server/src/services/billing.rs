@@ -58,6 +58,34 @@ pub struct AccountDetails {
     pub provider_subscription_id: String,
     pub total_amount_cents: i64,
     pub currency: String,
+    pub period_start: Option<String>,
+    pub period_end: Option<String>,
+    pub cancel_at_period_end: bool,
+    pub usage: Option<UsageDetails>,
+    pub invoices: Vec<InvoiceDetails>,
+}
+
+/// Observed usage from delivered hourly provider samples in the current period.
+#[derive(Debug, PartialEq, Eq)]
+pub struct UsageDetails {
+    pub machines_billed: i32,
+    pub machine_hours: i64,
+    pub sampled_hours: i64,
+    pub expected_hours: i64,
+    pub estimated_amount_cents: Option<i64>,
+    pub first_machine_credit_cents: i64,
+}
+
+/// An observed provider order; a document exists only when reported available.
+#[derive(Debug, PartialEq, Eq)]
+pub struct InvoiceDetails {
+    pub id: String,
+    pub date: Option<String>,
+    pub observed_at: Option<String>,
+    pub amount_cents: i64,
+    pub currency: String,
+    pub status: String,
+    pub document_available: bool,
 }
 
 /// Whether an organisation may be deleted, as far as billing is concerned.
@@ -431,6 +459,13 @@ impl Remote {
     }
 }
 
+fn json_i64(value: &serde_json::Value) -> Option<i64> {
+    value
+        .as_str()
+        .and_then(|value| value.parse().ok())
+        .or_else(|| value.as_i64())
+}
+
 fn view_from_response(answer: &serde_json::Value) -> BillingView {
     let account = &answer["account"];
     let Some(plan) = account["plan"].as_str().filter(|plan| !plan.is_empty()) else {
@@ -442,6 +477,45 @@ fn view_from_response(answer: &serde_json::Value) -> BillingView {
     ) {
         return BillingView::Unavailable;
     }
+    let period_start = account["periodStart"].as_str().map(str::to_owned);
+    let period_end = account["periodEnd"].as_str().map(str::to_owned);
+    let usage = (period_start.is_some() && period_end.is_some())
+        .then(|| account.get("usage"))
+        .flatten()
+        .filter(|usage| usage.is_object())
+        .map(|usage| UsageDetails {
+            machines_billed: json_i64(&usage["machinesBilled"])
+                .and_then(|count| i32::try_from(count).ok())
+                .unwrap_or(0),
+            machine_hours: json_i64(&usage["machineHours"]).unwrap_or(0),
+            sampled_hours: json_i64(&usage["sampledHours"]).unwrap_or(0),
+            expected_hours: json_i64(&usage["expectedHours"]).unwrap_or(0),
+            estimated_amount_cents: json_i64(&usage["estimatedAmountCents"]),
+            first_machine_credit_cents: json_i64(&usage["firstMachineCreditCents"]).unwrap_or(0),
+        });
+    let invoices = account["invoices"]
+        .as_array()
+        .into_iter()
+        .flat_map(|invoices| invoices.iter().take(20))
+        .filter_map(|invoice| {
+            let id = invoice["id"].as_str().filter(|id| !id.is_empty())?;
+            let currency = invoice["currency"]
+                .as_str()
+                .filter(|currency| !currency.is_empty())?;
+            let status = invoice["status"]
+                .as_str()
+                .filter(|status| !status.is_empty())?;
+            Some(InvoiceDetails {
+                id: id.to_owned(),
+                date: invoice["date"].as_str().map(str::to_owned),
+                observed_at: invoice["observedAt"].as_str().map(str::to_owned),
+                amount_cents: json_i64(&invoice["amountCents"])?,
+                currency: currency.to_owned(),
+                status: status.to_owned(),
+                document_available: invoice["documentAvailable"].as_bool().unwrap_or(false),
+            })
+        })
+        .collect();
     BillingView::Account(Arc::new(AccountDetails {
         plan: plan.to_owned(),
         pending_plan: account["pendingPlan"].as_str().unwrap_or("").to_owned(),
@@ -468,12 +542,13 @@ fn view_from_response(answer: &serde_json::Value) -> BillingView {
             .as_str()
             .unwrap_or("")
             .to_owned(),
-        total_amount_cents: account["totalAmountCents"]
-            .as_str()
-            .and_then(|value| value.parse().ok())
-            .or_else(|| account["totalAmountCents"].as_i64())
-            .unwrap_or(0),
+        total_amount_cents: json_i64(&account["totalAmountCents"]).unwrap_or(0),
         currency: account["currency"].as_str().unwrap_or("EUR").to_owned(),
+        period_start,
+        period_end,
+        cancel_at_period_end: account["cancelAtPeriodEnd"].as_bool().unwrap_or(false),
+        usage,
+        invoices,
     }))
 }
 
@@ -541,4 +616,60 @@ pub async fn queue_change(
         at,
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BillingView, view_from_response};
+
+    #[test]
+    fn account_decoder_preserves_observed_usage_and_omits_missing_history() {
+        let response = serde_json::json!({
+            "account": {
+                "plan": "Homelab",
+                "status": "ACCOUNT_STATUS_ACTIVE",
+                "periodStart": "2026-09-01T00:00:00Z",
+                "periodEnd": "2026-10-01T00:00:00Z",
+                "cancelAtPeriodEnd": true,
+                "usage": {
+                    "machinesBilled": 2,
+                    "machineHours": "59",
+                    "sampledHours": "30",
+                    "expectedHours": "31",
+                    "estimatedAmountCents": "0",
+                    "firstMachineCreditCents": "300"
+                },
+                "invoices": [{
+                    "id": "8d6c5ad1-8918-4d69-b8bd-884cae887fad",
+                    "date": "2026-09-01T00:00:00Z",
+                    "amountCents": "300",
+                    "currency": "eur",
+                    "status": "paid",
+                    "documentAvailable": true
+                }]
+            }
+        });
+        let BillingView::Account(details) = view_from_response(&response) else {
+            panic!("observed account should remain available");
+        };
+        assert!(details.cancel_at_period_end);
+        let usage = details.usage.as_ref().expect("known period has usage");
+        assert_eq!(usage.machine_hours, 59);
+        assert_eq!(usage.sampled_hours, 30);
+        assert_eq!(usage.expected_hours, 31);
+        assert_eq!(usage.estimated_amount_cents, Some(0));
+        assert_eq!(usage.first_machine_credit_cents, 300);
+        assert_eq!(details.invoices[0].amount_cents, 300);
+        assert!(details.invoices[0].document_available);
+
+        let legacy = serde_json::json!({
+            "account": {"plan": "Homelab", "status": "ACCOUNT_STATUS_ACTIVE"}
+        });
+        let BillingView::Account(details) = view_from_response(&legacy) else {
+            panic!("older billing backend should still have an account");
+        };
+        assert!(details.usage.is_none());
+        assert!(details.invoices.is_empty());
+        assert!(details.period_end.is_none());
+    }
 }
