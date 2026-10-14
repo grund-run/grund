@@ -2542,6 +2542,32 @@
           "value_name": "BILLING_REDIRECT_ORIGINS"
         },
         {
+          "description": "Billing environment. Defaults to sandbox when a billing service is configured, or off when it is not. Live requires an explicit choice",
+          "enum": [
+            "off",
+            "sandbox",
+            "live"
+          ],
+          "env": "GRUND_BILLING_MODE",
+          "flag": "--billing-mode",
+          "name": "billing_mode",
+          "type": "string",
+          "value_name": "BILLING_MODE"
+        },
+        {
+          "default": "false",
+          "description": "Permit test checkout and plan changes against sandbox outside production",
+          "enum": [
+            "true",
+            "false"
+          ],
+          "env": "GRUND_BILLING_SANDBOX_CHECKOUT",
+          "flag": "--billing-sandbox-checkout",
+          "name": "sandbox_checkout",
+          "type": "string",
+          "value_name": "SANDBOX_CHECKOUT"
+        },
+        {
           "description": "The capacity provider, e.g. http://fleet:8080, reached from grund's servers only. grund calls `grund.capacity.v1.CapacityService` on it. Set with GRUND_CAPACITY_TOKEN",
           "env": "GRUND_CAPACITY_URL",
           "flag": "--capacity-url",
@@ -3442,6 +3468,32 @@
           "value_name": "BILLING_REDIRECT_ORIGINS"
         },
         {
+          "description": "Billing environment. Defaults to sandbox when a billing service is configured, or off when it is not. Live requires an explicit choice",
+          "enum": [
+            "off",
+            "sandbox",
+            "live"
+          ],
+          "env": "GRUND_BILLING_MODE",
+          "flag": "--billing-mode",
+          "name": "billing_mode",
+          "type": "string",
+          "value_name": "BILLING_MODE"
+        },
+        {
+          "default": "false",
+          "description": "Permit test checkout and plan changes against sandbox outside production",
+          "enum": [
+            "true",
+            "false"
+          ],
+          "env": "GRUND_BILLING_SANDBOX_CHECKOUT",
+          "flag": "--billing-sandbox-checkout",
+          "name": "sandbox_checkout",
+          "type": "string",
+          "value_name": "SANDBOX_CHECKOUT"
+        },
+        {
           "description": "The capacity provider, e.g. http://fleet:8080, reached from grund's servers only. grund calls `grund.capacity.v1.CapacityService` on it. Set with GRUND_CAPACITY_TOKEN",
           "env": "GRUND_CAPACITY_URL",
           "flag": "--capacity-url",
@@ -4202,6 +4254,32 @@
           "name": "billing_redirect_origins",
           "type": "string",
           "value_name": "BILLING_REDIRECT_ORIGINS"
+        },
+        {
+          "description": "Billing environment. Defaults to sandbox when a billing service is configured, or off when it is not. Live requires an explicit choice",
+          "enum": [
+            "off",
+            "sandbox",
+            "live"
+          ],
+          "env": "GRUND_BILLING_MODE",
+          "flag": "--billing-mode",
+          "name": "billing_mode",
+          "type": "string",
+          "value_name": "BILLING_MODE"
+        },
+        {
+          "default": "false",
+          "description": "Permit test checkout and plan changes against sandbox outside production",
+          "enum": [
+            "true",
+            "false"
+          ],
+          "env": "GRUND_BILLING_SANDBOX_CHECKOUT",
+          "flag": "--billing-sandbox-checkout",
+          "name": "sandbox_checkout",
+          "type": "string",
+          "value_name": "SANDBOX_CHECKOUT"
         },
         {
           "description": "The capacity provider, e.g. http://fleet:8080, reached from grund's servers only. grund calls `grund.capacity.v1.CapacityService` on it. Set with GRUND_CAPACITY_TOKEN",
