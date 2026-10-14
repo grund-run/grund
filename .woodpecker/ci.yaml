@@ -104,29 +104,29 @@ steps:
     depends_on: []
     environment:
       CARGO_TERM_COLOR: always
-      # rustc outputs are shared across pipelines through sccache on
-      # clank-sccache (memcached, the homelab). sccache keys each compile on its inputs,
+      # Ratchet uses isolated public WebDAV; agent 5 keeps local memcached.
+      # Elsewhere the shared endpoint is secret. sccache keys each compile on inputs,
       # the compiler and the environment variables rustc reads (build.rs's
       # revision too), so a hit is the output that compile would give; bin
-      # crates, linking and build scripts are never cached. The cache needs no
-      # credentials; if the host is unreachable, the step compiles without it.
+      # crates, linking and build scripts are never cached. Memcached needs no
+      # credentials; public WebDAV is authenticated on trusted pushes only.
       RUSTC_WRAPPER: sccache
       # From a secret: this repository is public and mirrored, and names no
       # internal address.
       SCCACHE_MEMCACHED_ENDPOINT:
         from_secret: sccache_memcached_endpoint
+      CI_CACHE_PUBLIC_ENDPOINT:
+        from_secret: ci_cache_public_endpoint
+      SCCACHE_WEBDAV_PASSWORD:
+        from_secret: ci_cache_public_password
       CARGO_INCREMENTAL: "0"
       CARGO_TARGET_DIR: target/lint
     commands:
       # protobuf-dev: protoc and the well-known types, for the API codegen.
       - apk add --no-cache musl-dev protobuf-dev sccache
-      # The agent's own cache first, where it has one (agent 5: memcached in
-      # the CI daemon's network namespace, so at every step's gateway, port
-      # 11311). The shared one carries ~10 MB/s for all steps together, which
-      # made a warm build no faster than a cold one (grund-docs
-      # docs/ci-performance.md). Elsewhere, the shared one from the secret.
-      - gw="$$(ip route | awk '/^default/ {print $$3; exit}')"; if printf 'version\r\n' | nc -w 1 "$$gw" 11311 2>/dev/null | grep -q '^VERSION'; then export SCCACHE_MEMCACHED_ENDPOINT="tcp://$$gw:11311"; echo "using this agent's own compile cache"; else echo "using the shared compile cache"; fi
-      - hp="$${SCCACHE_MEMCACHED_ENDPOINT#tcp://}"; nc -z -w 3 "$${hp%:*}" "$${hp##*:}" || { echo "the compile cache is unreachable, so this step compiles without it"; unset RUSTC_WRAPPER; }
+      # Ratchet first, then the existing agent-5 gateway memcached probe,
+      # then the shared memcached secret or a direct compile.
+      - . .woodpecker/cache.sh
       - rustup component add rustfmt clippy
       - cargo fmt --all --check
       # Kasper's rule: in Rust, the only comments are docs on public items.
@@ -158,17 +158,21 @@ steps:
       # and fetch clippy and rustfmt over the network in a step that never
       # lints (mail pipeline 7 failed on exactly that download).
       RUSTUP_TOOLCHAIN: 1.98.1-x86_64-unknown-linux-musl
-      # rustc outputs are shared across pipelines through sccache on
-      # clank-sccache (memcached, the homelab). sccache keys each compile on its inputs,
+      # Ratchet uses isolated public WebDAV; agent 5 keeps local memcached.
+      # Elsewhere the shared endpoint is secret. sccache keys each compile on inputs,
       # the compiler and the environment variables rustc reads (build.rs's
       # revision too), so a hit is the output that compile would give; bin
-      # crates, linking and build scripts are never cached. The cache needs no
-      # credentials; if the host is unreachable, the step compiles without it.
+      # crates, linking and build scripts are never cached. Memcached needs no
+      # credentials; public WebDAV is authenticated on trusted pushes only.
       RUSTC_WRAPPER: sccache
       # From a secret: this repository is public and mirrored, and names no
       # internal address.
       SCCACHE_MEMCACHED_ENDPOINT:
         from_secret: sccache_memcached_endpoint
+      CI_CACHE_PUBLIC_ENDPOINT:
+        from_secret: ci_cache_public_endpoint
+      SCCACHE_WEBDAV_PASSWORD:
+        from_secret: ci_cache_public_password
       # A CI build is never rebuilt incrementally, so writing incremental
       # state is pure cost; and full debuginfo makes the test binaries
       # slower to compile and link, while line tables keep file:line in a
@@ -203,13 +207,9 @@ steps:
       - echo '680838f19d67151adba227e1570cdd8af12c19cf1735783ed1ba928bc41f363d  .accept-restic.bz2' | sha256sum -c -
       - mkdir -p .accept && bzip2 -dc .accept-restic.bz2 > .accept/restic && chmod 755 .accept/restic && rm .accept-restic.bz2
       - export GRUND_ACCEPT_RESTIC_BIN="$$PWD/.accept/restic"
-      # The agent's own cache first, where it has one (agent 5: memcached in
-      # the CI daemon's network namespace, so at every step's gateway, port
-      # 11311). The shared one carries ~10 MB/s for all steps together, which
-      # made a warm build no faster than a cold one (grund-docs
-      # docs/ci-performance.md). Elsewhere, the shared one from the secret.
-      - gw="$$(ip route | awk '/^default/ {print $$3; exit}')"; if printf 'version\r\n' | nc -w 1 "$$gw" 11311 2>/dev/null | grep -q '^VERSION'; then export SCCACHE_MEMCACHED_ENDPOINT="tcp://$$gw:11311"; echo "using this agent's own compile cache"; else echo "using the shared compile cache"; fi
-      - hp="$${SCCACHE_MEMCACHED_ENDPOINT#tcp://}"; nc -z -w 3 "$${hp%:*}" "$${hp##*:}" || { echo "the compile cache is unreachable, so this step compiles without it"; unset RUSTC_WRAPPER; }
+      # Ratchet first, then the existing agent-5 gateway memcached probe,
+      # then the shared memcached secret or a direct compile.
+      - . .woodpecker/cache.sh
       # Build every test binary first, and keep the path of the accepttest
       # binary: `contract` runs that same file against the release binary.
       # The same invocation as the run below, so the run compiles nothing.
@@ -263,29 +263,29 @@ steps:
       # and fetch clippy and rustfmt over the network in a step that never
       # lints (mail pipeline 7 failed on exactly that download).
       RUSTUP_TOOLCHAIN: 1.98.1-x86_64-unknown-linux-musl
-      # rustc outputs are shared across pipelines through sccache on
-      # clank-sccache (memcached, the homelab). sccache keys each compile on its inputs,
+      # Ratchet uses isolated public WebDAV; agent 5 keeps local memcached.
+      # Elsewhere the shared endpoint is secret. sccache keys each compile on inputs,
       # the compiler and the environment variables rustc reads (build.rs's
       # revision too), so a hit is the output that compile would give; bin
-      # crates, linking and build scripts are never cached. The cache needs no
-      # credentials; if the host is unreachable, the step compiles without it.
+      # crates, linking and build scripts are never cached. Memcached needs no
+      # credentials; public WebDAV is authenticated on trusted pushes only.
       RUSTC_WRAPPER: sccache
       # From a secret: this repository is public and mirrored, and names no
       # internal address.
       SCCACHE_MEMCACHED_ENDPOINT:
         from_secret: sccache_memcached_endpoint
+      CI_CACHE_PUBLIC_ENDPOINT:
+        from_secret: ci_cache_public_endpoint
+      SCCACHE_WEBDAV_PASSWORD:
+        from_secret: ci_cache_public_password
       CARGO_INCREMENTAL: "0"
     commands:
       # ca-certificates: the CA bundle the image ships (Dockerfile.prebuilt),
       # brought up to date here so the image build fetches nothing.
       - apk add --no-cache musl-dev binutils protobuf-dev sccache ca-certificates
-      # The agent's own cache first, where it has one (agent 5: memcached in
-      # the CI daemon's network namespace, so at every step's gateway, port
-      # 11311). The shared one carries ~10 MB/s for all steps together, which
-      # made a warm build no faster than a cold one (grund-docs
-      # docs/ci-performance.md). Elsewhere, the shared one from the secret.
-      - gw="$$(ip route | awk '/^default/ {print $$3; exit}')"; if printf 'version\r\n' | nc -w 1 "$$gw" 11311 2>/dev/null | grep -q '^VERSION'; then export SCCACHE_MEMCACHED_ENDPOINT="tcp://$$gw:11311"; echo "using this agent's own compile cache"; else echo "using the shared compile cache"; fi
-      - hp="$${SCCACHE_MEMCACHED_ENDPOINT#tcp://}"; nc -z -w 3 "$${hp%:*}" "$${hp##*:}" || { echo "the compile cache is unreachable, so this step compiles without it"; unset RUSTC_WRAPPER; }
+      # Ratchet first, then the existing agent-5 gateway memcached probe,
+      # then the shared memcached secret or a direct compile.
+      - . .woodpecker/cache.sh
       - export GRUND_BUILD_TIME="$$(date -u '+%Y-%m-%d %H:%M UTC')"
       - cargo build --locked --release -p grund -p grund-guest
       - if [ -n "$${RUSTC_WRAPPER:-}" ]; then sccache --show-stats; fi
