@@ -348,6 +348,9 @@ as deadline expiry. `deleting` is not proof the disk is gone: the volume leaves
 the listing only after the machine or hosted storage backend confirms erasure.
 Members cannot purge, and unrelated apps or organisations cannot select a
 volume. The seven-day default remains unchanged for all other volumes.
+Use `--dry-run` to preview the exact scoped purge request and audit reason
+without erasing data or sending `PurgeVolumeNow`; omit it and confirm (or pass
+`--yes`) only when the preview names the intended volume.
 
 Every ancestor of an existing host directory must be root-owned and not
 writable by non-root users; a user-writable home directory cannot be a source.

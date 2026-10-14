@@ -10998,12 +10998,18 @@
           "name": "yes",
           "type": "boolean",
           "value_name": "YES"
+        },
+        {
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
         }
       ],
       "audience": "client",
       "command": "grund volumes purge-now",
       "destructive": true,
-      "dry_run": false,
+      "dry_run": true,
       "examples": [
         "grund volumes purge-now photos data --reason 'owned synthetic app cleanup' --yes"
       ],

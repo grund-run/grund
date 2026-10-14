@@ -164,6 +164,8 @@ pub enum VolumesAction {
         reason: String,
         #[arg(long, help = "Do not ask for confirmation")]
         yes: bool,
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -489,6 +491,7 @@ pub async fn run(ctx: &Ctx, action: VolumesAction) -> CliResult<Output> {
             volume,
             reason,
             yes,
+            dry_run: preview,
         } => {
             let row = find(&api, &org, &app, &volume).await?;
             if row["status"] != "pending_deletion" {
@@ -497,21 +500,25 @@ pub async fn run(ctx: &Ctx, action: VolumesAction) -> CliResult<Output> {
                     "only an already deleted volume pending purge can be purged now",
                 ));
             }
+            let request = json!({
+                "organisation": org,
+                "app": app,
+                "volumeId": row["volumeId"],
+                "expectedVersion": row["version"],
+                "reason": reason,
+            });
+            if preview {
+                return Ok(dry_run(
+                    &[(format!("{SERVICE}/PurgeVolumeNow"), request)],
+                    vec![],
+                ));
+            }
             ctx.confirm(
                 yes,
                 &format!("Permanently purge {app}/{volume} now; all managed data will be erased after physical confirmation"),
             )?;
             let answer = api
-                .call(
-                    &format!("{SERVICE}/PurgeVolumeNow"),
-                    json!({
-                        "organisation": org,
-                        "app": app,
-                        "volumeId": row["volumeId"],
-                        "expectedVersion": row["version"],
-                        "reason": reason,
-                    }),
-                )
+                .call(&format!("{SERVICE}/PurgeVolumeNow"), request)
                 .await?;
             Ok(Output::fields(answer["volume"].clone()))
         }

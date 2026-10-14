@@ -643,7 +643,10 @@ async fn early_purge_queues_machine_erasure_and_waits_for_acknowledgement(pool: 
     let acknowledged: Option<chrono::DateTime<Utc>> =
         sqlx::query_scalar("SELECT acknowledged_at FROM grund_volume_cleanup WHERE organisation_id=$1 AND volume_id=$2")
             .bind(org).bind(volume).fetch_one(&pool).await.unwrap();
-    assert_eq!(acknowledged, Some(at));
+    assert_eq!(
+        acknowledged.unwrap().timestamp_micros(),
+        at.timestamp_micros()
+    );
 }
 
 #[sqlx::test(migrations = false)]
