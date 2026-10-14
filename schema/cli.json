@@ -10969,6 +10969,131 @@
           "name": "json",
           "type": "boolean",
           "value_name": "JSON"
+        },
+        {
+          "name": "app",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "APP"
+        },
+        {
+          "name": "volume",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "VOLUME"
+        },
+        {
+          "description": "Audit reason (1-512 bytes)",
+          "flag": "--reason",
+          "name": "reason",
+          "required": true,
+          "type": "string",
+          "value_name": "REASON"
+        },
+        {
+          "description": "Do not ask for confirmation",
+          "flag": "--yes",
+          "name": "yes",
+          "type": "boolean",
+          "value_name": "YES"
+        }
+      ],
+      "audience": "client",
+      "command": "grund volumes purge-now",
+      "destructive": true,
+      "dry_run": false,
+      "examples": [
+        "grund volumes purge-now photos data --reason 'owned synthetic app cleanup' --yes"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.volume.v1.Volume"
+      },
+      "path": "volumes purge-now",
+      "rpcs": [
+        "grund.volume.v1.VolumeService/ListVolumes",
+        "grund.volume.v1.VolumeService/PurgeVolumeNow"
+      ],
+      "summary": "Permanently purge an already deleted volume now, without waiting seven days"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
         }
       ],
       "audience": "client",

@@ -418,6 +418,10 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
         Requirement::SessionOrFullToken,
     ),
     (
+        "/grund.volume.v1.VolumeService/PurgeVolumeNow",
+        Requirement::SessionOrFullToken,
+    ),
+    (
         "/grund.volume.v1.VolumeService/SetBackupDestination",
         Requirement::SessionOrFullToken,
     ),
@@ -1747,6 +1751,11 @@ mod tests {
         unused_volume_method!(delete_volume, DeleteVolumeRequest, DeleteVolumeResponse);
         unused_volume_method!(restore_volume, RestoreVolumeRequest, RestoreVolumeResponse);
         unused_volume_method!(
+            purge_volume_now,
+            PurgeVolumeNowRequest,
+            PurgeVolumeNowResponse
+        );
+        unused_volume_method!(
             set_backup_destination,
             SetBackupDestinationRequest,
             SetBackupDestinationResponse
@@ -2212,6 +2221,7 @@ mod tests {
             "/grund.app.v1.AppService/ListRestorableApps",
             "/grund.app.v1.AppService/RestoreApp",
             "/grund.volume.v1.VolumeService/RestoreVolume",
+            "/grund.volume.v1.VolumeService/PurgeVolumeNow",
             "/grund.organisation.v1.OrganisationService/InviteMember",
             "/grund.organisation.v1.OrganisationService/ListMembers",
             "/grund.machine.v1.MachineService/CreateJoinToken",

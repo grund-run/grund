@@ -58,7 +58,7 @@ pub enum Command {
         about = "Apps: list, status, deploy from grund.yaml or flags, change a setting, roll back, delete"
     )]
     Apps(Box<apps::AppsCommand>),
-    #[command(about = "App-owned volumes: list, show, create, attach, detach, delete")]
+    #[command(about = "App-owned volumes: list, show, create, attach, detach, delete, purge")]
     Volumes(volumes::VolumesCommand),
     #[command(about = "Machines: list, add your own, labels, out of service, remove")]
     Machines(machines::MachinesCommand),

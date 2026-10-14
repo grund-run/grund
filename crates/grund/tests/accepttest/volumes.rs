@@ -160,12 +160,157 @@ async fn an_admin_cannot_restore_an_owners_backup_into_their_machine() -> anyhow
         )
         .await?;
     guest_then.status(403)?.connect_code("permission_denied")?;
+    let (reader, reader_when, reader_then) = given.testcase.another_browser();
+    let member = reader.a_signed_in_account().await?;
+    when.inviting(org, &member.email, "member").await?;
+    let link = reader_when
+        .the_mailed_link(&member.email, "Join", "/invite?token=")
+        .await?;
+    reader_when.visiting(&link).await?;
+    let token = reader.last_token()?;
+    reader_when
+        .submitting_on_current_page("/invite", &[("token", &token)])
+        .await?;
+    reader_then.redirects_to(&format!("/{org}"))?;
+    let pending = list(&when, &then, org, "safebox").await?;
+    let row = &pending["volumes"][0];
+    ensure!(row["volumeId"] == id && row["status"] == "pending_deletion");
+    let admin_pending = list(&guest_when, &guest_then, org, "safebox").await?;
+    ensure!(
+        admin_pending["volumes"][0]["volumeId"] == id,
+        "admin can inspect a deleted app's pending volume: {admin_pending}"
+    );
+    let purge = json!({
+        "organisation": org,
+        "app": "safebox",
+        "volumeId": id,
+        "expectedVersion": row["version"],
+        "reason": "owned synthetic app cleanup"
+    });
+    reader_when
+        .calling(&format!("{VOLUMES}/PurgeVolumeNow"), &purge.to_string())
+        .await?;
+    reader_then.status(403)?.connect_code("permission_denied")?;
+    guest_when
+        .calling(
+            &format!("{VOLUMES}/PurgeVolumeNow"),
+            &json!({"app":"different","organisation":org,"volumeId":id,"expectedVersion":row["version"],"reason":"owned synthetic app cleanup"}).to_string(),
+        )
+        .await?;
+    guest_then.status(404)?.connect_code("not_found")?;
+    guest_when
+        .calling(
+            &format!("{VOLUMES}/PurgeVolumeNow"),
+            &json!({"organisation":admin.username,"app":"safebox","volumeId":id,"expectedVersion":row["version"],"reason":"owned synthetic app cleanup"}).to_string(),
+        )
+        .await?;
+    guest_then.status(404)?.connect_code("not_found")?;
+    guest_when
+        .calling(
+            &format!("{VOLUMES}/PurgeVolumeNow"),
+            &json!({"organisation":org,"app":"safebox","volumeId":uuid::Uuid::now_v7(),"expectedVersion":row["version"],"reason":"owned synthetic app cleanup"}).to_string(),
+        )
+        .await?;
+    guest_then.status(404)?.connect_code("not_found")?;
+    guest_when
+        .calling(
+            &format!("{VOLUMES}/PurgeVolumeNow"),
+            &json!({"organisation":org,"app":"safebox","volumeId":id,"expectedVersion":row["version"],"reason":"  "}).to_string(),
+        )
+        .await?;
+    guest_then.status(400)?.connect_code("invalid_argument")?;
+    guest_when
+        .calling(
+            &format!("{VOLUMES}/PurgeVolumeNow"),
+            &json!({"organisation":org,"app":"safebox","volumeId":id,"expectedVersion":0,"reason":"owned synthetic app cleanup"}).to_string(),
+        )
+        .await?;
+    guest_then.status(409)?.connect_code("aborted")?;
+    guest_when
+        .calling(&format!("{VOLUMES}/PurgeVolumeNow"), &purge.to_string())
+        .await?;
+    guest_then.status(200)?;
+    let deleting = guest_then.json()?;
+    ensure!(
+        deleting["volume"]["status"] == "deleted" && deleting["volume"]["purgeAfter"].is_null(),
+        "unplaced synthetic volume has no physical disk to erase: {deleting}"
+    );
+    guest_when
+        .calling(&format!("{VOLUMES}/PurgeVolumeNow"), &purge.to_string())
+        .await?;
+    guest_then.status(404)?.connect_code("not_found")?;
     Ok(())
 }
 
 #[tokio::test]
-async fn an_app_owned_directory_survives_release_restart_and_deletion_restore() -> anyhow::Result<()>
-{
+async fn owner_purges_only_an_already_deleted_volume() -> anyhow::Result<()> {
+    let Some((given, when, then)) = testcase_with_mail().await? else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let org = &owner.username;
+    call(
+        &when,
+        &then,
+        "CreateApp",
+        json!({"organisation": org, "name": "purge-owned", "settings": quick(1)}),
+    )
+    .await?;
+    then.status(200)?;
+    when.calling(
+        &format!("{VOLUMES}/CreateVolume"),
+        &json!({
+            "organisation": org,
+            "app": "purge-owned",
+            "name": "data",
+            "path": "/data",
+            "idempotencyKey": uuid::Uuid::now_v7().to_string()
+        })
+        .to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    let created = then.json()?;
+    let id = created["volume"]["volumeId"]
+        .as_str()
+        .context("volume id")?;
+    let request = json!({
+        "organisation":org,
+        "app":"purge-owned",
+        "volumeId":id,
+        "expectedVersion":created["volume"]["version"],
+        "reason":"owned synthetic app cleanup"
+    });
+    when.calling(&format!("{VOLUMES}/PurgeVolumeNow"), &request.to_string())
+        .await?;
+    then.status(400)?.connect_code("failed_precondition")?;
+    when.calling(
+        &format!("{VOLUMES}/DeleteVolume"),
+        &json!({"organisation":org,"app":"purge-owned","volumeId":id,"expectedVersion":created["volume"]["version"]}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    let pending = then.json()?;
+    let request = json!({
+        "organisation":org,
+        "app":"purge-owned",
+        "volumeId":id,
+        "expectedVersion":pending["volume"]["version"],
+        "reason":"owned synthetic app cleanup"
+    });
+    when.calling(&format!("{VOLUMES}/PurgeVolumeNow"), &request.to_string())
+        .await?;
+    then.status(200)?;
+    ensure!(
+        then.json()?["volume"]["status"] == "deleted",
+        "an unplaced volume needs no physical acknowledgement"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_app_owned_directory_survives_restore_then_early_purge_waits_for_physical_erasure()
+-> anyhow::Result<()> {
     let registry = FakeRegistry::start().await?;
     let Some((given, when, then)) =
         testcase_configured(&[("GRUND_INSECURE_REGISTRIES", &registry.host)]).await?
@@ -346,6 +491,53 @@ async fn an_app_owned_directory_survives_release_restart_and_deletion_restore() 
         std::fs::read(&marker)? == b"written before release",
         "restored app retained the original volume"
     );
+    call(
+        &when,
+        &then,
+        "DeleteApp",
+        json!({"organisation": org, "name": "storage", "confirmVolumeCount": 1}),
+    )
+    .await?;
+    then.status(200)?;
+    let pending = list(&when, &then, org, "storage").await?;
+    ensure!(
+        pending["volumes"][0]["status"] == "pending_deletion" && root.exists() && marker.exists(),
+        "the second deletion still retains physical data: {pending}"
+    );
+    when.calling(
+        &format!("{VOLUMES}/PurgeVolumeNow"),
+        &json!({
+            "organisation": org,
+            "app": "storage",
+            "volumeId": volume_id,
+            "expectedVersion": pending["volumes"][0]["version"],
+            "reason": "verified test data cleanup"
+        })
+        .to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    ensure!(
+        then.json()?["volume"]["status"] == "deleting",
+        "a machine-bound volume must wait for its physical erasure receipt"
+    );
+    let started = Instant::now();
+    loop {
+        let left = list(&when, &then, org, "storage").await?;
+        if left["volumes"]
+            .as_array()
+            .is_none_or(|volumes| volumes.is_empty())
+            && !root.exists()
+        {
+            break;
+        }
+        ensure!(
+            started.elapsed() < Duration::from_secs(45),
+            "machine erasure and acknowledgement did not complete: {left}, disk exists: {}",
+            root.exists()
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
     drop(agent);
     Ok(())
 }

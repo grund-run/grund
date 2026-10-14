@@ -300,7 +300,7 @@ pub async fn apply_volume(
             sqlx::query("UPDATE grund_volumes SET status = $2, purge_after = NULL, stream_version = $3 WHERE volume_id = $1 AND stream_version < $3")
                 .bind(volume_id).bind(next).bind(version).execute(&mut *conn).await?;
         }
-        VolumeEvent::PurgeRequested { requested_at } => {
+        VolumeEvent::PurgeRequested { requested_at, .. } => {
             let updated: Option<(Uuid, Option<Uuid>)> = sqlx::query_as("UPDATE grund_volumes SET status = 'deleting', purge_after = NULL, stream_version = $2 WHERE volume_id = $1 AND stream_version < $2 RETURNING organisation_id, machine_id")
                 .bind(volume_id).bind(version).fetch_optional(&mut *conn).await?;
             if let Some((org, Some(machine))) = updated {

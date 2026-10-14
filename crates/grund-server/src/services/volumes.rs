@@ -36,6 +36,8 @@ pub enum VolumesError {
     Invalid(String),
     #[error("a restored volume cannot be mounted until its exact recovery point has been verified")]
     RestoreNotReady,
+    #[error("only an already deleted volume awaiting purge can be purged now")]
+    NotPendingDeletion,
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -731,6 +733,62 @@ impl Volumes {
         self.state.wakes.documents_changed();
         self.get(org, app, id).await
     }
+    /// Explicitly begins the same physical erasure workflow as scheduled purge.
+    pub async fn purge_now(
+        &self,
+        actor: Uuid,
+        org: Uuid,
+        app: Uuid,
+        id: Uuid,
+        version: i64,
+        reason: String,
+    ) -> Result<VolumeRow, VolumesError> {
+        if reason.trim() != reason
+            || reason.is_empty()
+            || reason.len() > 512
+            || reason.chars().any(char::is_control)
+        {
+            return Err(VolumesError::Invalid(
+                "reason must be 1-512 bytes without surrounding whitespace or control characters"
+                    .into(),
+            ));
+        }
+        let mut work = Work::begin(&self.state.events, Uuid::now_v7(), &actor.to_string())
+            .await
+            .map_err(volume_work)?;
+        let owner = work.load_app(app).await.map_err(volume_work)?;
+        if !owner.exists || owner.organisation_id != org {
+            return Err(VolumesError::NotFound);
+        }
+        let row = volumes::volume(&mut **work.sql(), org, app, id)
+            .await
+            .map_err(anyhow::Error::from)?
+            .ok_or(VolumesError::NotFound)?;
+        if row.stream_version != version {
+            return Err(VolumesError::Conflict);
+        }
+        if row.status != "pending_deletion" {
+            return Err(VolumesError::NotPendingDeletion);
+        }
+        let at: chrono::DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(&mut **work.sql())
+            .await
+            .map_err(anyhow::Error::from)?;
+        purge_in(
+            &self.state,
+            &mut work,
+            &row,
+            VolumeCommand::PurgeNow { actor, reason, at },
+            at,
+        )
+        .await?;
+        work.commit().await.map_err(volume_work)?;
+        self.state.wakes.documents_changed();
+        volumes::any_volume(&self.state.pool, org, app, id)
+            .await
+            .map_err(anyhow::Error::from)?
+            .ok_or(VolumesError::NotFound)
+    }
     /// A bounded purge pass uses an injectable instant so expiry boundaries can
     /// be exercised deterministically; production supplies PostgreSQL time.
     pub async fn purge_due(&self, at: chrono::DateTime<Utc>) -> Result<usize, VolumesError> {
@@ -760,23 +818,14 @@ impl Volumes {
                 .await
                 .map_err(anyhow::Error::from)?
                 .ok_or(VolumesError::NotFound)?;
-            work.volume(id, VolumeCommand::Purge { at })
-                .await
-                .map_err(volume_work)?;
-            sqlx::query("DELETE FROM grund_volume_backup_attempts WHERE organisation_id = $1 AND app_id = $2 AND volume_id = $3")
-                .bind(org).bind(app).bind(id).execute(&mut **work.sql()).await.map_err(anyhow::Error::from)?;
-            sqlx::query("DELETE FROM grund_volume_backup_points WHERE organisation_id = $1 AND app_id = $2 AND volume_id = $3")
-                .bind(org).bind(app).bind(id).execute(&mut **work.sql()).await.map_err(anyhow::Error::from)?;
-            sqlx::query("DELETE FROM grund_volume_backup_configs WHERE organisation_id = $1 AND app_id = $2 AND volume_id = $3")
-                .bind(org).bind(app).bind(id).execute(&mut **work.sql()).await.map_err(anyhow::Error::from)?;
-            if row.machine_id.is_none() || (row.size_gib.is_none() && row.source.is_some()) {
-                work.volume(id, VolumeCommand::FinalizeWithoutErasure { at })
-                    .await
-                    .map_err(volume_work)?;
-            }
-            if let Some(machine) = row.machine_id {
-                self.state.agents().publish_in(work.sql(), machine).await?;
-            }
+            purge_in(
+                &self.state,
+                &mut work,
+                &row,
+                VolumeCommand::Purge { at },
+                at,
+            )
+            .await?;
             work.commit().await.map_err(volume_work)?;
             count += 1;
         }
@@ -816,6 +865,33 @@ impl Volumes {
         self.state.wakes.documents_changed();
         Ok(())
     }
+}
+
+async fn purge_in(
+    state: &State,
+    work: &mut Work<'_>,
+    row: &VolumeRow,
+    command: VolumeCommand,
+    at: chrono::DateTime<Utc>,
+) -> Result<(), VolumesError> {
+    work.volume(row.volume_id, command)
+        .await
+        .map_err(volume_work)?;
+    sqlx::query("DELETE FROM grund_volume_backup_attempts WHERE organisation_id = $1 AND app_id = $2 AND volume_id = $3")
+        .bind(row.organisation_id).bind(row.app_id).bind(row.volume_id).execute(&mut **work.sql()).await.map_err(anyhow::Error::from)?;
+    sqlx::query("DELETE FROM grund_volume_backup_points WHERE organisation_id = $1 AND app_id = $2 AND volume_id = $3")
+        .bind(row.organisation_id).bind(row.app_id).bind(row.volume_id).execute(&mut **work.sql()).await.map_err(anyhow::Error::from)?;
+    sqlx::query("DELETE FROM grund_volume_backup_configs WHERE organisation_id = $1 AND app_id = $2 AND volume_id = $3")
+        .bind(row.organisation_id).bind(row.app_id).bind(row.volume_id).execute(&mut **work.sql()).await.map_err(anyhow::Error::from)?;
+    if row.machine_id.is_none() || (row.size_gib.is_none() && row.source.is_some()) {
+        work.volume(row.volume_id, VolumeCommand::FinalizeWithoutErasure { at })
+            .await
+            .map_err(volume_work)?;
+    }
+    if let Some(machine) = row.machine_id {
+        state.agents().publish_in(work.sql(), machine).await?;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]

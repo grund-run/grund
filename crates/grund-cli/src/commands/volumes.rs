@@ -154,6 +154,17 @@ pub enum VolumesAction {
         #[arg(long)]
         dry_run: bool,
     },
+    #[command(
+        about = "Permanently purge an already deleted volume now, without waiting seven days"
+    )]
+    PurgeNow {
+        app: String,
+        volume: String,
+        #[arg(long, required = true, help = "Audit reason (1-512 bytes)")]
+        reason: String,
+        #[arg(long, help = "Do not ask for confirmation")]
+        yes: bool,
+    },
 }
 
 const VOLUMES: &[(&str, &str)] = &[
@@ -470,6 +481,37 @@ pub async fn run(ctx: &Ctx, action: VolumesAction) -> CliResult<Output> {
             }
             let answer = api
                 .call(&format!("{SERVICE}/RestoreVolume"), request)
+                .await?;
+            Ok(Output::fields(answer["volume"].clone()))
+        }
+        VolumesAction::PurgeNow {
+            app,
+            volume,
+            reason,
+            yes,
+        } => {
+            let row = find(&api, &org, &app, &volume).await?;
+            if row["status"] != "pending_deletion" {
+                return Err(CliError::new(
+                    Code::Failed,
+                    "only an already deleted volume pending purge can be purged now",
+                ));
+            }
+            ctx.confirm(
+                yes,
+                &format!("Permanently purge {app}/{volume} now; all managed data will be erased after physical confirmation"),
+            )?;
+            let answer = api
+                .call(
+                    &format!("{SERVICE}/PurgeVolumeNow"),
+                    json!({
+                        "organisation": org,
+                        "app": app,
+                        "volumeId": row["volumeId"],
+                        "expectedVersion": row["version"],
+                        "reason": reason,
+                    }),
+                )
                 .await?;
             Ok(Output::fields(answer["volume"].clone()))
         }

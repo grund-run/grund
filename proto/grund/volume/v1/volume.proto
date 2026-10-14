@@ -4,8 +4,8 @@ package grund.volume.v1;
 import "google/protobuf/timestamp.proto";
 
 // Every lookup is scoped to an organisation AND one app; a volume of another
-// app/organisation is indistinguishable from an absent one. Only owners can
-// inspect pending volumes on a deleted app during its recovery window.
+// app/organisation is indistinguishable from an absent one. Owners and admins
+// can inspect pending volumes on a deleted app before physical erasure.
 service VolumeService {
   rpc ListVolumes(ListVolumesRequest) returns (ListVolumesResponse) { option idempotency_level = NO_SIDE_EFFECTS; }
   rpc GetVolume(GetVolumeRequest) returns (GetVolumeResponse) { option idempotency_level = NO_SIDE_EFFECTS; }
@@ -22,6 +22,10 @@ service VolumeService {
   // Owner-only. Restores the same pending volume before its purge deadline,
   // with optimistic concurrency; unrelated backup restores are separate.
   rpc RestoreVolume(RestoreVolumeRequest) returns (RestoreVolumeResponse);
+  // Owner/admin only: explicitly start irreversible erasure of a volume
+  // already pending deletion, without waiting for the seven-day deadline.
+  // Physical deletion still requires the machine/backend's confirmation.
+  rpc PurgeVolumeNow(PurgeVolumeNowRequest) returns (PurgeVolumeNowResponse);
   // Owner-only: the destination's credentials are sealed, never returned.
   rpc SetBackupDestination(SetBackupDestinationRequest) returns (SetBackupDestinationResponse);
   rpc GetBackupDestination(GetBackupDestinationRequest) returns (GetBackupDestinationResponse) { option idempotency_level = NO_SIDE_EFFECTS; }
@@ -95,6 +99,15 @@ message DeleteVolumeRequest { string organisation = 1; string app = 2; string vo
 message DeleteVolumeResponse { Volume volume = 1; }
 message RestoreVolumeRequest { string organisation = 1; string app = 2; string volume_id = 3; int64 expected_version = 4; }
 message RestoreVolumeResponse { Volume volume = 1; }
+message PurgeVolumeNowRequest {
+  string organisation = 1;
+  string app = 2;
+  string volume_id = 3;
+  int64 expected_version = 4;
+  // 1-512 bytes, no leading/trailing whitespace or control characters.
+  string reason = 5;
+}
+message PurgeVolumeNowResponse { Volume volume = 1; }
 
 message BackupDestination {
   bool enabled = 1;

@@ -86,6 +86,10 @@ pub enum VolumeEvent {
     },
     PurgeRequested {
         requested_at: DateTime<Utc>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        actor: Option<Uuid>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
     Deleted {
         deleted_at: DateTime<Utc>,
@@ -266,6 +270,11 @@ pub enum VolumeCommand {
         at: DateTime<Utc>,
     },
     Purge {
+        at: DateTime<Utc>,
+    },
+    PurgeNow {
+        actor: Uuid,
+        reason: String,
         at: DateTime<Utc>,
     },
     FinalizeWithoutErasure {
@@ -558,9 +567,21 @@ impl mire::Command for VolumeCommand {
             },
             C::Purge { at } => match (state.status, state.purge_after) {
                 (Some(S::PendingDeletion), Some(deadline)) if at >= deadline => {
-                    vec![E::PurgeRequested { requested_at: at }]
+                    vec![E::PurgeRequested {
+                        requested_at: at,
+                        actor: None,
+                        reason: None,
+                    }]
                 }
                 _ => return Err(VolumeError::InvalidAcknowledgement),
+            },
+            C::PurgeNow { actor, reason, at } => match state.status {
+                Some(S::PendingDeletion) => vec![E::PurgeRequested {
+                    requested_at: at,
+                    actor: Some(actor),
+                    reason: Some(reason),
+                }],
+                _ => return Err(VolumeError::Deleting),
             },
             C::FinalizeWithoutErasure { at } => match state.status {
                 Some(S::Deleted) => vec![],
@@ -718,7 +739,16 @@ mod tests {
             ..Volume::default()
         };
         assert!(VolumeCommand::Restore { at }.handle(&volume).is_err());
-        for event in (VolumeCommand::Purge { at }).handle(&volume).unwrap() {
+        let events = VolumeCommand::Purge { at }.handle(&volume).unwrap();
+        assert_eq!(
+            events,
+            vec![VolumeEvent::PurgeRequested {
+                requested_at: at,
+                actor: None,
+                reason: None,
+            }]
+        );
+        for event in events {
             volume.apply(&event);
         }
         assert_eq!(volume.status, Some(VolumeStatus::Deleting));
@@ -731,6 +761,49 @@ mod tests {
         assert_eq!(volume.status, Some(VolumeStatus::Deleted));
         assert!(VolumeCommand::Restore { at }.handle(&volume).is_err());
     }
+    #[test]
+    fn explicit_purge_requires_pending_deletion_and_records_actor_reason_and_time() {
+        let at = DateTime::from_timestamp(1_790_000_000, 0).unwrap();
+        let actor = Uuid::from_u128(42);
+        let mut volume = Volume {
+            status: Some(VolumeStatus::Available),
+            ..Volume::default()
+        };
+        let command = || VolumeCommand::PurgeNow {
+            actor,
+            reason: "owned synthetic app cleanup".into(),
+            at,
+        };
+        assert!(command().handle(&volume).is_err());
+        volume.status = Some(VolumeStatus::PendingDeletion);
+        volume.purge_after = Some(at + chrono::Duration::days(7));
+        let events = command().handle(&volume).unwrap();
+        assert_eq!(
+            events,
+            vec![VolumeEvent::PurgeRequested {
+                requested_at: at,
+                actor: Some(actor),
+                reason: Some("owned synthetic app cleanup".into()),
+            }]
+        );
+        volume.apply(&events[0]);
+        assert_eq!(volume.status, Some(VolumeStatus::Deleting));
+        assert_eq!(volume.purge_after, None);
+        assert!(command().handle(&volume).is_err());
+
+        let historic: VolumeEvent =
+            serde_json::from_value(serde_json::json!({"type":"purge_requested","requested_at":at}))
+                .unwrap();
+        assert_eq!(
+            historic,
+            VolumeEvent::PurgeRequested {
+                requested_at: at,
+                actor: None,
+                reason: None,
+            }
+        );
+    }
+
     #[test]
     fn hosted_volume_never_mounts_before_backend_receipt_or_deletes_before_detach() {
         let at = DateTime::from_timestamp(1_790_000_000, 0).unwrap();

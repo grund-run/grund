@@ -717,6 +717,18 @@ pub async fn app_by_name_including_deleted(
     ))
     .bind(organisation_id).bind(name).fetch_optional(executor).await
 }
+/// Keep a deleted app addressable during its recovery window and for explicit
+/// volume purge while it still has pending volumes beyond that deadline.
+pub async fn app_by_name_for_volume_purge(
+    executor: impl PgExecutor<'_>,
+    organisation_id: Uuid,
+    name: &str,
+) -> Result<Option<AppRow>, sqlx::Error> {
+    sqlx::query_as(select_apps!(
+        "WHERE organisation_id = $1 AND name = $2 AND (deleted_at IS NULL OR purge_after > clock_timestamp() OR EXISTS (SELECT 1 FROM grund_volumes v WHERE v.organisation_id = $1 AND v.app_id = grund_apps.app_id AND v.status = 'pending_deletion'))"
+    ))
+    .bind(organisation_id).bind(name).fetch_optional(executor).await
+}
 
 /// Deleted apps offered only to an owner, never in ordinary app lists.
 pub async fn restorable_apps(

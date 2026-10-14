@@ -388,6 +388,18 @@ pub const LEAVES: &[Leaf] = &[
         ],
         &["grund volumes restore-deleted photos data"],
     ),
+    Leaf {
+        destructive: true,
+        ..write(
+            "volumes purge-now",
+            "grund.volume.v1.Volume",
+            &[
+                "grund.volume.v1.VolumeService/ListVolumes",
+                "grund.volume.v1.VolumeService/PurgeVolumeNow",
+            ],
+            &["grund volumes purge-now photos data --reason 'owned synthetic app cleanup' --yes"],
+        )
+    },
     read(
         "volumes backups status",
         "grund.volume.v1.GetBackupDestinationResponse",

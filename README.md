@@ -339,6 +339,16 @@ that host directory. Storage uses the host filesystem and its existing
 permissions and encryption; there is no volume size quota. Keep independent
 backups of the machine.
 
+An organisation owner or admin can end recovery early for a volume already
+pending deletion, including one on a deleted app, with `grund volumes purge-now
+photos data --reason 'owned synthetic app cleanup' --yes` (or ConnectRPC
+`PurgeVolumeNow` with its current `expectedVersion`). This irreversible request
+records the actor, reason and time and starts the same physical-erasure workflow
+as deadline expiry. `deleting` is not proof the disk is gone: the volume leaves
+the listing only after the machine or hosted storage backend confirms erasure.
+Members cannot purge, and unrelated apps or organisations cannot select a
+volume. The seven-day default remains unchanged for all other volumes.
+
 Every ancestor of an existing host directory must be root-owned and not
 writable by non-root users; a user-writable home directory cannot be a source.
 The source directory itself keeps its existing owner and permissions. This

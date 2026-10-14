@@ -533,6 +533,120 @@ async fn deletion_retains_backup_and_name_until_test_clock_purges_it(pool: PgPoo
 }
 
 #[sqlx::test(migrations = false)]
+async fn early_purge_queues_machine_erasure_and_waits_for_acknowledgement(pool: PgPool) {
+    use grund_domain::volume::VolumeCommand;
+    use grund_store::volumes;
+
+    let events = store(&pool).await;
+    let org = Uuid::now_v7();
+    let app = create(&events, org, "cleanup").await;
+    let volume = Uuid::now_v7();
+    let machine = Uuid::now_v7();
+    let actor = Uuid::now_v7();
+    let at = Utc::now();
+    let deadline = at + Duration::days(7);
+    let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();
+    work.volume(
+        volume,
+        VolumeCommand::Request {
+            organisation_id: org,
+            app_id: app,
+            name: "data".into(),
+            path: "/data".into(),
+            source: None,
+            backup: false,
+            size_gib: None,
+            at,
+        },
+    )
+    .await
+    .unwrap();
+    work.volume(
+        volume,
+        VolumeCommand::Place {
+            machine_id: machine,
+            at,
+        },
+    )
+    .await
+    .unwrap();
+    work.volume(
+        volume,
+        VolumeCommand::Delete {
+            at,
+            purge_after: deadline,
+        },
+    )
+    .await
+    .unwrap();
+    work.commit().await.unwrap();
+
+    let mut work = Work::begin(&events, Uuid::now_v7(), &actor.to_string())
+        .await
+        .unwrap();
+    work.volume(
+        volume,
+        VolumeCommand::PurgeNow {
+            actor,
+            reason: "owned synthetic app cleanup".into(),
+            at,
+        },
+    )
+    .await
+    .unwrap();
+    work.commit().await.unwrap();
+    let row = volumes::volume(&pool, org, app, volume)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.status, "deleting");
+    assert_eq!(row.purge_after, None);
+    let audit: serde_json::Value = sqlx::query_scalar(
+        "SELECT data FROM es_events WHERE stream_id = $1 AND data->>'type' = 'purge_requested'",
+    )
+    .bind(format!("grund-volume-{volume}"))
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(audit["actor"], actor.to_string());
+    assert_eq!(audit["reason"], "owned synthetic app cleanup");
+    assert_eq!(
+        audit["requested_at"]
+            .as_str()
+            .unwrap()
+            .parse::<chrono::DateTime<Utc>>()
+            .unwrap(),
+        at
+    );
+    let cleanup: (Uuid, Option<chrono::DateTime<Utc>>) = sqlx::query_as(
+        "SELECT machine_id, acknowledged_at FROM grund_volume_cleanup WHERE organisation_id=$1 AND volume_id=$2",
+    )
+    .bind(org).bind(volume).fetch_one(&pool).await.unwrap();
+    assert_eq!(cleanup, (machine, None));
+
+    let mut work = Work::begin(&events, Uuid::now_v7(), "agent").await.unwrap();
+    work.volume(
+        volume,
+        VolumeCommand::ConfirmDeleted {
+            machine_id: machine,
+            at,
+        },
+    )
+    .await
+    .unwrap();
+    work.commit().await.unwrap();
+    let row = volumes::any_volume(&pool, org, app, volume)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.status, "deleted");
+    let acknowledged: Option<chrono::DateTime<Utc>> =
+        sqlx::query_scalar("SELECT acknowledged_at FROM grund_volume_cleanup WHERE organisation_id=$1 AND volume_id=$2")
+            .bind(org).bind(volume).fetch_one(&pool).await.unwrap();
+    assert_eq!(acknowledged, Some(at));
+}
+
+#[sqlx::test(migrations = false)]
 async fn a_report_counts_only_from_the_machine_a_replica_is_placed_on(pool: PgPool) {
     let events = store(&pool).await;
     let app_id = create(&events, Uuid::now_v7(), "web").await;

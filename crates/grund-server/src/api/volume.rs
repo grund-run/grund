@@ -22,10 +22,10 @@ use grund_proto::grund::volume::v1::{
     DetachVolumeResponse, ExportBackupKeyRequest, ExportBackupKeyResponse,
     GetBackupDestinationRequest, GetBackupDestinationResponse, GetVolumeRequest, GetVolumeResponse,
     GetVolumeStatusRequest, GetVolumeStatusResponse, ListRecoveryPointsRequest,
-    ListRecoveryPointsResponse, ListVolumesRequest, ListVolumesResponse,
-    RestoreRecoveryPointRequest, RestoreRecoveryPointResponse, RestoreVolumeRequest,
-    RestoreVolumeResponse, SetBackupDestinationRequest, SetBackupDestinationResponse,
-    VolumeService,
+    ListRecoveryPointsResponse, ListVolumesRequest, ListVolumesResponse, PurgeVolumeNowRequest,
+    PurgeVolumeNowResponse, RestoreRecoveryPointRequest, RestoreRecoveryPointResponse,
+    RestoreVolumeRequest, RestoreVolumeResponse, SetBackupDestinationRequest,
+    SetBackupDestinationResponse, VolumeService,
 };
 use grund_store::{apps, organisations::Membership, volumes::VolumeRow};
 use ring::{digest, hmac};
@@ -45,6 +45,7 @@ enum Access {
     Read,
     Manage,
     Owner,
+    Purge,
 }
 
 impl VolumeApi {
@@ -65,7 +66,9 @@ impl VolumeApi {
             })?
             .filter(|m| caller.reaches(m.organisation_id))
             .ok_or_else(|| ConnectError::not_found("no such organisation"))?;
-        if access == Access::Manage && !matches!(membership.role.as_str(), "owner" | "admin") {
+        if matches!(access, Access::Manage | Access::Purge)
+            && !matches!(membership.role.as_str(), "owner" | "admin")
+        {
             return Err(ConnectError::permission_denied(
                 "only owners and admins change an app's storage",
             ));
@@ -94,10 +97,10 @@ impl VolumeApi {
         if let Some(row) = row {
             return Ok((member.organisation_id, row.app_id));
         }
-        if member.role == "owner"
-            && access == Access::Read
+        if matches!(member.role.as_str(), "owner" | "admin")
+            && matches!(access, Access::Read | Access::Purge)
             && let Some(row) =
-                apps::app_by_name_including_deleted(&self.state.pool, member.organisation_id, app)
+                apps::app_by_name_for_volume_purge(&self.state.pool, member.organisation_id, app)
                     .await
                     .map_err(|e| {
                         tracing::error!(error = %e, "restorable app lookup failed");
@@ -127,6 +130,7 @@ fn failed(error: VolumesError) -> ConnectError {
     match error {
         VolumesError::NotFound => ConnectError::not_found(message),
         VolumesError::Conflict => ConnectError::aborted(message),
+        VolumesError::NotPendingDeletion => ConnectError::failed_precondition(message),
         VolumesError::Invalid(_) | VolumesError::SourceChanged(_) => {
             ConnectError::invalid_argument(message)
         }
@@ -436,6 +440,33 @@ impl VolumeService for VolumeApi {
             .await
             .map_err(failed)?;
         Response::ok(RestoreVolumeResponse {
+            volume: MessageField::from(message(&row)),
+            ..Default::default()
+        })
+    }
+    async fn purge_volume_now(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, PurgeVolumeNowRequest>,
+    ) -> ServiceResult<PurgeVolumeNowResponse> {
+        let caller = principal(&ctx)?;
+        let (org, app) = self
+            .app(&caller, request.organisation, request.app, Access::Purge)
+            .await?;
+        let row = self
+            .state
+            .volumes()
+            .purge_now(
+                caller.account_id,
+                org,
+                app,
+                id(request.volume_id)?,
+                request.expected_version,
+                request.reason.to_owned(),
+            )
+            .await
+            .map_err(failed)?;
+        Response::ok(PurgeVolumeNowResponse {
             volume: MessageField::from(message(&row)),
             ..Default::default()
         })
