@@ -624,15 +624,20 @@ impl Machines {
         if self.pool_machine(machine_id).await?.is_none() {
             return Ok(ChangeOutcome::NotFound);
         }
-        self.change(
-            actor,
-            machine_id,
-            MachineCommand::EndLease {
+        let outcome = self
+            .change(
                 actor,
-                at: Utc::now(),
-            },
-        )
-        .await
+                machine_id,
+                MachineCommand::EndLease {
+                    actor,
+                    at: Utc::now(),
+                },
+            )
+            .await?;
+        if matches!(outcome, ChangeOutcome::Done(_)) {
+            self.state.wakes.apps_changed();
+        }
+        Ok(outcome)
     }
 
     /// The grant for the lease `row` is on, signed now by the management

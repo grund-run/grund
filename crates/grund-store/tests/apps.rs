@@ -823,3 +823,185 @@ async fn legacy_release_ports_are_filled_once_without_changing_known_metadata(po
         Vec::<u16>::new()
     );
 }
+
+#[sqlx::test(migrations = false)]
+async fn a_returning_lease_keeps_the_app_and_volume_but_removes_its_fenced_replica(pool: PgPool) {
+    use grund_domain::{
+        app::{DrainReason, reconcile::reconcile_with_volumes},
+        volume::VolumeCommand,
+    };
+
+    let events = store(&pool).await;
+    let organisation_id = Uuid::now_v7();
+    let app_id = create(&events, organisation_id, "retained").await;
+    let release = release(&events, app_id).await;
+    let machine_id = Uuid::now_v7();
+    let replica_id = Uuid::now_v7();
+    let volume_id = Uuid::now_v7();
+    let now = Utc::now();
+    sqlx::query(
+        "INSERT INTO grund_machines (machine_id,pool,name,state,public_key, \
+         returning_organisation_id,minted_by,registered_at,key_registered_at,stream_version) \
+         VALUES ($1,'management','holder','returning',repeat('a',64),$2,'test', \
+                 clock_timestamp(),clock_timestamp(),1)",
+    )
+    .bind(machine_id)
+    .bind(organisation_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    decide(&events, app_id, |app| {
+        let rollout = app.rollout.as_ref().unwrap();
+        vec![
+            AppEvent::ReplicaPlaced {
+                replica_id,
+                slot: 0,
+                release,
+                machine_id,
+                placement: 0,
+                reason: PlaceReason::Rollout,
+                placed_at: now,
+            },
+            AppEvent::RolloutSucceeded {
+                rollout_id: rollout.rollout_id,
+                succeeded_at: now,
+            },
+            AppEvent::CurrentReleaseSet {
+                release,
+                set_at: now,
+            },
+        ]
+    })
+    .await;
+    let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();
+    for command in [
+        VolumeCommand::Request {
+            organisation_id,
+            app_id,
+            name: "data".into(),
+            path: "/data".into(),
+            source: None,
+            backup: false,
+            size_gib: Some(1),
+            at: now,
+        },
+        VolumeCommand::Place {
+            machine_id,
+            at: now,
+        },
+        VolumeCommand::PrepareBackend {
+            machine_id,
+            slot: 1,
+            at: now,
+        },
+        VolumeCommand::ConfirmBackendAttachment {
+            machine_id,
+            at: now,
+        },
+    ] {
+        work.volume(volume_id, command).await.unwrap();
+    }
+    work.commit().await.unwrap();
+
+    assert_eq!(
+        apps::ended_lease_machines(&pool, organisation_id, app_id)
+            .await
+            .unwrap(),
+        vec![(machine_id, false)]
+    );
+    let mut work = Work::begin(&events, Uuid::now_v7(), "grund/apps")
+        .await
+        .unwrap();
+    let (draining, ()) = work
+        .app_decide(app_id, |app| {
+            let decision = reconcile_with_volumes(
+                app,
+                &[],
+                &[],
+                &[(machine_id, false)],
+                now,
+                true,
+                &mut Uuid::now_v7,
+            );
+            Ok((decision.events, ()))
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(draining.as_slice(), [AppEvent::ReplicaDraining { replica_id: id, reason: DrainReason::LeaseEnded, .. }] if *id == replica_id)
+    );
+    work.commit().await.unwrap();
+    let state: String = sqlx::query_scalar("SELECT state FROM grund_replicas WHERE replica_id=$1")
+        .bind(replica_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(state, "draining");
+
+    let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();
+    work.volume(
+        volume_id,
+        VolumeCommand::BeginBackendDetachment {
+            machine_id,
+            at: now,
+        },
+    )
+    .await
+    .unwrap();
+    work.commit().await.unwrap();
+    assert_eq!(
+        apps::ended_lease_machines(&pool, organisation_id, app_id)
+            .await
+            .unwrap(),
+        vec![(machine_id, false)],
+        "starting a detach is not physical confirmation"
+    );
+    let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();
+    work.volume(
+        volume_id,
+        VolumeCommand::ConfirmBackendDetachment {
+            machine_id,
+            at: now,
+        },
+    )
+    .await
+    .unwrap();
+    work.commit().await.unwrap();
+    let detached = apps::ended_lease_machines(&pool, organisation_id, app_id)
+        .await
+        .unwrap();
+    assert_eq!(detached, vec![(machine_id, true)]);
+    let mut work = Work::begin(&events, Uuid::now_v7(), "grund/apps")
+        .await
+        .unwrap();
+    let (removed, ()) = work
+        .app_decide(app_id, |app| {
+            let decision =
+                reconcile_with_volumes(app, &[], &[], &detached, now, true, &mut Uuid::now_v7);
+            Ok((decision.events, ()))
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(removed.as_slice(), [AppEvent::ReplicaRemoved { replica_id: id, .. }] if *id == replica_id)
+    );
+    work.commit().await.unwrap();
+    assert!(
+        apps::app_machines(&pool, app_id).await.unwrap().is_empty(),
+        "no stale writer may block the returning provider lease"
+    );
+    let retained: (String, Option<i32>) =
+        sqlx::query_as("SELECT status,slot FROM grund_volumes WHERE volume_id=$1")
+            .bind(volume_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(retained, ("available".into(), None));
+    let app: (Option<i32>, Option<chrono::DateTime<Utc>>) =
+        sqlx::query_as("SELECT current_release,deleted_at FROM grund_apps WHERE app_id=$1")
+            .bind(app_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(app, (Some(release as i32), None));
+}

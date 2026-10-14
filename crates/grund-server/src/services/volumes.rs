@@ -360,6 +360,7 @@ impl Volumes {
         command: VolumeCommand,
         publish: bool,
     ) -> Result<(), VolumesError> {
+        let detached = matches!(&command, VolumeCommand::ConfirmBackendDetachment { .. });
         let mut work = Work::begin(&self.state.events, Uuid::now_v7(), "grund/hosted-storage")
             .await
             .map_err(volume_work)?;
@@ -389,6 +390,9 @@ impl Volumes {
         }
         work.commit().await.map_err(volume_work)?;
         self.state.wakes.documents_changed();
+        if detached {
+            self.state.wakes.apps_changed();
+        }
         Ok(())
     }
 

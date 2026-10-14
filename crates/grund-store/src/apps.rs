@@ -576,6 +576,7 @@ fn drain_reason(reason: DrainReason) -> &'static str {
         DrainReason::NoRoom => "no_room",
         DrainReason::ScaledDown => "scaled_down",
         DrainReason::NoRelease => "no_release",
+        DrainReason::LeaseEnded => "lease_ended",
         DrainReason::Deleted => "deleted",
     }
 }
@@ -1173,6 +1174,31 @@ pub async fn app_machines(
         .bind(app_id)
         .fetch_all(executor)
         .await
+}
+
+/// Returning management machines with replicas of this app. A true receipt
+/// means every nondeleted hosted volume on the machine has a cleared slot
+/// after its physical detach acknowledgement.
+pub async fn ended_lease_machines(
+    executor: impl PgExecutor<'_>,
+    organisation_id: Uuid,
+    app_id: Uuid,
+) -> Result<Vec<(Uuid, bool)>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT DISTINCT r.machine_id, NOT EXISTS ( \
+           SELECT 1 FROM grund_volumes v \
+           WHERE v.organisation_id=$1 AND v.machine_id=r.machine_id \
+             AND v.status <> 'deleted' AND (v.slot IS NOT NULL OR v.detachment_pending) \
+         ) AS detached \
+         FROM grund_replicas r JOIN grund_machines m ON m.machine_id=r.machine_id \
+         WHERE r.organisation_id=$1 AND r.app_id=$2 AND m.pool='management' \
+           AND m.state='returning' AND m.returning_organisation_id=$1 \
+         ORDER BY r.machine_id",
+    )
+    .bind(organisation_id)
+    .bind(app_id)
+    .fetch_all(executor)
+    .await
 }
 
 /// Memory and CPU the replicas of other apps reserve, per machine of the

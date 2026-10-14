@@ -1856,6 +1856,8 @@ impl Apps {
             .iter()
             .filter_map(observed)
             .collect();
+        let ended_lease_machines =
+            apps::ended_lease_machines(&mut **work.sql(), organisation_id, app_id).await?;
         let now = Utc::now();
         let (events, waiting) = work
             .app_decide(app_id, |app: &App| {
@@ -1863,6 +1865,7 @@ impl Apps {
                     app,
                     &observations,
                     &machines,
+                    &ended_lease_machines,
                     now,
                     stateful,
                     &mut Uuid::now_v7,
@@ -2154,6 +2157,7 @@ mod tests {
                 &app,
                 &[observation.clone()],
                 &views(&own, &app),
+                &[],
                 now,
                 true,
                 &mut new_id,
@@ -2168,6 +2172,7 @@ mod tests {
                 &app,
                 &[observation.clone()],
                 &views(&own, &app),
+                &[],
                 now,
                 true,
                 &mut new_id,
@@ -2182,6 +2187,7 @@ mod tests {
                 &app,
                 &[observation],
                 &views(&own, &app),
+                &[],
                 now,
                 true,
                 &mut new_id,
@@ -2193,7 +2199,7 @@ mod tests {
             assert_eq!(stopped.waiting[0].reason, Unplaceable::NoCapability);
             mire::Aggregate::apply(&mut app, &stopped.events[0]);
             let waiting =
-                reconcile_with_volumes(&app, &[], &views(&own, &app), now, true, &mut new_id);
+                reconcile_with_volumes(&app, &[], &views(&own, &app), &[], now, true, &mut new_id);
             assert!(
                 waiting.events.is_empty(),
                 "without a capable machine no writer is started"
@@ -2206,7 +2212,7 @@ mod tests {
             );
             own.capabilities.as_mut().unwrap().0["volumes"] = json!(true);
             let placed =
-                reconcile_with_volumes(&app, &[], &views(&own, &app), now, true, &mut new_id);
+                reconcile_with_volumes(&app, &[], &views(&own, &app), &[], now, true, &mut new_id);
             assert!(
                 matches!(placed.events.as_slice(), [AppEvent::ReplicaPlaced { machine_id, release: 2, .. }] if *machine_id == own_id),
                 "the newly capable own machine receives the new writer: {placed:?}"
@@ -2223,8 +2229,15 @@ mod tests {
                 reason: String::new(),
                 idle: false,
             };
-            let finished =
-                reconcile_with_volumes(&app, &[ready], &views(&own, &app), now, true, &mut new_id);
+            let finished = reconcile_with_volumes(
+                &app,
+                &[ready],
+                &views(&own, &app),
+                &[],
+                now,
+                true,
+                &mut new_id,
+            );
             for event in &finished.events {
                 mire::Aggregate::apply(&mut app, event);
             }

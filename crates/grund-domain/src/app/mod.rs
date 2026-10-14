@@ -111,6 +111,8 @@ pub enum DrainReason {
     ScaledDown,
     /// The app has no release to run (its first release failed).
     NoRelease,
+    /// Its management machine's lease ended; a hosted writer needs a detach receipt.
+    LeaseEnded,
     Deleted,
 }
 

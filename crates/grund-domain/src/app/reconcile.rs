@@ -107,6 +107,7 @@ struct Pass<'a> {
     waiting: Vec<Waiting>,
     observations: &'a [Observation],
     machines: &'a [MachineView],
+    ended_lease_machines: &'a [(Uuid, bool)],
     stateful: bool,
     now: DateTime<Utc>,
 }
@@ -275,16 +276,17 @@ pub fn reconcile(
     now: DateTime<Utc>,
     new_id: &mut dyn FnMut() -> Uuid,
 ) -> Decision {
-    reconcile_with_volumes(app, observations, machines, now, false, new_id)
+    reconcile_with_volumes(app, observations, machines, &[], now, false, new_id)
 }
 
-/// Stateful apps keep their machine and must verify that the old writer
-/// stopped before placing a successor. Never interpret disconnection as a
-/// fence, or let a timeout silently remove the old writer.
+/// Stateful apps keep their machine through transient outages. An ended
+/// management lease instead drains its replicas, but a writer is not removed
+/// until the volume's host-confirmed detach has cleared its slot.
 pub fn reconcile_with_volumes(
     app: &App,
     observations: &[Observation],
     machines: &[MachineView],
+    ended_lease_machines: &[(Uuid, bool)],
     now: DateTime<Utc>,
     stateful: bool,
     new_id: &mut dyn FnMut() -> Uuid,
@@ -295,12 +297,14 @@ pub fn reconcile_with_volumes(
         waiting: Vec::new(),
         observations,
         machines,
+        ended_lease_machines,
         now,
         stateful,
     };
     if !app.exists || app.deleted {
         return Decision::default();
     }
+    drain_ended_leases(&mut pass);
     let lost_slots = if stateful {
         BTreeSet::new()
     } else {
@@ -329,6 +333,33 @@ impl Pass<'_> {
     }
 }
 
+fn drain_ended_leases(pass: &mut Pass<'_>) {
+    let mut index = 0;
+    while index < pass.work.replicas.len() {
+        let replica = &pass.work.replicas[index];
+        let (id, machine_id, state) = (replica.replica_id, replica.machine_id, replica.state);
+        let detached = pass
+            .ended_lease_machines
+            .iter()
+            .find(|(machine, _)| *machine == machine_id)
+            .map(|(_, detached)| *detached);
+        if let Some(detached) = detached {
+            if state == ReplicaState::Running {
+                pass.drain(id, DrainReason::LeaseEnded);
+            }
+            if detached {
+                let now = pass.now;
+                pass.emit(AppEvent::ReplicaRemoved {
+                    replica_id: id,
+                    removed_at: now,
+                });
+                continue;
+            }
+        }
+        index += 1;
+    }
+}
+
 fn lose_replicas(pass: &mut Pass<'_>) -> BTreeSet<u32> {
     let after = Duration::seconds(i64::from(pass.work.settings.reschedule_after_seconds));
     let mut slots = BTreeSet::new();
@@ -336,6 +367,12 @@ fn lose_replicas(pass: &mut Pass<'_>) -> BTreeSet<u32> {
         .work
         .replicas
         .iter()
+        .filter(|r| {
+            !pass
+                .ended_lease_machines
+                .iter()
+                .any(|(machine, _)| *machine == r.machine_id)
+        })
         .filter(|r| match pass.machine(r.machine_id) {
             None => true,
             Some(machine) => {
@@ -1917,5 +1954,78 @@ mod tests {
         assert_eq!(world.available().len(), 3);
         assert_eq!(world.app.current_release, Some(2));
         assert!(!world.app.halted);
+    }
+
+    #[test]
+    fn an_ended_lease_drains_its_writer_but_removes_it_only_after_the_volume_detach_receipt() {
+        let mut world = World::new(1, vec![machine(1, 2048)]);
+        world.deploy(512, Behaviour::Healthy);
+        world.settled();
+        let old = world.app.replicas[0].replica_id;
+        let machine_id = Uuid::from_u128(1);
+        let mut new_id = || Uuid::from_u128(100);
+
+        let foreign = reconcile_with_volumes(
+            &world.app,
+            &[],
+            &[],
+            &[(Uuid::from_u128(2), true)],
+            world.now,
+            true,
+            &mut new_id,
+        );
+        assert!(
+            foreign.events.is_empty(),
+            "a different lease cannot fence this writer"
+        );
+
+        let draining = reconcile_with_volumes(
+            &world.app,
+            &[],
+            &[],
+            &[(machine_id, false)],
+            world.now,
+            true,
+            &mut new_id,
+        );
+        assert!(
+            matches!(draining.events.as_slice(), [AppEvent::ReplicaDraining { replica_id, reason: DrainReason::LeaseEnded, .. }] if *replica_id == old),
+            "the old writer is told to drain: {draining:?}"
+        );
+        world.app.apply(&draining.events[0]);
+        let not_yet_fenced = reconcile_with_volumes(
+            &world.app,
+            &[],
+            &[],
+            &[(machine_id, false)],
+            world.now + Duration::minutes(10),
+            true,
+            &mut new_id,
+        );
+        assert!(
+            not_yet_fenced.events.is_empty(),
+            "time and disconnection do not prove physical detach: {not_yet_fenced:?}"
+        );
+        let detached = reconcile_with_volumes(
+            &world.app,
+            &[],
+            &[],
+            &[(machine_id, true)],
+            world.now + Duration::minutes(10),
+            true,
+            &mut new_id,
+        );
+        assert!(
+            matches!(detached.events.as_slice(), [AppEvent::ReplicaRemoved { replica_id, .. }] if *replica_id == old),
+            "after the receipt no replica may block the returning lease: {detached:?}"
+        );
+        world.app.apply(&detached.events[0]);
+        assert!(world.app.replicas.is_empty());
+        assert_eq!(
+            world.app.current_release,
+            Some(1),
+            "the app remains recoverable"
+        );
+        assert_eq!(detached.waiting[0].reason, Unplaceable::NoMachine);
     }
 }
