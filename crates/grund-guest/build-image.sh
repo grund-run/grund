@@ -6,14 +6,17 @@
 #
 #   crates/grund-guest/build-image.sh <out.ext4>
 #   GRUND_BINARY=… GRUND_GUEST_BINARY=… crates/grund-guest/build-image.sh <out.ext4>
+#   GRUND_BINARY=… GRUND_GUEST_BINARY=… crates/grund-guest/test-build-image.sh
 #
 # With both binaries given (CI's release step built them), nothing is
-# compiled. The image is as small as its contents allow: what the two
-# binaries need plus GRUND_GUEST_HEADROOM_MIB (default 16) for the
-# filesystem's own metadata and the guest's first writes, or exactly
-# GRUND_GUEST_SIZE_MIB when that is set. Every MiB of it is downloaded by
-# each machine that runs a VM. The VM's disk is this image grown to its size,
-# and grund-guest grows / to fill it at boot. The reserve for that (256 GDT
+# compiled. Size from the staged files' apparent bytes, not their allocated
+# disk blocks: sparse binaries can need far more ext4 blocks than `du -sk`
+# reports. Round 110% of those bytes up to MiB, then add
+# GRUND_GUEST_HEADROOM_MIB (default 16) for ext4 metadata, journal and the
+# guest's first writes, or use exactly GRUND_GUEST_SIZE_MIB when set. Every
+# MiB is downloaded by each machine that runs a VM. The VM's disk is this
+# image grown to its size, and grund-guest grows / to fill it at boot. The
+# reserve for that (256 GDT
 # blocks, 64-bit descriptors) is asked for explicitly, growth to 2 TiB, so
 # it does not shrink with the image: mkfs's default reserve falls below 256
 # blocks under 33 MiB. A larger disk keeps a 2 TiB filesystem.
@@ -60,8 +63,8 @@ chmod 0644 "$stage/etc/os-release"
 chmod 1777 "$stage/tmp"
 find "$stage" -exec touch -h -d "@$epoch" {} +
 
-content_kib="$(du -sk "$stage" | cut -f1)"
-size_mib="${GRUND_GUEST_SIZE_MIB:-$(( (content_kib + 1023) / 1024 + headroom_mib ))}"
+content_bytes="$(du -sb --apparent-size "$stage" | cut -f1)"
+size_mib="${GRUND_GUEST_SIZE_MIB:-$(( (content_bytes * 11 + 10 * 1048576 - 1) / (10 * 1048576) + headroom_mib ))}"
 
 rm -f "$image.part"
 truncate -s "${size_mib}M" "$image.part"
