@@ -18,6 +18,11 @@ pub struct VolumeRow {
     pub slot: Option<i32>,
     pub detachment_pending: bool,
     pub status: String,
+    pub lost_host_id: Option<Uuid>,
+    pub lost_host_name: Option<String>,
+    pub lost_at: Option<DateTime<Utc>>,
+    pub lost_snapshot_id: Option<String>,
+    pub empty_replacement_accepted: bool,
     pub purge_after: Option<DateTime<Utc>>,
     pub measured_bytes: Option<i64>,
     pub measured_at: Option<DateTime<Utc>>,
@@ -28,7 +33,7 @@ pub struct VolumeRow {
 
 macro_rules! select_volumes {
     ($where:literal) => {
-        concat!("SELECT organisation_id, app_id, volume_id, name, path, source, size_gib, backup, machine_id, slot, detachment_pending, status, measured_bytes, measured_at, created_at, deleted_at, purge_after, stream_version FROM grund_volumes ", $where)
+        concat!("SELECT organisation_id, app_id, volume_id, name, path, source, size_gib, backup, machine_id, slot, detachment_pending, status, lost_host_id, lost_host_name, lost_at, lost_snapshot_id, empty_replacement_accepted, measured_bytes, measured_at, created_at, deleted_at, purge_after, stream_version FROM grund_volumes ", $where)
     };
 }
 
@@ -316,6 +321,153 @@ pub async fn apply_volume(
                     .bind(org).bind(volume_id).bind(deleted_at).bind(version).execute(&mut *conn).await?;
             }
         }
+        VolumeEvent::Lost {
+            host_id,
+            host_name,
+            lost_at,
+            snapshot_id,
+        } => {
+            sqlx::query("UPDATE grund_volumes SET status='lost', slot=NULL, detachment_pending=false, lost_host_id=$2, lost_host_name=$3, lost_at=$4, lost_snapshot_id=$5, stream_version=$6 WHERE volume_id=$1 AND stream_version<$6")
+                .bind(volume_id).bind(host_id).bind(host_name).bind(lost_at).bind(snapshot_id).bind(version).execute(&mut *conn).await?;
+        }
+        VolumeEvent::EmptyReplacementAccepted { .. } => {
+            sqlx::query("UPDATE grund_volumes SET empty_replacement_accepted=true, stream_version=$2 WHERE volume_id=$1 AND stream_version<$2")
+                .bind(volume_id).bind(version).execute(&mut *conn).await?;
+        }
+        VolumeEvent::LostVolumeAbandoned { abandoned_at } => {
+            sqlx::query("UPDATE grund_volumes SET status='deleted', deleted_at=$2, stream_version=$3 WHERE volume_id=$1 AND lost_host_id IS NOT NULL AND stream_version<$3")
+                .bind(volume_id).bind(abandoned_at).bind(version).execute(&mut *conn).await?;
+        }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn lost_volume_stays_scoped_and_old_projection_replay_cannot_resurrect_bytes(
+        pool: sqlx::PgPool,
+    ) -> anyhow::Result<()> {
+        let (org, other_org, app, id, machine, host) = (
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+        );
+        let at = Utc::now();
+        let mut connection = pool.acquire().await?;
+        apply_volume(
+            id,
+            1,
+            &VolumeEvent::Requested {
+                organisation_id: org,
+                app_id: app,
+                name: "data".into(),
+                path: "/data".into(),
+                source: None,
+                backup: true,
+                size_gib: Some(1),
+                requested_at: at,
+            },
+            &mut connection,
+        )
+        .await?;
+        apply_volume(
+            id,
+            2,
+            &VolumeEvent::Placed {
+                machine_id: machine,
+                placed_at: at,
+            },
+            &mut connection,
+        )
+        .await?;
+        apply_volume(
+            id,
+            3,
+            &VolumeEvent::Lost {
+                host_id: host,
+                host_name: "lost-h1".into(),
+                lost_at: at,
+                snapshot_id: Some(Uuid::now_v7().to_string()),
+            },
+            &mut connection,
+        )
+        .await?;
+        apply_volume(
+            id,
+            2,
+            &VolumeEvent::Placed {
+                machine_id: machine,
+                placed_at: at,
+            },
+            &mut connection,
+        )
+        .await?;
+        let row = volume(&pool, org, app, id).await?.unwrap();
+        assert_eq!(row.status, "lost");
+        assert_eq!(row.lost_host_id, Some(host));
+        assert_eq!(row.lost_host_name.as_deref(), Some("lost-h1"));
+        assert_eq!(
+            row.lost_at.map(|time| time.timestamp_micros()),
+            Some(at.timestamp_micros())
+        );
+        assert!(row.lost_snapshot_id.is_some());
+        assert_eq!(row.stream_version, 3);
+        assert!(volume(&pool, other_org, app, id).await?.is_none());
+        apply_volume(
+            id,
+            4,
+            &VolumeEvent::EmptyReplacementAccepted {
+                accepted_at: at,
+                actor: Uuid::now_v7(),
+            },
+            &mut connection,
+        )
+        .await?;
+        assert!(
+            volume(&pool, org, app, id)
+                .await?
+                .unwrap()
+                .empty_replacement_accepted
+        );
+        apply_volume(
+            id,
+            5,
+            &VolumeEvent::DeleteRequested {
+                machine_id: Some(machine),
+                requested_at: at,
+                purge_after: Some(at),
+            },
+            &mut connection,
+        )
+        .await?;
+        apply_volume(
+            id,
+            6,
+            &VolumeEvent::PurgeRequested {
+                requested_at: at,
+                actor: None,
+                reason: None,
+            },
+            &mut connection,
+        )
+        .await?;
+        apply_volume(
+            id,
+            7,
+            &VolumeEvent::LostVolumeAbandoned { abandoned_at: at },
+            &mut connection,
+        )
+        .await?;
+        let row = any_volume(&pool, org, app, id).await?.unwrap();
+        assert_eq!(row.status, "deleted");
+        assert_eq!(row.lost_host_id, Some(host));
+        assert!(volume(&pool, org, app, id).await?.is_none());
+        Ok(())
+    }
 }

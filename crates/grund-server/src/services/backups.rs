@@ -570,8 +570,15 @@ impl Backups {
             let snapshot_id = snapshot_uuid.ok_or_else(|| {
                 BackupError::Invalid("a hosted recovery-point ID must be a snapshot UUID".into())
             })?;
-            if !source_row.backup || !matches!(source_row.status.as_str(), "attached" | "available")
+            if !source_row.backup
+                || !matches!(
+                    source_row.status.as_str(),
+                    "attached" | "available" | "lost"
+                )
             {
+                return Err(BackupError::Ineligible);
+            }
+            if source_row.status == "lost" && source_row.lost_snapshot_id.is_none() {
                 return Err(BackupError::Ineligible);
             }
             let backend = self.state.volume_backend().ok_or(BackupError::Ineligible)?;

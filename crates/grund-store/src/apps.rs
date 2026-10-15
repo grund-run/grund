@@ -549,6 +549,21 @@ pub async fn apply_app(
             )
             .await?;
         }
+        AppEvent::HostedVolumeLost {
+            volume_id,
+            name,
+            host_name,
+            lost_at,
+            snapshot_id,
+        } => {
+            sqlx::query("UPDATE grund_apps SET lost_volumes = lost_volumes || jsonb_build_array(jsonb_build_object('volume_id',$2::text,'name',$3::text,'host_name',$4::text,'lost_at',$5::timestamptz,'snapshot_id',$6::text)) WHERE app_id=$1")
+                .bind(app_id).bind(volume_id.to_string()).bind(name).bind(host_name).bind(lost_at).bind(snapshot_id)
+                .execute(&mut *connection).await?;
+        }
+        AppEvent::HostedVolumeEmptyAccepted { volume_id, .. } => {
+            sqlx::query("UPDATE grund_apps SET lost_volumes = (SELECT coalesce(jsonb_agg(CASE WHEN loss->>'volume_id'=$2::text THEN loss || jsonb_build_object('empty_replacement_accepted',true) ELSE loss END ORDER BY position), '[]'::jsonb) FROM jsonb_array_elements(lost_volumes) WITH ORDINALITY entries(loss,position)) WHERE app_id=$1")
+                .bind(app_id).bind(volume_id.to_string()).execute(&mut *connection).await?;
+        }
         AppEvent::Purged { purged_at } => {
             sqlx::query("UPDATE grund_apps SET purge_after = NULL WHERE app_id = $1")
                 .bind(app_id)
@@ -679,13 +694,14 @@ pub struct AppRow {
     pub deleted_at: Option<DateTime<Utc>>,
     pub purge_after: Option<DateTime<Utc>>,
     pub waiting: Value,
+    pub lost_volumes: Json<Vec<grund_domain::app::HostedVolumeLoss>>,
 }
 
 macro_rules! select_apps {
     ($tail:literal) => {
         concat!(
             "SELECT app_id, organisation_id, name, settings, current_release, rollout, halted, \
-               stream_version, created_at, deleted_at, purge_after, waiting FROM grund_apps ",
+               stream_version, created_at, deleted_at, purge_after, waiting, lost_volumes FROM grund_apps ",
             $tail
         )
     };
@@ -1192,7 +1208,10 @@ pub async fn ended_lease_machines(
          ) AS detached \
          FROM grund_replicas r JOIN grund_machines m ON m.machine_id=r.machine_id \
          WHERE r.organisation_id=$1 AND r.app_id=$2 AND m.pool='management' \
-           AND m.state='returning' AND m.returning_organisation_id=$1 \
+           AND ((m.state='returning' AND m.returning_organisation_id=$1) \
+               OR EXISTS (SELECT 1 FROM grund_volumes lost WHERE lost.organisation_id=$1 \
+                   AND lost.app_id=$2 AND lost.machine_id=r.machine_id \
+                   AND lost.lost_host_id IS NOT NULL)) \
          ORDER BY r.machine_id",
     )
     .bind(organisation_id)
@@ -1359,4 +1378,64 @@ pub async fn placed_replica(
     .bind(replica_id)
     .fetch_optional(executor)
     .await
+}
+
+#[cfg(test)]
+mod hosted_loss_tests {
+    use super::*;
+    use grund_domain::app::{AppName, AppSettings};
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn app_loss_survives_projection_replay_with_host_and_completed_snapshot(
+        pool: sqlx::PgPool,
+    ) -> anyhow::Result<()> {
+        let (app, org, volume) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+        let at = Utc::now();
+        let mut connection = pool.acquire().await?;
+        apply_app(
+            app,
+            1,
+            &AppEvent::Created {
+                organisation_id: org,
+                name: AppName::parse("photos")?,
+                settings: AppSettings::default(),
+                created_by: Uuid::now_v7(),
+                created_at: at,
+            },
+            &mut connection,
+        )
+        .await?;
+        let loss = AppEvent::HostedVolumeLost {
+            volume_id: volume,
+            name: "data".into(),
+            host_name: "lost-h1".into(),
+            lost_at: at,
+            snapshot_id: Some("completed-point".into()),
+        };
+        apply_app(app, 2, &loss, &mut connection).await?;
+        apply_app(app, 2, &loss, &mut connection).await?;
+        let row = app_by_name(&pool, org, "photos").await?.unwrap();
+        assert_eq!(row.stream_version, 2);
+        assert_eq!(row.lost_volumes.0.len(), 1);
+        let loss = &row.lost_volumes.0[0];
+        assert_eq!(loss.volume_id, volume);
+        assert_eq!(loss.host_name, "lost-h1");
+        assert_eq!(loss.lost_at.timestamp_micros(), at.timestamp_micros());
+        assert_eq!(loss.snapshot_id.as_deref(), Some("completed-point"));
+        assert!(!loss.empty_replacement_accepted);
+        let accepted = AppEvent::HostedVolumeEmptyAccepted {
+            volume_id: volume,
+            actor: Uuid::now_v7(),
+            accepted_at: at,
+        };
+        apply_app(app, 3, &accepted, &mut connection).await?;
+        let accepted_row = app_by_name(&pool, org, "photos").await?.unwrap();
+        assert!(accepted_row.lost_volumes.0[0].empty_replacement_accepted);
+        assert!(
+            app_by_name(&pool, Uuid::now_v7(), "photos")
+                .await?
+                .is_none()
+        );
+        Ok(())
+    }
 }

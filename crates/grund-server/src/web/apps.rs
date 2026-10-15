@@ -1638,7 +1638,16 @@ fn volume_summary(rows: Vec<grund_store::volumes::VolumeRow>, now: DateTime<Utc>
                     || "No quota (own-machine directory)".into(),
                     |size| format!("{size} GiB"),
                 ),
-                status: if pending_deletion {
+                status: if let (Some(host), Some(at)) = (&row.lost_host_name, row.lost_at) {
+                    format!(
+                        "Volume lost with host {host} on {}; {}",
+                        at.format("%Y-%m-%d %H:%M UTC"),
+                        row.lost_snapshot_id.as_ref().map_or_else(
+                            || "no completed snapshot; recovery requires accept_empty and starts with empty data".to_string(),
+                            |id| format!("restore from completed snapshot {id} to a NEW volume"),
+                        ),
+                    )
+                } else if pending_deletion {
                     row.purge_after.map_or_else(
                         || "Pending deletion".into(),
                         |deadline| format!("Deleting in {} days", days_remaining(deadline, now)),

@@ -1870,6 +1870,11 @@ impl Apps {
                     .any(|volume| volume.name == name)
             })
         };
+        let usable_volumes: Vec<_> = owned_volumes
+            .iter()
+            .filter(|volume| volume.lost_host_id.is_none())
+            .cloned()
+            .collect();
         let pins_writer = |v: &grund_store::volumes::VolumeRow| {
             v.status == "attached"
                 || (v.size_gib.is_some()
@@ -1894,6 +1899,18 @@ impl Apps {
                 .all(|v| v.machine_id.is_none() || v.machine_id == pinned),
             "volumes requested by this release are on different machines; explicit recovery required"
         );
+        let lost_in_target = owned_volumes
+            .iter()
+            .find(|v| v.lost_host_id.is_some() && wanted(&v.name));
+        let unfenced_lost_machine: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM grund_volumes v JOIN grund_machines m \
+             ON m.machine_id=v.machine_id WHERE v.organisation_id=$1 AND v.app_id=$2 \
+             AND v.lost_host_id IS NOT NULL AND m.public_key IS NOT NULL)",
+        )
+        .bind(organisation_id)
+        .bind(app_id)
+        .fetch_one(&mut **work.sql())
+        .await?;
         let volume_backend = self.state.volume_backend();
         let candidates =
             machines::organisation_machines(&mut **work.sql(), organisation_id).await?;
@@ -1903,7 +1920,7 @@ impl Apps {
                 match &volume_backend {
                     Some(backend) => {
                         backend
-                            .eligible(work.sql(), candidate, &owned_volumes)
+                            .eligible(work.sql(), candidate, &usable_volumes)
                             .await?
                     }
                     None => false,
@@ -1926,6 +1943,9 @@ impl Apps {
                 view.last_seen = self.state.hearing.seen(view.last_seen);
                 machines.push(view);
             }
+        }
+        if lost_in_target.is_some() || unfenced_lost_machine {
+            machines.clear();
         }
         let observations: Vec<Observation> = apps::app_statuses(&mut **work.sql(), app_id)
             .await?
@@ -1978,7 +1998,24 @@ impl Apps {
         apps::set_waiting(
             &mut **work.sql(),
             app_id,
-            &serde_json::to_value(&waiting)?,
+            &if let Some(lost) = lost_in_target {
+                serde_json::json!([{
+                    "slot": 0,
+                    "reason": "volume_lost",
+                    "message": format!(
+                        "Volume {} lost with host {} on {}; {}",
+                        lost.name,
+                        lost.lost_host_name.as_deref().unwrap_or("unknown"),
+                        lost.lost_at.map(|at| at.to_rfc3339()).unwrap_or_default(),
+                        lost.lost_snapshot_id.as_ref().map_or_else(
+                            || "no completed snapshot; recovery requires accept_empty and starts with empty data".to_string(),
+                            |snapshot| format!("restore from snapshot {snapshot} to a new volume"),
+                        ),
+                    ),
+                }])
+            } else {
+                serde_json::to_value(&waiting)?
+            },
             now,
         )
         .await?;

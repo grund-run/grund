@@ -2,6 +2,7 @@
 //! customer machine alone performs physical creation and managed-dir erasure.
 use crate::{services::agents::AgentsState, state::State};
 use chrono::Utc;
+use grund_domain::app::AppEvent;
 use grund_domain::{
     app::spec::VolumeSpec,
     volume::{VolumeCommand, VolumeError},
@@ -38,6 +39,8 @@ pub enum VolumesError {
     RestoreNotReady,
     #[error("only an already deleted volume awaiting purge can be purged now")]
     NotPendingDeletion,
+    #[error("this volume was lost; use a new app-owned identity")]
+    Lost,
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -123,6 +126,14 @@ impl VolumesState for State {
             state: self.clone(),
         }
     }
+}
+
+/// Scoped, Fleet-confirmed loss of a hosted volume's physical host.
+pub struct HostedLoss {
+    pub host_id: Uuid,
+    pub host_name: String,
+    pub snapshot_id: Option<String>,
+    pub at: chrono::DateTime<Utc>,
 }
 
 async fn backend_holder_allowed(
@@ -501,6 +512,132 @@ impl Volumes {
         .await
     }
 
+    /// Private provider relay: Fleet's fenced lost-volume receipt is the only
+    /// source for this transition, and ownership is checked in the same write.
+    pub async fn declare_hosted_lost(
+        &self,
+        org: Uuid,
+        app: Uuid,
+        volume_id: Uuid,
+        loss: HostedLoss,
+    ) -> Result<(), VolumesError> {
+        let HostedLoss {
+            host_id,
+            host_name,
+            snapshot_id,
+            at,
+        } = loss;
+        let mut work = Work::begin(&self.state.events, Uuid::now_v7(), "grund/hosted-loss")
+            .await
+            .map_err(volume_work)?;
+        let row = volumes::any_volume(&mut **work.sql(), org, app, volume_id)
+            .await
+            .map_err(anyhow::Error::from)?
+            .ok_or(VolumesError::NotFound)?;
+        if row.status == "deleted"
+            || row.size_gib.is_none()
+            || row.lost_host_id.is_some_and(|old| old != host_id)
+        {
+            return Err(VolumesError::Lost);
+        }
+        work.volume(
+            volume_id,
+            VolumeCommand::DeclareLost {
+                host_id,
+                host_name: host_name.clone(),
+                snapshot_id: snapshot_id.clone(),
+                at,
+            },
+        )
+        .await
+        .map_err(volume_work)?;
+        work.app_decide(app, |owner| {
+            if !owner.exists || owner.organisation_id != org {
+                return Err(grund_domain::app::AppError::NotFound);
+            }
+            let events = if owner
+                .lost_volumes
+                .iter()
+                .any(|loss| loss.volume_id == volume_id)
+            {
+                vec![]
+            } else {
+                vec![AppEvent::HostedVolumeLost {
+                    volume_id,
+                    name: row.name.clone(),
+                    host_name,
+                    lost_at: at,
+                    snapshot_id,
+                }]
+            };
+            Ok((events, ()))
+        })
+        .await
+        .map_err(volume_work)?;
+        work.commit().await.map_err(volume_work)?;
+        self.state.wakes.apps_changed();
+        self.state.wakes.documents_changed();
+        Ok(())
+    }
+
+    pub async fn accept_empty_lost(
+        &self,
+        actor: Uuid,
+        org: Uuid,
+        app: Uuid,
+        volume_id: Uuid,
+        version: i64,
+        confirm_name: &str,
+    ) -> Result<VolumeRow, VolumesError> {
+        let mut work = Work::begin(&self.state.events, Uuid::now_v7(), &actor.to_string())
+            .await
+            .map_err(volume_work)?;
+        let owner = work.load_app(app).await.map_err(volume_work)?;
+        if !owner.exists || owner.deleted || owner.organisation_id != org {
+            return Err(VolumesError::NotFound);
+        }
+        let row = volumes::volume(&mut **work.sql(), org, app, volume_id)
+            .await
+            .map_err(anyhow::Error::from)?
+            .ok_or(VolumesError::NotFound)?;
+        if row.name != confirm_name {
+            return Err(VolumesError::Invalid(
+                "confirm_volume_name must match the lost volume".into(),
+            ));
+        }
+        if row.stream_version != version {
+            return Err(VolumesError::Conflict);
+        }
+        let at = Utc::now();
+        work.volume(
+            volume_id,
+            VolumeCommand::AcceptEmptyReplacement { actor, at },
+        )
+        .await
+        .map_err(volume_work)?;
+        work.app_decide(app, |owner| {
+            if !owner.exists || owner.organisation_id != org {
+                return Err(grund_domain::app::AppError::NotFound);
+            }
+            let events = owner
+                .lost_volumes
+                .iter()
+                .find(|loss| loss.volume_id == volume_id)
+                .filter(|loss| !loss.empty_replacement_accepted)
+                .map(|_| AppEvent::HostedVolumeEmptyAccepted {
+                    volume_id,
+                    actor,
+                    accepted_at: at,
+                })
+                .into_iter()
+                .collect();
+            Ok((events, ()))
+        })
+        .await
+        .map_err(volume_work)?;
+        work.commit().await.map_err(volume_work)?;
+        self.get(org, app, volume_id).await
+    }
     async fn restore_ready(
         &self,
         conn: &mut sqlx::PgConnection,
@@ -724,6 +861,9 @@ impl Volumes {
             .fetch_one(&mut **work.sql())
             .await
             .map_err(anyhow::Error::from)?;
+        if row.lost_host_id.is_some() {
+            return Err(VolumesError::Lost);
+        }
         if row.status != "pending_deletion" || !row.purge_after.is_some_and(|due| at < due) {
             return Err(VolumesError::NotFound);
         }
@@ -771,7 +911,8 @@ impl Volumes {
         if row.stream_version != version {
             return Err(VolumesError::Conflict);
         }
-        if row.status != "pending_deletion" {
+        if row.status != "pending_deletion" && !(row.status == "lost" && row.purge_after.is_some())
+        {
             return Err(VolumesError::NotPendingDeletion);
         }
         let at: chrono::DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
@@ -798,7 +939,7 @@ impl Volumes {
     pub async fn purge_due(&self, at: chrono::DateTime<Utc>) -> Result<usize, VolumesError> {
         let due: Vec<(Uuid, Uuid, Uuid)> = sqlx::query_as(
             "SELECT organisation_id, app_id, volume_id FROM grund_volumes \
-             WHERE status = 'pending_deletion' AND purge_after <= $1 \
+             WHERE status IN ('pending_deletion','lost') AND purge_after <= $1 \
              ORDER BY purge_after, volume_id LIMIT 100",
         )
         .bind(at)
@@ -814,7 +955,13 @@ impl Volumes {
             if state.organisation_id != Some(org)
                 || state.app_id != Some(app)
                 || !state.purge_after.is_some_and(|due| at >= due)
-                || state.status != Some(grund_domain::volume::VolumeStatus::PendingDeletion)
+                || !matches!(
+                    state.status,
+                    Some(
+                        grund_domain::volume::VolumeStatus::PendingDeletion
+                            | grund_domain::volume::VolumeStatus::Lost
+                    )
+                )
             {
                 continue;
             }
@@ -887,6 +1034,12 @@ async fn purge_in(
         .bind(row.organisation_id).bind(row.app_id).bind(row.volume_id).execute(&mut **work.sql()).await.map_err(anyhow::Error::from)?;
     sqlx::query("DELETE FROM grund_volume_backup_configs WHERE organisation_id = $1 AND app_id = $2 AND volume_id = $3")
         .bind(row.organisation_id).bind(row.app_id).bind(row.volume_id).execute(&mut **work.sql()).await.map_err(anyhow::Error::from)?;
+    if row.lost_host_id.is_some() {
+        work.volume(row.volume_id, VolumeCommand::AbandonLost { at })
+            .await
+            .map_err(volume_work)?;
+        return Ok(());
+    }
     if row.machine_id.is_none() || (row.size_gib.is_none() && row.source.is_some()) {
         work.volume(row.volume_id, VolumeCommand::FinalizeWithoutErasure { at })
             .await
@@ -916,6 +1069,7 @@ fn volume_work(error: grund_store::work::WorkError) -> VolumesError {
         grund_store::work::WorkError::Volume(VolumeError::InvalidSize) => VolumesError::Invalid(
             "hosted block size must be 1-4096 GiB without a host source".into(),
         ),
+        grund_store::work::WorkError::Volume(VolumeError::Lost) => VolumesError::Lost,
         grund_store::work::WorkError::Volume(VolumeError::BackendNotReady) => {
             VolumesError::Conflict
         }

@@ -418,6 +418,10 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
         Requirement::SessionOrFullToken,
     ),
     (
+        "/grund.volume.v1.VolumeService/AcceptEmptyLostVolume",
+        Requirement::SessionOrFullToken,
+    ),
+    (
         "/grund.volume.v1.VolumeService/PurgeVolumeNow",
         Requirement::SessionOrFullToken,
     ),
@@ -1750,6 +1754,11 @@ mod tests {
         unused_volume_method!(detach_volume, DetachVolumeRequest, DetachVolumeResponse);
         unused_volume_method!(delete_volume, DeleteVolumeRequest, DeleteVolumeResponse);
         unused_volume_method!(restore_volume, RestoreVolumeRequest, RestoreVolumeResponse);
+        unused_volume_method!(
+            accept_empty_lost_volume,
+            AcceptEmptyLostVolumeRequest,
+            AcceptEmptyLostVolumeResponse
+        );
         unused_volume_method!(
             purge_volume_now,
             PurgeVolumeNowRequest,

@@ -636,13 +636,18 @@ mod tests {
 
     #[test]
     fn a_killed_agent_can_retry_the_same_backup_attempt_without_reusing_its_password() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("scratch")
-            .join(format!("backup-agent-restart-{}", std::process::id()));
+        let target = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .unwrap_or_else(|| {
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .join("scratch")
+            });
+        let root = target.join(format!("backup-agent-restart-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let attempt = "11111111-1111-1111-1111-111111111111";

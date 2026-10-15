@@ -493,6 +493,20 @@ pub fn app_message(
         created_at: timestamp(row.created_at),
         halted: row.halted,
         version: row.stream_version,
+        lost_volumes: row
+            .lost_volumes
+            .0
+            .iter()
+            .map(|loss| proto::LostVolume {
+                volume_id: loss.volume_id.to_string(),
+                name: loss.name.clone(),
+                host_name: loss.host_name.clone(),
+                lost_at: timestamp(loss.lost_at),
+                snapshot_id: loss.snapshot_id.clone().unwrap_or_default(),
+                empty_replacement_accepted: loss.empty_replacement_accepted,
+                ..Default::default()
+            })
+            .collect(),
         ..Default::default()
     }
 }

@@ -379,6 +379,18 @@ pub const LEAVES: &[Leaf] = &[
             &["grund volumes delete photos data --yes"],
         )
     },
+    Leaf {
+        destructive: true,
+        ..write(
+            "volumes accept-empty",
+            "grund.volume.v1.Volume",
+            &[
+                "grund.volume.v1.VolumeService/ListVolumes",
+                "grund.volume.v1.VolumeService/AcceptEmptyLostVolume",
+            ],
+            &["grund volumes accept-empty photos data --yes"],
+        )
+    },
     write(
         "volumes restore-deleted",
         "grund.volume.v1.Volume",

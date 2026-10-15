@@ -22,6 +22,9 @@ service VolumeService {
   // Owner-only. Restores the same pending volume before its purge deadline,
   // with optimistic concurrency; unrelated backup restores are separate.
   rpc RestoreVolume(RestoreVolumeRequest) returns (RestoreVolumeResponse);
+  // Owner-only: acknowledge losing this volume's bytes. This never makes the
+  // lost identity mountable; create a different app-owned volume to start empty.
+  rpc AcceptEmptyLostVolume(AcceptEmptyLostVolumeRequest) returns (AcceptEmptyLostVolumeResponse);
   // Owner/admin only: explicitly start irreversible erasure of a volume
   // already pending deletion, without waiting for the seven-day deadline.
   // Physical deletion still requires the machine/backend's confirmation.
@@ -63,6 +66,12 @@ message Volume {
   // 0 is an own-machine directory without a promised quota. 1 to 4096 GiB
   // is a hosted block volume's configured capacity, not its measured use.
   uint64 size_gib = 15;
+  // Operator-declared hosted loss. Empty snapshot ID means no completed off-host
+  // snapshot was available. These fields remain visible during deletion.
+  string lost_host_name = 16;
+  google.protobuf.Timestamp lost_at = 17;
+  string lost_snapshot_id = 18;
+  bool empty_replacement_accepted = 19;
 }
 message ListVolumesRequest { string organisation = 1; string app = 2; }
 message ListVolumesResponse { repeated Volume volumes = 1; }
@@ -99,6 +108,15 @@ message DeleteVolumeRequest { string organisation = 1; string app = 2; string vo
 message DeleteVolumeResponse { Volume volume = 1; }
 message RestoreVolumeRequest { string organisation = 1; string app = 2; string volume_id = 3; int64 expected_version = 4; }
 message RestoreVolumeResponse { Volume volume = 1; }
+message AcceptEmptyLostVolumeRequest {
+  string organisation = 1;
+  string app = 2;
+  string volume_id = 3;
+  int64 expected_version = 4;
+  // Must match the original name exactly; accepting never reuses its ID.
+  string confirm_volume_name = 5;
+}
+message AcceptEmptyLostVolumeResponse { Volume volume = 1; }
 message PurgeVolumeNowRequest {
   string organisation = 1;
   string app = 2;

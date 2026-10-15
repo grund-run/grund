@@ -51,6 +51,8 @@ pub trait CapacityProvider: Any + Send + Sync {
         &'a self,
         key: &'a str,
         provider_id: &'a str,
+        accept_empty_volume_ids: &'a [uuid::Uuid],
+        restored_volumes: &'a [(uuid::Uuid, uuid::Uuid)],
     ) -> CapacityFuture<'a, Result<(), CapacityError>>;
 }
 
@@ -134,10 +136,20 @@ impl Capacity {
         }
     }
 
-    pub async fn release(&self, key: &str, provider_id: &str) -> Result<(), CapacityError> {
+    pub async fn release(
+        &self,
+        key: &str,
+        provider_id: &str,
+        accept_empty_volume_ids: &[uuid::Uuid],
+        restored_volumes: &[(uuid::Uuid, uuid::Uuid)],
+    ) -> Result<(), CapacityError> {
         match self {
             Self::None => Err(CapacityError::NotConfigured),
-            Self::Provider(provider) => provider.release(key, provider_id).await,
+            Self::Provider(provider) => {
+                provider
+                    .release(key, provider_id, accept_empty_volume_ids, restored_volumes)
+                    .await
+            }
         }
     }
 }

@@ -136,6 +136,17 @@ pub enum VolumesAction {
         #[arg(long)]
         dry_run: bool,
     },
+    #[command(
+        about = "Accept losing a hosted volume's bytes; replacement uses a NEW volume name and ID"
+    )]
+    AcceptEmpty {
+        app: String,
+        volume: String,
+        #[arg(long, help = "Do not ask for confirmation")]
+        yes: bool,
+        #[arg(long)]
+        dry_run: bool,
+    },
     #[command(about = "Restore the SAME pending-deletion volume before its purge deadline")]
     RestoreDeleted {
         app: String,
@@ -178,6 +189,9 @@ const VOLUMES: &[(&str, &str)] = &[
     ("MACHINE", "/machineId"),
     ("MEASURED BYTES", "/measuredBytes"),
     ("RESTORABLE UNTIL", "/purgeAfter"),
+    ("LOST HOST", "/lostHostName"),
+    ("LOST AT", "/lostAt"),
+    ("COMPLETED SNAPSHOT", "/lostSnapshotId"),
 ];
 
 const POINTS: &[(&str, &str)] = &[
@@ -463,6 +477,41 @@ pub async fn run(ctx: &Ctx, action: VolumesAction) -> CliResult<Output> {
                 .await?;
             Ok(Output::fields(answer))
         }
+        VolumesAction::AcceptEmpty {
+            app,
+            volume,
+            yes,
+            dry_run: preview,
+        } => {
+            let row = find(&api, &org, &app, &volume).await?;
+            if row["status"] != "lost" {
+                return Err(CliError::new(
+                    Code::Failed,
+                    "only a declared lost hosted volume can be accepted empty",
+                ));
+            }
+            let name = row["name"].as_str().unwrap_or_default();
+            let request = json!({
+                "organisation": org, "app": app,
+                "volumeId": row["volumeId"],
+                "expectedVersion": row["version"],
+                "confirmVolumeName": name,
+            });
+            if preview {
+                return Ok(dry_run(
+                    &[(format!("{SERVICE}/AcceptEmptyLostVolume"), request)],
+                    vec![],
+                ));
+            }
+            ctx.confirm(
+                yes,
+                &format!("Accept that {app}/{name} on lost host {} cannot supply its old bytes; create a NEW app-owned volume and redeploy explicitly", row["lostHostName"].as_str().unwrap_or("unknown")),
+            )?;
+            let answer = api
+                .call(&format!("{SERVICE}/AcceptEmptyLostVolume"), request)
+                .await?;
+            Ok(Output::fields(answer["volume"].clone()))
+        }
         VolumesAction::RestoreDeleted {
             app,
             volume,
@@ -494,7 +543,9 @@ pub async fn run(ctx: &Ctx, action: VolumesAction) -> CliResult<Output> {
             dry_run: preview,
         } => {
             let row = find(&api, &org, &app, &volume).await?;
-            if row["status"] != "pending_deletion" {
+            if row["status"] != "pending_deletion"
+                && !(row["status"] == "lost" && !row["purgeAfter"].is_null())
+            {
                 return Err(CliError::new(
                     Code::Failed,
                     "only an already deleted volume pending purge can be purged now",
@@ -515,7 +566,11 @@ pub async fn run(ctx: &Ctx, action: VolumesAction) -> CliResult<Output> {
             }
             ctx.confirm(
                 yes,
-                &format!("Permanently purge {app}/{volume} now; all managed data will be erased after physical confirmation"),
+                &if row["lostHostName"].as_str().is_some_and(|host| !host.is_empty()) {
+                    format!("Permanently abandon {app}/{volume} on lost host {}; this records loss, not physical erasure", row["lostHostName"].as_str().unwrap_or_default())
+                } else {
+                    format!("Permanently purge {app}/{volume} now; managed data is erased only after physical confirmation")
+                },
             )?;
             let answer = api
                 .call(&format!("{SERVICE}/PurgeVolumeNow"), request)

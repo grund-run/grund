@@ -242,6 +242,29 @@ pub enum AppEvent {
     Purged {
         purged_at: DateTime<Utc>,
     },
+    HostedVolumeLost {
+        volume_id: Uuid,
+        name: String,
+        host_name: String,
+        lost_at: DateTime<Utc>,
+        snapshot_id: Option<String>,
+    },
+    HostedVolumeEmptyAccepted {
+        volume_id: Uuid,
+        actor: Uuid,
+        accepted_at: DateTime<Utc>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HostedVolumeLoss {
+    pub volume_id: Uuid,
+    pub name: String,
+    pub host_name: String,
+    pub lost_at: DateTime<Utc>,
+    pub snapshot_id: Option<String>,
+    #[serde(default)]
+    pub empty_replacement_accepted: bool,
 }
 
 /// What `apply` builds; also the snapshot.
@@ -264,6 +287,8 @@ pub struct App {
     pub replicas: Vec<Replica>,
     pub next_placement: u64,
     pub last_spread_move: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub lost_volumes: Vec<HostedVolumeLoss>,
 }
 
 impl App {
@@ -397,13 +422,44 @@ impl mire::Aggregate for App {
                 self.purge_after = None;
                 self.halted = false;
             }
+            AppEvent::HostedVolumeLost {
+                volume_id,
+                name,
+                host_name,
+                lost_at,
+                snapshot_id,
+            } => {
+                if !self
+                    .lost_volumes
+                    .iter()
+                    .any(|loss| loss.volume_id == *volume_id)
+                {
+                    self.lost_volumes.push(HostedVolumeLoss {
+                        volume_id: *volume_id,
+                        name: name.clone(),
+                        host_name: host_name.clone(),
+                        lost_at: *lost_at,
+                        snapshot_id: snapshot_id.clone(),
+                        empty_replacement_accepted: false,
+                    });
+                }
+            }
+            AppEvent::HostedVolumeEmptyAccepted { volume_id, .. } => {
+                if let Some(loss) = self
+                    .lost_volumes
+                    .iter_mut()
+                    .find(|loss| loss.volume_id == *volume_id)
+                {
+                    loss.empty_replacement_accepted = true;
+                }
+            }
             AppEvent::Purged { .. } => self.purge_after = None,
         }
     }
 }
 
 impl mire::Snapshot for App {
-    const SNAPSHOT_VERSION: i32 = 3;
+    const SNAPSHOT_VERSION: i32 = 5;
     const SNAPSHOT_FREQUENCY: i64 = 100;
 }
 

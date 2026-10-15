@@ -11,6 +11,7 @@ pub enum VolumeStatus {
     Requested,
     Available,
     AwaitingBackend,
+    Lost,
     DetachingBackend,
     Attached,
     PendingDeletion,
@@ -94,6 +95,19 @@ pub enum VolumeEvent {
     Deleted {
         deleted_at: DateTime<Utc>,
     },
+    Lost {
+        host_id: Uuid,
+        host_name: String,
+        lost_at: DateTime<Utc>,
+        snapshot_id: Option<String>,
+    },
+    EmptyReplacementAccepted {
+        accepted_at: DateTime<Utc>,
+        actor: Uuid,
+    },
+    LostVolumeAbandoned {
+        abandoned_at: DateTime<Utc>,
+    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -114,6 +128,16 @@ pub struct Volume {
     pub status: Option<VolumeStatus>,
     pub requested_at: Option<DateTime<Utc>>,
     pub purge_after: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub lost_host_id: Option<Uuid>,
+    #[serde(default)]
+    pub lost_host_name: Option<String>,
+    #[serde(default)]
+    pub lost_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub lost_snapshot_id: Option<String>,
+    #[serde(default)]
+    pub empty_replacement_accepted: bool,
 }
 
 impl mire::Aggregate for Volume {
@@ -203,13 +227,31 @@ impl mire::Aggregate for Volume {
                 self.status = Some(VolumeStatus::Deleting);
                 self.purge_after = None;
             }
+            VolumeEvent::Lost {
+                host_id,
+                host_name,
+                lost_at,
+                snapshot_id,
+            } => {
+                self.lost_host_id = Some(*host_id);
+                self.lost_host_name = Some(host_name.clone());
+                self.lost_at = Some(*lost_at);
+                self.lost_snapshot_id = snapshot_id.clone();
+                self.slot = None;
+                self.detachment_pending = false;
+                self.status = Some(VolumeStatus::Lost);
+            }
+            VolumeEvent::EmptyReplacementAccepted { .. } => {
+                self.empty_replacement_accepted = true;
+            }
+            VolumeEvent::LostVolumeAbandoned { .. } => self.status = Some(VolumeStatus::Deleted),
             VolumeEvent::Deleted { .. } => self.status = Some(VolumeStatus::Deleted),
         }
     }
 }
 
 impl mire::Snapshot for Volume {
-    const SNAPSHOT_VERSION: i32 = 1;
+    const SNAPSHOT_VERSION: i32 = 2;
     const SNAPSHOT_FREQUENCY: i64 = 100;
 }
 
@@ -288,6 +330,19 @@ pub enum VolumeCommand {
         machine_id: Uuid,
         at: DateTime<Utc>,
     },
+    DeclareLost {
+        host_id: Uuid,
+        host_name: String,
+        snapshot_id: Option<String>,
+        at: DateTime<Utc>,
+    },
+    AcceptEmptyReplacement {
+        actor: Uuid,
+        at: DateTime<Utc>,
+    },
+    AbandonLost {
+        at: DateTime<Utc>,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -316,6 +371,8 @@ pub enum VolumeError {
     SizeChanged,
     #[error("hosted block size must be 1-4096 GiB without an existing host source")]
     InvalidSize,
+    #[error("lost volume cannot be mounted or reused; restore to a new app-owned identity")]
+    Lost,
 }
 
 impl mire::Command for VolumeCommand {
@@ -326,6 +383,20 @@ impl mire::Command for VolumeCommand {
         use VolumeCommand as C;
         use VolumeEvent as E;
         use VolumeStatus as S;
+        if state.lost_host_id.is_some()
+            && matches!(
+                &self,
+                C::PrepareBackend { .. }
+                    | C::ConfirmBackendAttachment { .. }
+                    | C::InvalidateBackendAttachment { .. }
+                    | C::BeginBackendDetachment { .. }
+                    | C::ConfirmBackendDetachment { .. }
+                    | C::ConfirmBackendDeleted { .. }
+                    | C::FinalizeWithoutErasure { .. }
+            )
+        {
+            return Err(VolumeError::Lost);
+        }
         Ok(match self {
             C::Request {
                 organisation_id,
@@ -341,6 +412,9 @@ impl mire::Command for VolumeCommand {
                     || (size_gib.is_some() && source.is_some())
                 {
                     return Err(VolumeError::InvalidSize);
+                }
+                if state.lost_host_id.is_some() {
+                    return Err(VolumeError::Lost);
                 }
                 if let Some(status) = state.status {
                     if matches!(status, S::PendingDeletion | S::Deleting | S::Deleted) {
@@ -377,6 +451,7 @@ impl mire::Command for VolumeCommand {
                 }
             }
             C::ReserveRestore { machine_id, at } => match (state.status, state.machine_id) {
+                _ if state.lost_host_id.is_some() => return Err(VolumeError::Lost),
                 (Some(S::Requested), None) => vec![E::RestoreReserved {
                     machine_id,
                     reserved_at: at,
@@ -385,6 +460,7 @@ impl mire::Command for VolumeCommand {
                 _ => return Err(VolumeError::MachineChanged),
             },
             C::Place { machine_id, at } => match (state.status, state.machine_id) {
+                _ if state.lost_host_id.is_some() => return Err(VolumeError::Lost),
                 (None | Some(S::PendingDeletion | S::Deleting | S::Deleted), _) => {
                     return Err(VolumeError::Deleting);
                 }
@@ -402,6 +478,9 @@ impl mire::Command for VolumeCommand {
                 slot,
                 at,
             } => {
+                if state.lost_host_id.is_some() {
+                    return Err(VolumeError::Lost);
+                }
                 if state.size_gib.is_none() || !(1..=4).contains(&slot) {
                     return Err(VolumeError::BackendNotReady);
                 }
@@ -503,6 +582,7 @@ impl mire::Command for VolumeCommand {
                 path,
                 at,
             } => match (state.status, state.machine_id) {
+                _ if state.lost_host_id.is_some() => return Err(VolumeError::Lost),
                 _ if state.size_gib.is_some() => return Err(VolumeError::BackendNotReady),
                 (None, _) => return Err(VolumeError::NotFound),
                 (Some(S::PendingDeletion | S::Deleting | S::Deleted), _) => {
@@ -525,6 +605,7 @@ impl mire::Command for VolumeCommand {
             },
             C::Detach { at } => match state.status {
                 _ if state.size_gib.is_some() => return Err(VolumeError::BackendNotReady),
+                _ if state.lost_host_id.is_some() => return Err(VolumeError::Lost),
                 None => return Err(VolumeError::NotFound),
                 Some(S::PendingDeletion | S::Deleting | S::Deleted) => {
                     return Err(VolumeError::Deleting);
@@ -533,6 +614,11 @@ impl mire::Command for VolumeCommand {
                 _ => vec![],
             },
             C::Delete { at, purge_after } => match state.status {
+                Some(S::Lost) => vec![E::DeleteRequested {
+                    machine_id: state.machine_id,
+                    requested_at: at,
+                    purge_after: Some(purge_after),
+                }],
                 None => return Err(VolumeError::NotFound),
                 Some(S::Deleting | S::Deleted) => vec![],
                 Some(S::PendingDeletion)
@@ -549,6 +635,7 @@ impl mire::Command for VolumeCommand {
                 }],
             },
             C::Restore { at } => match (state.status, state.purge_after) {
+                _ if state.lost_host_id.is_some() => return Err(VolumeError::Lost),
                 (Some(S::PendingDeletion), Some(deadline)) if at < deadline => {
                     vec![E::Restored {
                         restored_at: at,
@@ -566,7 +653,7 @@ impl mire::Command for VolumeCommand {
                 _ => return Err(VolumeError::Deleting),
             },
             C::Purge { at } => match (state.status, state.purge_after) {
-                (Some(S::PendingDeletion), Some(deadline)) if at >= deadline => {
+                (Some(S::PendingDeletion | S::Lost), Some(deadline)) if at >= deadline => {
                     vec![E::PurgeRequested {
                         requested_at: at,
                         actor: None,
@@ -576,11 +663,13 @@ impl mire::Command for VolumeCommand {
                 _ => return Err(VolumeError::InvalidAcknowledgement),
             },
             C::PurgeNow { actor, reason, at } => match state.status {
-                Some(S::PendingDeletion) => vec![E::PurgeRequested {
-                    requested_at: at,
-                    actor: Some(actor),
-                    reason: Some(reason),
-                }],
+                Some(S::PendingDeletion | S::Lost) if state.purge_after.is_some() => {
+                    vec![E::PurgeRequested {
+                        requested_at: at,
+                        actor: Some(actor),
+                        reason: Some(reason),
+                    }]
+                }
                 _ => return Err(VolumeError::Deleting),
             },
             C::FinalizeWithoutErasure { at } => match state.status {
@@ -615,6 +704,45 @@ impl mire::Command for VolumeCommand {
                     vec![E::Deleted { deleted_at: at }]
                 }
                 _ => return Err(VolumeError::InvalidAcknowledgement),
+            },
+            C::DeclareLost {
+                host_id,
+                host_name,
+                snapshot_id,
+                at,
+            } => {
+                if state.size_gib.is_none() || state.machine_id.is_none() {
+                    return Err(VolumeError::BackendNotReady);
+                }
+                match state.status {
+                    Some(S::Deleted) => vec![],
+                    Some(S::Lost) if state.lost_host_id == Some(host_id) => vec![],
+                    Some(S::Lost) => return Err(VolumeError::Lost),
+                    Some(_) => vec![E::Lost {
+                        host_id,
+                        host_name,
+                        lost_at: at,
+                        snapshot_id,
+                    }],
+                    None => return Err(VolumeError::NotFound),
+                }
+            }
+            C::AcceptEmptyReplacement { actor, at } => match state.status {
+                Some(S::Lost) if !state.empty_replacement_accepted => {
+                    vec![E::EmptyReplacementAccepted {
+                        accepted_at: at,
+                        actor,
+                    }]
+                }
+                Some(S::Lost) => vec![],
+                _ => return Err(VolumeError::Lost),
+            },
+            C::AbandonLost { at } => match state.status {
+                Some(S::Deleting) if state.lost_host_id.is_some() => {
+                    vec![E::LostVolumeAbandoned { abandoned_at: at }]
+                }
+                Some(S::Deleted) => vec![],
+                _ => return Err(VolumeError::Lost),
             },
         })
     }
@@ -947,5 +1075,104 @@ mod tests {
         )
         .unwrap();
         assert_eq!(volume.status, Some(VolumeStatus::Deleted));
+    }
+    #[test]
+    fn declared_host_loss_never_reuses_old_bytes_or_accepts_a_detach_receipt() {
+        let at = DateTime::from_timestamp(1_790_000_000, 0).unwrap();
+        let machine = Uuid::from_u128(1);
+        let host = Uuid::from_u128(2);
+        let actor = Uuid::from_u128(3);
+        let mut volume = Volume {
+            organisation_id: Some(Uuid::from_u128(4)),
+            app_id: Some(Uuid::from_u128(5)),
+            name: "data".into(),
+            path: "/data".into(),
+            size_gib: Some(1),
+            machine_id: Some(machine),
+            slot: Some(1),
+            status: Some(VolumeStatus::Attached),
+            ..Volume::default()
+        };
+        let loss = VolumeCommand::DeclareLost {
+            host_id: host,
+            host_name: "dead-host".into(),
+            snapshot_id: Some("ready-snapshot".into()),
+            at,
+        }
+        .handle(&volume)
+        .unwrap();
+        assert_eq!(loss.len(), 1);
+        volume.apply(&loss[0]);
+        assert_eq!(volume.status, Some(VolumeStatus::Lost));
+        assert_eq!(volume.lost_snapshot_id.as_deref(), Some("ready-snapshot"));
+        assert_eq!(volume.slot, None);
+        assert!(
+            VolumeCommand::DeclareLost {
+                host_id: host,
+                host_name: "dead-host".into(),
+                snapshot_id: None,
+                at,
+            }
+            .handle(&volume)
+            .unwrap()
+            .is_empty()
+        );
+        assert!(
+            VolumeCommand::ConfirmBackendDeleted {
+                machine_id: machine,
+                at
+            }
+            .handle(&volume)
+            .is_err()
+        );
+        assert!(
+            VolumeCommand::PrepareBackend {
+                machine_id: machine,
+                slot: 1,
+                at
+            }
+            .handle(&volume)
+            .is_err()
+        );
+        let acceptance = VolumeCommand::AcceptEmptyReplacement { actor, at }
+            .handle(&volume)
+            .unwrap();
+        volume.apply(&acceptance[0]);
+        assert!(volume.empty_replacement_accepted);
+        assert_eq!(volume.status, Some(VolumeStatus::Lost));
+        assert!(
+            VolumeCommand::AcceptEmptyReplacement { actor, at }
+                .handle(&volume)
+                .unwrap()
+                .is_empty()
+        );
+        for event in (VolumeCommand::Delete {
+            at,
+            purge_after: at + chrono::Duration::days(7),
+        })
+        .handle(&volume)
+        .unwrap()
+        {
+            volume.apply(&event);
+        }
+        assert!(VolumeCommand::Restore { at }.handle(&volume).is_err());
+        volume.apply(
+            &VolumeCommand::Purge {
+                at: at + chrono::Duration::days(7),
+            }
+            .handle(&volume)
+            .unwrap()[0],
+        );
+        assert!(
+            VolumeCommand::ConfirmBackendDeleted {
+                machine_id: machine,
+                at
+            }
+            .handle(&volume)
+            .is_err()
+        );
+        volume.apply(&VolumeCommand::AbandonLost { at }.handle(&volume).unwrap()[0]);
+        assert_eq!(volume.status, Some(VolumeStatus::Deleted));
+        assert_eq!(volume.lost_host_id, Some(host));
     }
 }

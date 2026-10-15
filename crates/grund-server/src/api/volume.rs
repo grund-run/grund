@@ -17,15 +17,16 @@ use chrono::{DateTime, Utc};
 use connectrpc::{ConnectError, RequestContext, Response, ServiceRequest, ServiceResult};
 use grund_domain::app::spec::VolumeSpec;
 use grund_proto::grund::volume::v1::{
-    self as proto, AttachVolumeRequest, AttachVolumeResponse, CreateVolumeRequest,
-    CreateVolumeResponse, DeleteVolumeRequest, DeleteVolumeResponse, DetachVolumeRequest,
-    DetachVolumeResponse, ExportBackupKeyRequest, ExportBackupKeyResponse,
-    GetBackupDestinationRequest, GetBackupDestinationResponse, GetVolumeRequest, GetVolumeResponse,
-    GetVolumeStatusRequest, GetVolumeStatusResponse, ListRecoveryPointsRequest,
-    ListRecoveryPointsResponse, ListVolumesRequest, ListVolumesResponse, PurgeVolumeNowRequest,
-    PurgeVolumeNowResponse, RestoreRecoveryPointRequest, RestoreRecoveryPointResponse,
-    RestoreVolumeRequest, RestoreVolumeResponse, SetBackupDestinationRequest,
-    SetBackupDestinationResponse, VolumeService,
+    self as proto, AcceptEmptyLostVolumeRequest, AcceptEmptyLostVolumeResponse,
+    AttachVolumeRequest, AttachVolumeResponse, CreateVolumeRequest, CreateVolumeResponse,
+    DeleteVolumeRequest, DeleteVolumeResponse, DetachVolumeRequest, DetachVolumeResponse,
+    ExportBackupKeyRequest, ExportBackupKeyResponse, GetBackupDestinationRequest,
+    GetBackupDestinationResponse, GetVolumeRequest, GetVolumeResponse, GetVolumeStatusRequest,
+    GetVolumeStatusResponse, ListRecoveryPointsRequest, ListRecoveryPointsResponse,
+    ListVolumesRequest, ListVolumesResponse, PurgeVolumeNowRequest, PurgeVolumeNowResponse,
+    RestoreRecoveryPointRequest, RestoreRecoveryPointResponse, RestoreVolumeRequest,
+    RestoreVolumeResponse, SetBackupDestinationRequest, SetBackupDestinationResponse,
+    VolumeService,
 };
 use grund_store::{apps, organisations::Membership, volumes::VolumeRow};
 use ring::{digest, hmac};
@@ -137,7 +138,8 @@ fn failed(error: VolumesError) -> ConnectError {
         VolumesError::MachineChanged
         | VolumesError::InvalidMachine
         | VolumesError::WriterPresent
-        | VolumesError::RestoreNotReady => ConnectError::failed_precondition(message),
+        | VolumesError::RestoreNotReady
+        | VolumesError::Lost => ConnectError::failed_precondition(message),
         VolumesError::Internal(cause) => {
             tracing::error!(error = %format!("{cause:#}"), "volume operation failed");
             ConnectError::internal("volume operation failed")
@@ -178,6 +180,10 @@ fn message(row: &VolumeRow) -> proto::Volume {
             .size_gib
             .map(|size| u64::try_from(size).expect("stored volume capacity is non-negative"))
             .unwrap_or_default(),
+        lost_host_name: row.lost_host_name.clone().unwrap_or_default(),
+        lost_at: row.lost_at.map(timestamp).unwrap_or_default(),
+        lost_snapshot_id: row.lost_snapshot_id.clone().unwrap_or_default(),
+        empty_replacement_accepted: row.empty_replacement_accepted,
         ..Default::default()
     }
 }
@@ -440,6 +446,33 @@ impl VolumeService for VolumeApi {
             .await
             .map_err(failed)?;
         Response::ok(RestoreVolumeResponse {
+            volume: MessageField::from(message(&row)),
+            ..Default::default()
+        })
+    }
+    async fn accept_empty_lost_volume(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, AcceptEmptyLostVolumeRequest>,
+    ) -> ServiceResult<AcceptEmptyLostVolumeResponse> {
+        let caller = principal(&ctx)?;
+        let (org, app) = self
+            .app(&caller, request.organisation, request.app, Access::Owner)
+            .await?;
+        let row = self
+            .state
+            .volumes()
+            .accept_empty_lost(
+                caller.account_id,
+                org,
+                app,
+                id(request.volume_id)?,
+                request.expected_version,
+                request.confirm_volume_name,
+            )
+            .await
+            .map_err(failed)?;
+        Response::ok(AcceptEmptyLostVolumeResponse {
             volume: MessageField::from(message(&row)),
             ..Default::default()
         })

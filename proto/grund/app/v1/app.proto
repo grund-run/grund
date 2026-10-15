@@ -277,6 +277,19 @@ message App {
   // Mire stream version, including rollout decisions; pass to Deploy to
   // refuse a plan whose observed app state changed.
   int64 version = 11;
+  // Irreversible hosted volume loss history, owner-scoped with this app.
+  repeated LostVolume lost_volumes = 12;
+}
+
+message LostVolume {
+  string volume_id = 1;
+  string name = 2;
+  string host_name = 3;
+  google.protobuf.Timestamp lost_at = 4;
+  // Empty means no completed off-host snapshot was available at declaration.
+  string snapshot_id = 5;
+  // Owner explicitly chose replacement with empty bytes instead of restoring.
+  bool empty_replacement_accepted = 6;
 }
 
 message RolloutStatus {
