@@ -641,10 +641,10 @@ mod tests {
             .unwrap()
             .parent()
             .unwrap()
-            .join("target")
+            .join("scratch")
             .join(format!("backup-agent-restart-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        fs::create_dir(&root).unwrap();
+        fs::create_dir_all(&root).unwrap();
         let attempt = "11111111-1111-1111-1111-111111111111";
         let interrupted = PrivateRun::new(&root, attempt, "old-password").unwrap();
         std::mem::forget(interrupted);
