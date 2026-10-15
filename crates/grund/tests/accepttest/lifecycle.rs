@@ -167,7 +167,7 @@ async fn owners_see_their_billing_account_in_organisation_settings() -> anyhow::
 }
 
 #[tokio::test]
-async fn settings_does_not_wait_for_billing_and_refreshes_one_account_at_a_time()
+async fn settings_omits_an_uncached_plan_without_waiting_and_shows_it_after_one_refresh()
 -> anyhow::Result<()> {
     let billing = FakeBilling::start_with_account(
         DeletionAnswer::Allow,
@@ -181,7 +181,9 @@ async fn settings_does_not_wait_for_billing_and_refreshes_one_account_at_a_time(
     let path = format!("/{}/settings", account.username);
     tokio::time::timeout(Duration::from_secs(1), when.visiting(&path)).await??;
     then.status(200)?
-        .body_contains("Billing is unavailable right now")?;
+        .body_contains("Managed by")?
+        .body_lacks("<p class=\"row-name\">Plan</p>")?
+        .body_lacks("Billing is unavailable")?;
     billing
         .wait_for("GetAccount", 1, Duration::from_secs(5))
         .await?;
@@ -194,7 +196,9 @@ async fn settings_does_not_wait_for_billing_and_refreshes_one_account_at_a_time(
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         when.visiting(&path).await?;
-        if then.body_contains("Pro").is_ok() {
+        if then.body_contains("<p class=\"row-name\">Plan</p>").is_ok()
+            && then.body_contains("Pro").is_ok()
+        {
             break;
         }
         anyhow::ensure!(Instant::now() < deadline, "billing plan never showed");
@@ -204,7 +208,8 @@ async fn settings_does_not_wait_for_billing_and_refreshes_one_account_at_a_time(
 }
 
 #[tokio::test]
-async fn settings_falls_back_when_billing_account_is_unavailable() -> anyhow::Result<()> {
+async fn settings_omits_an_unavailable_plan_without_misreporting_it_as_free() -> anyhow::Result<()>
+{
     let billing =
         FakeBilling::start_with_account(DeletionAnswer::Allow, AccountAnswer::Unavailable).await?;
     let Some((given, when, then)) = billed_by(&billing).await? else {
@@ -214,13 +219,17 @@ async fn settings_falls_back_when_billing_account_is_unavailable() -> anyhow::Re
     let path = format!("/{}/settings", account.username);
     when.visiting(&path).await?;
     then.status(200)?
-        .body_contains("Billing is unavailable right now")?;
+        .body_lacks("<p class=\"row-name\">Plan</p>")?
+        .body_lacks("Billing is unavailable")?
+        .body_lacks("Nothing is charged.")?;
     billing
         .wait_for("GetAccount", 1, Duration::from_secs(5))
         .await?;
     when.visiting(&path).await?;
     then.status(200)?
-        .body_contains("Billing is unavailable right now")?;
+        .body_lacks("<p class=\"row-name\">Plan</p>")?
+        .body_lacks("Billing is unavailable")?
+        .body_lacks("Nothing is charged.")?;
     Ok(())
 }
 

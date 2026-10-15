@@ -10,9 +10,7 @@ props crate::web::orgs::SettingsPage<'_> { viewer, csrf, owners, billing, billin
     <Row name="Your role" sub={&org.role} tone="ok" status_tone="ok" plain />
   </Rows>
   <Section id="billing" title="Billing"><Rows>
-    {if billing.state == "unavailable" {
-      <Row name="Plan" sub="Billing is unavailable right now" tone="ok" status_tone="ok" plain><:end><Para kind="hint">Try again in a few minutes.</Para></:end></Row>
-    } else {
+    {if billing.state != "unavailable" {
       <Row name="Plan" sub={&billing.plan} tone="ok" status_tone="ok" plain end_active={Some(billing.state == "free" || billing.past_due)}>
         <:end>{if billing.state == "free" { <Para kind="hint">Nothing is charged.</Para> } else if billing.past_due { <FieldError text={if org.owner { "A payment failed. Update the payment details." } else { "A payment failed. An owner needs to update the payment details." }} /> }}</:end>
       </Row>
