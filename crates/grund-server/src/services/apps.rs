@@ -58,6 +58,16 @@ pub enum AppsError {
     NotFound,
     #[error("an app of that name already exists")]
     NameTaken,
+    #[error(
+        "{name} was deleted on {deleted_at} and can be restored until {purge_after}.",
+        deleted_at = .deleted_at.format("%-d %b %Y %H:%M:%S UTC"),
+        purge_after = .purge_after.format("%-d %b %Y %H:%M:%S UTC")
+    )]
+    NameReserved {
+        name: String,
+        deleted_at: DateTime<Utc>,
+        purge_after: DateTime<Utc>,
+    },
     #[error("an organisation has at most {MAX_APPS_PER_ORGANISATION} apps")]
     AppLimit,
     #[error("{0}")]
@@ -92,6 +102,7 @@ impl AppsError {
         match self {
             AppsError::NotFound => "not_found",
             AppsError::NameTaken => "name_taken",
+            AppsError::NameReserved { .. } => "name_reserved_for_restore",
             AppsError::AppLimit => "app_limit",
             AppsError::Spec(_) => "spec_invalid",
             AppsError::ImageUnresolved(_) => "image_unresolved",
@@ -460,6 +471,23 @@ fn allows_public_release(
     mode != crate::config::AppDomains::CustomOnly || !publishes(spec) || has_bound_domain
 }
 
+fn deleted_name_conflict(
+    name: String,
+    deleted_at: DateTime<Utc>,
+    purge_after: DateTime<Utc>,
+    at: DateTime<Utc>,
+) -> AppsError {
+    if at < purge_after {
+        AppsError::NameReserved {
+            name,
+            deleted_at,
+            purge_after,
+        }
+    } else {
+        AppsError::NameTaken
+    }
+}
+
 impl Apps {
     async fn require_domain(
         &self,
@@ -575,6 +603,38 @@ impl Apps {
         })
     }
 
+    async fn name_conflict(
+        &self,
+        organisation_id: Uuid,
+        name: &str,
+    ) -> Result<Option<AppsError>, AppsError> {
+        let row =
+            apps::app_by_name_including_deleted(&self.state.pool, organisation_id, name).await?;
+        Ok(row.map(|row| match (row.deleted_at, row.purge_after) {
+            (Some(deleted_at), Some(purge_after)) => {
+                deleted_name_conflict(row.name, deleted_at, purge_after, Utc::now())
+            }
+            _ => AppsError::NameTaken,
+        }))
+    }
+
+    async fn created_name_conflict(
+        &self,
+        organisation_id: Uuid,
+        name: &str,
+        error: AppsError,
+    ) -> AppsError {
+        if matches!(error, AppsError::NameTaken) {
+            match self.name_conflict(organisation_id, name).await {
+                Ok(Some(conflict)) => conflict,
+                Ok(None) => error,
+                Err(error) => error,
+            }
+        } else {
+            error
+        }
+    }
+
     pub async fn create(
         &self,
         actor: Uuid,
@@ -589,28 +649,36 @@ impl Apps {
         {
             return Err(AppsError::AppLimit);
         }
-        if apps::app_by_name(&self.state.pool, organisation_id, name.as_str())
-            .await?
-            .is_some()
-        {
-            return Err(AppsError::NameTaken);
+        if let Some(conflict) = self.name_conflict(organisation_id, name.as_str()).await? {
+            return Err(conflict);
         }
         let app_id = Uuid::now_v7();
         let mut work = Work::begin(&self.state.events, Uuid::now_v7(), &actor.to_string())
             .await
             .map_err(AppsError::from)?;
-        work.app(
-            app_id,
-            AppCommand::Create {
-                actor,
-                organisation_id,
-                name: name.clone(),
-                settings,
-                at: Utc::now(),
-            },
-        )
-        .await?;
-        work.commit().await?;
+        let result = work
+            .app(
+                app_id,
+                AppCommand::Create {
+                    actor,
+                    organisation_id,
+                    name: name.clone(),
+                    settings,
+                    at: Utc::now(),
+                },
+            )
+            .await;
+        if let Err(error) = result {
+            drop(work);
+            return Err(self
+                .created_name_conflict(organisation_id, name.as_str(), error.into())
+                .await);
+        }
+        if let Err(error) = work.commit().await {
+            return Err(self
+                .created_name_conflict(organisation_id, name.as_str(), error.into())
+                .await);
+        }
         let row = apps::app(&self.state.pool, app_id)
             .await?
             .context("the app just created")?;
@@ -656,11 +724,8 @@ impl Apps {
         {
             return Err(AppsError::AppLimit);
         }
-        if apps::app_by_name(&self.state.pool, organisation_id, name.as_str())
-            .await?
-            .is_some()
-        {
-            return Err(AppsError::NameTaken);
+        if let Some(conflict) = self.name_conflict(organisation_id, name.as_str()).await? {
+            return Err(conflict);
         }
         let inspection = self.inspect(organisation_id, &spec.image).await?;
         if let Some(port) = detect {
@@ -678,18 +743,29 @@ impl Apps {
         }
         let app_id = Uuid::now_v7();
         let mut work = Work::begin(&self.state.events, Uuid::now_v7(), &actor.to_string()).await?;
-        work.app(
-            app_id,
-            AppCommand::Create {
-                actor,
-                organisation_id,
-                name: name.clone(),
-                settings,
-                at: Utc::now(),
-            },
-        )
-        .await?;
-        work.commit().await?;
+        let result = work
+            .app(
+                app_id,
+                AppCommand::Create {
+                    actor,
+                    organisation_id,
+                    name: name.clone(),
+                    settings,
+                    at: Utc::now(),
+                },
+            )
+            .await;
+        if let Err(error) = result {
+            drop(work);
+            return Err(self
+                .created_name_conflict(organisation_id, name.as_str(), error.into())
+                .await);
+        }
+        if let Err(error) = work.commit().await {
+            return Err(self
+                .created_name_conflict(organisation_id, name.as_str(), error.into())
+                .await);
+        }
         for (secret, (_, value)) in secret_names.iter().zip(&launch.secrets) {
             self.set_secret(
                 actor,
@@ -1985,6 +2061,31 @@ impl notmad::Component for AppReconciler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_deleted_name_is_restorable_only_before_its_deadline() {
+        let deleted_at = Utc::now();
+        let deadline = deleted_at + chrono::Duration::days(7);
+        let recoverable = deleted_name_conflict(
+            "shop".into(),
+            deleted_at,
+            deadline,
+            deadline - chrono::Duration::nanoseconds(1),
+        );
+        assert_eq!(recoverable.reason(), "name_reserved_for_restore");
+        assert_eq!(
+            recoverable.to_string(),
+            format!(
+                "shop was deleted on {} and can be restored until {}.",
+                deleted_at.format("%-d %b %Y %H:%M:%S UTC"),
+                deadline.format("%-d %b %Y %H:%M:%S UTC")
+            )
+        );
+        assert!(matches!(
+            deleted_name_conflict("shop".into(), deleted_at, deadline, deadline),
+            AppsError::NameTaken
+        ));
+    }
 
     #[test]
     fn first_volume_release_stops_the_old_writer_before_starting_on_a_capable_machine() {

@@ -337,7 +337,34 @@ async fn an_agent_with_a_token_deploys_from_grund_yaml_reads_status_scales_rolls
         "{}",
         refused.stderr
     );
-    shell.json("apps delete", &["shop", "--yes"]).await?;
+    let deletion = shell.json("apps delete", &["shop", "--yes"]).await?;
+    let deadline = deletion["message"]
+        .as_str()
+        .and_then(|message| message.strip_prefix("Deletion scheduled for shop; restore before "))
+        .and_then(|message| message.strip_suffix('.'))
+        .ok_or_else(|| anyhow::anyhow!("missing deletion deadline: {deletion}"))?;
+    let deadline = chrono::DateTime::parse_from_rfc3339(deadline)?;
+    let expected = format!(
+        "shop was deleted on {} and can be restored until {}.",
+        (deadline - chrono::Duration::days(7)).format("%-d %b %Y %H:%M:%S UTC"),
+        deadline.format("%-d %b %Y %H:%M:%S UTC")
+    );
+    let conflict = shell.run(&["apps", "create", "shop", "--json"]).await?;
+    anyhow::ensure!(
+        conflict.status == 6
+            && conflict.error()?["reason"] == "name_reserved_for_restore"
+            && conflict.error()?["message"] == expected,
+        "CLI JSON name conflict: {} {}",
+        conflict.status,
+        conflict.stderr
+    );
+    let text = shell.run(&["apps", "create", "shop"]).await?;
+    anyhow::ensure!(
+        text.status == 6 && text.stderr.contains(&expected),
+        "CLI text name conflict: {} {}",
+        text.status,
+        text.stderr
+    );
     let gone = shell.run(&["apps", "get", "shop", "--json"]).await?;
     anyhow::ensure!(
         gone.status == 5 && gone.error()?["code"] == "not_found",

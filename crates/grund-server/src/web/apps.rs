@@ -476,7 +476,6 @@ pub async fn apps_page(
         .await
         .map_err(|e| PageError::from(anyhow::anyhow!(e)))?;
     let restorable = if membership.role == "owner" {
-        let now = Utc::now();
         let mut rows: Vec<RestorableApp> = state
             .apps()
             .restorable(membership.organisation_id)
@@ -484,12 +483,19 @@ pub async fn apps_page(
             .map_err(|e| PageError::from(anyhow::anyhow!(e)))?
             .into_iter()
             .filter_map(|row| {
-                row.purge_after.map(|deadline| RestorableApp {
+                let deleted_at = row.deleted_at?;
+                let purge_after = row.purge_after?;
+                if purge_after <= Utc::now() {
+                    return None;
+                }
+                Some(RestorableApp {
+                    status: AppsError::NameReserved {
+                        name: row.name.clone(),
+                        deleted_at,
+                        purge_after,
+                    }
+                    .to_string(),
                     name: row.name,
-                    status: format!(
-                        "Deleted · restorable for {} days",
-                        days_remaining(deadline, now)
-                    ),
                 })
             })
             .collect();
@@ -602,6 +608,7 @@ pub async fn deploy_page(
         &membership,
         form,
         Refusal::default(),
+        None,
     )
     .await
 }
@@ -717,6 +724,7 @@ pub(super) fn refusal(error: &AppsError) -> Refusal {
             "name",
             "An app of that name already exists here. Choose another.",
         ),
+        AppsError::NameReserved { .. } => Refusal::field("name", error.to_string()),
         AppsError::ImageUnresolved(message) | AppsError::ImageUnsupported(message) => {
             Refusal::field("image", format!("{message}."))
         }
@@ -826,6 +834,7 @@ pub struct DeployPage {
     pub new: NewForm,
     pub new_error: String,
     pub errors: std::collections::BTreeMap<&'static str, String>,
+    pub restore_href: Option<String>,
     pub advanced: bool,
     pub secrets_dropped: bool,
     pub exposures: Vec<ExposureChoice>,
@@ -864,6 +873,7 @@ async fn new_view(
     membership: &Membership,
     new: NewForm,
     refused: Refusal,
+    restore_name: Option<String>,
 ) -> PageResult {
     let slug = &membership.slug;
     let choices: Vec<TemplateChoice> = templates::CATALOGUE
@@ -897,6 +907,9 @@ async fn new_view(
         slug: slug.clone(),
         manages: manages(membership),
         mode: if premade { "premade" } else { "custom" },
+        restore_href: restore_name
+            .filter(|_| membership.role == "owner")
+            .map(|name| format!("/{slug}/apps?q={name}#restorable-apps")),
         modes: vec![
             DeployMode {
                 key: "premade",
@@ -1407,6 +1420,7 @@ pub async fn create(
         } else {
             custom_launch(&form, public)
         };
+    let mut restore_name = None;
     let refused = match launch {
         Ok(launch) => {
             let wanted = launch.name.trim().to_ascii_lowercase();
@@ -1429,12 +1443,26 @@ pub async fn create(
                     }
                     Refusal::banner(sentence(&error))
                 }
-                Err(error) => refusal(&error),
+                Err(error) => {
+                    if let AppsError::NameReserved { name, .. } = &error {
+                        restore_name = Some(name.clone());
+                    }
+                    refusal(&error)
+                }
             }
         }
         Err(refused) => refused,
     };
-    new_view(&state, &browser, &session, &membership, form, refused).await
+    new_view(
+        &state,
+        &browser,
+        &session,
+        &membership,
+        form,
+        refused,
+        restore_name,
+    )
+    .await
 }
 
 fn urlencode(text: &str) -> String {

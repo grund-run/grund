@@ -344,6 +344,14 @@ that host directory. Storage uses the host filesystem and its existing
 permissions and encryption; there is no volume size quota. Keep independent
 backups of the machine.
 
+Creating another app with the same name during recovery is refused with
+`name_reserved_for_restore`. The API, dashboard and CLI messages show the
+recorded dates in UTC, for example `15 Oct 2026 19:04:03 UTC`. The API's
+`ErrorReason.deleted_at` and `ErrorReason.purge_after` retain exact timestamps
+as protobuf Timestamps (RFC 3339 in JSON). A live app
+with that name still gives `name_taken`; another organisation can use the same
+name.
+
 An organisation owner or admin can end recovery early for a volume already
 pending deletion, including one on a deleted app, with `grund volumes purge-now
 photos data --reason 'owned synthetic app cleanup' --yes` (or ConnectRPC

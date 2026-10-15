@@ -63,14 +63,34 @@ fn refusal(error: ConnectError, reason: &str) -> ConnectError {
     ))
 }
 
+fn app_refusal(error: ConnectError, cause: &AppsError) -> ConnectError {
+    if let AppsError::NameReserved {
+        deleted_at,
+        purge_after,
+        ..
+    } = cause
+    {
+        return error.with_detail(ErrorDetail::from_message(
+            "grund.app.v1.ErrorReason",
+            &ErrorReason {
+                reason: cause.reason().to_string(),
+                deleted_at: timestamp(*deleted_at),
+                purge_after: timestamp(*purge_after),
+                ..Default::default()
+            },
+        ));
+    }
+    refusal(error, cause.reason())
+}
+
 fn failed(error: AppsError) -> ConnectError {
-    let reason = error.reason();
     let message = error.to_string();
     let base = match &error {
         AppsError::NotFound | AppsError::ReleaseNotFound => ConnectError::not_found(message),
         AppsError::VersionConflict => ConnectError::aborted(message),
         AppsError::ExternalReleaseConflict => ConnectError::already_exists(message),
         AppsError::NameTaken
+        | AppsError::NameReserved { .. }
         | AppsError::AppLimit
         | AppsError::DomainRequired
         | AppsError::ExternalOwnerConflict
@@ -93,7 +113,7 @@ fn failed(error: AppsError) -> ConnectError {
             ConnectError::internal("grund could not finish that")
         }
     };
-    refusal(base, reason)
+    app_refusal(base, &error)
 }
 
 /// The settings a request gives, `None` for each it leaves out.

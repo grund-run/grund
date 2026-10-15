@@ -20,10 +20,11 @@ import "google/protobuf/timestamp.proto";
 // rolls back on its own.
 //
 // Errors carry a stable reason in an ErrorReason detail: spec_invalid (the
-// message says which field), name_taken, app_limit, image_unresolved (the
-// registry did not answer for the image, or has no such tag),
-// image_unsupported (no variant for any architecture grund runs),
-// release_not_found, and halted.
+// message says which field), name_taken (a live app), name_reserved_for_restore
+// (a deleted app within its recovery window; ErrorReason carries the exact
+// deletion time and restore deadline), app_limit, image_unresolved (the registry did
+// not answer for the image, or has no such tag), image_unsupported (no variant
+// for any architecture grund runs), release_not_found, and halted.
 service AppService {
   // Owners and admins. A new app with no release yet; nothing runs until
   // the first Deploy.
@@ -579,4 +580,8 @@ message RestoreAppResponse {}
 // Attached to errors as a detail: the stable reason a client can act on.
 message ErrorReason {
   string reason = 1;
+  // Only for name_reserved_for_restore. Exact UTC deletion time and restore
+  // deadline; unlike the human message these retain subsecond precision.
+  google.protobuf.Timestamp deleted_at = 2;
+  google.protobuf.Timestamp purge_after = 3;
 }

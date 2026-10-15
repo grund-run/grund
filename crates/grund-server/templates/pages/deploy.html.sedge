@@ -1,6 +1,6 @@
 use crate::templates::FormState;
 use crate::templates::compiled::components::{ImageSprite, PageHead, ChoiceField, ChoiceCard, Form, HiddenField, Banner, Grid, Field, StepperField, PairsField, ChipsField, Expanders, Expander, CodeField, ToggleField, Actions, Button, Para, EmptyState, Icon};
-props crate::web::apps::DeployPage { slug, manages, mode, modes, new, new_error, errors, advanced, secrets_dropped, exposures, public_hint, templates, image_keys, signals, memory_steps, cpu_steps, checks, action, csrf };
+props crate::web::apps::DeployPage { slug, manages, mode, modes, new, new_error, errors, restore_href, advanced, secrets_dropped, exposures, public_hint, templates, image_keys, signals, memory_steps, cpu_steps, checks, action, csrf };
 {let back = format!("/{slug}/apps");}
 {let form_state = FormState { csrf, errors, banners: &std::collections::BTreeMap::new() };}
 
@@ -28,6 +28,7 @@ props crate::web::apps::DeployPage { slug, manages, mode, modes, new, new_error,
         </ChoiceField>
         <Grid>
           <Field name="name" label="Name" value={&new.name} form={Some(&form_state)} hint="Lowercase letters, digits and -." required />
+          {if let Some(href) = restore_href { <Button label="Restore" href={href} kind="secondary" /> }}
           <StepperField name="copies" label="Copies" value={if new.copies.is_empty() { "1" } else { &new.copies }} min="1" max="20" error={form_state.error("copies").unwrap_or("")} />
           <ChoiceField name="exposure" label="Exposure" error={form_state.error("exposure").unwrap_or("")} hint={public_hint}>
             {for choice in exposures { <ChoiceCard name="exposure" value={choice.value} title={choice.title} text={&choice.text} icon={choice.icon} tag={choice.tag.unwrap_or("")} disabled={choice.disabled} selected={new.exposure == choice.value || (new.exposure.is_empty() && choice.value == "private")} /> }}
@@ -39,6 +40,7 @@ props crate::web::apps::DeployPage { slug, manages, mode, modes, new, new_error,
         <Banner text={new_error} />
         <Grid>
           <Field name="name" label="Name" value={&new.name} form={Some(&form_state)} hint="Lowercase letters, digits and -." required />
+          {if let Some(href) = restore_href { <Button label="Restore" href={href} kind="secondary" /> }}
           <Field name="image" label="Image" value={&new.image} form={Some(&form_state)} hint="Such as nats:2.10 or ghcr.io/org/app:latest. The tag is resolved now." required />
           <ChoiceField name="exposure" label="Exposure" error={form_state.error("exposure").unwrap_or("")} hint={public_hint}>
             {for choice in exposures { <ChoiceCard name="exposure" value={choice.value} title={choice.title} text={&choice.text} icon={choice.icon} tag={choice.tag.unwrap_or("")} disabled={choice.disabled} selected={new.exposure == choice.value || (new.exposure.is_empty() && choice.value == "private")} /> }}

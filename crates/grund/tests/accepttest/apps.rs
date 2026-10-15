@@ -1,9 +1,11 @@
 use std::time::{Duration, Instant};
 
+use buffa::Message;
+use grund_proto::grund::app::v1::ErrorReason;
 use serde_json::{Value, json};
 
 use crate::accepttest::{
-    fixtures::{FakeRegistry, Then, When, random_hex, testcase_configured},
+    fixtures::{FakeRegistry, Then, When, random_hex, testcase, testcase_configured},
     machines::origin,
 };
 
@@ -724,18 +726,24 @@ async fn a_second_organisation_cannot_see_or_touch_an_app() -> anyhow::Result<()
 }
 
 pub(super) fn reason(error: &Value) -> String {
+    detail(error)
+        .map(|detail| detail.reason)
+        .unwrap_or_default()
+}
+
+fn detail(error: &Value) -> Option<ErrorReason> {
     use base64::Engine;
     error["details"]
-        .as_array()
-        .and_then(|d| d.iter().find(|d| d["type"] == "grund.app.v1.ErrorReason"))
+        .as_array()?
+        .iter()
+        .find(|d| d["type"] == "grund.app.v1.ErrorReason")
         .and_then(|d| d["value"].as_str())
         .and_then(|v| {
             base64::engine::general_purpose::STANDARD_NO_PAD
                 .decode(v.trim_end_matches('='))
                 .ok()
         })
-        .map(|bytes| String::from_utf8_lossy(bytes.get(2..).unwrap_or_default()).to_string())
-        .unwrap_or_default()
+        .and_then(|bytes| ErrorReason::decode_from_slice(&bytes).ok())
 }
 
 pub(super) fn uuid_like() -> String {
@@ -844,6 +852,112 @@ async fn a_copy_on_a_machine_that_stops_answering_is_started_on_another() -> any
             .get("notifications")
             .is_none_or(|v| v.as_array().is_some_and(Vec::is_empty)),
         "disconnected machine leaked to another organisation: {unrelated}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_deleted_app_reserves_its_name_until_restored_without_affecting_another_organisation()
+-> anyhow::Result<()> {
+    let (given, when, then) = testcase().await?;
+    let owner = given.a_signed_in_account().await?;
+    let org = owner.username.as_str();
+    let (other, other_when, other_then) = given.testcase.another_browser();
+    let other_org = other.a_signed_in_account().await?.username;
+    let request = json!({"organisation": org, "name": "recover-me"});
+    call(&when, &then, "CreateApp", request.clone()).await?;
+    then.status(200)?;
+    call(&when, &then, "CreateApp", request.clone()).await?;
+    then.status(400)?.connect_code("failed_precondition")?;
+    let active = then.json()?;
+    let active_detail =
+        detail(&active).ok_or_else(|| anyhow::anyhow!("missing detail: {active}"))?;
+    anyhow::ensure!(
+        active_detail.reason == "name_taken"
+            && active_detail.deleted_at.as_option().is_none()
+            && active_detail.purge_after.as_option().is_none(),
+        "active names retain their reason without recovery dates: {active}"
+    );
+
+    let deleted = call(&when, &then, "DeleteApp", request.clone()).await?;
+    then.status(200)?;
+    let deadline = chrono::DateTime::parse_from_rfc3339(
+        deleted["purgeAfter"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("missing deadline: {deleted}"))?,
+    )?;
+    call(&when, &then, "CreateApp", request.clone()).await?;
+    then.status(400)?.connect_code("failed_precondition")?;
+    let refused = then.json()?;
+    let reserved = detail(&refused).ok_or_else(|| anyhow::anyhow!("missing detail: {refused}"))?;
+    let raw_deleted = reserved
+        .deleted_at
+        .as_option()
+        .ok_or_else(|| anyhow::anyhow!("missing deletion time: {refused}"))?;
+    let raw_deadline = reserved
+        .purge_after
+        .as_option()
+        .ok_or_else(|| anyhow::anyhow!("missing restore deadline: {refused}"))?;
+    let deleted_at = deadline - chrono::Duration::days(7);
+    anyhow::ensure!(
+        reserved.reason == "name_reserved_for_restore"
+            && (raw_deleted.seconds, raw_deleted.nanos)
+                == (
+                    deleted_at.timestamp(),
+                    deleted_at.timestamp_subsec_nanos() as i32
+                )
+            && (raw_deadline.seconds, raw_deadline.nanos)
+                == (
+                    deadline.timestamp(),
+                    deadline.timestamp_subsec_nanos() as i32
+                ),
+        "structured recovery times do not match the recorded RFC3339 deadline: {refused}"
+    );
+    let expected = format!(
+        "recover-me was deleted on {} and can be restored until {}.",
+        deleted_at.format("%-d %b %Y %H:%M:%S UTC"),
+        deadline.format("%-d %b %Y %H:%M:%S UTC")
+    );
+    anyhow::ensure!(
+        refused["message"].as_str() == Some(expected.as_str()),
+        "recovery conflict does not explain the recorded times: {refused}"
+    );
+    when.visiting(&format!("/{org}/apps")).await?;
+    then.status(200)?
+        .body_contains(&expected)?
+        .body_contains("<span>Restore</span>")?;
+    let deploy = format!("/{org}/deploy");
+    when.submitting(
+        &deploy,
+        &deploy,
+        &[
+            ("mode", "premade"),
+            ("template", "nats"),
+            ("name", "recover-me"),
+        ],
+    )
+    .await?;
+    then.status(422)?
+        .body_contains(&expected)?
+        .body_contains(&format!("/{org}/apps?q=recover-me#restorable-apps"))?;
+
+    call(
+        &other_when,
+        &other_then,
+        "CreateApp",
+        json!({"organisation": other_org, "name": "recover-me"}),
+    )
+    .await?;
+    other_then.status(200)?;
+    call(&other_when, &other_then, "CreateApp", request.clone()).await?;
+    other_then.status(404)?.connect_code("not_found")?;
+    call(&when, &then, "RestoreApp", request.clone()).await?;
+    then.status(200)?;
+    call(&when, &then, "CreateApp", request).await?;
+    then.status(400)?.connect_code("failed_precondition")?;
+    anyhow::ensure!(
+        reason(&then.json()?) == "name_taken",
+        "restored names are active conflicts"
     );
     Ok(())
 }
