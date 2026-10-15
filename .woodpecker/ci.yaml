@@ -116,8 +116,7 @@ steps:
       - 'command -v ci-cache >/dev/null || { (curl -fsS --connect-timeout 5 --max-time 60 -o /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.2.0/ci-cache-0.2.0-x86_64-linux-musl 2>/dev/null || { if command -v timeout >/dev/null; then timeout 60 wget -q -T 5 -O /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.2.0/ci-cache-0.2.0-x86_64-linux-musl; else wget -q -T 5 -O /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.2.0/ci-cache-0.2.0-x86_64-linux-musl; fi; } 2>/dev/null) && echo "9a8b7b692aaf73f6499de5bca19f15f7609783db03b65bdca252127fea17d36a  /usr/local/bin/.ci-cache.part" | sha256sum -c - >/dev/null 2>&1 && chmod 0755 /usr/local/bin/.ci-cache.part && mv /usr/local/bin/.ci-cache.part /usr/local/bin/ci-cache; rm -f /usr/local/bin/.ci-cache.part; command -v ci-cache >/dev/null || echo "ci-cache client unavailable, building uncached"; }'  # ci-cache: managed by kjuulh/woodpecker-forest
       - 'if command -v ci-cache >/dev/null; then ci-cache restore lint --preset cargo; fi'  # ci-cache: managed by kjuulh/woodpecker-forest
       - 'if command -v ci-cache >/dev/null; then eval "$$(ci-cache env)"; fi'  # ci-cache: managed by kjuulh/woodpecker-forest
-      # Ratchet first, then the existing agent-5 gateway memcached probe,
-      # then the shared memcached secret or a direct compile.
+      # At most 4 parallel rustc jobs on agent 1 (ratchet); see jobs.sh.
       - . .woodpecker/jobs.sh
       - rustup component add rustfmt clippy
       - cargo fmt --all --check
@@ -194,8 +193,7 @@ steps:
       - echo '680838f19d67151adba227e1570cdd8af12c19cf1735783ed1ba928bc41f363d  .accept-restic.bz2' | sha256sum -c -
       - mkdir -p .accept && bzip2 -dc .accept-restic.bz2 > .accept/restic && chmod 755 .accept/restic && rm .accept-restic.bz2
       - export GRUND_ACCEPT_RESTIC_BIN="$$PWD/.accept/restic"
-      # Ratchet first, then the existing agent-5 gateway memcached probe,
-      # then the shared memcached secret or a direct compile.
+      # At most 4 parallel rustc jobs on agent 1 (ratchet); see jobs.sh.
       - . .woodpecker/jobs.sh
       # Build every test binary first, and keep the path of the accepttest
       # binary: `contract` runs that same file against the release binary.
@@ -264,8 +262,7 @@ steps:
       - 'command -v ci-cache >/dev/null || { (curl -fsS --connect-timeout 5 --max-time 60 -o /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.2.0/ci-cache-0.2.0-x86_64-linux-musl 2>/dev/null || { if command -v timeout >/dev/null; then timeout 60 wget -q -T 5 -O /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.2.0/ci-cache-0.2.0-x86_64-linux-musl; else wget -q -T 5 -O /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.2.0/ci-cache-0.2.0-x86_64-linux-musl; fi; } 2>/dev/null) && echo "9a8b7b692aaf73f6499de5bca19f15f7609783db03b65bdca252127fea17d36a  /usr/local/bin/.ci-cache.part" | sha256sum -c - >/dev/null 2>&1 && chmod 0755 /usr/local/bin/.ci-cache.part && mv /usr/local/bin/.ci-cache.part /usr/local/bin/ci-cache; rm -f /usr/local/bin/.ci-cache.part; command -v ci-cache >/dev/null || echo "ci-cache client unavailable, building uncached"; }'  # ci-cache: managed by kjuulh/woodpecker-forest
       - 'if command -v ci-cache >/dev/null; then ci-cache restore release --preset cargo; fi'  # ci-cache: managed by kjuulh/woodpecker-forest
       - 'if command -v ci-cache >/dev/null; then eval "$$(ci-cache env)"; fi'  # ci-cache: managed by kjuulh/woodpecker-forest
-      # Ratchet first, then the existing agent-5 gateway memcached probe,
-      # then the shared memcached secret or a direct compile.
+      # At most 4 parallel rustc jobs on agent 1 (ratchet); see jobs.sh.
       - . .woodpecker/jobs.sh
       - export GRUND_BUILD_TIME="$$(date -u '+%Y-%m-%d %H:%M UTC')"
       - cargo build --locked --release -p grund -p grund-guest
