@@ -30,6 +30,9 @@ const MARK_GZIP: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/mark.svg.gz")
 pub const INTER_LICENSE: &str = include_str!("../../assets/licenses/inter.txt");
 pub const MONO_LICENSE: &str = include_str!("../../assets/licenses/jetbrains-mono.txt");
 
+/// Product-logo sources, usage conditions and trademark attribution for /licenses.
+pub const LOGO_NOTICES: &str = include_str!("../../assets/logos/NOTICE.txt");
+
 static SCHEMA: LazyLock<String> = LazyLock::new(grund_domain::app::file::schema_text);
 
 static CSS_ASSET: LazyLock<Asset> = LazyLock::new(|| {

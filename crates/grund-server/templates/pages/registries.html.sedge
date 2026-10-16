@@ -1,8 +1,8 @@
-use crate::templates::compiled::components::{OrganisationTabs, Rows, Row, Panel, Form, Field, Button, Banner, PostButton, EmptyState, Grid, Actions};
+use crate::templates::compiled::components::{OrganisationPage, Rows, Row, Panel, Form, Field, Button, Banner, PostButton, EmptyState, Grid, Actions};
 props crate::web::registries::RegistriesPage<'_> { viewer, csrf, credentials, notice, error, form_error, host_error, username_error, password_error, host, username };
 
 {if let Some(org) = &viewer.current {
-  <OrganisationTabs slug={&org.slug} active="registries" />
+  <OrganisationPage viewer={viewer} active="registries">
   <Banner text={error} ok={Some(notice)} />
   <section class="section" aria-labelledby="credentials"><div class="section-head"><h2 class="section-title" id="credentials">Registries with a login<span class="count">{credentials.len()}</span></h2></div>
     {if credentials.is_empty() { <EmptyState text="No registry logins. Public images need none." /> } else {
@@ -26,4 +26,5 @@ props crate::web::registries::RegistriesPage<'_> { viewer, csrf, credentials, no
       </Form>
     </Panel>
   }}
+  </OrganisationPage>
 }}

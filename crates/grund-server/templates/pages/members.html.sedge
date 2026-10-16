@@ -1,9 +1,9 @@
-use crate::templates::compiled::components::{OrganisationTabs, Rows, Row, Panel, Form, Field, Button, Banner, PostButton, ChipsField, SelectForm, EmptyState};
+use crate::templates::compiled::components::{OrganisationPage, Rows, Row, Panel, Form, Field, Button, Banner, PostButton, ChipsField, SelectForm, EmptyState};
 use crate::web::orgs::role_title;
 props crate::web::orgs::MembersPage<'_> { viewer, csrf, members, pending, roles, notice, error, invite_error, email, role };
 
 {if let Some(org) = &viewer.current {
-  <OrganisationTabs slug={&org.slug} active="members" />
+  <OrganisationPage viewer={viewer} active="members">
   <Banner text={error} ok={Some(notice)} />
   <Rows>
     {for member in members {
@@ -36,4 +36,5 @@ props crate::web::orgs::MembersPage<'_> { viewer, csrf, members, pending, roles,
       }}</Rows>
     }}
   </section>
+  </OrganisationPage>
 }}

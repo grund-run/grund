@@ -19,7 +19,7 @@ use crate::{
         volumes::VolumeBackend,
     },
     state::State,
-    web::pages::{NavLink, TypedViewer},
+    web::pages::{NavLink, OrganisationTab, TypedViewer},
 };
 use sqlx::{PgConnection, PgPool};
 
@@ -90,6 +90,10 @@ pub trait Extension: Send + Sync + 'static {
 
     /// Navigation links visible to this viewer.
     fn navigation(&self, _viewer: &TypedViewer) -> Vec<NavLink> {
+        Vec::new()
+    }
+    /// Organisation tabs visible to this viewer, inserted before About.
+    fn organisation_tabs(&self, _viewer: &TypedViewer) -> Vec<OrganisationTab> {
         Vec::new()
     }
     /// Whether this extension provides the organisation billing page.

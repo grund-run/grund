@@ -91,6 +91,14 @@ pub struct NavLink {
     pub section: &'static str,
 }
 
+/// A link in the shared organisation page navigation.
+#[derive(Clone, serde::Serialize)]
+pub struct OrganisationTab {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub href: String,
+}
+
 #[derive(Clone, serde::Serialize)]
 pub struct TypedViewer {
     pub username: String,
@@ -105,6 +113,38 @@ pub struct TypedViewer {
     pub operator: bool,
     pub registered_on: String,
     pub navigation: Vec<NavLink>,
+    pub organisation_tabs: Vec<OrganisationTab>,
+}
+
+pub(crate) fn organisation_tabs(
+    viewer: &TypedViewer,
+    extensions: &[std::sync::Arc<dyn crate::extension::Extension>],
+) -> Vec<OrganisationTab> {
+    let Some(org) = &viewer.current else {
+        return Vec::new();
+    };
+    let mut tabs: Vec<_> = [
+        ("general", "General", ""),
+        ("members", "Members", "/members"),
+        ("tokens", "API tokens", "/tokens"),
+        ("registries", "Registries", "/registries"),
+    ]
+    .into_iter()
+    .map(|(id, label, suffix)| OrganisationTab {
+        id,
+        label,
+        href: format!("/{}/settings{suffix}", org.slug),
+    })
+    .collect();
+    for extension in extensions {
+        tabs.extend(extension.organisation_tabs(viewer));
+    }
+    tabs.push(OrganisationTab {
+        id: "about",
+        label: "About",
+        href: format!("/{}/settings/about", org.slug),
+    });
+    tabs
 }
 
 /// The build and trace identity shown only to an instance operator.
@@ -412,12 +452,14 @@ pub async fn typed_viewer_context(
         operator,
         registered_on: viewer.registered_at.format("%-d %B %Y").to_string(),
         navigation: Vec::new(),
+        organisation_tabs: Vec::new(),
     };
     viewer.navigation = state
         .extensions
         .iter()
         .flat_map(|extension| extension.navigation(&viewer))
         .collect();
+    viewer.organisation_tabs = organisation_tabs(&viewer, &state.extensions);
     Ok(viewer)
 }
 
@@ -1356,7 +1398,7 @@ pub struct StyleGuidePage {
 }
 
 fn style_guide_fixture(csrf: String) -> StyleGuidePage {
-    let viewer = TypedViewer {
+    let mut viewer = TypedViewer {
         username: "example".into(),
         initials: "EX".into(),
         email: String::new(),
@@ -1368,6 +1410,7 @@ fn style_guide_fixture(csrf: String) -> StyleGuidePage {
         unread_notifications: 3,
         registered_on: String::new(),
         navigation: Vec::new(),
+        organisation_tabs: Vec::new(),
         current: Some(TypedOrg {
             slug: "nord-studio".into(),
             role: "owner".into(),
@@ -1401,6 +1444,7 @@ fn style_guide_fixture(csrf: String) -> StyleGuidePage {
         admin_footer: false,
         operator: false,
     };
+    viewer.organisation_tabs = organisation_tabs(&viewer, &[]);
     let apps = [
         (
             "storefront",

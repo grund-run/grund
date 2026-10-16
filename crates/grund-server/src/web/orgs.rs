@@ -1156,10 +1156,34 @@ pub async fn decline_account_invitation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::web::pages::{NavLink, TypedOrg, TypedViewer};
+    use crate::extension::Extension;
+    use crate::web::pages::{OrganisationTab, TypedOrg, TypedViewer, organisation_tabs};
 
-    fn settings_html(owner: bool, billing_enabled: bool, state: &'static str) -> String {
-        let viewer = TypedViewer {
+    struct OwnerTabs(bool);
+
+    impl Extension for OwnerTabs {
+        fn name(&self) -> &'static str {
+            "owner-tabs"
+        }
+
+        fn routes(&self) -> axum::Router<State> {
+            axum::Router::new()
+        }
+
+        fn organisation_tabs(&self, viewer: &TypedViewer) -> Vec<OrganisationTab> {
+            match viewer.current.as_ref() {
+                Some(org) if self.0 && org.owner => vec![OrganisationTab {
+                    id: "billing",
+                    label: "Billing",
+                    href: format!("/{}/settings/billing", org.slug),
+                }],
+                _ => Vec::new(),
+            }
+        }
+    }
+
+    fn viewer(role: &str, extension_enabled: bool) -> TypedViewer {
+        let mut viewer = TypedViewer {
             username: "ada".into(),
             email: "ada@example.test".into(),
             initials: "A".into(),
@@ -1168,10 +1192,10 @@ mod tests {
             orgs: Vec::new(),
             current: Some(TypedOrg {
                 slug: "acme".into(),
-                role: if owner { "owner" } else { "member" }.into(),
+                role: role.into(),
                 kind: "shared".into(),
-                manages: owner,
-                owner,
+                manages: matches!(role, "owner" | "admin"),
+                owner: role == "owner",
                 since: String::new(),
                 current: true,
             }),
@@ -1179,19 +1203,28 @@ mod tests {
             admin_footer: false,
             operator: false,
             registered_on: String::new(),
-            navigation: if billing_enabled {
-                Vec::new()
-            } else {
-                vec![NavLink {
-                    suffix: "/settings/billing".into(),
-                    icon_name: "gear",
-                    label: "Billing",
-                    section: "billing",
-                }]
-            },
+            navigation: Vec::new(),
+            organisation_tabs: Vec::new(),
         };
+        viewer.organisation_tabs = organisation_tabs(
+            &viewer,
+            &[std::sync::Arc::new(OwnerTabs(extension_enabled))],
+        );
+        viewer
+    }
+
+    fn settings_html(owner: bool, billing_enabled: bool, state: &'static str) -> String {
+        let viewer = viewer(if owner { "owner" } else { "member" }, billing_enabled);
+        settings_html_for(&viewer, billing_enabled, state)
+    }
+
+    fn settings_html_for(
+        viewer: &TypedViewer,
+        billing_enabled: bool,
+        state: &'static str,
+    ) -> String {
         crate::templates::compiled::pages::org_settings::render(&SettingsPage {
-            viewer: &viewer,
+            viewer,
             csrf: "csrf",
             owners: vec!["ada".into()],
             billing: BillingPage {
@@ -1229,6 +1262,163 @@ mod tests {
             assert!(html.contains("Owners manage billing."));
             assert!(!html.contains("href=\"/acme/settings/billing\""));
             assert!(!html.contains("Manage billing"));
+        }
+    }
+
+    fn core_pages(viewer: &TypedViewer) -> [(&'static str, String); 5] {
+        use crate::templates::compiled::pages;
+
+        [
+            ("general", settings_html_for(viewer, false, "free")),
+            (
+                "members",
+                pages::members::render(&MembersPage {
+                    viewer,
+                    csrf: "csrf",
+                    members: Vec::new(),
+                    pending: Vec::new(),
+                    roles: &[("member", "Member"), ("admin", "Admin")],
+                    notice: "",
+                    error: "",
+                    invite_error: String::new(),
+                    email: String::new(),
+                    role: "member".into(),
+                }),
+            ),
+            (
+                "tokens",
+                pages::tokens::render(&crate::web::tokens::TokensPage {
+                    viewer,
+                    csrf: "csrf",
+                    tokens: Vec::new(),
+                    lifetimes: vec![(30, "30 days".into())],
+                    minted: None,
+                    scopes: &[("deploy", "Deploy")],
+                    days: 30,
+                    scope: "deploy",
+                    name: String::new(),
+                    notice: "",
+                    error: "",
+                    create_error: String::new(),
+                }),
+            ),
+            (
+                "registries",
+                pages::registries::render(&crate::web::registries::RegistriesPage {
+                    viewer,
+                    csrf: "csrf",
+                    credentials: Vec::new(),
+                    notice: "",
+                    error: "",
+                    form_error: String::new(),
+                    host_error: String::new(),
+                    username_error: String::new(),
+                    password_error: String::new(),
+                    host: String::new(),
+                    username: String::new(),
+                }),
+            ),
+            (
+                "about",
+                pages::about::render(&crate::web::about::AboutPage {
+                    viewer,
+                    revision: "local",
+                    address: "https://example.test",
+                    app_addresses: "example.test".into(),
+                    single: false,
+                }),
+            ),
+        ]
+    }
+
+    #[test]
+    fn every_organisation_page_shares_a_heading_navigation_and_content_with_one_current_link() {
+        for role in ["owner", "admin", "member"] {
+            let viewer = viewer(role, true);
+            for (active, html) in core_pages(&viewer) {
+                let page = html
+                    .split_once("<div class=\"organisation-page\">")
+                    .expect("shared organisation page")
+                    .1;
+                assert_eq!(html.matches("class=\"organisation-page\"").count(), 1);
+                assert_eq!(page.matches("<h1 ").count(), 1);
+                let (head, after_nav) = page
+                    .split_once("<nav class=\"tabs\" aria-label=\"Organisation\">")
+                    .expect("accessible organisation navigation");
+                assert!(head.contains("<h1 "));
+                let (nav, content) = after_nav.split_once("</nav>").expect("navigation end");
+                let content = content
+                    .split_once("<div class=\"organisation-content\">")
+                    .expect("shared content after navigation")
+                    .1;
+                assert!(!content.trim_start().starts_with("</div>"));
+                assert!(!content.contains("<h1 "));
+                assert!(!content.contains("<nav "));
+                assert_eq!(nav.matches("aria-current=\"page\"").count(), 1);
+                assert_eq!(nav.matches("class=\"tab is-active\"").count(), 1);
+                let mut last_link = 0;
+                for tab in &viewer.organisation_tabs {
+                    let link = format!(
+                        "<a class=\"tab{}\" href=\"{}\"{}>",
+                        if tab.id == active { " is-active" } else { "" },
+                        tab.href,
+                        if tab.id == active {
+                            " aria-current=\"page\""
+                        } else {
+                            ""
+                        },
+                    );
+                    let position = nav.find(&link).expect("viewer tab preserved");
+                    assert!(position >= last_link);
+                    last_link = position + link.len();
+                }
+                assert_eq!(
+                    nav.matches("<a ").count(),
+                    viewer.organisation_tabs.len(),
+                    "{role} on {active}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn extension_tab_visibility_is_resolved_at_the_source_before_any_page_renders() {
+        for role in ["owner", "admin", "member"] {
+            for enabled in [false, true] {
+                let mut viewer = viewer(role, enabled);
+                let ids: Vec<_> = viewer.organisation_tabs.iter().map(|tab| tab.id).collect();
+                let expected = if role == "owner" && enabled {
+                    vec![
+                        "general",
+                        "members",
+                        "tokens",
+                        "registries",
+                        "billing",
+                        "about",
+                    ]
+                } else {
+                    vec!["general", "members", "tokens", "registries", "about"]
+                };
+                assert_eq!(ids, expected);
+                for (_, html) in core_pages(&viewer) {
+                    let nav = html
+                        .split_once("<nav class=\"tabs\" aria-label=\"Organisation\">")
+                        .unwrap()
+                        .1
+                        .split_once("</nav>")
+                        .unwrap()
+                        .0;
+                    assert_eq!(
+                        nav.contains("href=\"/acme/settings/billing\""),
+                        role == "owner" && enabled,
+                    );
+                }
+                viewer.current = None;
+                assert!(
+                    organisation_tabs(&viewer, &[std::sync::Arc::new(OwnerTabs(enabled))])
+                        .is_empty()
+                );
+            }
         }
     }
 }

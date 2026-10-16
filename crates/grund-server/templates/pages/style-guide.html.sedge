@@ -1,6 +1,6 @@
 use crate::templates::compiled::layouts::App;
 use crate::templates::compiled::components::{Contents, Specimen, Demos, Column, Labelled, Swatches, Borders, TypeScale, SpaceScale, Radii, IconGrid, Icon, ImageIcon, ImageSprite, Button, ButtonAdvanced, CopyButton, ShortId, RelativeTime, RowPill, Mark, Tag, Para, LinkMore, External, IconLink, PageHead, Section, Panel, Tabs, Status, StatusLine, Pill, IconFact, Callout, Stats, EmptyState, AddCard, Code, DnsRecords, Rows, Row, Items, AppRow, AppMenu, MachineRow, ListTools, Links, Link, Tiles, Tile, Timeline, Event, Menu, MenuItem, Banner, PostButton, Search, SelectForm, Form, Field, Grid, Actions, ToggleField, PairsField, CodeField, ChipsField, ChoiceLinks, Facts, Fact, Endpoint, ChoiceField, ChoiceCard, StepperField, Group, RangeField, Expanders, Expander, Nav, NavItem, TopbarAction};
-use crate::templates::compiled::components::{InvitationRows, InboxColumn, NotificationRows, NotificationBell};
+use crate::templates::compiled::components::{InvitationRows, InboxColumn, NotificationRows, NotificationBell, OrganisationPage};
 props crate::web::pages::StyleGuidePage { viewer, csrf, swatches, sprite_icons, gallery, icons, apps, machines };
 
 <App title="Style guide" viewer={viewer} csrf={csrf} title_org={Some(false)}>
@@ -23,7 +23,7 @@ props crate::web::pages::StyleGuidePage { viewer, csrf, swatches, sprite_icons, 
   <Section id="sg-icons" title="Icons">
     <Specimen title="Icon" code={r#"<Icon name="server" class="icon-lg tone-ok" />"#} note="24-unit stroke icons from the sprite in components/icons.html.sedge, in currentColor. icon-sm is 18 px, the default 22 px, icon-lg 36 px; tone-* colours them by what they stand for."><IconGrid names={sprite_icons.as_slice()} /></Specimen>
     <Specimen title="Tones" code={r#"<Icon name="server" class="icon-lg tone-blue" />"#}><Demos>{for (label, class) in [("tone-ok", "icon-lg tone-ok"), ("tone-blue", "icon-lg tone-blue"), ("tone-orange", "icon-lg tone-orange"), ("tone-violet", "icon-lg tone-violet"), ("tone-muted", "icon-lg tone-muted")] { <Labelled label={label}><Icon name="server" class={class} /></Labelled> }}</Demos></Specimen>
-    <Specimen title="Image icons" code={r#"<ImageIcon key="nginx" size="" />"#} note="Well-known images get their own, any other Docker Hub image the whale, an image from another registry the neutral box. The page declares the icons it shows with ImageSprite."><Demos>{for key in gallery.iter() { <Labelled label={key}><ImageIcon key={key} /></Labelled> }}<Labelled label="docker"><ImageIcon key="docker" /></Labelled><Labelled label="image"><ImageIcon key="image" /></Labelled></Demos></Specimen>
+    <Specimen title="Image icons" code={r#"<ImageIcon key="nginx" size="" />"#} note="Available upstream logos retain their native colours. Each uses the same fixed box; other images use the neutral fallback. The page declares the icons it shows with ImageSprite."><Demos>{for key in gallery.iter() { <Labelled label={key}><ImageIcon key={key} /></Labelled> }}<Labelled label="docker"><ImageIcon key="docker" /></Labelled><Labelled label="image"><ImageIcon key="image" /></Labelled></Demos></Specimen>
     <Specimen title="Marks" code={r#"<Mark name="nord-studio" size="" /><Mark name="ada" size="lg" />"#} note="The letter for an organisation (in the switcher) or a person (in rows)."><Demos><Mark name="nord-studio" /><Mark name="ada" size="lg" /></Demos></Specimen>
   </Section>
 
@@ -51,6 +51,15 @@ props crate::web::pages::StyleGuidePage { viewer, csrf, swatches, sprite_icons, 
       <Tabs label="storefront" tabs={&[("overview", "#sg-heads", "Overview", "home"), ("deployments", "#sg-heads", "Deployments", "layers"), ("logs", "#sg-heads", "Logs", "file"), ("metrics", "#sg-heads", "Metrics", "bars"), ("settings", "#sg-heads", "Settings", "gear")]} active="overview" />
     </Specimen>
     <Specimen title="Section" code={r#"<Section id="versions" title="Versions" count={Some(3)} more={Some((url, "View all"))}>The section's content.</Section>"#} note="A titled part of a page. count is muted after the title; more is one onward link; first drops the gap under the page head."><Section id="sg-demo-section" title="Versions" count={Some(3)} more={Some(("#sg-heads", "View all"))} first={Some(true)}><p>The section's content.</p></Section></Specimen>
+    <Specimen title="Organisation page" code={r#"<OrganisationPage viewer={viewer} active="general"><Rows><Row name="Name" sub={org.slug.as_str()} plain /></Rows><Section id="access" title="Access"><Para kind="hint">Only owners can rename an organisation.</Para><Rows><Row name="Your role" sub="Owner" plain /></Rows></Section></OrganisationPage>"#} note="One frame owns the Organisation head, core and extension tabs, and content. Header to tabs and tabs to content use --space-8; content sections use --space-14. A section heading to its intro uses --space-3, consecutive intro paragraphs --space-2, and the intro to cards or rows --space-6.">
+      <OrganisationPage viewer={viewer} active="general">
+        <Rows><Row name="Name" sub="nord-studio" plain /></Rows>
+        <Section id="sg-organisation-access" title="Access">
+          <Para kind="hint">Only owners can rename an organisation.</Para>
+          <Rows><Row name="Your role" sub="Owner" plain /></Rows>
+        </Section>
+      </OrganisationPage>
+    </Specimen>
     <Specimen title="Tabs" code={r#"<Tabs label="Organisation" tabs={&[("general", url, "General", ""), ("members", url, "Members", "")]} active="members" counts={&[]} filter={false} />"#} note="Split one sidebar section into pages, so the sidebar keeps one item per area."><Tabs label="Example" tabs={&[("general", "#sg-heads", "General", ""), ("members", "#sg-heads", "Members", ""), ("billing", "#sg-heads", "Billing", "")]} active="members" /></Specimen>
     <Specimen title="Tabs with a count and a search" code={r#"<Tabs label="Machines" tabs={tabs} active={tab} counts={&[("disconnected", 1)]} filter={true}><Search action={url} label="Search machines" /></Tabs>"#} note="A list split by tabs that are links (?tab=), a count in a small box after a tab, and the list's own search at the end of the line, a GET form (?q=). filter: the script switches the tabs and filters as you type, in place. On a phone the search goes under the tabs."><Tabs label="Machines" tabs={&[("", "#sg-heads", "All machines", ""), ("disconnected", "#sg-heads", "Disconnected", "")]} counts={&[("disconnected", 1)]}><Search action="#sg-heads" label="Search machines" id="sg-machine-search" /></Tabs></Specimen>
   </Section>
@@ -59,6 +68,9 @@ props crate::web::pages::StyleGuidePage { viewer, csrf, swatches, sprite_icons, 
     <Specimen title="Status" code={r#"<Status text="Serving" tone="ok" /><Status text="Offline" tone="muted" /><StatusLine text="All copies are ready." tone="ok" id="app-status" />"#} note="A toned check and a word for how a thing is. Colour means state: ok serving, blue in progress, orange attention, muted off."><Demos><Status text="Serving" tone="ok" /><Status text="Releasing" tone="blue" /><Status text="Failed" tone="orange" /><Status text="Running" tone="violet" /><Status text="Rejected" tone="danger" /><Status text="Offline" tone="muted" /></Demos><StatusLine text="All copies are ready." tone="ok" /></Specimen>
     <Specimen title="Pills" code={r#"<Pill text="Live" tone="ok" plain={false} />"#} note="Larger than a tag: a thing's state beside its name, as a dot of its tone (ok live, blue rolling out, orange degraded, danger failed, muted stopped)."><Demos><Pill text="Live" tone="ok" /><Pill text="Rolling out" tone="blue" /><Pill text="Degraded" tone="orange" /><Pill text="Failed" tone="danger" /><Pill text="Stopped" tone="muted" /></Demos></Specimen>
     <Specimen title="Plain pills" code={r#"<Pill text="Connected" tone="ok" plain={true} />"#} note="The dot and the word alone, small: how a thing in a list is, under its name."><Demos><Pill text="Connected" tone="ok" plain /><Pill text="Joining" tone="blue" plain /><Pill text="Disconnected" tone="orange" plain /><Pill text="Out of service" tone="muted" plain /></Demos></Specimen>
+    <Specimen title="Multiword pill in a narrow row" code={r#"<Column><Rows><Row name="Production registry" sub="registry.example.com" icon_name="key"><:status><RowPill text="Not set up" tone="muted" /></:status></Row></Rows></Column>"#} note="The pill keeps its text and rounded border on one line; the row moves its status below the name on phones.">
+      <Column><Rows><Row name="Production registry" sub="registry.example.com" icon_name="key" tone="muted"><:status><RowPill text="Not set up" tone="muted" /></:status></Row></Rows></Column>
+    </Specimen>
     <Specimen title="Facts with an icon" code={r#"<IconFact icon_name="cpu" text="16 vCPU" />"#} note="What a thing has, small, its icon before it, on one line; side by side in a row's right column."><Demos><IconFact icon_name="cpu" text="16 vCPU" /><IconFact icon_name="memory" text="64 GB RAM" /><IconFact icon_name="disk" text="1.2 TB" /></Demos></Specimen>
     <Specimen title="Tags" code={r#"<Tag text="You" />"#} note="Tiny, rounded and muted: You, Runs VMs, Needs storage."><Demos><Tag text="Needs storage" /><Tag text="You" /></Demos></Specimen>
   </Section>
@@ -153,9 +165,10 @@ props crate::web::pages::StyleGuidePage { viewer, csrf, swatches, sprite_icons, 
         <ChoiceCard name="sg-exposure" value="public" title="Public HTTP" text="Via a example.run address" icon="globe" />
       </ChoiceField>
       <ChoiceField name="sg-template" label="App (large, with a disabled one and an error)" error="Choose one of the apps." large>
-        <ChoiceCard name="sg-template" value="nats" title="NATS" text="A messaging server for your apps." image="nats" />
+        <ChoiceCard name="sg-template" value="nats" title="NATS" text="A messaging server for applications that publish and receive messages." image="nats" />
         <ChoiceCard name="sg-template" value="postgres" title="PostgreSQL" text="A relational database." image="postgres" disabled tag="Needs storage" />
       </ChoiceField>
+      <Para kind="hint">Template logos keep a 2.75rem box aligned with the title, including when the description wraps.</Para>
       <ChoiceField name="sg-states" label="States (hover, focus)"><ChoiceCard name="sg-states" value="a" title="Hover" text="state: hover" icon="lock" state="hover" /><ChoiceCard name="sg-states" value="b" title="Focus" text="state: focus" icon="globe" state="focus" /></ChoiceField>
     </Specimen>
     <Specimen title="Stepper" code={r#"<StepperField name="copies" label="Copies" value="1" min="1" max="20" hint="" error="" />"#} note="A whole number with − and +. The buttons show only with the script; without it the number is typed, with the browser's own arrows."><Column><StepperField name="sg-copies-2" label="Copies" value="1" min="1" max="20" error="Copies is a whole number from 1 to 20." /></Column></Specimen>

@@ -20,10 +20,10 @@ component RowPill(text: &str, tone: &str) {
 <span class="row-status"><Pill text={text} tone={tone} /></span>
 }
 component ImageIcon(key: &str, size: &str) {
-{if *key == "image" {
-  <span class="image-icon{if !size.is_empty() { " image-icon-" } else { "" }}{size} image-icon-neutral" aria-hidden="true"><Icon name="box" /></span>
+{if let Some(mark) = crate::templates::image_logo_mark(key) {
+  <span class="image-icon{if !size.is_empty() { " image-icon-" } else { "" }}{size}" aria-hidden="true"><svg width="100%" height="100%"><use href="#img-{key}"/></svg><sup class="image-trademark">{mark}</sup></span>
 } else {
-  <svg class="image-icon{if !size.is_empty() { " image-icon-" } else { "" }}{size}" viewBox="0 0 32 32" aria-hidden="true"><use href="#img-{key}"/></svg>
+  <span class="image-icon{if !size.is_empty() { " image-icon-" } else { "" }}{size} image-icon-neutral" aria-hidden="true"><Icon name="box" /></span>
 }}
 }
 component Status(text: &str, tone: &str) {
@@ -218,14 +218,17 @@ component Expander(title: &str, summary: &str, icon_name: &str, tone: &str, stat
   <div class="expander-body">{children}</div>
 </details>
 }
-component OrganisationTabs(slug: &str, active: &str, billing: bool) {
-<PageHead title="Organisation" />
+component OrganisationTabs(tabs: &[crate::web::pages::OrganisationTab], active: &str) {
 <nav class="tabs" aria-label="Organisation">
-  <a class={if *active == "general" { "tab is-active" } else { "tab" }} href="/{slug}/settings" aria-current={if *active == "general" { Some("page") } else { None }}>General</a>
-  <a class={if *active == "members" { "tab is-active" } else { "tab" }} href="/{slug}/settings/members" aria-current={if *active == "members" { Some("page") } else { None }}>Members</a>
-  <a class={if *active == "tokens" { "tab is-active" } else { "tab" }} href="/{slug}/settings/tokens" aria-current={if *active == "tokens" { Some("page") } else { None }}>API tokens</a>
-  <a class={if *active == "registries" { "tab is-active" } else { "tab" }} href="/{slug}/settings/registries" aria-current={if *active == "registries" { Some("page") } else { None }}>Registries</a>
-  {if *billing { <a class={if *active == "billing" { "tab is-active" } else { "tab" }} href="/{slug}/settings/billing" aria-current={if *active == "billing" { Some("page") } else { None }}>Billing</a> }}
-  <a class={if *active == "about" { "tab is-active" } else { "tab" }} href="/{slug}/settings/about" aria-current={if *active == "about" { Some("page") } else { None }}>About</a>
+  {for tab in tabs.iter() {
+    <a class={if *active == tab.id { "tab is-active" } else { "tab" }} href={&tab.href} aria-current={if *active == tab.id { Some("page") } else { None }}>{tab.label}</a>
+  }}
 </nav>
+}
+component OrganisationPage(viewer: &crate::web::pages::TypedViewer, active: &str, children: Html) {
+<div class="organisation-page">
+  <PageHead title="Organisation" />
+  <OrganisationTabs tabs={&viewer.organisation_tabs} active={active} />
+  <div class="organisation-content">{children}</div>
+</div>
 }

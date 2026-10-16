@@ -1,0 +1,12 @@
+key	brand	source_url	policy_url	mark	decision
+clickhouse	ClickHouse	https://clickhouse.design/images/brand/logos/logomark-white.svg	https://clickhouse.design/brand/logo-usage	™	allow
+docker	Docker	https://www.docker.com/static/Docker-Logos-1.zip	https://www.docker.com/legal/trademark-guidelines/	™	neutral
+mongo	MongoDB	https://raw.githubusercontent.com/mongodb/leafygreen-ui/be0774c73ce70d359d112f3be7790c9ed0dce4a6/packages/logo/src/Logos/MongoDBLogoMark.tsx	https://www.mongodb.com/legal/trademark-usage-guidelines	®	allow
+nats	NATS	https://raw.githubusercontent.com/nats-io/nats-site/f105cdf02a7763545bcb57e43032e25e1e955d0a/static/img/nats-icon-color.svg	https://www.synadia.com/about/brand,https://www.linuxfoundation.org/legal/trademark-usage	™	neutral
+nginx	NGINX	https://raw.githubusercontent.com/nginxinc/nginx-hugo-theme/de6f67d98ff132bf7da3ee53e7b7646c9852e1c8/static/images/icons/NGINX-Open-Source-product-icon.svg	https://www.f5.com/company/policies/trademarks	™	neutral
+node	Node.js	https://nodejs.org/static/logos/nodejsHex.svg	https://trademark-policy.openjsf.org/	™	neutral
+postgres	PostgreSQL	https://wiki.postgresql.org/images/a/a4/PostgreSQL_logo.3colors.svg	https://www.postgresql.org/about/policies/trademarks/	™	neutral
+prometheus	Prometheus	https://raw.githubusercontent.com/prometheus/prometheus/c052a79dc7fd0f2df2219ffe336f510b0d149b72/documentation/images/prometheus-logo.svg	https://www.linuxfoundation.org/legal/trademarks,https://www.linuxfoundation.org/legal/trademark-usage	™	neutral
+python	Python	https://s3.dualstack.us-east-2.amazonaws.com/pythondotorg-assets/media/files/python-logo-only.svg	https://www.python.org/psf/trademarks/	™	allow
+rabbitmq	RabbitMQ	https://www.rabbitmq.com/assets/files/rabbitmq-logo-e91cacd38fcef5219149bc5cfa10b384.svg	https://www.rabbitmq.com/trademark-guidelines	™	neutral
+redis	Redis	https://redis.io/	https://redis.io/legal/trademark-policy/	™	neutral

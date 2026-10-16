@@ -8,6 +8,26 @@ pub mod compiled {
     include!(concat!(env!("OUT_DIR"), "/sedge.rs"));
 }
 
+include!(concat!(env!("OUT_DIR"), "/image_logos.rs"));
+
+pub(crate) fn image_logo_mark(key: &str) -> Option<&'static str> {
+    IMAGE_LOGOS
+        .iter()
+        .find_map(|(name, mark, _)| (*name == key).then_some(*mark))
+}
+
+pub(crate) struct ImageLogoSymbols<'a>(pub &'a [&'a str]);
+
+impl sedge_rt::Render for ImageLogoSymbols<'_> {
+    fn render(&self, out: &mut String) {
+        for (key, _, symbol) in IMAGE_LOGOS {
+            if self.0.contains(key) {
+                out.push_str(symbol);
+            }
+        }
+    }
+}
+
 pub(crate) fn compiled_css_href() -> &'static str {
     static URL: LazyLock<String> = LazyLock::new(crate::web::assets::css_href);
     &URL

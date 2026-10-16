@@ -1,8 +1,8 @@
-use crate::templates::compiled::components::{OrganisationTabs, Rows, Row, Panel, Form, Field, Button, Banner, PostButton, Code, EmptyState};
+use crate::templates::compiled::components::{OrganisationPage, Rows, Row, Panel, Form, Field, Button, Banner, PostButton, Code, EmptyState};
 props crate::web::tokens::TokensPage<'_> { viewer, csrf, tokens, lifetimes, minted, scopes, days, scope, name, notice, error, create_error };
 
 {if let Some(org) = &viewer.current {
-  <OrganisationTabs slug={&org.slug} active="tokens" />
+  <OrganisationPage viewer={viewer} active="tokens">
   <Banner text={error} ok={Some(notice)} />
   {if let Some(minted) = minted {
     <section class="section section-stack" aria-labelledby="new-token"><div class="section-head"><h2 class="section-title" id="new-token">Your new token: {&minted.name}</h2></div>
@@ -37,4 +37,5 @@ props crate::web::tokens::TokensPage<'_> { viewer, csrf, tokens, lifetimes, mint
       <Button label="Make a token" kind="primary" />
     </Form>
   </Panel>
+  </OrganisationPage>
 }}

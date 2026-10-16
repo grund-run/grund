@@ -51,8 +51,8 @@ props crate::web::apps::DeployPage { slug, manages, mode, modes, new, new_error,
           </Grid>
         </Grid>
         <Expanders><Expander title="Advanced options" summary="Storage, environment, secrets, ready check, resources and command." icon_name="gear" open={*advanced}>
-          <PairsField name="env" label="Environment variables" pairs_owned={&new.env} blank={2} error={form_state.error("env").unwrap_or("")} hint="Shown in the clear." key_label="Name" value_label="Value" />
-          <PairsField name="secrets" label="Secrets" blank={2} secret error={form_state.error("secrets").unwrap_or("")} hint={if *secrets_dropped { "Enter them again: a refused form never shows a secret. Never shown again." } else { "Never shown again." }} key_label="Name" value_label="Value" />
+          <PairsField name="env" label="Environment variables" pairs_owned={&new.env} blank={1} error={form_state.error("env").unwrap_or("")} hint="Shown in the clear." key_label="Name" value_label="Value" />
+          <PairsField name="secrets" label="Secrets" blank={1} secret error={form_state.error("secrets").unwrap_or("")} hint={if *secrets_dropped { "Enter them again: a refused form never shows a secret. Never shown again." } else { "Never shown again." }} key_label="Name" value_label="Value" />
           <Grid>
             <ChipsField name="check" label="Ready check" options={checks} selected={&new.check} />
             <Field name="check_path" label="Check path" value={&new.check_path} error={form_state.error("check").unwrap_or("")} hint="For an HTTP check. Empty: /." mono />

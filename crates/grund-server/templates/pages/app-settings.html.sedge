@@ -116,7 +116,7 @@ props crate::web::apps::AppSettingsPage<'_> { app, items, edit, next, manages, o
       },
       SettingsEdit::Env { .. } => {
         <SettingsForm id="variables" title="Environment variables" action="{here}/release" cancel={&here} part="env" note={&release_note} autocomplete={Some("off")} form={&form} manages={*manages}>
-          <PairsField name="env" label="Environment variables" pairs={&options.env} blank={2} error={form.error("env").unwrap_or("")} hint="Shown in the clear." key_label="Name" value_label="Value" />
+          <PairsField name="env" label="Environment variables" pairs={&options.env} blank={1} error={form.error("env").unwrap_or("")} hint="Shown in the clear." key_label="Name" value_label="Value" />
         </SettingsForm>
       },
       SettingsEdit::Secrets { rows, variable } => {

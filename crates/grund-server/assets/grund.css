@@ -530,6 +530,14 @@ code,
   margin-bottom: var(--space-3);
 }
 
+.section-head ~ * + * {
+  margin-top: var(--space-6);
+}
+
+.section-head ~ p + p {
+  margin-top: var(--space-2);
+}
+
 .section-title {
   font-size: var(--text-3xl);
   letter-spacing: -0.03em;
@@ -684,6 +692,7 @@ a.nav-item:hover,
   font-size: var(--text-2xl);
   font-weight: 500;
   color: var(--text);
+  overflow-wrap: anywhere;
 }
 
 .row-sub {
@@ -697,6 +706,7 @@ a.nav-item:hover,
 .row-status {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-3);
   color: var(--text-2);
   font-size: var(--text-lg);
@@ -736,6 +746,15 @@ a.nav-item:hover,
   color: var(--muted);
 }
 
+.pill,
+.tag,
+.tab-count,
+.notification-count {
+  flex-shrink: 0;
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+
 .tag {
   display: inline-block;
   padding: 0.125rem var(--space-2);
@@ -748,8 +767,6 @@ a.nav-item:hover,
 }
 
 .section-stack {
-  display: grid;
-  gap: 0.875rem;
   margin-bottom: var(--space-10);
 }
 
@@ -1402,9 +1419,20 @@ a.item-name:hover {
 }
 
 .image-icon {
+  position: relative;
+  display: block;
   width: 2.75rem;
   height: 2.75rem;
   flex: none;
+}
+
+.image-trademark {
+  position: absolute;
+  top: 0;
+  right: 0;
+  font-size: var(--text-xs);
+  line-height: 1;
+  color: var(--muted);
 }
 
 .image-icon-lg {
@@ -1417,7 +1445,7 @@ a.item-name:hover {
   place-items: center;
   border-radius: var(--radius-sm);
   background: var(--active);
-  color: var(--accent);
+  color: var(--text-2);
 }
 
 .address {
@@ -1733,6 +1761,17 @@ legend.field-label {
   border-radius: var(--radius);
 }
 
+.choice:has(> .image-icon),
+.choice-main:has(> .image-icon) {
+  align-items: flex-start;
+}
+
+.choice > .image-icon,
+.choice-main > .image-icon {
+  width: 2.75rem;
+  height: 2.75rem;
+}
+
 .choice.is-chosen,
 .choice:has(.choice-input:checked) {
   border-color: var(--accent);
@@ -1776,6 +1815,7 @@ legend.field-label {
 .choice-title {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-2);
   font-weight: 500;
 }
@@ -2185,6 +2225,7 @@ legend.field-label {
 .expander-title {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-3);
   font-weight: 500;
 }
@@ -2245,7 +2286,6 @@ legend.field-label {
   font-weight: 500;
   letter-spacing: 0;
   line-height: 1.4;
-  white-space: nowrap;
 }
 
 .pill-plain {
@@ -2515,6 +2555,26 @@ a.endpoint-text:hover {
 
 .choices > .panel {
   margin-top: 0;
+}
+
+.organisation-page,
+.organisation-content {
+  display: grid;
+  min-width: 0;
+}
+
+.organisation-page {
+  gap: var(--space-8);
+}
+
+.organisation-content {
+  gap: var(--space-14);
+}
+
+.organisation-page > .page-head,
+.organisation-page > .tabs,
+.organisation-page > .organisation-content > * {
+  margin-block: 0;
 }
 
 /* ------------------------------------------------------------ style guide

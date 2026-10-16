@@ -1300,9 +1300,6 @@ async fn the_apps_list_shows_each_image_with_its_icon_and_where_to_reach_it_and_
         .body_contains("db.grund.internal:80")?
         .body_contains("data-copy=\"db.grund.internal:80\"")?
         .body_contains("postgres:16</p>")?
-        .body_contains("href=\"#img-postgres\"")?
-        .body_contains("id=\"img-postgres\"")?
-        .body_lacks("id=\"img-redis\"")?
         .body_contains(&format!("href=\"/{org}/apps/shop/deployments\""))?
         .body_contains(&format!("href=\"/{org}/apps/shop/settings?edit=delete\""))?
         .body_contains(&format!("href=\"/{org}/apps/shop/settings?edit=image\""))?
@@ -1362,10 +1359,15 @@ async fn the_deploy_page_finds_the_port_an_image_declares_and_its_copy_gets_read
     registry.publish_exposing("acme/api", "2", &["9090/tcp", "8080/tcp", "53/udp"]);
     let deploy = format!("/{org}/deploy");
     when.visiting(&deploy).await?;
-    then.status(200)?
-        .carries_the_security_headers()?
-        .body_contains("Custom deployment")?
-        .body_contains("Advanced options")?;
+    then.status(200)?.carries_the_security_headers()?;
+    let initial = then.body()?;
+    for field in ["env", "secrets"] {
+        anyhow::ensure!(
+            initial.matches(&format!("name=\"{field}_key\"")).count() == 1
+                && initial.matches(&format!("name=\"{field}_value\"")).count() == 1,
+            "{field} starts with one editable row"
+        );
+    }
     when.submitting(
         &deploy,
         &deploy,
@@ -1534,6 +1536,12 @@ async fn the_deploy_page_refuses_what_the_api_would_and_makes_nothing() -> anyho
         .body_contains("Enter them again")?
         .body_contains("value=\"Bad Name\"")?
         .body_lacks("topsecret")?;
+    let refused = then.body()?;
+    anyhow::ensure!(
+        refused.matches("name=\"secrets_key\"").count() == 1
+            && refused.matches("name=\"secrets_value\"").count() == 1,
+        "a refused deployment resets secrets to one empty row"
+    );
 
     when.submitting(
         &deploy,
