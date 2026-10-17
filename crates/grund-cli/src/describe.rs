@@ -221,8 +221,12 @@ pub fn document(root: &clap::Command, only: &[String]) -> Value {
     json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "name": "grund",
-        "version": env!("CARGO_PKG_VERSION"),
-        "summary": "grund's one binary: client commands (audience client) drive an instance over its Connect API as the dashboard does; operator commands run the instance, machine agent, relays and edges.",
+        "version": crate::VERSION,
+        "summary": if root.find_subcommand("serve").is_some() {
+            "grund's one binary: client commands (audience client) drive an instance over its Connect API as the dashboard does; operator commands run the instance, machine agent, relays and edges."
+        } else {
+            "grund's client commands drive an instance over its Connect API as the dashboard does."
+        },
         "conventions": {
             "output": "--output json (or --json, or GRUND_OUTPUT=json) prints one JSON document on stdout: the protobuf JSON of the message the command's output names. Fields at their default may be absent. 64-bit integers are strings.",
             "errors": "A failed command prints grund.cli.v1.ErrorOutput on stderr with --output json, and exits with its code's status.",

@@ -68,15 +68,11 @@ fn root() -> bool {
 fn arch() -> Check {
     match std::env::consts::ARCH {
         "x86_64" => Check::ok("arch", "x86_64"),
-        "aarch64" => Check::warn(
-            "arch",
-            "aarch64: grund publishes x86_64 builds only so far",
-            "install.sh refuses this machine until an aarch64 build is published",
-        ),
+        "aarch64" => Check::ok("arch", "aarch64"),
         other => Check::fail(
             "arch",
             other.to_string(),
-            "grund's agent runs on x86_64 (aarch64 later)",
+            "grund's agent runs on x86_64 and aarch64",
         ),
     }
 }

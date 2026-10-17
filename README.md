@@ -9,6 +9,33 @@ machine, app deployment and own-machine storage paths described below.
 Follow the deployment and data-backup instructions before depending on an
 instance.
 
+## Install the alpha CLI
+
+Linux amd64 and arm64 downloads include the CLI, server and machine commands
+in one static binary. **Alpha software: expect changes; back up data.**
+Read the installer before running it:
+
+```sh
+curl -fsSLo install-grund.sh https://grund.sh/install
+cat install-grund.sh
+sh install-grund.sh
+grund --version
+grund login                           # hosted dashboard at https://app.grund.sh
+```
+
+It verifies SHA-256 before replacing `grund` in `~/.local/bin`, or
+`/usr/local/bin` as root, without invoking sudo. Add the printed directory to
+`PATH` if needed. `--bin-dir /absolute/path` chooses another directory;
+`--version v0.0.0-alpha.1` pins a release. Without a version it resolves the
+newest published release, including alpha prereleases. Download failures or
+checksum mismatches leave the installed binary alone. Checksums rely on the
+public registry's HTTPS; releases are not signed. macOS downloads are not
+published yet.
+
+For your own instance, `grund login https://grund.example.com` selects it.
+An explicit address, `--instance` or `GRUND_INSTANCE` wins over the last
+signed-in instance; only a fresh login falls back to the hosted dashboard.
+
 ## What is open, and what is paid
 
 grund is open source. The self-hosted edition is free, and it is the real
@@ -38,6 +65,29 @@ welcome under Apache-2.0 with a sign-off ([CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ## Self-hosting
 
+On a Linux machine with systemd, Docker Engine and Docker Compose v2,
+the reviewed installer also starts a versioned server with HTTPS:
+
+```sh
+sudo sh install-grund.sh --domain grund.example.com
+sudo docker compose --project-directory /opt/grund exec grund /grund setup-link
+# Open the printed link, create the owner, and get a setup code on Machines.
+sudo sh install-grund.sh --domain grund.example.com --code CODE
+grund login https://grund.example.com
+```
+
+The name is the dashboard's address, not an app's; point it at this machine
+and make TCP 443 reachable first. Configuration is in `/opt/grund/.env`;
+the image is pinned by its verified release digest. The first pass installs
+the local machine service but leaves it disconnected until the owner
+enrolls it on the second installer pass. Rerunning keeps secrets, data and machine
+identity. `--no-vms` skips Firecracker; arm64 installs container apps without
+Firecracker. No app is deployed, and DNS, Docker installation, mail and
+backups are not configured for you. Use a fresh machine: the installer
+refuses to replace an existing unmanaged `/opt/grund/.env`.
+
+To build from a checkout instead:
+
 ```bash
 git clone https://git.kjuulh.io/grund/grund.git && cd grund
 docker compose up -d --wait     # builds this checkout; then http://localhost:8080
@@ -58,9 +108,9 @@ minutes. To run a published image instead, set `GRUND_IMAGE` and
 
 To add a machine, use "Add machine" on the Machines page. The command it
 gives installs grund and its agent on a Linux machine (root, systemd,
-x86_64) and connects it. This instance serves the installer and its own
-binary at `/install`. On the machine running compose, the command works as
-given. A machine on another host needs https, below.
+amd64 or arm64) and connects it. This instance serves the installer and its
+own binary at `/install`; the code's command selects that binary explicitly.
+A machine on another host needs HTTPS, below.
 
 **HTTPS.** With `GRUND_DOMAIN` set, grund terminates TLS itself on 443, with
 no proxy in front. It orders the certificate by ACME from Let's Encrypt
@@ -109,9 +159,11 @@ What compose deliberately does not do:
   `COMPOSE_PROFILES=mail` and `GRUND_SMTP_URL=smtp://mailpit:1025` add
   Mailpit, which catches every mail at http://localhost:8025 and delivers
   none.
-- **Updates.** `git pull` and `docker compose up -d` update grund.
-  Migrations are forward-only. Machines that joined keep the grund they
-  installed until you run the command on them again.
+- **Updates.** For a checkout, `git pull` and `docker compose up -d`.
+  For an installer-managed instance, rerun the installer with the desired
+  `--version` and the same `--domain`; this updates the local machine too.
+  Migrations are forward-only: selecting an older binary is not a database
+  rollback. Other machines keep their installed build until reinstalled.
 
 ## The binary
 
@@ -234,9 +286,9 @@ grund tokens create --name ci --scope deploy --apps shop --json
   writes a SKILL.md for Claude Code (`grund skill print` for others), and
   `grund mcp` serves the commands as MCP tools over stdio (`claude mcp add
   grund -- grund mcp`).
-- CI publishes the binary for Linux x86_64 only (an instance that serves
-  its installer has it at `/install/grund-linux-x86_64`). There is no macOS
-  or aarch64 build yet.
+- Versioned releases publish Linux amd64 and arm64 binaries with
+  `SHA256SUMS`. An instance that serves its installer also exposes its own
+  architecture's binary at `/install/grund-linux-<arch>`.
 
 ## Deploy from CI
 
@@ -520,7 +572,19 @@ Mailpit. Point them at a running instance with `GRUND_ACCEPT_URL` (and
 
 ## Releases
 
-Every push to `main` is tested, packaged into one image tagged
-`main-<commit>` at `git.kjuulh.io/grund/grund`, and rolled to the dev
-environment. There is no `latest` tag. Production is a deliberate promotion,
-never CI.
+Tags on the `v0.0.0-alpha.N` line publish alpha prereleases. The tag workflow
+waits for the normal CI gates, checks static amd64/arm64 binaries, runs the
+arm64 commands under QEMU, and exercises the final amd64 binary against real
+PostgreSQL and NATS before packaging those bytes into a multiarch image.
+It publishes the immutable generic package at
+`https://git.kjuulh.io/api/packages/grund/generic/grund/<tag>/`
+(`grund-linux-amd64`, `grund-linux-arm64`, `SHA256SUMS`, `compose.yaml`,
+`agent-install.sh`, the source `release.txt`, and `image-digest.txt`).
+Existing package files and image tags have to match; a conflict never
+overwrites a release. The public Gitea release is created last, and is what
+the installer's release list resolves. There is no mutable `latest` package
+or image.
+
+Pushes to `main` still publish the commit-addressed amd64 image and machine
+artifacts at `main-<commit>`. Neither a release tag nor this public
+repository's CI deploys a hosted instance.

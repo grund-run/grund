@@ -17,6 +17,9 @@
 #   --no-vms         install only the agent, never Firecracker
 #   --from-instance  take grund from the instance itself, not from grund's
 #                    package registry
+#   --binary FILE    use an already SHA-256-verified local grund release
+#   --prepare-only   install prerequisites and the unit without joining;
+#                    an existing registered machine is still restarted
 #
 # What it does, as root, each step checked:
 #   1. grund: the build this instance selects for a device, checked against a
@@ -55,7 +58,7 @@ RESTIC_VERSION=0.18.1
 RESTIC_BZ2_SHA256=680838f19d67151adba227e1570cdd8af12c19cf1735783ed1ba928bc41f363d
 PACKAGES=https://git.kjuulh.io/api/packages/grund/generic/grund
 
-url="" code="" name="" vms=1 from_instance=
+url="" code="" name="" vms=1 from_instance= binary= prepare_only=
 while [ $# -gt 0 ]; do
   case "$1" in
     --url) url="$2"; shift 2 ;;
@@ -63,6 +66,8 @@ while [ $# -gt 0 ]; do
     --name) name="$2"; shift 2 ;;
     --no-vms) vms=""; shift ;;
     --from-instance) from_instance=1; shift ;;
+    --binary) [ $# -ge 2 ] || { echo "--binary needs a file" >&2; exit 2; }; binary="$2"; shift 2 ;;
+    --prepare-only) prepare_only=1; shift ;;
     *) echo "install.sh: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -83,7 +88,16 @@ pkg() { # package, what to do without a known package manager
 [ -n "$url" ] || fail "give the instance: --url https://grund.example.com"
 [ "$(id -u)" = 0 ] || fail "run as root (sudo sh -s -- ...): it installs to /usr/local/bin and a systemd unit"
 [ "$(uname -s)" = Linux ] || fail "grund agent runs on Linux; this is $(uname -s)"
-[ "$(uname -m)" = x86_64 ] || fail "grund publishes x86_64 builds only so far; this is $(uname -m)"
+case "$(uname -m)" in
+  x86_64) arch=amd64 ;;
+  aarch64|arm64)
+    arch=arm64
+    RESTIC_BZ2_SHA256=87f53fddde38764095e9c058a3b31834052c37e5826d2acf34e18923c006bd45
+    [ -z "$vms" ] || echo "    arm64: container apps supported; this installer does not install Firecracker"
+    vms=""
+    ;;
+  *) fail "grund publishes Linux amd64 and arm64 builds; this is $(uname -m)" ;;
+esac
 command -v systemctl >/dev/null || fail "this installer needs systemd to run the agent"
 command -v curl >/dev/null || fail "curl is required"
 command -v sha256sum >/dev/null || fail "sha256sum is required (coreutils)"
@@ -96,44 +110,55 @@ verify() { # file sha256
   echo "$2  $1" | sha256sum -c --quiet >/dev/null 2>&1 || fail "$(basename "$1") does not match its SHA-256; nothing was installed from it"
 }
 
-step "grund, the build $url selects"
-ready="$(curl -fsS "$url/health/ready")" ||
-  fail "$url/health/ready did not answer 200; is the instance up and ready, and is this its address?"
-revision="$(echo "$ready" | sed -n 's/.*"revision":"\([^"]*\)".*/\1/p')"
-[ -n "$revision" ] || fail "$url/health/ready names no revision; is it a grund instance?"
-artifact_revision="$revision"
-if [ -n "$from_instance" ]; then
-  base="$url/install"
-  file="grund-linux-$(uname -m)"
-  curl -fsSL -o "$work/grund" "$base/$file" ||
-    fail "$url serves no $file: it does not serve its installer (GRUND_SERVE_INSTALLER), or runs grund for another architecture"
-  sum="$(curl -fsSL "$base/$file.sha256")" || fail "$url serves no SHA-256 for $file"
+if [ -n "$binary" ]; then
+  [ -x "$binary" ] || fail "--binary must name the verified executable"
+  [ -z "$from_instance" ] || fail "--binary and --from-instance cannot be combined"
+  step "grund, the verified local release"
+  "$binary" --version
+  if [ "$binary" != /usr/local/bin/grund ]; then
+    install -m 0755 "$binary" /usr/local/bin/grund
+  fi
 else
-  case "$revision" in
-    *+*)
-      server_revision=${revision%%+*}
-      artifact_revision=${revision#*+}
-      echo "$server_revision" | grep -qx '[0-9a-f]\{40\}' ||
-        fail "$url names an invalid server revision \"$revision\"; expected <server commit>+<public commit>"
-      ;;
-  esac
-  echo "$artifact_revision" | grep -qx '[0-9a-f]\{40\}' ||
-    fail "$url runs a grund build that was not published (revision \"$revision\"; a build from source, such as compose from a clone, has none). Install from the instance itself: its Machines page offers the command when it serves its installer (GRUND_SERVE_INSTALLER=true, compose.yaml's default), or add --from-instance to this one. Or run a published image, git.kjuulh.io/grund/grund:main-<the full 40-character commit>"
-  base="$PACKAGES/main-$artifact_revision"
-  curl -fsSL -o "$work/grund" "$base/grund" || fail "no published grund for revision $artifact_revision ($base/grund)"
-  sum="$(curl -fsSL "$base/grund.sha256")" || fail "no published SHA-256 for grund $artifact_revision"
+  step "grund, the build $url selects"
+  ready="$(curl -fsS "$url/health/ready")" ||
+    fail "$url/health/ready did not answer 200; is the instance up and ready, and is this its address?"
+  revision="$(echo "$ready" | sed -n 's/.*"revision":"\([^"]*\)".*/\1/p')"
+  [ -n "$revision" ] || fail "$url/health/ready names no revision; is it a grund instance?"
+  artifact_revision="$revision"
+  if [ -n "$from_instance" ]; then
+    base="$url/install"
+    file="grund-linux-$(uname -m)"
+    curl -fsSL -o "$work/grund" "$base/$file" ||
+      fail "$url serves no $file: it does not serve its installer (GRUND_SERVE_INSTALLER), or runs grund for another architecture"
+    sum="$(curl -fsSL "$base/$file.sha256")" || fail "$url serves no SHA-256 for $file"
+  else
+    case "$revision" in
+      *+*)
+        server_revision=${revision%%+*}
+        artifact_revision=${revision#*+}
+        echo "$server_revision" | grep -qx '[0-9a-f]\{40\}' ||
+          fail "$url names an invalid server revision \"$revision\"; expected <server commit>+<public commit>"
+        ;;
+    esac
+    echo "$artifact_revision" | grep -qx '[0-9a-f]\{40\}' ||
+      fail "$url runs a grund build that was not published (revision \"$revision\"; a build from source, such as compose from a clone, has none). Install from the instance itself: its Machines page offers the command when it serves its installer (GRUND_SERVE_INSTALLER=true, compose.yaml's default), or add --from-instance to this one. Or run a published image, git.kjuulh.io/grund/grund:main-<the full 40-character commit>"
+    [ "$arch" = amd64 ] || fail "main-commit packages contain amd64 only; use the versioned installer at https://grund.sh/install or --from-instance"
+    base="$PACKAGES/main-$artifact_revision"
+    curl -fsSL -o "$work/grund" "$base/grund" || fail "no published grund for revision $artifact_revision ($base/grund)"
+    sum="$(curl -fsSL "$base/grund.sha256")" || fail "no published SHA-256 for grund $artifact_revision"
+  fi
+  echo "$sum" | grep -qx '[0-9a-f]\{64\}' || fail "the SHA-256 from $base is not 64 hex characters"
+  verify "$work/grund" "$sum"
+  install -m 0755 "$work/grund" /usr/local/bin/grund
+  echo "    grund $artifact_revision from $base, sha256 $(echo "$sum" | cut -c1-12)"
 fi
-echo "$sum" | grep -qx '[0-9a-f]\{64\}' || fail "the SHA-256 from $base is not 64 hex characters"
-verify "$work/grund" "$sum"
-install -m 0755 "$work/grund" /usr/local/bin/grund
-echo "    grund $artifact_revision from $base, sha256 $(echo "$sum" | cut -c1-12)"
 step "restic $RESTIC_VERSION, encrypted backups"
 if ! command -v bzip2 >/dev/null; then
   echo "    bzip2, to unpack it"
   pkg bzip2 "install bzip2: it unpacks the pinned backup engine"
 fi
 archive="$work/restic.bz2"
-curl -fsSL -o "$archive" "https://github.com/restic/restic/releases/download/v$RESTIC_VERSION/restic_${RESTIC_VERSION}_linux_amd64.bz2" ||
+curl -fsSL -o "$archive" "https://github.com/restic/restic/releases/download/v$RESTIC_VERSION/restic_${RESTIC_VERSION}_linux_${arch}.bz2" ||
   fail "could not download pinned restic $RESTIC_VERSION"
 verify "$archive" "$RESTIC_BZ2_SHA256"
 bzip2 -dc "$archive" > "$work/restic" || fail "could not unpack verified restic"
@@ -160,6 +185,8 @@ fi
 
 if [ -f /var/lib/grund/agent/machine.json ]; then
   step "already registered; keeping this device's identity"
+elif [ -n "$prepare_only" ]; then
+  step "agent installed; enrollment waits for the owner's machine setup code"
 else
   [ -n "$code" ] || fail "give the setup code from $url's Machines page: --code grund_join_..."
   step "registering with $url"
@@ -196,8 +223,12 @@ WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
 systemctl enable grund-agent.service >/dev/null 2>&1
-systemctl restart grund-agent.service
-sleep 3
-systemctl is-active --quiet grund-agent.service || { journalctl -u grund-agent --no-pager -n 20; fail "grund-agent.service did not stay up"; }
-echo "    running; logs: journalctl -u grund-agent -f"
-echo "done: this device shows as connected on $url's Machines page"
+if [ -f /var/lib/grund/agent/machine.json ]; then
+  systemctl restart grund-agent.service
+  sleep 3
+  systemctl is-active --quiet grund-agent.service || { journalctl -u grund-agent --no-pager -n 20; fail "grund-agent.service did not stay up"; }
+  echo "    running; logs: journalctl -u grund-agent -f"
+  echo "done: this device shows as connected on $url's Machines page"
+else
+  echo "    enabled; not started until this machine is registered"
+fi

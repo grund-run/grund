@@ -5688,7 +5688,7 @@
           "value_name": "JSON"
         },
         {
-          "description": "The instance, such as grund.example.com. Default: --instance, GRUND_INSTANCE, or the current one",
+          "description": "The instance, such as grund.example.com. Default: --instance, GRUND_INSTANCE, the current one, or https://app.grund.sh",
           "name": "address",
           "positional": true,
           "type": "string",

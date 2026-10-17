@@ -13,8 +13,8 @@
 //!   `grund skill` (a SKILL.md for coding agents) and `grund mcp` (the same
 //!   commands as MCP tools).
 //!
-//! The operator commands (`serve`, `join`, `agent`, …) live beside these in
-//! the same binary and are described, but not run, from here.
+//! The unified Linux binary adds operator commands (`serve`, `join`,
+//! `agent`, …). The standalone client builds without those dependencies.
 #![forbid(unsafe_code)]
 
 pub mod api;
@@ -34,10 +34,13 @@ use context::Ctx;
 use error::{CliError, Code};
 use output::Format;
 
-/// The version and revision the binary reports, as `grund 0.1.0 (abc1234)`.
+/// The release tag supplied by `GRUND_VERSION`, or the crate version for local builds.
+pub const VERSION: &str = env!("GRUND_VERSION");
+
+/// The version and revision the binary reports, such as `grund v0.0.0-alpha.1 (abc1234)`.
 pub fn client_name(revision: &str) -> String {
     let short: String = revision.chars().take(12).collect();
-    format!("grund {} ({short})", env!("CARGO_PKG_VERSION"))
+    format!("grund {} ({short})", VERSION)
 }
 
 /// Runs a client command and returns the process's exit status. `root` is
@@ -110,7 +113,12 @@ pub fn usage_error(error: &clap::Error, args: &[String]) -> Option<i32> {
 /// The client commands, for a parser of their own (`grund mcp` parses each
 /// tool call with it).
 #[derive(clap::Parser, Debug)]
-#[command(name = "grund", disable_help_subcommand = true)]
+#[command(
+    name = "grund",
+    version = VERSION,
+    about = "grund: from zero to production, on your own premises",
+    disable_help_subcommand = true
+)]
 pub struct Standalone {
     #[command(subcommand)]
     pub command: Command,

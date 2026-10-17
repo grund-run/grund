@@ -40,7 +40,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 #[derive(Parser)]
 #[command(
     name = "grund",
-    version,
+    version = grund_cli::VERSION,
     about = "grund: from zero to production, on your own premises"
 )]
 struct Cli {

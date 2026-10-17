@@ -275,7 +275,7 @@ pub async fn handle(
             json!({
                 "protocolVersion": version,
                 "capabilities": {"tools": {"listChanged": false}},
-                "serverInfo": {"name": "grund", "version": env!("CARGO_PKG_VERSION")},
+                "serverInfo": {"name": "grund", "version": crate::VERSION},
                 "instructions": "Each tool is a grund CLI command run with --output json against the instance and credential of this process (grund login, or GRUND_INSTANCE and GRUND_TOKEN). An error result carries {error:{code,message,hint,field,reason}}.",
             })
         }

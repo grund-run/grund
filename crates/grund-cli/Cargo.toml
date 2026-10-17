@@ -8,6 +8,14 @@ publish.workspace = true
 repository.workspace = true
 license = "AGPL-3.0-only"
 
+[[bin]]
+name = "grund"
+path = "src/main.rs"
+required-features = ["standalone"]
+
+[features]
+standalone = []
+
 [dependencies]
 anyhow.workspace = true
 base64.workspace = true

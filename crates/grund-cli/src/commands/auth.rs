@@ -22,7 +22,7 @@ pub struct LoginArgs {
     #[arg(
         id = "address",
         value_name = "INSTANCE",
-        help = "The instance, such as grund.example.com. Default: --instance, GRUND_INSTANCE, or the current one"
+        help = "The instance, such as grund.example.com. Default: --instance, GRUND_INSTANCE, the current one, or https://app.grund.sh"
     )]
     pub instance: Option<String>,
 
@@ -182,9 +182,14 @@ async fn device_login(
 pub async fn login(ctx: &Ctx, args: LoginArgs, revision: &str) -> CliResult<Output> {
     let instance = match args.instance.as_deref().or(ctx.global.instance.as_deref()) {
         Some(text) => credentials::origin(text)?,
-        None => ctx.instance().map_err(|_| {
-            CliError::usage("name the instance: grund login grund.example.com").field("instance")
-        })?,
+        None => {
+            let current = ctx.credentials()?.current;
+            if current.is_empty() {
+                "https://app.grund.sh".to_string()
+            } else {
+                current
+            }
+        }
     };
     let path = ctx.credentials_path()?;
     let mut file = ctx.credentials()?;
