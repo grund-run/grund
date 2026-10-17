@@ -191,19 +191,18 @@ steps:
       - export GRUND_ACCEPT_RESTIC_BIN="$$PWD/.accept/restic"
       # At most 4 parallel rustc jobs on agent 1 (ratchet); see jobs.sh.
       - . .woodpecker/jobs.sh
-      # Build and save EE first, then default: cargo test below must see its
-      # matching default feature state, not recompile it after an EE build
-      # (70 s on agent 5 and 147 s on agent 1 in pipelines 260 and 267).
-      # Each acceptance suite keeps its own binary because the next feature
-      # build overwrites target/test/debug/grund. --workspace preserves the
-      # dependency feature resolution shared by the two builds.
+      # Build and save EE first, then default, so the foreground Cargo run
+      # uses its already-built default graph. Proto codegen watches inputs,
+      # not its generated descriptor; otherwise every invocation is dirty.
+      # Each suite keeps its own binary because the next feature build
+      # overwrites target/test/debug/grund. --workspace keeps dependency
+      # feature resolution consistent across the two builds.
       - mkdir -p .accept
       - cargo test --workspace --features grund/ee --locked --no-run --message-format=json-render-diagnostics > .accept/build-ee.json
       - grep '"reason":"compiler-artifact"' .accept/build-ee.json | grep '/crates/grund#' | grep '"name":"tests"' | sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' > .accept/path-ee
       - test "$$(wc -l < .accept/path-ee)" -eq 1 || { echo "expected one grund ee accepttest binary, found:"; cat .accept/path-ee; exit 1; }
       - cp "$$(cat .accept/path-ee)" .accept/tests-ee && cp target/test/debug/grund .accept/grund-ee
-      # Keep the default build last. The foreground run below uses the same
-      # invocation and target state; contract reuses this saved test binary.
+      # Keep the default build last; contract reuses this saved test binary.
       - cargo test --workspace --locked --no-run --message-format=json-render-diagnostics > .accept/build.json
       - grep '"reason":"compiler-artifact"' .accept/build.json | grep '/crates/grund#' | grep '"name":"tests"' | sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' > .accept/path
       - test "$$(wc -l < .accept/path)" -eq 1 || { echo "expected one grund accepttest binary, found:"; cat .accept/path; exit 1; }
@@ -221,9 +220,7 @@ steps:
         wait
         echo "--- the ee accepttests"; cat .accept/ee.log
         [ "$$core" -eq 0 ] && [ "$$(cat .accept/ee.status)" -eq 0 ] || { echo "workspace tests exited $$core, the ee accepttests $$(cat .accept/ee.status)"; exit 1; }
-      # The saved default accepttest binary already ran with the workspace;
-      # calling cargo again after the EE build recompiles the default tree
-      # (~60 s in pipeline 250) just to select this one timing test.
+      # Saved executables keep the isolated timing runs free of Cargo work.
       - (cd crates/grund && GRUND_ACCEPT_GRUND_BIN="$$PWD/../../.accept/grund" ../../.accept/tests --exact "$${TIMING_TEST}")
       - cd crates/grund && GRUND_ACCEPT_GRUND_BIN="$$PWD/../../.accept/grund-ee" ../../.accept/tests-ee --exact "$${TIMING_TEST}"
       - 'if command -v ci-cache >/dev/null; then ci-cache stats; fi'  # ci-cache: managed by kjuulh/woodpecker-forest

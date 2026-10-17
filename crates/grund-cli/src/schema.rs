@@ -1,5 +1,5 @@
 //! JSON Schemas for the CLI's JSON, generated from the protobuf descriptors
-//! compiled into the binary (`grund_proto::FILE_DESCRIPTOR_SET`, with the
+//! compiled into the binary (`grund_descriptors::FILE_DESCRIPTOR_SET`, with the
 //! proto comments as descriptions), so they cannot drift from what the
 //! instance sends. The mapping is protobuf JSON's: lowerCamelCase field
 //! names, enums by name, 64-bit integers as decimal strings, bytes as
@@ -78,7 +78,7 @@ fn clean(comment: Option<&String>) -> String {
 impl Registry {
     /// The registry of the descriptors compiled into this binary.
     pub fn compiled() -> Self {
-        Self::from_bytes(grund_proto::FILE_DESCRIPTOR_SET)
+        Self::from_bytes(grund_descriptors::FILE_DESCRIPTOR_SET)
     }
 
     /// The registry of a serialised `FileDescriptorSet`.

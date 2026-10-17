@@ -8,9 +8,10 @@ Source code in this repository is licensed as follows:
   in "ee/LICENSE" reserves all rights, and allows reading it and building
   it for development and testing.
 
-* Everything in "proto/" and "crates/grund-proto/" (grund's API contract and
-  the generated clients) is licensed under the Apache License, Version 2.0,
-  in "LICENSES/Apache-2.0.txt".
+* Everything in "proto/", "crates/grund-descriptors/" and
+  "crates/grund-proto/" (grund's API contract, descriptors and generated
+  clients) is licensed under the Apache License, Version 2.0, in
+  "LICENSES/Apache-2.0.txt".
 
 * Third-party material keeps its own license, stated beside it (for example
   the fonts in "crates/grund-server/assets/", under the SIL Open Font License

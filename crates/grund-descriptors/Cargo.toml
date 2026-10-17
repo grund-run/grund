@@ -1,0 +1,9 @@
+[package]
+name = "grund-descriptors"
+description = "grund's API descriptors and source file list, without generated message or service code"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+license = "Apache-2.0"

@@ -1960,8 +1960,8 @@ dependencies = [
  "buffa",
  "buffa-descriptor",
  "clap",
+ "grund-descriptors",
  "grund-domain",
- "grund-proto",
  "grund-tls",
  "reqwest",
  "rustls",
@@ -1999,6 +1999,10 @@ dependencies = [
  "tracing",
  "uuid",
 ]
+
+[[package]]
+name = "grund-descriptors"
+version = "0.1.0"
 
 [[package]]
 name = "grund-domain"
@@ -2117,6 +2121,7 @@ dependencies = [
  "buffa-types",
  "connectrpc",
  "connectrpc-build",
+ "grund-descriptors",
  "serde",
  "serde_json",
 ]
