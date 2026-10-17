@@ -6,9 +6,9 @@ component CsrfField(token: &str) {
 component HiddenField(name: &str, value: &str) {
   <input type="hidden" name={name} value={value}>
 }
-component Form(action: &str, csrf: &str, children: Html, layout: Option<&str>, method: Option<&str>, autocomplete: Option<&str>, form: Option<&FormState<'a>>) {
+component Form(action: &str, csrf: &str, children: Html, layout: Option<&str>, method: Option<&str>, autocomplete: Option<&str>, form: Option<&FormState<'a>>, refused: bool) {
   {let csrf = if csrf.is_empty() { form.map_or("", |state| state.csrf) } else { csrf };}
-  <form class={match layout.unwrap_or("stack") { "" => None, "row" => Some("form form-row"), _ => Some("form") }} method={method.unwrap_or("post")} action={action} novalidate autocomplete={autocomplete.filter(|s| !s.is_empty())}>
+  <form class={match layout.unwrap_or("stack") { "" => None, "row" => Some("form form-row"), _ => Some("form") }} method={method.unwrap_or("post")} action={action} novalidate autocomplete={autocomplete.filter(|s| !s.is_empty())} data-refused={crate::templates::BareDataAttr(*refused)}>
     {if !csrf.is_empty() { <CsrfField token={csrf} /> }}
     {children}
   </form>
@@ -98,13 +98,28 @@ component ChipsField(name: &str, label: &str, options: &[(&str, &str)], selected
 component OptionsOf(options: &[(&str, &str)], selected: &str) {
   {for (value, text) in options.iter() { <option value={value} selected={*value == *selected}>{text}</option> }}
 }
-component Select(name: &str, id: &str, options: &[(&str, &str)], selected: &str, state: &str, describe_by: &str, autosubmit: bool, invalid: Option<bool>) {
-  <span class="select-wrap">
-    <select class={if *state == "focus" { "control select is-focus" } else { "control select" }} id={id} name={name} data-autosubmit={crate::templates::BareDataAttr(*autosubmit)} aria-invalid={invalid.filter(|invalid| *invalid).map(|_| "true")} aria-describedby={(!describe_by.is_empty()).then_some(describe_by)}>
-      <OptionsOf options={options} selected={selected} />
+component Select(name: &str, id: &str, options: &[(&str, &str)], selected: &str, state: &str, describe_by: &str, autosubmit: bool, invalid: Option<bool>, label: &str, error: &str, hint: &str, required: bool, fill: &str, autofocus: bool, children: Option<Html>) {
+  {let id = if id.is_empty() { name } else { id };}
+  {let message_id = if !error.is_empty() { Some(format!("{id}-error")) } else if !hint.is_empty() { Some(format!("{id}-hint")) } else { None };}
+  {let control = <span class="select-wrap">
+    <select class={if *state == "focus" { "control select is-focus" } else { "control select" }} id={id} name={name} required={required} autofocus={autofocus}
+      data-autosubmit={crate::templates::BareDataAttr(*autosubmit)} data-fill={(!fill.is_empty()).then_some(fill)}
+      aria-invalid={(!error.is_empty() || invalid.unwrap_or(false)).then_some("true")}
+      aria-describedby={message_id.as_deref().or_else(|| (!describe_by.is_empty()).then_some(*describe_by))}>
+      {if let Some(content) = children { {content} } else { <OptionsOf options={options} selected={selected} /> }}
     </select>
     <Icon name="down" class="icon-sm select-chevron" />
-  </span>
+  </span>;}
+  {if label.is_empty() {
+    {control}
+    <Message id={id} error={error} hint={hint} />
+  } else {
+    <div class="field">
+      <LabelOf id={id} text={label} optional={!*required} />
+      {control}
+      <Message id={id} error={error} hint={hint} />
+    </div>
+  }}
 }
 component CodeField(name: &str, label: &str, value: &str, filename: &str, rows: usize, hint: &str, error: &str, required: bool, download: &str) {
   <div class="field">
@@ -130,7 +145,7 @@ component PairsField(name: &str, label: &str, pairs: &[(&str, &str)], pairs_owne
   <fieldset class="field" aria-describedby={if !error.is_empty() { Some(format!("{name}-error")) } else if !hint.is_empty() { Some(format!("{name}-hint")) } else { None }}>
     <legend class="field-label">{label} <span class="field-optional">Optional</span></legend>
     {let key_placeholder = if key_suggestions.is_empty() { None } else { Some(key_label.to_lowercase()) };}
-    <div class="pairs" data-pairs>
+    <div class="pairs" data-pairs data-secret={crate::templates::BareDataAttr(*secret)}>
       {for index in 0..(pairs.len() + pairs_owned.len() + blank) {
         {let key = pairs.get(index).map(|pair| pair.0).or_else(|| pairs_owned.get(index).map(|pair| pair.0.as_str())).unwrap_or("");}
         {let value = pairs.get(index).map(|pair| pair.1).or_else(|| pairs_owned.get(index).map(|pair| pair.1.as_str())).unwrap_or("");}
@@ -157,7 +172,7 @@ component Grid(children: Html) {
   <div class="form-grid">{children}</div>
 }
 component ChoiceField(name: &str, label: &str, error: &str, hint: &str, large: bool, children: Html) {
-  <fieldset class="field" aria-describedby={if !error.is_empty() { Some(format!("{name}-error")) } else if !hint.is_empty() { Some(format!("{name}-hint")) } else { None }}>
+  <fieldset class="field" aria-invalid={(!error.is_empty()).then_some("true")} aria-describedby={if !error.is_empty() { Some(format!("{name}-error")) } else if !hint.is_empty() { Some(format!("{name}-hint")) } else { None }}>
     {if !label.is_empty() { <legend class="field-label">{label}</legend> }}
     <div class={if *large { "choices choices-wide" } else { "choices" }}>{children}</div>
     <Message id={name} error={error} hint={hint} />

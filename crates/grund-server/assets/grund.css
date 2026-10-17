@@ -2243,7 +2243,7 @@ legend.field-label {
   color: var(--text-2);
 }
 
-.expander[open] .expander-chevron {
+.expander[open] > .expander-head > .expander-chevron {
   transform: rotate(180deg);
 }
 

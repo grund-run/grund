@@ -103,12 +103,14 @@ component Section(id: &str, title: &str, count: Option<usize>, more: Option<(&st
 </section>
 }
 component Panel(id: &str, title: &str, action: Option<(&str, &str)>, tag: Option<&str>, children: Html) {
-<section class="panel" aria-labelledby={id}>
+<section class="panel" aria-labelledby={(!title.is_empty() && !id.is_empty()).then_some(*id)}>
+  {if !title.is_empty() {
   <div class="panel-head">
     <h2 class="panel-title" id={id}>{title}</h2>
     {if let Some(tag) = tag { <Tag text={tag} /> }}
     {if let Some((href, label)) = action { <ButtonAdvanced label={label} href={href} icon_name="arrow" kind="secondary" size="sm" icon_end /> }}
   </div>
+  }}
   {children}
 </section>
 }

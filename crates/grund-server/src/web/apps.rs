@@ -663,22 +663,6 @@ const FORM_FIELDS: &[&str] = &[
     "volume_backup",
 ];
 
-const ADVANCED_FIELDS: &[&str] = &[
-    "env",
-    "secrets",
-    "check",
-    "memory",
-    "cpu",
-    "command",
-    "stop",
-    "volumes",
-    "volume_name",
-    "volume_path",
-    "volume_source",
-    "volume_size_gib",
-    "volume_backup",
-];
-
 fn form_field(spec_field: &str) -> Option<&'static str> {
     let head = spec_field.split(['.', '[']).next().unwrap_or_default();
     Some(match head {
@@ -811,36 +795,107 @@ pub struct TemplateView {
 pub struct TemplateChoice {
     pub value: &'static str,
     pub title: &'static str,
-    pub text: &'static str,
-    pub image: &'static str,
     pub disabled: bool,
     pub tag: Option<&'static str>,
 }
 
-pub struct DeployMode {
-    pub key: &'static str,
-    pub href: String,
-    pub icon: &'static str,
-    pub title: &'static str,
-    pub text: &'static str,
-    pub sub: &'static str,
+pub struct DeployAdvanced {
+    pub summary: String,
+    pub access: bool,
+    pub environment: bool,
+    pub storage: bool,
+    pub resources: bool,
+    pub runtime: bool,
 }
 
-pub struct DeployPage {
+impl DeployAdvanced {
+    fn new(form: &NewForm, refused: &Refusal, secrets_dropped: bool) -> Self {
+        let has_error = |fields: &[&str]| {
+            fields
+                .iter()
+                .any(|field| refused.fields.contains_key(field))
+        };
+        let copies = if form.copies.trim().is_empty() {
+            "1"
+        } else {
+            form.copies.trim()
+        };
+        let custom = form.mode != "premade"
+            && (!form.env.is_empty()
+                || !form.secrets.is_empty()
+                || [
+                    &form.port,
+                    &form.check,
+                    &form.check_path,
+                    &form.memory,
+                    &form.cpu,
+                    &form.command,
+                    &form.volume_name,
+                    &form.volume_path,
+                    &form.volume_source,
+                    &form.volume_size_gib,
+                ]
+                .iter()
+                .any(|value| !value.trim().is_empty())
+                || (!form.stop_signal.is_empty() && form.stop_signal != "SIGTERM")
+                || !form.stop_grace.is_empty()
+                || form.volume_backup == "on");
+        let defaults = if custom {
+            "custom settings"
+        } else if form.mode == "premade" {
+            "template defaults"
+        } else {
+            "image defaults"
+        };
+        Self {
+            summary: format!(
+                "{} · {copies} {} · {defaults}",
+                if form.exposure == "public" {
+                    "Public HTTP"
+                } else {
+                    "Private"
+                },
+                if copies.parse::<u32>() == Ok(1) {
+                    "copy"
+                } else {
+                    "copies"
+                },
+            ),
+            access: has_error(&["exposure", "port"]),
+            environment: secrets_dropped || has_error(&["env", "secrets"]),
+            storage: has_error(&[
+                "volumes",
+                "volume_name",
+                "volume_path",
+                "volume_source",
+                "volume_size_gib",
+                "volume_backup",
+            ]),
+            resources: has_error(&["copies", "memory", "cpu"]),
+            runtime: has_error(&["check", "command", "stop"]),
+        }
+    }
+
+    /// Whether a refused advanced field or dropped secret needs its group visible.
+    pub fn open(&self) -> bool {
+        self.access || self.environment || self.storage || self.resources || self.runtime
+    }
+}
+
+pub struct DeployPage<'a> {
     pub slug: String,
     pub manages: bool,
     pub mode: &'static str,
-    pub modes: Vec<DeployMode>,
+    pub source_tabs: &'a [(&'a str, &'a str, &'a str, &'a str)],
     pub new: NewForm,
     pub new_error: String,
     pub errors: std::collections::BTreeMap<&'static str, String>,
     pub restore_href: Option<String>,
-    pub advanced: bool,
+    pub advanced: DeployAdvanced,
     pub secrets_dropped: bool,
     pub exposures: Vec<ExposureChoice>,
     pub public_hint: String,
     pub templates: Vec<TemplateChoice>,
-    pub image_keys: Vec<&'static str>,
     pub signals: Vec<(&'static str, &'static str)>,
     pub memory_steps: &'static [u64],
     pub cpu_steps: Vec<String>,
@@ -881,19 +936,19 @@ async fn new_view(
         .map(|t| TemplateChoice {
             value: t.key,
             title: t.title,
-            text: t.summary,
-            image: template_icon(t),
             disabled: t.needs_storage,
             tag: t.needs_storage.then_some(NEEDS_STORAGE),
         })
         .collect();
     let premade = new.mode == "premade";
-    let mode_href = |mode: &str| format!("/{slug}/deploy?mode={mode}");
-    let advanced = refused
-        .fields
-        .keys()
-        .any(|field| ADVANCED_FIELDS.contains(field));
+    let image_href = format!("/{slug}/deploy?mode=custom");
+    let template_href = format!("/{slug}/deploy?mode=premade");
+    let source_tabs = [
+        ("custom", image_href.as_str(), "Image", ""),
+        ("premade", template_href.as_str(), "Template", ""),
+    ];
     let secrets_dropped = !refused.banner.is_empty() && !new.secrets.is_empty();
+    let advanced = DeployAdvanced::new(&new, &refused, secrets_dropped);
     let errors: std::collections::BTreeMap<&'static str, String> = FORM_FIELDS
         .iter()
         .map(|field| {
@@ -910,24 +965,7 @@ async fn new_view(
         restore_href: restore_name
             .filter(|_| membership.role == "owner")
             .map(|name| format!("/{slug}/apps?q={name}#restorable-apps")),
-        modes: vec![
-            DeployMode {
-                key: "premade",
-                href: mode_href("premade"),
-                icon: "grid",
-                title: "Premade",
-                text: "A pinned version of a common app",
-                sub: "NATS, whoami, nginx",
-            },
-            DeployMode {
-                key: "custom",
-                href: mode_href("custom"),
-                icon: "box",
-                title: "Custom",
-                text: "Any container image",
-                sub: "",
-            },
-        ],
+        source_tabs: &source_tabs,
         new,
         new_error: refused.banner.clone(),
         errors,
@@ -944,7 +982,6 @@ async fn new_view(
             .map(|domain| format!("Public: https://<name>-{slug}.{domain}"))
             .unwrap_or_default(),
         templates: choices,
-        image_keys: template_icons(),
         signals: STOP_SIGNALS.iter().map(|s| (*s, *s)).collect(),
         memory_steps: super::resources::MEMORY_STEPS,
         cpu_steps: super::resources::CPU_STEPS

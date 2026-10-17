@@ -122,17 +122,24 @@
       }, on);
     });
 
-    document.querySelectorAll("input[data-fill]").forEach(function (choice) {
+    document.querySelectorAll("input[data-fill], select[data-fill]").forEach(function (choice) {
       var target = document.getElementById(choice.dataset.fill);
       if (!target) return;
-      if (choice.checked && target.value === choice.value) target.dataset.filled = choice.value;
-      choice.addEventListener("change", function () {
-        if (!choice.checked) return;
+      var select = choice.tagName === "SELECT";
+      if ((select || choice.checked) && target.value === choice.value) target.dataset.filled = choice.value;
+      function fill() {
+        if (!select && !choice.checked) return;
+        if (select && (!choice.selectedOptions.length || choice.selectedOptions[0].disabled)) return;
         if (target.value === "" || target.value === target.dataset.filled) {
           target.value = choice.value;
           target.dataset.filled = choice.value;
         }
-      }, on);
+      }
+      choice.addEventListener("change", fill, on);
+      if (select) {
+        target.addEventListener("input", function () { delete target.dataset.filled; }, on);
+        fill();
+      }
     });
 
     document.querySelectorAll("[data-pairs]").forEach(function (pairs) {
@@ -155,6 +162,7 @@
             row.querySelectorAll("input").forEach(function (input) { input.value = ""; });
           }
           number();
+          pairs.dispatchEvent(new Event("input", { bubbles: true }));
           if (next) next.querySelector("input").focus();
         }, on);
       }
@@ -171,6 +179,7 @@
         pairs.appendChild(row);
         wire(row);
         number();
+        pairs.dispatchEvent(new Event("input", { bubbles: true }));
         row.querySelector("input").focus();
       }, on);
     });
@@ -261,12 +270,60 @@
       });
     });
 
+    var advanced = document.getElementById("deploy-options");
+    if (advanced) {
+      var deploy = advanced.closest("form");
+      var summary = advanced.querySelector(":scope > summary .expander-summary");
+      if (deploy && summary) {
+        function value(name) {
+          var field = deploy.elements.namedItem(name);
+          return field ? field.value.trim() : "";
+        }
+        function updateSummary() {
+          var custom = Array.prototype.some.call(advanced.querySelectorAll("input, select, textarea"), function (field) {
+            if (field.matches(":disabled")) return false;
+            if (field.type === "radio") {
+              return field.checked && ((field.name === "check" && field.value !== "" && field.value !== "none") ||
+                (field.name === "stop_signal" && field.value !== "" && field.value !== "SIGTERM"));
+            }
+            if (field.type === "checkbox") return field.name === "volume_backup" && field.checked;
+            return field.name !== "copies" && field.name !== "exposure" && field.value.trim() !== "";
+          });
+          var copies = value("copies") || "1";
+          summary.textContent = (value("exposure") === "public" ? "Public HTTP" : "Private") +
+            " · " + copies + (Number(copies) === 1 ? " copy" : " copies") + " · " +
+            (custom ? "custom settings" : value("mode") === "premade" ? "template defaults" : "image defaults");
+        }
+        deploy.addEventListener("input", updateSummary, on);
+        deploy.addEventListener("change", updateSummary, on);
+        updateSummary();
+      }
+    }
+
     function openTarget() {
       var target = location.hash && document.getElementById(decodeURIComponent(location.hash.slice(1)));
       if (target && target.tagName === "DETAILS") target.open = true;
     }
     openTarget();
     window.addEventListener("hashchange", openTarget, on);
+
+    document.querySelectorAll("form[data-refused] [data-pairs][data-secret] input").forEach(function (control) {
+      control.value = "";
+    });
+    Array.prototype.some.call(document.querySelectorAll("form[data-refused]"), function (form) {
+      var controls = "input:not([type=hidden]):not(:disabled), select:not(:disabled), textarea:not(:disabled)";
+      return Array.prototype.some.call(form.querySelectorAll('[aria-invalid="true"], .field-error'), function (invalid) {
+        var group = invalid.closest(".field") || invalid.closest("details");
+        var control = invalid.matches(controls) ? invalid : invalid.querySelector(controls);
+        if (!control && group) control = group.querySelector(controls);
+        if (!control || control.closest("[hidden]")) return false;
+        for (var parent = control.parentElement; parent; parent = parent.parentElement) {
+          if (parent.tagName === "DETAILS") parent.open = true;
+        }
+        control.focus();
+        return true;
+      });
+    });
 
     var menus = Array.prototype.slice.call(document.querySelectorAll("details.menu"));
     document.addEventListener("click", function (event) {

@@ -1,6 +1,7 @@
 use crate::templates::compiled::layouts::App;
 use crate::templates::compiled::components::{Contents, Specimen, Demos, Column, Labelled, Swatches, Borders, TypeScale, SpaceScale, Radii, IconGrid, Icon, ImageIcon, ImageSprite, Button, ButtonAdvanced, CopyButton, ShortId, RelativeTime, RowPill, Mark, Tag, Para, LinkMore, External, IconLink, PageHead, Section, Panel, Tabs, Status, StatusLine, Pill, IconFact, Callout, Stats, EmptyState, AddCard, Code, DnsRecords, Rows, Row, Items, AppRow, AppMenu, MachineRow, ListTools, Links, Link, Tiles, Tile, Timeline, Event, Menu, MenuItem, Banner, PostButton, Search, SelectForm, Form, Field, Grid, Actions, ToggleField, PairsField, CodeField, ChipsField, ChoiceLinks, Facts, Fact, Endpoint, ChoiceField, ChoiceCard, StepperField, Group, RangeField, Expanders, Expander, Nav, NavItem, TopbarAction};
 use crate::templates::compiled::components::{InvitationRows, InboxColumn, NotificationRows, NotificationBell, OrganisationPage};
+use crate::templates::compiled::components::Select;
 props crate::web::pages::StyleGuidePage { viewer, csrf, swatches, sprite_icons, gallery, icons, apps, machines };
 
 <App title="Style guide" viewer={viewer} csrf={csrf} title_org={Some(false)}>
@@ -124,6 +125,17 @@ props crate::web::pages::StyleGuidePage { viewer, csrf, swatches, sprite_icons, 
     <Specimen title="Fields in a row" code={r#"<Form action={url} csrf={csrf} layout={Some("row")}><Field name="email" label="Email" kind="email" /><ChipsField name="role" label="Role" options={roles} multiple={false} /><Button label="Send invitation" /></Form>"#} note="A form of one or two fields and its button: side by side, the button level with the boxes; each field takes the whole width below 900 px.">
       <Form action="#sg-forms" csrf={csrf} layout={Some("row")}><Field name="sg-invite" label="Email" kind="email" required placeholder={Some("name@example.com")} /><ChipsField name="sg-invite-role" label="Role" options={&[("member", "Member"), ("admin", "Admin")]} selected="member" /><ButtonAdvanced label="Send invitation" kind="primary" button_type="button" /></Form>
     </Specimen>
+    <Specimen title="Labelled select in a headerless panel" code={r#"<Panel id="source"><Select name="template" label="Template" required hint="Choose an available template." options={templates} selected="nats" /><Select name="template_error" label="Template" required error="Choose an available template."><option value="nats" selected>NATS</option><option value="postgres" disabled>PostgreSQL · Needs storage</option></Select></Panel>"#} note="An empty panel title omits its heading. Select shares Field's label and hint or error; omit id to use name. Tuple options cover ordinary choices; children allow disabled options.">
+      <Panel id="sg-select">
+        <Select name="sg-select-template" label="Template" required hint="Choose an available template." options={&[("nats", "NATS"), ("whoami", "whoami"), ("nginx", "nginx")]} selected="nats" />
+        <Select name="sg-select-template-focus" label="Template (focus)" required state="focus" options={&[("nats", "NATS"), ("whoami", "whoami")]} selected="whoami" />
+        <Select name="sg-select-template-error" label="Template (error)" required error="Choose an available template.">
+          <option value="" selected>Choose a template</option>
+          <option value="nats">NATS</option>
+          <option value="postgres" disabled>PostgreSQL · Needs storage</option>
+        </Select>
+      </Panel>
+    </Specimen>
     <Specimen title="Select in a row" code={r#"<SelectForm action={url} csrf={csrf} name="role" id={id} label="Role of linus" options={roles} selected="admin" button="Change" />"#} note="One choice posted from a row, such as a member's role. With the script it applies on change and the button hides."><SelectForm action="#sg-forms" csrf={csrf} name="role" id="sg-member-role" label="Role of linus" options={&[("member", "Member"), ("admin", "Admin"), ("owner", "Owner")]} selected="admin" button="Change" /></Specimen>
   </Section>
 
@@ -199,6 +211,14 @@ props crate::web::pages::StyleGuidePage { viewer, csrf, swatches, sprite_icons, 
         <Expander title="Copies (open)" summary="2 copies · rolls back a failed release on its own" icon_name="copy" open><Form action="#sg-choices" csrf={csrf}><StepperField name="sg-copies-3" label="Copies" value="2" min="1" max="20" /><Actions note="Saving applies at once, without a release."><ButtonAdvanced label="Save" kind="primary" button_type="button" /></Actions></Form></Expander>
         <Expander title="Delete nord-studio" summary="Cannot be undone." icon_name="trash" kind="danger"><p>Its form.</p></Expander>
       </Expanders>
+    </Specimen>
+    <Specimen title="Nested expanders" code={r#"<Expander title="Advanced" summary="Private · 1 copy · image defaults" open><Expanders><Expander title="Access and port">Access fields.</Expander><Expander title="Resources" open>Resource fields.</Expander></Expanders></Expander>"#} note="Each disclosure keeps its own open state and chevron, including closed children inside an open parent.">
+      <Expander id="sg-advanced" title="Advanced" summary="Private · 1 copy · image defaults" open>
+        <Expanders>
+          <Expander id="sg-access" title="Access and port" summary="Closed child" icon_name="lock"><Field name="sg-nested-port" label="Port" kind="number" hint="Empty: from the image." /></Expander>
+          <Expander id="sg-resources" title="Resources" summary="Open child" icon_name="cpu" open><StepperField name="sg-nested-copies" label="Copies" value="1" min="1" max="20" /></Expander>
+        </Expanders>
+      </Expander>
     </Specimen>
   </Section>
 

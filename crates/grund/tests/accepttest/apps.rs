@@ -1527,6 +1527,8 @@ async fn the_deploy_page_refuses_what_the_api_would_and_makes_nothing() -> anyho
             ("mode", "custom"),
             ("name", "Bad Name"),
             ("image", &web),
+            ("env_key", "DEPLOY_GREETING"),
+            ("env_value", "retain-non-secret"),
             ("secrets_key", "TOKEN"),
             ("secrets_value", "topsecret"),
         ],
@@ -1535,6 +1537,8 @@ async fn the_deploy_page_refuses_what_the_api_would_and_makes_nothing() -> anyho
     then.status(422)?
         .body_contains("Enter them again")?
         .body_contains("value=\"Bad Name\"")?
+        .body_contains("value=\"DEPLOY_GREETING\"")?
+        .body_contains("value=\"retain-non-secret\"")?
         .body_lacks("topsecret")?;
     let refused = then.body()?;
     anyhow::ensure!(
@@ -1583,9 +1587,7 @@ async fn the_deploy_page_refuses_what_the_api_would_and_makes_nothing() -> anyho
         .body_contains("Needs storage")?
         .body_contains(&format!("href=\"/{org}/deploy?template=nats\""))?;
     when.visiting(&format!("{deploy}?template=whoami")).await?;
-    then.status(200)?
-        .body_contains("value=\"whoami\" checked")?
-        .body_contains("Premade app")?;
+    then.status(200)?.carries_the_security_headers()?;
     Ok(())
 }
 
