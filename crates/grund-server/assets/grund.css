@@ -1362,7 +1362,8 @@ a.item-name:hover {
 
 .items-list:has(.item-facts) {
   display: grid;
-  grid-template-columns: 2.75rem minmax(0, 1fr) repeat(3, auto) 2.375rem;
+  /* Bound resource tracks so long reservations cannot consume the name column. */
+  grid-template-columns: 2.75rem minmax(10rem, 1fr) repeat(3, minmax(0, 1fr)) 2.375rem;
   column-gap: var(--space-10);
   padding-inline: 1.6875rem 1.375rem;
 }
