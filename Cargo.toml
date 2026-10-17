@@ -58,15 +58,12 @@ tracing-opentelemetry = { version = "=0.34.0", default-features = false }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 uuid = { version = "1", features = ["serde", "v4", "v5", "v7"] }
 
-# Thin LTO at opt-level 3 (Kasper, 2026-10-02). Fat LTO at opt-level "z"
-# made grund 43 % smaller (36.8 -> 20.8 MB), but on dev a sign-in's server
-# work went from ~16-17 ms to ~31-32 ms, and compiling password hashing at
-# 3 in its own crate (grund-password) did not win it back on dev (~32 ms),
-# although an isolated Argon2 benchmark said it should. grund-docs
-# docs/ci-performance.md.
+# Keep runtime code at O3, but prioritize fast builds over cross-crate LTO.
+# Binary optimization can be revisited separately once build times are sane.
 [profile.release]
-lto = "thin"
-codegen-units = 1
+opt-level = 3
+lto = false
+codegen-units = 16
 panic = "abort"
 strip = true
 
