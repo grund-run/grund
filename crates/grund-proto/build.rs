@@ -35,8 +35,10 @@ fn main() {
     for file in FILES {
         println!("cargo:rerun-if-changed=../../proto/{file}");
     }
+    println!("cargo:rerun-if-env-changed=BUFFA_ELEMENT_MEMORY_LIMIT");
     connectrpc_build::Config::new()
         .descriptor_set(&descriptors)
+        .emit_rerun_directives(false)
         .files(FILES)
         .include_file("_connectrpc.rs")
         .gate_client_feature(true)
