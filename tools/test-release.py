@@ -52,6 +52,32 @@ class ReleaseIdentity(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertFalse((self.repo / 'scratch/tag-release/dist/release.txt').exists())
 
+    def benchmark(self, **changes):
+        environment = self.environment | {
+            'CI_COMMIT_TAG': '', 'CI_COMMIT_SHA': self.commit, 'CI_PIPELINE_EVENT': 'push',
+        } | changes
+        return subprocess.run([sys.executable, 'tools/release.py', 'prepare-benchmark'],
+                              cwd=self.repo, env=environment, capture_output=True, text=True)
+
+    def test_a_push_benchmark_stages_its_source_without_creating_a_tag(self):
+        tags = self.git('tag', '--list')
+        result = self.benchmark()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.git('tag', '--list'), tags)
+        self.assertEqual((self.repo / 'scratch/tag-release/dist/release.txt').read_text(),
+                         self.commit + '\n')
+
+    def test_a_tag_cannot_use_the_non_publishing_benchmark_path(self):
+        result = self.benchmark(CI_COMMIT_TAG=self.tag, CI_PIPELINE_EVENT='tag')
+        self.assertEqual(result.returncode, 1)
+        self.assertFalse((self.repo / 'scratch/tag-release/dist/release.txt').exists())
+
+    def test_a_push_benchmark_cannot_stage_an_unrelated_checkout(self):
+        self.git('commit', '--allow-empty', '-qm', 'another source commit')
+        result = self.benchmark()
+        self.assertEqual(result.returncode, 1)
+        self.assertFalse((self.repo / 'scratch/tag-release/dist/release.txt').exists())
+
 
 if __name__ == '__main__':
     unittest.main()

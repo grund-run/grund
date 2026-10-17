@@ -1,0 +1,73 @@
+# Branch-only release-path trial. No registry/package publisher or release tag.
+when:
+  - event: push
+    branch: ci/ciperf-tag-build
+
+labels:
+  platform: linux/amd64
+
+services:
+  release-postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: grund_release
+      POSTGRES_USER: grund
+      POSTGRES_PASSWORD: grund-release-disposable
+      POSTGRES_INITDB_ARGS: "-c fsync=off -c synchronous_commit=off -c full_page_writes=off"
+  release-nats:
+    image: nats:2.15-alpine
+
+steps:
+  amd64:
+    image: rust:1.98.1-alpine3.24
+    depends_on: []
+    environment:
+      CARGO_BUILD_JOBS: "4"
+      CARGO_INCREMENTAL: "0"
+      CARGO_TARGET_DIR: target/release-build
+      CARGO_TERM_COLOR: always
+      RUSTUP_TOOLCHAIN: 1.98.1-x86_64-unknown-linux-musl
+    commands:
+      - apk add --no-cache musl-dev binutils protobuf-dev sccache ca-certificates curl python3 git
+      - &cache-bootstrap 'command -v ci-cache >/dev/null || { (curl -fsS --connect-timeout 5 --max-time 60 -o /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.3.0/ci-cache-0.3.0-x86_64-linux-musl 2>/dev/null || { if command -v timeout >/dev/null; then timeout 60 wget -q -T 5 -O /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.3.0/ci-cache-0.3.0-x86_64-linux-musl; else wget -q -T 5 -O /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.3.0/ci-cache-0.3.0-x86_64-linux-musl; fi; } 2>/dev/null) && echo "965865d40ee1b5867de652ba41d7f503be6d1601e8493f514b965ee6596cf07e  /usr/local/bin/.ci-cache.part" | sha256sum -c - >/dev/null 2>&1 && chmod 0755 /usr/local/bin/.ci-cache.part && mv /usr/local/bin/.ci-cache.part /usr/local/bin/ci-cache; rm -f /usr/local/bin/.ci-cache.part; command -v ci-cache >/dev/null || echo "ci-cache client unavailable, building uncached"; }'
+      - python3 tools/release-measure.py amd64 parallel-amd64-j4
+
+  arm64:
+    image: rust:1.98.1-alpine3.24
+    depends_on: []
+    environment:
+      CARGO_BUILD_JOBS: "4"
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_TARGET: aarch64-unknown-linux-musl
+      CARGO_TARGET_DIR: target/release-arm64
+      CARGO_TERM_COLOR: always
+      RUSTUP_TOOLCHAIN: 1.98.1-x86_64-unknown-linux-musl
+    commands:
+      - apk add --no-cache musl-dev binutils protobuf-dev sccache ca-certificates curl python3 xz qemu-aarch64 git
+      - *cache-bootstrap
+      - python3 tools/release-measure.py arm64 parallel-arm64-j4
+
+  released-binary-runtime:
+    image: alpine:3.24.0
+    depends_on: [amd64]
+    environment:
+      GRUND_RELEASE_DATABASE_URL: postgres://grund:grund-release-disposable@release-postgres:5432/grund_release
+      GRUND_RELEASE_NATS_URL: nats://release-nats:4222
+      GRUND_RELEASE_BENCHMARK_VERSION: ciperf-parallel-amd64-j4-${CI_COMMIT_SHA}
+    commands:
+      - apk add --no-cache python3 curl openssl git
+      - python3 tools/release-runtime.py scratch/tag-release/dist/grund-linux-amd64 --benchmark
+
+  cache-save:
+    image: alpine:3.24.0
+    depends_on: [amd64, arm64]
+    failure: ignore
+    environment:
+      CICACHE_SAVE: always
+      CICACHE_PASSWORD:
+        from_secret: ci_cache_public
+    commands:
+      - *cache-bootstrap
+      - du -sk target/release-build target/release-arm64 scratch/tag-release/tooling
+      - du -sk target/release-build/.ci-cache-sccache target/release-arm64/.ci-cache-sccache
+      - ci-cache save-all --refresh

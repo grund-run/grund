@@ -1,0 +1,53 @@
+# Same-container controls: thin LTO CGU 1/16 and jobs 4/8, no publishers.
+when:
+  - event: push
+    branch: ci/ciperf-tag-build
+    path:
+      include:
+        - .woodpecker/profile-perf.yaml
+        - tools/release-measure.py
+        - tools/release-runtime.py
+        - tools/release-build.sh
+        - tools/release.py
+
+depends_on: [tag-perf]
+labels:
+  platform: linux/amd64
+
+services:
+  profile-postgres-cgu1:
+    image: postgres:18-alpine
+    environment: &database-env
+      POSTGRES_DB: grund_release
+      POSTGRES_USER: grund
+      POSTGRES_PASSWORD: grund-release-disposable
+      POSTGRES_INITDB_ARGS: "-c fsync=off -c synchronous_commit=off -c full_page_writes=off"
+  profile-postgres-cgu16:
+    image: postgres:18-alpine
+    environment: *database-env
+  profile-postgres-cgu1-j8:
+    image: postgres:18-alpine
+    environment: *database-env
+  profile-postgres-cgu16-j8:
+    image: postgres:18-alpine
+    environment: *database-env
+  profile-nats:
+    image: nats:2.15-alpine
+
+steps:
+  native-profiles:
+    image: rust:1.98.1-alpine3.24
+    environment:
+      CARGO_BUILD_JOBS: "4"
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: always
+      RUSTUP_TOOLCHAIN: 1.98.1-x86_64-unknown-linux-musl
+      GRUND_RELEASE_NATS_URL: nats://profile-nats:4222
+      PERF_DATABASE_CGU1: postgres://grund:grund-release-disposable@profile-postgres-cgu1:5432/grund_release
+      PERF_DATABASE_CGU16: postgres://grund:grund-release-disposable@profile-postgres-cgu16:5432/grund_release
+      PERF_DATABASE_CGU1_J8: postgres://grund:grund-release-disposable@profile-postgres-cgu1-j8:5432/grund_release
+      PERF_DATABASE_CGU16_J8: postgres://grund:grund-release-disposable@profile-postgres-cgu16-j8:5432/grund_release
+    commands:
+      - apk add --no-cache musl-dev binutils protobuf-dev sccache ca-certificates curl python3 git openssl
+      - 'command -v ci-cache >/dev/null || { (curl -fsS --connect-timeout 5 --max-time 60 -o /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.3.0/ci-cache-0.3.0-x86_64-linux-musl 2>/dev/null || { if command -v timeout >/dev/null; then timeout 60 wget -q -T 5 -O /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.3.0/ci-cache-0.3.0-x86_64-linux-musl; else wget -q -T 5 -O /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.3.0/ci-cache-0.3.0-x86_64-linux-musl; fi; } 2>/dev/null) && echo "965865d40ee1b5867de652ba41d7f503be6d1601e8493f514b965ee6596cf07e  /usr/local/bin/.ci-cache.part" | sha256sum -c - >/dev/null 2>&1 && chmod 0755 /usr/local/bin/.ci-cache.part && mv /usr/local/bin/.ci-cache.part /usr/local/bin/ci-cache; rm -f /usr/local/bin/.ci-cache.part; command -v ci-cache >/dev/null || echo "ci-cache client unavailable, building uncached"; }'
+      - python3 tools/release-measure.py matrix

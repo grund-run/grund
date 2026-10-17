@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Run the staged Linux binary with disposable, real PostgreSQL and NATS."""
 
+import concurrent.futures
+import http.cookiejar
 import json
 import os
 from pathlib import Path
 import re
 import secrets
 import socket
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -29,9 +32,48 @@ def wait_for_port(url):
             time.sleep(1)
 
 
+def benchmark_throughput(origin):
+    def sign_in(_):
+        cookies = http.cookiejar.CookieJar()
+        client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookies))
+        with client.open(origin + "/login", timeout=10) as response:
+            page = response.read().decode()
+        match = re.search(r'name="csrf" value="([^"]+)"', page)
+        if not match:
+            raise RuntimeError("benchmark could not obtain a real sign-in CSRF token")
+        body = urllib.parse.urlencode({
+            "csrf": match[1], "login": "ciperf-" + secrets.token_hex(8),
+            "password": "a-deliberately-wrong-benchmark-password",
+        }).encode()
+        request = urllib.request.Request(origin + "/login", data=body, headers={
+            "Origin": origin, "Content-Type": "application/x-www-form-urlencoded",
+        })
+        started = time.perf_counter()
+        with client.open(request, timeout=15) as response:
+            if response.status != 200 or response.geturl() != origin + "/login":
+                raise RuntimeError("benchmark sign-in was not refused at the real login form")
+            response.read()
+        return (time.perf_counter() - started) * 1000
+
+    for index in range(3):
+        sign_in(index)
+    samples = sorted(sign_in(index) for index in range(20))
+    started = time.perf_counter()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(sign_in, range(32)))
+    elapsed = time.perf_counter() - started
+    print("BENCHMARK " + json.dumps({
+        "version": os.environ.get("GRUND_RELEASE_BENCHMARK_VERSION", ""),
+        "signin_samples": len(samples), "signin_min_ms": samples[0],
+        "signin_p50_ms": statistics.median(samples), "signin_p95_ms": samples[18],
+        "signin_concurrency": 4, "signin_requests": 32, "signin_rps": 32 / elapsed,
+    }, sort_keys=True))
+
+
 def main():
-    if len(sys.argv) != 2:
-        raise RuntimeError("usage: tools/release-runtime.py <staged-linux-binary>")
+    if len(sys.argv) not in (2, 3) or (len(sys.argv) == 3 and sys.argv[2] != "--benchmark"):
+        raise RuntimeError("usage: tools/release-runtime.py <staged-linux-binary> [--benchmark]")
+    benchmark = len(sys.argv) == 3
     binary = str(Path(sys.argv[1]).resolve())
     revision = os.environ.get("CI_COMMIT_SHA", "")
     if not re.fullmatch(r"[0-9a-f]{40}", revision):
@@ -68,6 +110,8 @@ def main():
             "GRUND_ORGANISATIONS": "multi",
             "GRUND_CREDENTIALS_FILE": str(state / "credentials.yaml"),
         })
+        if benchmark:
+            environment["GRUND_LOGIN_ATTEMPTS_PER_ADDRESS"] = "0"
         logfile = work / "runtime-server.log"
         with logfile.open("w") as log:
             server = subprocess.Popen([binary, "serve"], env=environment, stdout=log, stderr=subprocess.STDOUT)
@@ -101,6 +145,8 @@ def main():
                 if error.get("code") != "unauthenticated" or error.get("rpc") != "grund.token.v1.TokenService/GetCurrentToken":
                     raise RuntimeError("released CLI did not complete the expected real authentication RPC")
                 print("Released binary passed readiness, dependency, owner bootstrap, HTTP probe and CLI RPC checks")
+                if benchmark:
+                    benchmark_throughput(origin)
             except BaseException:
                 log.flush()
                 print(logfile.read_text(), file=sys.stderr)

@@ -44,31 +44,58 @@ def digest(path):
         return hashlib.file_digest(source, "sha256").hexdigest()
 
 
-def identity():
+def source_identity():
     global REVISION
-    if not VERSION.fullmatch(TAG):
-        fail("release tag must be vX.Y.Z or vX.Y.Z-alpha.N (N starts at 1)")
     if not re.fullmatch(r"[0-9a-f]{40}", REVISION):
         fail("CI_COMMIT_SHA must be a full 40-character commit or annotated tag object")
-    # Gitea's annotated-tag webhook names the tag object, not its source commit.
     REVISION = output("git", "rev-parse", f"{REVISION}^{{commit}}")
     if output("git", "rev-parse", "HEAD") != REVISION:
         fail("checkout does not match CI_COMMIT_SHA")
+
+
+def identity():
+    if not VERSION.fullmatch(TAG):
+        fail("release tag must be vX.Y.Z or vX.Y.Z-alpha.N (N starts at 1)")
+    source_identity()
     if output("git", "rev-parse", f"refs/tags/{TAG}^{{commit}}") != REVISION:
         fail("release tag does not point to the checked-out commit")
 
 
-def prepare():
-    identity()
+def benchmark_identity():
+    global TAG
+    if TAG or os.environ.get("CI_PIPELINE_EVENT") != "push":
+        fail("a release benchmark requires a push pipeline without a release tag")
+    source_identity()
+    TAG = os.environ.get("GRUND_RELEASE_BENCHMARK_VERSION", f"ciperf-{REVISION}")
+    if not re.fullmatch(r"[A-Za-z0-9.+-]{1,100}", TAG):
+        fail("benchmark version contains unsupported characters")
+
+
+def stage_inputs():
     DIST.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(ROOT / "compose.yaml", DIST / "compose.yaml")
     shutil.copyfile(ROOT / "crates/grund-agent/install.sh", DIST / "agent-install.sh")
     (DIST / "release.txt").write_text(REVISION + "\n")
 
 
-def verify():
+def prepare():
     identity()
-    for arch, machine in (("amd64", "Advanced Micro Devices X86-64"), ("arm64", "AArch64")):
+    stage_inputs()
+
+
+def prepare_benchmark():
+    benchmark_identity()
+    stage_inputs()
+
+
+def verify(architectures=("amd64", "arm64"), benchmark=False):
+    if benchmark:
+        benchmark_identity()
+    else:
+        identity()
+    machines = {"amd64": "Advanced Micro Devices X86-64", "arm64": "AArch64"}
+    for arch in architectures:
+        machine = machines[arch]
         binary = DIST / f"grund-linux-{arch}"
         binary.chmod(0o755)
         header = output("readelf", "-h", str(binary))
@@ -260,9 +287,21 @@ def publish():
 
 def main():
     os.chdir(ROOT)
-    commands = {"prepare": prepare, "verify": verify, "merge-images": merge_images, "publish-image": publish_image, "publish": publish}
+    commands = {
+        "prepare": prepare,
+        "prepare-benchmark": prepare_benchmark,
+        "verify": verify,
+        "verify-amd64": lambda: verify(("amd64",)),
+        "verify-arm64": lambda: verify(("arm64",)),
+        "verify-benchmark": lambda: verify(benchmark=True),
+        "verify-benchmark-amd64": lambda: verify(("amd64",), benchmark=True),
+        "verify-benchmark-arm64": lambda: verify(("arm64",), benchmark=True),
+        "merge-images": merge_images,
+        "publish-image": publish_image,
+        "publish": publish,
+    }
     if len(sys.argv) != 2 or sys.argv[1] not in commands:
-        fail("usage: tools/release.py {prepare|verify|merge-images|publish-image|publish}")
+        fail("usage: tools/release.py {" + "|".join(commands) + "}")
     commands[sys.argv[1]]()
 
 
