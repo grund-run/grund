@@ -14,9 +14,10 @@ use connectrpc::{
 };
 use grund_proto::grund::domain::v1::{
     self as proto, AddDomainRequest, AddDomainResponse, BindDomainRequest, BindDomainResponse,
-    CheckDomainRequest, CheckDomainResponse, DomainService, ErrorReason, GetDomainRequest,
-    GetDomainResponse, ListDomainsRequest, ListDomainsResponse, RemoveDomainRequest,
-    RemoveDomainResponse, UnbindDomainRequest, UnbindDomainResponse, VerifyDomainRequest,
+    CheckDomainRequest, CheckDomainResponse, ConfigureAppDomainRequest, ConfigureAppDomainResponse,
+    DomainService, ErrorReason, GetDomainRequest, GetDomainResponse, ListDomainsRequest,
+    ListDomainsResponse, RemoveDomainRequest, RemoveDomainResponse, SetAppSubdomainRequest,
+    SetAppSubdomainResponse, UnbindDomainRequest, UnbindDomainResponse, VerifyDomainRequest,
     VerifyDomainResponse,
 };
 use grund_store::{domain_setup::StepState, organisations::Membership};
@@ -71,7 +72,7 @@ fn failed(error: DomainsError) -> ConnectError {
     let base = match &error {
         DomainsError::NotFound | DomainsError::AppNotFound => ConnectError::not_found(message),
         DomainsError::NotAllowed => ConnectError::permission_denied(message),
-        DomainsError::Invalid(_) | DomainsError::Reserved(_) => {
+        DomainsError::Invalid(_) | DomainsError::Reserved(_) | DomainsError::InvalidSubdomain => {
             ConnectError::invalid_argument(message)
         }
         DomainsError::Exists | DomainsError::Taken => ConnectError::already_exists(message),
@@ -82,7 +83,9 @@ fn failed(error: DomainsError) -> ConnectError {
         | DomainsError::NotVerified
         | DomainsError::VerificationFailed(_)
         | DomainsError::AppNotPublic
-        | DomainsError::LastPublicDomain => ConnectError::failed_precondition(message),
+        | DomainsError::LastPublicDomain
+        | DomainsError::NamespaceConflict(_)
+        | DomainsError::AppDomainRequired => ConnectError::failed_precondition(message),
         DomainsError::Internal(cause) => {
             tracing::error!(error = %format!("{cause:#}"), "domain API call failed");
             ConnectError::internal("grund could not finish that")
@@ -136,6 +139,9 @@ fn message(view: &DomainView) -> proto::Domain {
             .collect(),
         certificate_attempts: view.certificate_attempts,
         certificate_next_attempt_at: timestamp(view.certificate_next_attempt_at),
+        is_app_domain: view.is_app_domain,
+        parent_domain: view.parent_domain.clone(),
+        managed_app_name: view.managed_app_name.clone().unwrap_or_default(),
         ..Default::default()
     }
 }
@@ -305,5 +311,51 @@ impl DomainService for DomainApi {
             .await
             .map_err(failed)?;
         Response::ok(RemoveDomainResponse::default())
+    }
+
+    async fn configure_app_domain(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, ConfigureAppDomainRequest>,
+    ) -> ServiceResult<ConfigureAppDomainResponse> {
+        if principal(&ctx)?.apps.is_some() {
+            return Err(ConnectError::permission_denied(
+                "a person's session or full token is required",
+            ));
+        }
+        let (actor, membership) = self.member(&ctx, request.organisation).await?;
+        let domain = self
+            .state
+            .domains()
+            .configure_app_domain(actor, &membership, request.name)
+            .await
+            .map_err(failed)?;
+        Response::ok(ConfigureAppDomainResponse {
+            domain: MessageField::some(message(&domain)),
+            ..Default::default()
+        })
+    }
+
+    async fn set_app_subdomain(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, SetAppSubdomainRequest>,
+    ) -> ServiceResult<SetAppSubdomainResponse> {
+        if principal(&ctx)?.apps.is_some() {
+            return Err(ConnectError::permission_denied(
+                "a person's session or full token is required",
+            ));
+        }
+        let (actor, membership) = self.member(&ctx, request.organisation).await?;
+        let domain = self
+            .state
+            .domains()
+            .set_app_subdomain(actor, &membership, request.app, request.subdomain)
+            .await
+            .map_err(failed)?;
+        Response::ok(SetAppSubdomainResponse {
+            domain: MessageField::some(message(&domain)),
+            ..Default::default()
+        })
     }
 }

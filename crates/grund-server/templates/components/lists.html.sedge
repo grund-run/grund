@@ -47,11 +47,31 @@ component DomainSetup(domain: &crate::web::domains::DomainItem<'_>, slug: &str, 
 }
 
 component DomainRecords(domain: &crate::web::domains::DomainItem<'_>) {
-  {if domain.state == "pending" {
+  {if domain.state == "pending" && domain.parent_domain.is_none() {
     <Para kind="aside">Add the TXT record, then check ownership.</Para>
+  }}
+  {if let Some(parent) = domain.parent_domain {
+    <Para kind="aside">Ownership verified through <code>{parent}</code>. No TXT record is needed for this app address.</Para>
+    {if let Some(app) = domain.managed_app {
+      <Para kind="aside">App address for <code>{app}</code>. {if domain.state == "verified" { Automatic assignment is disabled. Save the subdomain in this app's Settings to enable it again. }}</Para>
+    }}
+  }}
+  {if domain.is_app_domain {
+    <Para kind="aside">App addresses use <code>&lt;app-name&gt;.{domain.name}</code> by default. Each assigned address gets its own certificate; this does not request a wildcard certificate. The parent domain's app binding is independent.</Para>
+  }}
+  {if let Some(wildcard) = &domain.wildcard_name {
+    {if let Some(target) = domain.edge_target {
+      <Para kind="aside">Add this wildcard CNAME for app addresses. Only assigned app addresses are routed.</Para>
+      <DnsRecords records={&[("CNAME", wildcard.as_str(), target)]} label={format!("App address records for {}", domain.parent_domain.unwrap_or(domain.name))} />
+    } else {
+      <Para kind="aside">No edge target is configured for app addresses.</Para>
+    }}
   }}
   {if domain.records.iter().any(|record| record.0 == "CNAME") {
     <Para kind="aside">Point {domain.name} at grund with the CNAME record. For a domain at the top of its zone, use your provider's ALIAS, ANAME or CNAME flattening to the same address.</Para>
+  }}
+  {if domain.edge_target.is_none() && domain.wildcard_name.is_none() {
+    <Para kind="aside">No edge target is configured for this domain.</Para>
   }}
   {if !domain.records.is_empty() {
     <DnsRecords records={&domain.records} label={format!("Records for {}", domain.name)} />

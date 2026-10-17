@@ -92,6 +92,46 @@ pub async fn apply_domain(
             .execute(&mut *connection)
             .await?;
         }
+        DomainEvent::AppDomainEnabled { .. } => {
+            sqlx::query(
+                "UPDATE grund_domains SET is_app_domain = true, stream_version = $2 \
+                  WHERE domain_id = $1 AND stream_version < $2",
+            )
+            .bind(domain_id)
+            .bind(version)
+            .execute(&mut *connection)
+            .await?;
+        }
+        DomainEvent::GeneratedFromParent {
+            parent_domain_id,
+            parent_domain,
+            managed_app_id,
+            ..
+        } => {
+            sqlx::query(
+                "UPDATE grund_domains SET parent_domain_id = $2, parent_domain = $3, \
+                        managed_app_id = $4, stream_version = $5 \
+                  WHERE domain_id = $1 AND stream_version < $5",
+            )
+            .bind(domain_id)
+            .bind(parent_domain_id)
+            .bind(parent_domain.as_str())
+            .bind(managed_app_id)
+            .bind(version)
+            .execute(&mut *connection)
+            .await?;
+        }
+        DomainEvent::AppDomainAllocationSet { enabled, .. } => {
+            sqlx::query(
+                "UPDATE grund_domains SET assignment_disabled = $2, stream_version = $3 \
+                  WHERE domain_id = $1 AND stream_version < $3",
+            )
+            .bind(domain_id)
+            .bind(!enabled)
+            .bind(version)
+            .execute(&mut *connection)
+            .await?;
+        }
     }
     Ok(())
 }
@@ -125,6 +165,12 @@ pub struct DomainRow {
     pub token: String,
     pub state: String,
     pub app_id: Option<Uuid>,
+    pub is_app_domain: bool,
+    pub parent_domain_id: Option<Uuid>,
+    pub parent_domain: Option<String>,
+    pub managed_app_id: Option<Uuid>,
+    pub managed_app_name: Option<String>,
+    pub assignment_disabled: bool,
     /// The bound app's name, while it is live.
     pub app_name: Option<String>,
     pub added_at: DateTime<Utc>,
@@ -151,6 +197,8 @@ macro_rules! select_rows {
     ($where:literal) => {
         concat!(
             "SELECT d.domain_id, d.organisation_id, d.name, d.token, d.state, d.app_id, \
+            d.is_app_domain, d.parent_domain_id, d.parent_domain, d.managed_app_id, d.assignment_disabled, \
+            managed.name AS managed_app_name, \
             a.name AS app_name, d.added_at, d.verified_at, d.bound_at, d.checked_at, d.check_error, \
             c.not_after AS certificate_not_after, c.last_error AS certificate_error, \
             (c.subject IS NOT NULL) AS certificate_wanted, \
@@ -163,6 +211,7 @@ macro_rules! select_rows {
                 AS certificate_next_attempt_at \
        FROM grund_domains d \
        LEFT JOIN grund_apps a ON a.app_id = d.app_id AND a.deleted_at IS NULL \
+       LEFT JOIN grund_apps managed ON managed.app_id = d.managed_app_id AND managed.deleted_at IS NULL \
        LEFT JOIN grund_certificates c ON c.subject = 'domain:' || d.domain_id::text \
        LEFT JOIN grund_domain_setup s ON s.domain_id = d.domain_id ",
             $where
@@ -195,6 +244,82 @@ pub async fn by_name(
     .bind(organisation_id)
     .bind(name)
     .fetch_optional(executor)
+    .await
+}
+
+/// Serializes hierarchy decisions across organisations for this transaction.
+pub async fn lock_hierarchy_policy(executor: impl PgExecutor<'_>) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "SELECT pg_advisory_xact_lock(hashtextextended('grund-domain-hierarchy-policy', 0))",
+    )
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+/// The organisation's live enabled parent, if configured.
+pub async fn configured_parent(
+    executor: impl PgExecutor<'_>,
+    organisation_id: Uuid,
+) -> Result<Option<DomainRow>, sqlx::Error> {
+    sqlx::query_as(select_rows!(
+        "WHERE d.organisation_id = $1 AND d.is_app_domain AND d.state <> 'removed'"
+    ))
+    .bind(organisation_id)
+    .fetch_optional(executor)
+    .await
+}
+
+/// The app's latest managed assignment, preferring live rows over removed history.
+pub async fn managed_assignment(
+    executor: impl PgExecutor<'_>,
+    organisation_id: Uuid,
+    app_id: Uuid,
+) -> Result<Option<DomainRow>, sqlx::Error> {
+    sqlx::query_as(select_rows!(
+        "WHERE d.organisation_id = $1 AND d.managed_app_id = $2 \
+         ORDER BY (d.state <> 'removed') DESC, d.added_at DESC, d.domain_id DESC LIMIT 1"
+    ))
+    .bind(organisation_id)
+    .bind(app_id)
+    .fetch_optional(executor)
+    .await
+}
+
+/// Whether the organisation's parent still has any live generated children.
+pub async fn has_live_children(
+    executor: impl PgExecutor<'_>,
+    organisation_id: Uuid,
+    parent_domain_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM grund_domains \
+          WHERE organisation_id = $1 AND parent_domain_id = $2 AND state <> 'removed')",
+    )
+    .bind(organisation_id)
+    .bind(parent_domain_id)
+    .fetch_one(executor)
+    .await
+}
+
+/// Whether a foreign claimed namespace contains the name, or a foreign verified
+/// descendant would fall inside a proposed parent namespace.
+pub async fn foreign_namespace_overlap(
+    executor: impl PgExecutor<'_>,
+    organisation_id: Uuid,
+    name: &str,
+    include_descendants: bool,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM grund_domains \
+          WHERE organisation_id <> $1 AND state IN ('verified', 'bound') \
+            AND ((is_app_domain AND ($2 = name OR right($2, length(name) + 1) = '.' || name)) \
+              OR ($3 AND (name = $2 OR right(name, length($2) + 1) = '.' || $2))))",
+    )
+    .bind(organisation_id)
+    .bind(name)
+    .bind(include_descendants)
+    .fetch_one(executor)
     .await
 }
 
@@ -247,28 +372,30 @@ pub async fn cooling_until(
     .await
 }
 
-/// How many domains the organisation has that are not removed.
+/// How many ordinary custom domains the organisation has that are not removed.
 pub async fn count_live(
     executor: impl PgExecutor<'_>,
     organisation_id: Uuid,
 ) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar(
-        "SELECT count(*) FROM grund_domains WHERE organisation_id = $1 AND state <> 'removed'",
+        "SELECT count(*) FROM grund_domains \
+          WHERE organisation_id = $1 AND state <> 'removed' AND parent_domain_id IS NULL",
     )
     .bind(organisation_id)
     .fetch_one(executor)
     .await
 }
 
-/// How many domains the organisation added in the last day, removed ones
-/// included.
+/// How many ordinary custom domains the organisation added in the last day,
+/// removed ones included.
 pub async fn added_today(
     executor: impl PgExecutor<'_>,
     organisation_id: Uuid,
 ) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar(
         "SELECT count(*) FROM grund_domains \
-          WHERE organisation_id = $1 AND added_at > clock_timestamp() - interval '1 day'",
+          WHERE organisation_id = $1 AND parent_domain_id IS NULL \
+            AND added_at > clock_timestamp() - interval '1 day'",
     )
     .bind(organisation_id)
     .fetch_one(executor)
@@ -448,10 +575,604 @@ pub async fn certificate(
 
 #[cfg(test)]
 mod tests {
-    use grund_domain::custom_domain::DomainName;
+    use grund_config::app::spec::{AppName, AppSettings};
+    use grund_domain::{
+        app::AppCommand,
+        custom_domain::{DomainCommand, DomainName},
+    };
+    use mire::EventStore;
     use sqlx::PgPool;
 
     use super::*;
+    use crate::work::Work;
+
+    async fn event_store(pool: &PgPool) -> EventStore {
+        crate::migrate(pool).await.unwrap();
+        EventStore::new(pool.clone())
+    }
+
+    async fn parent(events: &EventStore, organisation_id: Uuid, name: &str) -> Uuid {
+        let domain_id = Uuid::now_v7();
+        let mut work = Work::begin(events, Uuid::now_v7(), "test").await.unwrap();
+        lock_hierarchy_policy(&mut **work.sql()).await.unwrap();
+        for command in [
+            DomainCommand::Add {
+                actor: Uuid::nil(),
+                organisation_id,
+                name: DomainName::parse(name).unwrap(),
+                token: format!("grund-verify-{}", "a".repeat(43)),
+                at: Utc::now(),
+            },
+            DomainCommand::Verify {
+                actor: Uuid::nil(),
+                at: Utc::now(),
+            },
+            DomainCommand::EnableAppDomain {
+                actor: Uuid::nil(),
+                at: Utc::now(),
+            },
+        ] {
+            work.domain(domain_id, command).await.unwrap();
+        }
+        work.commit().await.unwrap();
+        domain_id
+    }
+
+    async fn generation(
+        work: &mut Work<'_>,
+        organisation_id: Uuid,
+        parent_domain_id: Uuid,
+        app_id: Uuid,
+        name: &str,
+    ) -> DomainCommand {
+        let authority = work
+            .load_domain(parent_domain_id)
+            .await
+            .unwrap()
+            .app_domain_authority(parent_domain_id)
+            .unwrap();
+        DomainCommand::Generate {
+            actor: Uuid::nil(),
+            organisation_id,
+            name: DomainName::parse(name).unwrap(),
+            token: format!("grund-verify-{}", "b".repeat(43)),
+            authority,
+            app_id,
+            at: Utc::now(),
+        }
+    }
+
+    async fn generated(
+        events: &EventStore,
+        organisation_id: Uuid,
+        parent_domain_id: Uuid,
+        app_id: Uuid,
+        name: &str,
+    ) -> Uuid {
+        let domain_id = Uuid::now_v7();
+        let mut work = Work::begin(events, Uuid::now_v7(), "test").await.unwrap();
+        lock_hierarchy_policy(&mut **work.sql()).await.unwrap();
+        let command = generation(&mut work, organisation_id, parent_domain_id, app_id, name).await;
+        work.domain(domain_id, command).await.unwrap();
+        work.commit().await.unwrap();
+        domain_id
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn foreign_namespaces_use_dns_label_boundaries_and_verified_live_ownership(pool: PgPool) {
+        let events = event_store(&pool).await;
+        let (owner, foreign) = (Uuid::now_v7(), Uuid::now_v7());
+        let namespace = parent(&events, foreign, "apps.example.com").await;
+        for name in [
+            "apps.example.com",
+            "shop.apps.example.com",
+            "a.b.apps.example.com",
+        ] {
+            assert!(
+                foreign_namespace_overlap(&pool, owner, name, false)
+                    .await
+                    .unwrap()
+            );
+            assert!(
+                !foreign_namespace_overlap(&pool, foreign, name, true)
+                    .await
+                    .unwrap()
+            );
+        }
+        for name in [
+            "notapps.example.com",
+            "apps.example.com.other.net",
+            "example.com",
+        ] {
+            assert!(
+                !foreign_namespace_overlap(&pool, owner, name, false)
+                    .await
+                    .unwrap()
+            );
+        }
+        assert!(
+            foreign_namespace_overlap(&pool, owner, "example.com", true)
+                .await
+                .unwrap()
+        );
+        let exact = add(&pool, foreign, "api.other.example.com", 1).await;
+        assert!(
+            !foreign_namespace_overlap(&pool, owner, "other.example.com", true)
+                .await
+                .unwrap()
+        );
+        apply(&pool, exact, 2, verified()).await;
+        assert!(
+            foreign_namespace_overlap(&pool, owner, "other.example.com", true)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !foreign_namespace_overlap(&pool, owner, "other.example.com", false)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !foreign_namespace_overlap(&pool, owner, "x.api.other.example.com", false)
+                .await
+                .unwrap()
+        );
+        apply(
+            &pool,
+            namespace,
+            4,
+            DomainEvent::Bound {
+                app_id: Uuid::now_v7(),
+                bound_by: Uuid::nil(),
+                bound_at: Utc::now(),
+            },
+        )
+        .await;
+        assert!(
+            foreign_namespace_overlap(&pool, owner, "shop.apps.example.com", false)
+                .await
+                .unwrap()
+        );
+        for domain in [namespace, exact] {
+            apply(
+                &pool,
+                domain,
+                5,
+                DomainEvent::Removed {
+                    removed_by: Uuid::nil(),
+                    removed_at: Utc::now(),
+                },
+            )
+            .await;
+        }
+        assert!(
+            !foreign_namespace_overlap(&pool, owner, "example.com", true)
+                .await
+                .unwrap()
+        );
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn one_live_parent_per_organisation_is_enforced_by_the_database(pool: PgPool) {
+        let events = event_store(&pool).await;
+        let organisation = Uuid::now_v7();
+        let first = parent(&events, organisation, "apps.example.com").await;
+        let second = add(&pool, organisation, "other.example.com", 1).await;
+        apply(&pool, second, 2, verified()).await;
+        let mut connection = pool.acquire().await.unwrap();
+        let refused = apply_domain(
+            second,
+            3,
+            &DomainEvent::AppDomainEnabled {
+                enabled_by: Uuid::nil(),
+                enabled_at: Utc::now(),
+            },
+            &mut connection,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            refused
+                .as_database_error()
+                .and_then(|error| error.constraint()),
+            Some("grund_domains_app_domain_idx")
+        );
+        drop(connection);
+        assert_eq!(
+            configured_parent(&pool, organisation)
+                .await
+                .unwrap()
+                .unwrap()
+                .domain_id,
+            first
+        );
+        assert!(
+            configured_parent(&pool, Uuid::now_v7())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        apply(
+            &pool,
+            first,
+            4,
+            DomainEvent::Removed {
+                removed_by: Uuid::nil(),
+                removed_at: Utc::now(),
+            },
+        )
+        .await;
+        apply(
+            &pool,
+            second,
+            3,
+            DomainEvent::AppDomainEnabled {
+                enabled_by: Uuid::nil(),
+                enabled_at: Utc::now(),
+            },
+        )
+        .await;
+        assert_eq!(
+            configured_parent(&pool, organisation)
+                .await
+                .unwrap()
+                .unwrap()
+                .domain_id,
+            second
+        );
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn a_managed_app_has_one_live_assignment_and_cannot_bind_it_to_another_app(pool: PgPool) {
+        let events = event_store(&pool).await;
+        let (organisation, app) = (Uuid::now_v7(), Uuid::now_v7());
+        let parent_id = parent(&events, organisation, "apps.example.com").await;
+        let child = generated(
+            &events,
+            organisation,
+            parent_id,
+            app,
+            "shop.apps.example.com",
+        )
+        .await;
+        let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();
+        lock_hierarchy_policy(&mut **work.sql()).await.unwrap();
+        let command = generation(
+            &mut work,
+            organisation,
+            parent_id,
+            app,
+            "other.apps.example.com",
+        )
+        .await;
+        let refused = work.domain(Uuid::now_v7(), command).await.unwrap_err();
+        assert_eq!(
+            refused.unique_violation().as_deref(),
+            Some("grund_domains_managed_assignment_idx")
+        );
+        drop(work);
+        let refused = sqlx::query("UPDATE grund_domains SET app_id = $2 WHERE domain_id = $1")
+            .bind(child)
+            .bind(Uuid::now_v7())
+            .execute(&pool)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            refused
+                .as_database_error()
+                .and_then(|error| error.constraint()),
+            Some("grund_domains_managed_binding_check")
+        );
+        let refused =
+            sqlx::query("UPDATE grund_domains SET parent_domain = NULL WHERE domain_id = $1")
+                .bind(child)
+                .execute(&pool)
+                .await
+                .unwrap_err();
+        assert_eq!(
+            refused
+                .as_database_error()
+                .and_then(|error| error.constraint()),
+            Some("grund_domains_provenance_check")
+        );
+        assert!(
+            has_live_children(&pool, organisation, parent_id)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !has_live_children(&pool, Uuid::now_v7(), parent_id)
+                .await
+                .unwrap()
+        );
+        assert_eq!(count_live(&pool, organisation).await.unwrap(), 1);
+        assert_eq!(added_today(&pool, organisation).await.unwrap(), 1);
+        apply(
+            &pool,
+            child,
+            2,
+            DomainEvent::GeneratedFromParent {
+                parent_domain_id: Uuid::now_v7(),
+                parent_domain: DomainName::parse("other.example.com").unwrap(),
+                managed_app_id: Uuid::now_v7(),
+                parent_verified_at: Utc::now(),
+                generated_by: Uuid::nil(),
+                generated_at: Utc::now(),
+            },
+        )
+        .await;
+        let row = managed_assignment(&pool, organisation, app)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.parent_domain_id, Some(parent_id));
+        assert_eq!(row.parent_domain.as_deref(), Some("apps.example.com"));
+        assert_eq!(row.managed_app_id, Some(app));
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn explicit_opt_out_and_parent_provenance_survive_unbinding_removal_and_replay(
+        pool: PgPool,
+    ) {
+        let events = event_store(&pool).await;
+        let (organisation, app) = (Uuid::now_v7(), Uuid::now_v7());
+        let parent_id = parent(&events, organisation, "apps.example.com").await;
+        let child = generated(
+            &events,
+            organisation,
+            parent_id,
+            app,
+            "shop.apps.example.com",
+        )
+        .await;
+        let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();
+        work.app(
+            app,
+            AppCommand::Create {
+                actor: Uuid::nil(),
+                organisation_id: organisation,
+                name: AppName::parse("shop").unwrap(),
+                settings: AppSettings::default(),
+                at: Utc::now(),
+            },
+        )
+        .await
+        .unwrap();
+        work.domain(
+            child,
+            DomainCommand::Unbind {
+                actor: Uuid::nil(),
+                at: Utc::now(),
+            },
+        )
+        .await
+        .unwrap();
+        work.commit().await.unwrap();
+        let row = managed_assignment(&pool, organisation, app)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.state, "verified");
+        assert!(row.assignment_disabled);
+        assert_eq!(row.app_name, None);
+        assert_eq!(row.managed_app_name.as_deref(), Some("shop"));
+        assert_eq!(row.parent_domain_id, Some(parent_id));
+        assert_eq!(row.parent_domain.as_deref(), Some("apps.example.com"));
+        assert_eq!(row.managed_app_id, Some(app));
+        let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();
+        work.domain(
+            child,
+            DomainCommand::Bind {
+                actor: Uuid::nil(),
+                app_id: app,
+                at: Utc::now(),
+            },
+        )
+        .await
+        .unwrap();
+        work.domain(
+            child,
+            DomainCommand::UnbindForAppDeletion {
+                actor: Uuid::nil(),
+                at: Utc::now(),
+            },
+        )
+        .await
+        .unwrap();
+        work.commit().await.unwrap();
+        assert!(
+            !managed_assignment(&pool, organisation, app)
+                .await
+                .unwrap()
+                .unwrap()
+                .assignment_disabled
+        );
+        let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();
+        work.domain(
+            child,
+            DomainCommand::Remove {
+                actor: Uuid::nil(),
+                at: Utc::now(),
+            },
+        )
+        .await
+        .unwrap();
+        work.commit().await.unwrap();
+        apply(
+            &pool,
+            child,
+            3,
+            DomainEvent::AppDomainAllocationSet {
+                enabled: true,
+                changed_by: Uuid::nil(),
+                changed_at: Utc::now(),
+            },
+        )
+        .await;
+        let row = managed_assignment(&pool, organisation, app)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.state, "removed");
+        assert!(row.assignment_disabled);
+        assert_eq!(row.parent_domain_id, Some(parent_id));
+        assert_eq!(row.managed_app_id, Some(app));
+        assert!(
+            !has_live_children(&pool, organisation, parent_id)
+                .await
+                .unwrap()
+        );
+        assert!(
+            managed_assignment(&pool, Uuid::now_v7(), app)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let replacement = generated(
+            &events,
+            organisation,
+            parent_id,
+            app,
+            "new.apps.example.com",
+        )
+        .await;
+        sqlx::query("UPDATE grund_domains SET added_at = clock_timestamp() + interval '1 day' WHERE domain_id = $1")
+            .bind(child)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            managed_assignment(&pool, organisation, app)
+                .await
+                .unwrap()
+                .unwrap()
+                .domain_id,
+            replacement
+        );
+        assert_eq!(added_today(&pool, organisation).await.unwrap(), 1);
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn a_failed_hostname_rename_rolls_back_the_old_binding_and_all_new_events(pool: PgPool) {
+        let events = event_store(&pool).await;
+        let (organisation, app) = (Uuid::now_v7(), Uuid::now_v7());
+        let parent_id = parent(&events, organisation, "apps.example.com").await;
+        let old = generated(
+            &events,
+            organisation,
+            parent_id,
+            app,
+            "shop.apps.example.com",
+        )
+        .await;
+        let occupied = add(&pool, Uuid::now_v7(), "taken.apps.example.com", 1).await;
+        apply(&pool, occupied, 2, verified()).await;
+        let new = Uuid::now_v7();
+        let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();
+        lock_hierarchy_policy(&mut **work.sql()).await.unwrap();
+        work.domain(
+            old,
+            DomainCommand::Remove {
+                actor: Uuid::nil(),
+                at: Utc::now(),
+            },
+        )
+        .await
+        .unwrap();
+        let command = generation(
+            &mut work,
+            organisation,
+            parent_id,
+            app,
+            "taken.apps.example.com",
+        )
+        .await;
+        let refused = work.domain(new, command).await.unwrap_err();
+        assert_eq!(
+            refused.unique_violation().as_deref(),
+            Some("grund_domains_claimed_idx")
+        );
+        drop(work);
+        let row = managed_assignment(&pool, organisation, app)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.domain_id, old);
+        assert_eq!(row.state, "bound");
+        assert_eq!(row.name, "shop.apps.example.com");
+        assert!(!row.assignment_disabled);
+        assert!(
+            by_name(&pool, organisation, "taken.apps.example.com")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();
+        let old_state = work.load_domain(old).await.unwrap();
+        assert_eq!(old_state.app_id, Some(app));
+        assert!(!old_state.removed);
+        assert!(!work.load_domain(new).await.unwrap().exists);
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn a_default_hostname_collision_rolls_back_app_creation_and_generated_allocation(
+        pool: PgPool,
+    ) {
+        let events = event_store(&pool).await;
+        let organisation = Uuid::now_v7();
+        let parent_id = parent(&events, organisation, "apps.example.com").await;
+        let occupied = add(&pool, Uuid::now_v7(), "shop.apps.example.com", 1).await;
+        apply(&pool, occupied, 2, verified()).await;
+        let (app, child) = (Uuid::now_v7(), Uuid::now_v7());
+        let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();
+        lock_hierarchy_policy(&mut **work.sql()).await.unwrap();
+        work.app(
+            app,
+            AppCommand::Create {
+                actor: Uuid::nil(),
+                organisation_id: organisation,
+                name: AppName::parse("shop").unwrap(),
+                settings: AppSettings::default(),
+                at: Utc::now(),
+            },
+        )
+        .await
+        .unwrap();
+        let command = generation(
+            &mut work,
+            organisation,
+            parent_id,
+            app,
+            "shop.apps.example.com",
+        )
+        .await;
+        let refused = work.domain(child, command).await.unwrap_err();
+        assert_eq!(
+            refused.unique_violation().as_deref(),
+            Some("grund_domains_claimed_idx")
+        );
+        drop(work);
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM grund_apps WHERE app_id = $1")
+            .bind(app)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
+        assert!(
+            managed_assignment(&pool, organisation, app)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            !has_live_children(&pool, organisation, parent_id)
+                .await
+                .unwrap()
+        );
+        let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();
+        assert!(!work.load_app(app).await.unwrap().exists);
+        assert!(!work.load_domain(child).await.unwrap().exists);
+    }
 
     async fn add(pool: &PgPool, organisation_id: Uuid, name: &str, version: i64) -> Uuid {
         let domain_id = Uuid::now_v7();

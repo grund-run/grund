@@ -267,8 +267,12 @@ grund apps set shop image ghcr.io/acme/shop:2.1 --dry-run
 grund apps set shop copies 3
 grund apps rollback shop 4 --wait
 grund machines add web-2               # prints the command to run on the new machine
-grund domains add shop.example.com
-grund domains check shop.example.com   # check setup and queue an eligible certificate retry
+grund domains add shop.example.net
+grund domains check shop.example.net   # check setup and queue an eligible certificate retry
+grund domains add example.com
+grund domains verify example.com       # after adding the printed ownership TXT
+grund domains app-domain example.com   # existing and future apps get <app>.example.com
+grund domains subdomain shop storefront
 grund tokens create --name ci --scope deploy --apps shop --json
 ```
 
@@ -313,6 +317,16 @@ with check and retry times. `grund domains list` shows the same steps.
 Owners and admins can add, verify, bind, move, unbind and check domains from
 the app. Setup checks continue automatically; **Check now** queues a fresh
 check without bypassing a certificate authority's retry deadline.
+
+For organisation app addresses, verify a parent such as `example.com`, then
+choose **Use for app addresses** on Domains. Point `*.example.com` at the
+configured edge shown there. Existing and future apps get
+`<app>.example.com`; an owner or admin can choose another single-label name
+in app Settings or with `grund domains subdomain`. Collisions are refused,
+and unbinding is an opt-out until explicitly restored. DNS control labels
+are reserved; `api`, `www` and `admin` remain usable on your own parent.
+Each assigned hostname uses its own HTTP-01 certificate. Wildcard DNS does
+not require a wildcard certificate, DNS-01 or DNS-provider credentials.
 
 ## Deploy from CI
 

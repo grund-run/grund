@@ -1,8 +1,9 @@
 //! A custom domain (grund-docs website/design/app-domains.md §3,
 //! design/traffic.md §5.3): a name an organisation owns, proved with a TXT
-//! record grund generates, then bound to one of its apps. One stream per
-//! domain the organisation added; adding the same name again after removing
-//! it is a new stream.
+//! record grund generates, then bound to one of its apps. A verified parent
+//! can also authorise app addresses with durable parent and app ownership.
+//! One stream per domain the organisation added; adding the same name again
+//! after removing it is a new stream.
 //!
 //! The aggregate decides only what follows from its own history. Whether
 //! the TXT record is there, whether another organisation holds the name and
@@ -38,7 +39,9 @@ pub enum DomainNameError {
         "write an international name in its xn-- form (punycode); grund takes letters, digits, hyphens and dots"
     )]
     NotAscii,
-    #[error("a wildcard is not a name grund can verify; add each name on its own")]
+    #[error(
+        "add the parent name without *.; app subdomains are configured after ownership verification"
+    )]
     Wildcard,
     #[error("enter the name alone, without https:// or a path")]
     NotAName,
@@ -151,11 +154,31 @@ pub enum DomainEvent {
         added_by: Uuid,
         added_at: DateTime<Utc>,
     },
-    /// The TXT record was found holding the token: the name is the
+    /// Ownership was proved by TXT or a verified parent: the name is the
     /// organisation's on this instance until it is removed.
     Verified {
         verified_by: Uuid,
         verified_at: DateTime<Utc>,
+    },
+    /// The verified name became the organisation's app namespace.
+    AppDomainEnabled {
+        enabled_by: Uuid,
+        enabled_at: DateTime<Utc>,
+    },
+    /// A verified parent authorised this name for its managed app.
+    GeneratedFromParent {
+        parent_domain_id: Uuid,
+        parent_domain: DomainName,
+        managed_app_id: Uuid,
+        parent_verified_at: DateTime<Utc>,
+        generated_by: Uuid,
+        generated_at: DateTime<Utc>,
+    },
+    /// Whether automatic allocation may restore this app's assignment.
+    AppDomainAllocationSet {
+        enabled: bool,
+        changed_by: Uuid,
+        changed_at: DateTime<Utc>,
     },
     /// Requests for the name go to the app's public port.
     Bound {
@@ -186,6 +209,48 @@ pub struct Domain {
     pub verified_at: Option<DateTime<Utc>>,
     pub app_id: Option<Uuid>,
     pub removed: bool,
+    #[serde(default)]
+    pub is_app_domain: bool,
+    #[serde(default)]
+    pub parent_domain_id: Option<Uuid>,
+    #[serde(default)]
+    pub parent_domain: Option<DomainName>,
+    #[serde(default)]
+    pub managed_app_id: Option<Uuid>,
+    #[serde(default)]
+    pub assignment_disabled: bool,
+}
+
+/// Proof that a live verified parent enabled app-domain allocation.
+#[derive(Debug, Clone)]
+pub struct AppDomainAuthority {
+    organisation_id: Uuid,
+    parent_domain_id: Uuid,
+    parent_domain: DomainName,
+    parent_verified_at: DateTime<Utc>,
+}
+
+impl Domain {
+    /// Captures the parent's authority after the service locks namespace policy.
+    pub fn app_domain_authority(
+        &self,
+        parent_domain_id: Uuid,
+    ) -> Result<AppDomainAuthority, DomainError> {
+        if !self.exists || self.removed {
+            return Err(DomainError::NotFound);
+        }
+        let parent_verified_at = self.verified_at.ok_or(DomainError::NotVerified)?;
+        if !self.is_app_domain || self.parent_domain_id.is_some() {
+            return Err(DomainError::InvalidAuthority);
+        }
+        let parent_domain = self.name.clone().ok_or(DomainError::InvalidAuthority)?;
+        Ok(AppDomainAuthority {
+            organisation_id: self.organisation_id,
+            parent_domain_id,
+            parent_domain,
+            parent_verified_at,
+        })
+    }
 }
 
 impl mire::Aggregate for Domain {
@@ -209,6 +274,20 @@ impl mire::Aggregate for Domain {
                 self.token = token.clone();
             }
             DomainEvent::Verified { verified_at, .. } => self.verified_at = Some(*verified_at),
+            DomainEvent::AppDomainEnabled { .. } => self.is_app_domain = true,
+            DomainEvent::GeneratedFromParent {
+                parent_domain_id,
+                parent_domain,
+                managed_app_id,
+                ..
+            } => {
+                self.parent_domain_id = Some(*parent_domain_id);
+                self.parent_domain = Some(parent_domain.clone());
+                self.managed_app_id = Some(*managed_app_id);
+            }
+            DomainEvent::AppDomainAllocationSet { enabled, .. } => {
+                self.assignment_disabled = !enabled;
+            }
             DomainEvent::Bound { app_id, .. } => self.app_id = Some(*app_id),
             DomainEvent::Unbound { .. } => self.app_id = None,
             DomainEvent::Removed { .. } => {
@@ -220,7 +299,7 @@ impl mire::Aggregate for Domain {
 }
 
 impl mire::Snapshot for Domain {
-    const SNAPSHOT_VERSION: i32 = 1;
+    const SNAPSHOT_VERSION: i32 = 2;
     const SNAPSHOT_FREQUENCY: i64 = 100;
 }
 
@@ -235,18 +314,32 @@ pub enum DomainCommand {
         token: String,
         at: DateTime<Utc>,
     },
+    /// Enables app addresses without changing an existing apex binding.
+    EnableAppDomain { actor: Uuid, at: DateTime<Utc> },
+    /// Creates a verified, bound child with durable parent and app ownership.
+    Generate {
+        actor: Uuid,
+        organisation_id: Uuid,
+        name: DomainName,
+        token: String,
+        authority: AppDomainAuthority,
+        app_id: Uuid,
+        at: DateTime<Utc>,
+    },
     /// The service found the token in the name's TXT record. Verifying a
     /// verified name again changes nothing.
     Verify { actor: Uuid, at: DateTime<Utc> },
-    /// Binding to the app it is bound to changes nothing; binding to
-    /// another moves it.
+    /// Binding to the same app is idempotent. Ordinary names may move;
+    /// generated names remain owned by their managed app.
     Bind {
         actor: Uuid,
         app_id: Uuid,
         at: DateTime<Utc>,
     },
-    /// Unbinding a name bound to nothing changes nothing.
+    /// Unbinds the name and opts generated names out of automatic allocation.
     Unbind { actor: Uuid, at: DateTime<Utc> },
+    /// Suspends a binding without changing the app's allocation preference.
+    UnbindForAppDeletion { actor: Uuid, at: DateTime<Utc> },
     /// Unbinds it first if it is bound.
     Remove { actor: Uuid, at: DateTime<Utc> },
 }
@@ -259,6 +352,12 @@ pub enum DomainError {
     NotFound,
     #[error("the domain is not verified yet")]
     NotVerified,
+    #[error("the domain cannot authorise app addresses")]
+    InvalidAuthority,
+    #[error("a generated domain can only be bound to its managed app")]
+    ManagedAppMismatch,
+    #[error("an app address must be one DNS label below its parent")]
+    InvalidGeneratedName,
 }
 
 impl mire::Command for DomainCommand {
@@ -267,30 +366,103 @@ impl mire::Command for DomainCommand {
     type Events = Vec<DomainEvent>;
 
     fn handle(self, domain: &Domain) -> Result<Vec<DomainEvent>, DomainError> {
-        if let DomainCommand::Add {
-            actor,
-            organisation_id,
-            name,
-            token,
-            at,
-        } = self
-        {
-            if domain.exists {
-                return Err(DomainError::AlreadyExists);
-            }
-            return Ok(vec![DomainEvent::Added {
+        match self {
+            DomainCommand::Add {
+                actor,
                 organisation_id,
                 name,
                 token,
-                added_by: actor,
-                added_at: at,
-            }]);
+                at,
+            } => {
+                if domain.exists {
+                    return Err(DomainError::AlreadyExists);
+                }
+                return Ok(vec![DomainEvent::Added {
+                    organisation_id,
+                    name,
+                    token,
+                    added_by: actor,
+                    added_at: at,
+                }]);
+            }
+            DomainCommand::Generate {
+                actor,
+                organisation_id,
+                name,
+                token,
+                authority,
+                app_id,
+                at,
+            } => {
+                if domain.exists {
+                    return Err(DomainError::AlreadyExists);
+                }
+                if authority.organisation_id != organisation_id {
+                    return Err(DomainError::InvalidAuthority);
+                }
+                let label = name
+                    .as_str()
+                    .strip_suffix(authority.parent_domain.as_str())
+                    .and_then(|prefix| prefix.strip_suffix('.'));
+                if !label.is_some_and(|label| {
+                    !label.is_empty()
+                        && !label.contains('.')
+                        && !matches!(label, "_grund" | "_acme-challenge" | "*")
+                }) {
+                    return Err(DomainError::InvalidGeneratedName);
+                }
+                return Ok(vec![
+                    DomainEvent::Added {
+                        organisation_id,
+                        name,
+                        token,
+                        added_by: actor,
+                        added_at: at,
+                    },
+                    DomainEvent::GeneratedFromParent {
+                        parent_domain_id: authority.parent_domain_id,
+                        parent_domain: authority.parent_domain,
+                        managed_app_id: app_id,
+                        parent_verified_at: authority.parent_verified_at,
+                        generated_by: actor,
+                        generated_at: at,
+                    },
+                    DomainEvent::Verified {
+                        verified_by: actor,
+                        verified_at: at,
+                    },
+                    DomainEvent::Bound {
+                        app_id,
+                        bound_by: actor,
+                        bound_at: at,
+                    },
+                ]);
+            }
+            _ => {}
         }
         if !domain.exists || domain.removed {
             return Err(DomainError::NotFound);
         }
         Ok(match self {
-            DomainCommand::Add { .. } => unreachable!("handled above"),
+            DomainCommand::Add { .. } | DomainCommand::Generate { .. } => {
+                unreachable!("handled above")
+            }
+            DomainCommand::EnableAppDomain { actor, at } => {
+                if domain.parent_domain_id.is_some() {
+                    return Err(DomainError::InvalidAuthority);
+                }
+                if domain.verified_at.is_none() {
+                    return Err(DomainError::NotVerified);
+                }
+                if domain.is_app_domain {
+                    Vec::new()
+                } else {
+                    vec![DomainEvent::AppDomainEnabled {
+                        enabled_by: actor,
+                        enabled_at: at,
+                    }]
+                }
+            }
             DomainCommand::Verify { actor, at } => match domain.verified_at {
                 Some(_) => Vec::new(),
                 None => vec![DomainEvent::Verified {
@@ -302,23 +474,51 @@ impl mire::Command for DomainCommand {
                 if domain.verified_at.is_none() {
                     return Err(DomainError::NotVerified);
                 }
-                match domain.app_id {
-                    Some(bound) if bound == app_id => Vec::new(),
-                    _ => vec![DomainEvent::Bound {
+                if domain
+                    .managed_app_id
+                    .is_some_and(|managed| managed != app_id)
+                {
+                    return Err(DomainError::ManagedAppMismatch);
+                }
+                let mut events = Vec::new();
+                if domain.assignment_disabled {
+                    events.push(DomainEvent::AppDomainAllocationSet {
+                        enabled: true,
+                        changed_by: actor,
+                        changed_at: at,
+                    });
+                }
+                if domain.app_id != Some(app_id) {
+                    events.push(DomainEvent::Bound {
                         app_id,
                         bound_by: actor,
                         bound_at: at,
-                    }],
+                    });
                 }
+                events
             }
-            DomainCommand::Unbind { actor, at } => match domain.app_id {
-                Some(app_id) => vec![DomainEvent::Unbound {
-                    app_id,
-                    unbound_by: actor,
-                    unbound_at: at,
-                }],
-                None => Vec::new(),
-            },
+            DomainCommand::Unbind { actor, at }
+            | DomainCommand::UnbindForAppDeletion { actor, at } => {
+                let mut events = Vec::new();
+                if let Some(app_id) = domain.app_id {
+                    events.push(DomainEvent::Unbound {
+                        app_id,
+                        unbound_by: actor,
+                        unbound_at: at,
+                    });
+                }
+                if matches!(self, DomainCommand::Unbind { .. })
+                    && domain.parent_domain_id.is_some()
+                    && !domain.assignment_disabled
+                {
+                    events.push(DomainEvent::AppDomainAllocationSet {
+                        enabled: false,
+                        changed_by: actor,
+                        changed_at: at,
+                    });
+                }
+                events
+            }
             DomainCommand::Remove { actor, at } => {
                 let mut events = Vec::new();
                 if let Some(app_id) = domain.app_id {
@@ -326,6 +526,13 @@ impl mire::Command for DomainCommand {
                         app_id,
                         unbound_by: actor,
                         unbound_at: at,
+                    });
+                }
+                if domain.parent_domain_id.is_some() && !domain.assignment_disabled {
+                    events.push(DomainEvent::AppDomainAllocationSet {
+                        enabled: false,
+                        changed_by: actor,
+                        changed_at: at,
                     });
                 }
                 events.push(DomainEvent::Removed {
@@ -340,7 +547,7 @@ impl mire::Command for DomainCommand {
 
 #[cfg(test)]
 mod tests {
-    use mire::{Aggregate, Command};
+    use mire::{Aggregate, AggregateRoot, Command};
 
     use super::*;
 
@@ -366,6 +573,54 @@ mod tests {
         }
         .handle(&Domain::default())
         .unwrap()
+    }
+
+    fn verified_parent() -> AggregateRoot<Domain> {
+        let mut root = AggregateRoot::new("parent");
+        root.execute(DomainCommand::Add {
+            actor: Uuid::nil(),
+            organisation_id: Uuid::from_u128(7),
+            name: DomainName::parse("apps.example.com").unwrap(),
+            token: "parent-token".into(),
+            at: at(),
+        })
+        .unwrap();
+        root.execute(DomainCommand::Verify {
+            actor: Uuid::nil(),
+            at: at(),
+        })
+        .unwrap();
+        root
+    }
+
+    fn generate(parent: &Domain, name: &str, organisation_id: Uuid) -> DomainCommand {
+        DomainCommand::Generate {
+            actor: Uuid::nil(),
+            organisation_id,
+            name: DomainName::parse(name).unwrap(),
+            token: "child-token".into(),
+            authority: parent.app_domain_authority(Uuid::from_u128(10)).unwrap(),
+            app_id: Uuid::from_u128(1),
+            at: at() + chrono::Duration::seconds(60),
+        }
+    }
+
+    fn generated() -> AggregateRoot<Domain> {
+        let mut parent = verified_parent();
+        parent
+            .execute(DomainCommand::EnableAppDomain {
+                actor: Uuid::nil(),
+                at: at(),
+            })
+            .unwrap();
+        let mut root = AggregateRoot::new("child");
+        root.execute(generate(
+            &parent.state,
+            "api.apps.example.com",
+            parent.state.organisation_id,
+        ))
+        .unwrap();
+        root
     }
 
     #[test]
@@ -478,6 +733,347 @@ mod tests {
             }
             .handle(&fold(&events)),
             Err(DomainError::NotFound)
+        );
+    }
+
+    #[test]
+    fn enabling_an_app_domain_requires_a_live_verified_parent_and_preserves_its_binding() {
+        let enable = || DomainCommand::EnableAppDomain {
+            actor: Uuid::nil(),
+            at: at(),
+        };
+        assert_eq!(
+            enable().handle(&Domain::default()),
+            Err(DomainError::NotFound)
+        );
+        assert!(matches!(
+            Domain::default().app_domain_authority(Uuid::from_u128(10)),
+            Err(DomainError::NotFound)
+        ));
+        let unverified = fold(&added());
+        assert_eq!(enable().handle(&unverified), Err(DomainError::NotVerified));
+        assert!(matches!(
+            unverified.app_domain_authority(Uuid::from_u128(10)),
+            Err(DomainError::NotVerified)
+        ));
+
+        let mut parent = verified_parent();
+        assert!(matches!(
+            parent.state.app_domain_authority(Uuid::from_u128(10)),
+            Err(DomainError::InvalidAuthority)
+        ));
+        parent
+            .execute(DomainCommand::Bind {
+                actor: Uuid::nil(),
+                app_id: Uuid::from_u128(2),
+                at: at(),
+            })
+            .unwrap();
+        let before = parent.pending_count();
+        parent.execute(enable()).unwrap();
+        assert_eq!(parent.pending_count(), before + 1);
+        assert!(parent.state.is_app_domain);
+        assert_eq!(parent.state.app_id, Some(Uuid::from_u128(2)));
+        assert!(
+            parent
+                .state
+                .app_domain_authority(Uuid::from_u128(10))
+                .is_ok()
+        );
+        parent.execute(enable()).unwrap();
+        assert_eq!(parent.pending_count(), before + 1);
+        parent
+            .execute(DomainCommand::Remove {
+                actor: Uuid::nil(),
+                at: at(),
+            })
+            .unwrap();
+        assert!(matches!(
+            parent.state.app_domain_authority(Uuid::from_u128(10)),
+            Err(DomainError::NotFound)
+        ));
+        assert_eq!(enable().handle(&parent.state), Err(DomainError::NotFound));
+    }
+
+    #[test]
+    fn generation_requires_the_parents_organisation_and_exactly_one_child_label() {
+        let mut parent = verified_parent();
+        parent
+            .execute(DomainCommand::EnableAppDomain {
+                actor: Uuid::nil(),
+                at: at(),
+            })
+            .unwrap();
+        assert_eq!(
+            generate(&parent.state, "api.apps.example.com", Uuid::from_u128(8))
+                .handle(&Domain::default()),
+            Err(DomainError::InvalidAuthority)
+        );
+        for name in [
+            "apps.example.com",
+            "api.example.com",
+            "api.notapps.example.com",
+            "api.deep.apps.example.com",
+            "apps.example.com.other.com",
+        ] {
+            assert_eq!(
+                generate(&parent.state, name, parent.state.organisation_id)
+                    .handle(&Domain::default()),
+                Err(DomainError::InvalidGeneratedName),
+                "{name}"
+            );
+        }
+        for name in [
+            "api.apps.example.com",
+            "www.apps.example.com",
+            "admin.apps.example.com",
+            "a-1.apps.example.com",
+        ] {
+            assert!(
+                generate(&parent.state, name, parent.state.organisation_id)
+                    .handle(&Domain::default())
+                    .is_ok()
+            );
+        }
+    }
+
+    #[test]
+    fn a_generated_domain_records_parent_authority_and_cannot_move_or_become_a_parent() {
+        let root = generated();
+        assert_eq!(root.pending_count(), 4);
+        assert!(root.state.exists);
+        assert!(!root.state.is_app_domain);
+        assert!(!root.state.assignment_disabled);
+        assert_eq!(root.state.parent_domain_id, Some(Uuid::from_u128(10)));
+        assert_eq!(
+            root.state.parent_domain.as_ref().unwrap().as_str(),
+            "apps.example.com"
+        );
+        assert_eq!(root.state.managed_app_id, Some(Uuid::from_u128(1)));
+        assert_eq!(root.state.app_id, Some(Uuid::from_u128(1)));
+        assert_eq!(
+            root.state.verified_at,
+            Some(at() + chrono::Duration::seconds(60))
+        );
+        assert_eq!(
+            DomainCommand::Bind {
+                actor: Uuid::nil(),
+                app_id: Uuid::from_u128(2),
+                at: at(),
+            }
+            .handle(&root.state),
+            Err(DomainError::ManagedAppMismatch)
+        );
+        assert_eq!(
+            DomainCommand::EnableAppDomain {
+                actor: Uuid::nil(),
+                at: at(),
+            }
+            .handle(&root.state),
+            Err(DomainError::InvalidAuthority)
+        );
+        assert!(matches!(
+            root.state.app_domain_authority(Uuid::from_u128(11)),
+            Err(DomainError::InvalidAuthority)
+        ));
+        let mut parent = verified_parent();
+        parent
+            .execute(DomainCommand::EnableAppDomain {
+                actor: Uuid::nil(),
+                at: at(),
+            })
+            .unwrap();
+        let events = generate(
+            &parent.state,
+            "api.apps.example.com",
+            parent.state.organisation_id,
+        )
+        .handle(&Domain::default())
+        .unwrap();
+        assert!(matches!(
+            &events[1],
+            DomainEvent::GeneratedFromParent {
+                parent_domain_id,
+                parent_domain,
+                managed_app_id,
+                parent_verified_at,
+                generated_by,
+                generated_at,
+            } if *parent_domain_id == Uuid::from_u128(10)
+                && parent_domain.as_str() == "apps.example.com"
+                && *managed_app_id == Uuid::from_u128(1)
+                && *parent_verified_at == at()
+                && *generated_by == Uuid::nil()
+                && *generated_at == at() + chrono::Duration::seconds(60)
+        ));
+        assert!(matches!(events[0], DomainEvent::Added { .. }));
+        assert!(matches!(events[2], DomainEvent::Verified { .. }));
+        assert!(matches!(events[3], DomainEvent::Bound { .. }));
+        assert_eq!(
+            generate(
+                &parent.state,
+                "api.apps.example.com",
+                parent.state.organisation_id,
+            )
+            .handle(&root.state),
+            Err(DomainError::AlreadyExists)
+        );
+    }
+
+    #[test]
+    fn explicit_unbinding_opts_out_even_after_app_deletion_suspended_the_binding() {
+        let mut root = generated();
+        let provenance = (
+            root.state.parent_domain_id,
+            root.state.parent_domain.clone(),
+            root.state.managed_app_id,
+        );
+        let suspend = || DomainCommand::UnbindForAppDeletion {
+            actor: Uuid::nil(),
+            at: at(),
+        };
+        root.execute(suspend()).unwrap();
+        assert_eq!(root.state.app_id, None);
+        assert!(!root.state.assignment_disabled);
+        let before = root.pending_count();
+        root.execute(suspend()).unwrap();
+        assert_eq!(root.pending_count(), before);
+        let unbind = || DomainCommand::Unbind {
+            actor: Uuid::nil(),
+            at: at(),
+        };
+        root.execute(unbind()).unwrap();
+        assert!(root.state.assignment_disabled);
+        assert_eq!(root.pending_count(), before + 1);
+        root.execute(unbind()).unwrap();
+        root.execute(suspend()).unwrap();
+        assert!(root.state.assignment_disabled);
+        assert_eq!(root.pending_count(), before + 1);
+        assert_eq!(
+            (
+                root.state.parent_domain_id,
+                root.state.parent_domain.clone(),
+                root.state.managed_app_id,
+            ),
+            provenance
+        );
+        assert_eq!(
+            DomainCommand::Bind {
+                actor: Uuid::nil(),
+                app_id: Uuid::from_u128(2),
+                at: at(),
+            }
+            .handle(&root.state),
+            Err(DomainError::ManagedAppMismatch)
+        );
+        assert!(root.state.assignment_disabled);
+        let bind = || DomainCommand::Bind {
+            actor: Uuid::nil(),
+            app_id: Uuid::from_u128(1),
+            at: at(),
+        };
+        root.execute(bind()).unwrap();
+        assert!(!root.state.assignment_disabled);
+        assert_eq!(root.state.app_id, Some(Uuid::from_u128(1)));
+        assert_eq!(root.pending_count(), before + 3);
+        root.execute(bind()).unwrap();
+        assert_eq!(root.pending_count(), before + 3);
+        root.execute(unbind()).unwrap();
+        assert!(root.state.assignment_disabled);
+        assert_eq!(root.state.app_id, None);
+    }
+
+    #[test]
+    fn removing_a_generated_domain_preserves_its_opt_out_and_provenance() {
+        for suspend_first in [false, true] {
+            let mut root = generated();
+            if suspend_first {
+                root.execute(DomainCommand::UnbindForAppDeletion {
+                    actor: Uuid::nil(),
+                    at: at(),
+                })
+                .unwrap();
+            }
+            root.execute(DomainCommand::Remove {
+                actor: Uuid::nil(),
+                at: at(),
+            })
+            .unwrap();
+            assert!(root.state.removed);
+            assert!(root.state.assignment_disabled);
+            assert_eq!(root.state.app_id, None);
+            assert_eq!(root.state.parent_domain_id, Some(Uuid::from_u128(10)));
+            assert_eq!(root.state.managed_app_id, Some(Uuid::from_u128(1)));
+            assert_eq!(
+                root.state.parent_domain.as_ref().unwrap().as_str(),
+                "apps.example.com"
+            );
+            assert_eq!(
+                DomainCommand::Bind {
+                    actor: Uuid::nil(),
+                    app_id: Uuid::from_u128(1),
+                    at: at(),
+                }
+                .handle(&root.state),
+                Err(DomainError::NotFound)
+            );
+        }
+    }
+
+    #[test]
+    fn namespace_snapshots_roundtrip_parent_authority_and_removed_assignment_preferences() {
+        assert_eq!(<Domain as mire::Snapshot>::SNAPSHOT_VERSION, 2);
+        let mut parent = verified_parent();
+        parent
+            .execute(DomainCommand::EnableAppDomain {
+                actor: Uuid::nil(),
+                at: at(),
+            })
+            .unwrap();
+        let restored_parent: Domain =
+            serde_json::from_str(&serde_json::to_string(&parent.state).unwrap()).unwrap();
+        assert_eq!(restored_parent, parent.state);
+        assert!(
+            restored_parent
+                .app_domain_authority(Uuid::from_u128(10))
+                .is_ok()
+        );
+        let mut child = generated();
+        child
+            .execute(DomainCommand::Remove {
+                actor: Uuid::nil(),
+                at: at(),
+            })
+            .unwrap();
+        let restored_child: Domain =
+            serde_json::from_str(&serde_json::to_string(&child.state).unwrap()).unwrap();
+        assert_eq!(restored_child, child.state);
+        assert!(restored_child.assignment_disabled);
+        assert!(restored_child.removed);
+    }
+
+    #[test]
+    fn old_domain_json_defaults_to_an_ordinary_domain_without_namespace_authority() {
+        let original = fold(&added());
+        let value = serde_json::json!({
+            "exists": original.exists,
+            "organisation_id": original.organisation_id,
+            "name": original.name,
+            "token": original.token,
+            "verified_at": original.verified_at,
+            "app_id": original.app_id,
+            "removed": original.removed,
+        });
+        let restored: Domain = serde_json::from_value(value).unwrap();
+        assert_eq!(restored, original);
+        assert!(!restored.is_app_domain);
+        assert_eq!(restored.parent_domain_id, None);
+        assert_eq!(restored.parent_domain, None);
+        assert_eq!(restored.managed_app_id, None);
+        assert!(!restored.assignment_disabled);
+        assert_eq!(
+            serde_json::from_str::<Domain>(&serde_json::to_string(&restored).unwrap()).unwrap(),
+            restored
         );
     }
 }

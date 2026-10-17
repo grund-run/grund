@@ -849,3 +849,121 @@ async fn the_notifications_cli_lists_json_and_marks_only_its_own_items_read() ->
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn a_full_token_configures_app_addresses_and_the_cli_defaults_or_replaces_the_label()
+-> anyhow::Result<()> {
+    let Some(stack) = crate::accepttest::traffic::a_stack_with(&[]).await? else {
+        return Ok(());
+    };
+    let owner = stack.given.a_signed_in_account().await?;
+    let org = owner.username;
+    let (when, then) = (&stack.when, &stack.then);
+    let token = a_token(when, then, &org, "domain manager", "full").await?;
+    let instance = origin(when);
+    let shell = Shell::fresh(&[("GRUND_INSTANCE", &instance), ("GRUND_TOKEN", &token)])?;
+    shell.json("apps create", &["hello"]).await?;
+    let parent = crate::accepttest::domains::a_custom_name();
+    let added = shell.json("domains add", &[&parent]).await?;
+    stack
+        .pebble
+        .set_txt(
+            added["domain"]["verificationRecordName"]
+                .as_str()
+                .unwrap_or_default(),
+            added["domain"]["verificationRecordValue"]
+                .as_str()
+                .unwrap_or_default(),
+        )
+        .await?;
+    shell.json("domains verify", &[&parent]).await?;
+    let preview = shell
+        .json("domains app-domain", &[&parent, "--dry-run"])
+        .await?;
+    anyhow::ensure!(
+        preview["calls"][0]["rpc"] == "grund.domain.v1.DomainService/ConfigureAppDomain"
+            && preview["calls"][0]["request"]["name"] == parent,
+        "wrong namespace preview: {preview}"
+    );
+    let before = shell.json("domains get", &[&parent]).await?;
+    anyhow::ensure!(
+        before["domain"]["isAppDomain"] != true,
+        "preview enabled the parent: {before}"
+    );
+    let configured = shell.json("domains app-domain", &[&parent]).await?;
+    anyhow::ensure!(
+        configured["domain"]["isAppDomain"] == true,
+        "the CLI did not enable the parent: {configured}"
+    );
+    let default_name = format!("hello.{parent}");
+    let default = shell.json("domains get", &[&default_name]).await?;
+    anyhow::ensure!(
+        default["domain"]["parentDomain"] == parent
+            && default["domain"]["managedAppName"] == "hello"
+            && default["domain"]["setupSteps"].as_array().map(Vec::len) == Some(6),
+        "default app address lacks parent authority or progress: {default}"
+    );
+    let preview = shell
+        .json("domains subdomain", &["hello", "admin", "--dry-run"])
+        .await?;
+    anyhow::ensure!(
+        preview["calls"][0]["rpc"] == "grund.domain.v1.DomainService/SetAppSubdomain"
+            && preview["calls"][0]["request"]["app"] == "hello"
+            && preview["calls"][0]["request"]["subdomain"] == "admin",
+        "wrong subdomain preview: {preview}"
+    );
+    shell.json("domains get", &[&default_name]).await?;
+    let chosen_name = format!("admin.{parent}");
+    let chosen = shell.json("domains subdomain", &["hello", "admin"]).await?;
+    anyhow::ensure!(
+        chosen["domain"]["name"] == chosen_name && chosen["domain"]["app"] == "hello",
+        "the CLI did not select the customer-owned label: {chosen}"
+    );
+    let previous = shell
+        .run(&["domains", "get", &default_name, "--json"])
+        .await?;
+    anyhow::ensure!(
+        previous.status != 0 && previous.error()?["code"] == "not_found",
+        "the previous hostname survived the rename: {} {}",
+        previous.stdout,
+        previous.stderr
+    );
+    let defaulted = shell.json("domains subdomain", &["hello"]).await?;
+    anyhow::ensure!(
+        defaulted["domain"]["name"] == default_name
+            && defaulted["domain"]["setupSteps"].as_array().map(Vec::len) == Some(6),
+        "omitting the CLI label did not restore the app-name default: {defaulted}"
+    );
+    let second_org = stack.given.a_fresh_name("team");
+    when.submitting("/orgs/new", "/orgs/new", &[("slug", &second_org)])
+        .await?;
+    then.status(303)?;
+    for args in [
+        vec![
+            "domains",
+            "app-domain",
+            parent.as_str(),
+            "--org",
+            second_org.as_str(),
+            "--json",
+        ],
+        vec![
+            "domains",
+            "subdomain",
+            "hello",
+            "www",
+            "--org",
+            second_org.as_str(),
+            "--json",
+        ],
+    ] {
+        let foreign = shell.run(&args).await?;
+        anyhow::ensure!(
+            foreign.status != 0 && foreign.error()?["code"] == "not_found",
+            "the token borrowed its maker's access to a second organisation: {} {}",
+            foreign.stdout,
+            foreign.stderr
+        );
+    }
+    Ok(())
+}

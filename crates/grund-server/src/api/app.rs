@@ -86,7 +86,9 @@ fn failed(error: AppsError) -> ConnectError {
     let base = match &error {
         AppsError::NotFound | AppsError::ReleaseNotFound => ConnectError::not_found(message),
         AppsError::VersionConflict => ConnectError::aborted(message),
-        AppsError::ExternalReleaseConflict => ConnectError::already_exists(message),
+        AppsError::ExternalReleaseConflict | AppsError::DomainConfiguration(_) => {
+            ConnectError::already_exists(message)
+        }
         AppsError::NameTaken
         | AppsError::NameReserved { .. }
         | AppsError::AppLimit

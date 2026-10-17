@@ -35,7 +35,9 @@ import "google/protobuf/timestamp.proto";
 // (another organisation holds it), domain_cooling_down, domain_limit,
 // domain_rate_limited, not_verified, verification_failed (the message says
 // what DNS answered), app_not_found, app_not_public (no public HTTP port),
-// app_domain_limit.
+// app_domain_limit, namespace_conflict (overlapping authority, live children,
+// or an attempt to move a generated hostname), app_domain_required,
+// subdomain_invalid.
 service DomainService {
   // By name.
   rpc ListDomains(ListDomainsRequest) returns (ListDomainsResponse) {
@@ -73,6 +75,19 @@ service DomainService {
 
   // Owners and admins. Unbinds it first. The certificate is not revoked.
   rpc RemoveDomain(RemoveDomainRequest) returns (RemoveDomainResponse);
+
+  // Owners and admins, using a session or full token. Enables a verified
+  // parent for app addresses and assigns defaults to existing apps atomically.
+  // The parent's apex binding is independent. Repeated calls coalesce.
+  rpc ConfigureAppDomain(ConfigureAppDomainRequest) returns (ConfigureAppDomainResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+
+  // Owners and admins, using a session or full token. Atomically replaces
+  // the app's generated hostname; the previous name is no longer served.
+  rpc SetAppSubdomain(SetAppSubdomainRequest) returns (SetAppSubdomainResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
 }
 
 enum DomainStatus {
@@ -116,8 +131,8 @@ message Domain {
   // Lowercase, no trailing dot.
   string name = 1;
   DomainStatus status = 2;
-  // The TXT record that proves the domain: its name (_grund.<name>) and
-  // the value it must hold.
+  // The TXT record proving ownership. Both fields are empty for generated
+  // app hostnames: parent_domain names their verified authority instead.
   string verification_record_name = 3;
   string verification_record_value = 4;
   // The app it is bound to; empty when none.
@@ -134,6 +149,12 @@ message Domain {
   int32 certificate_attempts = 12;
   // Absent when no certificate attempt is scheduled.
   google.protobuf.Timestamp certificate_next_attempt_at = 13;
+  // This verified parent supplies the organisation's default app addresses.
+  bool is_app_domain = 14;
+  // Present only for generated app hostnames; authority comes from this parent.
+  optional string parent_domain = 15;
+  // The app whose generated hostname this is, even after explicit unbinding.
+  string managed_app_name = 16;
 }
 
 message ListDomainsRequest {
@@ -207,6 +228,27 @@ message RemoveDomainRequest {
 }
 
 message RemoveDomainResponse {}
+
+message ConfigureAppDomainRequest {
+  string organisation = 1;
+  // An existing, verified domain owned by this organisation. Not a wildcard.
+  string name = 2;
+}
+
+message ConfigureAppDomainResponse {
+  Domain domain = 1;
+}
+
+message SetAppSubdomainRequest {
+  string organisation = 1;
+  string app = 2;
+  // One lowercase DNS label; empty uses the app's current name.
+  string subdomain = 3;
+}
+
+message SetAppSubdomainResponse {
+  Domain domain = 1;
+}
 
 // Attached as a detail to errors.
 message ErrorReason {

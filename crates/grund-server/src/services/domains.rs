@@ -91,6 +91,9 @@ pub struct DomainView {
     pub txt_name: String,
     pub txt_value: String,
     pub app_name: Option<String>,
+    pub is_app_domain: bool,
+    pub parent_domain: Option<String>,
+    pub managed_app_name: Option<String>,
     pub added_at: DateTime<Utc>,
     pub verified_at: Option<DateTime<Utc>>,
     pub bound_at: Option<DateTime<Utc>>,
@@ -127,15 +130,25 @@ fn view(row: DomainRow) -> DomainView {
         _ => None,
     };
     DomainView {
-        txt_name: name
-            .as_ref()
-            .map(DomainName::verification_name)
-            .unwrap_or_default(),
-        txt_value: row.token,
+        txt_name: if row.parent_domain.is_some() {
+            String::new()
+        } else {
+            name.as_ref()
+                .map(DomainName::verification_name)
+                .unwrap_or_default()
+        },
+        txt_value: if row.parent_domain.is_some() {
+            String::new()
+        } else {
+            row.token
+        },
+        is_app_domain: row.is_app_domain,
+        parent_domain: row.parent_domain,
         name: row.name,
         status,
         state: row.state,
         app_name: row.app_name,
+        managed_app_name: row.managed_app_name,
         added_at: row.added_at,
         verified_at: row.verified_at,
         bound_at: row.bound_at,
@@ -209,6 +222,14 @@ pub enum DomainsError {
     LastPublicDomain,
     #[error("an app has at most {MAX_PER_APP} custom domains")]
     AppLimit,
+    #[error("{0}")]
+    NamespaceConflict(String),
+    #[error("configure a verified organisation app domain first")]
+    AppDomainRequired,
+    #[error(
+        "an app subdomain must be one lowercase DNS label, 1–63 letters, digits or hyphens, without a leading or trailing hyphen"
+    )]
+    InvalidSubdomain,
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -232,6 +253,9 @@ impl DomainsError {
             DomainsError::AppNotPublic => "app_not_public",
             DomainsError::LastPublicDomain => "last_public_domain",
             DomainsError::AppLimit => "app_domain_limit",
+            DomainsError::NamespaceConflict(_) => "namespace_conflict",
+            DomainsError::AppDomainRequired => "app_domain_required",
+            DomainsError::InvalidSubdomain => "subdomain_invalid",
             DomainsError::Internal(_) => "internal",
         }
     }
@@ -242,12 +266,22 @@ impl From<WorkError> for DomainsError {
         match error.unique_violation().as_deref() {
             Some("grund_domains_claimed_idx") => return DomainsError::Taken,
             Some("grund_domains_name_idx") => return DomainsError::Exists,
+            Some("grund_domains_app_domain_idx" | "grund_domains_managed_assignment_idx") => {
+                return DomainsError::NamespaceConflict(
+                    "the organisation's app-domain assignment changed; retry the request".into(),
+                );
+            }
             _ => {}
         }
         match error {
             WorkError::Domain(DomainError::NotFound) => DomainsError::NotFound,
             WorkError::Domain(DomainError::NotVerified) => DomainsError::NotVerified,
             WorkError::Domain(DomainError::AlreadyExists) => DomainsError::Exists,
+            WorkError::Domain(DomainError::InvalidAuthority) => DomainsError::NotVerified,
+            WorkError::Domain(DomainError::ManagedAppMismatch) => DomainsError::NamespaceConflict(
+                "a generated app address cannot be moved to another app; change its subdomain instead".into(),
+            ),
+            WorkError::Domain(DomainError::InvalidGeneratedName) => DomainsError::InvalidSubdomain,
             other => DomainsError::Internal(other.into()),
         }
     }
@@ -360,6 +394,20 @@ fn manages(membership: &Membership) -> bool {
     Role::parse(&membership.role).is_some_and(Role::manages_members)
 }
 
+fn app_hostname(label: &str, parent: &str) -> Result<DomainName, DomainsError> {
+    if !(1..=63).contains(&label.len())
+        || label.starts_with('-')
+        || label.ends_with('-')
+        || !label
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        || matches!(label, "_grund" | "_acme-challenge" | "*")
+    {
+        return Err(DomainsError::InvalidSubdomain);
+    }
+    Ok(DomainName::parse(&format!("{label}.{parent}"))?)
+}
+
 impl Domains {
     fn reserved(&self, name: &DomainName) -> Option<String> {
         let config = &self.state.config;
@@ -434,6 +482,7 @@ impl Domains {
         work: &mut Work<'_>,
         initial: &DomainRow,
     ) -> Result<DomainRow, DomainsError> {
+        domains::lock_hierarchy_policy(&mut **work.sql()).await?;
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
             .bind(format!("grund-domain-binding:{}", initial.domain_id))
             .execute(&mut **work.sql())
@@ -460,17 +509,18 @@ impl Domains {
 
     async fn held_elsewhere(
         &self,
+        connection: &mut PgConnection,
         organisation_id: Uuid,
         name: &DomainName,
     ) -> Result<(), DomainsError> {
-        if domains::holder(&self.state.pool, name.as_str())
+        if domains::holder(&mut *connection, name.as_str())
             .await?
             .is_some_and(|holder| holder != organisation_id)
         {
             return Err(DomainsError::Taken);
         }
         if let Some(until) = domains::cooling_until(
-            &self.state.pool,
+            &mut *connection,
             name.as_str(),
             organisation_id,
             self.state.config.entry.domain_cooldown as f64,
@@ -478,6 +528,325 @@ impl Domains {
         .await?
         {
             return Err(DomainsError::CoolingDown(until));
+        }
+        if domains::foreign_namespace_overlap(
+            &mut *connection,
+            organisation_id,
+            name.as_str(),
+            false,
+        )
+        .await?
+        {
+            return Err(DomainsError::NamespaceConflict(
+                "another organisation owns the app-domain namespace above this name".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Enables a verified name as the organisation's app-address namespace.
+    pub async fn configure_app_domain(
+        &self,
+        actor: Uuid,
+        membership: &Membership,
+        name: &str,
+    ) -> Result<DomainView, DomainsError> {
+        if !manages(membership) {
+            return Err(DomainsError::NotAllowed);
+        }
+        let initial = self.row(membership.organisation_id, name).await?;
+        let mut work = Work::begin(&self.state.events, Uuid::now_v7(), &actor.to_string()).await?;
+        let row = self.lock_binding(&mut work, &initial).await?;
+        if row.verified_at.is_none() {
+            return Err(DomainsError::NotVerified);
+        }
+        if row.parent_domain_id.is_some() {
+            return Err(DomainsError::NamespaceConflict(
+                "a generated app address cannot itself be an app domain".into(),
+            ));
+        }
+        if let Some(parent) =
+            domains::configured_parent(&mut **work.sql(), membership.organisation_id).await?
+            && parent.domain_id != row.domain_id
+        {
+            return Err(DomainsError::NamespaceConflict(
+                "release the current app domain's generated addresses and remove it before choosing another".into(),
+            ));
+        }
+        let name = DomainName::parse(&row.name)?;
+        if let Some(parent) = self.reserved(&name) {
+            return Err(DomainsError::Reserved(parent));
+        }
+        self.held_elsewhere(work.sql(), membership.organisation_id, &name)
+            .await?;
+        if domains::foreign_namespace_overlap(
+            &mut **work.sql(),
+            membership.organisation_id,
+            &row.name,
+            true,
+        )
+        .await?
+        {
+            return Err(DomainsError::NamespaceConflict(
+                "another organisation holds a verified name inside this app-domain namespace"
+                    .into(),
+            ));
+        }
+        work.domain(
+            row.domain_id,
+            DomainCommand::EnableAppDomain {
+                actor,
+                at: Utc::now(),
+            },
+        )
+        .await?;
+        let apps =
+            grund_store::apps::organisation_apps(&mut **work.sql(), membership.organisation_id)
+                .await?;
+        for app in &apps {
+            self.allocate_app_domain_in(
+                &mut work,
+                actor,
+                membership.organisation_id,
+                app.app_id,
+                &app.name,
+            )
+            .await?;
+        }
+        work.commit().await?;
+        self.state.wakes.documents_changed();
+        self.get(membership.organisation_id, &row.name).await
+    }
+
+    /// Reserves an app's default address inside its creation or restoration transaction.
+    pub async fn allocate_app_domain_in(
+        &self,
+        work: &mut Work<'_>,
+        actor: Uuid,
+        organisation_id: Uuid,
+        app_id: Uuid,
+        app_name: &str,
+    ) -> Result<(), DomainsError> {
+        domains::lock_hierarchy_policy(&mut **work.sql()).await?;
+        let Some(parent) = domains::configured_parent(&mut **work.sql(), organisation_id).await?
+        else {
+            return Ok(());
+        };
+        if let Some(existing) =
+            domains::managed_assignment(&mut **work.sql(), organisation_id, app_id).await?
+        {
+            if existing.assignment_disabled || existing.state == "removed" {
+                return Ok(());
+            }
+            if existing.parent_domain_id != Some(parent.domain_id) {
+                return Err(DomainsError::NamespaceConflict(
+                    "release the app's previous generated address before changing its parent"
+                        .into(),
+                ));
+            }
+            if existing.app_id == Some(app_id) && existing.state == "bound" {
+                return Ok(());
+            }
+            let existing = self.lock_binding(work, &existing).await?;
+            self.lock_apps(work, &mut [app_id]).await?;
+            if domains::count_bound(&mut **work.sql(), app_id).await? >= MAX_PER_APP {
+                return Err(DomainsError::AppLimit);
+            }
+            work.domain(
+                existing.domain_id,
+                DomainCommand::Bind {
+                    actor,
+                    app_id,
+                    at: Utc::now(),
+                },
+            )
+            .await?;
+            self.want_public_certificate(
+                work.sql(),
+                existing.domain_id,
+                organisation_id,
+                app_id,
+                &existing.name,
+            )
+            .await?;
+        } else {
+            self.lock_apps(work, &mut [app_id]).await?;
+            let name = app_hostname(app_name, &parent.name)?;
+            self.generate_in(work, actor, organisation_id, app_id, name, &parent)
+                .await?;
+        }
+        self.publish_apps(work.sql(), &[app_id]).await?;
+        Ok(())
+    }
+
+    /// Atomically replaces an app's generated address with a chosen single label.
+    pub async fn set_app_subdomain(
+        &self,
+        actor: Uuid,
+        membership: &Membership,
+        app_name: &str,
+        subdomain: &str,
+    ) -> Result<DomainView, DomainsError> {
+        if !manages(membership) {
+            return Err(DomainsError::NotAllowed);
+        }
+        let mut work = Work::begin(&self.state.events, Uuid::now_v7(), &actor.to_string()).await?;
+        domains::lock_hierarchy_policy(&mut **work.sql()).await?;
+        let parent = domains::configured_parent(&mut **work.sql(), membership.organisation_id)
+            .await?
+            .ok_or(DomainsError::AppDomainRequired)?;
+        let app =
+            grund_store::apps::app_by_name(&mut **work.sql(), membership.organisation_id, app_name)
+                .await?
+                .ok_or(DomainsError::AppNotFound)?;
+        let label = if subdomain.is_empty() {
+            &app.name
+        } else {
+            subdomain
+        };
+        let name = app_hostname(label, &parent.name)?;
+        let previous =
+            domains::managed_assignment(&mut **work.sql(), membership.organisation_id, app.app_id)
+                .await?;
+        let previous = match previous {
+            Some(previous) if previous.state != "removed" => {
+                Some(self.lock_binding(&mut work, &previous).await?)
+            }
+            _ => None,
+        };
+        self.lock_apps(&mut work, &mut [app.app_id]).await?;
+        if let Some(previous) = &previous
+            && previous.name == name.as_str()
+        {
+            if previous.app_id.is_none()
+                && domains::count_bound(&mut **work.sql(), app.app_id).await? >= MAX_PER_APP
+            {
+                return Err(DomainsError::AppLimit);
+            }
+            work.domain(
+                previous.domain_id,
+                DomainCommand::Bind {
+                    actor,
+                    app_id: app.app_id,
+                    at: Utc::now(),
+                },
+            )
+            .await?;
+            self.want_public_certificate(
+                work.sql(),
+                previous.domain_id,
+                membership.organisation_id,
+                app.app_id,
+                &previous.name,
+            )
+            .await?;
+        } else {
+            if let Some(previous) = &previous {
+                work.domain(
+                    previous.domain_id,
+                    DomainCommand::Remove {
+                        actor,
+                        at: Utc::now(),
+                    },
+                )
+                .await?;
+                domains::drop_certificate(work.sql(), previous.domain_id).await?;
+            }
+            self.generate_in(
+                &mut work,
+                actor,
+                membership.organisation_id,
+                app.app_id,
+                name.clone(),
+                &parent,
+            )
+            .await?;
+        }
+        self.publish_apps(work.sql(), &[app.app_id]).await?;
+        work.commit().await?;
+        self.state.wakes.documents_changed();
+        self.get(membership.organisation_id, name.as_str()).await
+    }
+
+    async fn generate_in(
+        &self,
+        work: &mut Work<'_>,
+        actor: Uuid,
+        organisation_id: Uuid,
+        app_id: Uuid,
+        name: DomainName,
+        parent: &DomainRow,
+    ) -> Result<(), DomainsError> {
+        self.held_elsewhere(work.sql(), organisation_id, &name)
+            .await?;
+        if domains::by_name(&mut **work.sql(), organisation_id, name.as_str())
+            .await?
+            .is_some()
+        {
+            return Err(DomainsError::Exists);
+        }
+        if domains::count_bound(&mut **work.sql(), app_id).await? >= MAX_PER_APP {
+            return Err(DomainsError::AppLimit);
+        }
+        let authority = work
+            .load_domain(parent.domain_id)
+            .await?
+            .app_domain_authority(parent.domain_id)
+            .map_err(|error| DomainsError::from(WorkError::Domain(error)))?;
+        let domain_id = Uuid::now_v7();
+        work.domain(
+            domain_id,
+            DomainCommand::Generate {
+                actor,
+                organisation_id,
+                name: name.clone(),
+                token: new_token(),
+                authority,
+                app_id,
+                at: Utc::now(),
+            },
+        )
+        .await?;
+        self.want_public_certificate(
+            work.sql(),
+            domain_id,
+            organisation_id,
+            app_id,
+            name.as_str(),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn want_public_certificate(
+        &self,
+        connection: &mut PgConnection,
+        domain_id: Uuid,
+        organisation_id: Uuid,
+        app_id: Uuid,
+        name: &str,
+    ) -> Result<(), DomainsError> {
+        let Some((directory, profile)) = self.state.certificates.ordering() else {
+            return Ok(());
+        };
+        let current_public = domains::current_spec(&mut *connection, app_id)
+            .await?
+            .is_some_and(|spec| publishes(&spec.0));
+        let public = current_public
+            || grund_store::apps::releases(&mut *connection, app_id, 1)
+                .await?
+                .first()
+                .is_some_and(|release| publishes(&release.spec.0));
+        if public {
+            domains::want_certificate(
+                &mut *connection,
+                domain_id,
+                organisation_id,
+                name,
+                &directory,
+                &profile,
+            )
+            .await?;
         }
         Ok(())
     }
@@ -497,20 +866,22 @@ impl Domains {
             return Err(DomainsError::Reserved(parent));
         }
         let organisation_id = membership.organisation_id;
-        if domains::by_name(&self.state.pool, organisation_id, name.as_str())
+        let mut work = Work::begin(&self.state.events, Uuid::now_v7(), &actor.to_string()).await?;
+        domains::lock_hierarchy_policy(&mut **work.sql()).await?;
+        if domains::by_name(&mut **work.sql(), organisation_id, name.as_str())
             .await?
             .is_some()
         {
             return Err(DomainsError::Exists);
         }
-        self.held_elsewhere(organisation_id, &name).await?;
-        if domains::count_live(&self.state.pool, organisation_id).await? >= MAX_PER_ORGANISATION {
+        self.held_elsewhere(work.sql(), organisation_id, &name)
+            .await?;
+        if domains::count_live(&mut **work.sql(), organisation_id).await? >= MAX_PER_ORGANISATION {
             return Err(DomainsError::Limit);
         }
-        if domains::added_today(&self.state.pool, organisation_id).await? >= MAX_ADDED_PER_DAY {
+        if domains::added_today(&mut **work.sql(), organisation_id).await? >= MAX_ADDED_PER_DAY {
             return Err(DomainsError::DailyLimit);
         }
-        let mut work = Work::begin(&self.state.events, Uuid::now_v7(), &actor.to_string()).await?;
         work.domain(
             Uuid::now_v7(),
             DomainCommand::Add {
@@ -545,8 +916,6 @@ impl Domains {
         }
         let name = DomainName::parse(&row.name)
             .map_err(|_| DomainsError::Internal(anyhow::anyhow!("a stored name does not parse")))?;
-        self.held_elsewhere(membership.organisation_id, &name)
-            .await?;
         let found = lookup_txt(
             self.state.config.entry.dns_resolver,
             &name.verification_name(),
@@ -558,6 +927,9 @@ impl Domains {
             return Err(DomainsError::VerificationFailed(check_words(code)));
         }
         let mut work = Work::begin(&self.state.events, Uuid::now_v7(), &actor.to_string()).await?;
+        let row = self.lock_binding(&mut work, &row).await?;
+        self.held_elsewhere(work.sql(), membership.organisation_id, &name)
+            .await?;
         work.domain(
             row.domain_id,
             DomainCommand::Verify {
@@ -586,14 +958,22 @@ impl Domains {
             return Err(DomainsError::NotAllowed);
         }
         let initial = self.row(membership.organisation_id, name).await?;
-        let app =
-            grund_store::apps::app_by_name(&self.state.pool, membership.organisation_id, app_name)
-                .await?
-                .ok_or(DomainsError::AppNotFound)?;
         let mut work = Work::begin(&self.state.events, Uuid::now_v7(), &actor.to_string()).await?;
         let row = self.lock_binding(&mut work, &initial).await?;
+        let app =
+            grund_store::apps::app_by_name(&mut **work.sql(), membership.organisation_id, app_name)
+                .await?
+                .ok_or(DomainsError::AppNotFound)?;
         if row.state == "pending" {
             return Err(DomainsError::NotVerified);
+        }
+        if row
+            .managed_app_id
+            .is_some_and(|managed| managed != app.app_id)
+        {
+            return Err(DomainsError::NamespaceConflict(
+                "a generated app address cannot be moved to another app; change its subdomain instead".into(),
+            ));
         }
         if row.app_id == Some(app.app_id) {
             return Ok(view(row));
@@ -602,7 +982,8 @@ impl Domains {
         app_ids.extend(row.app_id);
         self.lock_apps(&mut work, &mut app_ids).await?;
         let spec = domains::current_spec(&mut **work.sql(), app.app_id).await?;
-        if self.state.config.entry.app_domains != crate::config::AppDomains::CustomOnly
+        if row.managed_app_id.is_none()
+            && self.state.config.entry.app_domains != crate::config::AppDomains::CustomOnly
             && !spec.is_some_and(|spec| publishes(&spec.0))
         {
             return Err(DomainsError::AppNotPublic);
@@ -622,17 +1003,14 @@ impl Domains {
             },
         )
         .await?;
-        if let Some((directory, profile)) = self.state.certificates.ordering() {
-            domains::want_certificate(
-                &mut **work.sql(),
-                row.domain_id,
-                membership.organisation_id,
-                &row.name,
-                &directory,
-                &profile,
-            )
-            .await?;
-        }
+        self.want_public_certificate(
+            work.sql(),
+            row.domain_id,
+            membership.organisation_id,
+            app.app_id,
+            &row.name,
+        )
+        .await?;
         self.publish_apps(work.sql(), &app_ids).await?;
         work.commit().await?;
         self.state.wakes.documents_changed();
@@ -687,6 +1065,18 @@ impl Domains {
         let initial = self.row(membership.organisation_id, name).await?;
         let mut work = Work::begin(&self.state.events, Uuid::now_v7(), &actor.to_string()).await?;
         let row = self.lock_binding(&mut work, &initial).await?;
+        if row.is_app_domain
+            && domains::has_live_children(
+                &mut **work.sql(),
+                membership.organisation_id,
+                row.domain_id,
+            )
+            .await?
+        {
+            return Err(DomainsError::NamespaceConflict(
+                "remove this app domain's generated addresses before removing the parent".into(),
+            ));
+        }
         if let Some(app_id) = row.app_id {
             self.lock_apps(&mut work, &mut [app_id]).await?;
             self.require_other_domain(work.sql(), app_id).await?;
@@ -718,7 +1108,7 @@ impl Domains {
         for row in domains::bound_to(&mut **work.sql(), app_id).await? {
             work.domain(
                 row.domain_id,
-                DomainCommand::Unbind {
+                DomainCommand::UnbindForAppDeletion {
                     actor,
                     at: Utc::now(),
                 },
@@ -836,6 +1226,12 @@ mod tests {
             state: state.into(),
             app_id: (state == "bound").then(Uuid::nil),
             app_name: (state == "bound").then(|| "web".to_string()),
+            is_app_domain: false,
+            parent_domain_id: None,
+            parent_domain: None,
+            managed_app_id: None,
+            managed_app_name: None,
+            assignment_disabled: false,
             added_at: Utc::now(),
             verified_at: None,
             bound_at: None,
@@ -877,5 +1273,48 @@ mod tests {
         assert_eq!(shown.txt_name, "_grund.app.example.com");
         assert!(shown.txt_value.starts_with("grund-verify-"));
         assert_eq!(shown.txt_value.len(), "grund-verify-".len() + 43);
+    }
+
+    #[test]
+    fn app_labels_are_single_lowercase_dns_labels_not_control_records() {
+        for label in ["api", "www", "admin", "a", "web-2"] {
+            assert_eq!(
+                app_hostname(label, "example.com").unwrap().as_str(),
+                format!("{label}.example.com")
+            );
+        }
+        for label in [
+            "",
+            "_grund",
+            "_acme-challenge",
+            "*",
+            "a.b",
+            "-a",
+            "a-",
+            "Web",
+            "a/b",
+        ] {
+            assert!(
+                matches!(
+                    app_hostname(label, "example.com"),
+                    Err(DomainsError::InvalidSubdomain)
+                ),
+                "{label}"
+            );
+        }
+        assert!(matches!(
+            app_hostname(&"a".repeat(64), "example.com"),
+            Err(DomainsError::InvalidSubdomain)
+        ));
+    }
+
+    #[test]
+    fn a_generated_address_reports_parent_authority_without_a_child_txt_challenge() {
+        let mut generated = row("bound");
+        generated.parent_domain = Some("example.com".into());
+        let shown = view(generated);
+        assert_eq!(shown.parent_domain.as_deref(), Some("example.com"));
+        assert!(shown.txt_name.is_empty());
+        assert!(shown.txt_value.is_empty());
     }
 }

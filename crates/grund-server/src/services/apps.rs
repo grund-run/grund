@@ -37,7 +37,7 @@ use crate::{
     registry::{Inspection, Login, Registry, ResolveError},
     services::{
         agents::{AgentsState, MachineCaller},
-        domains::DomainsState,
+        domains::{DomainsError, DomainsState},
         entry::{EntryState, publishes},
         registry_credentials::RegistryCredentialsState,
         volumes::{VolumesError, VolumesState},
@@ -80,6 +80,8 @@ pub enum AppsError {
         "Public HTTP requires a verified custom domain bound to this app; bind one under Domains first"
     )]
     DomainRequired,
+    #[error("the organisation's app-domain default could not be assigned: {0}")]
+    DomainConfiguration(String),
     #[error("no such release")]
     ReleaseNotFound,
     #[error("the external release key was already used for a different artifact or spec")]
@@ -108,6 +110,7 @@ impl AppsError {
             AppsError::ImageUnresolved(_) => "image_unresolved",
             AppsError::ImageUnsupported(_) => "image_unsupported",
             AppsError::DomainRequired => "domain_required",
+            AppsError::DomainConfiguration(_) => "domain_configuration",
             AppsError::ReleaseNotFound => "release_not_found",
             AppsError::ExternalReleaseConflict => "external_release_conflict",
             AppsError::VersionConflict => "version_conflict",
@@ -137,6 +140,15 @@ impl From<WorkError> for AppsError {
 impl From<sqlx::Error> for AppsError {
     fn from(error: sqlx::Error) -> Self {
         AppsError::Internal(error.into())
+    }
+}
+
+impl From<DomainsError> for AppsError {
+    fn from(error: DomainsError) -> Self {
+        match error {
+            DomainsError::Internal(error) => AppsError::Internal(error),
+            other => AppsError::DomainConfiguration(other.to_string()),
+        }
     }
 }
 
@@ -503,6 +515,21 @@ impl Apps {
                     return Err(AppsError::DomainRequired);
                 }
             }
+            if publishes(spec)
+                && let Some((directory, profile)) = self.state.certificates.ordering()
+            {
+                for domain in domains::bound_to(&mut *connection, app_id).await? {
+                    domains::want_certificate(
+                        &mut *connection,
+                        domain.domain_id,
+                        domain.organisation_id,
+                        &domain.name,
+                        &directory,
+                        &profile,
+                    )
+                    .await?;
+                }
+            }
         }
         Ok(())
     }
@@ -584,7 +611,20 @@ impl Apps {
     ) -> Result<AppListing, AppsError> {
         let address = match &release {
             Some(release) if publishes(&release.spec.0) => {
-                if self.state.config.entry.app_domains == crate::config::AppDomains::CustomOnly {
+                if let Some(assignment) = domains::managed_assignment(
+                    &mut *connection,
+                    view.row.organisation_id,
+                    view.row.app_id,
+                )
+                .await?
+                    && assignment.state == "bound"
+                    && assignment.app_id == Some(view.row.app_id)
+                    && !assignment.assignment_disabled
+                {
+                    Some(assignment.name)
+                } else if self.state.config.entry.app_domains
+                    == crate::config::AppDomains::CustomOnly
+                {
                     domains::first_bound_name(&mut *connection, view.row.app_id).await?
                 } else {
                     self.state
@@ -656,6 +696,12 @@ impl Apps {
         let mut work = Work::begin(&self.state.events, Uuid::now_v7(), &actor.to_string())
             .await
             .map_err(AppsError::from)?;
+        domains::lock_hierarchy_policy(&mut **work.sql()).await?;
+        if apps::count_live_apps(&mut **work.sql(), organisation_id).await?
+            >= MAX_APPS_PER_ORGANISATION
+        {
+            return Err(AppsError::AppLimit);
+        }
         let result = work
             .app(
                 app_id,
@@ -674,6 +720,10 @@ impl Apps {
                 .created_name_conflict(organisation_id, name.as_str(), error.into())
                 .await);
         }
+        self.state
+            .domains()
+            .allocate_app_domain_in(&mut work, actor, organisation_id, app_id, name.as_str())
+            .await?;
         if let Err(error) = work.commit().await {
             return Err(self
                 .created_name_conflict(organisation_id, name.as_str(), error.into())
@@ -738,11 +788,14 @@ impl Apps {
                 problem: "an app with volumes has exactly one copy".into(),
             }));
         }
-        if !allows_public_release(self.state.config.entry.app_domains, &spec, false) {
-            return Err(AppsError::DomainRequired);
-        }
         let app_id = Uuid::now_v7();
         let mut work = Work::begin(&self.state.events, Uuid::now_v7(), &actor.to_string()).await?;
+        domains::lock_hierarchy_policy(&mut **work.sql()).await?;
+        if apps::count_live_apps(&mut **work.sql(), organisation_id).await?
+            >= MAX_APPS_PER_ORGANISATION
+        {
+            return Err(AppsError::AppLimit);
+        }
         let result = work
             .app(
                 app_id,
@@ -760,6 +813,14 @@ impl Apps {
             return Err(self
                 .created_name_conflict(organisation_id, name.as_str(), error.into())
                 .await);
+        }
+        self.state
+            .domains()
+            .allocate_app_domain_in(&mut work, actor, organisation_id, app_id, name.as_str())
+            .await?;
+        let bound = domains::count_bound(&mut **work.sql(), app_id).await? > 0;
+        if !allows_public_release(self.state.config.entry.app_domains, &spec, bound) {
+            return Err(AppsError::DomainRequired);
         }
         if let Err(error) = work.commit().await {
             return Err(self
@@ -1670,6 +1731,8 @@ impl Apps {
     ) -> Result<DateTime<Utc>, AppsError> {
         let row = self.live(organisation_id, name).await?;
         let mut work = Work::begin(&self.state.events, Uuid::now_v7(), &actor.to_string()).await?;
+        domains::lock_hierarchy_policy(&mut **work.sql()).await?;
+        lock_app_domain_policy(work.sql(), row.app_id).await?;
         let before = apps::app_machines(&mut **work.sql(), row.app_id).await?;
         let app = work.load_app(row.app_id).await?;
         if app.deleted || app.organisation_id != organisation_id {
@@ -1734,6 +1797,8 @@ impl Apps {
             .await?
             .ok_or(AppsError::NotFound)?;
         let mut work = Work::begin(&self.state.events, Uuid::now_v7(), &actor.to_string()).await?;
+        domains::lock_hierarchy_policy(&mut **work.sql()).await?;
+        lock_app_domain_policy(work.sql(), row.app_id).await?;
         let app = work.load_app(row.app_id).await?;
         let at: DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
             .fetch_one(&mut **work.sql())
@@ -1761,6 +1826,10 @@ impl Apps {
             }
         }
         work.app(row.app_id, AppCommand::Restore { actor, at })
+            .await?;
+        self.state
+            .domains()
+            .allocate_app_domain_in(&mut work, actor, organisation_id, row.app_id, &row.name)
             .await?;
         self.publish_machines(work.sql(), machines).await?;
         work.commit().await?;

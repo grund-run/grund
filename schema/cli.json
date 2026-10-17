@@ -1368,6 +1368,16 @@
       "title": "grund.domain.v1.CheckDomainResponse",
       "type": "object"
     },
+    "grund.domain.v1.ConfigureAppDomainResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "domain": {
+          "$ref": "#/$defs/grund.domain.v1.Domain"
+        }
+      },
+      "title": "grund.domain.v1.ConfigureAppDomainResponse",
+      "type": "object"
+    },
     "grund.domain.v1.Domain": {
       "additionalProperties": false,
       "properties": {
@@ -1396,8 +1406,20 @@
           "format": "date-time",
           "type": "string"
         },
+        "isAppDomain": {
+          "description": "This verified parent supplies the organisation's default app addresses.",
+          "type": "boolean"
+        },
+        "managedAppName": {
+          "description": "The app whose generated hostname this is, even after explicit unbinding.",
+          "type": "string"
+        },
         "name": {
           "description": "Lowercase, no trailing dot.",
+          "type": "string"
+        },
+        "parentDomain": {
+          "description": "Present only for generated app hostnames; authority comes from this parent.",
           "type": "string"
         },
         "problem": {
@@ -1423,7 +1445,7 @@
           "type": "string"
         },
         "verificationRecordName": {
-          "description": "The TXT record that proves the domain: its name (_grund.<name>) and the value it must hold.",
+          "description": "The TXT record proving ownership. Both fields are empty for generated app hostnames: parent_domain names their verified authority instead.",
           "type": "string"
         },
         "verificationRecordValue": {
@@ -1494,6 +1516,16 @@
         }
       },
       "title": "grund.domain.v1.ListDomainsResponse",
+      "type": "object"
+    },
+    "grund.domain.v1.SetAppSubdomainResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "domain": {
+          "$ref": "#/$defs/grund.domain.v1.Domain"
+        }
+      },
+      "title": "grund.domain.v1.SetAppSubdomainResponse",
       "type": "object"
     },
     "grund.domain.v1.UnbindDomainResponse": {
@@ -13216,6 +13248,232 @@
         "grund.domain.v1.DomainService/UnbindDomain"
       ],
       "summary": "Stop serving the domain's app on it"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "domain",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "DOMAIN"
+        },
+        {
+          "description": "Show the request instead of sending it",
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund domains app-domain",
+      "destructive": false,
+      "dry_run": true,
+      "examples": [
+        "grund domains app-domain example.com"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.domain.v1.ConfigureAppDomainResponse"
+      },
+      "path": "domains app-domain",
+      "rpcs": [
+        "grund.domain.v1.DomainService/ConfigureAppDomain"
+      ],
+      "summary": "Use a verified parent domain for this organisation's app addresses"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "app",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "APP"
+        },
+        {
+          "description": "One lowercase DNS label; omitted uses the app's name",
+          "name": "label",
+          "positional": true,
+          "type": "string",
+          "value_name": "LABEL"
+        },
+        {
+          "description": "Show the request instead of sending it",
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund domains subdomain",
+      "destructive": false,
+      "dry_run": true,
+      "examples": [
+        "grund domains subdomain web www",
+        "grund domains subdomain web"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.domain.v1.SetAppSubdomainResponse"
+      },
+      "path": "domains subdomain",
+      "rpcs": [
+        "grund.domain.v1.DomainService/SetAppSubdomain"
+      ],
+      "summary": "Replace an app's address under its organisation's app domain"
     },
     {
       "args": [

@@ -76,6 +76,11 @@ pub struct DomainItem<'a> {
     pub name: &'a str,
     pub state: &'a str,
     pub app: &'a str,
+    pub is_app_domain: bool,
+    pub parent_domain: Option<&'a str>,
+    pub managed_app: Option<&'a str>,
+    pub wildcard_name: Option<String>,
+    pub edge_target: Option<&'a str>,
     pub sentence: Cow<'a, str>,
     pub tone: &'static str,
     pub records: Vec<(&'static str, &'a str, &'a str)>,
@@ -103,6 +108,8 @@ pub struct DomainsPage<'a> {
     pub form_error: String,
     pub name_error: String,
     pub name: String,
+    pub namespace_name: String,
+    pub namespace_error: String,
 }
 
 #[derive(Default)]
@@ -112,12 +119,14 @@ struct AddForm {
     form_error: String,
     name_error: String,
     name: String,
+    namespace_name: String,
+    namespace_error: String,
 }
 
 pub(crate) fn domain_context<'a>(
     domain: &'a DomainView,
-    address: Option<&'a str>,
     public: bool,
+    edge_target: Option<&'a str>,
 ) -> DomainItem<'a> {
     let app = domain.app_name.as_deref().unwrap_or("");
     let serving = domain
@@ -148,19 +157,30 @@ pub(crate) fn domain_context<'a>(
         }
         _ => (Cow::Borrowed("HTTPS setup not complete."), "orange"),
     };
-    let pending = domain.state == "pending";
-    let mut records = Vec::with_capacity(usize::from(pending) + usize::from(address.is_some()));
+    let pending = domain.state == "pending" && domain.parent_domain.is_none();
+    let mut records = Vec::with_capacity(
+        usize::from(pending) + usize::from(edge_target.is_some() && domain.parent_domain.is_none()),
+    );
     if pending {
         records.push(("TXT", domain.txt_name.as_str(), domain.txt_value.as_str()));
     }
-    if let Some(address) = address {
-        records.push(("CNAME", domain.name.as_str(), address));
+    if let Some(target) = edge_target.filter(|_| domain.parent_domain.is_none()) {
+        records.push(("CNAME", domain.name.as_str(), target));
     }
     DomainItem {
         id: format!("domain-{}", domain.name),
         name: &domain.name,
         state: &domain.state,
         app,
+        is_app_domain: domain.is_app_domain,
+        parent_domain: domain.parent_domain.as_deref(),
+        managed_app: domain.managed_app_name.as_deref(),
+        wildcard_name: domain
+            .parent_domain
+            .as_deref()
+            .or_else(|| domain.is_app_domain.then_some(domain.name.as_str()))
+            .map(|parent| format!("*.{parent}")),
+        edge_target,
         sentence,
         tone,
         records,
@@ -199,18 +219,6 @@ async fn domains_view(
         .filter(|listing| custom_only || listing.address.is_some())
         .map(|listing| listing.view.row.name.as_str())
         .collect();
-    let address_of = |app: &Option<String>| {
-        app.as_ref().and_then(|app| {
-            listings
-                .iter()
-                .find(|l| &l.view.row.name == app)
-                .and_then(|l| {
-                    l.address
-                        .as_deref()
-                        .or_else(|| state.config.entry.edges.first().map(String::as_str))
-                })
-        })
-    };
     let domain_rows = state
         .domains()
         .list(membership.organisation_id)
@@ -226,9 +234,8 @@ async fn domains_view(
             });
             domain_context(
                 domain,
-                address_of(&domain.app_name)
-                    .or_else(|| state.config.entry.edges.first().map(String::as_str)),
                 public,
+                state.config.entry.edges.first().map(String::as_str),
             )
         })
         .collect();
@@ -257,6 +264,8 @@ async fn domains_view(
                 form_error: form.form_error,
                 name_error: form.name_error,
                 name: form.name,
+                namespace_name: form.namespace_name,
+                namespace_error: form.namespace_error,
             })
         },
     )
@@ -276,6 +285,7 @@ pub async fn domains_page(
         "unbound" => "Domain unbound. It stays verified for this organisation.",
         "removed" => "Domain removed.",
         "checking" => "Domain check queued.",
+        "app-domain" => "App addresses now use this organisation's verified domain.",
         _ => "",
     };
     let error = match query.error.as_str() {
@@ -368,6 +378,49 @@ pub async fn add(
         }
     };
     domains_view(&state, &browser, &session, &membership, status, answer).await
+}
+
+/// Enables a verified domain as this organisation's app-address parent.
+pub async fn configure_app_domain(
+    AxumState(state): AxumState<State>,
+    browser: Browser,
+    uri: Uri,
+    Path(slug): Path<String>,
+    Form(form): Form<NameForm>,
+) -> PageResult {
+    if !browser.form_is_genuine(&form.csrf) {
+        return forged(&state, &browser);
+    }
+    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
+    let outcome = state
+        .domains()
+        .configure_app_domain(session.account_id, &membership, &form.name)
+        .await;
+    let (status, error) = match outcome {
+        Ok(_) => return Ok(redirect(&format!("/{slug}/domains?done=app-domain#custom"))),
+        Err(DomainsError::Internal(error)) => return Err(PageError::from(error)),
+        Err(DomainsError::NotAllowed) => (
+            StatusCode::FORBIDDEN,
+            "Only owners and admins configure app addresses.".into(),
+        ),
+        Err(error) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            capitalise(&error.to_string()),
+        ),
+    };
+    domains_view(
+        &state,
+        &browser,
+        &session,
+        &membership,
+        status,
+        AddForm {
+            namespace_name: form.name,
+            namespace_error: error,
+            ..Default::default()
+        },
+    )
+    .await
 }
 
 fn capitalise(text: &str) -> String {

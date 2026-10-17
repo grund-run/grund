@@ -96,7 +96,7 @@ component StatusLine(text: &str, tone: &str, id: &str) {
 component Section(id: &str, title: &str, count: Option<usize>, more: Option<(&str, &str)>, first: Option<bool>, stack: Option<bool>, children: Html) {
 <section class={if first.unwrap_or(false) && !stack.unwrap_or(false) { None } else if first.unwrap_or(false) { Some("section-stack") } else if stack.unwrap_or(false) { Some("section section-stack") } else { Some("section") }} aria-labelledby={id}>
   <div class="section-head">
-    <h2 class="section-title" id={id}>{title}{if let Some(count) = count { <span class="count">{count}</span> }}</h2>
+    <h2 class="section-title page-name" id={id}>{title}{if let Some(count) = count { <span class="count">{count}</span> }}</h2>
     {if let Some((href, label)) = more { <LinkMore href={href} label={label} /> }}
   </div>
   {children}
@@ -106,7 +106,7 @@ component Panel(id: &str, title: &str, action: Option<(&str, &str)>, tag: Option
 <section class="panel" aria-labelledby={(!title.is_empty() && !id.is_empty()).then_some(*id)}>
   {if !title.is_empty() {
   <div class="panel-head">
-    <h2 class="panel-title" id={id}>{title}</h2>
+    <h2 class="panel-title page-name" id={id}>{title}</h2>
     {if let Some(tag) = tag { <Tag text={tag} /> }}
     {if let Some((href, label)) = action { <ButtonAdvanced label={label} href={href} icon_name="arrow" kind="secondary" size="sm" icon_end /> }}
   </div>

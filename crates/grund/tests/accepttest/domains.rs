@@ -9,7 +9,7 @@ use crate::accepttest::{
 
 const DOMAINS: &str = "/grund.domain.v1.DomainService";
 
-async fn domain_call(
+pub(super) async fn domain_call(
     when: &When,
     then: &Then,
     procedure: &str,
@@ -51,7 +51,7 @@ fn refused_with(answer: &(u16, Value), status: u16, reason: &str) -> anyhow::Res
     Ok(())
 }
 
-fn a_custom_name() -> String {
+pub(super) fn a_custom_name() -> String {
     format!("shop-{}.example.com", random_hex(4))
 }
 
@@ -67,7 +67,7 @@ async fn added(when: &When, then: &Then, org: &str, name: &str) -> anyhow::Resul
     Ok(answer.1["domain"].clone())
 }
 
-async fn verified(
+pub(super) async fn verified(
     stack: &Stack,
     when: &When,
     then: &Then,
@@ -101,7 +101,12 @@ async fn verified(
     Ok(())
 }
 
-async fn status_of(when: &When, then: &Then, org: &str, name: &str) -> anyhow::Result<Value> {
+pub(super) async fn status_of(
+    when: &When,
+    then: &Then,
+    org: &str,
+    name: &str,
+) -> anyhow::Result<Value> {
     let answer = domain_call(
         when,
         then,
@@ -668,6 +673,14 @@ async fn another_organisation_can_neither_claim_a_bound_domain_nor_see_or_touch_
         ),
         ("UnbindDomain", json!({"organisation": org, "name": name})),
         ("RemoveDomain", json!({"organisation": org, "name": name})),
+        (
+            "ConfigureAppDomain",
+            json!({"organisation": org, "name": name}),
+        ),
+        (
+            "SetAppSubdomain",
+            json!({"organisation": org, "app": "hello", "subdomain": "www"}),
+        ),
     ] {
         let answer = domain_call(&stranger, &stranger_then, procedure, body).await?;
         anyhow::ensure!(
@@ -953,5 +966,344 @@ async fn app_settings_can_verify_bind_move_and_unbind_a_domain_without_exposing_
         status_of(when, then, &org, &name).await?["status"] == "DOMAIN_STATUS_VERIFIED",
         "the app's unbind did not retain verified ownership"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_app_domain_assigns_existing_and_future_apps_and_replaces_labels_without_undoing_opt_out()
+-> anyhow::Result<()> {
+    let Some(stack) = a_stack_with(&[]).await? else {
+        return Ok(());
+    };
+    let owner = stack.given.a_signed_in_account().await?;
+    let org = owner.username;
+    let (when, then) = (&stack.when, &stack.then);
+    when.calling(
+        "/grund.app.v1.AppService/CreateApp",
+        &json!({"organisation": org, "name": "existing"}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    let parent = a_custom_name();
+    verified(&stack, when, then, &org, &parent).await?;
+    let configured = domain_call(
+        when,
+        then,
+        "ConfigureAppDomain",
+        json!({"organisation": org, "name": parent}),
+    )
+    .await?;
+    anyhow::ensure!(
+        configured.0 == 200 && configured.1["domain"]["isAppDomain"] == true,
+        "parent was not configured: {configured:?}"
+    );
+    let existing_name = format!("existing.{parent}");
+    let existing = status_of(when, then, &org, &existing_name).await?;
+    anyhow::ensure!(
+        existing["app"] == "existing"
+            && existing["parentDomain"] == parent
+            && existing["managedAppName"] == "existing"
+            && existing["verificationRecordName"]
+                .as_str()
+                .is_none_or(str::is_empty)
+            && existing["verificationRecordValue"]
+                .as_str()
+                .is_none_or(str::is_empty),
+        "the existing app did not inherit its verified parent's authority: {existing}"
+    );
+    let steps: Vec<_> = existing["setupSteps"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|step| step["name"].as_str())
+        .collect();
+    anyhow::ensure!(
+        steps
+            == [
+                "dns_record",
+                "edge_reachable",
+                "certificate_requested",
+                "challenge_passed",
+                "certificate_issued",
+                "serving_https",
+            ],
+        "generated hostname lost normal setup observations: {existing}"
+    );
+    let occupied = format!("blocked.{parent}");
+    verified(&stack, when, then, &org, &occupied).await?;
+    when.calling(
+        "/grund.app.v1.AppService/CreateApp",
+        &json!({"organisation": org, "name": "blocked"}).to_string(),
+    )
+    .await?;
+    then.status(409)?.connect_code("already_exists")?;
+    when.calling(
+        "/grund.app.v1.AppService/GetApp",
+        &json!({"organisation": org, "name": "blocked"}).to_string(),
+    )
+    .await?;
+    then.status(404)?.connect_code("not_found")?;
+    let untouched = status_of(when, then, &org, &occupied).await?;
+    anyhow::ensure!(
+        untouched["status"] == "DOMAIN_STATUS_VERIFIED"
+            && untouched["app"].as_str().is_none_or(str::is_empty),
+        "a default-allocation conflict stole an exact domain: {untouched}"
+    );
+    when.calling(
+        "/grund.app.v1.AppService/CreateApp",
+        &json!({"organisation": org, "name": "future"}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    let future_name = format!("future.{parent}");
+    let future = status_of(when, then, &org, &future_name).await?;
+    anyhow::ensure!(
+        future["app"] == "future" && future["parentDomain"] == parent,
+        "new app did not receive its default: {future}"
+    );
+    anyhow::ensure!(
+        future["status"] == "DOMAIN_STATUS_BOUND"
+            && future["certificateNextAttemptAt"].is_null()
+            && future["certificateExpiresAt"].is_null(),
+        "a private app requested a certificate before a public release: {future}"
+    );
+    stack.deploy(&org, "future", "1", 1).await?;
+    let public = status_of(when, then, &org, &future_name).await?;
+    anyhow::ensure!(
+        public["certificateNextAttemptAt"].is_string(),
+        "the public release did not schedule its individual hostname certificate: {public}"
+    );
+    let renamed_name = format!("www.{parent}");
+    let renamed = domain_call(
+        when,
+        then,
+        "SetAppSubdomain",
+        json!({"organisation": org, "app": "existing", "subdomain": "www"}),
+    )
+    .await?;
+    anyhow::ensure!(
+        renamed.0 == 200
+            && renamed.1["domain"]["name"] == renamed_name
+            && renamed.1["domain"]["app"] == "existing"
+            && renamed.1["domain"]["parentDomain"] == parent,
+        "chosen app label was not effective: {renamed:?}"
+    );
+    let old = domain_call(
+        when,
+        then,
+        "GetDomain",
+        json!({"organisation": org, "name": existing_name}),
+    )
+    .await?;
+    anyhow::ensure!(
+        old.0 == 404 && old.1["code"] == "not_found",
+        "rename retained the previous hostname: {old:?}"
+    );
+    let collision = domain_call(
+        when,
+        then,
+        "SetAppSubdomain",
+        json!({"organisation": org, "app": "existing", "subdomain": "future"}),
+    )
+    .await?;
+    anyhow::ensure!(
+        collision.0 >= 400,
+        "a sibling's hostname was stolen: {collision:?}"
+    );
+    anyhow::ensure!(
+        status_of(when, then, &org, &renamed_name).await?["app"] == "existing"
+            && status_of(when, then, &org, &future_name).await?["app"] == "future",
+        "a failed rename changed either app's hostname"
+    );
+    let reset = domain_call(
+        when,
+        then,
+        "SetAppSubdomain",
+        json!({"organisation": org, "app": "existing", "subdomain": ""}),
+    )
+    .await?;
+    anyhow::ensure!(
+        reset.0 == 200 && reset.1["domain"]["name"] == existing_name,
+        "empty label did not use the app's current name: {reset:?}"
+    );
+    let unbound = domain_call(
+        when,
+        then,
+        "UnbindDomain",
+        json!({"organisation": org, "name": existing_name}),
+    )
+    .await?;
+    anyhow::ensure!(
+        unbound.0 == 200 && unbound.1["domain"]["status"] == "DOMAIN_STATUS_VERIFIED",
+        "explicit opt-out failed: {unbound:?}"
+    );
+    let repeated = domain_call(
+        when,
+        then,
+        "ConfigureAppDomain",
+        json!({"organisation": org, "name": parent}),
+    )
+    .await?;
+    anyhow::ensure!(
+        repeated.0 == 200,
+        "idempotent configuration failed: {repeated:?}"
+    );
+    stack
+        .deploy_with_exposure(&org, "existing", "1", 1, false)
+        .await?;
+    let opted_out = status_of(when, then, &org, &existing_name).await?;
+    anyhow::ensure!(
+        opted_out["status"] == "DOMAIN_STATUS_VERIFIED"
+            && opted_out["app"].as_str().is_none_or(str::is_empty)
+            && opted_out["parentDomain"] == parent,
+        "automatic defaults undid a deliberate unbind: {opted_out}"
+    );
+    let restored = domain_call(
+        when,
+        then,
+        "SetAppSubdomain",
+        json!({"organisation": org, "app": "existing", "subdomain": ""}),
+    )
+    .await?;
+    anyhow::ensure!(
+        restored.0 == 200 && restored.1["domain"]["app"] == "existing",
+        "an explicit subdomain choice did not re-enable the app address: {restored:?}"
+    );
+    let removed = domain_call(
+        when,
+        then,
+        "RemoveDomain",
+        json!({"organisation": org, "name": existing_name}),
+    )
+    .await?;
+    anyhow::ensure!(
+        removed.0 == 200,
+        "generated address removal failed: {removed:?}"
+    );
+    let repeated = domain_call(
+        when,
+        then,
+        "ConfigureAppDomain",
+        json!({"organisation": org, "name": parent}),
+    )
+    .await?;
+    anyhow::ensure!(
+        repeated.0 == 200,
+        "configuration after opt-out failed: {repeated:?}"
+    );
+    stack
+        .deploy_with_exposure(&org, "existing", "2", 1, false)
+        .await?;
+    let absent = domain_call(
+        when,
+        then,
+        "GetDomain",
+        json!({"organisation": org, "name": existing_name}),
+    )
+    .await?;
+    anyhow::ensure!(
+        absent.0 == 404 && absent.1["code"] == "not_found",
+        "automatic allocation recreated a deliberately removed hostname: {absent:?}"
+    );
+    let restored = domain_call(
+        when,
+        then,
+        "SetAppSubdomain",
+        json!({"organisation": org, "app": "existing", "subdomain": ""}),
+    )
+    .await?;
+    anyhow::ensure!(
+        restored.0 == 200
+            && restored.1["domain"]["name"] == existing_name
+            && restored.1["domain"]["app"] == "existing",
+        "an explicit choice could not restore a removed generated address: {restored:?}"
+    );
+    let (outsider, foreign_when, foreign_then) = stack.given.testcase.another_browser();
+    let foreign = outsider.a_signed_in_account().await?;
+    let hidden = domain_call(
+        &foreign_when,
+        &foreign_then,
+        "ConfigureAppDomain",
+        json!({"organisation": foreign.username, "name": parent}),
+    )
+    .await?;
+    anyhow::ensure!(
+        hidden.0 == 404 && hidden.1["code"] == "not_found",
+        "a foreign parent was exposed: {hidden:?}"
+    );
+    for name in [&parent, &future_name] {
+        let hidden = domain_call(
+            &foreign_when,
+            &foreign_then,
+            "GetDomain",
+            json!({"organisation": org, "name": name}),
+        )
+        .await?;
+        anyhow::ensure!(
+            hidden.0 == 404 && hidden.1["code"] == "not_found",
+            "another organisation could read a parent or child: {hidden:?}"
+        );
+    }
+    let listed = domain_call(
+        &foreign_when,
+        &foreign_then,
+        "ListDomains",
+        json!({"organisation": foreign.username}),
+    )
+    .await?;
+    anyhow::ensure!(
+        listed.0 == 200 && listed.1["domains"].as_array().is_none_or(Vec::is_empty),
+        "parent or generated child leaked to another organisation: {listed:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_member_can_read_domains_but_cannot_configure_the_app_namespace() -> anyhow::Result<()> {
+    let Some((given, when, then)) = crate::accepttest::fixtures::testcase_with_mail().await? else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let org = owner.username;
+    let (guest, guest_when, guest_then) = given.testcase.another_browser();
+    let member = guest.a_signed_in_account().await?;
+    when.inviting(&org, &member.email, "member").await?;
+    then.status(303)?;
+    let link = guest_when
+        .the_mailed_link(
+            &member.email,
+            &format!("Join {org} on grund"),
+            "/invite?token=",
+        )
+        .await?;
+    guest_when.visiting(&link).await?;
+    let token = guest.last_token()?;
+    guest_when
+        .submitting_on_current_page("/invite", &[("token", &token)])
+        .await?;
+    guest_then.redirects_to(&format!("/{org}"))?;
+    for (procedure, body) in [
+        (
+            "ConfigureAppDomain",
+            json!({"organisation": org, "name": "example.com"}),
+        ),
+        (
+            "SetAppSubdomain",
+            json!({"organisation": org, "app": "hello", "subdomain": "www"}),
+        ),
+    ] {
+        let answer = domain_call(&guest_when, &guest_then, procedure, body).await?;
+        anyhow::ensure!(
+            answer.0 == 403 && answer.1["code"] == "permission_denied",
+            "member changed the namespace: {procedure} {answer:?}"
+        );
+    }
+    guest_when
+        .calling(
+            &format!("{DOMAINS}/ListDomains"),
+            &json!({"organisation": org}).to_string(),
+        )
+        .await?;
+    guest_then.status(200)?;
     Ok(())
 }

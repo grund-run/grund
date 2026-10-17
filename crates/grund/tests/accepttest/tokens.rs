@@ -156,6 +156,25 @@ async fn ci_deploys_with_a_token_and_no_session_in_the_tokens_organisation_only(
         .calling_with(GET_VIEWER, "{}", &[("Authorization", &bearer)])
         .await?;
     ci_then.status(403)?.connect_code("permission_denied")?;
+    for (procedure, body) in [
+        (
+            "ConfigureAppDomain",
+            json!({"organisation": org, "name": "example.com"}),
+        ),
+        (
+            "SetAppSubdomain",
+            json!({"organisation": org, "app": "shop", "subdomain": "www"}),
+        ),
+    ] {
+        ci_when
+            .calling_with(
+                &format!("/grund.domain.v1.DomainService/{procedure}"),
+                &body.to_string(),
+                &[("Authorization", &bearer)],
+            )
+            .await?;
+        ci_then.status(403)?.connect_code("permission_denied")?;
+    }
 
     let fixture = &given.testcase.fixture;
     anyhow::ensure!(
@@ -409,6 +428,25 @@ async fn app_limited_deploy_token_cannot_read_or_change_sibling_apps_or_domains(
         )
         .await?;
     ci_then.status(403)?.connect_code("permission_denied")?;
+    for (procedure, body) in [
+        (
+            "ConfigureAppDomain",
+            json!({"organisation": org, "name": unbound_domain}),
+        ),
+        (
+            "SetAppSubdomain",
+            json!({"organisation": org, "app": "shop", "subdomain": "www"}),
+        ),
+    ] {
+        ci_when
+            .calling_with(
+                &format!("{domains}/{procedure}"),
+                &body.to_string(),
+                &[("Authorization", &bearer)],
+            )
+            .await?;
+        ci_then.status(403)?.connect_code("permission_denied")?;
+    }
     ci_when
         .calling_with(
             "/grund.volume.v1.VolumeService/ListVolumes",

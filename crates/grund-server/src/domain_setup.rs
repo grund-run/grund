@@ -39,6 +39,7 @@ struct Dns {
     addresses: BTreeSet<IpAddr>,
     expected: BTreeSet<IpAddr>,
     aliases: BTreeSet<String>,
+    issue: Option<&'static str>,
 }
 
 fn resolver(server: Option<SocketAddr>) -> anyhow::Result<Resolver<TokioRuntimeProvider>> {
@@ -71,11 +72,16 @@ fn resolver(server: Option<SocketAddr>) -> anyhow::Result<Resolver<TokioRuntimeP
     Ok(builder.build()?)
 }
 
-async fn dns(state: &State, name: &str) -> anyhow::Result<Dns> {
-    let resolver = resolver(state.config.entry.dns_resolver)?;
-    let domain = resolver.lookup_ip(format!("{name}."));
+async fn dns(server: Option<SocketAddr>, edges: &[String], name: &str) -> anyhow::Result<Dns> {
+    let resolver = resolver(server)?;
+    let name = format!("{name}.");
+    let domain = resolver.lookup_ip(name.as_str());
+    let aliases = resolver.lookup(
+        name.as_str(),
+        hickory_resolver::proto::rr::RecordType::CNAME,
+    );
     let mut queries = futures_util::stream::FuturesUnordered::new();
-    for edge in &state.config.entry.edges {
+    for edge in edges {
         queries.push(resolver.lookup_ip(format!("{edge}.")));
     }
     let edges = async move {
@@ -87,15 +93,33 @@ async fn dns(state: &State, name: &str) -> anyhow::Result<Dns> {
         }
         addresses
     };
-    let (domain, expected) = tokio::join!(domain, edges);
-    let domain = domain.context("the domain did not resolve")?;
-    let addresses = domain.iter().collect();
-    let aliases = domain
-        .as_lookup()
-        .answers()
-        .iter()
+    let (domain, expected, aliases) = tokio::join!(domain, edges, aliases);
+    let (addresses, issue) = match domain {
+        Ok(answer) => (answer.iter().collect(), None),
+        Err(error) => (
+            BTreeSet::new(),
+            Some(if error.is_nx_domain() {
+                "DNS answered NXDOMAIN."
+            } else if error.is_no_records_found() {
+                "DNS returned no address records."
+            } else {
+                "The address lookup failed."
+            }),
+        ),
+    };
+    let aliases = aliases
+        .as_ref()
+        .ok()
+        .into_iter()
+        .flat_map(|answer| answer.answers().iter())
         .filter_map(|record| match &record.data {
-            hickory_resolver::proto::rr::RData::CNAME(alias) => Some(alias.to_string()),
+            hickory_resolver::proto::rr::RData::CNAME(alias) => {
+                let mut name = alias.to_string();
+                if name.ends_with('.') {
+                    name.pop();
+                }
+                Some(name)
+            }
             _ => None,
         })
         .collect();
@@ -103,6 +127,7 @@ async fn dns(state: &State, name: &str) -> anyhow::Result<Dns> {
         addresses,
         expected,
         aliases,
+        issue,
     })
 }
 
@@ -184,9 +209,31 @@ async fn observe(
     holder: Uuid,
     steps: &mut [Step; 3],
 ) -> anyhow::Result<()> {
-    let resolved = match tokio::time::timeout(DNS_DEADLINE, dns(state, &claim.name)).await {
+    let resolved = match tokio::time::timeout(
+        DNS_DEADLINE,
+        dns(
+            state.config.entry.dns_resolver,
+            &state.config.entry.edges,
+            &claim.name,
+        ),
+    )
+    .await
+    {
         Ok(Ok(resolved)) => resolved,
-        _ => return Ok(()),
+        outcome => {
+            steps[0] = observation(
+                claim,
+                "dns_record",
+                StepState::Failed,
+                if outcome.is_err() {
+                    "The DNS lookup exceeded its five-second deadline."
+                } else {
+                    "The DNS resolver could not be opened."
+                }
+                .into(),
+            );
+            return Ok(());
+        }
     };
     let ready = matches_edges(&resolved.addresses, &resolved.expected);
     let addresses = resolved
@@ -211,7 +258,7 @@ async fn observe(
             StepState::Failed
         },
         format!(
-            "Addresses: {}. CNAME: {}. Configured edge addresses: {}.{}",
+            "Addresses: {}. CNAME: {}. Configured edge addresses: {}.{}{}{}",
             if addresses.is_empty() {
                 "none"
             } else {
@@ -233,7 +280,9 @@ async fn observe(
                 " All observed addresses match."
             } else {
                 " Not all observed addresses match."
-            }
+            },
+            resolved.issue.map_or("", |_| " "),
+            resolved.issue.unwrap_or(""),
         ),
     );
     if !ready {
@@ -453,6 +502,84 @@ mod tests {
         ));
         assert!(!matches_edges(&BTreeSet::new(), &expected));
         assert!(!matches_edges(&BTreeSet::from([edge]), &BTreeSet::new()));
+    }
+
+    #[tokio::test]
+    async fn a_broken_cname_remains_visible_when_its_address_lookup_has_no_records() {
+        use hickory_resolver::proto::{
+            op::{Message, ResponseCode},
+            rr::{
+                Name, RData, Record, RecordType,
+                rdata::{A, CNAME},
+            },
+        };
+        let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let address = socket.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut buffer = [0; 4096];
+            loop {
+                let (length, peer) = socket.recv_from(&mut buffer).await.unwrap();
+                let request = Message::from_vec(&buffer[..length]).unwrap();
+                let mut response = Message::response(request.metadata.id, request.metadata.op_code);
+                response.metadata.recursion_available = true;
+                response.metadata.authoritative = true;
+                for query in request.queries {
+                    if query
+                        .name
+                        .to_string()
+                        .eq_ignore_ascii_case("edge.example.com.")
+                    {
+                        if query.query_type == RecordType::A {
+                            response.add_answer(Record::from_rdata(
+                                query.name.clone(),
+                                30,
+                                RData::A(A("192.0.2.10".parse().unwrap())),
+                            ));
+                        }
+                    } else if query.query_type == RecordType::CNAME {
+                        response.add_answer(Record::from_rdata(
+                            query.name.clone(),
+                            30,
+                            RData::CNAME(CNAME(
+                                Name::from_ascii("wrong.example.invalid.").unwrap(),
+                            )),
+                        ));
+                    } else {
+                        response.metadata.response_code = ResponseCode::NXDomain;
+                    }
+                    response.add_query(query);
+                }
+                socket
+                    .send_to(&response.to_vec().unwrap(), peer)
+                    .await
+                    .unwrap();
+            }
+        });
+        let resolved = tokio::time::timeout(
+            DNS_DEADLINE,
+            dns(
+                Some(address),
+                &["edge.example.com".into()],
+                "app.example.com",
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        server.abort();
+        assert!(resolved.addresses.is_empty());
+        assert!(
+            resolved
+                .aliases
+                .iter()
+                .any(|name| name.trim_end_matches('.') == "wrong.example.invalid")
+        );
+        assert_eq!(
+            resolved.expected,
+            BTreeSet::from(["192.0.2.10".parse().unwrap()])
+        );
+        assert!(resolved.issue.is_some());
+        assert!(!matches_edges(&resolved.addresses, &resolved.expected));
     }
 
     async fn http_response(

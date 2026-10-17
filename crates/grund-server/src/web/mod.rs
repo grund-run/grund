@@ -176,6 +176,10 @@ pub fn router(state: State) -> Router {
         )
         .route("/{org}/domains/verify", post(domains::verify))
         .route("/{org}/domains/check", post(domains::check))
+        .route(
+            "/{org}/domains/app-domain",
+            post(domains::configure_app_domain),
+        )
         .route("/{org}/domains/bind", post(domains::bind))
         .route("/{org}/domains/unbind", post(domains::unbind))
         .route("/{org}/domains/remove", post(domains::remove))

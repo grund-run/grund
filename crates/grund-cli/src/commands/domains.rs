@@ -66,6 +66,25 @@ pub enum DomainsAction {
         #[arg(long, help = "Show the request instead of sending it")]
         dry_run: bool,
     },
+    #[command(about = "Use a verified parent domain for this organisation's app addresses")]
+    AppDomain {
+        #[arg(value_name = "DOMAIN")]
+        domain: String,
+        #[arg(long, help = "Show the request instead of sending it")]
+        dry_run: bool,
+    },
+    #[command(about = "Replace an app's address under its organisation's app domain")]
+    Subdomain {
+        #[arg(value_name = "APP")]
+        app: String,
+        #[arg(
+            value_name = "LABEL",
+            help = "One lowercase DNS label; omitted uses the app's name"
+        )]
+        label: Option<String>,
+        #[arg(long, help = "Show the request instead of sending it")]
+        dry_run: bool,
+    },
     #[command(
         about = "Remove a domain; a verified one is held for a cool-down before another organisation can add it"
     )]
@@ -200,6 +219,32 @@ pub async fn run(ctx: &Ctx, action: DomainsAction) -> CliResult<Output> {
             }
             Ok(Output::fields(
                 api.call(&call("UnbindDomain"), request).await?,
+            ))
+        }
+        DomainsAction::AppDomain {
+            domain,
+            dry_run: preview,
+        } => {
+            let request = json!({"organisation": org, "name": domain});
+            if preview {
+                return Ok(dry_run(&[(call("ConfigureAppDomain"), request)], vec![]));
+            }
+            Ok(Output::fields(
+                api.call(&call("ConfigureAppDomain"), request).await?,
+            ))
+        }
+        DomainsAction::Subdomain {
+            app,
+            label,
+            dry_run: preview,
+        } => {
+            let request =
+                json!({"organisation": org, "app": app, "subdomain": label.unwrap_or_default()});
+            if preview {
+                return Ok(dry_run(&[(call("SetAppSubdomain"), request)], vec![]));
+            }
+            Ok(Output::fields(
+                api.call(&call("SetAppSubdomain"), request).await?,
             ))
         }
         DomainsAction::Remove {

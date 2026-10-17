@@ -568,6 +568,21 @@ pub const LEAVES: &[Leaf] = &[
         &["grund.domain.v1.DomainService/UnbindDomain"],
         &["grund domains unbind shop.example.com"],
     ),
+    write(
+        "domains app-domain",
+        "grund.domain.v1.ConfigureAppDomainResponse",
+        &["grund.domain.v1.DomainService/ConfigureAppDomain"],
+        &["grund domains app-domain example.com"],
+    ),
+    write(
+        "domains subdomain",
+        "grund.domain.v1.SetAppSubdomainResponse",
+        &["grund.domain.v1.DomainService/SetAppSubdomain"],
+        &[
+            "grund domains subdomain web www",
+            "grund domains subdomain web",
+        ],
+    ),
     destroy(
         "domains remove",
         &["grund.domain.v1.DomainService/RemoveDomain"],

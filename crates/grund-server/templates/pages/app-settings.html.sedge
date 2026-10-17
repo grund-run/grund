@@ -133,25 +133,37 @@ props crate::web::apps::AppSettingsPage<'_> { app, items, edit, next, manages, o
           </Grid>
         </SettingsForm>
       },
-      SettingsEdit::Domains { domains, apps, target, public, added_name } => {
+      SettingsEdit::Domains { domains, apps, public, added_name, parent, subdomain, edge_target } => {
         <Panel id="domains" title="Custom domain">
           <Banner part={Some("domains")} form={Some(&form)} />
+          {if let Some(parent) = parent {
+            <Para kind="aside">Organisation app domain: <code>{parent}</code>.</Para>
+            {if *manages {
+              <Form action="{here}/domains" form={Some(&form)}>
+                <HiddenField name="operation" value="subdomain" />
+                <Field name="subdomain" label="App subdomain" value={subdomain.as_str()} hint={format!("One lowercase DNS label before .{parent}. Empty uses {}. Saving replaces the previous app address and re-enables an unbound address.", app.name)} autocomplete="off" mono form={Some(&form)} />
+                <Actions><Button label="Save subdomain" kind="secondary" /></Actions>
+              </Form>
+            }}
+          } else {
+            <Para kind="aside">No organisation app domain configured. <a href="/{app.base.split('/').nth(1).unwrap_or("")}/domains#custom">Set up app addresses in Domains</a>.</Para>
+          }}
           {for domain in domains {
-            {let item = crate::web::domains::domain_context(domain, target.as_deref(), *public);}
+            {let item = crate::web::domains::domain_context(domain, *public, edge_target.as_deref());}
             <Section id={item.id.as_str()} title={&domain.name}>
               <DomainSetup domain={&item} slug={app.base.split('/').nth(1).unwrap_or("")} compact refresh_href={here.as_str()} refresh_fields={&[("edit", "domains")]} />
               <DomainRecords domain={&item} />
               {if *manages {
                 <Actions>
                   <PostButton action="{here}/domains" csrf={form.csrf} label="Check now" kind="secondary" hidden={&[("operation", "check"), ("domain", &domain.name)]} />
-                  {if domain.state == "verified" {
+                  {if domain.state == "verified" && domain.parent_domain.is_none() {
                     <PostButton action="{here}/domains" csrf={form.csrf} label="Bind" kind="secondary" hidden={&[("operation", "bind"), ("domain", &domain.name)]} />
                   }}
                   {if domain.state == "bound" {
                     <PostButton action="{here}/domains" csrf={form.csrf} label="Unbind" kind="secondary" hidden={&[("operation", "unbind"), ("domain", &domain.name)]} />
                   }}
                 </Actions>
-                {if domain.state == "bound" && !apps.is_empty() {
+                {if domain.state == "bound" && domain.parent_domain.is_none() && !apps.is_empty() {
                   <Form action="{here}/domains" form={Some(&form)} layout={Some("row")}>
                     <HiddenField name="operation" value="move" /><HiddenField name="domain" value={&domain.name} />
                     <Select name="target" id="move-{domain.name}" label="Move to app" options={&options.apps} required />
@@ -164,7 +176,7 @@ props crate::web::apps::AppSettingsPage<'_> { app, items, edit, next, manages, o
           {if *manages {
             <Form action="{here}/domains" form={Some(&form)} layout={Some("row")}>
               <HiddenField name="operation" value="add" />
-              <Field name="domain" label="Domain" value={added_name.as_str()} hint="Add the records, then Check now to verify and bind." autocomplete="off" required mono />
+              <Field name="domain" label="Domain" value={added_name.as_str()} hint="Add the records, then Check now to verify and bind." autocomplete="off" required mono form={Some(&form)} />
               <Button label="Add domain" kind="secondary" />
             </Form>
           }}

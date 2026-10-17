@@ -14,6 +14,7 @@ mod insights;
 mod lifecycle;
 mod login;
 mod machines;
+mod namespace_web;
 mod network;
 mod notifications;
 mod organisations;

@@ -478,6 +478,14 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
         Requirement::SessionOrFullToken,
     ),
     (
+        "/grund.domain.v1.DomainService/ConfigureAppDomain",
+        Requirement::SessionOrFullToken,
+    ),
+    (
+        "/grund.domain.v1.DomainService/SetAppSubdomain",
+        Requirement::SessionOrFullToken,
+    ),
+    (
         "/grund.notification.v1.NotificationService/ListNotifications",
         Requirement::SessionOrFullToken,
     ),
@@ -1927,6 +1935,20 @@ mod tests {
         ) -> ServiceResult<grund_proto::grund::domain::v1::RemoveDomainResponse> {
             unreachable!()
         }
+        async fn configure_app_domain(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, grund_proto::grund::domain::v1::ConfigureAppDomainRequest>,
+        ) -> ServiceResult<grund_proto::grund::domain::v1::ConfigureAppDomainResponse> {
+            unreachable!()
+        }
+        async fn set_app_subdomain(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, grund_proto::grund::domain::v1::SetAppSubdomainRequest>,
+        ) -> ServiceResult<grund_proto::grund::domain::v1::SetAppSubdomainResponse> {
+            unreachable!()
+        }
     }
 
     struct UnusedNotifications;
@@ -2248,6 +2270,8 @@ mod tests {
             "/grund.machine.v1.MachineService/SetMachineInService",
             "/grund.domain.v1.DomainService/BindDomain",
             "/grund.domain.v1.DomainService/CheckDomain",
+            "/grund.domain.v1.DomainService/ConfigureAppDomain",
+            "/grund.domain.v1.DomainService/SetAppSubdomain",
             "/grund.registry.v1.RegistryService/SetRegistryLogin",
         ] {
             assert!(for_full.contains(required), "{required}");

@@ -1416,6 +1416,7 @@ fn sentence(error: &AppsError) -> String {
         AppsError::Spec(spec) => format!("{}: {}.", spec.field, spec.problem),
         AppsError::NameTaken => "An app of that name already exists.".into(),
         AppsError::AppLimit => "This organisation has all the apps it may have.".into(),
+        AppsError::DomainConfiguration(message) => capitalise(message),
         AppsError::Internal(_) => "grund could not finish that. Try again.".into(),
         other => capitalise(&format!("{other}.")),
     }
@@ -1957,6 +1958,7 @@ pub(super) struct Refused {
     pub(super) file: Option<String>,
     pub(super) placement: Option<super::placement::PlacementForm>,
     pub(super) domain: Option<String>,
+    pub(super) subdomain: Option<String>,
 }
 
 macro_rules! app_page {
@@ -2124,9 +2126,11 @@ pub enum SettingsEdit {
     Domains {
         domains: Vec<crate::services::domains::DomainView>,
         apps: Vec<String>,
-        target: Option<String>,
         public: bool,
         added_name: String,
+        parent: Option<String>,
+        subdomain: String,
+        edge_target: Option<String>,
     },
     Volumes {
         summary: VolumeSummary,
@@ -2615,35 +2619,57 @@ pub(super) async fn app_view(
                 rows: secrets,
                 variable: refused.variable,
             },
-            "domains" => SettingsEdit::Domains {
-                domains: state
+            "domains" => {
+                let domains = state
                     .domains()
                     .list(membership.organisation_id)
                     .await
-                    .map_err(|error| PageError::from(anyhow::anyhow!(error)))?
-                    .into_iter()
-                    .filter(|domain| domain.app_name.as_deref().is_none_or(|app| app == name))
-                    .collect(),
-                apps: apps
-                    .listings(membership.organisation_id, slug)
-                    .await
-                    .map_err(|error| PageError::from(anyhow::anyhow!(error)))?
-                    .into_iter()
-                    .filter(|app| {
-                        app.view.row.name != name
-                            && (state.config.entry.app_domains
-                                == crate::config::AppDomains::CustomOnly
-                                || app.spec.as_ref().is_some_and(publishes))
-                    })
-                    .map(|app| app.view.row.name)
-                    .collect(),
-                target: listing
-                    .address
-                    .clone()
-                    .or_else(|| state.config.entry.edges.first().cloned()),
-                public: listing.spec.as_ref().is_some_and(publishes),
-                added_name: refused.domain.unwrap_or_default(),
-            },
+                    .map_err(|error| PageError::from(anyhow::anyhow!(error)))?;
+                let parent = domains
+                    .iter()
+                    .find(|domain| domain.is_app_domain)
+                    .map(|domain| domain.name.clone());
+                let subdomain = refused.subdomain.unwrap_or_else(|| {
+                    domains
+                        .iter()
+                        .find(|domain| {
+                            domain.parent_domain.is_some()
+                                && domain.managed_app_name.as_deref() == Some(name)
+                        })
+                        .and_then(|domain| domain.name.split_once('.'))
+                        .map_or_else(|| name.to_string(), |(label, _)| label.to_string())
+                });
+                SettingsEdit::Domains {
+                    parent,
+                    subdomain,
+                    edge_target: state.config.entry.edges.first().cloned(),
+                    domains: domains
+                        .into_iter()
+                        .filter(|domain| {
+                            if domain.parent_domain.is_some() {
+                                domain.managed_app_name.as_deref() == Some(name)
+                            } else {
+                                domain.app_name.as_deref().is_none_or(|app| app == name)
+                            }
+                        })
+                        .collect(),
+                    apps: apps
+                        .listings(membership.organisation_id, slug)
+                        .await
+                        .map_err(|error| PageError::from(anyhow::anyhow!(error)))?
+                        .into_iter()
+                        .filter(|app| {
+                            app.view.row.name != name
+                                && (state.config.entry.app_domains
+                                    == crate::config::AppDomains::CustomOnly
+                                    || app.spec.as_ref().is_some_and(publishes))
+                        })
+                        .map(|app| app.view.row.name)
+                        .collect(),
+                    public: listing.spec.as_ref().is_some_and(publishes),
+                    added_name: refused.domain.unwrap_or_default(),
+                }
+            }
             "volumes" => SettingsEdit::Volumes {
                 summary: volume_summary,
                 name: form.volume_name,
@@ -2869,6 +2895,7 @@ async fn refuse_setting(
             volume: String::new(),
             placement: None,
             domain: None,
+            subdomain: None,
         },
     )
     .await
@@ -2958,6 +2985,9 @@ pub async fn domain_settings(
         return forged(&state, &browser);
     }
     let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
+    if !manages(&membership) {
+        return Ok(StatusCode::FORBIDDEN.into_response());
+    }
     let app = state
         .apps()
         .get(membership.organisation_id, &name)
@@ -2971,6 +3001,17 @@ pub async fn domain_settings(
                 .await
                 .map(|_| ());
         }
+        if form.operation == "subdomain" {
+            return domains
+                .set_app_subdomain(
+                    session.account_id,
+                    &membership,
+                    &app.row.name,
+                    &form.subdomain,
+                )
+                .await
+                .map(|_| ());
+        }
         let domain = domains
             .get(membership.organisation_id, &form.domain)
             .await?;
@@ -2978,6 +3019,10 @@ pub async fn domain_settings(
             .app_name
             .as_deref()
             .is_some_and(|bound| bound != name)
+            || domain
+                .managed_app_name
+                .as_deref()
+                .is_some_and(|managed| managed != name)
         {
             return Err(crate::services::domains::DomainsError::NotFound);
         }
@@ -2986,7 +3031,7 @@ pub async fn domain_settings(
                 let checked = domains
                     .check_now(session.account_id, &membership, &domain.name)
                     .await?;
-                if checked.state == "verified" {
+                if checked.state == "verified" && checked.parent_domain.is_none() {
                     domains
                         .bind(session.account_id, &membership, &domain.name, &app.row.name)
                         .await?;
@@ -3028,8 +3073,13 @@ pub async fn domain_settings(
                 (String::new(), String::new()),
                 Refused {
                     part: "domains",
-                    refusal: Refusal::banner(error.to_string()),
+                    refusal: match form.operation.as_str() {
+                        "subdomain" => Refusal::field("subdomain", error.to_string()),
+                        "add" => Refusal::field("domain", error.to_string()),
+                        _ => Refusal::banner(error.to_string()),
+                    },
                     domain: (form.operation == "add").then_some(form.domain),
+                    subdomain: (form.operation == "subdomain").then_some(form.subdomain),
                     ..Default::default()
                 },
             )
@@ -3047,6 +3097,8 @@ pub struct AppDomainForm {
     operation: String,
     #[serde(default)]
     target: String,
+    #[serde(default)]
+    subdomain: String,
 }
 
 /// `POST /{org}/apps/{app}/settings/release`: one Settings item (`part`)
@@ -3302,6 +3354,7 @@ pub async fn apply_file(
             volume: String::new(),
             placement: None,
             domain: None,
+            subdomain: None,
         },
     )
     .await
@@ -3434,6 +3487,7 @@ pub async fn set_secret(
             volume: String::new(),
             placement: None,
             domain: None,
+            subdomain: None,
         },
     )
     .await
