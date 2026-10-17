@@ -139,6 +139,12 @@ pub struct DomainRow {
     /// Whether a certificate is wanted for it (it is bound and this
     /// instance orders).
     pub certificate_wanted: bool,
+    /// Persistent observations of the six setup boundaries.
+    pub steps: sqlx::types::Json<Vec<crate::domain_setup::Step>>,
+    /// Consecutive failed ACME attempts, reset after successful issuance.
+    pub certificate_attempts: i32,
+    /// When the certificate worker may next attempt this subject.
+    pub certificate_next_attempt_at: Option<DateTime<Utc>>,
 }
 
 macro_rules! select_rows {
@@ -147,10 +153,18 @@ macro_rules! select_rows {
             "SELECT d.domain_id, d.organisation_id, d.name, d.token, d.state, d.app_id, \
             a.name AS app_name, d.added_at, d.verified_at, d.bound_at, d.checked_at, d.check_error, \
             c.not_after AS certificate_not_after, c.last_error AS certificate_error, \
-            (c.subject IS NOT NULL) AS certificate_wanted \
+            (c.subject IS NOT NULL) AS certificate_wanted, \
+            coalesce(s.steps, grund_domain_setup_waiting()) AS steps, \
+            coalesce(c.attempts, 0) AS certificate_attempts, \
+            CASE WHEN c.subject IS NULL OR d.state <> 'bound' THEN NULL \
+                 WHEN c.chain_pem IS NULL THEN c.next_attempt_at \
+                 WHEN c.renew_at IS NULL AND c.ari_check_at IS NULL THEN NULL \
+                 ELSE greatest(c.next_attempt_at, least(c.renew_at, c.ari_check_at)) END \
+                AS certificate_next_attempt_at \
        FROM grund_domains d \
        LEFT JOIN grund_apps a ON a.app_id = d.app_id AND a.deleted_at IS NULL \
-       LEFT JOIN grund_certificates c ON c.subject = 'domain:' || d.domain_id::text ",
+       LEFT JOIN grund_certificates c ON c.subject = 'domain:' || d.domain_id::text \
+       LEFT JOIN grund_domain_setup s ON s.domain_id = d.domain_id ",
             $where
         )
     };

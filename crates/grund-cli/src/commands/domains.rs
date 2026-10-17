@@ -1,14 +1,16 @@
 //! `grund domains`: the organisation's custom domains, over
 //! `grund.domain.v1.DomainService`.
 
+use std::fmt::Write;
+
 use clap::Subcommand;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::{
     commands::{Noun, done, dry_run},
     context::Ctx,
     error::CliResult,
-    output::Output,
+    output::{Format, Output},
 };
 
 const SERVICE: &str = "grund.domain.v1.DomainService";
@@ -35,6 +37,11 @@ pub enum DomainsAction {
     },
     #[command(about = "Look the TXT record up now")]
     Verify {
+        #[arg(value_name = "DOMAIN")]
+        domain: String,
+    },
+    #[command(about = "Check domain setup and retry now")]
+    Check {
         #[arg(value_name = "DOMAIN")]
         domain: String,
     },
@@ -79,6 +86,54 @@ const DOMAINS: &[(&str, &str)] = &[
     ("PROBLEM", "/problem"),
 ];
 
+fn listed(answer: Value) -> Output {
+    let summary = Output::table(answer, "/domains", DOMAINS);
+    let mut text = summary.render(Format::Text);
+    if let Some(domains) = summary.value["domains"].as_array() {
+        for domain in domains {
+            let _ = writeln!(text, "\n{}", domain["name"].as_str().unwrap_or_default());
+            let _ = writeln!(
+                text,
+                "  Failed certificate attempts: {}",
+                domain["certificateAttempts"].as_i64().unwrap_or(0)
+            );
+            let _ = writeln!(
+                text,
+                "  Next certificate attempt: {}",
+                domain["certificateNextAttemptAt"]
+                    .as_str()
+                    .unwrap_or("not scheduled")
+            );
+            if let Some(steps) = domain["setupSteps"].as_array() {
+                for step in steps {
+                    let state = step["state"].as_str().unwrap_or("STEP_STATE_UNSPECIFIED");
+                    let state = state.strip_prefix("STEP_STATE_").unwrap_or(state);
+                    let _ = writeln!(
+                        text,
+                        "  {}: {}",
+                        step["name"].as_str().unwrap_or_default(),
+                        state.to_ascii_lowercase()
+                    );
+                    if let Some(detail) = step["detail"].as_str().filter(|s| !s.is_empty()) {
+                        let _ = writeln!(text, "    {detail}");
+                    }
+                    let _ = writeln!(
+                        text,
+                        "    Last check: {}",
+                        step["checkedAt"].as_str().unwrap_or("not checked")
+                    );
+                    let _ = writeln!(
+                        text,
+                        "    Next retry: {}",
+                        step["nextRetryAt"].as_str().unwrap_or("not scheduled")
+                    );
+                }
+            }
+        }
+    }
+    Output::with_text(summary.value, text)
+}
+
 /// Runs a `grund domains` verb.
 pub async fn run(ctx: &Ctx, action: DomainsAction) -> CliResult<Output> {
     let api = ctx.api()?;
@@ -89,7 +144,7 @@ pub async fn run(ctx: &Ctx, action: DomainsAction) -> CliResult<Output> {
             let answer = api
                 .call(&call("ListDomains"), json!({"organisation": org}))
                 .await?;
-            Ok(Output::table(answer, "/domains", DOMAINS))
+            Ok(listed(answer))
         }
         DomainsAction::Get { domain } => Ok(Output::fields(
             api.call(
@@ -111,6 +166,13 @@ pub async fn run(ctx: &Ctx, action: DomainsAction) -> CliResult<Output> {
         DomainsAction::Verify { domain } => Ok(Output::fields(
             api.call(
                 &call("VerifyDomain"),
+                json!({"organisation": org, "name": domain}),
+            )
+            .await?,
+        )),
+        DomainsAction::Check { domain } => Ok(Output::fields(
+            api.call(
+                &call("CheckDomain"),
                 json!({"organisation": org, "name": domain}),
             )
             .await?,

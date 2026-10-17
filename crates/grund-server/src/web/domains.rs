@@ -10,14 +10,15 @@ use axum::{
     extract::{Path, Query, State as AxumState},
     http::{StatusCode, Uri},
 };
-use grund_store::organisations::Membership;
+use chrono::{DateTime, Utc};
+use grund_store::{domain_setup::Step, organisations::Membership};
 use serde::Deserialize;
 use std::borrow::Cow;
 
 use crate::{
     services::{
         apps::AppsState,
-        domains::{DomainView, DomainsError, DomainsState, Status},
+        domains::{DomainView, DomainsError, DomainsState},
         entry::publishes,
         sessions::Session,
     },
@@ -29,10 +30,45 @@ use crate::{
     },
 };
 
-pub struct DomainRecord<'a> {
-    pub kind: &'static str,
+pub struct DomainStep<'a> {
     pub name: &'a str,
-    pub value: &'a str,
+    pub label: &'a str,
+    pub state: &'static str,
+    pub state_code: &'static str,
+    pub tone: &'static str,
+    pub detail: &'a str,
+    pub checked_at: Option<DateTime<Utc>>,
+    pub next_retry_at: Option<DateTime<Utc>>,
+}
+
+impl<'a> From<&'a Step> for DomainStep<'a> {
+    fn from(step: &'a Step) -> Self {
+        let label = match step.name.as_str() {
+            "dns_record" => "DNS record seen",
+            "edge_reachable" => "Edge reachable",
+            "certificate_requested" => "Certificate requested",
+            "challenge_passed" => "Challenge passed",
+            "certificate_issued" => "Certificate issued",
+            "serving_https" => "Serving HTTPS",
+            name => name,
+        };
+        let (state, tone) = match step.state.as_str() {
+            "done" => ("Done", "ok"),
+            "in_progress" => ("In progress", "blue"),
+            "failed" => ("Failed", "danger"),
+            _ => ("Waiting", "muted"),
+        };
+        Self {
+            name: &step.name,
+            label,
+            state,
+            state_code: step.state.as_str(),
+            tone,
+            detail: &step.detail,
+            checked_at: step.checked_at,
+            next_retry_at: step.next_retry_at,
+        }
+    }
 }
 
 pub struct DomainItem<'a> {
@@ -42,8 +78,11 @@ pub struct DomainItem<'a> {
     pub app: &'a str,
     pub sentence: Cow<'a, str>,
     pub tone: &'static str,
-    pub record: Option<DomainRecord<'a>>,
-    pub records_aside: Option<String>,
+    pub records: Vec<(&'static str, &'a str, &'a str)>,
+    pub steps: Vec<DomainStep<'a>>,
+    pub refresh: bool,
+    pub certificate_attempts: i32,
+    pub certificate_next_attempt_at: Option<DateTime<Utc>>,
 }
 
 pub struct AppAddress<'a> {
@@ -75,78 +114,60 @@ struct AddForm {
     name: String,
 }
 
-fn domain_context<'a>(
-    index: usize,
+pub(crate) fn domain_context<'a>(
     domain: &'a DomainView,
     address: Option<&'a str>,
     public: bool,
 ) -> DomainItem<'a> {
     let app = domain.app_name.as_deref().unwrap_or("");
-    let (sentence, tone) = match domain.status {
-        Status::Pending => (Cow::Borrowed("Waiting for its TXT record."), "orange"),
-        Status::Verified => (
-            Cow::Borrowed(
-                "Verified: it is this organisation's on this grund. Bind it to an app to serve it.",
-            ),
-            "blue",
-        ),
-        Status::Bound if !public => (
-            Cow::Owned(format!(
-                "Bound to {app}. Publish its HTTP port to serve it."
-            )),
-            "blue",
-        ),
-        Status::Bound => (
-            Cow::Owned(format!(
-                "Bound to {app}. Its certificate is on its way once {} points at grund's edge.",
-                domain.name
-            )),
-            "orange",
-        ),
-        Status::Issued if !public => (
-            Cow::Owned(format!(
-                "Bound to {app}. Publish its HTTP port to serve it."
-            )),
-            "blue",
-        ),
-        Status::Issued => (
-            Cow::Owned(format!(
-                "Serving {app} at https://{}, certificate valid until {}.",
-                domain.name,
-                domain
-                    .certificate_not_after
-                    .map(|at| at.format("%-d %b %Y").to_string())
-                    .unwrap_or_default()
-            )),
-            "ok",
-        ),
-        Status::Error => (
-            Cow::Borrowed(domain.problem.as_deref().unwrap_or("Something went wrong.")),
+    let serving = domain
+        .steps
+        .iter()
+        .any(|step| step.name == "serving_https" && step.state.as_str() == "done");
+    let (sentence, tone) = match domain.state.as_str() {
+        "pending" if domain.problem.is_some() => (
+            Cow::Borrowed(domain.problem.as_deref().unwrap_or_default()),
             "danger",
         ),
+        "pending" => (Cow::Borrowed("Waiting for its TXT record."), "orange"),
+        "verified" => (Cow::Borrowed("Domain verified. No app bound."), "blue"),
+        _ if !public => (
+            Cow::Owned(format!("Bound to {app}. No public HTTP port.")),
+            "blue",
+        ),
+        _ if serving => (
+            Cow::Owned(format!("Serving {app} at https://{}.", domain.name)),
+            "ok",
+        ),
+        _ if domain
+            .steps
+            .iter()
+            .any(|step| step.state.as_str() == "failed") =>
+        {
+            (Cow::Borrowed("Setup check failed."), "danger")
+        }
+        _ => (Cow::Borrowed("HTTPS setup not complete."), "orange"),
     };
-    let record = match (domain.state.as_str(), address) {
-        ("pending", _) => Some(DomainRecord {
-            kind: "TXT",
-            name: &domain.txt_name,
-            value: &domain.txt_value,
-        }),
-        ("bound", Some(address)) => Some(DomainRecord {
-            kind: "CNAME",
-            name: &domain.name,
-            value: address,
-        }),
-        _ => None,
-    };
+    let pending = domain.state == "pending";
+    let mut records = Vec::with_capacity(usize::from(pending) + usize::from(address.is_some()));
+    if pending {
+        records.push(("TXT", domain.txt_name.as_str(), domain.txt_value.as_str()));
+    }
+    if let Some(address) = address {
+        records.push(("CNAME", domain.name.as_str(), address));
+    }
     DomainItem {
-        id: format!("domain-{}", index + 1),
+        id: format!("domain-{}", domain.name),
         name: &domain.name,
         state: &domain.state,
-        app, sentence, tone, record,
-        records_aside: (domain.state == "bound" && address.is_some()).then(|| format!(
-            "Point {} at grund with this record. A domain at the top of its zone (example.com itself) cannot have a CNAME: use your provider's ALIAS, ANAME or CNAME flattening to the same address.",
-            domain.name
-        )),
+        app,
+        sentence,
+        tone,
+        records,
+        steps: domain.steps.iter().map(DomainStep::from).collect(),
+        refresh: domain.state == "bound" && !serving,
+        certificate_attempts: domain.certificate_attempts,
+        certificate_next_attempt_at: domain.certificate_next_attempt_at,
     }
 }
 
@@ -197,14 +218,18 @@ async fn domains_view(
         .map_err(|e| PageError::from(anyhow::anyhow!(e)))?;
     let domains: Vec<DomainItem<'_>> = domain_rows
         .iter()
-        .enumerate()
-        .map(|(index, domain)| {
+        .map(|domain| {
             let public = domain.app_name.as_ref().is_some_and(|name| {
                 listings.iter().any(|listing| {
                     &listing.view.row.name == name && listing.spec.as_ref().is_some_and(publishes)
                 })
             });
-            domain_context(index, domain, address_of(&domain.app_name), public)
+            domain_context(
+                domain,
+                address_of(&domain.app_name)
+                    .or_else(|| state.config.entry.edges.first().map(String::as_str)),
+                public,
+            )
         })
         .collect();
     signed_in_typed(
@@ -250,6 +275,7 @@ pub async fn domains_page(
         "bound" => "Domain bound. grund orders its certificate once it points at grund's edge.",
         "unbound" => "Domain unbound. It stays verified for this organisation.",
         "removed" => "Domain removed.",
+        "checking" => "Domain check queued.",
         _ => "",
     };
     let error = match query.error.as_str() {
@@ -384,6 +410,10 @@ async fn act(
     let domains = state.domains();
     let actor = session.account_id;
     let outcome = match action {
+        Action::Check => domains
+            .check_now(actor, &membership, &form.name)
+            .await
+            .map(|_| ()),
         Action::Verify => domains
             .verify(actor, &membership, &form.name)
             .await
@@ -406,10 +436,31 @@ async fn act(
 }
 
 enum Action {
+    Check,
     Verify,
     Bind,
     Unbind,
     Remove,
+}
+
+/// `POST /{org}/domains/check`: queues a setup check now.
+pub async fn check(
+    AxumState(state): AxumState<State>,
+    browser: Browser,
+    uri: Uri,
+    Path(slug): Path<String>,
+    Form(form): Form<NameForm>,
+) -> PageResult {
+    act(
+        &state,
+        &browser,
+        &uri,
+        &slug,
+        form,
+        "done=checking",
+        Action::Check,
+    )
+    .await
 }
 
 /// `POST /{org}/domains/verify`: looks for the TXT record now.

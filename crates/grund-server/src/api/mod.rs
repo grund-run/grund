@@ -462,6 +462,10 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
         Requirement::SessionOrFullToken,
     ),
     (
+        "/grund.domain.v1.DomainService/CheckDomain",
+        Requirement::SessionOrFullToken,
+    ),
+    (
         "/grund.domain.v1.DomainService/BindDomain",
         Requirement::SessionOrFullToken,
     ),
@@ -1895,6 +1899,13 @@ mod tests {
         ) -> ServiceResult<grund_proto::grund::domain::v1::VerifyDomainResponse> {
             unreachable!()
         }
+        async fn check_domain(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, grund_proto::grund::domain::v1::CheckDomainRequest>,
+        ) -> ServiceResult<grund_proto::grund::domain::v1::CheckDomainResponse> {
+            unreachable!()
+        }
         async fn bind_domain(
             &self,
             _: RequestContext,
@@ -2236,6 +2247,7 @@ mod tests {
             "/grund.machine.v1.MachineService/CreateJoinToken",
             "/grund.machine.v1.MachineService/SetMachineInService",
             "/grund.domain.v1.DomainService/BindDomain",
+            "/grund.domain.v1.DomainService/CheckDomain",
             "/grund.registry.v1.RegistryService/SetRegistryLogin",
         ] {
             assert!(for_full.contains(required), "{required}");

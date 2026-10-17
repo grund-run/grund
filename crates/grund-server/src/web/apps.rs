@@ -1956,6 +1956,7 @@ pub(super) struct Refused {
     pub(super) variable: String,
     pub(super) file: Option<String>,
     pub(super) placement: Option<super::placement::PlacementForm>,
+    pub(super) domain: Option<String>,
 }
 
 macro_rules! app_page {
@@ -2021,9 +2022,8 @@ app_page!(
 );
 
 pub struct AppDomain {
-    pub state_words: &'static str,
     pub name: String,
-    pub serving: bool,
+    pub public: bool,
 }
 
 pub struct AppIdentity {
@@ -2033,8 +2033,6 @@ pub struct AppIdentity {
     pub image: Option<String>,
     pub address: Option<String>,
     pub domains: Vec<AppDomain>,
-    pub domains_href: String,
-    pub custom_only: bool,
     pub internal: Option<String>,
     pub word: &'static str,
     pub tone: &'static str,
@@ -2123,7 +2121,13 @@ pub enum SettingsEdit {
         rows: Vec<SecretView>,
         variable: String,
     },
-    Domains,
+    Domains {
+        domains: Vec<crate::services::domains::DomainView>,
+        apps: Vec<String>,
+        target: Option<String>,
+        public: bool,
+        added_name: String,
+    },
     Volumes {
         summary: VolumeSummary,
         name: String,
@@ -2216,6 +2220,13 @@ fn setting_options<'a>(edit: &'a SettingsEdit, memory_values: &'a [String]) -> S
         },
         SettingsEdit::Env { pairs: rows } => SettingsOptions {
             env: pairs(rows),
+            ..Default::default()
+        },
+        SettingsEdit::Domains { apps, .. } => SettingsOptions {
+            apps: apps
+                .iter()
+                .map(|app| (app.as_str(), app.as_str()))
+                .collect(),
             ..Default::default()
         },
         _ => SettingsOptions::default(),
@@ -2547,17 +2558,9 @@ pub(super) async fn app_view(
         .into_iter()
         .map(|domain| {
             let public = listing.spec.as_ref().is_some_and(publishes);
-            let serving = public && domain.status == crate::services::domains::Status::Issued;
             AppDomain {
-                state_words: if !public {
-                    "Bound; publish the app's HTTP port to serve it"
-                } else if serving {
-                    "Serving with its own certificate"
-                } else {
-                    "Bound; its certificate is on its way once its DNS points here"
-                },
                 name: domain.name,
-                serving,
+                public,
             }
         })
         .collect();
@@ -2612,7 +2615,35 @@ pub(super) async fn app_view(
                 rows: secrets,
                 variable: refused.variable,
             },
-            "domains" => SettingsEdit::Domains,
+            "domains" => SettingsEdit::Domains {
+                domains: state
+                    .domains()
+                    .list(membership.organisation_id)
+                    .await
+                    .map_err(|error| PageError::from(anyhow::anyhow!(error)))?
+                    .into_iter()
+                    .filter(|domain| domain.app_name.as_deref().is_none_or(|app| app == name))
+                    .collect(),
+                apps: apps
+                    .listings(membership.organisation_id, slug)
+                    .await
+                    .map_err(|error| PageError::from(anyhow::anyhow!(error)))?
+                    .into_iter()
+                    .filter(|app| {
+                        app.view.row.name != name
+                            && (state.config.entry.app_domains
+                                == crate::config::AppDomains::CustomOnly
+                                || app.spec.as_ref().is_some_and(publishes))
+                    })
+                    .map(|app| app.view.row.name)
+                    .collect(),
+                target: listing
+                    .address
+                    .clone()
+                    .or_else(|| state.config.entry.edges.first().cloned()),
+                public: listing.spec.as_ref().is_some_and(publishes),
+                added_name: refused.domain.unwrap_or_default(),
+            },
             "volumes" => SettingsEdit::Volumes {
                 summary: volume_summary,
                 name: form.volume_name,
@@ -2660,9 +2691,6 @@ pub(super) async fn app_view(
                 image: spec.map(|s| s.image.clone()),
                 address: listing.address.clone(),
                 domains,
-                domains_href: format!("/{slug}/domains#custom"),
-                custom_only: state.config.entry.app_domains
-                    == crate::config::AppDomains::CustomOnly,
                 internal: listing
                     .spec
                     .as_ref()
@@ -2840,6 +2868,7 @@ async fn refuse_setting(
             edit: String::new(),
             volume: String::new(),
             placement: None,
+            domain: None,
         },
     )
     .await
@@ -2915,6 +2944,109 @@ pub async fn configure(
         None,
     )
     .await
+}
+
+/// Changes a domain from the app's Settings page using the domain service's policies.
+pub async fn domain_settings(
+    AxumState(state): AxumState<State>,
+    browser: Browser,
+    uri: Uri,
+    Path((slug, name)): Path<(String, String)>,
+    Form(form): Form<AppDomainForm>,
+) -> PageResult {
+    if !browser.form_is_genuine(&form.csrf) {
+        return forged(&state, &browser);
+    }
+    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
+    let app = state
+        .apps()
+        .get(membership.organisation_id, &name)
+        .await
+        .map_err(|error| PageError::from(anyhow::anyhow!(error)))?;
+    let domains = state.domains();
+    let result = async {
+        if form.operation == "add" {
+            return domains
+                .add(session.account_id, &membership, &form.domain)
+                .await
+                .map(|_| ());
+        }
+        let domain = domains
+            .get(membership.organisation_id, &form.domain)
+            .await?;
+        if domain
+            .app_name
+            .as_deref()
+            .is_some_and(|bound| bound != name)
+        {
+            return Err(crate::services::domains::DomainsError::NotFound);
+        }
+        match form.operation.as_str() {
+            "check" => {
+                let checked = domains
+                    .check_now(session.account_id, &membership, &domain.name)
+                    .await?;
+                if checked.state == "verified" {
+                    domains
+                        .bind(session.account_id, &membership, &domain.name, &app.row.name)
+                        .await?;
+                }
+            }
+            "bind" => {
+                domains
+                    .bind(session.account_id, &membership, &domain.name, &app.row.name)
+                    .await?;
+            }
+            "unbind" => {
+                domains
+                    .unbind(session.account_id, &membership, &domain.name)
+                    .await?;
+            }
+            "move" => {
+                domains
+                    .bind(session.account_id, &membership, &domain.name, &form.target)
+                    .await?;
+            }
+            _ => return Err(crate::services::domains::DomainsError::NotFound),
+        }
+        Ok(())
+    }
+    .await;
+    match result {
+        Ok(()) => Ok(redirect(&format!(
+            "/{slug}/apps/{name}/settings?edit=domains"
+        ))),
+        Err(crate::services::domains::DomainsError::Internal(error)) => Err(PageError::from(error)),
+        Err(error) => {
+            app_view(
+                &state,
+                &browser,
+                &session,
+                &membership,
+                &name,
+                "settings",
+                (String::new(), String::new()),
+                Refused {
+                    part: "domains",
+                    refusal: Refusal::banner(error.to_string()),
+                    domain: (form.operation == "add").then_some(form.domain),
+                    ..Default::default()
+                },
+            )
+            .await
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct AppDomainForm {
+    #[serde(default)]
+    csrf: String,
+    #[serde(default)]
+    domain: String,
+    operation: String,
+    #[serde(default)]
+    target: String,
 }
 
 /// `POST /{org}/apps/{app}/settings/release`: one Settings item (`part`)
@@ -3169,6 +3301,7 @@ pub async fn apply_file(
             edit: String::new(),
             volume: String::new(),
             placement: None,
+            domain: None,
         },
     )
     .await
@@ -3300,6 +3433,7 @@ pub async fn set_secret(
             edit: String::new(),
             volume: String::new(),
             placement: None,
+            domain: None,
         },
     )
     .await

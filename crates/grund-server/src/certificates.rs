@@ -45,6 +45,7 @@ use std::{
 use anyhow::Context;
 use chrono::{DateTime, Utc};
 use grund_store::certificates::{self as store, Challenge, Claim, Desired, Issued};
+use grund_store::domain_setup::{self as setup_store, StepState};
 use grund_tls::{KeyAndCsr, Resolver, Served};
 use instant_acme::{
     Account, AuthorizationStatus, CertificateIdentifier, ChallengeType, Identifier, NewAccount,
@@ -390,6 +391,25 @@ impl Certificates {
         } else {
             None
         };
+        setup_store::certificate_failed(
+            &mut *tx,
+            &claim,
+            self.inner.holder,
+            delay.as_secs_f64(),
+            failed.failure.code(),
+        )
+        .await?;
+        store::retry_floor(
+            &mut *tx,
+            &claim.subject,
+            self.inner.holder,
+            if failed.failure == Failure::RateLimited {
+                Some(delay.as_secs_f64())
+            } else {
+                retry_after.map(|duration| duration.min(acme::MAX_RETRY_AFTER).as_secs_f64())
+            },
+        )
+        .await?;
         let recorded = store::record_failure(
             &mut *tx,
             &claim.subject,
@@ -407,7 +427,11 @@ impl Certificates {
             )
             .await?;
         }
-        tx.commit().await?;
+        if recorded {
+            tx.commit().await?;
+        } else {
+            tx.rollback().await?;
+        }
         let serving = match claim.terminator.as_str() {
             "remote" => claim
                 .chain_pem
@@ -491,11 +515,19 @@ impl Certificates {
             .and_then(|(der, _, _)| CertificateIdentifier::try_from(der).ok())
             .map(CertificateIdentifier::into_owned);
         let (order_id, mut order, keyed) = self.order(&account, claim, replaces).await?;
+        setup_store::certificate_step(
+            &self.inner.pool,
+            claim,
+            self.inner.holder,
+            2,
+            StepState::Done,
+            "The CA accepted a certificate order.",
+            None,
+        )
+        .await
+        .map_err(Attempt::store)?;
         let challenge = Challenge::parse(&claim.challenge).unwrap_or(Challenge::TlsAlpn01);
-        let published = match self
-            .authorize(&mut order, &claim.subject, challenge, remote)
-            .await
-        {
+        let published = match self.authorize(&mut order, claim, challenge, remote).await {
             Ok(published) => published,
             Err(failed) => {
                 self.remove_challenges(&claim.subject, challenge).await;
@@ -548,6 +580,17 @@ impl Certificates {
             ari_check_at,
         };
         let mut tx = self.inner.pool.begin().await.map_err(Attempt::store)?;
+        setup_store::certificate_step(
+            &mut *tx,
+            claim,
+            self.inner.holder,
+            4,
+            StepState::Done,
+            "The CA issued a certificate; the chain is stored.",
+            None,
+        )
+        .await
+        .map_err(Attempt::store)?;
         let recorded = store::record_issued(
             &mut *tx,
             &claim.subject,
@@ -567,7 +610,11 @@ impl Certificates {
                 .await
                 .map_err(Attempt::store)?;
         }
-        tx.commit().await.map_err(Attempt::store)?;
+        if recorded {
+            tx.commit().await.map_err(Attempt::store)?;
+        } else {
+            tx.rollback().await.map_err(Attempt::store)?;
+        }
         if !recorded {
             tracing::warn!(
                 subject = %claim.subject,
@@ -643,9 +690,15 @@ impl Certificates {
                 tracing::info!(subject = %claim.subject, url = %pending.url, "https: resuming an order placed earlier");
                 return Ok((pending.order_id, order, keyed));
             }
-            store::finish_order(pool, pending.order_id, "abandoned", "not_resumable")
-                .await
-                .map_err(Attempt::store)?;
+            store::finish_order(
+                pool,
+                pending.order_id,
+                self.inner.holder,
+                "abandoned",
+                "not_resumable",
+            )
+            .await
+            .map_err(Attempt::store)?;
         }
         let keyed = match remote_csr {
             Some(csr) => Keyed::Remote(csr),
@@ -684,15 +737,21 @@ impl Certificates {
             Keyed::Own(made) => Some(self.seal(&order_aad(order_id), made.key_pkcs8_der())),
             Keyed::Remote(_) => None,
         };
-        store::insert_order(
+        let recorded = store::insert_order(
             pool,
             order_id,
             &claim.subject,
+            self.inner.holder,
             order.url(),
             sealed.as_deref(),
         )
         .await
         .map_err(Attempt::store)?;
+        if !recorded {
+            return Err(Attempt::internal(anyhow::anyhow!(
+                "the certificate lease was lost"
+            )));
+        }
         tracing::info!(subject = %claim.subject, url = %order.url(), profile = %claim.profile, "https: order placed");
         Ok((order_id, order, keyed))
     }
@@ -700,10 +759,11 @@ impl Certificates {
     async fn authorize(
         &self,
         order: &mut instant_acme::Order,
-        subject: &str,
+        claim: &Claim,
         challenge: Challenge,
         remote: bool,
     ) -> Result<Vec<(String, String)>, Attempt> {
+        let subject = &claim.subject;
         let kind = match challenge {
             Challenge::TlsAlpn01 => ChallengeType::TlsAlpn01,
             Challenge::Http01 => ChallengeType::Http01,
@@ -730,14 +790,33 @@ impl Certificates {
                 }
             };
             let token = handle.token.clone();
-            store::put_challenge(
+            let recorded = store::put_challenge(
                 &self.inner.pool,
                 subject,
-                challenge,
-                &name,
-                &token,
-                handle.key_authorization().as_str(),
+                self.inner.holder,
+                store::ChallengeAnswer {
+                    kind: challenge,
+                    name: &name,
+                    token: &token,
+                    key_authorization: handle.key_authorization().as_str(),
+                },
                 CHALLENGE_TTL.as_secs_f64(),
+            )
+            .await
+            .map_err(Attempt::store)?;
+            if !recorded {
+                return Err(Attempt::internal(anyhow::anyhow!(
+                    "the certificate lease was lost"
+                )));
+            }
+            setup_store::certificate_step(
+                &self.inner.pool,
+                claim,
+                self.inner.holder,
+                3,
+                StepState::InProgress,
+                "The HTTP challenge was published; waiting for CA validation.",
+                None,
             )
             .await
             .map_err(Attempt::store)?;
@@ -797,6 +876,7 @@ impl Certificates {
                 store::finish_order(
                     &self.inner.pool,
                     order_id,
+                    self.inner.holder,
                     "invalid",
                     "authorization_failed",
                 )
@@ -812,13 +892,46 @@ impl Certificates {
                 ));
             }
         }
+        if matches!(
+            order_status(order),
+            OrderStatus::Ready | OrderStatus::Processing | OrderStatus::Valid
+        ) {
+            setup_store::certificate_step(
+                &self.inner.pool,
+                claim,
+                self.inner.holder,
+                3,
+                StepState::Done,
+                "The CA accepted the domain authorization.",
+                None,
+            )
+            .await
+            .map_err(Attempt::store)?;
+            setup_store::certificate_step(
+                &self.inner.pool,
+                claim,
+                self.inner.holder,
+                4,
+                StepState::InProgress,
+                "The CA accepted the challenge; waiting for its certificate.",
+                None,
+            )
+            .await
+            .map_err(Attempt::store)?;
+        }
         if matches!(order_status(order), OrderStatus::Ready) {
             order.finalize_csr(csr_der).await.map_err(Attempt::acme)?;
         }
         if matches!(order_status(order), OrderStatus::Invalid) {
-            store::finish_order(&self.inner.pool, order_id, "invalid", "order_invalid")
-                .await
-                .map_err(Attempt::store)?;
+            store::finish_order(
+                &self.inner.pool,
+                order_id,
+                self.inner.holder,
+                "invalid",
+                "order_invalid",
+            )
+            .await
+            .map_err(Attempt::store)?;
             return Err(Attempt::failed(
                 Failure::Refused,
                 anyhow::anyhow!("the CA marked the order invalid"),

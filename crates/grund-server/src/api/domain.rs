@@ -1,6 +1,6 @@
 //! `grund.domain.v1.DomainService`: an organisation's custom domains
 //! (grund-docs website/design/app-domains.md §3). Members get and list;
-//! owners and admins add, verify, bind, unbind and remove. Deploy tokens
+//! owners and admins add, verify, check, bind, unbind and remove. Deploy tokens
 //! read only domains bound to their allowed apps; unbound domains stay hidden.
 //! An organisation the caller is not a member of, an organisation a token
 //! is not for, and a domain that is not the organisation's, are not_found
@@ -14,11 +14,12 @@ use connectrpc::{
 };
 use grund_proto::grund::domain::v1::{
     self as proto, AddDomainRequest, AddDomainResponse, BindDomainRequest, BindDomainResponse,
-    DomainService, ErrorReason, GetDomainRequest, GetDomainResponse, ListDomainsRequest,
-    ListDomainsResponse, RemoveDomainRequest, RemoveDomainResponse, UnbindDomainRequest,
-    UnbindDomainResponse, VerifyDomainRequest, VerifyDomainResponse,
+    CheckDomainRequest, CheckDomainResponse, DomainService, ErrorReason, GetDomainRequest,
+    GetDomainResponse, ListDomainsRequest, ListDomainsResponse, RemoveDomainRequest,
+    RemoveDomainResponse, UnbindDomainRequest, UnbindDomainResponse, VerifyDomainRequest,
+    VerifyDomainResponse,
 };
-use grund_store::organisations::Membership;
+use grund_store::{domain_setup::StepState, organisations::Membership};
 
 use crate::{
     api::principal,
@@ -115,6 +116,26 @@ fn message(view: &DomainView) -> proto::Domain {
         bound_at: timestamp(view.bound_at),
         certificate_expires_at: timestamp(view.certificate_not_after),
         problem: view.problem.clone().unwrap_or_default(),
+        setup_steps: view
+            .steps
+            .iter()
+            .map(|step| proto::DomainSetupStep {
+                name: step.name.clone(),
+                state: match step.state {
+                    StepState::Waiting => proto::StepState::STEP_STATE_WAITING,
+                    StepState::InProgress => proto::StepState::STEP_STATE_IN_PROGRESS,
+                    StepState::Done => proto::StepState::STEP_STATE_DONE,
+                    StepState::Failed => proto::StepState::STEP_STATE_FAILED,
+                }
+                .into(),
+                detail: step.detail.clone(),
+                checked_at: timestamp(step.checked_at),
+                next_retry_at: timestamp(step.next_retry_at),
+                ..Default::default()
+            })
+            .collect(),
+        certificate_attempts: view.certificate_attempts,
+        certificate_next_attempt_at: timestamp(view.certificate_next_attempt_at),
         ..Default::default()
     }
 }
@@ -207,6 +228,30 @@ impl DomainService for DomainApi {
             .await
             .map_err(failed)?;
         Response::ok(VerifyDomainResponse {
+            domain: MessageField::some(message(&domain)),
+            ..Default::default()
+        })
+    }
+
+    async fn check_domain(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, CheckDomainRequest>,
+    ) -> ServiceResult<CheckDomainResponse> {
+        let caller = principal(&ctx)?;
+        if caller.apps.is_some() {
+            return Err(ConnectError::permission_denied(
+                "a person's session or full token is required",
+            ));
+        }
+        let (actor, membership) = self.member(&ctx, request.organisation).await?;
+        let domain = self
+            .state
+            .domains()
+            .check_now(actor, &membership, request.name)
+            .await
+            .map_err(failed)?;
+        Response::ok(CheckDomainResponse {
             domain: MessageField::some(message(&domain)),
             ..Default::default()
         })

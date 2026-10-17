@@ -26,6 +26,7 @@ pub mod config;
 pub mod crypto;
 pub mod db;
 pub mod doctor;
+pub mod domain_setup;
 pub mod edge;
 pub mod extension;
 pub mod health;
@@ -180,6 +181,7 @@ pub async fn serve(
         .add(services::maintenance::Sweeper::new(state.clone()))
         .add(extension::ExtensionWork(state.clone()))
         .add(certificates::CertificateWork::new(&state))
+        .add(domain_setup::DomainSetup::new(state.clone()))
         .add(sagas::DeletionWorker::new(&state))
         .add(services::outbox::OutboxDrain::new(
             state.clone(),

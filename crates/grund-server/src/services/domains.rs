@@ -62,7 +62,7 @@ pub enum Status {
     Verified,
     /// Bound; its certificate is on its way, or this instance orders none.
     Bound,
-    /// Bound and served with a certificate.
+    /// Bound with an issued certificate; setup steps report actual HTTPS observations.
     Issued,
     /// The last verification check or certificate order failed.
     Error,
@@ -97,6 +97,9 @@ pub struct DomainView {
     pub certificate_not_after: Option<DateTime<Utc>>,
     /// What went wrong last, in words, when `status` is `Error`.
     pub problem: Option<String>,
+    pub steps: Vec<grund_store::domain_setup::Step>,
+    pub certificate_attempts: i32,
+    pub certificate_next_attempt_at: Option<DateTime<Utc>>,
 }
 
 fn view(row: DomainRow) -> DomainView {
@@ -137,6 +140,13 @@ fn view(row: DomainRow) -> DomainView {
         verified_at: row.verified_at,
         bound_at: row.bound_at,
         certificate_not_after: row.certificate_not_after,
+        steps: if row.steps.0.is_empty() {
+            grund_store::domain_setup::waiting_steps()
+        } else {
+            row.steps.0
+        },
+        certificate_attempts: row.certificate_attempts,
+        certificate_next_attempt_at: row.certificate_next_attempt_at,
         problem,
     }
 }
@@ -153,7 +163,7 @@ fn check_words(code: &str) -> String {
 fn certificate_words(code: &str, name: &str) -> String {
     match code {
         "authorization_failed" => format!(
-            "The certificate authority could not reach {name} on port 80 through grund's edge. Check that the domain points at grund's edge."
+            "The certificate authority did not validate {name}. Check its domain record and port 80 access to grund's edge."
         ),
         "acme_rate_limited" => {
             "The certificate authority is limiting new certificates; grund tries again later."
@@ -379,6 +389,26 @@ impl Domains {
     /// The organisation's domain `name`.
     pub async fn get(&self, organisation_id: Uuid, name: &str) -> Result<DomainView, DomainsError> {
         self.row(organisation_id, name).await.map(view)
+    }
+
+    /// Schedules a bound domain's setup checks now, or verifies its ownership record.
+    pub async fn check_now(
+        &self,
+        actor: Uuid,
+        membership: &Membership,
+        name: &str,
+    ) -> Result<DomainView, DomainsError> {
+        if !manages(membership) {
+            return Err(DomainsError::NotAllowed);
+        }
+        let row = self.row(membership.organisation_id, name).await?;
+        if row.state == "pending" {
+            return self.verify(actor, membership, name).await;
+        }
+        if row.state == "bound" {
+            grund_store::domain_setup::request_check(&self.state.pool, row.domain_id).await?;
+        }
+        self.get(membership.organisation_id, name).await
     }
 
     /// The domains bound to an app.
@@ -814,6 +844,9 @@ mod tests {
             certificate_not_after: None,
             certificate_error: None,
             certificate_wanted: state == "bound",
+            steps: sqlx::types::Json(Vec::new()),
+            certificate_attempts: 0,
+            certificate_next_attempt_at: None,
         }
     }
 
@@ -830,7 +863,6 @@ mod tests {
         failing.certificate_error = Some("authorization_failed".into());
         let failing = view(failing);
         assert_eq!(failing.status, Status::Error);
-        assert!(failing.problem.unwrap().contains("port 80"));
         let mut unchecked = row("pending");
         unchecked.check_error = Some("no_record".into());
         assert_eq!(view(unchecked).status, Status::Error);

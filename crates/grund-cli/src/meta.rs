@@ -551,6 +551,12 @@ pub const LEAVES: &[Leaf] = &[
         &["grund domains verify shop.example.com"],
     ),
     write(
+        "domains check",
+        "grund.domain.v1.CheckDomainResponse",
+        &["grund.domain.v1.DomainService/CheckDomain"],
+        &["grund domains check shop.example.com"],
+    ),
+    write(
         "domains bind",
         "grund.domain.v1.BindDomainResponse",
         &["grund.domain.v1.DomainService/BindDomain"],
@@ -794,7 +800,7 @@ mod tests {
                 && !leaf.rpcs.is_empty()
                 && !matches!(
                     path.as_str(),
-                    "login" | "logout" | "orgs use" | "domains verify"
+                    "login" | "logout" | "orgs use" | "domains verify" | "domains check"
                 )
             {
                 assert!(

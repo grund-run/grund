@@ -13,6 +13,7 @@ pub mod backup;
 pub mod certificates;
 pub mod device_logins;
 pub mod doctor;
+pub mod domain_setup;
 pub mod domains;
 pub mod entry;
 pub mod machine_activity;

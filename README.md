@@ -268,6 +268,7 @@ grund apps set shop copies 3
 grund apps rollback shop 4 --wait
 grund machines add web-2               # prints the command to run on the new machine
 grund domains add shop.example.com
+grund domains check shop.example.com   # check setup and queue an eligible certificate retry
 grund tokens create --name ci --scope deploy --apps shop --json
 ```
 
@@ -281,10 +282,10 @@ grund tokens create --name ci --scope deploy --apps shop --json
   permission denied, 5 not found, 6 conflict, 7 invalid, 8 unavailable, 9
   rollout failed.
 - Nothing asks without a terminal: destructive commands need `--yes` then.
-  Every command that changes the instance takes `--dry-run` (but `domains
-  verify`, which only looks the record up now); one that makes a release is
-  checked by the instance as a deploy is, image resolved, and nothing is
-  written.
+  Every command that changes the instance takes `--dry-run` except `domains
+  verify` (ownership lookup) and `domains check` (an immediate setup check).
+  A release's dry run resolves its image and checks the proposed change
+  without writing it.
   `apps deploy --dry-run` also previews a missing app without creating it
   and reports structured desired-versus-live changes and the observed
   `expectedVersion`; `apps deploy shop --expected-version N` refuses a
@@ -305,6 +306,13 @@ grund tokens create --name ci --scope deploy --apps shop --json
 - Versioned releases publish Linux amd64 and arm64 binaries with
   `SHA256SUMS`. An instance that serves its installer also exposes its own
   architecture's binary at `/install/grund-linux-<arch>`.
+
+Domains and an app's Settings show the domain record, edge check, certificate
+request, challenge result, issued certificate and observed HTTPS separately,
+with check and retry times. `grund domains list` shows the same steps.
+Owners and admins can add, verify, bind, move, unbind and check domains from
+the app. Setup checks continue automatically; **Check now** queues a fresh
+check without bypassing a certificate authority's retry deadline.
 
 ## Deploy from CI
 

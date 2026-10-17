@@ -4,14 +4,14 @@ props crate::web::apps::AppOverviewPage<'_> { app, running, releases };
 
 <Panel id="status" title="Application status">
   <Facts>
-    <Fact label="Reachable at" wide>
+    <Fact label="Addresses" wide>
       {if let Some(address) = &app.address {
         <Endpoint text={format!("https://{address}")} href={format!("https://{address}")} />
-      } else if app.domains.iter().any(|domain| domain.serving) {
+      } else if app.domains.iter().any(|domain| domain.public) {
         <Para kind="hint">No default address.</Para>
       }}
-      {for domain in &app.domains { {if domain.serving { <Endpoint text={format!("https://{}", domain.name)} href={format!("https://{}", domain.name)} /> }} }}
-      {if app.address.is_none() && !app.domains.iter().any(|domain| domain.serving) {
+      {for domain in &app.domains { {if domain.public { <Endpoint text={format!("https://{}", domain.name)} href={format!("https://{}", domain.name)} /> }} }}
+      {if app.address.is_none() && !app.domains.iter().any(|domain| domain.public) {
         {if let Some(internal) = &app.internal {
           <Endpoint text={internal} href="" />
         } else {

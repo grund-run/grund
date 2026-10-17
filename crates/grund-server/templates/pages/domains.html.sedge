@@ -1,4 +1,4 @@
-use crate::templates::compiled::components::{PageHead, Banner, Panel, Button, Icon, CopyButton, EmptyState, Callout, StatusLine, Para, Field};
+use crate::templates::compiled::components::{PageHead, Banner, Panel, Button, Icon, EmptyState, DomainSetup, DomainRecords, Para, Field};
 props crate::web::domains::DomainsPage<'_> { csrf, slug, manages, addresses, bindable_apps, custom_only, domains, notice, error, form_error, name_error, name };
 
 <PageHead title="Domains" />
@@ -20,21 +20,8 @@ props crate::web::domains::DomainsPage<'_> { csrf, slug, manages, addresses, bin
 </section>
 {for domain in domains {
   <Panel id={domain.id.as_str()} title={domain.name}>
-    {if domain.tone == "danger" {
-      <Callout title="Not working yet" text={domain.sentence.as_ref()} icon_name="alert" tone="danger" danger />
-    } else {
-      <StatusLine text={domain.sentence.as_ref()} tone={domain.tone} id="{domain.id}-status" />
-    }}
-    {if domain.state == "pending" {
-      <Para kind="aside">Make this record at your DNS provider, then check it.</Para>
-    } else if domain.record.is_some() {
-      <Para text={domain.records_aside.as_deref().unwrap_or("")} kind="aside" />
-    }}
-    {if let Some(record) = &domain.record {
-      <table class="dns-records"><caption class="visually-hidden">Records for {domain.name}</caption><thead><tr><th scope="col">Type</th><th scope="col">Name</th><th scope="col">Value</th></tr></thead><tbody>
-        <tr><td data-label="Type"><code>{record.kind}</code></td><td data-label="Name"><span class="dns-cell"><code>{record.name}</code><CopyButton text={record.name} label="the {record.kind} record's name" /></span></td><td data-label="Value"><span class="dns-cell"><code>{record.value}</code><CopyButton text={record.value} label="the {record.kind} record's value" /></span></td></tr>
-      </tbody></table>
-    }}
+    <DomainSetup domain={domain} slug={slug} />
+    <DomainRecords domain={domain} />
     {if *manages {
       {if domain.state == "verified" || domain.state == "bound" {
         {if !bindable_apps.is_empty() {
@@ -47,6 +34,7 @@ props crate::web::domains::DomainsPage<'_> { csrf, slug, manages, addresses, bin
       }}
       <div class="form-actions">
         {if domain.state == "pending" { <form method="post" action="/{slug}/domains/verify" novalidate><input type="hidden" name="csrf" value={csrf}><input type="hidden" name="name" value={domain.name}><Button label="Check DNS now" kind="secondary" /></form> }}
+        {if domain.state == "bound" { <form method="post" action="/{slug}/domains/check" novalidate><input type="hidden" name="csrf" value={csrf}><input type="hidden" name="name" value={domain.name}><Button label="Check now" kind="secondary" /></form> }}
         {if domain.state == "bound" { <form method="post" action="/{slug}/domains/unbind" novalidate><input type="hidden" name="csrf" value={csrf}><input type="hidden" name="name" value={domain.name}><Button label="Unbind" kind="secondary" /></form> }}
         <form method="post" action="/{slug}/domains/remove" novalidate><input type="hidden" name="csrf" value={csrf}><input type="hidden" name="name" value={domain.name}><button class="btn btn-danger" type="submit"><span>Remove {domain.name}</span></button></form>
       </div>

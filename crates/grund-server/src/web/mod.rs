@@ -175,6 +175,7 @@ pub fn router(state: State) -> Router {
             get(domains::domains_page).post(domains::add),
         )
         .route("/{org}/domains/verify", post(domains::verify))
+        .route("/{org}/domains/check", post(domains::check))
         .route("/{org}/domains/bind", post(domains::bind))
         .route("/{org}/domains/unbind", post(domains::unbind))
         .route("/{org}/domains/remove", post(domains::remove))
@@ -185,6 +186,10 @@ pub fn router(state: State) -> Router {
         .route("/{org}/apps/{app}/metrics", get(apps::metrics_page))
         .route("/{org}/apps/{app}/settings", get(apps::settings_page))
         .route("/{org}/apps/{app}/settings/copies", post(apps::configure))
+        .route(
+            "/{org}/apps/{app}/settings/domains",
+            post(apps::domain_settings),
+        )
         .route(
             "/{org}/apps/{app}/settings/placement",
             post(placement::save),

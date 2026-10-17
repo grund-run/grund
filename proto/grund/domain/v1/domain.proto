@@ -24,8 +24,8 @@ import "google/protobuf/timestamp.proto";
 // removes it. A name that was verified and then removed is held for a
 // cool-down (7 days by default) before another organisation can add it.
 //
-// Members get and list; owners and admins add, verify, bind, unbind and
-// remove. A deploy token may get and list, but an app-limited deploy token
+// Members get and list; owners and admins add, verify, check, bind, unbind
+// and remove. A deploy token may get and list, but an app-limited deploy token
 // sees only domains bound to its allowed apps; unbound domains stay hidden.
 // Only a person's session or full token may write domains. An organisation
 // the caller cannot reach, and a domain it cannot reach, are not_found alike.
@@ -53,6 +53,12 @@ service DomainService {
   // answers as it is.
   rpc VerifyDomain(VerifyDomainRequest) returns (VerifyDomainResponse);
 
+  // Owners and admins. Queues the same durable setup check used by automatic
+  // retries, without waiting for it to finish. Repeated calls coalesce.
+  rpc CheckDomain(CheckDomainRequest) returns (CheckDomainResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+
   // Owners and admins. Binds a verified domain to an app with a public
   // HTTP port (the port its address serves); binding it to another app
   // moves it. At most 10 per app.
@@ -77,11 +83,33 @@ enum DomainStatus {
   DOMAIN_STATUS_VERIFIED = 2;
   // Bound; its certificate is on its way (or the instance orders none).
   DOMAIN_STATUS_BOUND = 3;
-  // Bound and served with a certificate.
+  // A certificate was issued; setup_steps records whether HTTPS is observed.
   DOMAIN_STATUS_CERTIFICATE_ISSUED = 4;
   // The last verification check or certificate order failed: problem says
   // why.
   DOMAIN_STATUS_ERROR = 5;
+}
+
+// A setup observation, not an inferred certificate or domain status.
+enum StepState {
+  STEP_STATE_UNSPECIFIED = 0;
+  STEP_STATE_WAITING = 1;
+  STEP_STATE_IN_PROGRESS = 2;
+  STEP_STATE_DONE = 3;
+  STEP_STATE_FAILED = 4;
+}
+
+message DomainSetupStep {
+  // One of dns_record, edge_reachable, certificate_requested,
+  // challenge_passed, certificate_issued, serving_https, in that order.
+  string name = 1;
+  StepState state = 2;
+  // Factual result or reason; never a challenge token or private key.
+  string detail = 3;
+  // Absent until this step has been checked.
+  google.protobuf.Timestamp checked_at = 4;
+  // Absent when no retry is scheduled for this step.
+  google.protobuf.Timestamp next_retry_at = 5;
 }
 
 message Domain {
@@ -100,6 +128,12 @@ message Domain {
   google.protobuf.Timestamp certificate_expires_at = 9;
   // In words, when status is DOMAIN_STATUS_ERROR.
   string problem = 10;
+  // Six persisted setup observations, including waiting steps when unbound.
+  repeated DomainSetupStep setup_steps = 11;
+  // Consecutive failed certificate attempts, including renewals; resets on success.
+  int32 certificate_attempts = 12;
+  // Absent when no certificate attempt is scheduled.
+  google.protobuf.Timestamp certificate_next_attempt_at = 13;
 }
 
 message ListDomainsRequest {
@@ -135,6 +169,15 @@ message VerifyDomainRequest {
 }
 
 message VerifyDomainResponse {
+  Domain domain = 1;
+}
+
+message CheckDomainRequest {
+  string organisation = 1;
+  string name = 2;
+}
+
+message CheckDomainResponse {
   Domain domain = 1;
 }
 

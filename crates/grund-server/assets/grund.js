@@ -16,6 +16,7 @@
 
   var listening = null;
   var first = true;
+  var refreshIndex = 0;
 
   function enhance() {
     if (listening) listening.abort();
@@ -24,6 +25,21 @@
     var initial = first;
     first = false;
     document.documentElement.classList.add("has-js");
+
+    if (window.sedx) {
+      var refreshes = document.querySelectorAll("form[data-refresh][sedx-target]");
+      if (refreshes.length) {
+        var refresh = refreshes[refreshIndex++ % refreshes.length];
+        var timer = setTimeout(function () {
+          if (document.visibilityState !== "visible" || document.querySelector('[sedx-layout][aria-busy="true"]')) {
+            enhance();
+            return;
+          }
+          refresh.requestSubmit();
+        }, 3000);
+        listening.signal.addEventListener("abort", function () { clearTimeout(timer); }, { once: true });
+      }
+    }
 
     if (navigator.clipboard) {
       document.querySelectorAll("button[data-copy]").forEach(function (button) {

@@ -354,6 +354,12 @@ async fn a_verified_domain_bound_to_an_app_is_served_through_the_edge_with_a_cer
         .as_str()
         .unwrap_or_default()
         .to_string();
+    when.visiting(&format!("/{org}/domains")).await?;
+    then.status(200)?
+        .body_contains("<code>TXT</code>")?
+        .body_contains("<code>CNAME</code>")?
+        .body_contains(&token)?
+        .body_lacks("data-refresh")?;
 
     let unverified = domain_call(
         when,
@@ -437,6 +443,17 @@ async fn a_verified_domain_bound_to_an_app_is_served_through_the_edge_with_a_cer
         "{}",
         answer.1
     );
+    let page = format!("/{org}/domains");
+    let check = format!("{page}/check");
+    when.visiting(&page).await?;
+    then.status(200)?
+        .body_contains(&format!("action=\"{check}\""))?;
+    when.submitting_with_token(&check, "invalid", &[("name", name.as_str())])
+        .await?;
+    then.status(403)?;
+    when.submitting(&page, &check, &[("name", name.as_str())])
+        .await?;
+    then.redirects_to(&format!("{page}?done=checking#custom"))?;
 
     let started = Instant::now();
     loop {
@@ -529,9 +546,17 @@ async fn a_verified_domain_bound_to_an_app_is_served_through_the_edge_with_a_cer
     );
 
     when.visiting(&format!("/{org}/domains")).await?;
-    then.status(200)?
-        .body_contains(&name)?
-        .body_contains("Serving hello at https:")?;
+    then.status(200)?.body_contains(&name)?;
+    for step in [
+        "dns_record",
+        "edge_reachable",
+        "certificate_requested",
+        "challenge_passed",
+        "certificate_issued",
+        "serving_https",
+    ] {
+        then.body_contains(&format!("data-domain-step=\"{step}\""))?;
+    }
     when.visiting(&format!("/{org}/apps/hello")).await?;
     then.status(200)?
         .body_contains(&format!("https://{name}"))?;
@@ -636,6 +661,7 @@ async fn another_organisation_can_neither_claim_a_bound_domain_nor_see_or_touch_
             json!({"organisation": org, "name": a_custom_name()}),
         ),
         ("VerifyDomain", json!({"organisation": org, "name": name})),
+        ("CheckDomain", json!({"organisation": org, "name": name})),
         (
             "BindDomain",
             json!({"organisation": org, "name": name, "app": "hello"}),
@@ -656,7 +682,7 @@ async fn another_organisation_can_neither_claim_a_bound_domain_nor_see_or_touch_
     stranger_then.status(404)?.body_lacks(&name)?;
     stranger.visiting(&format!("/{theirs}/domains")).await?;
     stranger_then.status(200)?.body_lacks(&name)?;
-    for action in ["verify", "bind", "unbind", "remove"] {
+    for action in ["verify", "check", "bind", "unbind", "remove"] {
         stranger.visiting(&format!("/{theirs}/domains")).await?;
         stranger
             .submitting_on_current_page(
@@ -847,6 +873,85 @@ async fn a_bound_domain_without_an_edge_records_one_certificate_failure() -> any
             .get("notifications")
             .is_none_or(|v| v.as_array().is_some_and(Vec::is_empty)),
         "certificate failure for another org leaked: {unrelated}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn app_settings_can_verify_bind_move_and_unbind_a_domain_without_exposing_it_to_an_outsider()
+-> anyhow::Result<()> {
+    let Some(stack) = a_stack_with(&[]).await? else {
+        return Ok(());
+    };
+    let owner = stack.given.a_signed_in_account().await?;
+    let org = owner.username;
+    stack.deploy(&org, "hello", "1", 1).await?;
+    stack.deploy(&org, "other", "1", 1).await?;
+    let (when, then) = (&stack.when, &stack.then);
+    let page = format!("/{org}/apps/hello/settings?edit=domains");
+    let action = format!("/{org}/apps/hello/settings/domains");
+    let name = a_custom_name();
+    when.visiting(&page).await?;
+    when.submitting_on_current_page(&action, &[("operation", "add"), ("domain", &name)])
+        .await?;
+    then.redirects_to(&page)?;
+    let added = status_of(when, then, &org, &name).await?;
+    stack
+        .pebble
+        .set_txt(
+            added["verificationRecordName"].as_str().unwrap_or_default(),
+            added["verificationRecordValue"]
+                .as_str()
+                .unwrap_or_default(),
+        )
+        .await?;
+    when.visiting(&page).await?;
+    when.submitting_on_current_page(&action, &[("operation", "check"), ("domain", &name)])
+        .await?;
+    then.redirects_to(&page)?;
+    anyhow::ensure!(
+        status_of(when, then, &org, &name).await?["app"] == "hello",
+        "the app's check did not verify and bind its domain"
+    );
+    let (outsider, outsider_when, outsider_then) = stack.given.testcase.another_browser();
+    let foreign = outsider.a_signed_in_account().await?;
+    outsider_when
+        .visiting(&format!("/{}/domains", foreign.username))
+        .await?;
+    outsider_when
+        .submitting_on_current_page(&action, &[("operation", "unbind"), ("domain", &name)])
+        .await?;
+    outsider_then.status(404)?;
+    anyhow::ensure!(
+        status_of(when, then, &org, &name).await?["app"] == "hello",
+        "another account changed the app's domain"
+    );
+    when.visiting(&page).await?;
+    when.submitting_on_current_page(
+        &action,
+        &[
+            ("operation", "move"),
+            ("domain", &name),
+            ("target", "other"),
+        ],
+    )
+    .await?;
+    then.redirects_to(&page)?;
+    anyhow::ensure!(
+        status_of(when, then, &org, &name).await?["app"] == "other",
+        "the domain did not move to the chosen app"
+    );
+    let other_page = format!("/{org}/apps/other/settings?edit=domains");
+    when.visiting(&other_page).await?;
+    when.submitting_on_current_page(
+        &format!("/{org}/apps/other/settings/domains"),
+        &[("operation", "unbind"), ("domain", &name)],
+    )
+    .await?;
+    then.redirects_to(&other_page)?;
+    anyhow::ensure!(
+        status_of(when, then, &org, &name).await?["status"] == "DOMAIN_STATUS_VERIFIED",
+        "the app's unbind did not retain verified ownership"
     );
     Ok(())
 }

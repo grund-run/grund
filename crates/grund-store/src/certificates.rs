@@ -154,6 +154,8 @@ pub struct Claim {
     pub terminator: String,
     /// A remote terminator's CSR, unspent whenever an order is due.
     pub csr: Option<Vec<u8>>,
+    /// The domain binding observed when claimed; fences progress across rebinds.
+    pub setup_generation: Option<Uuid>,
 }
 
 /// Claims the subject whose work is most overdue, for `lease_seconds`: an
@@ -182,7 +184,8 @@ pub async fn claim(
          RETURNING c.subject, c.names, c.directory, c.profile, c.challenge, c.attempts, c.chain_pem, \
                    ((c.chain_pem IS NULL OR c.renew_at <= clock_timestamp()) \
                     AND (c.terminator = 'instance' OR NOT c.csr_spent)) AS order_due, \
-                   c.terminator, c.csr",
+                   c.terminator, c.csr, (SELECT s.generation FROM grund_domain_setup s \
+                     WHERE 'domain:' || s.domain_id::text = c.subject) AS setup_generation",
     )
     .bind(holder)
     .bind(lease_seconds)
@@ -218,7 +221,7 @@ pub async fn record_issued(
                   csr_spent = (terminator = 'remote'), \
                   next_attempt_at = clock_timestamp(), leased_by = NULL, leased_until = NULL, \
                   updated_at = clock_timestamp() \
-            WHERE subject = $1 AND leased_by = $2 RETURNING subject), \
+            WHERE subject = $1 AND leased_by = $2 AND leased_until > clock_timestamp() RETURNING subject), \
          finished AS ( \
            UPDATE grund_acme_orders SET status = 'valid', sealed_key = NULL, finished_at = clock_timestamp() \
             WHERE order_id = $9 AND status = 'pending' AND EXISTS (SELECT 1 FROM written)) \
@@ -252,7 +255,7 @@ pub async fn record_failure(
         "UPDATE grund_certificates SET attempts = attempts + 1, \
                 next_attempt_at = clock_timestamp() + make_interval(secs => $3), last_error = $4, \
                 leased_by = NULL, leased_until = NULL, updated_at = clock_timestamp() \
-          WHERE subject = $1 AND leased_by = $2",
+          WHERE subject = $1 AND leased_by = $2 AND leased_until > clock_timestamp()",
     )
     .bind(subject)
     .bind(holder)
@@ -275,7 +278,7 @@ pub async fn record_renewal_info(
     let result = sqlx::query(
         "UPDATE grund_certificates SET renew_at = $3, ari_check_at = $4, \
                 leased_by = NULL, leased_until = NULL, updated_at = clock_timestamp() \
-          WHERE subject = $1 AND leased_by = $2",
+          WHERE subject = $1 AND leased_by = $2 AND leased_until > clock_timestamp()",
     )
     .bind(subject)
     .bind(holder)
@@ -298,6 +301,27 @@ pub async fn release(
     )
     .bind(subject)
     .bind(holder)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+/// Retains the CA's own retry deadline separately from local exponential
+/// backoff, so DNS recovery can only shorten the latter.
+pub async fn retry_floor(
+    executor: impl PgExecutor<'_>,
+    subject: &str,
+    holder: Uuid,
+    seconds: Option<f64>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE grund_certificates SET retry_not_before = CASE WHEN $3::double precision IS NOT NULL \
+           THEN clock_timestamp() + make_interval(secs => $3) END \
+         WHERE subject = $1 AND leased_by = $2 AND leased_until > clock_timestamp()",
+    )
+    .bind(subject)
+    .bind(holder)
+    .bind(seconds)
     .execute(executor)
     .await?;
     Ok(())
@@ -344,38 +368,45 @@ pub async fn insert_order(
     executor: impl PgExecutor<'_>,
     order_id: Uuid,
     subject: &str,
+    holder: Uuid,
     url: &str,
     sealed_key: Option<&[u8]>,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "INSERT INTO grund_acme_orders (order_id, subject, url, sealed_key, status) VALUES ($1, $2, $3, $4, 'pending')",
+) -> Result<bool, sqlx::Error> {
+    let written = sqlx::query(
+        "INSERT INTO grund_acme_orders (order_id, subject, url, sealed_key, status) \
+         SELECT $1, subject, $3, $4, 'pending' FROM grund_certificates \
+         WHERE subject = $2 AND leased_by = $5 AND leased_until > clock_timestamp()",
     )
     .bind(order_id)
     .bind(subject)
     .bind(url)
     .bind(sealed_key)
+    .bind(holder)
     .execute(executor)
     .await?;
-    Ok(())
+    Ok(written.rows_affected() == 1)
 }
 
 /// Ends a pending order as `invalid` or `abandoned`, dropping its key.
 pub async fn finish_order(
     executor: impl PgExecutor<'_>,
     order_id: Uuid,
+    holder: Uuid,
     status: &str,
     error: &str,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "UPDATE grund_acme_orders SET status = $2, error = $3, sealed_key = NULL, finished_at = clock_timestamp() \
-          WHERE order_id = $1 AND status = 'pending'",
+) -> Result<bool, sqlx::Error> {
+    let written = sqlx::query(
+        "UPDATE grund_acme_orders o SET status = $2, error = $3, sealed_key = NULL, finished_at = clock_timestamp() \
+          WHERE order_id = $1 AND status = 'pending' AND EXISTS (SELECT 1 FROM grund_certificates c \
+             WHERE c.subject = o.subject AND c.leased_by = $4 AND c.leased_until > clock_timestamp())",
     )
     .bind(order_id)
     .bind(status)
     .bind(error)
+    .bind(holder)
     .execute(executor)
     .await?;
-    Ok(())
+    Ok(written.rows_affected() == 1)
 }
 
 /// How many orders were placed for `subject`, finished or not.
@@ -429,36 +460,44 @@ pub async fn delete_account(
     Ok(())
 }
 
+/// A challenge response borrowed from the active ACME authorization.
+pub struct ChallengeAnswer<'a> {
+    pub kind: Challenge,
+    pub name: &'a str,
+    pub token: &'a str,
+    pub key_authorization: &'a str,
+}
+
 /// Publishes a challenge's key authorization for `subject` for
 /// `ttl_seconds`, so every replica answers it (or hands it to the subject's
 /// terminator), and drops expired ones.
 pub async fn put_challenge(
     pool: &PgPool,
     subject: &str,
-    kind: Challenge,
-    name: &str,
-    token: &str,
-    key_authorization: &str,
+    holder: Uuid,
+    answer: ChallengeAnswer<'_>,
     ttl_seconds: f64,
-) -> Result<(), sqlx::Error> {
+) -> Result<bool, sqlx::Error> {
     sqlx::query("DELETE FROM grund_acme_challenges WHERE expires_at < clock_timestamp()")
         .execute(pool)
         .await?;
-    sqlx::query(
+    let written = sqlx::query(
         "INSERT INTO grund_acme_challenges (kind, name, token, key_authorization, expires_at, subject) \
-         VALUES ($1, $2, $3, $4, clock_timestamp() + make_interval(secs => $5), $6) \
+         SELECT $1, $2, $3, $4, clock_timestamp() + make_interval(secs => $5), subject \
+         FROM grund_certificates WHERE subject = $6 AND leased_by = $7 AND leased_until > clock_timestamp() \
          ON CONFLICT (kind, name, token) DO UPDATE SET key_authorization = EXCLUDED.key_authorization, \
                 expires_at = EXCLUDED.expires_at, subject = EXCLUDED.subject, answering_at = NULL",
     )
-    .bind(kind.as_str())
-    .bind(name)
-    .bind(token)
-    .bind(key_authorization)
+    .bind(answer.kind.as_str())
+    .bind(answer.name)
+    .bind(answer.token)
+    .bind(answer.key_authorization)
     .bind(ttl_seconds)
     .bind(subject)
+    .bind(holder)
     .execute(pool)
     .await?;
-    Ok(())
+    Ok(written.rows_affected() == 1)
 }
 
 /// Removes a challenge once its authorization is decided.
@@ -755,6 +794,7 @@ mod tests {
             &pool,
             order,
             "instance",
+            b,
             "https://acme.example/order/1",
             None,
         )
@@ -799,6 +839,7 @@ mod tests {
             &pool,
             order,
             "instance",
+            holder,
             "https://acme.example/order/1",
             None,
         )
@@ -837,32 +878,46 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn a_subject_has_one_pending_order_at_a_time(pool: PgPool) {
         desire(&pool, &desired("instance")).await.unwrap();
+        let holder = Uuid::now_v7();
+        claim(&pool, holder, 300.0).await.unwrap().unwrap();
         let url = "https://acme.example/order/1";
-        insert_order(&pool, Uuid::now_v7(), "instance", url, Some(b"k"))
+        insert_order(&pool, Uuid::now_v7(), "instance", holder, url, Some(b"k"))
             .await
             .unwrap();
         assert!(
-            insert_order(&pool, Uuid::now_v7(), "instance", url, None)
+            insert_order(&pool, Uuid::now_v7(), "instance", holder, url, None)
                 .await
                 .is_err()
         );
         let pending = pending_order(&pool, "instance").await.unwrap().unwrap();
-        finish_order(&pool, pending.order_id, "invalid", "authorization_failed")
-            .await
-            .unwrap();
+        finish_order(
+            &pool,
+            pending.order_id,
+            holder,
+            "invalid",
+            "authorization_failed",
+        )
+        .await
+        .unwrap();
         assert!(pending_order(&pool, "instance").await.unwrap().is_none());
         assert_eq!(order_count(&pool, "instance").await.unwrap(), 1);
     }
 
     #[sqlx::test(migrations = "./migrations")]
     async fn a_challenge_is_answered_until_it_expires(pool: PgPool) {
+        desire(&pool, &desired("instance")).await.unwrap();
+        let holder = Uuid::now_v7();
+        claim(&pool, holder, 300.0).await.unwrap().unwrap();
         put_challenge(
             &pool,
             "instance",
-            Challenge::TlsAlpn01,
-            "grund.example.com",
-            "tok",
-            "ka",
+            holder,
+            ChallengeAnswer {
+                kind: Challenge::TlsAlpn01,
+                name: "grund.example.com",
+                token: "tok",
+                key_authorization: "ka",
+            },
             60.0,
         )
         .await
@@ -870,10 +925,13 @@ mod tests {
         put_challenge(
             &pool,
             "instance",
-            Challenge::Http01,
-            "grund.example.com",
-            "tok2",
-            "ka2",
+            holder,
+            ChallengeAnswer {
+                kind: Challenge::Http01,
+                name: "grund.example.com",
+                token: "tok2",
+                key_authorization: "ka2",
+            },
             0.0,
         )
         .await
@@ -941,9 +999,16 @@ mod tests {
         assert_eq!(claimed.terminator, "remote");
         assert_eq!(claimed.csr.as_deref(), Some(&b"csr-1"[..]));
         let order = Uuid::now_v7();
-        insert_order(&pool, order, subject, "https://acme.example/order/1", None)
-            .await
-            .unwrap();
+        insert_order(
+            &pool,
+            order,
+            subject,
+            holder,
+            "https://acme.example/order/1",
+            None,
+        )
+        .await
+        .unwrap();
         let mut due_now = issued();
         due_now.sealed_key = None;
         due_now.renew_at = Utc::now() - chrono::Duration::seconds(1);
@@ -1007,13 +1072,19 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn a_terminator_sees_only_its_own_challenges_and_says_when_it_answers(pool: PgPool) {
         let subject = "relay:relay.example.com";
+        request_remote(&pool, &remote(b"csr")).await.unwrap();
+        let holder = Uuid::now_v7();
+        claim(&pool, holder, 300.0).await.unwrap().unwrap();
         put_challenge(
             &pool,
             subject,
-            Challenge::TlsAlpn01,
-            "relay.example.com",
-            "tok",
-            "ka",
+            holder,
+            ChallengeAnswer {
+                kind: Challenge::TlsAlpn01,
+                name: "relay.example.com",
+                token: "tok",
+                key_authorization: "ka",
+            },
             60.0,
         )
         .await

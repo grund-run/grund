@@ -1,4 +1,4 @@
-use crate::templates::compiled::components::{Section, Panel, EmptyState, Form, HiddenField, Banner, Field, FieldError, Grid, Group, ChoiceField, ChoiceCard, ChipsField, StepperField, ToggleField, RangeField, PairsField, CodeField, Actions, Button, Rows, Row, PostButton, Para, Code, Links, Link, Tiles, Tile, Expanders, Expander};
+use crate::templates::compiled::components::{Section, Panel, EmptyState, Form, HiddenField, Banner, Field, FieldError, Grid, Group, ChoiceField, ChoiceCard, ChipsField, StepperField, ToggleField, RangeField, PairsField, CodeField, Actions, Button, Rows, Row, PostButton, Para, Code, Links, Link, Tiles, Tile, Expanders, Expander, DomainSetup, DomainRecords, Select};
 use crate::templates::FormState;
 use crate::web::apps::SettingsEdit;
 
@@ -133,10 +133,41 @@ props crate::web::apps::AppSettingsPage<'_> { app, items, edit, next, manages, o
           </Grid>
         </SettingsForm>
       },
-      SettingsEdit::Domains => {
+      SettingsEdit::Domains { domains, apps, target, public, added_name } => {
         <Panel id="domains" title="Custom domain">
-          {if !app.domains.is_empty() { <Rows>{for domain in &app.domains { <Row name={&domain.name} sub={domain.state_words} plain /> }}</Rows> }}
-          <Para kind="hint">Add and bind a verified domain on <a href={&app.domains_href}>Domains</a>. {if app.custom_only { A private app can be bound before you choose Public HTTP. }}</Para>
+          <Banner part={Some("domains")} form={Some(&form)} />
+          {for domain in domains {
+            {let item = crate::web::domains::domain_context(domain, target.as_deref(), *public);}
+            <Section id={item.id.as_str()} title={&domain.name}>
+              <DomainSetup domain={&item} slug={app.base.split('/').nth(1).unwrap_or("")} compact refresh_href={here.as_str()} refresh_fields={&[("edit", "domains")]} />
+              <DomainRecords domain={&item} />
+              {if *manages {
+                <Actions>
+                  <PostButton action="{here}/domains" csrf={form.csrf} label="Check now" kind="secondary" hidden={&[("operation", "check"), ("domain", &domain.name)]} />
+                  {if domain.state == "verified" {
+                    <PostButton action="{here}/domains" csrf={form.csrf} label="Bind" kind="secondary" hidden={&[("operation", "bind"), ("domain", &domain.name)]} />
+                  }}
+                  {if domain.state == "bound" {
+                    <PostButton action="{here}/domains" csrf={form.csrf} label="Unbind" kind="secondary" hidden={&[("operation", "unbind"), ("domain", &domain.name)]} />
+                  }}
+                </Actions>
+                {if domain.state == "bound" && !apps.is_empty() {
+                  <Form action="{here}/domains" form={Some(&form)} layout={Some("row")}>
+                    <HiddenField name="operation" value="move" /><HiddenField name="domain" value={&domain.name} />
+                    <Select name="target" id="move-{domain.name}" label="Move to app" options={&options.apps} required />
+                    <Button label="Move" kind="secondary" />
+                  </Form>
+                }}
+              }}
+            </Section>
+          }}
+          {if *manages {
+            <Form action="{here}/domains" form={Some(&form)} layout={Some("row")}>
+              <HiddenField name="operation" value="add" />
+              <Field name="domain" label="Domain" value={added_name.as_str()} hint="Add the records, then Check now to verify and bind." autocomplete="off" required mono />
+              <Button label="Add domain" kind="secondary" />
+            </Form>
+          }}
         </Panel>
       },
       SettingsEdit::Volumes { summary, name, path, source, size_gib, selected, backup } => {

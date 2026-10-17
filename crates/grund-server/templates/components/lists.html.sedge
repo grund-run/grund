@@ -1,4 +1,4 @@
-use crate::templates::compiled::components::{CopyButton, External, Icon, IconFact, ImageIcon, Mark, Pill, PostButton, ShortId, Status, Tag};
+use crate::templates::compiled::components::{CopyButton, DnsRecords, Expander, Expanders, External, HiddenField, Icon, IconFact, ImageIcon, Mark, Para, Pill, PostButton, ShortId, Status, StatusLine, Tag};
 
 component Rows(children: Html) {
   <ul class="rows">{children}</ul>
@@ -15,6 +15,47 @@ component Row(name: &str, sub: &str, icon_name: &str, tone: &str, letter: &str, 
     }}
     {if end_active.unwrap_or(true) { {if let Some(end) = end { <div class="row-end">{end}</div> } else { <span></span> }} } else { <span></span> }}
   </li>
+}
+
+component DomainStepFacts(step: &crate::web::domains::DomainStep<'_>) {
+  <span data-domain-step={step.name} data-step-state={step.state_code}>{step.detail}</span>{if !step.detail.is_empty() { <br> }}
+  Last checked: {if let Some(at) = step.checked_at { <time datetime={at.to_rfc3339()}>{at.format("%Y-%m-%d %H:%M:%S UTC").to_string()}</time> } else { Not checked }}<br>
+  Next retry: {if let Some(at) = step.next_retry_at { <time datetime={at.to_rfc3339()}>{at.format("%Y-%m-%d %H:%M:%S UTC").to_string()}</time> } else { Not scheduled }}
+}
+
+component DomainSetup(domain: &crate::web::domains::DomainItem<'_>, slug: &str, compact: bool, refresh_href: &str, refresh_fields: &[(&str, &str)]) {
+<div id="{domain.id}-progress" aria-label="Setup for {domain.name}">
+  <StatusLine text={domain.sentence.as_ref()} tone={domain.tone} />
+  {if *compact {
+    <Expanders>{for step in &domain.steps {
+      <Expander title={step.label} icon_name={match step.state_code { "done" => "ok", "failed" => "alert", "in_progress" => "clock", _ => "minus" }} tone={step.tone} state={Some((step.state, step.tone))} open={matches!(step.state_code, "failed" | "in_progress")}>
+        <Para kind="hint"><DomainStepFacts step={step} /></Para>
+      </Expander>
+    }}</Expanders>
+  } else {
+    <Rows>{for step in &domain.steps {
+      <Row name={step.label} icon_name={match step.state_code { "done" => "ok", "failed" => "alert", "in_progress" => "clock", _ => "minus" }} tone={step.tone} status_text={Some(step.state)} status_tone={step.tone} end_active={Some(false)}>
+        <:sub_content><DomainStepFacts step={step} /></:sub_content>
+      </Row>
+    }}</Rows>
+  }}
+  <Para kind="aside">Failed attempts: {domain.certificate_attempts}. Next attempt: {if let Some(at) = domain.certificate_next_attempt_at { <time datetime={at.to_rfc3339()}>{at.format("%Y-%m-%d %H:%M:%S UTC").to_string()}</time> } else { Not scheduled }}</Para>
+  {if domain.refresh {
+    <form method="get" action={if refresh_href.is_empty() { format!("/{slug}/domains") } else { refresh_href.to_string() }} sedx-target="{domain.id}-progress" data-refresh hidden>{for (name, value) in refresh_fields.iter() { <HiddenField name={name} value={value} /> }}</form>
+  }}
+</div>
+}
+
+component DomainRecords(domain: &crate::web::domains::DomainItem<'_>) {
+  {if domain.state == "pending" {
+    <Para kind="aside">Add the TXT record, then check ownership.</Para>
+  }}
+  {if domain.records.iter().any(|record| record.0 == "CNAME") {
+    <Para kind="aside">Point {domain.name} at grund with the CNAME record. For a domain at the top of its zone, use your provider's ALIAS, ANAME or CNAME flattening to the same address.</Para>
+  }}
+  {if !domain.records.is_empty() {
+    <DnsRecords records={&domain.records} label={format!("Records for {}", domain.name)} />
+  }}
 }
 component InvitationRows(invitations: &[crate::web::pages::PendingInvitationView], csrf: &str) {
 <Rows>

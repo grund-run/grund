@@ -1272,6 +1272,16 @@
       "title": "grund.domain.v1.BindDomainResponse",
       "type": "object"
     },
+    "grund.domain.v1.CheckDomainResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "domain": {
+          "$ref": "#/$defs/grund.domain.v1.Domain"
+        }
+      },
+      "title": "grund.domain.v1.CheckDomainResponse",
+      "type": "object"
+    },
     "grund.domain.v1.Domain": {
       "additionalProperties": false,
       "properties": {
@@ -1287,7 +1297,16 @@
           "format": "date-time",
           "type": "string"
         },
+        "certificateAttempts": {
+          "description": "Consecutive failed certificate attempts, including renewals; resets on success.",
+          "type": "integer"
+        },
         "certificateExpiresAt": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "certificateNextAttemptAt": {
+          "description": "Absent when no certificate attempt is scheduled.",
           "format": "date-time",
           "type": "string"
         },
@@ -1298,6 +1317,13 @@
         "problem": {
           "description": "In words, when status is DOMAIN_STATUS_ERROR.",
           "type": "string"
+        },
+        "setupSteps": {
+          "description": "Six persisted setup observations, including waiting steps when unbound.",
+          "items": {
+            "$ref": "#/$defs/grund.domain.v1.DomainSetupStep"
+          },
+          "type": "array"
         },
         "status": {
           "enum": [
@@ -1323,6 +1349,42 @@
         }
       },
       "title": "grund.domain.v1.Domain",
+      "type": "object"
+    },
+    "grund.domain.v1.DomainSetupStep": {
+      "additionalProperties": false,
+      "properties": {
+        "checkedAt": {
+          "description": "Absent until this step has been checked.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "detail": {
+          "description": "Factual result or reason; never a challenge token or private key.",
+          "type": "string"
+        },
+        "name": {
+          "description": "One of dns_record, edge_reachable, certificate_requested, challenge_passed, certificate_issued, serving_https, in that order.",
+          "type": "string"
+        },
+        "nextRetryAt": {
+          "description": "Absent when no retry is scheduled for this step.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "state": {
+          "description": "A setup observation, not an inferred certificate or domain status.",
+          "enum": [
+            "STEP_STATE_UNSPECIFIED",
+            "STEP_STATE_WAITING",
+            "STEP_STATE_IN_PROGRESS",
+            "STEP_STATE_DONE",
+            "STEP_STATE_FAILED"
+          ],
+          "type": "string"
+        }
+      },
+      "title": "grund.domain.v1.DomainSetupStep",
       "type": "object"
     },
     "grund.domain.v1.GetDomainResponse": {
@@ -12458,6 +12520,108 @@
         "grund.domain.v1.DomainService/VerifyDomain"
       ],
       "summary": "Look the TXT record up now"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "domain",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "DOMAIN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund domains check",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund domains check shop.example.com"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.domain.v1.CheckDomainResponse"
+      },
+      "path": "domains check",
+      "rpcs": [
+        "grund.domain.v1.DomainService/CheckDomain"
+      ],
+      "summary": "Check domain setup and retry now"
     },
     {
       "args": [
