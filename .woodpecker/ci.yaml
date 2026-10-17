@@ -34,17 +34,7 @@
 # A push or pull request that changes only documentation (*.md) runs nothing:
 # no build reads those files. The next code change tests the whole tree.
 when:
-  - event: push
-    branch: main
-    path:
-      exclude: ["*.md"]
-  - event: pull_request
-    path:
-      exclude: ["*.md"]
   - event: manual
-  # Versioned releases reuse every existing gate before their own packaging.
-  - event: tag
-    ref: refs/tags/v*
 
 labels:
   platform: linux/amd64
@@ -345,7 +335,6 @@ steps:
     when:
       - event: push
         branch: main
-      - event: manual
     environment:
       REGISTRY_TOKEN:
         from_secret: registry_token
@@ -376,7 +365,6 @@ steps:
     when:
       - event: push
         branch: main
-      - event: manual
     settings:
       registry: git.kjuulh.io
       repo: git.kjuulh.io/grund/grund
