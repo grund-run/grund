@@ -78,7 +78,7 @@ impl AgentService for AgentApi {
             .capabilities
             .as_option()
             .map_or(serde_json::json!({}), |c| {
-                serde_json::json!({
+                let mut capabilities = serde_json::json!({
                     "kvm": c.kvm,
                     "root": c.root,
                     "egress": c.egress,
@@ -93,7 +93,44 @@ impl AgentService for AgentApi {
                     "max_replica_memory_mib": c.max_replica_memory_mib,
                     "max_replica_cpu_millis": c.max_replica_cpu_millis,
                     "disk_gib": c.disk_gib,
-                })
+                });
+                if let Some(usage) = c.usage.as_option() {
+                    let mut snapshot = serde_json::Map::new();
+                    if let Some(value) = usage.cpu_millis {
+                        snapshot.insert("cpu_millis".into(), value.into());
+                    }
+                    if let Some(value) = usage.memory_used_bytes {
+                        snapshot.insert("memory_used_bytes".into(), value.into());
+                    }
+                    if let Some(value) = usage.disk_used_bytes {
+                        snapshot.insert("disk_used_bytes".into(), value.into());
+                    }
+                    if let Some(value) = usage.disk_total_bytes {
+                        snapshot.insert("disk_total_bytes".into(), value.into());
+                    }
+                    if let Some(value) = usage.uptime_seconds {
+                        snapshot.insert("uptime_seconds".into(), value.into());
+                    }
+                    if let Some(sampled_at) = usage.sampled_at.as_option().and_then(|timestamp| {
+                        let nanos = u32::try_from(timestamp.nanos)
+                            .ok()
+                            .filter(|nanos| *nanos < 1_000_000_000)?;
+                        chrono::DateTime::from_timestamp(timestamp.seconds, nanos)
+                    }) {
+                        snapshot.insert(
+                            "sampled_at".into(),
+                            sampled_at
+                                .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)
+                                .into(),
+                        );
+                    }
+                    snapshot.insert(
+                        "agent_revision".into(),
+                        usage.agent_revision.chars().take(64).collect::<String>().into(),
+                    );
+                    capabilities["usage"] = serde_json::Value::Object(snapshot);
+                }
+                capabilities
             });
         let generation = self
             .state

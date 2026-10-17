@@ -1241,21 +1241,6 @@ pub async fn reservations(
     .await
 }
 
-/// How many running (not draining) copies each machine of the organisation
-/// holds, for the Machines page.
-pub async fn copies_per_machine(
-    executor: impl PgExecutor<'_>,
-    organisation_id: Uuid,
-) -> Result<Vec<(Uuid, i64)>, sqlx::Error> {
-    sqlx::query_as(
-        "SELECT machine_id, count(*) FROM grund_replicas \
-         WHERE organisation_id = $1 AND state = 'running' GROUP BY machine_id",
-    )
-    .bind(organisation_id)
-    .fetch_all(executor)
-    .await
-}
-
 /// What the organisation's other apps hold on one machine.
 #[derive(Debug, Clone, FromRow)]
 pub struct Reservation {

@@ -2163,6 +2163,7 @@ mod tests {
             revoked_at: None,
             provider_machine_id: None,
             last_seen_at: Some(now),
+            agent_version: None,
             capabilities: Some(Json(json!({
                 "apps": true,
                 "volumes": volumes,

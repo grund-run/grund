@@ -38,6 +38,10 @@ use crate::{
 pub struct MachineItem<'a> {
     pub id: String,
     pub remove_href: String,
+    pub href: String,
+    pub workloads: String,
+    pub reserved: [String; 3],
+    pub actual: [String; 3],
     pub name: &'a str,
     pub labels: Vec<String>,
     pub status: &'static str,
@@ -193,7 +197,7 @@ pub async fn machines_page(
 const DISCONNECTED: &str = "disconnected";
 
 #[derive(Default)]
-struct MachinesForm<'a> {
+pub(super) struct MachinesForm<'a> {
     notice: &'a str,
     error: &'a str,
     tab: &'a str,
@@ -203,7 +207,10 @@ struct MachinesForm<'a> {
     run: RunForm,
 }
 
-fn machine_status(row: &MachineRow, now: chrono::DateTime<Utc>) -> (&'static str, &'static str) {
+pub(super) fn machine_status(
+    row: &MachineRow,
+    now: chrono::DateTime<Utc>,
+) -> (&'static str, &'static str) {
     if row.cordoned_at.is_some() {
         ("Out of service", "muted")
     } else if connected(row.last_seen_at, now) {
@@ -215,7 +222,7 @@ fn machine_status(row: &MachineRow, now: chrono::DateTime<Utc>) -> (&'static str
     }
 }
 
-fn human_size(mib: u64) -> String {
+pub(super) fn human_size(mib: u64) -> String {
     let one = |value: f64, places: usize| {
         let text = format!("{value:.places$}");
         text.strip_suffix(".0").unwrap_or(&text).to_string()
@@ -230,7 +237,7 @@ fn human_size(mib: u64) -> String {
     }
 }
 
-fn machine_facts(
+pub(super) fn machine_facts(
     capabilities: Option<&serde_json::Value>,
     joined_facts: &serde_json::Value,
 ) -> [(&'static str, String); 3] {
@@ -259,7 +266,7 @@ fn machine_facts(
     ]
 }
 
-fn machine_context<'a>(
+pub(super) fn machine_context<'a>(
     row: &'a MachineRow,
     copies: i64,
     now: chrono::DateTime<Utc>,
@@ -304,6 +311,14 @@ fn machine_context<'a>(
         .unwrap_or(row.machine_id)
         .to_string();
     MachineItem {
+        href: if row.pool == "management" || external_remove_href.is_some() {
+            String::new()
+        } else {
+            format!("/{slug}/machines/{id}")
+        },
+        workloads: String::new(),
+        reserved: Default::default(),
+        actual: Default::default(),
         labels,
         status,
         tone,
@@ -377,9 +392,10 @@ async fn machines_view(
                 .await?,
         );
     }
-    let copies = grund_store::apps::copies_per_machine(&state.pool, membership.organisation_id)
-        .await
-        .map_err(anyhow::Error::from)?;
+    let activity =
+        grund_store::machine_activity::summaries(&state.pool, membership.organisation_id)
+            .await
+            .map_err(anyhow::Error::from)?;
     let mut machines: Vec<MachineItem<'_>> = rows
         .iter()
         .filter(|row| {
@@ -388,11 +404,19 @@ async fn machines_view(
                 .any(|order| order.machine_id == Some(row.machine_id))
         })
         .map(|row| {
-            let n = copies
+            let summary = activity
                 .iter()
-                .find(|(id, _)| *id == row.machine_id)
-                .map_or(0, |(_, n)| *n);
-            machine_context(row, n, now, &form, &membership.slug, None)
+                .find(|summary| summary.machine_id == row.machine_id);
+            let mut item = machine_context(
+                row,
+                summary.map_or(0, |s| s.instances),
+                now,
+                &form,
+                &membership.slug,
+                None,
+            );
+            super::machine_detail::add_activity(&mut item, row, summary, now);
+            item
         })
         .collect();
     for order in &orders {
@@ -400,22 +424,27 @@ async fn machines_view(
             .machine_id
             .and_then(|id| rows.iter().find(|row| row.machine_id == id));
         let mut item = if let Some(row) = row {
-            let n = copies
+            let summary = activity
                 .iter()
-                .find(|(id, _)| *id == row.machine_id)
-                .map_or(0, |(_, n)| *n);
-            machine_context(
+                .find(|summary| summary.machine_id == row.machine_id);
+            let mut item = machine_context(
                 row,
-                n,
+                summary.map_or(0, |s| s.instances),
                 now,
                 &form,
                 &membership.slug,
                 Some(&order.remove_href),
-            )
+            );
+            super::machine_detail::add_activity(&mut item, row, summary, now);
+            item
         } else {
             MachineItem {
                 id: String::new(),
                 remove_href: order.remove_href.clone(),
+                href: String::new(),
+                workloads: String::new(),
+                reserved: Default::default(),
+                actual: Default::default(),
                 name: &order.name,
                 labels: Vec::new(),
                 status: if order.state == "failed" {

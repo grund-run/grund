@@ -2,6 +2,7 @@
 //! `grund.machine.v1.MachineService`. A machine is named by its name or
 //! its id.
 
+use chrono::{DateTime, Utc};
 use clap::Subcommand;
 use serde_json::{Value, json};
 
@@ -10,7 +11,7 @@ use crate::{
     commands::{Noun, changes, done, dry_run},
     context::Ctx,
     error::{CliError, CliResult, Code},
-    output::Output,
+    output::{Format, Output},
 };
 
 const SERVICE: &str = "grund.machine.v1.MachineService";
@@ -21,9 +22,15 @@ pub type MachinesCommand = Noun<MachinesAction>;
 /// What `grund machines` does.
 #[derive(Debug, Subcommand)]
 pub enum MachinesAction {
-    #[command(about = "The organisation's machines, connected or not")]
+    #[command(
+        about = "List machines, app counts, reservations, and reported host usage",
+        long_about = "List the organisation's machines, connected or not, with app and instance counts, reserved versus total CPU, RAM and disk, and measured usage for the whole machine. Reservations are not actual usage. Missing reports are shown as Not reported; usage samples older than 30 seconds are Stale. JSON and YAML retain the complete API response."
+    )]
     List,
-    #[command(about = "One machine: facts, capabilities, labels, whether it is connected")]
+    #[command(
+        about = "Show a machine's details, workloads, reservations, and reported host usage",
+        long_about = "Show every field returned for one machine, including its capabilities, labels, connection state, app and instance counts, reservations, workloads with desired and observed state, and available host telemetry with its sample time. Reservations are not actual usage; absent telemetry is not zero."
+    )]
     Get {
         #[arg(value_name = "MACHINE", help = "Its name or id")]
         machine: String,
@@ -90,9 +97,115 @@ const MACHINES: &[(&str, &str)] = &[
     ("ID", "/machineId"),
     ("CONNECTED", "/connected"),
     ("STATE", "/state"),
+    ("APPS", "/apps"),
+    ("INSTANCES", "/instances"),
+    ("CPU RESERVED/TOTAL", "/cpu"),
+    ("RAM RESERVED/TOTAL", "/memory"),
+    ("DISK RESERVED/TOTAL", "/disk"),
+    ("HOST CPU USED", "/hostCpu"),
+    ("HOST RAM USED", "/hostMemory"),
+    ("HOST DISK USED/TOTAL", "/hostDisk"),
+    ("USAGE SAMPLE", "/usage"),
     ("OUT OF SERVICE", "/outOfServiceSince"),
     ("LABELS", "/labels"),
 ];
+
+fn number(value: &Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+}
+
+fn cpu(value: Option<u64>) -> String {
+    value.map_or_else(
+        || "Not reported".to_string(),
+        |millis| format!("{}.{:03} cores", millis / 1000, millis % 1000),
+    )
+}
+
+fn memory(value: Option<u64>) -> String {
+    value.map_or_else(|| "Not reported".to_string(), |mib| format!("{mib} MiB"))
+}
+
+fn disk(value: Option<u64>) -> String {
+    value.map_or_else(|| "Not reported".to_string(), |gib| format!("{gib} GiB"))
+}
+
+fn bytes(value: Option<u64>) -> String {
+    value.map_or_else(
+        || "Not reported".to_string(),
+        |bytes| format!("{:.2} GiB", bytes as f64 / 1_073_741_824.0),
+    )
+}
+
+fn machine_list(answer: Value) -> Output {
+    let now = Utc::now();
+    let rows = answer["machines"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|machine| {
+            let activity = &machine["activity"];
+            let capabilities = &machine["capabilities"];
+            let usage = &capabilities["usage"];
+            let reserved = |field: &str| {
+                activity
+                    .is_object()
+                    .then(|| number(&activity[field]).unwrap_or(0))
+            };
+            let total = |field: &str| {
+                number(&capabilities[field]).filter(|value| *value > 0).or_else(|| {
+                    if field == "cpuMillis" {
+                        number(&machine["facts"]["cpus"]).and_then(|cpus| cpus.checked_mul(1000))
+                    } else {
+                        number(&machine["facts"][field])
+                    }.filter(|value| *value > 0)
+                })
+            };
+            let disk_reserved = if activity["diskUnbounded"].as_bool().unwrap_or(false) {
+                format!("{} + unbounded", disk(reserved("diskGib")))
+            } else {
+                disk(reserved("diskGib"))
+            };
+            let sample = if !usage.is_object() {
+                "Not reported"
+            } else {
+                match usage["sampledAt"]
+                    .as_str()
+                    .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                {
+                    Some(sampled) if sampled > now => "Clock ahead",
+                    Some(sampled)
+                        if now.signed_duration_since(sampled) > chrono::Duration::seconds(30) =>
+                    {
+                        "Stale"
+                    }
+                    Some(_) => "Current",
+                    None => "Unknown sample time",
+                }
+            };
+            json!({
+                "name": machine["name"],
+                "machineId": machine["machineId"],
+                "connected": if machine["connected"].as_bool().unwrap_or(false) { "yes" } else { "no" },
+                "state": machine["state"],
+                "apps": reserved("apps").map_or_else(|| "Not reported".to_string(), |n| n.to_string()),
+                "instances": reserved("instances").map_or_else(|| "Not reported".to_string(), |n| n.to_string()),
+                "cpu": format!("{} / {}", cpu(reserved("cpuMillis")), cpu(total("cpuMillis"))),
+                "memory": format!("{} / {}", memory(reserved("memoryMib")), memory(total("memoryMib"))),
+                "disk": format!("{disk_reserved} / {}", disk(total("diskGib"))),
+                "hostCpu": cpu(number(&usage["cpuMillis"])),
+                "hostMemory": bytes(number(&usage["memoryUsedBytes"])),
+                "hostDisk": format!("{} / {}", bytes(number(&usage["diskUsedBytes"])), bytes(number(&usage["diskTotalBytes"]))),
+                "usage": sample,
+                "outOfServiceSince": machine["outOfServiceSince"],
+                "labels": machine["labels"],
+            })
+        })
+        .collect::<Vec<_>>();
+    let text = Output::table(json!({"machines": rows}), "/machines", MACHINES).render(Format::Text);
+    Output::with_text(answer, text)
+}
 
 async fn find(api: &Api, org: &str, machine: &str) -> CliResult<Value> {
     let answer = api
@@ -125,7 +238,11 @@ pub async fn run(ctx: &Ctx, action: MachinesAction) -> CliResult<Output> {
                     json!({"organisation": org}),
                 )
                 .await?;
-            Ok(Output::table(answer, "/machines", MACHINES))
+            Ok(if ctx.format == Format::Text {
+                machine_list(answer)
+            } else {
+                Output::fields(answer)
+            })
         }
         MachinesAction::Get { machine } => {
             let found = find(&api, &org, &machine).await?;

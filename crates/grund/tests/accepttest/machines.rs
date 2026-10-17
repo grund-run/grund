@@ -748,6 +748,16 @@ async fn the_machines_page_adds_a_device_shows_it_connected_and_runs_a_vm_on_it(
         .body_contains("Joining")?;
 
     grund_agent_once(&device).await;
+    let detail = format!("{page}/{device_id}");
+    when.visiting(&detail).await?;
+    then.status(200)?;
+    let (outsider, outsider_when, outsider_then) = given.testcase.another_browser();
+    outsider.a_signed_in_account().await?;
+    outsider_when.visiting(&detail).await?;
+    outsider_then.status(404)?;
+    when.visiting(&format!("{page}/{}", uuid::Uuid::now_v7()))
+        .await?;
+    then.status(404)?;
     when.visiting(&page).await?;
     then.status(200)?
         .body_contains("Runs VMs")?

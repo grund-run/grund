@@ -23,5 +23,6 @@ pub mod resolved;
 pub mod runtime;
 pub mod secrets;
 pub mod simulated;
+mod usage;
 pub mod vm;
 pub mod volume;

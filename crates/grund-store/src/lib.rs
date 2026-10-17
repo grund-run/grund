@@ -15,6 +15,8 @@ pub mod device_logins;
 pub mod doctor;
 pub mod domains;
 pub mod entry;
+pub mod machine_activity;
+pub mod machine_recovery;
 pub mod machines;
 pub mod networks;
 pub mod notifications;

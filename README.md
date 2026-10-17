@@ -112,6 +112,22 @@ amd64 or arm64) and connects it. This instance serves the installer and its
 own binary at `/install`; the code's command selects that binary explicitly.
 A machine on another host needs HTTPS, below.
 
+Machines shows each machine's app and instance counts and reserved CPU, memory
+and disk against its capacity. Open one of your own machines to see its placed
+instances and volumes, linked to their apps, its software and last contact.
+`grund machines list` and `grund machines get MACHINE` expose the same data.
+Reservations include draining instances and virtual machines; unsized volumes
+and existing host directories are marked unbounded, not zero.
+
+New agents also report whole-machine CPU, memory and data-filesystem usage
+and uptime with their five-second heartbeat. These are measurements, separate
+from reservations. Older agents show `Not reported`; samples older than
+30 seconds show `stale`. There is no usage history or network-traffic collection.
+The detail page shows each app's disconnect policy: stateless instances become
+eligible for replacement after its configured wait; apps with volumes stay
+pinned. A replacement needs another eligible machine with capacity. A server
+or database outage can restart the wait. Placement times do not imply readiness.
+
 **HTTPS.** With `GRUND_DOMAIN` set, grund terminates TLS itself on 443, with
 no proxy in front. It orders the certificate by ACME from Let's Encrypt
 (`GRUND_ACME_DIRECTORY` names another CA), proving the name with

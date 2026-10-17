@@ -93,10 +93,10 @@ component MachineRow(slug: &str, manages: bool, machine: &crate::web::machines::
   <li class="item" data-name={machine.search} data-tab={machine.tab} hidden={!machine.shown}>
     <span class="item-icon" aria-hidden="true"><Icon name="server" class="icon-lg" /></span>
     <div class="item-text">
-      <div class="item-head"><p class="item-name">{machine.name}</p>{if machine.leased { <Tag text="Hosted" /> }}{if machine.kvm { <Tag text="Runs VMs" /> }}{for label in machine.labels.iter().take(3) { <Tag text={label} /> }}{if machine.labels.len() > 3 { <Tag text={format!("+{}", machine.labels.len() - 3)} /> }}</div>
-      <p class="item-sub item-sub-wrap"><Pill text={machine.status} tone={machine.tone} plain />{if !machine.detail.is_empty() { <span class="item-detail">{machine.detail}</span> }}</p>
+      <div class="item-head">{if machine.href.is_empty() { <p class="item-name">{machine.name}</p> } else { <a class="item-name" href={machine.href.as_str()}>{machine.name}</a> }}{if machine.leased { <Tag text="Hosted" /> }}{if machine.kvm { <Tag text="Runs VMs" /> }}{for label in machine.labels.iter().take(3) { <Tag text={label} /> }}{if machine.labels.len() > 3 { <Tag text={format!("+{}", machine.labels.len() - 3)} /> }}</div>
+      <p class="item-sub item-sub-wrap"><Pill text={machine.status} tone={machine.tone} plain />{if !machine.workloads.is_empty() { <span class="item-detail">{machine.workloads}</span> }}{if !machine.detail.is_empty() { <span class="item-detail">{machine.detail}</span> }}</p>
     </div>
-    <div class="item-meta item-facts">{for (icon_name, text) in &machine.facts { {if !text.is_empty() { <IconFact icon_name={icon_name} text={text} /> } else { <span></span> }} }}</div>
+    <div class="item-meta item-facts">{for (index, (icon_name, text)) in machine.facts.iter().enumerate() { {if !text.is_empty() || !machine.reserved[index].is_empty() { <IconFact icon_name={icon_name} text={if machine.reserved[index].is_empty() { text } else { &machine.reserved[index] }} detail={&machine.actual[index]} /> } else { <span></span> }} }}</div>
     {if *manages { <MachineMenu slug={slug} machine={machine} csrf={csrf} /> } else { <span></span> }}
   </li>
 }
@@ -105,6 +105,7 @@ component MachineMenu(slug: &str, machine: &crate::web::machines::MachineItem<'_
   {let base = format!("/{slug}/machines");}
   <Menu label={format!("Actions for {}", machine.name)} icon_name="more">
     {if !machine.joining {
+      {if !machine.href.is_empty() { <MenuItem href={machine.href.as_str()} icon_name="server" label="Details" /> }}
       <MenuItem href={format!("{base}?labels={}#labels", machine.id)} icon_name="tag" label="Labels" />
       {if machine.hosts_vms { <MenuItem href={format!("{base}?run={}#run", machine.id)} icon_name="box" label="Run a virtual machine" /> }}
       {if machine.out_of_service {

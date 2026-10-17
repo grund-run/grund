@@ -1,0 +1,28 @@
+use crate::templates::compiled::components::{PageHead, MachineMenu, Panel, Facts, Fact, Rows, Row, EmptyState, Para, Banner};
+props crate::web::machine_detail::MachineDetailPage<'_> { slug, csrf, manages, machine, metadata, workloads, sample, outdated };
+
+<PageHead title={machine.name} back={Some((&format!("/{slug}/machines"), "Machines"))} state={Some((machine.status, machine.tone))}>
+  {if *manages { <MachineMenu slug={slug} machine={machine} csrf={csrf} /> }}
+</PageHead>
+{if *outdated { <Banner text="Software update available" tone="warning" /> }}
+<Panel id="resources" title="Resources">
+  <Para text={machine.workloads.as_str()} />
+  <Facts>
+    {for (index, label) in ["CPU", "Memory", "Disk"].iter().enumerate() {
+      <Fact label={label} value={machine.reserved[index].as_str()} lines={&[(machine.actual[index].as_str(), "")]} wide />
+    }}
+    <Fact label="Usage sampled at" value={sample} wide />
+  </Facts>
+</Panel>
+<Panel id="workloads" title="Workloads">
+  {if workloads.is_empty() { <EmptyState text="No workloads placed on this machine." /> } else {
+    <Rows>{for workload in workloads {
+      <Row name={workload.name.as_str()} href={workload.href.as_str()} sub={workload.detail.as_str()} detail={workload.recovery.as_str()} icon_name={workload.icon} status_text={Some(workload.status.as_str())} status_tone={workload.tone} />
+    }}</Rows>
+  }}
+</Panel>
+<Panel id="machine" title="Machine">
+  <Facts>{for (label, value) in metadata {
+    <Fact label={label} value={value.as_str()} wide />
+  }}</Facts>
+</Panel>

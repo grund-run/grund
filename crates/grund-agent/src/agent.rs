@@ -448,8 +448,9 @@ pub async fn run<R: VmRuntime, C: ContainerRuntime + 'static>(
     let lease_changed = crate::lease::changed(link.clone(), registered.clone(), lease.clone());
     tokio::pin!(lease_changed);
     let leased = registered.pool == "management" && !args.once;
+    let mut usage = crate::usage::Sampler::new();
     loop {
-        let interval = match round(&context).await {
+        let interval = match round(&context, &mut usage).await {
             Ok(seconds) => args.interval.unwrap_or(seconds.max(1) as u64),
             Err(error) => {
                 tracing::warn!(error = %format!("{error:#}"), "round failed; trying again");
@@ -851,6 +852,7 @@ struct Round<'a, R, C> {
 
 async fn round<R: VmRuntime, C: ContainerRuntime>(
     context: &Round<'_, R, C>,
+    usage: &mut crate::usage::Sampler,
 ) -> anyhow::Result<i32> {
     let Round {
         link,
@@ -871,6 +873,7 @@ async fn round<R: VmRuntime, C: ContainerRuntime>(
     } else {
         apps.reason.clone()
     };
+    let usage = usage.sample(data_dir);
     let beat: HeartbeatResponse = link
         .call(
             "Heartbeat",
@@ -890,7 +893,8 @@ async fn round<R: VmRuntime, C: ContainerRuntime>(
                     apps_unavailable_reason: apps_reason,
                     max_replica_memory_mib: policy.max_replica_memory_mib,
                     max_replica_cpu_millis: policy.max_replica_cpu_millis,
-                    disk_gib: join::disk_gib(data_dir).max(0) as u64,
+                    disk_gib: usage.disk_total_bytes.map_or(0, |total| total >> 30),
+                    usage: buffa::MessageField::from(usage),
                     ..Default::default()
                 }),
                 ..Default::default()

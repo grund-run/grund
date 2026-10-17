@@ -231,6 +231,27 @@ message Capabilities {
   // This agent can verify app-owned volume identities and writable mounts.
   // Absent on older agents: the scheduler must not place stateful apps there.
   bool volumes = 14;
+  // Optional measured host usage, separate from placement reservations.
+  // Older agents do not report this snapshot.
+  MachineUsage usage = 15;
+}
+
+// One bounded host sample. Missing numeric fields mean unknown, not zero.
+message MachineUsage {
+  // Actual CPU across all cores in millicores, averaged since the previous
+  // heartbeat sample. Idle and iowait are excluded; guest time is counted once.
+  // Absent on the first sample or when counters cannot be compared.
+  optional uint32 cpu_millis = 1;
+  // MemTotal minus MemAvailable, not the sum of process resident memory.
+  optional uint64 memory_used_bytes = 2;
+  // Total minus free blocks on the filesystem holding the agent's data,
+  // including blocks reserved from unprivileged users.
+  optional uint64 disk_used_bytes = 3;
+  optional uint64 disk_total_bytes = 4;
+  optional uint64 uptime_seconds = 5;
+  google.protobuf.Timestamp sampled_at = 6;
+  // Embedded build revision, or "unknown" for builds without revision metadata.
+  string agent_revision = 7;
 }
 
 message HeartbeatResponse {

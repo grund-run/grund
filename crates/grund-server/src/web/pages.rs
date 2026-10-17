@@ -1540,6 +1540,21 @@ fn style_guide_fixture(csrf: String) -> StyleGuidePage {
             crate::web::machines::MachineItem {
                 id: name.into(),
                 remove_href: format!("/nord-studio/machines/{name}/remove"),
+                href: format!("/nord-studio/machines/{name}"),
+                workloads: "2 apps · 3 instances".into(),
+                reserved: [
+                    format!("0.75 / {vcpus} vCPU reserved"),
+                    format!("768 MB / {memory} RAM reserved"),
+                    format!(
+                        "0 GB + unbounded / {} reserved",
+                        disk.unwrap_or("Not reported")
+                    ),
+                ],
+                actual: [
+                    "0.1 vCPU used".into(),
+                    "1.2 GB used".into(),
+                    "6 GB used".into(),
+                ],
                 name,
                 labels: labels.into_iter().map(str::to_owned).collect(),
                 status,

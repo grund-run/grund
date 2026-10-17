@@ -14,14 +14,17 @@ use grund_proto::grund::{
         CreateJoinTokenRequest, CreateJoinTokenResponse, DeclareMachinePortsRequest,
         DeclareMachinePortsResponse, GetMachineRequest, GetMachineResponse,
         GetOrganisationKeyRequest, GetOrganisationKeyResponse, ListMachinesRequest,
-        ListMachinesResponse, ListVmsRequest, ListVmsResponse, Machine, MachineService,
-        MachineState, NetworkPort as NetworkPortProto, NetworkTransport, RevokeMachineRequest,
+        ListMachinesResponse, ListVmsRequest, ListVmsResponse, Machine, MachineActivity,
+        MachineRecoveryPolicy, MachineReplacement, MachineService, MachineState, MachineWorkload,
+        NetworkPort as NetworkPortProto, NetworkTransport, RevokeMachineRequest,
         RevokeMachineResponse, RunVmRequest, RunVmResponse, SetMachineInServiceRequest,
         SetMachineInServiceResponse, SetMachineLabelsRequest, SetMachineLabelsResponse,
         StopVmRequest, StopVmResponse, Vm,
     },
 };
-use grund_store::{agents::VmRow, machines::MachineRow, organisations::Membership};
+use grund_store::{
+    agents::VmRow, machine_activity, machines::MachineRow, organisations::Membership,
+};
 use uuid::Uuid;
 
 use crate::{
@@ -175,6 +178,22 @@ fn machine(row: &MachineRow, own_slug: &str) -> Machine {
             .collect(),
         out_of_service_since: row.cordoned_at.map(timestamp).unwrap_or_default(),
         hosted: leased,
+        agent_version: if leased {
+            String::new()
+        } else {
+            row.agent_version.clone().unwrap_or_default()
+        },
+        agent_outdated: !leased
+            && crate::services::agents::outdated_version(
+                row.agent_version.as_deref().unwrap_or_default(),
+            ),
+        expected_agent_revision: if leased
+            || crate::services::agents::expected_agent_revision() == "unknown"
+        {
+            String::new()
+        } else {
+            crate::services::agents::expected_agent_revision().to_string()
+        },
         ..Default::default()
     }
 }
@@ -228,6 +247,57 @@ fn declared(
     })
 }
 
+fn activity(row: &machine_activity::MachineSummary) -> MachineActivity {
+    MachineActivity {
+        apps: row.apps,
+        instances: row.instances,
+        cpu_millis: row.cpu_millis,
+        memory_mib: row.memory_mib,
+        disk_gib: row.disk_gib,
+        disk_unbounded: row.disk_unbounded,
+        ..Default::default()
+    }
+}
+
+fn workload(row: machine_activity::MachineWorkload) -> MachineWorkload {
+    MachineWorkload {
+        app_id: row.app_id.to_string(),
+        app_name: row.app_name,
+        id: row.id.to_string(),
+        name: row.name,
+        kind: row.kind,
+        desired: row.desired,
+        observed: row.observed,
+        cpu_millis: row.cpu_millis,
+        memory_mib: row.memory_mib,
+        disk_gib: row.disk_gib,
+        measured_bytes: row.measured_bytes,
+        ..Default::default()
+    }
+}
+
+fn usage(value: &serde_json::Value) -> agent::MachineUsage {
+    agent::MachineUsage {
+        cpu_millis: value["cpu_millis"]
+            .as_u64()
+            .and_then(|value| u32::try_from(value).ok()),
+        memory_used_bytes: value["memory_used_bytes"].as_u64(),
+        disk_used_bytes: value["disk_used_bytes"].as_u64(),
+        disk_total_bytes: value["disk_total_bytes"].as_u64(),
+        uptime_seconds: value["uptime_seconds"].as_u64(),
+        sampled_at: value["sampled_at"]
+            .as_str()
+            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+            .map(|at| timestamp(at.with_timezone(&Utc)))
+            .unwrap_or_default(),
+        agent_revision: value["agent_revision"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+        ..Default::default()
+    }
+}
+
 fn capabilities(value: &serde_json::Value) -> agent::Capabilities {
     agent::Capabilities {
         kvm: value["kvm"].as_bool().unwrap_or(false),
@@ -246,6 +316,11 @@ fn capabilities(value: &serde_json::Value) -> agent::Capabilities {
         max_replica_memory_mib: value["max_replica_memory_mib"].as_u64().unwrap_or(0),
         max_replica_cpu_millis: value["max_replica_cpu_millis"].as_u64().unwrap_or(0) as u32,
         disk_gib: value["disk_gib"].as_u64().unwrap_or(0),
+        usage: value
+            .get("usage")
+            .filter(|value| value.is_object())
+            .map(|value| MessageField::from(usage(value)))
+            .unwrap_or_default(),
         ..Default::default()
     }
 }
@@ -550,6 +625,13 @@ impl MachineService for MachineApi {
             .await
             .map_err(internal)?;
         let external = self.listings(&membership).await?;
+        let summaries: std::collections::HashMap<_, _> =
+            machine_activity::summaries(&self.state.pool, membership.organisation_id)
+                .await
+                .map_err(internal)?
+                .into_iter()
+                .map(|summary| (summary.machine_id, summary))
+                .collect();
         let mut listed: Vec<Machine> = rows
             .iter()
             .filter(|row| row.pool != "management" || row.lease_id.is_some())
@@ -558,15 +640,28 @@ impl MachineService for MachineApi {
                     .iter()
                     .any(|item| item.machine_id == Some(row.machine_id))
             })
-            .map(|row| machine(row, &membership.slug))
+            .map(|row| {
+                let mut shown = machine(row, &membership.slug);
+                shown.activity = summaries
+                    .get(&row.machine_id)
+                    .map(|summary| MessageField::from(activity(summary)))
+                    .unwrap_or_default();
+                shown
+            })
             .collect();
         listed.extend(external.iter().map(|item| {
-            external_machine(
+            let mut shown = external_machine(
                 item,
                 item.machine_id
                     .and_then(|id| rows.iter().find(|row| row.machine_id == id)),
                 &membership.slug,
-            )
+            );
+            shown.activity = item
+                .machine_id
+                .and_then(|id| summaries.get(&id))
+                .map(|summary| MessageField::from(activity(summary)))
+                .unwrap_or_default();
+            shown
         }));
         Response::ok(ListMachinesResponse {
             machines: listed,
@@ -585,7 +680,8 @@ impl MachineService for MachineApi {
             .await?;
         let id = uuid(request.machine_id)?;
         let external = self.listings(&membership).await?;
-        let shown = if let Some(item) = external.iter().find(|item| item.id == id) {
+        let (mut shown, machine_id) = if let Some(item) = external.iter().find(|item| item.id == id)
+        {
             let row = match item.machine_id {
                 Some(machine_id) => self
                     .state
@@ -595,13 +691,121 @@ impl MachineService for MachineApi {
                     .map_err(internal)?,
                 None => None,
             };
-            external_machine(item, row.as_ref(), &membership.slug)
+            (
+                external_machine(item, row.as_ref(), &membership.slug),
+                row.map(|row| row.machine_id),
+            )
         } else {
             let row = self.pool_machine(&membership, request.machine_id).await?;
-            machine(&row, &membership.slug)
+            (machine(&row, &membership.slug), Some(row.machine_id))
         };
+        let workloads = if let Some(machine_id) = machine_id {
+            shown.activity =
+                machine_activity::summaries(&self.state.pool, membership.organisation_id)
+                    .await
+                    .map_err(internal)?
+                    .iter()
+                    .find(|summary| summary.machine_id == machine_id)
+                    .map(|summary| MessageField::from(activity(summary)))
+                    .unwrap_or_default();
+            machine_activity::workloads(&self.state.pool, membership.organisation_id, machine_id)
+                .await
+                .map_err(internal)?
+                .into_iter()
+                .map(workload)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let (direct_addresses, vms) = if let Some(machine_id) = machine_id.filter(|_| !shown.hosted)
+        {
+            let addresses = machine_activity::addresses(
+                &self.state.pool,
+                membership.organisation_id,
+                machine_id,
+            )
+            .await
+            .map_err(internal)?;
+            let vms = self
+                .state
+                .agents()
+                .vms(membership.organisation_id)
+                .await
+                .map_err(internal)?
+                .iter()
+                .filter(|row| row.host_machine_id == machine_id)
+                .map(|row| vm(row, &[]))
+                .collect();
+            (addresses, vms)
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        let (recovery_policies, replacements) =
+            if let Some(machine_id) = machine_id.filter(|_| !shown.hosted) {
+                let seen = shown
+                    .last_seen_at
+                    .as_option()
+                    .and_then(|at| DateTime::from_timestamp(at.seconds, at.nanos as u32));
+                let policies = grund_store::machine_recovery::policies(
+                    &self.state.pool,
+                    membership.organisation_id,
+                    machine_id,
+                )
+                .await
+                .map_err(internal)?
+                .into_iter()
+                .map(|policy| {
+                    let eligible = (!policy.has_volumes && !shown.connected)
+                        .then(|| {
+                            self.state.hearing.seen(seen).map(|seen| {
+                                seen + chrono::Duration::seconds(policy.reschedule_after_seconds)
+                            })
+                        })
+                        .flatten();
+                    MachineRecoveryPolicy {
+                        app_id: policy.app_id.to_string(),
+                        has_volumes: policy.has_volumes,
+                        reschedule_after_seconds: policy.reschedule_after_seconds as u32,
+                        replacement_eligible_at: eligible.map(timestamp).unwrap_or_default(),
+                        ..Default::default()
+                    }
+                })
+                .collect();
+                let replacements = if shown.connected {
+                    Vec::new()
+                } else {
+                    grund_store::machine_recovery::replacements(
+                        &self.state.pool,
+                        membership.organisation_id,
+                        machine_id,
+                    )
+                    .await
+                    .map_err(internal)?
+                    .into_iter()
+                    .map(|replacement| MachineReplacement {
+                        app_id: replacement.app_id.to_string(),
+                        app_name: replacement.app_name,
+                        instance_id: replacement.instance_id.to_string(),
+                        slot: replacement.slot as u32,
+                        lost_at: timestamp(replacement.lost_at),
+                        placed_at: replacement.placed_at.map(timestamp).unwrap_or_default(),
+                        machine_name: replacement.machine_name.unwrap_or_default(),
+                        reschedule_after_seconds: replacement.reschedule_after_seconds as u32,
+                        ..Default::default()
+                    })
+                    .collect()
+                };
+                (policies, replacements)
+            } else {
+                (Vec::new(), Vec::new())
+            };
         Response::ok(GetMachineResponse {
             machine: MessageField::from(shown),
+            workloads,
+            direct_addresses,
+            vms,
+            recovery_policies,
+            replacements,
             ..Default::default()
         })
     }

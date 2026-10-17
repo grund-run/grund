@@ -114,6 +114,74 @@ message Machine {
   // Existing wire field: true for a leased or extension-provisioned machine,
   // including one still joining. The field name is retained for clients.
   bool hosted = 19;
+  // Reservations for this organisation only, not measured host usage.
+  MachineActivity activity = 20;
+  // The version from the latest heartbeat, not the registration facts.
+  string agent_version = 21;
+  // True only when the reported build is known to precede the expected build.
+  // Different git revisions alone do not establish that ordering.
+  bool agent_outdated = 22;
+  // The server's build revision, when known; not a promise it is newer.
+  string expected_agent_revision = 23;
+}
+
+// Allocations still held on a machine, including draining instances and
+// desired-running VMs. Counts include desired-running app instances only.
+message MachineActivity {
+  int64 apps = 1;
+  int64 instances = 2;
+  int64 cpu_millis = 3;
+  int64 memory_mib = 4;
+  // The known sized-volume and VM reservation, not a measured disk total.
+  int64 disk_gib = 5;
+  // Unsized managed volumes or host paths make disk_gib an incomplete total.
+  bool disk_unbounded = 6;
+}
+
+// A placed app instance or nondeleted volume, scoped to the current pool's
+// organisation. Desired and observed states are deliberately separate.
+message MachineWorkload {
+  string app_id = 1;
+  string app_name = 2;
+  string id = 3;
+  string name = 4;
+  // "instance" or "volume".
+  string kind = 5;
+  // Instance: "running" or "draining". Volume: "present" or "deleted";
+  // deletion requests can still hold disk until their allocation is removed.
+  string desired = 6;
+  // Instance: the last machine report, empty if none. Volume: its lifecycle
+  // projection status, not an independently measured host state.
+  string observed = 7;
+  int64 cpu_millis = 8;
+  int64 memory_mib = 9;
+  // Absent for instances and unsized or host-path volumes.
+  optional int64 disk_gib = 10;
+  // The last reported volume size; absent when not measured.
+  optional int64 measured_bytes = 11;
+}
+
+// Disconnect handling uses the same app settings and volume ownership as scheduling.
+message MachineRecoveryPolicy {
+  string app_id = 1;
+  bool has_volumes = 2;
+  uint32 reschedule_after_seconds = 3;
+  // Unset while connected or pinned. Earliest eligibility, not a capacity guarantee;
+  // server/database recovery can restart this clock.
+  google.protobuf.Timestamp replacement_eligible_at = 4;
+}
+
+// A copy removed during this machine's current silence. An unset placed_at means
+// its replacement has not been placed; placement does not establish readiness.
+message MachineReplacement {
+  string app_id = 1;
+  string app_name = 2;
+  string instance_id = 3;
+  uint32 slot = 4;
+  google.protobuf.Timestamp lost_at = 5;
+  google.protobuf.Timestamp placed_at = 6;
+  string machine_name = 7;
+  uint32 reschedule_after_seconds = 8;
 }
 
 // The transport of a declared port.
@@ -202,6 +270,13 @@ message GetMachineRequest {
 
 message GetMachineResponse {
   Machine machine = 1;
+  repeated MachineWorkload workloads = 2;
+  // Fresh direct socket addresses reported within five minutes; own machines only.
+  repeated string direct_addresses = 3;
+  // Virtual machines allocated here, including their desired and observed states.
+  repeated Vm vms = 4;
+  repeated MachineRecoveryPolicy recovery_policies = 5;
+  repeated MachineReplacement replacements = 6;
 }
 
 message RevokeMachineRequest {

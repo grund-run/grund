@@ -162,8 +162,8 @@ component Callout(title: &str, text: &str, icon_name: &str, tone: &str, danger: 
   <div class="callout-body"><p class="callout-title">{title}</p><p class="callout-text">{text}</p></div>
 </div>
 }
-component IconFact(icon_name: &str, text: &str) {
-<span class="icon-fact"><Icon name={icon_name} class="icon-sm" />{text}</span>
+component IconFact(icon_name: &str, text: &str, detail: &str) {
+<span class="icon-fact"><Icon name={icon_name} class="icon-sm" /><span>{text}{if !detail.is_empty() { <br><small>{detail}</small> }}</span></span>
 }
 component Stats(facts: &[(&str, &str)]) {
 <ul class="stats">{for (icon_name, text) in facts.iter() { <li><IconFact icon_name={icon_name} text={text} /></li> }}</ul>

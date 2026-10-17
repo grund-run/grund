@@ -1384,7 +1384,7 @@ a.item-name:hover {
   display: inline-flex;
   align-items: center;
   gap: var(--space-3);
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .item-facts .icon-fact {

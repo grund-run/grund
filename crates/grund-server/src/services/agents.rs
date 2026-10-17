@@ -40,6 +40,31 @@ pub const LONG_POLL: std::time::Duration = std::time::Duration::from_secs(10);
 /// The purpose prefix of an agent request's signature.
 pub const REQUEST_PREFIX: &str = "grund-agent-request-v1\n";
 
+/// Whether a three-part numeric agent version precedes this server's version.
+/// Unknown and prerelease versions do not establish update ordering.
+pub fn outdated_version(version: &str) -> bool {
+    fn parts(version: &str) -> Option<[u64; 3]> {
+        let mut parts = version.split('.');
+        let parsed = [
+            parts.next()?.parse().ok()?,
+            parts.next()?.parse().ok()?,
+            parts.next()?.parse().ok()?,
+        ];
+        parts.next().is_none().then_some(parsed)
+    }
+    parts(version)
+        .zip(parts(crate::health::VERSION))
+        .is_some_and(|(version, current)| version < current)
+}
+
+/// The public agent revision, including when the hosted server adds its own prefix.
+pub fn expected_agent_revision() -> &'static str {
+    crate::health::revision()
+        .rsplit('+')
+        .next()
+        .unwrap_or("unknown")
+}
+
 /// The machine a control-link request is from, as its signature proved.
 #[derive(Debug, Clone)]
 pub struct MachineCaller {

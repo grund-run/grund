@@ -24,6 +24,7 @@ pub mod browser;
 pub mod device;
 pub mod domains;
 pub mod install;
+pub mod machine_detail;
 pub mod machines;
 pub mod notifications;
 pub mod orgs;
@@ -226,6 +227,7 @@ pub fn router(state: State) -> Router {
             "/{org}/machines/add",
             get(machines::add_page).post(machines::add),
         )
+        .route("/{org}/machines/{machine}", get(machine_detail::page))
         .route("/{org}/machines/vms", post(machines::run_vm))
         .route("/{org}/machines/vms/{vm}/stop", post(machines::stop_vm))
         .route("/{org}/machines/{machine}/remove", post(machines::remove))
