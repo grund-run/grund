@@ -5,7 +5,8 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use grund_tls::{Resolver, Served, kx};
+use grund_crypto::kx;
+use grund_tls::{Resolver, Served};
 use rustls::crypto::CryptoProvider;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
@@ -109,7 +110,7 @@ fn handshake(client: ClientConfig, server: ServerConfig) -> Handshake {
 
 #[test]
 fn grund_prefers_the_hybrid_group_first_then_x25519() {
-    let names: Vec<NamedGroup> = grund_tls::provider()
+    let names: Vec<NamedGroup> = grund_crypto::provider()
         .kx_groups
         .iter()
         .map(|group| group.name())
@@ -139,7 +140,7 @@ fn grund_s_server_negotiates_x25519mlkem768_with_a_client_offering_only_it() {
 fn grund_s_client_and_server_negotiate_x25519mlkem768_in_one_round_trip() {
     let identity = identity();
     let done = handshake(
-        client(grund_tls::provider(), &identity),
+        client(grund_crypto::provider(), &identity),
         grund_server(&identity),
     );
     assert_eq!(done.group, Some(NamedGroup::X25519MLKEM768));
@@ -194,7 +195,7 @@ fn grund_s_client_falls_back_to_x25519_without_a_retry_against_a_server_without_
         Arc::new(rustls::crypto::ring::default_provider()),
         &identity,
     );
-    let done = handshake(client(grund_tls::provider(), &identity), server);
+    let done = handshake(client(grund_crypto::provider(), &identity), server);
     assert_eq!(done.group, Some(NamedGroup::X25519));
     assert_eq!(done.client_flights, 2);
 }
@@ -341,7 +342,7 @@ fn grund_s_client_negotiates_x25519mlkem768_with_an_openssl_server_offering_only
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
     let mut connection = ClientConnection::new(
-        Arc::new(client(grund_tls::provider(), &identity)),
+        Arc::new(client(grund_crypto::provider(), &identity)),
         ServerName::try_from(NAME).unwrap(),
     )
     .unwrap();

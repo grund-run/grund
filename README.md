@@ -144,7 +144,7 @@ setting is in `grund serve --help` and [.env.example](.env.example).
 grund's TLS, here, on its relays, between machines (iroh's QUIC) and in
 its HTTPS and SMTP clients, offers TLS 1.3 and 1.2. Its key exchange
 prefers the hybrid post-quantum X25519MLKEM768 and falls back to X25519,
-with no C crypto library beyond ring (`crates/grund-tls`).
+with no C crypto library beyond ring (`crates/grund-crypto`).
 
 **A relay on another host.** Machines behind different NATs need a relay
 with a public address: `grund relay` on a host of its own, listed in the
@@ -558,6 +558,7 @@ crates/grund-server/templates/  compiled .html.sedge pages and components, and .
 crates/grund-store/    PostgreSQL: migrations, event-sourced write paths, read models
 crates/grund-domain/   aggregates, events and pure decisions; no I/O
 crates/grund-config/   shared grund.yaml, YAML and validated values; no event store or server runtime
+crates/grund-crypto/   shared TLS crypto provider and client config; no listeners or certificate generation
 crates/grund-descriptors/  API descriptors and the shared proto file list (needs protoc)
 crates/grund-proto/    typed messages and services generated from those descriptors
 ee/grund-ee/           the commercial features, plugged in through one Extension seam (--features ee)

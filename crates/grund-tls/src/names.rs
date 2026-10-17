@@ -93,7 +93,7 @@ pub fn names_server_config(
     answers: Answers,
     alpn: &[&[u8]],
 ) -> anyhow::Result<rustls::ServerConfig> {
-    let mut config = rustls::ServerConfig::builder_with_provider(crate::provider())
+    let mut config = rustls::ServerConfig::builder_with_provider(grund_crypto::provider())
         .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
         .context("TLS versions")?
         .with_no_client_auth()

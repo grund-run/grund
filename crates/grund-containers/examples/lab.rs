@@ -228,7 +228,7 @@ fn state_line(state: &TaskState) -> String {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    grund_tls::install_default();
+    grund_crypto::install_default();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut config = Config::default();
     if let Ok(dir) = std::env::var("GRUND_CONTAINERS_DATA_DIR") {

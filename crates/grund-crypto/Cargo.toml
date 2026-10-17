@@ -1,0 +1,17 @@
+[package]
+name = "grund-crypto"
+description = "grund's TLS crypto provider and client configuration, with hybrid X25519MLKEM768 first and no server certificate machinery"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+license = "AGPL-3.0-only"
+
+[dependencies]
+anyhow.workspace = true
+ml-kem = { version = "0.3.2", default-features = false, features = ["getrandom", "zeroize"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+
+[dev-dependencies]
+ring = "0.17"

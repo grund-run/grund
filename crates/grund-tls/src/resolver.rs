@@ -75,7 +75,7 @@ impl Served {
                     .collect()
             })
             .unwrap_or_default();
-        let key = CertifiedKey::from_der(chain, key, &crate::provider())
+        let key = CertifiedKey::from_der(chain, key, &grund_crypto::provider())
             .context("the certificate and its key do not belong together")?;
         Ok(Self {
             key: Arc::new(key),

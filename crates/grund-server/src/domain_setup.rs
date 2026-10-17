@@ -121,7 +121,7 @@ fn observation(claim: &store::Claim, name: &str, state: StepState, detail: Strin
 }
 
 fn pinned_client(name: &str, address: SocketAddr) -> reqwest::ClientBuilder {
-    grund_tls::install_default();
+    grund_crypto::install_default();
     reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
@@ -517,7 +517,7 @@ mod tests {
     async fn https_requires_a_trusted_chain_and_the_domain_hostname_even_with_a_pinned_ip() {
         use std::sync::Arc;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        grund_tls::install_default();
+        grund_crypto::install_default();
         let certificate =
             rcgen::generate_simple_self_signed(vec!["probe.example.com".into()]).unwrap();
         let config = rustls::ServerConfig::builder()

@@ -29,7 +29,7 @@ impl Api {
     /// A client for `origin` (already normalised), presenting `credential`
     /// as `Authorization: Bearer` when given.
     pub fn new(origin: &str, credential: Option<String>) -> CliResult<Self> {
-        grund_tls::install_default();
+        grund_crypto::install_default();
         let builder = reqwest::Client::builder()
             .timeout(Duration::from_secs(60))
             .connect_timeout(Duration::from_secs(10))
@@ -43,7 +43,7 @@ impl Api {
         } else {
             let roots =
                 rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-            let config = grund_tls::client_config(roots)
+            let config = grund_crypto::client_config(roots)
                 .map_err(|e| CliError::new(Code::Failed, format!("TLS setup: {e:#}")))?;
             builder.use_preconfigured_tls(config)
         };

@@ -536,7 +536,7 @@ fn client_config(
     roots: Arc<rustls::RootCertStore>,
     post_quantum_only: bool,
 ) -> rustls::ClientConfig {
-    let mut provider = grund_tls::provider().as_ref().clone();
+    let mut provider = grund_crypto::provider().as_ref().clone();
     if post_quantum_only {
         provider
             .kx_groups

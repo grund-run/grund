@@ -249,7 +249,7 @@ fn serve_limit() -> usize {
 /// Runs `grund edge` until SIGTERM or SIGINT.
 pub async fn run(command: EdgeCommand) -> anyhow::Result<()> {
     command.validate()?;
-    grund_tls::install_default();
+    grund_crypto::install_default();
     std::fs::create_dir_all(&command.data_dir)
         .with_context(|| format!("create GRUND_EDGE_DATA_DIR {}", command.data_dir.display()))?;
     let tls_listener = tokio::net::TcpListener::bind(command.listen)
@@ -637,7 +637,7 @@ mod tests {
 
     #[tokio::test]
     async fn reviving_a_slow_relay_closes_the_old_edge_before_rebinding() -> anyhow::Result<()> {
-        grund_tls::install_default();
+        grund_crypto::install_default();
         let ping = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let relay: iroh::RelayUrl = format!("http://{}/", ping.local_addr()?).parse()?;
         let ping_task = tokio::spawn(async move {

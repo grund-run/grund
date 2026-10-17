@@ -130,7 +130,7 @@ pub struct Source {
 
 /// Runs `grund join`.
 pub async fn run(args: &JoinArgs) -> anyhow::Result<()> {
-    grund_tls::install_default();
+    grund_crypto::install_default();
     if let Some(record) = read_record(&args.data_dir)? {
         println!(
             "already registered as {} ({}) with {}; nothing to do",
@@ -204,7 +204,7 @@ pub fn http_client() -> anyhow::Result<reqwest::Client> {
         tracing::info!("no system certificate store; trusting the Mozilla roots built into grund");
         let roots =
             rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        builder.use_preconfigured_tls(grund_tls::client_config(roots)?)
+        builder.use_preconfigured_tls(grund_crypto::client_config(roots)?)
     };
     builder.build().context("build the HTTP client")
 }

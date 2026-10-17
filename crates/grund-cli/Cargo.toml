@@ -25,7 +25,7 @@ clap.workspace = true
 chrono.workspace = true
 grund-config.workspace = true
 grund-descriptors.workspace = true
-grund-tls.workspace = true
+grund-crypto.workspace = true
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde.workspace = true

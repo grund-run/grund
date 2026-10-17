@@ -232,7 +232,7 @@ pub fn bearer_challenge(header: &str) -> Option<(String, Vec<(String, String)>)>
 
 impl Registry {
     pub fn new(insecure: Vec<String>) -> anyhow::Result<Self> {
-        grund_tls::install_default();
+        grund_crypto::install_default();
         let http = reqwest::Client::builder()
             .timeout(CALL_TIMEOUT)
             .connect_timeout(Duration::from_secs(5))

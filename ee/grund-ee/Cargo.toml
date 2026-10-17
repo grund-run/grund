@@ -17,7 +17,7 @@ grund-config.workspace = true
 grund-domain.workspace = true
 grund-server.workspace = true
 grund-store.workspace = true
-grund-tls.workspace = true
+grund-crypto.workspace = true
 reqwest = { version = "0.13", default-features = false, features = ["form", "json", "rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 sedge-rt = { git = "https://git.kjuulh.io/kjuulh/sedge.git", rev = "a65801397851703ee774faa87e5986c30afbdc44" }

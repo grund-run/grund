@@ -18,11 +18,11 @@ clap.workspace = true
 ed25519-dalek = "2"
 getrandom.workspace = true
 grund-config.workspace = true
+grund-crypto.workspace = true
 grund-domain.workspace = true
 grund-entry.workspace = true
 grund-net.workspace = true
 grund-proto.workspace = true
-grund-tls.workspace = true
 hex.workspace = true
 http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "http1", "http2", "server"] }

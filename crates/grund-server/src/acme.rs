@@ -42,7 +42,7 @@ impl Http {
     /// A client trusting the system roots and, when given, the PEM roots in
     /// `extra_roots` (GRUND_ACME_CA_FILE).
     pub fn new(extra_roots: Option<&std::path::Path>) -> anyhow::Result<Self> {
-        grund_tls::install_default();
+        grund_crypto::install_default();
         let mut builder = reqwest::Client::builder()
             .timeout(REQUEST_TIMEOUT)
             .connect_timeout(Duration::from_secs(10))

@@ -15,6 +15,7 @@ repository = "https://git.kjuulh.io/grund/grund"
 grund-agent = { path = "crates/grund-agent" }
 grund-cli = { path = "crates/grund-cli" }
 grund-config = { path = "crates/grund-config" }
+grund-crypto = { path = "crates/grund-crypto" }
 grund-vm = { path = "crates/grund-vm" }
 grund-net = { path = "crates/grund-net" }
 grund-password = { path = "crates/grund-password" }

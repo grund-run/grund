@@ -286,7 +286,7 @@ pub async fn run_with_extensions(
 ) -> anyhow::Result<()> {
     grund_server::health::set_revision(revision);
     grund_server::health::set_build_time(built);
-    grund_tls::install_default();
+    grund_crypto::install_default();
     let args: Vec<String> = std::env::args().collect();
     let cli = match Cli::try_parse_from(&args) {
         Ok(cli) => cli,

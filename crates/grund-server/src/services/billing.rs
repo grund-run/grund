@@ -163,7 +163,7 @@ impl Billing {
         let (Some(url), Some(token)) = (&config.billing_url, &config.billing_token) else {
             return Ok(Billing::Free);
         };
-        grund_tls::install_default();
+        grund_crypto::install_default();
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .connect_timeout(Duration::from_secs(2))

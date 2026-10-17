@@ -298,7 +298,7 @@ pub async fn run<R: VmRuntime, C: ContainerRuntime + 'static>(
     runtime: R,
     containers: C,
 ) -> anyhow::Result<()> {
-    grund_tls::install_default();
+    grund_crypto::install_default();
     let registered = join::read_record(&args.data_dir)?
         .context("this machine is not registered; run grund join first")?;
     let key = join::machine_key(&args.data_dir)?;
@@ -1187,7 +1187,7 @@ mod tests {
     async fn an_uplink_change_interrupts_a_stuck_heartbeat_and_the_next_one_uses_a_new_socket()
     -> anyhow::Result<()> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        grund_tls::install_default();
+        grund_crypto::install_default();
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let link = Link {

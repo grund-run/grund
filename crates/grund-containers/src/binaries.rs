@@ -149,7 +149,7 @@ impl Release {
 /// The HTTP client releases are fetched with: grund's TLS provider
 /// (grund-tls), and a bounded connect.
 pub fn http_client() -> anyhow::Result<reqwest::Client> {
-    grund_tls::install_default();
+    grund_crypto::install_default();
     reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(30))
         .build()

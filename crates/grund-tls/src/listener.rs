@@ -209,7 +209,7 @@ mod tests {
         roots: rustls::RootCertStore,
         alpn: &[u8],
     ) -> std::io::Result<tokio_rustls::client::TlsStream<TcpStream>> {
-        let mut config = rustls::ClientConfig::builder_with_provider(crate::provider())
+        let mut config = rustls::ClientConfig::builder_with_provider(grund_crypto::provider())
             .with_safe_default_protocol_versions()
             .unwrap()
             .with_root_certificates(roots)
@@ -324,12 +324,12 @@ mod tests {
                 Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
             }
             fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-                crate::provider()
+                grund_crypto::provider()
                     .signature_verification_algorithms
                     .supported_schemes()
             }
         }
-        let mut config = rustls::ClientConfig::builder_with_provider(crate::provider())
+        let mut config = rustls::ClientConfig::builder_with_provider(grund_crypto::provider())
             .with_protocol_versions(&[&rustls::version::TLS13])
             .unwrap()
             .dangerous()

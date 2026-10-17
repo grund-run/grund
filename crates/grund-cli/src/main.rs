@@ -2,7 +2,7 @@ use clap::{CommandFactory, Parser};
 
 #[tokio::main]
 async fn main() {
-    grund_tls::install_default();
+    grund_crypto::install_default();
     let args: Vec<String> = std::env::args().collect();
     let cli = match grund_cli::Standalone::try_parse_from(&args) {
         Ok(cli) => cli,

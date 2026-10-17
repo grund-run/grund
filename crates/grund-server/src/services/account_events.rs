@@ -78,7 +78,7 @@ pub struct Reporter {
 
 impl Reporter {
     pub fn new(config: &AccountEventArgs) -> anyhow::Result<Self> {
-        grund_tls::install_default();
+        grund_crypto::install_default();
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .connect_timeout(Duration::from_secs(5))

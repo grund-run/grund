@@ -114,7 +114,7 @@ impl Default for NetConfig {
 }
 
 /// Builds and binds an endpoint with grund's policy, for the given ALPNs.
-/// Its TLS, to peers and to relays, uses `grund_tls::provider()`, so it
+/// Its TLS, to peers and to relays, uses `grund_crypto::provider()`, so it
 /// prefers X25519MLKEM768 and still sends an X25519 share for a peer or
 /// relay without it.
 /// Waits up to 5 s for the home relay when there is one, so the endpoint can
@@ -147,7 +147,7 @@ pub async fn bind_now(
         .stream_receive_window(iroh::endpoint::VarInt::from_u32(STREAM_RECEIVE_WINDOW))
         .build();
     let mut builder = Endpoint::builder(presets::Minimal)
-        .crypto_provider(grund_tls::provider())
+        .crypto_provider(grund_crypto::provider())
         .secret_key(key)
         .alpns(alpns)
         .transport_config(transport)

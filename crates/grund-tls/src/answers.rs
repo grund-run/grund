@@ -101,7 +101,7 @@ pub fn answering_server_config(
     answers: Answers,
     alpn: &[&[u8]],
 ) -> anyhow::Result<rustls::ServerConfig> {
-    let mut config = rustls::ServerConfig::builder_with_provider(crate::provider())
+    let mut config = rustls::ServerConfig::builder_with_provider(grund_crypto::provider())
         .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
         .context("TLS versions")?
         .with_no_client_auth()
@@ -172,7 +172,7 @@ mod tests {
             Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
         }
         fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-            crate::provider()
+            grund_crypto::provider()
                 .signature_verification_algorithms
                 .supported_schemes()
         }
@@ -183,7 +183,7 @@ mod tests {
         name: &'static str,
         alpn: &[u8],
     ) -> Option<(Vec<u8>, Option<Vec<u8>>)> {
-        let mut config = rustls::ClientConfig::builder_with_provider(crate::provider())
+        let mut config = rustls::ClientConfig::builder_with_provider(grund_crypto::provider())
             .with_protocol_versions(&[&rustls::version::TLS13])
             .unwrap()
             .dangerous()
