@@ -4,7 +4,7 @@
 # Manual main runs can fill an evicted/cold cache without a dependency change.
 when:
   - event: push
-    branch: main
+    branch: ci/ciperf-release
     path:
       include:
         - Cargo.lock
@@ -12,7 +12,7 @@ when:
         - .woodpecker/release-cache.yaml
         - tools/release-build.sh
   - event: manual
-    branch: main
+    branch: ci/ciperf-release
 
 labels:
   platform: linux/amd64
@@ -34,6 +34,9 @@ steps:
       - &arm-cache-client 'command -v ci-cache >/dev/null || { (curl -fsS --connect-timeout 5 --max-time 60 -o /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.3.1/ci-cache-0.3.1-x86_64-linux-musl 2>/dev/null || { if command -v timeout >/dev/null; then timeout 60 wget -q -T 5 -O /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.3.1/ci-cache-0.3.1-x86_64-linux-musl; else wget -q -T 5 -O /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.3.1/ci-cache-0.3.1-x86_64-linux-musl; fi; } 2>/dev/null) && echo "460ac0386515e7ce2704c65e414ed1ee2a938fe0b1ed05ec8dd363d9ef3a5f7e  /usr/local/bin/.ci-cache.part" | sha256sum -c - >/dev/null 2>&1 && chmod 0755 /usr/local/bin/.ci-cache.part && mv /usr/local/bin/.ci-cache.part /usr/local/bin/ci-cache; rm -f /usr/local/bin/.ci-cache.part; command -v ci-cache >/dev/null || echo "ci-cache client unavailable, building uncached"; }'
       - 'if command -v ci-cache >/dev/null; then ci-cache restore release-arm64 --preset cargo --dir scratch/tag-release/tooling; eval "$$(ci-cache env)"; fi'
       - sh tools/release-build.sh cache-arm64
+      - test ! -e scratch/tag-release/dist
+      - CARGO_LOG=cargo::core::compiler::fingerprint=info CI_PIPELINE_EVENT=manual sh tools/release-build.sh cache-arm64
+      - test ! -e scratch/tag-release/dist
       - 'if command -v ci-cache >/dev/null; then ci-cache stats; fi'
 
   cache-save:
@@ -41,6 +44,7 @@ steps:
     depends_on: [arm64-libraries]
     failure: ignore
     environment:
+      CICACHE_SAVE: always
       CICACHE_PASSWORD:
         from_secret: ci_cache_public
     commands:
