@@ -1,5 +1,20 @@
 {
   "$defs": {
+    "grund.agent.v1.Artifact": {
+      "additionalProperties": false,
+      "description": "A file pinned by digest.",
+      "properties": {
+        "sha256": {
+          "description": "Lowercase hex SHA-256.",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "title": "grund.agent.v1.Artifact",
+      "type": "object"
+    },
     "grund.agent.v1.Capabilities": {
       "additionalProperties": false,
       "properties": {
@@ -63,6 +78,14 @@
           "description": "The VM runtime runs with root rather than in user namespaces.",
           "type": "boolean"
         },
+        "usage": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/grund.agent.v1.MachineUsage"
+            }
+          ],
+          "description": "Optional measured host usage, separate from placement reservations. Older agents do not report this snapshot."
+        },
         "volumes": {
           "description": "This agent can verify app-owned volume identities and writable mounts. Absent on older agents: the scheduler must not place stateful apps there.",
           "type": "boolean"
@@ -117,6 +140,69 @@
         }
       },
       "title": "grund.agent.v1.MachineFacts",
+      "type": "object"
+    },
+    "grund.agent.v1.MachineUsage": {
+      "additionalProperties": false,
+      "description": "One bounded host sample. Missing numeric fields mean unknown, not zero.",
+      "properties": {
+        "agentRevision": {
+          "description": "Embedded build revision, or \"unknown\" for builds without revision metadata.",
+          "type": "string"
+        },
+        "cpuMillis": {
+          "description": "Actual CPU across all cores in millicores, averaged since the previous heartbeat sample. Idle and iowait are excluded; guest time is counted once. Absent on the first sample or when counters cannot be compared.",
+          "type": "integer"
+        },
+        "diskTotalBytes": {
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "diskUsedBytes": {
+          "description": "Total minus free blocks on the filesystem holding the agent's data, including blocks reserved from unprivileged users.",
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "memoryUsedBytes": {
+          "description": "MemTotal minus MemAvailable, not the sum of process resident memory.",
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "sampledAt": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "uptimeSeconds": {
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        }
+      },
+      "title": "grund.agent.v1.MachineUsage",
+      "type": "object"
+    },
+    "grund.agent.v1.VmImage": {
+      "additionalProperties": false,
+      "properties": {
+        "kernel": {
+          "$ref": "#/$defs/grund.agent.v1.Artifact"
+        },
+        "rootfs": {
+          "$ref": "#/$defs/grund.agent.v1.Artifact"
+        }
+      },
+      "title": "grund.agent.v1.VmImage",
       "type": "object"
     },
     "grund.app.v1.App": {
@@ -1433,8 +1519,40 @@
     "grund.machine.v1.GetMachineResponse": {
       "additionalProperties": false,
       "properties": {
+        "directAddresses": {
+          "description": "Fresh direct socket addresses reported within five minutes; own machines only.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "machine": {
           "$ref": "#/$defs/grund.machine.v1.Machine"
+        },
+        "recoveryPolicies": {
+          "items": {
+            "$ref": "#/$defs/grund.machine.v1.MachineRecoveryPolicy"
+          },
+          "type": "array"
+        },
+        "replacements": {
+          "items": {
+            "$ref": "#/$defs/grund.machine.v1.MachineReplacement"
+          },
+          "type": "array"
+        },
+        "vms": {
+          "description": "Virtual machines allocated here, including their desired and observed states.",
+          "items": {
+            "$ref": "#/$defs/grund.machine.v1.Vm"
+          },
+          "type": "array"
+        },
+        "workloads": {
+          "items": {
+            "$ref": "#/$defs/grund.machine.v1.MachineWorkload"
+          },
+          "type": "array"
         }
       },
       "title": "grund.machine.v1.GetMachineResponse",
@@ -1478,6 +1596,22 @@
     "grund.machine.v1.Machine": {
       "additionalProperties": false,
       "properties": {
+        "activity": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/grund.machine.v1.MachineActivity"
+            }
+          ],
+          "description": "Reservations for this organisation only, not measured host usage."
+        },
+        "agentOutdated": {
+          "description": "True only when the reported build is known to precede the expected build. Different git revisions alone do not establish that ordering.",
+          "type": "boolean"
+        },
+        "agentVersion": {
+          "description": "The version from the latest heartbeat, not the registration facts.",
+          "type": "string"
+        },
         "capabilities": {
           "allOf": [
             {
@@ -1489,6 +1623,10 @@
         "connected": {
           "description": "Whether its agent sent a heartbeat in the last 30 seconds.",
           "type": "boolean"
+        },
+        "expectedAgentRevision": {
+          "description": "The server's build revision, when known; not a promise it is newer.",
+          "type": "string"
         },
         "facts": {
           "$ref": "#/$defs/grund.agent.v1.MachineFacts"
@@ -1586,6 +1724,172 @@
       "title": "grund.machine.v1.Machine",
       "type": "object"
     },
+    "grund.machine.v1.MachineActivity": {
+      "additionalProperties": false,
+      "description": "Allocations still held on a machine, including draining instances and desired-running VMs. Counts include desired-running app instances only.",
+      "properties": {
+        "apps": {
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "cpuMillis": {
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "diskGib": {
+          "description": "The known sized-volume and VM reservation, not a measured disk total.",
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "diskUnbounded": {
+          "description": "Unsized managed volumes or host paths make disk_gib an incomplete total.",
+          "type": "boolean"
+        },
+        "instances": {
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "memoryMib": {
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        }
+      },
+      "title": "grund.machine.v1.MachineActivity",
+      "type": "object"
+    },
+    "grund.machine.v1.MachineRecoveryPolicy": {
+      "additionalProperties": false,
+      "description": "Disconnect handling uses the same app settings and volume ownership as scheduling.",
+      "properties": {
+        "appId": {
+          "type": "string"
+        },
+        "hasVolumes": {
+          "type": "boolean"
+        },
+        "replacementEligibleAt": {
+          "description": "Unset while connected or pinned. Earliest eligibility, not a capacity guarantee; server/database recovery can restart this clock.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "rescheduleAfterSeconds": {
+          "type": "integer"
+        }
+      },
+      "title": "grund.machine.v1.MachineRecoveryPolicy",
+      "type": "object"
+    },
+    "grund.machine.v1.MachineReplacement": {
+      "additionalProperties": false,
+      "description": "A copy removed during this machine's current silence. An unset placed_at means its replacement has not been placed; placement does not establish readiness.",
+      "properties": {
+        "appId": {
+          "type": "string"
+        },
+        "appName": {
+          "type": "string"
+        },
+        "instanceId": {
+          "type": "string"
+        },
+        "lostAt": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "machineName": {
+          "type": "string"
+        },
+        "placedAt": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "rescheduleAfterSeconds": {
+          "type": "integer"
+        },
+        "slot": {
+          "type": "integer"
+        }
+      },
+      "title": "grund.machine.v1.MachineReplacement",
+      "type": "object"
+    },
+    "grund.machine.v1.MachineWorkload": {
+      "additionalProperties": false,
+      "description": "A placed app instance or nondeleted volume, scoped to the current pool's organisation. Desired and observed states are deliberately separate.",
+      "properties": {
+        "appId": {
+          "type": "string"
+        },
+        "appName": {
+          "type": "string"
+        },
+        "cpuMillis": {
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "desired": {
+          "description": "Instance: \"running\" or \"draining\". Volume: \"present\" or \"deleted\"; deletion requests can still hold disk until their allocation is removed.",
+          "type": "string"
+        },
+        "diskGib": {
+          "description": "Absent for instances and unsized or host-path volumes.",
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "description": "\"instance\" or \"volume\".",
+          "type": "string"
+        },
+        "measuredBytes": {
+          "description": "The last reported volume size; absent when not measured.",
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "memoryMib": {
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "observed": {
+          "description": "Instance: the last machine report, empty if none. Volume: its lifecycle projection status, not an independently measured host state.",
+          "type": "string"
+        }
+      },
+      "title": "grund.machine.v1.MachineWorkload",
+      "type": "object"
+    },
     "grund.machine.v1.NetworkPort": {
       "additionalProperties": false,
       "description": "A port a machine accepts connections on from its network's other members.",
@@ -1625,6 +1929,70 @@
         }
       },
       "title": "grund.machine.v1.SetMachineLabelsResponse",
+      "type": "object"
+    },
+    "grund.machine.v1.Vm": {
+      "additionalProperties": false,
+      "description": "A VM an organisation runs on one of its machines.",
+      "properties": {
+        "createdAt": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "diskGib": {
+          "type": "integer"
+        },
+        "hostMachineId": {
+          "description": "The machine it runs on, and that machine's name.",
+          "type": "string"
+        },
+        "hostName": {
+          "type": "string"
+        },
+        "image": {
+          "$ref": "#/$defs/grund.agent.v1.VmImage"
+        },
+        "machineId": {
+          "description": "The machine it registered as, once it did.",
+          "type": "string"
+        },
+        "memoryMib": {
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "observedReason": {
+          "type": "string"
+        },
+        "observedState": {
+          "description": "What its host last reported, and why, for a failure.",
+          "enum": [
+            "VM_OBSERVED_STATE_UNSPECIFIED",
+            "VM_OBSERVED_STATE_STARTING",
+            "VM_OBSERVED_STATE_RUNNING",
+            "VM_OBSERVED_STATE_STOPPED",
+            "VM_OBSERVED_STATE_EXITED",
+            "VM_OBSERVED_STATE_FAILED"
+          ],
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "VM_DESIRED_STATE_UNSPECIFIED",
+            "VM_DESIRED_STATE_RUNNING",
+            "VM_DESIRED_STATE_STOPPED"
+          ],
+          "type": "string"
+        },
+        "vcpus": {
+          "type": "integer"
+        },
+        "vmId": {
+          "type": "string"
+        }
+      },
+      "title": "grund.machine.v1.Vm",
       "type": "object"
     },
     "grund.notification.v1.CountUnreadResponse": {
@@ -11429,7 +11797,7 @@
       "rpcs": [
         "grund.machine.v1.MachineService/ListMachines"
       ],
-      "summary": "The organisation's machines, connected or not"
+      "summary": "List machines, app counts, reservations, and reported host usage"
     },
     {
       "args": [
@@ -11533,7 +11901,7 @@
         "grund.machine.v1.MachineService/ListMachines",
         "grund.machine.v1.MachineService/GetMachine"
       ],
-      "summary": "One machine: facts, capabilities, labels, whether it is connected"
+      "summary": "Show a machine's details, workloads, reservations, and reported host usage"
     },
     {
       "args": [
