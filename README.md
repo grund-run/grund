@@ -47,7 +47,7 @@ it can be read. They are not in the public self-hosted build.
 | | Where | License |
 |---|---|---|
 | Everything grund does, except the features below | everywhere but `ee/` | AGPL-3.0-only |
-| The API contract and clients | `proto/`, `crates/grund-proto` | Apache-2.0 |
+| The API contract, descriptors and clients | `proto/`, `crates/grund-descriptors`, `crates/grund-proto` | Apache-2.0 |
 | Sign in with GitHub or Google (planned for the Homelab plan) | `ee/` | all rights reserved for now |
 | Single sign-on with your own provider, audit log (planned for Business) | `ee/` | all rights reserved for now *(not built)* |
 
@@ -533,7 +533,8 @@ crates/grund-server/   the control plane: config, services, pages, API, backgrou
 crates/grund-server/templates/  compiled .html.sedge pages and components, and .txt.sedge mail
 crates/grund-store/    PostgreSQL: migrations, event-sourced write paths, read models
 crates/grund-domain/   aggregates, events and pure decisions; no I/O
-crates/grund-proto/    the API contract, generated from proto/ (needs protoc)
+crates/grund-descriptors/  API descriptors and the shared proto file list (needs protoc)
+crates/grund-proto/    typed messages and services generated from those descriptors
 ee/grund-ee/           the commercial features, plugged in through one Extension seam (--features ee)
 tools/comment-policy/  the CI check that Rust comments are docs on public items only
 compose.yaml           the self-hosted instance

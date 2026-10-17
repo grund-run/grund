@@ -18,6 +18,7 @@ grund-vm = { path = "crates/grund-vm" }
 grund-net = { path = "crates/grund-net" }
 grund-password = { path = "crates/grund-password" }
 grund-domain = { path = "crates/grund-domain" }
+grund-descriptors = { path = "crates/grund-descriptors" }
 grund-entry = { path = "crates/grund-entry" }
 grund-ee = { path = "ee/grund-ee" }
 grund-proto = { path = "crates/grund-proto" }

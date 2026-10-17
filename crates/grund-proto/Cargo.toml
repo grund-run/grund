@@ -20,3 +20,4 @@ serde_json.workspace = true
 
 [build-dependencies]
 connectrpc-build = "=0.9.0"
+grund-descriptors.workspace = true

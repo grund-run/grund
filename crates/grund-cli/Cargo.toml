@@ -23,7 +23,7 @@ buffa = { version = "=0.9.2", features = ["json"] }
 buffa-descriptor = "=0.9.2"
 clap.workspace = true
 grund-domain.workspace = true
-grund-proto.workspace = true
+grund-descriptors.workspace = true
 grund-tls.workspace = true
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
