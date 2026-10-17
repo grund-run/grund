@@ -36,11 +36,14 @@ def main():
     revision = os.environ.get("CI_COMMIT_SHA", "")
     if not re.fullmatch(r"[0-9a-f]{40}", revision):
         raise RuntimeError("CI_COMMIT_SHA must name the expected full public commit")
+    root = Path(__file__).resolve().parent.parent
+    revision = subprocess.check_output(
+        ["git", "rev-parse", f"{revision}^{{commit}}"], cwd=root, text=True
+    ).strip()
     database = os.environ["GRUND_RELEASE_DATABASE_URL"]
     nats = os.environ["GRUND_RELEASE_NATS_URL"]
     wait_for_port(database)
     wait_for_port(nats)
-    root = Path(__file__).resolve().parent.parent
     work = root / "scratch/tag-release"
     work.mkdir(parents=True, exist_ok=True)
     address = os.environ.get("GRUND_RELEASE_LISTEN", "127.0.0.1:18080")

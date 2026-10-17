@@ -45,10 +45,13 @@ def digest(path):
 
 
 def identity():
+    global REVISION
     if not VERSION.fullmatch(TAG):
         fail("release tag must be vX.Y.Z or vX.Y.Z-alpha.N (N starts at 1)")
     if not re.fullmatch(r"[0-9a-f]{40}", REVISION):
-        fail("CI_COMMIT_SHA must be the full 40-character public commit")
+        fail("CI_COMMIT_SHA must be a full 40-character commit or annotated tag object")
+    # Gitea's annotated-tag webhook names the tag object, not its source commit.
+    REVISION = output("git", "rev-parse", f"{REVISION}^{{commit}}")
     if output("git", "rev-parse", "HEAD") != REVISION:
         fail("checkout does not match CI_COMMIT_SHA")
     if output("git", "rev-parse", f"refs/tags/{TAG}^{{commit}}") != REVISION:
@@ -234,6 +237,8 @@ def publish():
             fail(f"public {name} differs from the staged bytes (including on HTTP 409)")
     alpha = "-alpha." in TAG
     stage = "Alpha release. Expect rough edges; not a stability guarantee.\n\n" if alpha else ""
+    if TAG == "v0.0.0-alpha.2":
+        stage += "v0.0.0-alpha.1 was a failed, unpublished tag; no binaries or Gitea release were published for it. This is the first downloadable alpha.\n\n"
     notes = (f"{stage}Linux downloads for amd64 and arm64 include the command-line client, server and machine commands in one static binary.\n\n"
              f"Downloads and SHA256SUMS: {base}\n\n"
              f"Self-host image: `{IMAGE}:{TAG}`\n\nPublic source commit: `{REVISION}`.\n\n"

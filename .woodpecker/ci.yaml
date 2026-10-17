@@ -115,7 +115,9 @@ steps:
       CARGO_TARGET_DIR: target/lint
     commands:
       # protobuf-dev: protoc and the well-known types, for the API codegen.
-      - apk add --no-cache musl-dev protobuf-dev sccache
+      - apk add --no-cache musl-dev protobuf-dev sccache python3 git
+      # Annotated-tag webhooks identify a tag object, not the checked-out commit.
+      - python3 tools/test-release.py
       - 'command -v ci-cache >/dev/null || { (curl -fsS --connect-timeout 5 --max-time 60 -o /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.2.0/ci-cache-0.2.0-x86_64-linux-musl 2>/dev/null || { if command -v timeout >/dev/null; then timeout 60 wget -q -T 5 -O /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.2.0/ci-cache-0.2.0-x86_64-linux-musl; else wget -q -T 5 -O /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.2.0/ci-cache-0.2.0-x86_64-linux-musl; fi; } 2>/dev/null) && echo "9a8b7b692aaf73f6499de5bca19f15f7609783db03b65bdca252127fea17d36a  /usr/local/bin/.ci-cache.part" | sha256sum -c - >/dev/null 2>&1 && chmod 0755 /usr/local/bin/.ci-cache.part && mv /usr/local/bin/.ci-cache.part /usr/local/bin/ci-cache; rm -f /usr/local/bin/.ci-cache.part; command -v ci-cache >/dev/null || echo "ci-cache client unavailable, building uncached"; }'  # ci-cache: managed by kjuulh/woodpecker-forest
       - 'if command -v ci-cache >/dev/null; then ci-cache restore lint --preset cargo; fi'  # ci-cache: managed by kjuulh/woodpecker-forest
       - 'if command -v ci-cache >/dev/null; then eval "$$(ci-cache env)"; fi'  # ci-cache: managed by kjuulh/woodpecker-forest

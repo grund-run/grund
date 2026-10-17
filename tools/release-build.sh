@@ -9,9 +9,10 @@ export CARGO_BUILD_JOBS=4 CARGO_INCREMENTAL=0
 export RUSTC_WRAPPER=sccache SCCACHE_DIR="${SCCACHE_DIR:-$HOME/.cache/sccache}" SCCACHE_CACHE_SIZE=40G
 export RUSTUP_TOOLCHAIN=1.98.1-x86_64-unknown-linux-musl
 python3 tools/release.py prepare
-export GRUND_VERSION="$CI_COMMIT_TAG" GRUND_REVISION="$CI_COMMIT_SHA"
+export GRUND_VERSION="$CI_COMMIT_TAG"
+export GRUND_REVISION="$(git rev-parse "${CI_COMMIT_SHA}^{commit}")"
 # A rerun must reproduce the same immutable package, including attribution.
-export GRUND_BUILD_TIME="$(git show -s --format=%cI "$CI_COMMIT_SHA")"
+export GRUND_BUILD_TIME="$(git show -s --format=%cI "$GRUND_REVISION")"
 
 mkdir -p scratch/tag-release/tooling
 curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
