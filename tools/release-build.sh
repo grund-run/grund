@@ -32,6 +32,12 @@ else
     export GRUND_VERSION="$CI_COMMIT_TAG"
 fi
 
+if "$benchmark" && [ -n "${GRUND_RELEASE_ROOT_CGU:-}" ]; then
+    cargo() {
+        command cargo --config "profile.release.package.grund.codegen-units=$GRUND_RELEASE_ROOT_CGU" "$@"
+    }
+fi
+
 if [ "$arch" = amd64 ] || [ "$arch" = all ]; then
     # Match main's native musl build, so its dependency snapshot is reusable.
     cargo build --locked --release -p grund --bin grund

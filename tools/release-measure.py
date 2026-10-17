@@ -24,7 +24,7 @@ def cpu_usage():
     return dict(line.split() for line in cgroup('cpu.stat').splitlines() if len(line.split()) == 2).get('usage_usec')
 
 
-def measure(arch, label, jobs, cgu=1, database=None, fresh_workspace=False):
+def measure(arch, label, jobs, cgu=1, database=None, fresh_workspace=False, root_cgu=None):
     environment = os.environ.copy()
     environment.update({
         'CARGO_BUILD_JOBS': str(jobs), 'CARGO_INCREMENTAL': '0',
@@ -34,6 +34,10 @@ def measure(arch, label, jobs, cgu=1, database=None, fresh_workspace=False):
         environment.pop('CARGO_PROFILE_RELEASE_CODEGEN_UNITS', None)
     else:
         environment['CARGO_PROFILE_RELEASE_CODEGEN_UNITS'] = str(cgu)
+    if root_cgu is None:
+        environment.pop('GRUND_RELEASE_ROOT_CGU', None)
+    else:
+        environment['GRUND_RELEASE_ROOT_CGU'] = str(root_cgu)
     if arch == 'amd64':
         environment.pop('CARGO_BUILD_TARGET', None)
         target = 'target/release-build' if cgu == 1 else 'target/release-cgu16'
@@ -43,12 +47,14 @@ def measure(arch, label, jobs, cgu=1, database=None, fresh_workspace=False):
         target = 'target/release-arm64'
         step = 'release-arm64'
     environment['CARGO_TARGET_DIR'] = target
+    total_started = time.monotonic()
     restore = ['ci-cache', 'restore', step, '--preset', 'cargo']
     if arch == 'arm64':
         restore.extend(['--dir', 'scratch/tag-release/tooling'])
     if shutil.which('ci-cache'):
         subprocess.run(restore, cwd=ROOT, env=environment, check=True)
         subprocess.run(['ci-cache', 'env'], cwd=ROOT, env=environment, check=True)
+    restore_elapsed = time.monotonic() - total_started
     if fresh_workspace:
         # Match snapshot restores: dependencies stay, workspace artifacts do not.
         metadata = json.loads(subprocess.check_output([
@@ -61,7 +67,8 @@ def measure(arch, label, jobs, cgu=1, database=None, fresh_workspace=False):
     started = time.monotonic()
     subprocess.run(['sh', 'tools/release-build.sh', '--benchmark', arch], cwd=ROOT,
                    env=environment, check=True)
-    elapsed = time.monotonic() - started
+    finished = time.monotonic()
+    elapsed = finished - started
     after = cpu_usage()
     binary = ROOT / 'scratch/tag-release/dist' / f'grund-linux-{arch}'
     destination = ROOT / 'scratch/tag-perf' / label
@@ -71,6 +78,8 @@ def measure(arch, label, jobs, cgu=1, database=None, fresh_workspace=False):
     result = {
         'label': label, 'agent': environment.get('CI_MACHINE', ''), 'arch': arch,
         'jobs': jobs, 'codegen_units': cgu, 'wall_s': elapsed,
+        'root_codegen_units': root_cgu if root_cgu is not None else cgu,
+        'restore_s': restore_elapsed, 'total_s': finished - total_started,
         'binary_bytes': binary.stat().st_size,
         'sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
         'cpu_s': (int(after) - int(before)) / 1e6 if before and after else None,
@@ -101,10 +110,33 @@ def main():
         measure('amd64', 'thin-cgu16-j4', 4, cgu=16, database=os.environ['PERF_DATABASE_CGU16'], fresh_workspace=True)
         measure('amd64', 'thin-cgu1-j8', 8, database=os.environ['PERF_DATABASE_CGU1_J8'], fresh_workspace=True)
         measure('amd64', 'thin-cgu16-j8', 8, cgu=16, database=os.environ['PERF_DATABASE_CGU16_J8'], fresh_workspace=True)
+    elif sys.argv[1:] == ['matrix-package']:
+        measure('amd64', 'package-cgu1-j4', 4, database=os.environ['PERF_DATABASE_CGU1'], fresh_workspace=True)
+        measure('amd64', 'package-cgu16-seed-j4', 4, root_cgu=16, fresh_workspace=True)
+        measure('amd64', 'package-cgu16-j4', 4, root_cgu=16, database=os.environ['PERF_DATABASE_CGU16'], fresh_workspace=True)
+    elif sys.argv[1:] == ['arm-cache']:
+        # Prime registry sources equally; target artifacts and tools still
+        # come exclusively from the per-target snapshot in the warm case.
+        subprocess.run(['cargo', 'fetch', '--locked', '--target', 'aarch64-unknown-linux-musl', '--quiet'], check=True)
+        subprocess.run(['rustup', 'target', 'add', 'aarch64-unknown-linux-musl'], check=True)
+        measure('arm64', 'arm-cache-warm-j4', 4)
+        if os.environ.get('CI_MACHINE') != '0c1ad77f1697':
+            # #275 already supplies the agent-1 cold control. A different
+            # agent gets its own cold run, never a cross-agent comparison.
+            subprocess.run(['sccache', '--stop-server'], check=True)
+            for relative in ('target/release-arm64', 'scratch/tag-release/tooling'):
+                path = ROOT / relative
+                if path.exists():
+                    shutil.rmtree(path)
+            os.environ.update({
+                'CICACHE': 'off',
+                'SCCACHE_DIR': str(ROOT / 'scratch/tag-perf/cold-sccache'),
+            })
+            measure('arm64', 'arm-cache-cold-control-j4', 4)
     elif len(sys.argv) == 3 and sys.argv[1] in ('amd64', 'arm64'):
         measure(sys.argv[1], sys.argv[2], int(os.environ.get('CARGO_BUILD_JOBS', '4')))
     else:
-        raise RuntimeError('usage: release-measure.py {matrix|<amd64|arm64> <label>}')
+        raise RuntimeError('usage: release-measure.py {matrix|matrix-package|arm-cache|<amd64|arm64> <label>}')
 
 
 if __name__ == '__main__':
