@@ -15,18 +15,15 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use chrono::{DateTime, Utc};
-use grund_domain::app::ReleaseSource;
-use grund_domain::{
-    app::{
-        file::{SCHEMA_PATH, render as render_file},
-        spec::{
-            AppSpec, CheckKind, CheckSpec, EnvVar, MAX_COPIES, PortSpec, Protocol, STOP_SIGNALS,
-            SecretEnv, SettingsInput, StopSpec, VolumeSpec,
-        },
-        templates,
+use grund_config::app::{
+    file::{SCHEMA_PATH, render as render_file},
+    spec::{
+        AppSpec, CheckKind, CheckSpec, EnvVar, MAX_COPIES, PortSpec, Protocol, STOP_SIGNALS,
+        SecretEnv, SettingsInput, StopSpec, VolumeSpec,
     },
-    organisation::Role,
 };
+use grund_domain::app::ReleaseSource;
+use grund_domain::{app::templates, organisation::Role};
 use grund_store::{
     apps::{ReleaseRow, ReplicaRow},
     organisations::Membership,
@@ -1760,7 +1757,7 @@ pub struct VolumeDetail {
 fn setting_items(
     spec: &AppSpec,
     image: &str,
-    settings: &grund_domain::app::AppSettings,
+    settings: &grund_config::app::spec::AppSettings,
     address: Option<&str>,
     secrets: &[String],
     domains: &[String],
@@ -1814,7 +1811,7 @@ fn setting_items(
     let placed = !settings.machines.is_empty()
         || !settings.placement.is_default()
         || settings.reschedule_after_seconds
-            != grund_domain::app::AppSettings::default().reschedule_after_seconds;
+            != grund_config::app::spec::AppSettings::default().reschedule_after_seconds;
     let optional = [
         (
             "placement",
@@ -1907,7 +1904,7 @@ fn setting_items(
 
 const FILE_NAME: &str = "grund.yaml";
 
-fn placement_words(settings: &grund_domain::app::AppSettings) -> String {
+fn placement_words(settings: &grund_config::app::spec::AppSettings) -> String {
     let rules = &settings.placement;
     let mut parts = vec![
         grund_domain::app::placement::rules_words(settings)
@@ -1923,7 +1920,7 @@ fn placement_words(settings: &grund_domain::app::AppSettings) -> String {
         parts.push(format!("apart from {}", rules.apart.join(", ")));
     }
     if settings.reschedule_after_seconds
-        != grund_domain::app::AppSettings::default().reschedule_after_seconds
+        != grund_config::app::spec::AppSettings::default().reschedule_after_seconds
     {
         parts.push(format!(
             "replaced after {}",

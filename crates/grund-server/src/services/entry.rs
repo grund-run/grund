@@ -43,8 +43,8 @@ pub struct Entry {
 }
 
 /// Whether an app's spec publishes a port the gate routes.
-pub fn publishes(spec: &grund_domain::app::AppSpec) -> bool {
-    use grund_domain::app::spec::Protocol;
+pub fn publishes(spec: &grund_config::app::spec::AppSpec) -> bool {
+    use grund_config::app::spec::Protocol;
     spec.ports
         .iter()
         .any(|p| p.public && matches!(p.protocol, Protocol::Http | Protocol::H2c))

@@ -22,7 +22,7 @@ base64.workspace = true
 buffa = { version = "=0.9.2", features = ["json"] }
 buffa-descriptor = "=0.9.2"
 clap.workspace = true
-grund-domain.workspace = true
+grund-config.workspace = true
 grund-descriptors.workspace = true
 grund-tls.workspace = true
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }

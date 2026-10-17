@@ -92,7 +92,7 @@ pub fn describe(root: &clap::Command, args: DescribeArgs) -> CliResult<Output> {
 pub fn schema(root: &clap::Command, args: SchemaArgs) -> CliResult<Output> {
     let registry = Registry::compiled();
     let value = match args.what.as_str() {
-        "grund.yaml" => grund_domain::app::file::schema(),
+        "grund.yaml" => grund_config::app::file::schema(),
         "error" => registry.schema("grund.cli.v1.ErrorOutput"),
         "output" => {
             let path = args.name.join(" ");

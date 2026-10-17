@@ -926,11 +926,11 @@ async fn deploy(ctx: &Ctx, api: &Api, org: &str, args: DeployArgs) -> CliResult<
                 .field("file")
                 .hint("give the file with -f, or deploy from flags with --image")
         })?;
-        let names = grund_domain::app::file::declared_names(&text);
+        let names = grund_config::app::file::declared_names(&text);
         let chosen = match &args.app {
             Some(app) => vec![app.clone()],
             None if names.is_empty() => {
-                let problem = grund_domain::app::file::parse_app(&text, "")
+                let problem = grund_config::app::file::parse_app(&text, "")
                     .err()
                     .map(|e| (e.field, e.problem))
                     .unwrap_or_else(|| ("grund.yaml".into(), "declares no apps".into()));
@@ -943,7 +943,7 @@ async fn deploy(ctx: &Ctx, api: &Api, org: &str, args: DeployArgs) -> CliResult<
             None => names,
         };
         for app in chosen {
-            if let Err(e) = grund_domain::app::file::parse_app(&text, &app) {
+            if let Err(e) = grund_config::app::file::parse_app(&text, &app) {
                 return Err(CliError::new(
                     Code::Invalid,
                     format!("{}: {}", path.display(), e.problem),

@@ -4,11 +4,9 @@
 //! and writes the rows that go with its events.
 
 use chrono::{DateTime, Utc};
-use grund_domain::{
-    names::{EmailAddress, Username},
-    organisation::{
-        INVITATION_TTL, OrganisationCommand, OrganisationError, OrganisationKind, Role,
-    },
+use grund_config::names::{EmailAddress, Username};
+use grund_domain::organisation::{
+    INVITATION_TTL, OrganisationCommand, OrganisationError, OrganisationKind, Role,
 };
 use grund_store::{
     accounts, notifications,

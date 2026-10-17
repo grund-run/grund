@@ -4,13 +4,11 @@
 use buffa::Message;
 use chrono::{DateTime, Duration, Utc};
 use ed25519_dalek::{Signature, VerifyingKey};
-use grund_domain::{
-    machine::{
-        Authority, KeyPurpose, MAX_MACHINES_PER_ORGANISATION, MAX_OPEN_TOKENS, MAX_REPLAYS,
-        MachineCommand, MachineError, MachineFacts, MachineKey, Pool, TOKEN_TTL, TOKEN_TTL_MAX,
-        TokenKind, enrollment_message, prefix,
-    },
-    names::MachineName,
+use grund_config::names::MachineName;
+use grund_domain::machine::{
+    Authority, KeyPurpose, MAX_MACHINES_PER_ORGANISATION, MAX_OPEN_TOKENS, MAX_REPLAYS,
+    MachineCommand, MachineError, MachineFacts, MachineKey, Pool, TOKEN_TTL, TOKEN_TTL_MAX,
+    TokenKind, enrollment_message, prefix,
 };
 use grund_proto::grund::agent::v1 as agent;
 use grund_store::{
@@ -741,7 +739,7 @@ impl Machines {
         actor: Uuid,
         machine_id: Uuid,
         organisation_id: Uuid,
-        labels: grund_domain::labels::Labels,
+        labels: grund_config::labels::Labels,
     ) -> anyhow::Result<ChangeOutcome> {
         let outcome = self
             .change(

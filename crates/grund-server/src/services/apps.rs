@@ -12,17 +12,17 @@ use std::sync::{LazyLock, Mutex};
 
 use anyhow::Context;
 use chrono::{DateTime, Utc};
-use grund_domain::app::{
-    App, AppCommand, AppError, AppEvent, AppName, AppSettings, AppSpec, ExternalRelease,
-    ReleaseSource, SecretVersion,
+use grund_config::app::{
     file::parse_app,
+    spec::{
+        AppName, AppSettings, AppSpec, ImageReference, MAX_APPS_PER_ORGANISATION, MAX_SECRET_BYTES,
+        MachineKind, PortSpec, SecretEnv, SettingsInput, SpecError, secret_name_ok,
+    },
+};
+use grund_domain::app::{
+    App, AppCommand, AppError, AppEvent, ExternalRelease, ReleaseSource, SecretVersion,
     placement::MachineView,
     reconcile::{Observation, Observed, reconcile_with_volumes},
-    spec::MachineKind,
-    spec::{
-        ImageReference, MAX_APPS_PER_ORGANISATION, MAX_SECRET_BYTES, PortSpec, SecretEnv,
-        SettingsInput, SpecError, secret_name_ok,
-    },
 };
 use grund_store::{
     apps::{self, AppRow, ReleaseRow, ReplicaRow},
@@ -2127,10 +2127,9 @@ mod tests {
     #[test]
     fn first_volume_release_stops_the_old_writer_before_starting_on_a_capable_machine() {
         use chrono::Duration;
+        use grund_config::app::spec::{StopSpec, VolumeSpec};
         use grund_domain::app::{
-            PlaceReason, Release, ReleaseSource, ReplicaState,
-            placement::Unplaceable,
-            spec::{StopSpec, VolumeSpec},
+            PlaceReason, Release, ReleaseSource, ReplicaState, placement::Unplaceable,
         };
         use serde_json::json;
         use sqlx::types::Json;
@@ -2388,7 +2387,7 @@ mod tests {
 
     #[test]
     fn only_a_verified_bound_domain_allows_custom_only_publication() {
-        use grund_domain::app::spec::Protocol;
+        use grund_config::app::spec::Protocol;
 
         let mut spec = AppSpec {
             image: "nginx:1.27".into(),

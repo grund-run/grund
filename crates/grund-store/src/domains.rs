@@ -350,7 +350,7 @@ pub async fn first_bound_name(
 pub async fn current_spec(
     executor: impl PgExecutor<'_>,
     app_id: Uuid,
-) -> Result<Option<sqlx::types::Json<grund_domain::app::AppSpec>>, sqlx::Error> {
+) -> Result<Option<sqlx::types::Json<grund_config::app::spec::AppSpec>>, sqlx::Error> {
     sqlx::query_scalar(
         "SELECT r.spec FROM grund_apps a JOIN grund_releases r ON r.app_id = a.app_id \
           WHERE a.app_id = $1 AND a.deleted_at IS NULL \

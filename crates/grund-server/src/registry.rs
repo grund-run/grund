@@ -24,7 +24,7 @@
 use std::time::Duration;
 
 use anyhow::Context;
-use grund_domain::app::spec::{ImageReference, is_digest};
+use grund_config::app::spec::{ImageReference, is_digest};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 

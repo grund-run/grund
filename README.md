@@ -533,6 +533,7 @@ crates/grund-server/   the control plane: config, services, pages, API, backgrou
 crates/grund-server/templates/  compiled .html.sedge pages and components, and .txt.sedge mail
 crates/grund-store/    PostgreSQL: migrations, event-sourced write paths, read models
 crates/grund-domain/   aggregates, events and pure decisions; no I/O
+crates/grund-config/   shared grund.yaml, YAML and validated values; no event store or server runtime
 crates/grund-descriptors/  API descriptors and the shared proto file list (needs protoc)
 crates/grund-proto/    typed messages and services generated from those descriptors
 ee/grund-ee/           the commercial features, plugged in through one Extension seam (--features ee)

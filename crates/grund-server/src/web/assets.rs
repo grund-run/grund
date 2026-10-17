@@ -33,7 +33,7 @@ pub const MONO_LICENSE: &str = include_str!("../../assets/licenses/jetbrains-mon
 /// Product-logo sources, usage conditions and trademark attribution for /licenses.
 pub const LOGO_NOTICES: &str = include_str!(concat!(env!("OUT_DIR"), "/logo_notices.txt"));
 
-static SCHEMA: LazyLock<String> = LazyLock::new(grund_domain::app::file::schema_text);
+static SCHEMA: LazyLock<String> = LazyLock::new(grund_config::app::file::schema_text);
 
 static CSS_ASSET: LazyLock<Asset> = LazyLock::new(|| {
     Asset::compressed(CSS.as_bytes(), CSS_BR, CSS_GZIP, "text/css; charset=utf-8")

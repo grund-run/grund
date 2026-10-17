@@ -15,7 +15,7 @@ use buffa::{Message, MessageField, MessageView};
 use buffa_types::google::protobuf::Timestamp;
 use chrono::{DateTime, Utc};
 use connectrpc::{ConnectError, RequestContext, Response, ServiceRequest, ServiceResult};
-use grund_domain::app::spec::VolumeSpec;
+use grund_config::app::spec::VolumeSpec;
 use grund_proto::grund::volume::v1::{
     self as proto, AcceptEmptyLostVolumeRequest, AcceptEmptyLostVolumeResponse,
     AttachVolumeRequest, AttachVolumeResponse, CreateVolumeRequest, CreateVolumeResponse,

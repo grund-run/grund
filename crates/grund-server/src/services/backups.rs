@@ -7,7 +7,8 @@ use std::time::Duration;
 use anyhow::{Context, ensure};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
-use grund_domain::{app::spec::VolumeSpec, volume::VolumeCommand};
+use grund_config::app::spec::VolumeSpec;
+use grund_domain::volume::VolumeCommand;
 use grund_proto::grund::agent::v1::{BackupOperation, BackupWork};
 use grund_store::{
     backup::{self, BackupConfig, RecoveryPoint},
@@ -484,7 +485,7 @@ impl Backups {
                 "an exact recovery-point ID is required".into(),
             ));
         }
-        if grund_domain::app::spec::AppName::parse(name).map_or(true, |n| n.as_str() != name) {
+        if grund_config::app::spec::AppName::parse(name).map_or(true, |n| n.as_str() != name) {
             return Err(BackupError::Invalid(
                 "new volume name must be 1-32 lowercase letters, digits and single hyphens".into(),
             ));

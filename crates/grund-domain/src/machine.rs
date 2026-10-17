@@ -12,7 +12,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{labels::Labels, names::MachineName};
+use grund_config::{labels::Labels, names::MachineName};
 
 pub const MACHINE_CATEGORY: &str = "grund-machine";
 
@@ -1185,7 +1185,7 @@ mod tests {
      {
         let org = Uuid::now_v7();
         let other = Uuid::now_v7();
-        let labels = crate::labels::labels([("zone", "a")]).unwrap();
+        let labels = grund_config::labels::labels([("zone", "a")]).unwrap();
         let set = |organisation_id, labels: &Labels| MachineCommand::SetLabels {
             actor: Uuid::now_v7(),
             organisation_id,

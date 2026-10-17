@@ -5,7 +5,7 @@
 //! design/apps.md §4, M4). The format is deliberately this list, so that
 //! templates as files can replace it without touching the pages.
 
-use super::spec::{AppSpec, CheckKind, CheckSpec, PortSpec, Protocol, StopSpec};
+use grund_config::app::spec::{AppSpec, CheckKind, CheckSpec, PortSpec, Protocol, StopSpec};
 
 /// One premade app.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,7 +152,7 @@ impl Template {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::spec::{AppName, ImageReference};
+    use grund_config::app::spec::{AppName, ImageReference};
 
     #[test]
     fn every_deployable_template_is_a_valid_spec_pinned_by_digest() {
@@ -163,8 +163,21 @@ mod tests {
             assert!(reference.tag.is_some(), "{} keeps its tag", template.key);
             for public in [false, true] {
                 let spec = template.spec(public).expect("deployable");
-                spec.validate()
+                let spec = spec
+                    .validate()
                     .unwrap_or_else(|e| panic!("{}: {e}", template.key));
+                let text = grund_config::app::file::render(
+                    template.key,
+                    &spec,
+                    &grund_config::app::spec::AppSettings::default(),
+                    "x",
+                );
+                assert_eq!(
+                    grund_config::app::file::parse_app(&text, template.key)
+                        .unwrap()
+                        .spec,
+                    spec
+                );
             }
         }
     }

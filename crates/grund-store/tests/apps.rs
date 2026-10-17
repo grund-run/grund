@@ -1,8 +1,6 @@
 use chrono::{Duration, Utc};
-use grund_domain::app::{
-    AppCommand, AppEvent, AppName, AppSettings, ExternalRelease, PlaceReason, ReleaseSource,
-    spec::{AppSpec, StopSpec},
-};
+use grund_config::app::spec::{AppName, AppSettings, AppSpec, StopSpec};
+use grund_domain::app::{AppCommand, AppEvent, ExternalRelease, PlaceReason, ReleaseSource};
 use grund_store::{
     apps::{self, Report},
     work::Work,

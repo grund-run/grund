@@ -1,9 +1,9 @@
 use std::time::Duration;
 
 use chrono::Utc;
+use grund_config::names::Username;
 use grund_domain::{
     account::{Account, AccountCommand, AccountEvent, RegistrationMethod},
-    names::Username,
     organisation::OrganisationCommand,
 };
 use grund_store::{
@@ -488,8 +488,8 @@ async fn a_single_instance_adopts_its_one_organisation_and_refuses_to_choose_bet
     );
 }
 
-fn machine_name(text: &str) -> grund_domain::names::MachineName {
-    grund_domain::names::MachineName::parse(text).unwrap()
+fn machine_name(text: &str) -> grund_config::names::MachineName {
+    grund_config::names::MachineName::parse(text).unwrap()
 }
 
 fn machine_key(byte: u8) -> grund_domain::machine::MachineKey {

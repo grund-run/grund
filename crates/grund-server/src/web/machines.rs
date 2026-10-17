@@ -907,13 +907,13 @@ pub async fn labels(
         .map(|k| (k.as_str(), values.next().unwrap_or_default()))
         .filter(|(k, _)| !k.trim().is_empty())
         .collect();
-    let labels = match grund_domain::labels::labels(pairs) {
+    let labels = match grund_config::labels::labels(pairs) {
         Ok(labels) => labels,
         Err(error) => {
             let code = match error {
-                grund_domain::labels::LabelError::Key => "label-key",
-                grund_domain::labels::LabelError::Value => "label-value",
-                grund_domain::labels::LabelError::TooMany => "label-many",
+                grund_config::labels::LabelError::Key => "label-key",
+                grund_config::labels::LabelError::Value => "label-value",
+                grund_config::labels::LabelError::TooMany => "label-many",
             };
             return Ok(redirect(&format!(
                 "/{slug}/machines?labels={machine_id}&error={code}#labels"

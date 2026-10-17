@@ -12,7 +12,8 @@
 //! enters an event, a release, a signed document, a page or a log line.
 
 use anyhow::Context;
-use grund_domain::{app::spec::ImageReference, organisation::Role};
+use grund_config::app::spec::ImageReference;
+use grund_domain::organisation::Role;
 use grund_store::{
     organisations::Membership,
     registry_credentials::{self, CredentialView, SealedCredential},

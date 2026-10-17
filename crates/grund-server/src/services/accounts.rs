@@ -5,10 +5,8 @@
 use std::time::Duration;
 
 use chrono::Utc;
-use grund_domain::{
-    account::{AccountCommand, PasswordChangeReason, RegistrationMethod},
-    names::{self, EmailAddress, Username},
-};
+use grund_config::names::{self, EmailAddress, Username};
+use grund_domain::account::{AccountCommand, PasswordChangeReason, RegistrationMethod};
 use grund_store::{
     accounts::{self, LoginRecord, Lookup, Viewer},
     outbox::{self, Kind},

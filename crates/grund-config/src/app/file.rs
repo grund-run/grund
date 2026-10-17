@@ -1235,28 +1235,8 @@ apps:
                 .collect();
             assert!(errors.is_empty(), "{errors:?}\n{text}");
         }
-        for template in super::super::templates::CATALOGUE {
-            let Some(spec) = template.spec(true) else {
-                continue;
-            };
-            let spec = spec.validate().unwrap();
-            let text = render(template.key, &spec, &AppSettings::default(), "x");
-            assert!(validator.is_valid(&as_json(&text)), "{text}");
-        }
         assert!(!validator.is_valid(&as_json("apps:\n  web:\n    image: nginx\n    copis: 2\n")));
         assert!(!validator.is_valid(&as_json("apps:\n  web:\n    copies: 2\n")));
-    }
-
-    #[test]
-    fn the_schema_describes_the_fields_editors_show() {
-        let schema = schema();
-        let text = schema.to_string();
-        assert_eq!(schema["$schema"], "http://json-schema.org/draft-07/schema#");
-        assert_eq!(schema["title"], "grund.yaml");
-        assert_eq!(schema["additionalProperties"], false);
-        assert!(text.contains("How many copies run. Default 1, at most 20."));
-        assert!(text.contains("\"h2c\""));
-        assert!(text.contains("volumes"));
     }
 
     #[test]
@@ -1268,7 +1248,7 @@ apps:
         let kept = std::fs::read_to_string(path).unwrap_or_default();
         assert!(
             kept == schema_text(),
-            "schema/grund.json is stale: run GRUND_WRITE_SCHEMA=1 cargo test -p grund-domain"
+            "schema/grund.json is stale: run GRUND_WRITE_SCHEMA=1 cargo test -p grund-config"
         );
     }
 }

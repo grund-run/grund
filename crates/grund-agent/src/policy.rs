@@ -56,7 +56,7 @@ impl Policy {
     /// file's policy is the one used, and is written to `path`.
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let policy = match std::fs::read_to_string(path) {
-            Ok(text) => grund_domain::yaml::from_str(&text)
+            Ok(text) => grund_config::yaml::from_str(&text)
                 .with_context(|| format!("{} does not parse as grund's policy", path.display()))?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => match legacy_file(path) {
                 Some(old) => Self::migrate(&old, path)?,
@@ -108,7 +108,7 @@ impl Policy {
     pub fn to_yaml(&self) -> String {
         format!(
             "# This machine's policy: what no app may ask of it. Read by grund agent at start.\n{}",
-            grund_domain::yaml::to_string(self)
+            grund_config::yaml::to_string(self)
         )
     }
 
@@ -119,11 +119,11 @@ impl Policy {
         }
         let image = replica.image.as_option();
         let digest = image.map(|i| i.digest.as_str()).unwrap_or_default();
-        if !grund_domain::app::spec::is_digest(digest) {
+        if !grund_config::app::spec::is_digest(digest) {
             return Some("the image is not pinned by sha256 digest".into());
         }
         let reference = image.map(|i| i.reference.as_str()).unwrap_or_default();
-        if grund_domain::app::spec::ImageReference::parse(reference).is_err() {
+        if grund_config::app::spec::ImageReference::parse(reference).is_err() {
             return Some("the image reference does not parse".into());
         }
         if self.max_replica_memory_mib > 0 && replica.memory_mib > self.max_replica_memory_mib {

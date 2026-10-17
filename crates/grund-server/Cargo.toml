@@ -24,6 +24,7 @@ connectrpc = { version = "=0.9.1", features = ["axum"] }
 ed25519-dalek = "2"
 futures-util.workspace = true
 getrandom.workspace = true
+grund-config.workspace = true
 grund-domain.workspace = true
 grund-entry.workspace = true
 grund-net.workspace = true

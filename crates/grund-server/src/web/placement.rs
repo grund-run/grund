@@ -14,7 +14,7 @@ use axum::{
     extract::{Path, State as AxumState},
     http::Uri,
 };
-use grund_domain::app::{AppSettings, spec::SettingsInput};
+use grund_config::app::spec::{AppSettings, SettingsInput};
 use grund_store::organisations::Membership;
 
 use crate::{

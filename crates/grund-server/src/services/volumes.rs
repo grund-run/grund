@@ -2,11 +2,9 @@
 //! customer machine alone performs physical creation and managed-dir erasure.
 use crate::{services::agents::AgentsState, state::State};
 use chrono::Utc;
+use grund_config::app::spec::VolumeSpec;
 use grund_domain::app::AppEvent;
-use grund_domain::{
-    app::spec::VolumeSpec,
-    volume::{VolumeCommand, VolumeError},
-};
+use grund_domain::volume::{VolumeCommand, VolumeError};
 use grund_store::{
     machines::MachineRow,
     volumes::{self, VolumeRow},
@@ -1088,7 +1086,8 @@ fn volume_work(error: grund_store::work::WorkError) -> VolumesError {
 }
 
 fn validate_spec(spec: VolumeSpec) -> Result<VolumeSpec, VolumesError> {
-    if grund_domain::app::AppName::parse(&spec.name).map_or(true, |name| name.as_str() != spec.name)
+    if grund_config::app::spec::AppName::parse(&spec.name)
+        .map_or(true, |name| name.as_str() != spec.name)
     {
         return Err(VolumesError::Invalid(
             "volume name must be 1-32 lowercase letters, digits or single hyphens".into(),

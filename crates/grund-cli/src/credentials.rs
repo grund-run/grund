@@ -84,7 +84,7 @@ impl Credentials {
         let text = std::fs::read_to_string(path).map_err(|e| {
             CliError::new(Code::Failed, format!("cannot read {}: {e}", path.display()))
         })?;
-        grund_domain::yaml::from_str(&text).map_err(|e| {
+        grund_config::yaml::from_str(&text).map_err(|e| {
             CliError::new(
                 Code::Failed,
                 format!(
@@ -105,7 +105,7 @@ impl Credentials {
         let temporary = dir.join(format!(".credentials.{}.tmp", std::process::id()));
         let text = format!(
             "# Written by grund login. Holds credentials: keep it mode 0600.\n{}",
-            grund_domain::yaml::to_string(self)
+            grund_config::yaml::to_string(self)
         );
         let mut file = std::fs::OpenOptions::new()
             .write(true)

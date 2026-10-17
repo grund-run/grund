@@ -6,17 +6,15 @@
 //! Observations (a replica became ready, a machine stopped answering) are
 //! not events; what grund decides because of them is ([`reconcile`]).
 
-pub mod file;
 pub mod placement;
 pub mod reconcile;
-pub mod spec;
 pub mod templates;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub use self::spec::{AppName, AppSettings, AppSpec, SpecError};
+use grund_config::app::spec::{AppName, AppSettings, AppSpec};
 
 pub const APP_CATEGORY: &str = "grund-app";
 
@@ -673,7 +671,7 @@ mod tests {
     use mire::{Aggregate, Command};
 
     use super::*;
-    use crate::app::spec::{PortSpec, Protocol, StopSpec};
+    use grund_config::app::spec::{PortSpec, Protocol, StopSpec};
 
     fn at() -> DateTime<Utc> {
         DateTime::from_timestamp(1_790_000_000, 0).unwrap()

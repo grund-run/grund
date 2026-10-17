@@ -7,10 +7,8 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use buffa::Message;
 use chrono::{DateTime, Duration, Utc};
 use ed25519_dalek::{Signature, VerifyingKey};
-use grund_domain::{
-    machine::{CLOCK_SKEW, KeyPurpose, MAX_MACHINES_PER_ORGANISATION, prefix},
-    names::MachineName,
-};
+use grund_config::names::MachineName;
+use grund_domain::machine::{CLOCK_SKEW, KeyPurpose, MAX_MACHINES_PER_ORGANISATION, prefix};
 use grund_proto::grund::agent::v1 as agent;
 use grund_store::{
     agents::{self, DocumentRow, NewVm, VmRow},
@@ -700,7 +698,7 @@ fn invalid(request: &VmRequest) -> Option<String> {
 /// A replica's entry in its machine's document (apps.md §6.2): plain
 /// settings, and secrets by name and version only.
 pub fn replica_message(placed: &grund_store::apps::PlacedRow) -> agent::Replica {
-    use grund_domain::app::spec::{CheckKind, Protocol};
+    use grund_config::app::spec::{CheckKind, Protocol};
     let spec = &placed.spec.0;
     agent::Replica {
         replica_id: placed.replica_id.to_string(),

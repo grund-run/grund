@@ -308,7 +308,7 @@ pub struct MachineRow {
     pub last_seen_at: Option<DateTime<Utc>>,
     pub capabilities: Option<sqlx::types::Json<Value>>,
     pub network_ports: sqlx::types::Json<Vec<grund_domain::machine::NetworkPort>>,
-    pub labels: sqlx::types::Json<grund_domain::labels::Labels>,
+    pub labels: sqlx::types::Json<grund_config::labels::Labels>,
     pub cordoned_at: Option<DateTime<Utc>>,
     pub hosted_size: Option<String>,
     pub hosted_region: Option<String>,

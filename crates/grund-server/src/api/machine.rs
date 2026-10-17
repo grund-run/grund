@@ -678,7 +678,7 @@ impl MachineService for MachineApi {
         let membership = self
             .member(&caller, request.organisation, Access::Manage)
             .await?;
-        let labels = grund_domain::labels::labels(request.labels.iter().map(|(k, v)| (*k, *v)))
+        let labels = grund_config::labels::labels(request.labels.iter().map(|(k, v)| (*k, *v)))
             .map_err(|e| ConnectError::invalid_argument(e.to_string()))?;
         let row = self.pool_machine(&membership, request.machine_id).await?;
         let outcome = self

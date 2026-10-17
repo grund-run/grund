@@ -155,7 +155,7 @@ impl Tokens {
         apps.dedup();
         if apps.len() != count
             || apps.iter().any(|name| {
-                grund_domain::app::spec::AppName::parse(name)
+                grund_config::app::spec::AppName::parse(name)
                     .map_or(true, |parsed| parsed.as_str() != name)
             })
         {

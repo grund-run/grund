@@ -10,10 +10,7 @@ pub mod account;
 pub mod app;
 pub mod custom_domain;
 pub mod doctor;
-pub mod labels;
 pub mod machine;
-pub mod names;
 
 pub mod organisation;
 pub mod volume;
-pub mod yaml;

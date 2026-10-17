@@ -237,7 +237,7 @@ mod tests {
             max_replica_cpu_millis: 0,
             labels: Default::default(),
             cordoned: false,
-            kind: grund_domain::app::spec::MachineKind::Own,
+            kind: grund_config::app::spec::MachineKind::Own,
             running_apps: Vec::new(),
         }
     }

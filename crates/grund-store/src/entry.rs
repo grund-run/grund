@@ -17,10 +17,10 @@ pub struct RouteRow {
     pub app_created_at: DateTime<Utc>,
     pub suspended: bool,
     /// The spec of the app's current release, if it has one.
-    pub current_spec: Option<Json<grund_domain::app::AppSpec>>,
+    pub current_spec: Option<Json<grund_config::app::spec::AppSpec>>,
     pub replica_id: Option<Uuid>,
     pub machine_id: Option<Uuid>,
-    pub spec: Option<Json<grund_domain::app::AppSpec>>,
+    pub spec: Option<Json<grund_config::app::spec::AppSpec>>,
     pub ready: bool,
     pub migration_paused: bool,
     /// The machine's key, lowercase hex: its iroh endpoint id.

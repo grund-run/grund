@@ -106,7 +106,7 @@ pub fn router(state: State) -> Router {
     Router::new()
         .route("/health/live", get(health::live))
         .route("/health/ready", get(health::ready))
-        .route(grund_domain::app::file::SCHEMA_PATH, get(assets::schema))
+        .route(grund_config::app::file::SCHEMA_PATH, get(assets::schema))
         .route("/", get(orgs::landing))
         .route("/login", get(pages::login_form).post(pages::login))
         .route("/logout", post(pages::logout))
@@ -468,7 +468,7 @@ fn bad_form(_state: &State, status: StatusCode, request_id: Uuid) -> Response {
 mod tests {
     use super::*;
     use axum::{body::Body, http::Request};
-    use grund_domain::names::{NameError, Username};
+    use grund_config::names::{NameError, Username};
     use http_body_util::BodyExt;
     use std::convert::Infallible;
     use tower::ServiceExt;

@@ -685,7 +685,7 @@ pub struct AppRow {
     pub app_id: Uuid,
     pub organisation_id: Uuid,
     pub name: String,
-    pub settings: Json<grund_domain::app::AppSettings>,
+    pub settings: Json<grund_config::app::spec::AppSettings>,
     pub current_release: Option<i32>,
     pub rollout: Option<Value>,
     pub halted: bool,
@@ -834,7 +834,7 @@ pub async fn set_waiting(
 pub struct ReleaseRow {
     pub app_id: Uuid,
     pub number: i32,
-    pub spec: Json<grund_domain::app::AppSpec>,
+    pub spec: Json<grund_config::app::spec::AppSpec>,
     pub image_digest: String,
     pub platforms: Json<Vec<String>>,
     pub exposed_ports: Option<Json<Vec<u16>>>,
@@ -916,7 +916,7 @@ pub async fn cache_release_ports(
 pub struct RunningRow {
     pub app_id: Uuid,
     pub number: i32,
-    pub spec: Json<grund_domain::app::AppSpec>,
+    pub spec: Json<grund_config::app::spec::AppSpec>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -1124,7 +1124,7 @@ pub struct PlacedRow {
     pub release: i32,
     pub placement: i64,
     pub state: String,
-    pub spec: Json<grund_domain::app::AppSpec>,
+    pub spec: Json<grund_config::app::spec::AppSpec>,
     pub image_digest: String,
     pub secret_versions: Json<Vec<grund_domain::app::SecretVersion>>,
 }
@@ -1155,7 +1155,7 @@ pub struct EndpointRow {
     pub replica_id: Uuid,
     pub machine_id: Uuid,
     pub app_name: String,
-    pub spec: Json<grund_domain::app::AppSpec>,
+    pub spec: Json<grund_config::app::spec::AppSpec>,
     pub ready: bool,
 }
 
@@ -1383,7 +1383,7 @@ pub async fn placed_replica(
 #[cfg(test)]
 mod hosted_loss_tests {
     use super::*;
-    use grund_domain::app::{AppName, AppSettings};
+    use grund_config::app::spec::{AppName, AppSettings};
 
     #[sqlx::test(migrations = "./migrations")]
     async fn app_loss_survives_projection_replay_with_host_and_completed_snapshot(

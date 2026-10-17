@@ -7,11 +7,9 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{
-    AppSettings, Release,
-    spec::{MachineKind, PlacementRules},
-};
-use crate::labels::{Labels, labels_text};
+use super::Release;
+use grund_config::app::spec::{AppSettings, MachineKind, PlacementRules};
+use grund_config::labels::{Labels, labels_text};
 
 /// A machine is unreachable once its last report is older than this
 /// (six missed 5 s heartbeats, apps.md §9.2).
@@ -292,10 +290,8 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
-    use crate::app::{
-        ReleaseSource,
-        spec::{AppSpec, StopSpec},
-    };
+    use crate::app::ReleaseSource;
+    use grund_config::app::spec::{AppSpec, StopSpec};
 
     fn now() -> DateTime<Utc> {
         DateTime::from_timestamp(1_790_000_000, 0).unwrap()

@@ -420,7 +420,7 @@ impl ContainerRuntime for SimulatedContainers {
         );
         std::fs::create_dir_all(self.dir.join("images"))?;
         if let Some(authorization) = authorization {
-            let reference = grund_domain::app::spec::ImageReference::parse(&image.reference)
+            let reference = grund_config::app::spec::ImageReference::parse(&image.reference)
                 .map_err(|e| anyhow::anyhow!("{}", e.problem))?;
             let url = format!(
                 "{}/v2/{}/manifests/{}",

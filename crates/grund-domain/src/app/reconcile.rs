@@ -477,8 +477,9 @@ fn failure_reason(pass: &Pass<'_>, replica: &Replica, release: &Release) -> Opti
             "v{} didn't become ready: its check on {} failed for {span}{}.",
             release.number,
             match &check.kind {
-                super::spec::CheckKind::Http { path } => format!("{path} (port {})", check.port),
-                super::spec::CheckKind::Tcp => format!("port {}", check.port),
+                grund_config::app::spec::CheckKind::Http { path } =>
+                    format!("{path} (port {})", check.port),
+                grund_config::app::spec::CheckKind::Tcp => format!("port {}", check.port),
             },
             last.map_or(String::new(), |r| format!(" (last answer: {r})"))
         ),
@@ -844,9 +845,10 @@ mod tests {
     use mire::{Aggregate, Command};
 
     use super::*;
-    use crate::app::{
-        AppCommand, AppName, AppSettings, ReleaseSource,
-        spec::{AppSpec, CheckKind, CheckSpec, PortSpec, Protocol, SettingsInput, StopSpec},
+    use crate::app::{AppCommand, ReleaseSource};
+    use grund_config::app::spec::{
+        AppName, AppSettings, AppSpec, CheckKind, CheckSpec, PortSpec, Protocol, SettingsInput,
+        StopSpec,
     };
 
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -887,16 +889,16 @@ mod tests {
             reserved_cpu_millis: 0,
             max_replica_memory_mib: 0,
             max_replica_cpu_millis: 0,
-            labels: crate::labels::Labels::new(),
+            labels: grund_config::labels::Labels::new(),
             cordoned: false,
-            kind: crate::app::spec::MachineKind::Own,
+            kind: grund_config::app::spec::MachineKind::Own,
             running_apps: Vec::new(),
         }
     }
 
     fn labelled(id: u128, memory_mib: u64, pairs: &[(&str, &str)]) -> MachineView {
         let mut m = machine(id, memory_mib);
-        m.labels = crate::labels::labels(pairs.iter().copied()).unwrap();
+        m.labels = grund_config::labels::labels(pairs.iter().copied()).unwrap();
         m
     }
 

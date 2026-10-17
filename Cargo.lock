@@ -1921,6 +1921,7 @@ dependencies = [
  "clap",
  "ed25519-dalek 2.2.0",
  "getrandom 0.3.4",
+ "grund-config",
  "grund-domain",
  "grund-entry",
  "grund-net",
@@ -1960,8 +1961,8 @@ dependencies = [
  "buffa",
  "buffa-descriptor",
  "clap",
+ "grund-config",
  "grund-descriptors",
- "grund-domain",
  "grund-tls",
  "reqwest",
  "rustls",
@@ -1971,6 +1972,20 @@ dependencies = [
  "tokio",
  "uuid",
  "webpki-roots 1.0.9",
+]
+
+[[package]]
+name = "grund-config"
+version = "0.1.0"
+dependencies = [
+ "indexmap",
+ "jsonschema",
+ "schemars",
+ "serde",
+ "serde-saphyr",
+ "serde_json",
+ "serde_path_to_error",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -2009,14 +2024,10 @@ name = "grund-domain"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "indexmap",
- "jsonschema",
+ "grund-config",
  "mire",
- "schemars",
  "serde",
- "serde-saphyr",
  "serde_json",
- "serde_path_to_error",
  "thiserror 2.0.21",
  "uuid",
 ]
@@ -2032,6 +2043,7 @@ dependencies = [
  "clap",
  "ed25519-dalek 2.2.0",
  "getrandom 0.3.4",
+ "grund-config",
  "grund-domain",
  "grund-server",
  "grund-store",
@@ -2146,6 +2158,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "getrandom 0.3.4",
+ "grund-config",
  "grund-domain",
  "grund-entry",
  "grund-net",
@@ -2208,6 +2221,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "grund-config",
  "grund-domain",
  "mire",
  "serde",

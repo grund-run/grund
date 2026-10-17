@@ -11,13 +11,11 @@ use chrono::{DateTime, Utc};
 use connectrpc::{
     ConnectError, ErrorDetail, RequestContext, Response, ServiceRequest, ServiceResult,
 };
-use grund_domain::app::{
-    AppSettings, ExternalRelease, ReleaseSource,
-    spec::{
-        AppSpec, CheckKind, CheckSpec, EnvVar, PortSpec, Protocol, SecretEnv, SettingsInput,
-        StopSpec, VolumeSpec,
-    },
+use grund_config::app::spec::{
+    AppSettings, AppSpec, CheckKind, CheckSpec, EnvVar, PortSpec, Protocol, SecretEnv,
+    SettingsInput, StopSpec, VolumeSpec,
 };
+use grund_domain::app::{ExternalRelease, ReleaseSource};
 use grund_proto::grund::app::v1::{
     self as proto, AppService, ConfigureAppRequest, ConfigureAppResponse, CreateAppRequest,
     CreateAppResponse, DeleteAppRequest, DeleteAppResponse, DeployRequest, DeployResponse,
@@ -333,7 +331,7 @@ fn settings_message(settings: &AppSettings) -> proto::AppSettings {
     }
 }
 
-fn placement_message(rules: &grund_domain::app::spec::PlacementRules) -> proto::Placement {
+fn placement_message(rules: &grund_config::app::spec::PlacementRules) -> proto::Placement {
     proto::Placement {
         labels: rules
             .labels
@@ -341,8 +339,8 @@ fn placement_message(rules: &grund_domain::app::spec::PlacementRules) -> proto::
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect(),
         kind: match rules.kind {
-            Some(grund_domain::app::spec::MachineKind::Own) => proto::MachineKind::MACHINE_KIND_OWN,
-            Some(grund_domain::app::spec::MachineKind::Hosted) => {
+            Some(grund_config::app::spec::MachineKind::Own) => proto::MachineKind::MACHINE_KIND_OWN,
+            Some(grund_config::app::spec::MachineKind::Hosted) => {
                 proto::MachineKind::MACHINE_KIND_HOSTED
             }
             None => proto::MachineKind::MACHINE_KIND_UNSPECIFIED,

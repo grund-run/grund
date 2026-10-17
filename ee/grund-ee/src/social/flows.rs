@@ -10,10 +10,8 @@ use std::time::Duration;
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::Utc;
-use grund_domain::{
-    account::{AccountCommand, RegistrationMethod},
-    names::{EmailAddress, Username},
-};
+use grund_config::names::{EmailAddress, Username};
+use grund_domain::account::{AccountCommand, RegistrationMethod};
 use grund_store::{
     accounts::{self, Lookup},
     social,

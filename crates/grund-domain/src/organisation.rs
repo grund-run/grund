@@ -10,7 +10,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::names::Username;
+use grund_config::names::Username;
 
 pub const ORGANISATION_CATEGORY: &str = "grund-organisation";
 

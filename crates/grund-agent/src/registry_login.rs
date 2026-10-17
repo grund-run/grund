@@ -16,7 +16,7 @@
 
 use anyhow::{Context, bail};
 use base64::{Engine, engine::general_purpose::STANDARD};
-use grund_domain::app::spec::ImageReference;
+use grund_config::app::spec::ImageReference;
 use serde::Deserialize;
 
 /// The organisation's login to one registry host.

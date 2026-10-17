@@ -132,7 +132,7 @@ fn yaml(value: &Value) -> String {
     match value {
         Value::Object(map) if map.is_empty() => String::new(),
         _ => {
-            let text = grund_domain::yaml::to_string(value);
+            let text = grund_config::yaml::to_string(value);
             if text.ends_with('\n') {
                 text
             } else {

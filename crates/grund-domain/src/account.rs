@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::names::Username;
+use grund_config::names::Username;
 
 pub const ACCOUNT_CATEGORY: &str = "grund-account";
 

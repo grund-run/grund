@@ -320,7 +320,7 @@ fn spec(
     roots: &[PathBuf],
 ) -> Result<ContainerSpec, String> {
     let image = replica.image.as_option().ok_or("no image")?;
-    let reference = grund_domain::app::spec::ImageReference::parse(&image.reference)
+    let reference = grund_config::app::spec::ImageReference::parse(&image.reference)
         .map_err(|e| e.to_string())?;
     let mut env: Vec<(String, String)> = replica
         .env
