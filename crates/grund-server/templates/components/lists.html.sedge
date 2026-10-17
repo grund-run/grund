@@ -118,11 +118,10 @@ component MachineMenu(slug: &str, machine: &crate::web::machines::MachineItem<'_
 }
 
 component TemplateRow(template: &crate::web::apps::TemplateView, href: &str) {
-  <li class="item" data-name={template.key}>
+  <li class="item item-template" data-name={template.key}>
     <ImageIcon key={template.icon} />
     <div class="item-text"><p class="item-name">{template.title}</p><p class="item-sub item-sub-wrap">{template.summary}</p></div>
     <div class="item-meta">{if let Some(soon) = template.soon { <Tag text={soon} /> } else if !href.is_empty() { <a class="btn btn-secondary btn-sm" href={href}><span>Deploy</span></a> }}</div>
-    <span></span>
   </li>
 }
 

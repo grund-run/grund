@@ -10,22 +10,32 @@ pub mod compiled {
 
 include!(concat!(env!("OUT_DIR"), "/image_logos.rs"));
 
-pub(crate) fn image_logo_mark(key: &str) -> Option<&'static str> {
+pub(crate) fn image_logo(key: &str) -> Option<(&'static str, bool)> {
     IMAGE_LOGOS
         .iter()
-        .find_map(|(name, mark, _)| (*name == key).then_some(*mark))
+        .find_map(|(name, mark, _, _, wide)| (*name == key).then_some((*mark, *wide)))
 }
 
 pub(crate) struct ImageLogoSymbols<'a>(pub &'a [&'a str]);
 
 impl sedge_rt::Render for ImageLogoSymbols<'_> {
     fn render(&self, out: &mut String) {
-        for (key, _, symbol) in IMAGE_LOGOS {
+        for (key, _, symbol, _, _) in IMAGE_LOGOS {
             if self.0.contains(key) {
                 out.push_str(symbol);
             }
         }
     }
+}
+
+pub(crate) fn image_logo_notices<'a>(
+    keys: &'a [&str],
+) -> impl Iterator<Item = &'static str> + Clone + 'a {
+    IMAGE_LOGOS
+        .iter()
+        .filter_map(move |(key, _, _, notice, _)| {
+            (keys.contains(key) && !notice.is_empty()).then_some(*notice)
+        })
 }
 
 pub(crate) fn compiled_css_href() -> &'static str {

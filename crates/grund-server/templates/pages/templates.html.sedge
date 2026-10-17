@@ -1,4 +1,4 @@
-use crate::templates::compiled::components::{ImageSprite, PageHead, Items, TemplateRow};
+use crate::templates::compiled::components::{ImageSprite, ImageLogoNotices, PageHead, Items, TemplateRow};
 props crate::web::apps::TemplatesPage { slug, manages, templates, image_keys };
 
 <ImageSprite icons={image_keys} />
@@ -8,3 +8,4 @@ props crate::web::apps::TemplatesPage { slug, manages, templates, image_keys };
     <TemplateRow template={template} href={if *manages { format!("/{slug}/deploy?template={}", template.key) } else { String::new() }} />
   }}
 </Items>
+<ImageLogoNotices icons={image_keys} />

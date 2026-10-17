@@ -1,30 +1,22 @@
 Product logo notices
-Verified source and usage guidance: 2026-10-17.
+Source and trademark policy review: 2026-10-17.
 
-The sources.tsv table controls which upstream SVGs are embedded. Only allow rows
-are displayed; neutral rows use the shared box glyph pending logo permission.
-Artwork identifies the named software, not endorsement of grund.
+Kasper accepted the trademark risk on 2026-10-17 for the product logos below.
+That decision is not a claim that the trademark owners granted permission,
+endorsement, sponsorship or affiliation.
 
-Python and the two-snakes logo are trademarks or registered trademarks of the
-Python Software Foundation. Unmodified nominative use follows the PSF policy.
-The logo is accompanied by TM. Geometry, gradients and native colours are unchanged;
-exporter metadata was removed and CSS declarations converted to SVG presentation
-attributes for the page Content Security Policy.
+Each vendored SVG is the complete, unmodified upstream file. Geometry, colours,
+styles, metadata, proportions and native whitespace are preserved. The sprite
+embeds each complete file as an image document, scaled to fit without cropping.
+No external logo CDN is contacted by the browser.
 
-MongoDB and the leaf mark are registered trademarks of MongoDB, Inc.
-The logo identifies MongoDB software. The registered-mark notice is displayed.
-The official MongoDBLogoMark path and supported White colour are exported from
-LeafyGreen UI under Apache-2.0; its licence and copyright are retained in mongo.svg.
+The sources.tsv table records the source, policy, decision and attribution.
+Those rows generate the individual notices below and the attribution at the
+bottom of pages displaying the corresponding logos. Redis and MinIO ownership
+statements therefore also appear on the same page as their marks.
+The table's layout column selects square or wide containment. Cards reserve the
+same 72-pixel column for both: square art stays 44 pixels and left-aligned;
+wide marks fill a centred 72-by-44-pixel slot without distortion or cropping.
 
-ClickHouse, the ClickHouse logo, and related marks are trademarks or registered
-trademarks of ClickHouse, Inc. or its affiliates. The official dark-background mark
-is used without changing its paths or colours; exporter styles use equivalent
-SVG presentation attributes.
-
-PostgreSQL, Redis, RabbitMQ, Docker, NGINX, NATS, Node.js and Prometheus logos
-are not displayed: permission for this use has not been established. Source and
-policy links remain in sources.tsv for a later clearance decision. PostgreSQL
-word-mark fair-use examples do not establish permission for Slonik artwork.
-
-To clear a brand, vendor its official SVG with native viewBox and presentation
-attributes, preserve applicable notices, then change its table decision to allow.
+whoami has no official mark and uses the neutral glyph. Docker remains neutral:
+its key represents arbitrary Docker Hub images, not a Docker template app.

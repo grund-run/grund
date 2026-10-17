@@ -1,6 +1,6 @@
 use crate::templates::compiled::layouts::App;
 use crate::templates::compiled::components::{Contents, Specimen, Demos, Column, Labelled, Swatches, Borders, TypeScale, SpaceScale, Radii, IconGrid, Icon, ImageIcon, ImageSprite, Button, ButtonAdvanced, CopyButton, ShortId, RelativeTime, RowPill, Mark, Tag, Para, LinkMore, External, IconLink, PageHead, Section, Panel, Tabs, Status, StatusLine, Pill, IconFact, Callout, Stats, EmptyState, AddCard, Code, DnsRecords, Rows, Row, Items, AppRow, AppMenu, MachineRow, ListTools, Links, Link, Tiles, Tile, Timeline, Event, Menu, MenuItem, Banner, PostButton, Search, SelectForm, Form, Field, Grid, Actions, ToggleField, PairsField, CodeField, ChipsField, ChoiceLinks, Facts, Fact, Endpoint, ChoiceField, ChoiceCard, StepperField, Group, RangeField, Expanders, Expander, Nav, NavItem, TopbarAction};
-use crate::templates::compiled::components::{InvitationRows, InboxColumn, NotificationRows, NotificationBell, OrganisationPage};
+use crate::templates::compiled::components::{InvitationRows, InboxColumn, NotificationRows, NotificationBell, OrganisationPage, ImageLogoNotices};
 use crate::templates::compiled::components::Select;
 props crate::web::pages::StyleGuidePage { viewer, csrf, swatches, sprite_icons, gallery, icons, apps, machines };
 
@@ -24,7 +24,7 @@ props crate::web::pages::StyleGuidePage { viewer, csrf, swatches, sprite_icons, 
   <Section id="sg-icons" title="Icons">
     <Specimen title="Icon" code={r#"<Icon name="server" class="icon-lg tone-ok" />"#} note="24-unit stroke icons from the sprite in components/icons.html.sedge, in currentColor. icon-sm is 18 px, the default 22 px, icon-lg 36 px; tone-* colours them by what they stand for."><IconGrid names={sprite_icons.as_slice()} /></Specimen>
     <Specimen title="Tones" code={r#"<Icon name="server" class="icon-lg tone-blue" />"#}><Demos>{for (label, class) in [("tone-ok", "icon-lg tone-ok"), ("tone-blue", "icon-lg tone-blue"), ("tone-orange", "icon-lg tone-orange"), ("tone-violet", "icon-lg tone-violet"), ("tone-muted", "icon-lg tone-muted")] { <Labelled label={label}><Icon name="server" class={class} /></Labelled> }}</Demos></Specimen>
-    <Specimen title="Image icons" code={r#"<ImageIcon key="nginx" size="" />"#} note="Available upstream logos retain their native colours. Each uses the same fixed box; other images use the neutral fallback. The page declares the icons it shows with ImageSprite."><Demos>{for key in gallery.iter() { <Labelled label={key}><ImageIcon key={key} /></Labelled> }}<Labelled label="docker"><ImageIcon key="docker" /></Labelled><Labelled label="image"><ImageIcon key="image" /></Labelled></Demos></Specimen>
+    <Specimen title="Image icons" code={r#"<ImageIcon key="nginx" size="" />"#} note="Original upstream SVGs retain their colours and proportions. Cards reserve a 72 px icon column: square artwork is 44 px, left-aligned; wide marks contain in 72 × 44 px. Unbranded images use a plain glyph. The page declares its marks with ImageSprite and ends with ImageLogoNotices."><Demos>{for key in gallery.iter() { <Labelled label={key}><ImageIcon key={key} /></Labelled> }}<Labelled label="docker"><ImageIcon key="docker" /></Labelled><Labelled label="image"><ImageIcon key="image" /></Labelled></Demos></Specimen>
     <Specimen title="Marks" code={r#"<Mark name="nord-studio" size="" /><Mark name="ada" size="lg" />"#} note="The letter for an organisation (in the switcher) or a person (in rows)."><Demos><Mark name="nord-studio" /><Mark name="ada" size="lg" /></Demos></Specimen>
   </Section>
 
@@ -281,4 +281,5 @@ props crate::web::pages::StyleGuidePage { viewer, csrf, swatches, sprite_icons, 
       <Demos><Labelled label="unread"><NotificationBell count={viewer.unread_notifications} active={false} /></Labelled><Labelled label="empty"><NotificationBell count={0} active={false} /></Labelled><Labelled label="focus"><NotificationBell count={3} active={false} state="focus" /></Labelled></Demos>
     </Specimen>
   </Section>
+  <ImageLogoNotices icons={icons.as_slice()} />
 </App>

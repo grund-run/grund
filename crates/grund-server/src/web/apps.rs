@@ -155,8 +155,8 @@ fn health(view: &AppView, now: DateTime<Utc>) -> Health {
     Health { word, tone }
 }
 
-/// The icon a page draws for `image`: a well-known image's own, `docker`
-/// for any other image on Docker Hub, and `image` for one from elsewhere.
+/// The icon for a recognized product image, or a neutral glyph for whoami.
+/// Other Docker Hub images use `docker`; images from elsewhere use `image`.
 pub fn image_icon(image: &str) -> &'static str {
     const KNOWN: &[(&str, &[&str])] = &[
         ("nginx", &["nginx", "nginx-unprivileged", "openresty"]),
@@ -178,6 +178,8 @@ pub fn image_icon(image: &str) -> &'static str {
         ("python", &["python"]),
         ("prometheus", &["prometheus"]),
         ("rabbitmq", &["rabbitmq"]),
+        ("minio", &["minio"]),
+        ("image", &["whoami"]),
     ];
     let reference = image.split('@').next().unwrap_or_default().trim();
     let mut parts: Vec<&str> = reference.split('/').collect();
@@ -2770,6 +2772,12 @@ pub(super) async fn app_view(
                 }
                 _ => crate::templates::compiled::pages::app_soon::render(&page.soon),
             });
+            sedge_rt::Render::render(
+                &crate::templates::compiled::components::ImageLogoNotices {
+                    icons: &[page.shell.app.icon],
+                },
+                &mut html,
+            );
             html
         },
     )
@@ -4012,6 +4020,8 @@ mod tests {
             ("quay.io/prometheus/prometheus", "prometheus"),
             ("rabbitmq:4-management", "rabbitmq"),
             ("node:22", "node"),
+            ("minio", "minio"),
+            ("quay.io/minio/minio:latest", "minio"),
         ] {
             assert_eq!(image_icon(image), icon, "{image}");
         }
@@ -4019,9 +4029,9 @@ mod tests {
 
     #[test]
     fn other_images_get_docker_on_docker_hub_and_a_neutral_icon_elsewhere() {
-        assert_eq!(image_icon("traefik/whoami:v1.11.0"), "docker");
+        assert_eq!(image_icon("traefik/whoami:v1.11.0"), "image");
         assert_eq!(image_icon("myapp/worker:latest"), "docker");
-        assert_eq!(image_icon("docker.io/traefik/whoami:v1.11.0"), "docker");
+        assert_eq!(image_icon("docker.io/traefik/whoami:v1.11.0"), "image");
         assert_eq!(image_icon("index.docker.io/library/busybox"), "docker");
         assert_eq!(image_icon("nodered/node-red"), "docker");
         assert_eq!(image_icon("ghcr.io/ours/api:v1.4.0"), "image");

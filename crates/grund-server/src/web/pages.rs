@@ -1370,6 +1370,7 @@ const KNOWN_IMAGE_ICONS: &[&str] = &[
     "python",
     "prometheus",
     "rabbitmq",
+    "minio",
 ];
 
 /// The name of every icon in the sprite, in display order.

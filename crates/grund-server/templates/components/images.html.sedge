@@ -1,3 +1,12 @@
+use crate::templates::compiled::components::Para;
+
 component ImageSprite(icons: &[&str]) {
 <svg class="sprite" aria-hidden="true">{crate::templates::ImageLogoSymbols(icons)}</svg>
+}
+
+component ImageLogoNotices(icons: &[&str]) {
+  {let mut notices = crate::templates::image_logo_notices(icons).peekable();}
+  {if notices.peek().is_some() {
+    <footer class="logo-notices"><Para kind="hint">{for notice in notices.clone() { <span>{notice}{" "}</span> }}</Para></footer>
+  }}
 }

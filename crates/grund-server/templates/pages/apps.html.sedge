@@ -1,4 +1,4 @@
-use crate::templates::compiled::components::{ImageSprite, PageHead, ListTools, Banner, Para, Items, AppRow, EmptyState, AddCard, Panel, Rows, Row, PostButton};
+use crate::templates::compiled::components::{ImageSprite, ImageLogoNotices, PageHead, ListTools, Banner, Para, Items, AppRow, EmptyState, AddCard, Panel, Rows, Row, PostButton};
 props crate::web::apps::AppsPage<'_> { slug, list_href, grid_href, all_href, icons, apps, restorable, total, list, sorts, notice, error, manages, csrf };
 
 <ImageSprite icons={icons} />
@@ -28,3 +28,4 @@ props crate::web::apps::AppsPage<'_> { slug, list_href, grid_href, all_href, ico
     }}</Rows>
   </Panel>
 }}
+<ImageLogoNotices icons={icons} />

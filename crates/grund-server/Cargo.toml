@@ -77,6 +77,7 @@ webpki-roots = "1"
 x509-parser = { version = "0.18", features = ["verify"] }
 
 [build-dependencies]
+base64.workspace = true
 brotli = { version = "9", default-features = false, features = ["std"] }
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 sedx = { git = "https://git.kjuulh.io/kjuulh/sedge.git", rev = "a65801397851703ee774faa87e5986c30afbdc44" }

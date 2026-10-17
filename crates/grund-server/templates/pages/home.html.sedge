@@ -1,4 +1,4 @@
-use crate::templates::compiled::components::{ImageSprite, PageHead, Section, Items, AppRow, AddCard, EmptyState, Rows, Row, Stats, InvitationRows};
+use crate::templates::compiled::components::{ImageSprite, ImageLogoNotices, PageHead, Section, Items, AppRow, AddCard, EmptyState, Rows, Row, Stats, InvitationRows};
 use crate::web::orgs::role_title;
 props crate::web::orgs::HomePage<'_> { viewer, csrf, members, icons, apps, app_count };
 
@@ -26,4 +26,5 @@ props crate::web::orgs::HomePage<'_> { viewer, csrf, members, icons, apps, app_c
     <Rows><Row name={&format!("{} member{}",members,if *members == 1 { "" } else { "s" })} icon_name="users" tone="blue" sub={members_href.as_str()} status_text={Some(role_title(&org.role))} status_tone="ok" /></Rows>
   </Section>
   <Stats facts={&[("mail",viewer.email.as_str()),("clock",member_since.as_str())]} />
+  <ImageLogoNotices icons={icons} />
 }}

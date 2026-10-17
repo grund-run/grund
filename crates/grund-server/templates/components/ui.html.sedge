@@ -20,8 +20,8 @@ component RowPill(text: &str, tone: &str) {
 <span class="row-status"><Pill text={text} tone={tone} /></span>
 }
 component ImageIcon(key: &str, size: &str) {
-{if let Some(mark) = crate::templates::image_logo_mark(key) {
-  <span class="image-icon{if !size.is_empty() { " image-icon-" } else { "" }}{size}" aria-hidden="true"><svg width="100%" height="100%"><use href="#img-{key}"/></svg><sup class="image-trademark">{mark}</sup></span>
+{if let Some((mark, wide)) = crate::templates::image_logo(key) {
+  <span class="image-icon{if wide { " image-icon-wide" } else { "" }}{if !size.is_empty() { " image-icon-" } else { "" }}{size}" aria-hidden="true"><svg width="100%" height="100%"><use href="#img-{key}"/></svg><sup class="image-trademark">{mark}</sup></span>
 } else {
   <span class="image-icon{if !size.is_empty() { " image-icon-" } else { "" }}{size} image-icon-neutral" aria-hidden="true"><Icon name="box" /></span>
 }}
