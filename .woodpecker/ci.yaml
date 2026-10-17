@@ -35,7 +35,7 @@
 # no build reads those files. The next code change tests the whole tree.
 when:
   - event: push
-    branch: ci/ciperf-test-order
+    branch: ci/ciperf-codegen
 
 labels:
   platform: linux/amd64
