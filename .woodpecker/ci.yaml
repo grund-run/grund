@@ -34,7 +34,8 @@
 # A push or pull request that changes only documentation (*.md) runs nothing:
 # no build reads those files. The next code change tests the whole tree.
 when:
-  - event: manual
+  - event: push
+    branch: ci/ciperf-baseline
 
 labels:
   platform: linux/amd64
