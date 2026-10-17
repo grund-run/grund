@@ -237,10 +237,10 @@ def publish():
             fail(f"public {name} differs from the staged bytes (including on HTTP 409)")
     alpha = "-alpha." in TAG
     stage = "Alpha release. Expect rough edges; not a stability guarantee.\n\n" if alpha else ""
-    if TAG == "v0.0.0-alpha.2":
-        stage += "v0.0.0-alpha.1 was a failed, unpublished tag; no binaries or Gitea release were published for it. This is the first downloadable alpha.\n\n"
+    if TAG == "v0.0.0-alpha.3":
+        stage += "v0.0.0-alpha.1 and v0.0.0-alpha.2 were failed, unpublished tags; no binaries or Gitea releases were published for them. This is the first downloadable alpha.\n\n"
     notes = (f"{stage}Linux downloads for amd64 and arm64 include the command-line client, server and machine commands in one static binary.\n\n"
-             f"Downloads and SHA256SUMS: {base}\n\n"
+             f"[Linux amd64]({base}grund-linux-amd64) · [Linux arm64]({base}grund-linux-arm64) · [SHA256SUMS]({base}SHA256SUMS)\n\n"
              f"Self-host image: `{IMAGE}:{TAG}`\n\nPublic source commit: `{REVISION}`.\n\n"
              "macOS downloads are not included in this release.")
     payload = {"tag_name": TAG, "target_commitish": REVISION, "name": f"grund {TAG}", "body": notes, "draft": False, "prerelease": alpha}

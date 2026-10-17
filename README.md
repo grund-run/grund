@@ -26,7 +26,7 @@ grund login                           # hosted dashboard at https://app.grund.sh
 It verifies SHA-256 before replacing `grund` in `~/.local/bin`, or
 `/usr/local/bin` as root, without invoking sudo. Add the printed directory to
 `PATH` if needed. `--bin-dir /absolute/path` chooses another directory;
-`--version v0.0.0-alpha.2` pins a release. Without a version it resolves the
+`--version v0.0.0-alpha.3` pins a release. Without a version it resolves the
 newest published release, including alpha prereleases. Download failures or
 checksum mismatches leave the installed binary alone. Checksums rely on the
 public registry's HTTPS; releases are not signed. macOS downloads are not
@@ -585,11 +585,11 @@ overwrites a release. The public Gitea release is created last, and is what
 the installer's release list resolves. There is no mutable `latest` package
 or image.
 
-`v0.0.0-alpha.1` was an unpublished tag: its CI webhook identified an
-annotated tag object instead of a source commit, and the identity gate
-refused it. No binaries or Gitea release were published for that tag.
-Release attribution peels annotated tags to the actual source commit;
-`tools/test-release.py` covers that case and refuses a different checkout.
+`v0.0.0-alpha.1` and `v0.0.0-alpha.2` are unpublished tags. The first exposed
+an annotated-tag identity mismatch; the second stopped at a missing Git
+dependency in its clean runtime check. Neither published binaries or a
+Gitea release. Release attribution peels annotated tags to the source
+commit; `tools/test-release.py` covers it and refuses a different checkout.
 
 Pushes to `main` still publish the commit-addressed amd64 image and machine
 artifacts at `main-<commit>`. Neither a release tag nor this public

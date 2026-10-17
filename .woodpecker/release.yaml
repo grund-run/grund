@@ -44,7 +44,7 @@ steps:
       GRUND_RELEASE_DATABASE_URL: postgres://grund:grund-release-disposable@release-postgres:5432/grund_release
       GRUND_RELEASE_NATS_URL: nats://release-nats:4222
     commands:
-      - apk add --no-cache python3 curl openssl
+      - apk add --no-cache python3 curl openssl git
       # Exercise final download bytes, not the differently attributed ci build.
       # Readiness must prove this commit and both real dependencies; the same
       # binary then creates an owner, probes HTTP and makes a real CLI RPC.
