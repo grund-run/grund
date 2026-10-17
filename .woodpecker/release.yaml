@@ -90,7 +90,7 @@ steps:
     depends_on: [image-amd64, image-arm64]
     environment:
       REGISTRY_TOKEN:
-        from_secret: registry_token
+        from_secret: release_token
     commands:
       - apk add --no-cache python3 skopeo git ca-certificates
       # Archive inspection compares the packaged /grund with each verified
