@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 import urllib.error
 import urllib.request
 
@@ -58,17 +59,34 @@ def identity():
         fail("release tag does not point to the checked-out commit")
 
 
+def stage_payload(name, content):
+    # Both architecture steps stage the same metadata. Readers must see a
+    # complete file even when the other builder refreshes it during verify.
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=WORK, delete=False) as target:
+            temporary = Path(target.name)
+            target.write(content)
+        temporary.chmod(0o644)
+        temporary.replace(DIST / name)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 def prepare():
     identity()
     DIST.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(ROOT / "compose.yaml", DIST / "compose.yaml")
-    shutil.copyfile(ROOT / "crates/grund-agent/install.sh", DIST / "agent-install.sh")
-    (DIST / "release.txt").write_text(REVISION + "\n")
+    stage_payload("compose.yaml", (ROOT / "compose.yaml").read_bytes())
+    stage_payload("agent-install.sh", (ROOT / "crates/grund-agent/install.sh").read_bytes())
+    stage_payload("release.txt", (REVISION + "\n").encode())
 
 
-def verify():
+def verify(architectures=("amd64", "arm64")):
     identity()
     for arch, machine in (("amd64", "Advanced Micro Devices X86-64"), ("arm64", "AArch64")):
+        if arch not in architectures:
+            continue
         binary = DIST / f"grund-linux-{arch}"
         binary.chmod(0o755)
         header = output("readelf", "-h", str(binary))
@@ -260,9 +278,17 @@ def publish():
 
 def main():
     os.chdir(ROOT)
-    commands = {"prepare": prepare, "verify": verify, "merge-images": merge_images, "publish-image": publish_image, "publish": publish}
+    commands = {
+        "prepare": prepare,
+        "verify": verify,
+        "verify-amd64": lambda: verify(("amd64",)),
+        "verify-arm64": lambda: verify(("arm64",)),
+        "merge-images": merge_images,
+        "publish-image": publish_image,
+        "publish": publish,
+    }
     if len(sys.argv) != 2 or sys.argv[1] not in commands:
-        fail("usage: tools/release.py {prepare|verify|merge-images|publish-image|publish}")
+        fail("usage: tools/release.py {" + "|".join(commands) + "}")
     commands[sys.argv[1]]()
 
 
