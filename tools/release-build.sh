@@ -16,7 +16,7 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$root/scratch/tag-release/target}"
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}" CARGO_INCREMENTAL=0
-export RUSTC_WRAPPER=sccache SCCACHE_DIR="${SCCACHE_DIR:-$HOME/.cache/sccache}" SCCACHE_CACHE_SIZE=40G
+export RUSTC_WRAPPER=sccache SCCACHE_DIR="${SCCACHE_DIR:-$HOME/.cache/sccache}" SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE:-2G}"
 export RUSTUP_TOOLCHAIN=1.98.1-x86_64-unknown-linux-musl
 export GRUND_REVISION="$(git rev-parse "${CI_COMMIT_SHA}^{commit}")"
 # A rerun reproduces the same attribution; benchmark labels force a new link.

@@ -1,0 +1,35 @@
+# One chosen fast-build profile: cold then cached, with one real runtime sample.
+# This branch creates no tag, uploads no cache and publishes no artifacts.
+when:
+  - event: push
+    branch: ci/ciperf-no-lto
+
+labels:
+  platform: linux/amd64
+
+services:
+  no-lto-postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: grund_release
+      POSTGRES_USER: grund
+      POSTGRES_PASSWORD: grund-release-disposable
+      POSTGRES_INITDB_ARGS: "-c fsync=off -c synchronous_commit=off -c full_page_writes=off"
+  no-lto-nats:
+    image: nats:2.15-alpine
+
+steps:
+  fast-release:
+    image: rust:1.98.1-alpine3.24
+    environment:
+      CARGO_BUILD_JOBS: "4"
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: always
+      RUSTUP_TOOLCHAIN: 1.98.1-x86_64-unknown-linux-musl
+      SCCACHE_CACHE_SIZE: 2G
+      GRUND_RELEASE_NATS_URL: nats://no-lto-nats:4222
+      PERF_DATABASE_NOLTO: postgres://grund:grund-release-disposable@no-lto-postgres:5432/grund_release
+    commands:
+      - apk add --no-cache musl-dev binutils protobuf-dev sccache ca-certificates curl python3 git openssl
+      - 'command -v ci-cache >/dev/null || { (curl -fsS --connect-timeout 5 --max-time 60 -o /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.3.1/ci-cache-0.3.1-x86_64-linux-musl 2>/dev/null || { if command -v timeout >/dev/null; then timeout 60 wget -q -T 5 -O /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.3.1/ci-cache-0.3.1-x86_64-linux-musl; else wget -q -T 5 -O /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.3.1/ci-cache-0.3.1-x86_64-linux-musl; fi; } 2>/dev/null) && echo "460ac0386515e7ce2704c65e414ed1ee2a938fe0b1ed05ec8dd363d9ef3a5f7e  /usr/local/bin/.ci-cache.part" | sha256sum -c - >/dev/null 2>&1 && chmod 0755 /usr/local/bin/.ci-cache.part && mv /usr/local/bin/.ci-cache.part /usr/local/bin/ci-cache; rm -f /usr/local/bin/.ci-cache.part; command -v ci-cache >/dev/null || echo "ci-cache client unavailable, building uncached"; }'
+      - python3 tools/release-measure.py no-lto

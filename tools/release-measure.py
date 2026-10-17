@@ -26,6 +26,7 @@ def cpu_usage():
 
 def measure(arch, label, jobs, cgu=1, database=None, fresh_workspace=False, root_cgu=None):
     environment = os.environ.copy()
+    environment['SCCACHE_DIR'] = str(ROOT / 'scratch/no-lto-sccache')
     environment.update({
         'CARGO_BUILD_JOBS': str(jobs), 'CARGO_INCREMENTAL': '0',
         'GRUND_RELEASE_BENCHMARK_VERSION': f'ciperf-{label}-{environment["CI_COMMIT_SHA"]}',
@@ -78,6 +79,8 @@ def measure(arch, label, jobs, cgu=1, database=None, fresh_workspace=False, root
     result = {
         'label': label, 'agent': environment.get('CI_MACHINE', ''), 'arch': arch,
         'jobs': jobs, 'codegen_units': cgu, 'wall_s': elapsed,
+        'lto': environment['CARGO_PROFILE_RELEASE_LTO'],
+        'opt_level': int(environment['CARGO_PROFILE_RELEASE_OPT_LEVEL']),
         'root_codegen_units': root_cgu if root_cgu is not None else cgu,
         'restore_s': restore_elapsed, 'total_s': finished - total_started,
         'binary_bytes': binary.stat().st_size,
@@ -104,39 +107,15 @@ def main():
         'agent': os.environ.get('CI_MACHINE', ''), 'logical_cpus': os.cpu_count(),
         'cpu_max': cgroup('cpu.max'), 'memory_max': cgroup('memory.max'),
     }, sort_keys=True), flush=True)
-    if sys.argv[1:] == ['matrix']:
-        measure('amd64', 'thin-cgu1-j4', 4, database=os.environ['PERF_DATABASE_CGU1'], fresh_workspace=True)
-        measure('amd64', 'thin-cgu16-seed-j4', 4, cgu=16, fresh_workspace=True)
-        measure('amd64', 'thin-cgu16-j4', 4, cgu=16, database=os.environ['PERF_DATABASE_CGU16'], fresh_workspace=True)
-        measure('amd64', 'thin-cgu1-j8', 8, database=os.environ['PERF_DATABASE_CGU1_J8'], fresh_workspace=True)
-        measure('amd64', 'thin-cgu16-j8', 8, cgu=16, database=os.environ['PERF_DATABASE_CGU16_J8'], fresh_workspace=True)
-    elif sys.argv[1:] == ['matrix-package']:
-        measure('amd64', 'package-cgu1-j4', 4, database=os.environ['PERF_DATABASE_CGU1'], fresh_workspace=True)
-        measure('amd64', 'package-cgu16-seed-j4', 4, root_cgu=16, fresh_workspace=True)
-        measure('amd64', 'package-cgu16-j4', 4, root_cgu=16, database=os.environ['PERF_DATABASE_CGU16'], fresh_workspace=True)
-    elif sys.argv[1:] == ['arm-cache']:
-        # Prime registry sources equally; target artifacts and tools still
-        # come exclusively from the per-target snapshot in the warm case.
-        subprocess.run(['cargo', 'fetch', '--locked', '--target', 'aarch64-unknown-linux-musl', '--quiet'], check=True)
-        subprocess.run(['rustup', 'target', 'add', 'aarch64-unknown-linux-musl'], check=True)
-        measure('arm64', 'arm-cache-warm-j4', 4)
-        if os.environ.get('CI_MACHINE') != '0c1ad77f1697':
-            # #275 already supplies the agent-1 cold control. A different
-            # agent gets its own cold run, never a cross-agent comparison.
-            subprocess.run(['sccache', '--stop-server'], check=True)
-            for relative in ('target/release-arm64', 'scratch/tag-release/tooling'):
-                path = ROOT / relative
-                if path.exists():
-                    shutil.rmtree(path)
-            os.environ.update({
-                'CICACHE': 'off',
-                'SCCACHE_DIR': str(ROOT / 'scratch/tag-perf/cold-sccache'),
-            })
-            measure('arm64', 'arm-cache-cold-control-j4', 4)
-    elif len(sys.argv) == 3 and sys.argv[1] in ('amd64', 'arm64'):
-        measure(sys.argv[1], sys.argv[2], int(os.environ.get('CARGO_BUILD_JOBS', '4')))
-    else:
-        raise RuntimeError('usage: release-measure.py {matrix|matrix-package|arm-cache|<amd64|arm64> <label>}')
+    if sys.argv[1:] != ['no-lto']:
+        raise RuntimeError('usage: release-measure.py no-lto')
+    os.environ.update({
+        'CARGO_PROFILE_RELEASE_LTO': 'false',
+        'CARGO_PROFILE_RELEASE_OPT_LEVEL': '3',
+    })
+    measure('amd64', 'no-lto-cgu16-cold-j4', 4, cgu=16)
+    measure('amd64', 'no-lto-cgu16-warm-j4', 4, cgu=16,
+            database=os.environ['PERF_DATABASE_NOLTO'], fresh_workspace=True)
 
 
 if __name__ == '__main__':
