@@ -276,6 +276,7 @@ pub struct InvitePage<'a> {
 pub struct LicensesPage<'a> {
     pub inter: &'a str,
     pub mono: &'a str,
+    pub uplot: &'a str,
 }
 
 pub fn redirect(to: &str) -> Response {
@@ -1321,6 +1322,7 @@ pub async fn licenses(AxumState(_state): AxumState<State>, browser: Browser) -> 
         crate::templates::compiled::pages::licenses::render(&LicensesPage {
             inter: crate::web::assets::INTER_LICENSE,
             mono: crate::web::assets::MONO_LICENSE,
+            uplot: crate::web::assets::UPLOT_LICENSE,
         }),
     )
 }

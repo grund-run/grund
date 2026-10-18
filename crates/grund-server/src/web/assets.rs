@@ -17,6 +17,7 @@ const JS: &str = include_str!("../../assets/grund.js");
 const INTER: &[u8] = include_bytes!("../../assets/fonts/inter-latin.woff2");
 const MONO: &[u8] = include_bytes!("../../assets/fonts/jetbrains-mono-latin.woff2");
 const MARK: &str = include_str!("../../assets/mark.svg");
+const UPLOT: &str = include_str!("../../assets/vendor/uplot-1.6.32.min.js");
 const CSS_BR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/grund.css.br"));
 const CSS_GZIP: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/grund.css.gz"));
 const JS_BR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/grund.js.br"));
@@ -25,10 +26,14 @@ const SEDX_BR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/sedx.js.br"));
 const SEDX_GZIP: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/sedx.js.gz"));
 const MARK_BR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/mark.svg.br"));
 const MARK_GZIP: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/mark.svg.gz"));
+const UPLOT_BR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/uplot.js.br"));
+const UPLOT_GZIP: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/uplot.js.gz"));
 
 /// The full texts of the fonts' licenses, for /licenses.
 pub const INTER_LICENSE: &str = include_str!("../../assets/licenses/inter.txt");
 pub const MONO_LICENSE: &str = include_str!("../../assets/licenses/jetbrains-mono.txt");
+/// uPlot 1.6.32, the chart library vendored for the app logs and metrics tabs.
+pub const UPLOT_LICENSE: &str = include_str!("../../assets/licenses/uplot.txt");
 
 /// Product-logo sources, usage conditions and trademark attribution for /licenses.
 pub const LOGO_NOTICES: &str = include_str!(concat!(env!("OUT_DIR"), "/logo_notices.txt"));
@@ -51,6 +56,14 @@ static SEDX_ASSET: LazyLock<Asset> = LazyLock::new(|| {
         sedx::JS.as_bytes(),
         SEDX_BR,
         SEDX_GZIP,
+        "text/javascript; charset=utf-8",
+    )
+});
+static UPLOT_ASSET: LazyLock<Asset> = LazyLock::new(|| {
+    Asset::compressed(
+        UPLOT.as_bytes(),
+        UPLOT_BR,
+        UPLOT_GZIP,
         "text/javascript; charset=utf-8",
     )
 });
@@ -114,6 +127,7 @@ pub fn warm_up() {
     LazyLock::force(&JS_ASSET);
     LazyLock::force(&SEDX_ASSET);
     LazyLock::force(&MARK_ASSET);
+    LazyLock::force(&UPLOT_ASSET);
     LazyLock::force(&INTER_ASSET);
     LazyLock::force(&MONO_ASSET);
 }
@@ -169,6 +183,7 @@ pub async fn serve(
         "grund.css" => (&CSS_ASSET, true),
         "grund.js" => (&JS_ASSET, true),
         "sedx.js" => (&SEDX_ASSET, true),
+        "uplot.js" => (&UPLOT_ASSET, true),
         "fonts/inter-latin.woff2" => (&INTER_ASSET, false),
         "fonts/jetbrains-mono-latin.woff2" => (&MONO_ASSET, false),
         "favicon.svg" | "mark.svg" => (&MARK_ASSET, false),
@@ -352,12 +367,21 @@ mod tests {
         response.into_body().collect().await.unwrap().to_bytes()
     }
 
+    #[test]
+    fn the_vendored_chart_library_is_the_published_release_unchanged() {
+        assert_eq!(
+            hex::encode(Sha256::digest(UPLOT.as_bytes())),
+            "19c8d4c6ad88929a79f4ae49d6f7161566dfd0ba3d15cc495e974f787eb78f1f"
+        );
+    }
+
     #[tokio::test]
     async fn embedded_assets_negotiate_decodable_encodings_and_distinct_etags() {
         for (path, original) in [
             ("/static/grund.css", CSS.as_bytes()),
             ("/static/grund.js", JS.as_bytes()),
             ("/static/sedx.js", sedx::JS.as_bytes()),
+            ("/static/uplot.js", UPLOT.as_bytes()),
             ("/static/mark.svg", MARK.as_bytes()),
         ] {
             let identity = get(path, None, None).await;

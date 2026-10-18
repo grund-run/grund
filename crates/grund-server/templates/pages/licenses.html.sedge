@@ -1,9 +1,10 @@
 use crate::templates::compiled::{layouts::Auth, components::{AuthHead, Section, Code}};
-props crate::web::pages::LicensesPage<'_> { inter, mono };
+props crate::web::pages::LicensesPage<'_> { inter, mono, uplot };
 
 <Auth title="Licenses">
-  <AuthHead title="Licenses" subtitle="Fonts and product logos used by grund." />
+  <AuthHead title="Licenses" subtitle="Fonts, product logos and the chart library used by grund." />
   <Section id="inter" title="Inter"><Code text={inter} copy={false} wrap /></Section>
   <Section id="jetbrains-mono" title="JetBrains Mono"><Code text={mono} copy={false} wrap /></Section>
+  <Section id="uplot" title="uPlot 1.6.32"><Code text={uplot} copy={false} wrap /></Section>
   <Section id="product-logos" title="Product logos"><Code text={crate::web::assets::LOGO_NOTICES} copy={false} wrap /></Section>
 </Auth>
