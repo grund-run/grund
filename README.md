@@ -70,10 +70,10 @@ server updates are available from `v0.0.0-alpha.6`. The no-argument local
 flow below is available from alpha.10: alphas .5 through .9 still require
 a domain or an existing-instance setup code.
 
-Installation requires Linux, root and systemd. If Docker or its client
-tools are missing on Debian or Ubuntu, the installer announces and
-installs the distribution's own packages. On other distributions, install
-Docker Engine and Docker Compose v2 first; grund does not run a third-party
+Installation requires Linux, root and systemd. On Debian or Ubuntu releases
+whose own repositories provide Docker Compose v2, the installer announces and
+installs missing Docker tools from those repositories. Otherwise, install
+Docker Engine and Docker Compose v2 first. grund does not run a third-party
 installation script.
 
 **Fresh Debian 13 with alpha.10:** install `docker.io`, `docker-cli` and
