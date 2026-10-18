@@ -62,6 +62,7 @@ async fn release(events: &EventStore, app_id: Uuid) -> u32 {
                 secret_versions: Vec::new(),
                 source: ReleaseSource::Api,
                 external_release: None,
+                request: None,
                 rollback_of: None,
                 note: String::new(),
                 rollout_id: Uuid::now_v7(),
@@ -206,6 +207,7 @@ async fn external_release_identity_and_owner_rebuild_from_app_events(pool: PgPoo
             secret_versions: Vec::new(),
             source: ReleaseSource::File,
             external_release: Some(origin.clone()),
+            request: None,
             rollback_of: None,
             note: String::new(),
             rollout_id: Uuid::now_v7(),
@@ -307,6 +309,7 @@ async fn external_release_identity_and_owner_rebuild_from_app_events(pool: PgPoo
                 secret_versions: Vec::new(),
                 source: ReleaseSource::File,
                 external_release: Some(origin.clone()),
+                request: None,
                 rollback_of: None,
                 note: String::new(),
                 rollout_id: Uuid::now_v7(),
@@ -1002,4 +1005,86 @@ async fn a_returning_lease_keeps_the_app_and_volume_but_removes_its_fenced_repli
             .await
             .unwrap();
     assert_eq!(app, (Some(release as i32), None));
+}
+
+#[sqlx::test(migrations = false)]
+async fn update_cache_is_tenant_scoped_and_hidden_as_soon_as_the_running_base_changes(
+    pool: PgPool,
+) {
+    use grund_domain::app::updates::{ImageUpdate, UpdateState};
+    let events = store(&pool).await;
+    let tenant = Uuid::now_v7();
+    let other = Uuid::now_v7();
+    let app_id = create(&events, tenant, "same-name").await;
+    let other_app = create(&events, other, "same-name").await;
+    release(&events, app_id).await;
+    release(&events, other_app).await;
+    for id in [app_id, other_app] {
+        decide(&events, id, |_| {
+            vec![AppEvent::CurrentReleaseSet {
+                release: 1,
+                set_at: Utc::now(),
+            }]
+        })
+        .await;
+    }
+    let update = ImageUpdate {
+        base_release: 1,
+        current_image: "docker.io/library/nginx:latest".into(),
+        current_digest: format!("sha256:{}", "d".repeat(64)),
+        checked_at: Some(Utc::now()),
+        state: UpdateState::Current,
+        reason: "current".into(),
+        candidates: Vec::new(),
+    };
+    assert!(
+        apps::save_update_check(&pool, tenant, app_id, &update)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        apps::update_check(&pool, tenant, app_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .0,
+        update
+    );
+    assert!(
+        apps::update_check(&pool, other, app_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        apps::update_check(&pool, other, other_app)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(apps::update_checks(&pool, other).await.unwrap().is_empty());
+    assert!(
+        !apps::save_update_check(&pool, other, app_id, &update)
+            .await
+            .unwrap()
+    );
+    release(&events, app_id).await;
+    decide(&events, app_id, |_| {
+        vec![AppEvent::CurrentReleaseSet {
+            release: 2,
+            set_at: Utc::now(),
+        }]
+    })
+    .await;
+    assert!(
+        apps::update_check(&pool, tenant, app_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        !apps::save_update_check(&pool, tenant, app_id, &update)
+            .await
+            .unwrap()
+    );
 }

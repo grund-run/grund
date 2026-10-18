@@ -318,6 +318,7 @@ mod tests {
             secret_versions: Vec::new(),
             source: ReleaseSource::Api,
             external_release: None,
+            request: None,
             rollback_of: None,
             note: String::new(),
             created_by: Uuid::nil(),

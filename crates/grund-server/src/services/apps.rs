@@ -6,9 +6,11 @@
 //! transaction with the events' read models and the signed documents of
 //! every machine it touched (§6.1, §10.3).
 
+mod updates;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::{LazyLock, Mutex};
+pub use updates::{ApplyImageUpdate, ImageUpdate};
 
 use anyhow::Context;
 use chrono::{DateTime, Utc};
@@ -88,6 +90,16 @@ pub enum AppsError {
     ExternalReleaseConflict,
     #[error("the app changed since the approved plan")]
     VersionConflict,
+    #[error("the running release changed; check for updates again")]
+    UpdateStale,
+    #[error("wait for the active rollout before updating the image")]
+    UpdateRollout,
+    #[error("the app needs a successful release before checking for updates")]
+    UpdateNoBase,
+    #[error("this target was not offered by the running release's explicit check")]
+    UpdateNotOffered,
+    #[error("the update request key was already used for a different request")]
+    UpdateRequestConflict,
     #[error("this app belongs to another external project")]
     ExternalOwnerConflict,
     #[error(transparent)]
@@ -114,6 +126,11 @@ impl AppsError {
             AppsError::ReleaseNotFound => "release_not_found",
             AppsError::ExternalReleaseConflict => "external_release_conflict",
             AppsError::VersionConflict => "version_conflict",
+            AppsError::UpdateStale => "update_stale",
+            AppsError::UpdateRollout => "rollout_in_progress",
+            AppsError::UpdateNoBase => "update_no_base",
+            AppsError::UpdateNotOffered => "update_not_available",
+            AppsError::UpdateRequestConflict => "idempotency_conflict",
             AppsError::ExternalOwnerConflict => "external_owner_conflict",
             AppsError::Volume(_) => "volume_invalid",
             AppsError::VolumeConfirmationRequired { .. } => "volume_confirmation_required",
@@ -132,6 +149,7 @@ impl From<WorkError> for AppsError {
             WorkError::App(AppError::ReleaseNotFound) => AppsError::ReleaseNotFound,
             WorkError::App(AppError::AlreadyExists) => AppsError::NameTaken,
             WorkError::App(AppError::ExternalOwnerConflict) => AppsError::ExternalOwnerConflict,
+            WorkError::App(AppError::RequestConflict) => AppsError::UpdateRequestConflict,
             other => AppsError::Internal(other.into()),
         }
     }
@@ -289,6 +307,7 @@ pub struct AppListing {
     /// The app's public hostname when its current release publishes: the
     /// shared address, or its first bound domain in custom-only mode.
     pub address: Option<String>,
+    pub update: ImageUpdate,
 }
 
 /// One secret value of a replica.
@@ -593,11 +612,21 @@ impl Apps {
                 .into_iter()
                 .map(|row| (row.app_id, row))
                 .collect();
+        let mut updates: std::collections::HashMap<Uuid, ImageUpdate> =
+            apps::update_checks(&self.state.pool, organisation_id)
+                .await?
+                .into_iter()
+                .map(|(id, update)| (id, update.0))
+                .collect();
         let mut connection = self.state.pool.acquire().await?;
         let mut listings = Vec::new();
         for view in self.list(organisation_id).await? {
             let release = running.remove(&view.row.app_id);
-            listings.push(self.listed(&mut connection, slug, view, release).await?);
+            let mut listing = self.listed(&mut connection, slug, view, release).await?;
+            if let Some(update) = updates.remove(&listing.view.row.app_id) {
+                listing.update = update;
+            }
+            listings.push(listing);
         }
         Ok(listings)
     }
@@ -636,6 +665,14 @@ impl Apps {
             _ => None,
         };
         Ok(AppListing {
+            update: ImageUpdate::not_checked(
+                view.row.current_release.unwrap_or(0) as u32,
+                release
+                    .as_ref()
+                    .map(|release| release.spec.0.image.clone())
+                    .unwrap_or_default(),
+                String::new(),
+            ),
             view,
             spec: release.as_ref().map(|r| r.spec.0.clone()),
             deployed_at: release.map(|r| r.created_at),
@@ -851,6 +888,7 @@ impl Apps {
                     secret_versions,
                     source: ReleaseSource::Dashboard,
                     external_release: None,
+                    request: None,
                     rollback_of: None,
                     note: String::new(),
                     rollout_id: Uuid::now_v7(),
@@ -954,6 +992,7 @@ impl Apps {
                 secret_versions,
                 source: ReleaseSource::Dashboard,
                 external_release: None,
+                request: None,
                 rollback_of: None,
                 note: String::new(),
                 rollout_id: Uuid::now_v7(),
@@ -977,7 +1016,12 @@ impl Apps {
             .into_iter()
             .find(|r| r.app_id == view.row.app_id);
         let mut connection = self.state.pool.acquire().await?;
-        self.listed(&mut connection, slug, view, release).await
+        let update = apps::update_check(&mut *connection, organisation_id, view.row.app_id).await?;
+        let mut listing = self.listed(&mut connection, slug, view, release).await?;
+        if let Some(update) = update {
+            listing.update = update.0;
+        }
+        Ok(listing)
     }
 
     async fn secret_versions(
@@ -1069,10 +1113,41 @@ impl Apps {
         settings: Option<AppSettings>,
         expected_version: Option<i64>,
     ) -> Result<ReleaseRow, AppsError> {
+        self.record_release_checked(actor, app_id, release, settings, expected_version, None)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn record_release_checked(
+        &self,
+        actor: Uuid,
+        app_id: Uuid,
+        release: AppCommand,
+        settings: Option<AppSettings>,
+        expected_version: Option<i64>,
+        update: Option<&ApplyImageUpdate>,
+    ) -> Result<ReleaseRow, AppsError> {
         let mut work = Work::begin(&self.state.events, Uuid::now_v7(), &actor.to_string()).await?;
         lock_app_domain_policy(work.sql(), app_id).await?;
         let app = work.load_app(app_id).await?;
         let app_name = app.name.as_ref().ok_or(AppsError::NotFound)?;
+        if let AppCommand::Release {
+            request: Some(request),
+            ..
+        } = &release
+            && let Some(number) = updates::retained_request(&app, request)?
+        {
+            return apps::release(&mut **work.sql(), app_id, number as i32)
+                .await?
+                .ok_or(AppsError::ReleaseNotFound);
+        }
+        if let Some(update) = update {
+            update.validate_base(&app)?;
+            let cached = apps::update_check(&mut **work.sql(), app.organisation_id, app_id)
+                .await?
+                .ok_or(AppsError::UpdateNotOffered)?;
+            update.candidate(&cached.0)?;
+        }
         if let AppCommand::Release {
             external_release: Some(origin),
             ..
@@ -1481,6 +1556,7 @@ impl Apps {
             secret_versions,
             source,
             external_release,
+            request: None,
             rollback_of: None,
             note,
             rollout_id: Uuid::now_v7(),
@@ -1524,6 +1600,7 @@ impl Apps {
                 secret_versions,
                 source: ReleaseSource::Rollback,
                 external_release: None,
+                request: None,
                 rollback_of: Some(number),
                 note: String::new(),
                 rollout_id: Uuid::now_v7(),
@@ -2304,6 +2381,7 @@ mod tests {
                         secret_versions: Vec::new(),
                         source: ReleaseSource::Api,
                         external_release: None,
+                        request: None,
                         rollback_of: None,
                         note: String::new(),
                         created_by: Uuid::nil(),
@@ -2333,6 +2411,7 @@ mod tests {
                         secret_versions: Vec::new(),
                         source: ReleaseSource::Api,
                         external_release: None,
+                        request: None,
                         rollback_of: None,
                         note: String::new(),
                         created_by: Uuid::nil(),

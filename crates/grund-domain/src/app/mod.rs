@@ -9,6 +9,7 @@
 pub mod placement;
 pub mod reconcile;
 pub mod templates;
+pub mod updates;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -57,6 +58,13 @@ pub struct ExternalRelease {
     pub request_digest: [u8; 32],
 }
 
+/// Retained identity of an explicit image-update request, independent of Forest ownership.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseRequest {
+    pub id: String,
+    pub fingerprint: [u8; 32],
+}
+
 /// An immutable, numbered snapshot of what every copy runs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Release {
@@ -79,6 +87,8 @@ pub struct Release {
     pub created_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_release: Option<ExternalRelease>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<ReleaseRequest>,
 }
 
 /// Why a replica was placed.
@@ -457,7 +467,7 @@ impl mire::Aggregate for App {
 }
 
 impl mire::Snapshot for App {
-    const SNAPSHOT_VERSION: i32 = 5;
+    const SNAPSHOT_VERSION: i32 = 6;
     const SNAPSHOT_FREQUENCY: i64 = 100;
 }
 
@@ -489,6 +499,7 @@ pub enum AppCommand {
         secret_versions: Vec<SecretVersion>,
         source: ReleaseSource,
         external_release: Option<ExternalRelease>,
+        request: Option<ReleaseRequest>,
         rollback_of: Option<u32>,
         note: String,
         rollout_id: Uuid,
@@ -520,6 +531,8 @@ pub enum AppError {
     TooManyReleases,
     #[error("this app belongs to another external project")]
     ExternalOwnerConflict,
+    #[error("the update request key was already used for a different request")]
+    RequestConflict,
 }
 
 impl mire::Command for AppCommand {
@@ -591,11 +604,23 @@ impl mire::Command for AppCommand {
                 secret_versions,
                 source,
                 external_release,
+                request,
                 rollback_of,
                 note,
                 rollout_id,
                 at,
             } => {
+                if let Some(request) = &request
+                    && let Some(previous) = app.releases.iter().find_map(|release| {
+                        release.request.as_ref().filter(|old| old.id == request.id)
+                    })
+                {
+                    return if previous.fingerprint == request.fingerprint {
+                        Ok(Vec::new())
+                    } else {
+                        Err(AppError::RequestConflict)
+                    };
+                }
                 if let Some(origin) = &external_release
                     && app.external_owner.as_ref().is_some_and(|owner| {
                         owner.0 != origin.forest_organisation
@@ -625,6 +650,7 @@ impl mire::Command for AppCommand {
                         note,
                         created_by: actor,
                         external_release,
+                        request,
                         created_at: at,
                     },
                 }];
@@ -728,6 +754,7 @@ mod tests {
             exposed_ports: Some(vec![80]),
             source: ReleaseSource::Api,
             external_release: None,
+            request: None,
             rollback_of: None,
             note: String::new(),
             rollout_id: Uuid::from_u128(9),
@@ -796,6 +823,7 @@ mod tests {
             secret_versions: Vec::new(),
             source: ReleaseSource::Rollback,
             external_release: None,
+            request: None,
             rollback_of: Some(4),
             note: String::new(),
             rollout_id: Uuid::nil(),
@@ -919,5 +947,84 @@ mod tests {
         .handle(&app)
         .unwrap();
         assert!(events.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod request_tests {
+    use super::*;
+    use mire::{Aggregate, Command};
+
+    fn command(request: ReleaseRequest) -> AppCommand {
+        AppCommand::Release {
+            actor: Uuid::nil(),
+            spec: templates::CATALOGUE[2].spec(false).unwrap(),
+            image_digest: format!("sha256:{}", "a".repeat(64)),
+            platforms: Vec::new(),
+            exposed_ports: None,
+            secret_versions: Vec::new(),
+            source: ReleaseSource::Api,
+            external_release: None,
+            request: Some(request),
+            rollback_of: None,
+            note: String::new(),
+            rollout_id: Uuid::nil(),
+            at: DateTime::from_timestamp(1, 0).unwrap(),
+        }
+    }
+
+    #[test]
+    fn retained_update_requests_replay_after_newer_releases_without_claiming_forest_ownership() {
+        let first = ReleaseRequest {
+            id: "first".into(),
+            fingerprint: [1; 32],
+        };
+        let second = ReleaseRequest {
+            id: "second".into(),
+            fingerprint: [2; 32],
+        };
+        let mut app = App {
+            exists: true,
+            ..Default::default()
+        };
+        for request in [first.clone(), second] {
+            for event in command(request).handle(&app).unwrap() {
+                app.apply(&event);
+            }
+        }
+        assert!(command(first.clone()).handle(&app).unwrap().is_empty());
+        assert_eq!(app.releases.len(), 2);
+        assert_eq!(app.external_owner, None);
+        assert_eq!(
+            command(ReleaseRequest {
+                fingerprint: [3; 32],
+                ..first
+            })
+            .handle(&app),
+            Err(AppError::RequestConflict)
+        );
+        let restored: App = serde_json::from_slice(&serde_json::to_vec(&app).unwrap()).unwrap();
+        assert_eq!(restored, app);
+    }
+
+    #[test]
+    fn historical_release_without_request_identity_still_hydrates() {
+        let app = App {
+            exists: true,
+            ..Default::default()
+        };
+        let events = command(ReleaseRequest {
+            id: "request".into(),
+            fingerprint: [1; 32],
+        })
+        .handle(&app)
+        .unwrap();
+        let AppEvent::ReleaseCreated { release } = &events[0] else {
+            panic!("release")
+        };
+        let mut value = serde_json::to_value(release).unwrap();
+        value.as_object_mut().unwrap().remove("request");
+        let historical: Release = serde_json::from_value(value).unwrap();
+        assert_eq!(historical.request, None);
     }
 }

@@ -1481,6 +1481,8 @@ fn style_guide_fixture(csrf: String) -> StyleGuidePage {
             address: address.map(str::to_owned),
             public: address.is_some(),
             internal: internal.map(str::to_owned),
+            update_label: "Not checked",
+            update_tone: "muted",
         },
     )
     .collect();

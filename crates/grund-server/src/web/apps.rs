@@ -22,7 +22,10 @@ use grund_config::app::{
         SecretEnv, SettingsInput, StopSpec, VolumeSpec,
     },
 };
-use grund_domain::app::ReleaseSource;
+use grund_domain::app::{
+    ReleaseSource,
+    updates::{CandidateKind, ImageUpdate, UpdateState},
+};
 use grund_domain::{app::templates, organisation::Role};
 use grund_store::{
     apps::{ReleaseRow, ReplicaRow},
@@ -34,7 +37,10 @@ use uuid::Uuid;
 
 use crate::{
     services::{
-        apps::{AppListing, AppView, AppsError, AppsState, Change, DeployInput, Launch},
+        apps::{
+            AppListing, AppView, ApplyImageUpdate, AppsError, AppsState, Change, DeployInput,
+            Launch,
+        },
         backups::BackupsState,
         domains::DomainsState,
         entry::{EntryState, publishes},
@@ -219,6 +225,8 @@ pub struct ListingView {
     pub address: Option<String>,
     pub internal: Option<String>,
     pub public: bool,
+    pub update_label: &'static str,
+    pub update_tone: &'static str,
 }
 
 /// An app as a list row or card shows it.
@@ -236,6 +244,8 @@ pub fn listing_view(listing: &AppListing) -> ListingView {
         copies: view.row.settings.0.copies,
         icon: image_icon(&image),
         image,
+        update_label: update_words(listing.update.state).0,
+        update_tone: update_words(listing.update.state).1,
         address: listing.address.clone(),
         public: listing.spec.as_ref().is_some_and(publishes),
         internal: listing
@@ -408,6 +418,8 @@ fn notice_words(done: &str) -> &'static str {
         "created" => "App made. Its first release is rolling out.",
         "released-file" => "grund.yaml applied as a new release. It is rolling out.",
         "released" => "Saved as a new release. It is rolling out.",
+        "update-checked" => "Image update check completed.",
+        "image-updated" => "Image update released. It is rolling out.",
         "saved" => "Saved.",
         "secret" => "Secret stored. A release that reads it is rolling out.",
         "secret-removed" => "Secret removed. A release without it is rolling out.",
@@ -2077,6 +2089,54 @@ pub struct AppOverviewPage<'a> {
     pub app: &'a AppIdentity,
     pub running: &'a Option<RunningRelease>,
     pub releases: &'a [ReleaseView],
+    pub update: &'a ImageUpdateView,
+}
+
+fn update_words(state: UpdateState) -> (&'static str, &'static str) {
+    match state {
+        UpdateState::NotChecked => ("Not checked", "muted"),
+        UpdateState::Current => ("No change found", "muted"),
+        UpdateState::Available => ("Update available", "orange"),
+        UpdateState::Pinned => ("Pinned image", "muted"),
+        UpdateState::Error => ("Check failed", "danger"),
+    }
+}
+
+pub struct ImageUpdateView {
+    pub observation: ImageUpdate,
+    pub label: &'static str,
+    pub tone: &'static str,
+    pub checked: String,
+    pub catalogue: bool,
+    pub reason: &'static str,
+}
+
+impl ImageUpdateView {
+    fn new(observation: ImageUpdate) -> Self {
+        let (label, tone) = update_words(observation.state);
+        let checked = observation
+            .checked_at
+            .map_or_else(|| "Never checked".into(), when);
+        let catalogue = observation
+            .candidates
+            .iter()
+            .any(|candidate| candidate.kind == CandidateKind::Catalogue);
+        let reason = match observation.state {
+            UpdateState::NotChecked => "Use Check for updates to inspect this app's image.",
+            UpdateState::Current => "The last check found no different image content.",
+            UpdateState::Available => "Choose an image below to make a release.",
+            UpdateState::Pinned => "This image has no tag to check.",
+            UpdateState::Error => "The image could not be checked. Try Check for updates again.",
+        };
+        Self {
+            observation,
+            label,
+            tone,
+            checked,
+            catalogue,
+            reason,
+        }
+    }
 }
 
 pub struct AppDeploymentsPage<'a> {
@@ -2246,6 +2306,7 @@ pub struct AppSettingsPage<'a> {
     pub owner: bool,
     pub form: crate::templates::FormState<'a>,
     pub options: SettingsOptions<'a>,
+    pub update: &'a ImageUpdateView,
 }
 
 pub struct AppDetailPage {
@@ -2257,6 +2318,7 @@ pub struct AppDetailPage {
     pub crowded: Option<String>,
     pub soon: AppSoonPage,
     pub settings: AppSettingsData,
+    pub update: ImageUpdateView,
 }
 
 #[tracing::instrument(name = "web.apps.app_view", skip_all)]
@@ -2282,6 +2344,11 @@ pub(super) async fn app_view(
         .releases_for(listing.view.row.app_id)
         .await
         .map_err(|e| PageError::from(anyhow::anyhow!(e)))?;
+    let update = ImageUpdateView::new(
+        apps.get_update(membership.organisation_id, name)
+            .await
+            .map_err(|e| PageError::from(anyhow::anyhow!(e)))?,
+    );
     let view = &listing.view;
     let base = format!("/{slug}/apps/{}", view.row.name);
     let now = Utc::now();
@@ -2734,6 +2801,7 @@ pub(super) async fn app_view(
         releases: history,
         replicas,
         crowded,
+        update,
         soon: AppSoonPage {
             title: soon_title,
             text: soon_text,
@@ -2785,6 +2853,7 @@ pub(super) async fn app_view(
                         app: &page.shell.app,
                         running: &page.running,
                         releases: &page.releases,
+                        update: &page.update,
                     })
                 }
                 "deployments" => crate::templates::compiled::pages::app_deployments::render(
@@ -2811,6 +2880,7 @@ pub(super) async fn app_view(
                         items: &page.settings.items,
                         edit: &page.settings.edit,
                         next: page.settings.next,
+                        update: &page.update,
                         manages: page.shell.manages,
                         owner: page.owner,
                         form: crate::templates::FormState {
@@ -3563,6 +3633,131 @@ pub struct CsrfForm {
     csrf: String,
 }
 
+/// `POST /{org}/apps/{app}/updates/check`: explicitly refresh cached image availability.
+pub async fn check_update(
+    AxumState(state): AxumState<State>,
+    browser: Browser,
+    uri: Uri,
+    Path((slug, name)): Path<(String, String)>,
+    Form(form): Form<CsrfForm>,
+) -> PageResult {
+    if !browser.form_is_genuine(&form.csrf) {
+        return forged(&state, &browser);
+    }
+    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
+    if !manages(&membership) {
+        return Ok(redirect(&format!("/{slug}/apps/{name}?error=not-allowed")));
+    }
+    match state
+        .apps()
+        .check_update(membership.organisation_id, &name)
+        .await
+    {
+        Ok(_) => Ok(redirect(&format!(
+            "/{slug}/apps/{name}/settings?edit=image&done=update-checked"
+        ))),
+        Err(AppsError::NotFound) => Ok(redirect(&format!("/{slug}/apps?error=gone"))),
+        Err(error) => {
+            refuse_setting(
+                &state,
+                &browser,
+                &session,
+                &membership,
+                &name,
+                "image",
+                Refusal::banner(sentence(&error)),
+                None,
+            )
+            .await
+        }
+    }
+}
+
+#[derive(Deserialize, Default)]
+pub struct ApplyUpdateForm {
+    #[serde(default)]
+    csrf: String,
+    #[serde(default)]
+    base_release: String,
+    #[serde(default)]
+    base_digest: String,
+    #[serde(default)]
+    target_reference: String,
+    #[serde(default)]
+    target_digest: String,
+    #[serde(default)]
+    request_id: String,
+}
+
+/// `POST /{org}/apps/{app}/updates/apply`: release the explicitly approved image.
+pub async fn apply_update(
+    AxumState(state): AxumState<State>,
+    browser: Browser,
+    uri: Uri,
+    Path((slug, name)): Path<(String, String)>,
+    Form(form): Form<ApplyUpdateForm>,
+) -> PageResult {
+    if !browser.form_is_genuine(&form.csrf) {
+        return forged(&state, &browser);
+    }
+    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
+    if !manages(&membership) {
+        return Ok(redirect(&format!("/{slug}/apps/{name}?error=not-allowed")));
+    }
+    let result = match form.base_release.parse::<u32>() {
+        Ok(base_release) => {
+            state
+                .apps()
+                .apply_update(
+                    session.account_id,
+                    membership.organisation_id,
+                    &name,
+                    ApplyImageUpdate {
+                        base_release,
+                        base_digest: form.base_digest,
+                        target_reference: form.target_reference,
+                        target_digest: form.target_digest,
+                        request_id: form.request_id,
+                        source: ReleaseSource::Dashboard,
+                    },
+                )
+                .await
+        }
+        Err(_) => {
+            return refuse_setting(
+                &state,
+                &browser,
+                &session,
+                &membership,
+                &name,
+                "image",
+                Refusal::banner("Nothing was updated. Check for updates again."),
+                None,
+            )
+            .await;
+        }
+    };
+    match result {
+        Ok(_) => Ok(redirect(&format!(
+            "/{slug}/apps/{name}/deployments?done=image-updated"
+        ))),
+        Err(AppsError::NotFound) => Ok(redirect(&format!("/{slug}/apps?error=gone"))),
+        Err(error) => {
+            refuse_setting(
+                &state,
+                &browser,
+                &session,
+                &membership,
+                &name,
+                "image",
+                Refusal::banner(sentence(&error)),
+                None,
+            )
+            .await
+        }
+    }
+}
+
 /// `POST /{org}/apps/{app}/releases/{number}/rollback`.
 pub async fn rollback(
     AxumState(state): AxumState<State>,
@@ -4222,5 +4417,92 @@ mod tests {
         assert_eq!(image_icon("ghcr.io/ours/api:v1.4.0"), "image");
         assert_eq!(image_icon("localhost:5000/shop"), "image");
         assert_eq!(image_icon(""), "image");
+    }
+
+    #[test]
+    fn each_offered_image_has_its_own_approval_and_readers_cannot_submit_updates() {
+        let app = AppIdentity {
+            name: "shop".into(),
+            base: "/team/apps/shop".into(),
+            icon: "image",
+            image: Some("acme/shop:1".into()),
+            address: None,
+            domains: Vec::new(),
+            internal: None,
+            word: "Live",
+            tone: "ok",
+        };
+        let update = ImageUpdateView::new(ImageUpdate {
+            base_release: 7,
+            current_image: "acme/shop:1".into(),
+            current_digest: "sha256:base".into(),
+            checked_at: Some(Utc::now()),
+            state: UpdateState::Available,
+            reason: "update_available".into(),
+            candidates: vec![
+                grund_domain::app::updates::UpdateCandidate {
+                    reference: "acme/shop:1".into(),
+                    digest: "sha256:tag".into(),
+                    kind: CandidateKind::Tag,
+                    label: "Same tag".into(),
+                },
+                grund_domain::app::updates::UpdateCandidate {
+                    reference: "acme/shop:2".into(),
+                    digest: "sha256:catalogue".into(),
+                    kind: CandidateKind::Catalogue,
+                    label: "Catalogue suggestion".into(),
+                },
+            ],
+        });
+        let items = Some(SettingItems {
+            configured: Vec::new(),
+            more: Vec::new(),
+        });
+        let edit = SettingsEdit::Image { image: "1".into() };
+        let empty = std::collections::BTreeMap::new();
+        let render = |manages| {
+            crate::templates::compiled::pages::app_settings::render(&AppSettingsPage {
+                app: &app,
+                items: &items,
+                edit: &edit,
+                next: Some(8),
+                manages,
+                owner: manages,
+                form: crate::templates::FormState {
+                    csrf: "session-csrf",
+                    errors: &empty,
+                    banners: &empty,
+                },
+                options: SettingsOptions::default(),
+                update: &update,
+            })
+        };
+        let html = render(true);
+        assert_eq!(
+            html.matches("action=\"/team/apps/shop/updates/apply\"")
+                .count(),
+            2
+        );
+        assert_eq!(html.matches("name=\"base_release\" value=\"7\"").count(), 2);
+        assert_eq!(
+            html.matches("name=\"base_digest\" value=\"sha256:base\"")
+                .count(),
+            2
+        );
+        for digest in ["sha256:tag", "sha256:catalogue"] {
+            assert!(html.contains(&format!("name=\"target_digest\" value=\"{digest}\"")));
+        }
+        let ids: Vec<_> = html
+            .split("name=\"request_id\" value=\"")
+            .skip(1)
+            .map(|rest| rest.split_once('"').unwrap().0)
+            .collect();
+        assert_eq!(ids.len(), 2);
+        assert_ne!(ids[0], ids[1]);
+        assert!(ids.iter().all(|id| Uuid::parse_str(id).is_ok()));
+        let reader = render(false);
+        assert!(!reader.contains("/updates/apply"));
+        assert!(!reader.contains("/updates/check"));
+        assert!(reader.contains("sha256:catalogue"));
     }
 }

@@ -1592,6 +1592,146 @@ async fn the_deploy_page_refuses_what_the_api_would_and_makes_nothing() -> anyho
 }
 
 #[tokio::test]
+async fn dashboard_image_updates_are_explicit_cached_and_release_the_approved_content()
+-> anyhow::Result<()> {
+    let registry = FakeRegistry::start().await?;
+    let Some((given, when, then)) =
+        testcase_configured(&[("GRUND_INSECURE_REGISTRIES", &registry.host)]).await?
+    else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let org = owner.username;
+    let _agent = a_machine(&when, &then, &org, "updates").await?;
+    let image = registry.image("acme/updates", "latest");
+    let first = registry.publish("acme/updates", "latest");
+    call(
+        &when,
+        &then,
+        "CreateApp",
+        json!({"organisation": org, "name": "updates", "settings": quick(1)}),
+    )
+    .await?;
+    then.status(200)?;
+    let deployed = call(
+        &when,
+        &then,
+        "Deploy",
+        json!({"organisation": org, "name": "updates", "spec": spec(&image, json!([{"name": "KEEP", "value": "unchanged"}]))}),
+    )
+    .await?;
+    then.status(200)?;
+    until(
+        &when,
+        &then,
+        &org,
+        "updates",
+        Duration::from_secs(30),
+        "first release live",
+        |app| live(app, 1),
+    )
+    .await?;
+    let base = format!("/{org}/apps/updates");
+    let settings = format!("{base}/settings?edit=image");
+    let second = registry.publish("acme/updates", "latest");
+    let before = registry.manifest_calls();
+    for path in [
+        &settings,
+        &base,
+        &format!("/{org}/apps"),
+        &format!("/{org}"),
+    ] {
+        when.visiting(path).await?;
+        then.status(200)?.body_contains("Not checked")?;
+    }
+    anyhow::ensure!(
+        registry.manifest_calls() == before,
+        "GET contacted the registry"
+    );
+    when.submitting(&settings, &format!("{base}/updates/check"), &[])
+        .await?;
+    then.status(303)?;
+    anyhow::ensure!(
+        registry.manifest_calls() > before,
+        "Check did not inspect the image"
+    );
+    let after_check = registry.manifest_calls();
+    for path in [
+        &settings,
+        &base,
+        &format!("/{org}/apps"),
+        &format!("/{org}"),
+    ] {
+        when.visiting(path).await?;
+        then.status(200)?.body_contains("Update available")?;
+    }
+    anyhow::ensure!(
+        registry.manifest_calls() == after_check,
+        "cached GET inspected the image"
+    );
+    when.visiting(&settings).await?;
+    let html = then.body()?;
+    then.body_contains(&format!("name=\"base_digest\" value=\"{first}\""))?
+        .body_contains(&format!("name=\"target_digest\" value=\"{second}\""))?;
+    let request_marker = "name=\"request_id\" value=\"";
+    let request_id = html
+        .split_once(request_marker)
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(value, _)| value.to_string())
+        .ok_or_else(|| anyhow::anyhow!("the offered update has no request identity"))?;
+    let _third = registry.publish("acme/updates", "latest");
+    let fields = [
+        ("base_release", "1"),
+        ("base_digest", first.as_str()),
+        ("target_reference", image.as_str()),
+        ("target_digest", second.as_str()),
+        ("request_id", request_id.as_str()),
+    ];
+    let (outsider, outsider_when, outsider_then) = given.testcase.another_browser();
+    let stranger = outsider.a_signed_in_account().await?;
+    let calls_before_refusal = registry.manifest_calls();
+    for action in ["check", "apply"] {
+        outsider_when
+            .submitting(
+                &format!("/{}", stranger.username),
+                &format!("{base}/updates/{action}"),
+                &fields,
+            )
+            .await?;
+        outsider_then.status(404)?;
+    }
+    anyhow::ensure!(
+        registry.manifest_calls() == calls_before_refusal,
+        "an outsider triggered an image inspection"
+    );
+    when.submitting(&settings, &format!("{base}/updates/apply"), &fields)
+        .await?;
+    then.status(303)?;
+    when.submitting(&settings, &format!("{base}/updates/apply"), &fields)
+        .await?;
+    then.status(303)?;
+    let history = call(
+        &when,
+        &then,
+        "ListReleases",
+        json!({"organisation": org, "name": "updates"}),
+    )
+    .await?;
+    then.status(200)?;
+    let rows = history["releases"].as_array().unwrap();
+    anyhow::ensure!(rows.len() == 2, "a replay made another release: {history}");
+    let updated = rows.iter().find(|row| row["number"] == 2).unwrap();
+    anyhow::ensure!(
+        updated["imageDigest"] == second
+            && updated["spec"]["env"] == deployed["release"]["spec"]["env"]
+            && updated["spec"]["ports"] == deployed["release"]["spec"]["ports"]
+            && updated["spec"]["resources"] == deployed["release"]["spec"]["resources"],
+        "the update did not preserve settings or bind the approved content: {updated}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn exposure_uses_release_ports_without_contacting_the_registry_on_get() -> anyhow::Result<()>
 {
     let registry = FakeRegistry::start().await?;

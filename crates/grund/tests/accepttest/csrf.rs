@@ -69,3 +69,21 @@ async fn a_signed_in_form_needs_the_token_bound_to_that_session() -> anyhow::Res
     then.status(200)?;
     Ok(())
 }
+
+#[tokio::test]
+async fn image_update_forms_refuse_csrf_before_membership_or_input_validation() -> anyhow::Result<()>
+{
+    let (_given, when, then) = testcase().await?;
+    when.visiting("/login").await?;
+    let origin = when.form_origin();
+    for action in ["check", "apply"] {
+        when.posting_raw(
+            &format!("/missing/apps/missing/updates/{action}"),
+            &[("base_release", "not-a-number")],
+            Some(&origin),
+        )
+        .await?;
+        then.status(403)?.body_contains("This form has expired")?;
+    }
+    Ok(())
+}

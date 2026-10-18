@@ -404,5 +404,27 @@ async fn a_member_sees_logins_and_their_own_tokens_but_changes_neither_and_their
     )
     .await?;
     ci_then.status(403)?.connect_code("permission_denied")?;
+    let calls = registry.manifest_calls();
+    for procedure in ["CheckAppUpdate", "ApplyAppUpdate"] {
+        call(
+            &guest_when,
+            &guest_then,
+            procedure,
+            json!({"organisation":org,"name":"nope"}),
+        )
+        .await?;
+        guest_then.status(403)?.connect_code("permission_denied")?;
+        ci.calling_with(
+            &format!("/grund.app.v1.AppService/{procedure}"),
+            &json!({"organisation":org,"name":"nope"}).to_string(),
+            &[("Authorization", &bearer)],
+        )
+        .await?;
+        ci_then.status(403)?.connect_code("permission_denied")?;
+    }
+    anyhow::ensure!(
+        registry.manifest_calls() == calls,
+        "a member's denied update contacted a registry"
+    );
     Ok(())
 }

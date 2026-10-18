@@ -381,6 +381,74 @@
       "title": "grund.app.v1.AppSpec",
       "type": "object"
     },
+    "grund.app.v1.AppUpdate": {
+      "additionalProperties": false,
+      "properties": {
+        "baseRelease": {
+          "description": "Zero means no successful running release is available to check.",
+          "type": "integer"
+        },
+        "candidates": {
+          "items": {
+            "$ref": "#/$defs/grund.app.v1.AppUpdateCandidate"
+          },
+          "type": "array"
+        },
+        "checkedAt": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "currentDigest": {
+          "type": "string"
+        },
+        "currentImage": {
+          "type": "string"
+        },
+        "reason": {
+          "description": "Stable, secret-free reason; a failed check is never current.",
+          "type": "string"
+        },
+        "state": {
+          "description": "A different digest is different image content, not semantic version ordering.",
+          "enum": [
+            "APP_UPDATE_STATE_UNSPECIFIED",
+            "APP_UPDATE_STATE_NOT_CHECKED",
+            "APP_UPDATE_STATE_CURRENT",
+            "APP_UPDATE_STATE_AVAILABLE",
+            "APP_UPDATE_STATE_PINNED",
+            "APP_UPDATE_STATE_ERROR"
+          ],
+          "type": "string"
+        }
+      },
+      "title": "grund.app.v1.AppUpdate",
+      "type": "object"
+    },
+    "grund.app.v1.AppUpdateCandidate": {
+      "additionalProperties": false,
+      "properties": {
+        "digest": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "APP_UPDATE_CANDIDATE_KIND_UNSPECIFIED",
+            "APP_UPDATE_CANDIDATE_KIND_TAG",
+            "APP_UPDATE_CANDIDATE_KIND_CATALOGUE"
+          ],
+          "type": "string"
+        },
+        "label": {
+          "description": "Repository-matched catalogue suggestions do not assert template provenance.",
+          "type": "string"
+        },
+        "reference": {
+          "type": "string"
+        }
+      },
+      "title": "grund.app.v1.AppUpdateCandidate",
+      "type": "object"
+    },
     "grund.app.v1.Check": {
       "additionalProperties": false,
       "description": "A check grund makes on each copy, from its machine. A copy is ready after one pass and not ready after three failures in a row, or at once when its process exits.",
@@ -451,6 +519,16 @@
         }
       },
       "title": "grund.app.v1.GetAppResponse",
+      "type": "object"
+    },
+    "grund.app.v1.GetAppUpdateResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "update": {
+          "$ref": "#/$defs/grund.app.v1.AppUpdate"
+        }
+      },
+      "title": "grund.app.v1.GetAppUpdateResponse",
       "type": "object"
     },
     "grund.app.v1.ListAppsResponse": {
@@ -8208,6 +8286,266 @@
         "grund.app.v1.AppService/GetApp"
       ],
       "summary": "Whether an app is live: health (no_release, rolling_out, live, degraded, failed, halted), copies ready of wanted, its rollout"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "app",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "APP"
+        },
+        {
+          "description": "Check for image changes instead of reading only cached results",
+          "flag": "--check",
+          "name": "check",
+          "type": "boolean",
+          "value_name": "CHECK"
+        },
+        {
+          "description": "Show the check request without checking for image changes",
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund apps updates",
+      "destructive": false,
+      "dry_run": true,
+      "examples": [
+        "grund apps updates web",
+        "grund apps updates web --check --json"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.app.v1.GetAppUpdateResponse"
+      },
+      "path": "apps updates",
+      "rpcs": [
+        "grund.app.v1.AppService/GetApp",
+        "grund.app.v1.AppService/GetAppUpdate",
+        "grund.app.v1.AppService/CheckAppUpdate"
+      ],
+      "summary": "Cached image updates for an app; --check checks for changes now"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "app",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "APP"
+        },
+        {
+          "description": "Choose this exact reference from grund apps updates; required when choices differ",
+          "flag": "--candidate",
+          "name": "candidate",
+          "type": "string",
+          "value_name": "REF"
+        },
+        {
+          "description": "Choose this exact sha256:… content from the checked candidates",
+          "flag": "--digest",
+          "name": "digest",
+          "type": "string",
+          "value_name": "SHA256"
+        },
+        {
+          "description": "Wait until the rollout is live or failed; exit 9 when it failed",
+          "flag": "--wait",
+          "name": "wait",
+          "type": "boolean",
+          "value_name": "WAIT"
+        },
+        {
+          "default": "600",
+          "description": "With --wait: give up after this long (exit 8)",
+          "flag": "--timeout",
+          "name": "timeout",
+          "type": "integer",
+          "value_name": "SECONDS"
+        },
+        {
+          "description": "Show the cached selection and request without checking or making a release",
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund apps update",
+      "destructive": false,
+      "dry_run": true,
+      "examples": [
+        "grund apps update web --wait",
+        "grund apps update web --candidate nginx:1.27 --dry-run --json"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.cli.v1.AppDeploy"
+      },
+      "path": "apps update",
+      "rpcs": [
+        "grund.app.v1.AppService/GetApp",
+        "grund.app.v1.AppService/GetAppUpdate",
+        "grund.app.v1.AppService/ApplyAppUpdate"
+      ],
+      "summary": "Apply a checked image update as a new release, keeping other settings"
     },
     {
       "args": [

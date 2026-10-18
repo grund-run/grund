@@ -65,10 +65,8 @@ welcome under Apache-2.0 with a sign-off ([CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ## Self-hosting
 
-Managed installation is available from `v0.0.0-alpha.5`; alpha.4 and earlier
-do not contain `grund install`. The update commands below are implemented
-in this checkout but absent from published alpha.5 and earlier: select a
-release with `grund update --help` before using them. Installation requires
+Managed installation is available from `v0.0.0-alpha.5`; CLI and managed
+server updates are available from `v0.0.0-alpha.6`. Installation requires
 Linux, root, systemd, Docker Engine and Docker Compose v2:
 
 ```sh
@@ -323,8 +321,8 @@ grund tokens create --name ci --scope deploy --apps shop --json
 - Nothing asks without a terminal: destructive commands need `--yes` then.
   Every command that changes the instance takes `--dry-run` except `domains
   verify` (ownership lookup) and `domains check` (an immediate setup check).
-  A release's dry run resolves its image and checks the proposed change
-  without writing it.
+  `apps deploy --dry-run` resolves its image and checks the proposed change
+  without writing it; `apps update --dry-run` only previews the cached selection.
   `apps deploy --dry-run` also previews a missing app without creating it
   and reports structured desired-versus-live changes and the observed
   `expectedVersion`; `apps deploy shop --expected-version N` refuses a
@@ -345,6 +343,24 @@ grund tokens create --name ci --scope deploy --apps shop --json
 - Versioned releases publish Linux amd64 and arm64 binaries with
   `SHA256SUMS`. An instance that serves its installer also exposes its own
   architecture's binary at `/install/grund-linux-<arch>`.
+
+**App image updates are implemented in this checkout, not in published
+alpha.6 or earlier.** The dashboard shows cached status; an app's Settings
+has explicit Check and Update actions. The same operations are in the CLI:
+
+```sh
+grund apps updates shop --check
+grund apps update shop --dry-run
+grund apps update shop --wait
+```
+
+A check compares the app's tag with its running image and may show a labelled
+template suggestion when the repository matches. It does not prove template
+origin or a newer software version. Update makes a release of the selected
+content without replacing your settings; it does not follow a tag that moves
+after the check. Multiple choices require `--candidate` or `--digest`.
+Stale checks and in-progress rollouts are refused. There are no scheduled checks
+or automatic app updates. Back up app data first: image rollback is not data restore.
 
 Domains and an app's Settings show the domain record, edge check, certificate
 request, challenge result, issued certificate and observed HTTPS separately,
@@ -574,7 +590,8 @@ What a token can do:
   leaving the organisation leaves the token powerless.
 - Its scope is chosen when it is made. `deploy` (the default) may call
   `CreateApp`, `GetApp`, `ListApps`, `Deploy`, `ListReleases`, `Rollback`,
-  `Scale`, `ConfigureApp` and `SetSecret`. `full` may also delete apps and
+  `Scale`, `ConfigureApp`, `SetSecret` and explicit app-image checks/updates.
+  `full` may also delete apps and
   manage machines, custom domains, members, invitations and registry
   logins. Neither reaches the account, sessions, tokens, or creating,
   renaming and deleting organisations: those get `permission_denied`.

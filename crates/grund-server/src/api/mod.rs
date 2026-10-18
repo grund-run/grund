@@ -342,6 +342,18 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
         Requirement::SessionOrToken,
     ),
     (
+        "/grund.app.v1.AppService/GetAppUpdate",
+        Requirement::SessionOrToken,
+    ),
+    (
+        "/grund.app.v1.AppService/CheckAppUpdate",
+        Requirement::SessionOrToken,
+    ),
+    (
+        "/grund.app.v1.AppService/ApplyAppUpdate",
+        Requirement::SessionOrToken,
+    ),
+    (
         "/grund.app.v1.AppService/ListApps",
         Requirement::SessionOrToken,
     ),
@@ -1661,6 +1673,27 @@ mod tests {
         ) -> ServiceResult<app_proto::GetAppResponse> {
             unreachable!()
         }
+        async fn get_app_update(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, app_proto::GetAppUpdateRequest>,
+        ) -> ServiceResult<app_proto::GetAppUpdateResponse> {
+            unreachable!()
+        }
+        async fn check_app_update(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, app_proto::CheckAppUpdateRequest>,
+        ) -> ServiceResult<app_proto::CheckAppUpdateResponse> {
+            unreachable!()
+        }
+        async fn apply_app_update(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, app_proto::ApplyAppUpdateRequest>,
+        ) -> ServiceResult<app_proto::ApplyAppUpdateResponse> {
+            unreachable!()
+        }
         async fn list_apps(
             &self,
             _: RequestContext,
@@ -2179,6 +2212,9 @@ mod tests {
         let expected: BTreeSet<&str> = [
             "CreateApp",
             "GetApp",
+            "GetAppUpdate",
+            "CheckAppUpdate",
+            "ApplyAppUpdate",
             "ListApps",
             "Deploy",
             "PreviewDeploy",

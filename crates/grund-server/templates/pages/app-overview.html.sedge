@@ -1,5 +1,5 @@
 use crate::templates::compiled::components::{Panel, Facts, Fact, Endpoint, Para, Timeline, Event, EmptyState};
-props crate::web::apps::AppOverviewPage<'_> { app, running, releases };
+props crate::web::apps::AppOverviewPage<'_> { app, running, releases, update };
 {let releases_href = format!("{}/deployments", app.base);}
 
 <Panel id="status" title="Application status">
@@ -30,7 +30,9 @@ props crate::web::apps::AppOverviewPage<'_> { app, running, releases };
     } else {
       <Fact label="Last change" value="None" icon_name="clock" />
     }}
+    <Fact label="Image updates" value={update.label} tone={update.tone} lines={&[(update.checked.as_str(), "")]} />
   </Facts>
+  <Para><a href="{app.base}/settings?edit=image">View image updates</a></Para>
 </Panel>
 <Panel id="activity" title="Latest activity" action={Some((&releases_href, "All releases"))}>
   {if releases.is_empty() {

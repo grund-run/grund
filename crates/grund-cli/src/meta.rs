@@ -223,6 +223,32 @@ pub const LEAVES: &[Leaf] = &[
         &["grund.app.v1.AppService/GetApp"],
         &["grund apps status web --json | jq -r .health"],
     ),
+    write(
+        "apps updates",
+        "grund.app.v1.GetAppUpdateResponse",
+        &[
+            "grund.app.v1.AppService/GetApp",
+            "grund.app.v1.AppService/GetAppUpdate",
+            "grund.app.v1.AppService/CheckAppUpdate",
+        ],
+        &[
+            "grund apps updates web",
+            "grund apps updates web --check --json",
+        ],
+    ),
+    write(
+        "apps update",
+        "grund.cli.v1.AppDeploy",
+        &[
+            "grund.app.v1.AppService/GetApp",
+            "grund.app.v1.AppService/GetAppUpdate",
+            "grund.app.v1.AppService/ApplyAppUpdate",
+        ],
+        &[
+            "grund apps update web --wait",
+            "grund apps update web --candidate nginx:1.27 --dry-run --json",
+        ],
+    ),
     read(
         "apps history",
         "grund.app.v1.ListReleasesResponse",

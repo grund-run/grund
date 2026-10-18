@@ -911,6 +911,73 @@ pub async fn cache_release_ports(
     Ok(())
 }
 
+/// Cached checks of the currently running release, never a registry read.
+pub async fn update_checks(
+    executor: impl PgExecutor<'_>,
+    organisation_id: Uuid,
+) -> Result<Vec<(Uuid, Json<grund_domain::app::updates::ImageUpdate>)>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT c.app_id, c.observation FROM grund_app_update_checks c \
+         JOIN grund_apps a ON a.app_id = c.app_id AND a.organisation_id = c.organisation_id \
+         JOIN grund_releases r ON r.app_id = a.app_id AND r.number = a.current_release \
+         WHERE c.organisation_id = $1 AND a.deleted_at IS NULL \
+           AND c.base_release = a.current_release AND c.base_digest = r.image_digest",
+    )
+    .bind(organisation_id)
+    .fetch_all(executor)
+    .await
+}
+
+/// One tenant's cached observation, hidden if the running base changed.
+pub async fn update_check(
+    executor: impl PgExecutor<'_>,
+    organisation_id: Uuid,
+    app_id: Uuid,
+) -> Result<Option<Json<grund_domain::app::updates::ImageUpdate>>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT c.observation FROM grund_app_update_checks c \
+         JOIN grund_apps a ON a.app_id = c.app_id AND a.organisation_id = c.organisation_id \
+         JOIN grund_releases r ON r.app_id = a.app_id AND r.number = a.current_release \
+         WHERE c.organisation_id = $1 AND c.app_id = $2 AND a.deleted_at IS NULL \
+           AND c.base_release = a.current_release AND c.base_digest = r.image_digest",
+    )
+    .bind(organisation_id)
+    .bind(app_id)
+    .fetch_optional(executor)
+    .await
+}
+
+/// Save a completed explicit check only while its base release still runs.
+pub async fn save_update_check(
+    executor: impl PgExecutor<'_>,
+    organisation_id: Uuid,
+    app_id: Uuid,
+    update: &grund_domain::app::updates::ImageUpdate,
+) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query(
+        "INSERT INTO grund_app_update_checks \
+         (organisation_id, app_id, base_release, base_digest, checked_at, observation) \
+         SELECT $1, $2, $3, $4, $5, $6 FROM grund_apps a \
+         JOIN grund_releases r ON r.app_id = a.app_id AND r.number = a.current_release \
+         WHERE a.organisation_id = $1 AND a.app_id = $2 AND a.deleted_at IS NULL \
+           AND a.current_release = $3 AND r.image_digest = $4 \
+         ON CONFLICT (organisation_id, app_id) DO UPDATE SET \
+           base_release = EXCLUDED.base_release, base_digest = EXCLUDED.base_digest, \
+           checked_at = EXCLUDED.checked_at, observation = EXCLUDED.observation \
+         WHERE grund_app_update_checks.checked_at <= EXCLUDED.checked_at",
+    )
+    .bind(organisation_id)
+    .bind(app_id)
+    .bind(update.base_release as i32)
+    .bind(&update.current_digest)
+    .bind(update.checked_at)
+    .bind(Json(update))
+    .execute(executor)
+    .await?
+    .rows_affected()
+        == 1)
+}
+
 /// The release an app runs, for its organisation's list.
 #[derive(Debug, Clone, FromRow)]
 pub struct RunningRow {

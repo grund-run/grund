@@ -130,6 +130,7 @@ component AppRow(slug: &str, manages: bool, app: &crate::web::apps::ListingView)
     <div class="item-text">
       <a class="item-name" href="/{slug}/apps/{app.name}">{app.name}</a>
       <p class="item-sub" title={if app.image.is_empty() { None } else { Some(app.image.as_str()) }}>{if app.image.is_empty() { No version yet } else { {crate::templates::short_image(&app.image)} }}</p>
+      <p class="item-sub"><a href="/{slug}/apps/{app.name}/settings?edit=image"><Pill text={app.update_label} tone={app.update_tone} plain /></a></p>
     </div>
     <div class="item-meta"><AppAddress app={app} /></div>
     <AppMenu slug={slug} manages={*manages} name={app.name} address={app.address.as_deref()} />

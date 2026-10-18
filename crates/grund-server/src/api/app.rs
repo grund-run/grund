@@ -17,13 +17,15 @@ use grund_config::app::spec::{
 };
 use grund_domain::app::{ExternalRelease, ReleaseSource};
 use grund_proto::grund::app::v1::{
-    self as proto, AppService, ConfigureAppRequest, ConfigureAppResponse, CreateAppRequest,
-    CreateAppResponse, DeleteAppRequest, DeleteAppResponse, DeployRequest, DeployResponse,
-    ErrorReason, GetAppRequest, GetAppResponse, ListAppsRequest, ListAppsResponse,
-    ListReleasesRequest, ListReleasesResponse, ListRestorableAppsRequest,
-    ListRestorableAppsResponse, PreviewDeployRequest, PreviewDeployResponse, RestoreAppRequest,
-    RestoreAppResponse, RollbackRequest, RollbackResponse, ScaleRequest, ScaleResponse,
-    SetSecretRequest, SetSecretResponse,
+    self as proto, AppService, ApplyAppUpdateRequest, ApplyAppUpdateResponse,
+    CheckAppUpdateRequest, CheckAppUpdateResponse, ConfigureAppRequest, ConfigureAppResponse,
+    CreateAppRequest, CreateAppResponse, DeleteAppRequest, DeleteAppResponse, DeployRequest,
+    DeployResponse, ErrorReason, GetAppRequest, GetAppResponse, GetAppUpdateRequest,
+    GetAppUpdateResponse, ListAppsRequest, ListAppsResponse, ListReleasesRequest,
+    ListReleasesResponse, ListRestorableAppsRequest, ListRestorableAppsResponse,
+    PreviewDeployRequest, PreviewDeployResponse, RestoreAppRequest, RestoreAppResponse,
+    RollbackRequest, RollbackResponse, ScaleRequest, ScaleResponse, SetSecretRequest,
+    SetSecretResponse,
 };
 use grund_store::{apps::ReleaseRow, organisations::Membership};
 
@@ -85,15 +87,18 @@ fn failed(error: AppsError) -> ConnectError {
     let message = error.to_string();
     let base = match &error {
         AppsError::NotFound | AppsError::ReleaseNotFound => ConnectError::not_found(message),
-        AppsError::VersionConflict => ConnectError::aborted(message),
-        AppsError::ExternalReleaseConflict | AppsError::DomainConfiguration(_) => {
-            ConnectError::already_exists(message)
-        }
+        AppsError::VersionConflict | AppsError::UpdateStale => ConnectError::aborted(message),
+        AppsError::ExternalReleaseConflict
+        | AppsError::UpdateRequestConflict
+        | AppsError::DomainConfiguration(_) => ConnectError::already_exists(message),
         AppsError::NameTaken
         | AppsError::NameReserved { .. }
         | AppsError::AppLimit
         | AppsError::DomainRequired
         | AppsError::ExternalOwnerConflict
+        | AppsError::UpdateRollout
+        | AppsError::UpdateNoBase
+        | AppsError::UpdateNotOffered
         | AppsError::VolumeConfirmationRequired { .. } => {
             ConnectError::failed_precondition(message)
         }
@@ -554,6 +559,45 @@ pub fn release_message(row: &ReleaseRow) -> proto::Release {
     }
 }
 
+fn update_message(update: crate::services::apps::ImageUpdate) -> proto::AppUpdate {
+    use grund_domain::app::updates::{CandidateKind, UpdateState};
+    proto::AppUpdate {
+        checked_at: update.checked_at.map(timestamp).unwrap_or_default(),
+        base_release: update.base_release,
+        current_image: update.current_image,
+        current_digest: update.current_digest,
+        state: match update.state {
+            UpdateState::NotChecked => proto::AppUpdateState::APP_UPDATE_STATE_NOT_CHECKED,
+            UpdateState::Current => proto::AppUpdateState::APP_UPDATE_STATE_CURRENT,
+            UpdateState::Available => proto::AppUpdateState::APP_UPDATE_STATE_AVAILABLE,
+            UpdateState::Pinned => proto::AppUpdateState::APP_UPDATE_STATE_PINNED,
+            UpdateState::Error => proto::AppUpdateState::APP_UPDATE_STATE_ERROR,
+        }
+        .into(),
+        candidates: update
+            .candidates
+            .into_iter()
+            .map(|candidate| proto::AppUpdateCandidate {
+                reference: candidate.reference,
+                digest: candidate.digest,
+                kind: match candidate.kind {
+                    CandidateKind::Tag => {
+                        proto::AppUpdateCandidateKind::APP_UPDATE_CANDIDATE_KIND_TAG
+                    }
+                    CandidateKind::Catalogue => {
+                        proto::AppUpdateCandidateKind::APP_UPDATE_CANDIDATE_KIND_CATALOGUE
+                    }
+                }
+                .into(),
+                label: candidate.label,
+                ..Default::default()
+            })
+            .collect(),
+        reason: update.reason,
+        ..Default::default()
+    }
+}
+
 fn deploy_change(
     changes: &mut Vec<proto::DeployChange>,
     field: &str,
@@ -636,6 +680,85 @@ fn owned<'a, V: MessageView<'a>>(view: &V) -> Result<V::Owned, ConnectError> {
 
 #[allow(refining_impl_trait)]
 impl AppService for AppApi {
+    async fn get_app_update(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, GetAppUpdateRequest>,
+    ) -> ServiceResult<GetAppUpdateResponse> {
+        let caller = principal(&ctx)?;
+        let membership = self
+            .member(&caller, request.organisation, Access::Read)
+            .await?;
+        caller.check_app(request.name)?;
+        let update = self
+            .state
+            .apps()
+            .get_update(membership.organisation_id, request.name)
+            .await
+            .map_err(failed)?;
+        Response::ok(GetAppUpdateResponse {
+            update: MessageField::from(update_message(update)),
+            ..Default::default()
+        })
+    }
+
+    async fn check_app_update(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, CheckAppUpdateRequest>,
+    ) -> ServiceResult<CheckAppUpdateResponse> {
+        let caller = principal(&ctx)?;
+        let membership = self
+            .member(&caller, request.organisation, Access::Manage)
+            .await?;
+        caller.check_app(request.name)?;
+        let update = self
+            .state
+            .apps()
+            .check_update(membership.organisation_id, request.name)
+            .await
+            .map_err(failed)?;
+        Response::ok(CheckAppUpdateResponse {
+            update: MessageField::from(update_message(update)),
+            ..Default::default()
+        })
+    }
+
+    async fn apply_app_update(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, ApplyAppUpdateRequest>,
+    ) -> ServiceResult<ApplyAppUpdateResponse> {
+        let caller = principal(&ctx)?;
+        let request: ApplyAppUpdateRequest = owned(&*request)?;
+        let membership = self
+            .member(&caller, &request.organisation, Access::Manage)
+            .await?;
+        caller.check_app(&request.name)?;
+        let release = self
+            .state
+            .apps()
+            .apply_update(
+                caller.account_id,
+                membership.organisation_id,
+                &request.name,
+                crate::services::apps::ApplyImageUpdate {
+                    base_release: request.base_release,
+                    base_digest: request.base_digest,
+                    target_reference: request.target_reference,
+                    target_digest: request.target_digest,
+                    request_id: request.idempotency_key,
+                    source: ReleaseSource::Api,
+                },
+            )
+            .await
+            .map_err(failed)?;
+        Response::ok(ApplyAppUpdateResponse {
+            release: MessageField::from(release_message(&release)),
+            ..Default::default()
+        })
+    }
+
     async fn create_app(
         &self,
         ctx: RequestContext,

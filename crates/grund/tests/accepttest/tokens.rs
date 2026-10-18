@@ -288,6 +288,18 @@ async fn app_limited_deploy_token_cannot_read_or_change_sibling_apps_or_domains(
     for (procedure, body) in [
         ("GetApp", json!({"organisation": org, "name": "worker"})),
         (
+            "GetAppUpdate",
+            json!({"organisation": org, "name": "worker"}),
+        ),
+        (
+            "CheckAppUpdate",
+            json!({"organisation": org, "name": "worker"}),
+        ),
+        (
+            "ApplyAppUpdate",
+            json!({"organisation": org, "name": "worker"}),
+        ),
+        (
             "ListReleases",
             json!({"organisation": org, "name": "worker"}),
         ),

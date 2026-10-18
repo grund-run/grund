@@ -2,6 +2,7 @@
 mod fixtures;
 
 mod api;
+mod app_updates;
 mod apps;
 mod billing;
 mod certificates;

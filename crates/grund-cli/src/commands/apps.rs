@@ -10,6 +10,7 @@ use std::{path::PathBuf, time::Duration};
 
 use clap::{Args, Subcommand};
 use serde_json::{Value, json};
+use uuid::Uuid;
 
 use crate::{
     api::Api,
@@ -50,6 +51,24 @@ pub enum AppsAction {
         #[arg(value_name = "APP")]
         app: String,
     },
+    #[command(about = "Cached image updates for an app; --check checks for changes now")]
+    Updates {
+        #[arg(value_name = "APP")]
+        app: String,
+        #[arg(
+            long,
+            help = "Check for image changes instead of reading only cached results"
+        )]
+        check: bool,
+        #[arg(
+            long,
+            requires = "check",
+            help = "Show the check request without checking for image changes"
+        )]
+        dry_run: bool,
+    },
+    #[command(about = "Apply a checked image update as a new release, keeping other settings")]
+    Update(UpdateArgs),
     #[command(about = "An app's releases, newest first, at most 100")]
     History {
         #[arg(value_name = "APP")]
@@ -154,6 +173,32 @@ pub struct Follow {
         help = "With --wait: give up after this long (exit 8)"
     )]
     pub timeout: u64,
+}
+
+/// `grund apps update`.
+#[derive(Debug, Args)]
+pub struct UpdateArgs {
+    #[arg(value_name = "APP")]
+    pub app: String,
+    #[arg(
+        long,
+        value_name = "REF",
+        help = "Choose this exact reference from grund apps updates; required when choices differ"
+    )]
+    pub candidate: Option<String>,
+    #[arg(
+        long,
+        value_name = "SHA256",
+        help = "Choose this exact sha256:… content from the checked candidates"
+    )]
+    pub digest: Option<String>,
+    #[command(flatten)]
+    pub follow: Follow,
+    #[arg(
+        long,
+        help = "Show the cached selection and request without checking or making a release"
+    )]
+    pub dry_run: bool,
 }
 
 /// `grund apps deploy`.
@@ -517,6 +562,28 @@ pub async fn run(ctx: &Ctx, action: AppsAction) -> CliResult<Output> {
             let answer = get_app(&api, &org, &app).await?;
             Ok(Output::fields(status(&answer["app"])))
         }
+        AppsAction::Updates {
+            app,
+            check,
+            dry_run: preview,
+        } => {
+            get_app(&api, &org, &app).await?;
+            let request = json!({"organisation": org, "name": app});
+            if preview {
+                return Ok(dry_run(
+                    &[(format!("{SERVICE}/CheckAppUpdate"), request)],
+                    vec![],
+                ));
+            }
+            let method = if check {
+                "CheckAppUpdate"
+            } else {
+                "GetAppUpdate"
+            };
+            let answer = api.call(&format!("{SERVICE}/{method}"), request).await?;
+            Ok(Output::fields(answer))
+        }
+        AppsAction::Update(args) => update(ctx, &api, &org, args).await,
         AppsAction::History { app } => {
             let answer = api
                 .call(
@@ -685,6 +752,124 @@ async fn get_app(api: &Api, org: &str, app: &str) -> CliResult<Value> {
         json!({"organisation": org, "name": app}),
     )
     .await
+}
+
+fn update_candidate<'a>(
+    update: &'a Value,
+    app: &str,
+    reference: Option<&str>,
+    digest: Option<&str>,
+) -> CliResult<&'a Value> {
+    if update["state"].as_str() != Some("APP_UPDATE_STATE_AVAILABLE") {
+        let message = match update["state"].as_str() {
+            Some("APP_UPDATE_STATE_CURRENT") => format!("{app} has no checked image changes"),
+            Some("APP_UPDATE_STATE_PINNED") => format!("{app} has no watched image tag"),
+            Some("APP_UPDATE_STATE_ERROR") => {
+                format!("the last image update check for {app} failed")
+            }
+            _ => format!("{app} has no available checked image update"),
+        };
+        return Err(CliError::new(Code::Conflict, message)
+            .hint(format!("grund apps updates {app} --check")));
+    }
+    let mut candidates = update["candidates"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|candidate| {
+            reference.is_none_or(|reference| candidate["reference"].as_str() == Some(reference))
+                && digest.is_none_or(|digest| candidate["digest"].as_str() == Some(digest))
+        });
+    let candidate = candidates.next().ok_or_else(|| {
+        CliError::usage("no checked update matches that selection")
+            .hint(format!("grund apps updates {app} --check"))
+            .field(if reference.is_some() {
+                "candidate"
+            } else {
+                "digest"
+            })
+    })?;
+    if candidates.next().is_some() {
+        return Err(CliError::usage("more than one checked image update matches; choose one explicitly")
+            .hint(format!(
+                "grund apps updates {app} shows the choices; use --candidate REF and, if needed, --digest SHA256"
+            ))
+            .field("candidate"));
+    }
+    Ok(candidate)
+}
+
+async fn update(ctx: &Ctx, api: &Api, org: &str, args: UpdateArgs) -> CliResult<Output> {
+    get_app(api, org, &args.app).await?;
+    let answer = api
+        .call(
+            &format!("{SERVICE}/GetAppUpdate"),
+            json!({"organisation": org, "name": args.app}),
+        )
+        .await?;
+    let update = &answer["update"];
+    let candidate = update_candidate(
+        update,
+        &args.app,
+        args.candidate.as_deref(),
+        args.digest.as_deref(),
+    )?;
+    let base_release = update["baseRelease"]
+        .as_u64()
+        .filter(|number| *number > 0 && *number <= u64::from(u32::MAX));
+    let base_digest = update["currentDigest"].as_str().filter(|s| !s.is_empty());
+    let target_reference = candidate["reference"].as_str().filter(|s| !s.is_empty());
+    let target_digest = candidate["digest"].as_str().filter(|s| !s.is_empty());
+    let (Some(base_release), Some(base_digest), Some(target_reference), Some(target_digest)) =
+        (base_release, base_digest, target_reference, target_digest)
+    else {
+        return Err(CliError::new(
+            Code::Failed,
+            "the instance returned an incomplete checked image update",
+        )
+        .hint(format!("grund apps updates {} --check", args.app)));
+    };
+    let request = json!({
+        "organisation": org,
+        "name": args.app,
+        "baseRelease": base_release,
+        "baseDigest": base_digest,
+        "targetReference": target_reference,
+        "targetDigest": target_digest,
+        "idempotencyKey": Uuid::now_v7().to_string(),
+    });
+    if args.dry_run {
+        let mut changed = changes(
+            "/spec/image",
+            &update["currentImage"],
+            &candidate["reference"],
+        );
+        changed.extend(changes(
+            "/digest",
+            &update["currentDigest"],
+            &candidate["digest"],
+        ));
+        return Ok(dry_run(
+            &[(format!("{SERVICE}/ApplyAppUpdate"), request)],
+            changed,
+        ));
+    }
+    let answer = api
+        .call(&format!("{SERVICE}/ApplyAppUpdate"), request)
+        .await?;
+    let mut result = json!({"app": args.app, "release": answer["release"].clone()});
+    if args.follow.wait {
+        result["rollout"] = wait(
+            ctx,
+            api,
+            org,
+            &args.app,
+            &answer["release"],
+            args.follow.timeout,
+        )
+        .await?;
+    }
+    Ok(Output::fields(result))
 }
 
 async fn releases(api: &Api, org: &str, app: &str) -> CliResult<Vec<Value>> {
@@ -1334,6 +1519,80 @@ async fn set(ctx: &Ctx, api: &Api, org: &str, args: SetArgs) -> CliResult<Output
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn multiple_checked_updates_require_an_explicit_selection() {
+        let update = json!({
+            "state": "APP_UPDATE_STATE_AVAILABLE",
+            "candidates": [
+                {"reference": "example/app:1", "digest": "sha256:one"},
+                {"reference": "example/app:2", "digest": "sha256:two"},
+            ],
+        });
+        assert!(update_candidate(&update, "web", None, None).is_err());
+        assert_eq!(
+            update_candidate(&update, "web", Some("example/app:2"), None).unwrap()["digest"],
+            "sha256:two"
+        );
+        assert_eq!(
+            update_candidate(&update, "web", None, Some("sha256:one")).unwrap()["reference"],
+            "example/app:1"
+        );
+        assert!(
+            update_candidate(&update, "web", Some("example/app:1"), Some("sha256:two")).is_err()
+        );
+    }
+
+    #[test]
+    fn a_single_checked_update_can_be_selected_without_a_flag() {
+        let update = json!({
+            "state": "APP_UPDATE_STATE_AVAILABLE",
+            "candidates": [{"reference": "example/app:1", "digest": "sha256:one"}],
+        });
+        assert_eq!(
+            update_candidate(&update, "web", None, None).unwrap(),
+            &update["candidates"][0]
+        );
+        assert!(update_candidate(&update, "web", Some("example/app:2"), None).is_err());
+        assert!(update_candidate(&update, "web", None, Some("sha256:two")).is_err());
+    }
+
+    #[test]
+    fn a_reference_shared_by_candidates_still_requires_a_content_choice() {
+        let update = json!({
+            "state": "APP_UPDATE_STATE_AVAILABLE",
+            "candidates": [
+                {"reference": "example/app:1", "digest": "sha256:one"},
+                {"reference": "example/app:1", "digest": "sha256:two"},
+            ],
+        });
+        assert!(update_candidate(&update, "web", Some("example/app:1"), None).is_err());
+        assert_eq!(
+            update_candidate(&update, "web", Some("example/app:1"), Some("sha256:two")).unwrap()["digest"],
+            "sha256:two"
+        );
+    }
+
+    #[test]
+    fn unavailable_checks_never_apply_leftover_candidates() {
+        for state in [
+            "APP_UPDATE_STATE_NOT_CHECKED",
+            "APP_UPDATE_STATE_CURRENT",
+            "APP_UPDATE_STATE_PINNED",
+            "APP_UPDATE_STATE_ERROR",
+        ] {
+            let update = json!({
+                "state": state,
+                "candidates": [{"reference": "example/app:1", "digest": "sha256:one"}],
+            });
+            assert_eq!(
+                update_candidate(&update, "web", None, None)
+                    .unwrap_err()
+                    .code,
+                Code::Conflict
+            );
+        }
+    }
 
     #[test]
     fn a_port_is_name_number_and_protocol() {

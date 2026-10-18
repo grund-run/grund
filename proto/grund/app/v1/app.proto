@@ -89,6 +89,22 @@ service AppService {
     option idempotency_level = NO_SIDE_EFFECTS;
   }
 
+  // Cached observation only; does not contact an image registry.
+  rpc GetAppUpdate(GetAppUpdateRequest) returns (GetAppUpdateResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // Owners and admins explicitly check the running release's tag and matching
+  // catalogue images using this organisation's registry credentials. No release.
+  rpc CheckAppUpdate(CheckAppUpdateRequest) returns (CheckAppUpdateResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+
+  // Owners and admins approve exactly one checked target and base. A retained
+  // idempotency key replays the original release, even after the base changes;
+  // reusing it for different input fails already_exists. Refuses active rollouts.
+  rpc ApplyAppUpdate(ApplyAppUpdateRequest) returns (ApplyAppUpdateResponse);
+
 }
 
 // Everything one release runs (apps.md §3.1, §3.4).
@@ -598,3 +614,62 @@ message ErrorReason {
   google.protobuf.Timestamp deleted_at = 2;
   google.protobuf.Timestamp purge_after = 3;
 }
+
+// A different digest is different image content, not semantic version ordering.
+enum AppUpdateState {
+  APP_UPDATE_STATE_UNSPECIFIED = 0;
+  APP_UPDATE_STATE_NOT_CHECKED = 1;
+  APP_UPDATE_STATE_CURRENT = 2;
+  APP_UPDATE_STATE_AVAILABLE = 3;
+  APP_UPDATE_STATE_PINNED = 4;
+  APP_UPDATE_STATE_ERROR = 5;
+}
+
+enum AppUpdateCandidateKind {
+  APP_UPDATE_CANDIDATE_KIND_UNSPECIFIED = 0;
+  APP_UPDATE_CANDIDATE_KIND_TAG = 1;
+  APP_UPDATE_CANDIDATE_KIND_CATALOGUE = 2;
+}
+
+message AppUpdateCandidate {
+  string reference = 1;
+  string digest = 2;
+  AppUpdateCandidateKind kind = 3;
+  // Repository-matched catalogue suggestions do not assert template provenance.
+  string label = 4;
+}
+
+message AppUpdate {
+  google.protobuf.Timestamp checked_at = 1;
+  // Zero means no successful running release is available to check.
+  uint32 base_release = 2;
+  string current_image = 3;
+  string current_digest = 4;
+  AppUpdateState state = 5;
+  repeated AppUpdateCandidate candidates = 6;
+  // Stable, secret-free reason; a failed check is never current.
+  string reason = 7;
+}
+
+message GetAppUpdateRequest {
+  string organisation = 1;
+  string name = 2;
+}
+message GetAppUpdateResponse { AppUpdate update = 1; }
+message CheckAppUpdateRequest {
+  string organisation = 1;
+  string name = 2;
+}
+message CheckAppUpdateResponse { AppUpdate update = 1; }
+message ApplyAppUpdateRequest {
+  string organisation = 1;
+  string name = 2;
+  uint32 base_release = 3;
+  string base_digest = 4;
+  string target_reference = 5;
+  string target_digest = 6;
+  // 1–128 printable non-space ASCII bytes, scoped to this app. Retained with
+  // the immutable release; no 24-hour expiry or Forest ownership is implied.
+  string idempotency_key = 7;
+}
+message ApplyAppUpdateResponse { Release release = 1; }

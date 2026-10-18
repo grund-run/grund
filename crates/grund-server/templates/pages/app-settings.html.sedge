@@ -1,6 +1,7 @@
 use crate::templates::compiled::components::{Section, Panel, EmptyState, Form, HiddenField, Banner, Field, FieldError, Grid, Group, ChoiceField, ChoiceCard, ChipsField, StepperField, ToggleField, RangeField, PairsField, CodeField, Actions, Button, Rows, Row, PostButton, Para, Code, Links, Link, Tiles, Tile, Expanders, Expander, DomainSetup, DomainRecords, Select};
 use crate::templates::FormState;
 use crate::web::apps::SettingsEdit;
+use grund_domain::app::updates::UpdateState;
 
 component SettingsForm(id: &str, title: &str, action: &str, cancel: &str, part: &str, note: &str, save: &str = "Save and release", kind: &str = "primary", icon: &str = "layers", autocomplete: Option<&str>, fields: Option<&[&str]>, form: &FormState<'_>, manages: bool, before: Option<Html>, children: Html) {
   <Panel id={id} title={title}>
@@ -19,7 +20,7 @@ component SettingsForm(id: &str, title: &str, action: &str, cancel: &str, part: 
   </Panel>
 }
 
-props crate::web::apps::AppSettingsPage<'_> { app, items, edit, next, manages, owner, form, options };
+props crate::web::apps::AppSettingsPage<'_> { app, items, edit, next, manages, owner, form, options, update };
 {let here = format!("{}/settings", app.base);}
 {let release_note = format!("Saving makes release v{}.", next.unwrap_or(0));}
 
@@ -29,6 +30,37 @@ props crate::web::apps::AppSettingsPage<'_> { app, items, edit, next, manages, o
   } else {
     {match edit {
       SettingsEdit::Image { image } => {
+        <Panel id="image-updates" title="Image updates">
+          <Rows>
+            <Row name={update.label} sub={update.reason} icon_name="layers" tone={update.tone} />
+            <Row name="Last checked" sub={&update.checked} plain />
+          </Rows>
+          {if *manages {
+            <Actions><PostButton action="{app.base}/updates/check" csrf={form.csrf} label="Check for updates" kind="secondary" /></Actions>
+          }}
+          {if update.observation.state == UpdateState::Available && update.catalogue {
+            <Para kind="hint">Catalogue suggestions match this image's repository. They do not mean this app was created from a template.</Para>
+          }}
+          {if update.observation.state == UpdateState::Available && !update.observation.candidates.is_empty() {
+            <Para kind="hint">Different image content is not proof of a newer version. Updating keeps your app settings. Back up app data first; rolling back an image does not restore data.</Para>
+            {for (index, candidate) in update.observation.candidates.iter().enumerate() {
+              <Section id="image-candidate-{index}" title={&candidate.label}>
+                <Para kind="row-sub"><code>{candidate.reference}</code></Para>
+                <Para kind="row-sub"><code>{candidate.digest}</code></Para>
+                {if *manages {
+                  <Form action="{app.base}/updates/apply" form={Some(&form)}>
+                    <HiddenField name="base_release" value={&update.observation.base_release.to_string()} />
+                    <HiddenField name="base_digest" value={&update.observation.current_digest} />
+                    <HiddenField name="target_reference" value={&candidate.reference} />
+                    <HiddenField name="target_digest" value={&candidate.digest} />
+                    <HiddenField name="request_id" value={&uuid::Uuid::now_v7().to_string()} />
+                    <Actions><Button label="Update to this image" kind="secondary" /></Actions>
+                  </Form>
+                }}
+              </Section>
+            }}
+          }}
+        </Panel>
         <SettingsForm id="version" title="Image" action="{here}/release" cancel={&here} part="image" note={&release_note} autocomplete={Some("off")} form={&form} manages={*manages}>
           <Field name="image" label="Image" value={image} hint="A tag, such as v1.11.0, or a whole reference. The tag is resolved now." autocomplete="off" required mono form={Some(&form)} />
         </SettingsForm>
