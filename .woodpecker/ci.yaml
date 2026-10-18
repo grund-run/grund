@@ -256,23 +256,37 @@ steps:
     commands:
       # ca-certificates: the CA bundle the image ships (Dockerfile.prebuilt),
       # brought up to date here so the image build fetches nothing.
-      - apk add --no-cache musl-dev binutils protobuf-dev sccache ca-certificates
-      - 'command -v ci-cache >/dev/null || { (curl -fsS --connect-timeout 5 --max-time 60 -o /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.3.1/ci-cache-0.3.1-x86_64-linux-musl 2>/dev/null || { if command -v timeout >/dev/null; then timeout 60 wget -q -T 5 -O /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.3.1/ci-cache-0.3.1-x86_64-linux-musl; else wget -q -T 5 -O /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.3.1/ci-cache-0.3.1-x86_64-linux-musl; fi; } 2>/dev/null) && echo "460ac0386515e7ce2704c65e414ed1ee2a938fe0b1ed05ec8dd363d9ef3a5f7e  /usr/local/bin/.ci-cache.part" | sha256sum -c - >/dev/null 2>&1 && chmod 0755 /usr/local/bin/.ci-cache.part && mv /usr/local/bin/.ci-cache.part /usr/local/bin/ci-cache; rm -f /usr/local/bin/.ci-cache.part; command -v ci-cache >/dev/null || echo "ci-cache client unavailable, building uncached"; }'  # ci-cache: managed by kjuulh/woodpecker-forest
+      - apk add --no-cache musl-dev binutils protobuf-dev sccache ca-certificates python3 git
+      - &release-cache-client 'command -v ci-cache >/dev/null || { (curl -fsS --connect-timeout 5 --max-time 60 -o /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.3.1/ci-cache-0.3.1-x86_64-linux-musl 2>/dev/null || { if command -v timeout >/dev/null; then timeout 60 wget -q -T 5 -O /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.3.1/ci-cache-0.3.1-x86_64-linux-musl; else wget -q -T 5 -O /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.3.1/ci-cache-0.3.1-x86_64-linux-musl; fi; } 2>/dev/null) && echo "460ac0386515e7ce2704c65e414ed1ee2a938fe0b1ed05ec8dd363d9ef3a5f7e  /usr/local/bin/.ci-cache.part" | sha256sum -c - >/dev/null 2>&1 && chmod 0755 /usr/local/bin/.ci-cache.part && mv /usr/local/bin/.ci-cache.part /usr/local/bin/ci-cache; rm -f /usr/local/bin/.ci-cache.part; command -v ci-cache >/dev/null || echo "ci-cache client unavailable, building uncached"; }'
       - 'if command -v ci-cache >/dev/null; then ci-cache restore release --preset cargo; fi'  # ci-cache: managed by kjuulh/woodpecker-forest
       - 'if command -v ci-cache >/dev/null; then eval "$$(ci-cache env)"; fi'  # ci-cache: managed by kjuulh/woodpecker-forest
       # At most 4 parallel rustc jobs on agent 1 (ratchet); see jobs.sh.
       - . .woodpecker/jobs.sh
-      - export GRUND_BUILD_TIME="$$(date -u '+%Y-%m-%d %H:%M UTC')"
+      - |
+        export GRUND_REVISION="$$(git rev-parse "$${CI_COMMIT_SHA}^{commit}")"
+        if [ -n "$${CI_COMMIT_TAG:-}" ]; then
+          python3 tools/release.py prepare
+          export GRUND_VERSION="$${CI_COMMIT_TAG}"
+          export GRUND_BUILD_TIME="$$(git show -s --format=%cI "$${GRUND_REVISION}")"
+        else
+          export GRUND_BUILD_TIME="$$(date -u '+%Y-%m-%d %H:%M UTC')"
+        fi
       - cargo build --locked --release -p grund -p grund-guest
       - if readelf -d target/release-build/release/grund | grep -q NEEDED; then echo "grund is dynamically linked; scratch cannot run it"; exit 1; fi
       - if readelf -d target/release-build/release/grund-guest | grep -q NEEDED; then echo "grund-guest is dynamically linked; the guest has no libc"; exit 1; fi
       # A compile cache must never ship another commit's build: the binary
       # has to carry this commit's revision (build.rs, /health/ready).
-      - tr -c 0-9a-f "\n" < target/release-build/release/grund | grep -q "$${CI_COMMIT_SHA}" || { echo "grund does not carry revision $${CI_COMMIT_SHA}"; exit 1; }
+      - tr -c 0-9a-f "\n" < target/release-build/release/grund | grep -q "$${GRUND_REVISION}" || { echo "grund does not carry revision $${GRUND_REVISION}"; exit 1; }
       # Stage the binary first and run the staged file, so the process the
       # accepttests assert against is byte for byte the one that gets packaged.
       - mkdir -p .image/var/lib/grund .dist && cp target/release-build/release/grund .image/grund && cp target/release-build/release/grund-guest .dist/grund-guest
       - cp /etc/ssl/certs/ca-certificates.crt .image/ca-certificates.crt
+      # Tags package these exact contract-tested bytes, never a second build.
+      - |
+        if [ -n "$${CI_COMMIT_TAG:-}" ]; then
+          cp .image/grund scratch/tag-release/dist/grund-linux-amd64
+          python3 tools/release.py verify-amd64
+        fi
       - 'if command -v ci-cache >/dev/null; then ci-cache stats; fi'  # ci-cache: managed by kjuulh/woodpecker-forest
 
   contract:
@@ -398,3 +412,113 @@ steps:
     commands:  # ci-cache: managed by kjuulh/woodpecker-forest
       - 'command -v ci-cache >/dev/null || { (curl -fsS --connect-timeout 5 --max-time 60 -o /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.3.1/ci-cache-0.3.1-x86_64-linux-musl 2>/dev/null || { if command -v timeout >/dev/null; then timeout 60 wget -q -T 5 -O /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.3.1/ci-cache-0.3.1-x86_64-linux-musl; else wget -q -T 5 -O /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.3.1/ci-cache-0.3.1-x86_64-linux-musl; fi; } 2>/dev/null) && echo "460ac0386515e7ce2704c65e414ed1ee2a938fe0b1ed05ec8dd363d9ef3a5f7e  /usr/local/bin/.ci-cache.part" | sha256sum -c - >/dev/null 2>&1 && chmod 0755 /usr/local/bin/.ci-cache.part && mv /usr/local/bin/.ci-cache.part /usr/local/bin/ci-cache; rm -f /usr/local/bin/.ci-cache.part; command -v ci-cache >/dev/null || echo "ci-cache client unavailable, building uncached"; }'  # ci-cache: managed by kjuulh/woodpecker-forest
       - 'if command -v ci-cache >/dev/null; then ci-cache save-all --refresh; fi'  # ci-cache: managed by kjuulh/woodpecker-forest
+
+# Tags share this workspace and the one native build above. Every publication
+# still waits for the normal CI gates as well as runtime and both OCI archives.
+  linux-arm64:
+    image: rust:1.98.1-alpine3.24
+    depends_on: []
+    when: &tag-release
+      - event: tag
+        ref: refs/tags/v*
+    environment:
+      CARGO_BUILD_JOBS: "4"
+      CARGO_BUILD_TARGET: aarch64-unknown-linux-musl
+      CARGO_TARGET_DIR: target/release-arm64
+      RUSTC_WRAPPER: sccache
+      SCCACHE_CACHE_SIZE: 2G
+      CARGO_INCREMENTAL: "0"
+      RUSTUP_TOOLCHAIN: 1.98.1-x86_64-unknown-linux-musl
+    commands:
+      - apk add --no-cache musl-dev binutils protobuf-dev sccache ca-certificates curl python3 xz qemu-aarch64 git
+      - *release-cache-client
+      # Cache identity includes the explicit arm64 target, lock and toolchain.
+      - 'if command -v ci-cache >/dev/null; then ci-cache restore release-arm64 --preset cargo --dir scratch/tag-release/tooling; eval "$$(ci-cache env)"; fi'
+      # Zig supplies musl C; QEMU executes the static result without binfmt.
+      - sh tools/release-build.sh arm64
+
+  released-binary-runtime:
+    image: alpine:3.24.0
+    depends_on: [release, release-postgres, release-nats]
+    when: *tag-release
+    environment:
+      GRUND_RELEASE_DATABASE_URL: postgres://grund:grund-release-disposable@release-postgres:5432/grund_release
+      GRUND_RELEASE_NATS_URL: nats://release-nats:4222
+    commands:
+      - apk add --no-cache python3 curl openssl git
+      # The contract suite and final download run byte-identical native files.
+      # Readiness must prove this commit and both real dependencies; the same
+      # binary then creates an owner, probes HTTP and makes a real CLI RPC.
+      - cmp .image/grund scratch/tag-release/dist/grund-linux-amd64
+      - sha256sum .image/grund scratch/tag-release/dist/grund-linux-amd64
+      - python3 tools/release-runtime.py scratch/tag-release/dist/grund-linux-amd64
+
+  image-amd64:
+    image: woodpeckerci/plugin-docker-buildx:6.1.2@sha256:d26b69cbe748b8a219c707e7889d5ffb3f9214bc3c480c30fe857ff85954267c
+    depends_on: [released-binary-runtime]
+    when: *tag-release
+    settings:
+      dockerfile: Dockerfile.prebuilt
+      context: scratch/tag-release/image-amd64
+      repo: git.kjuulh.io/grund/grund
+      platforms: linux/amd64
+      tags: ${CI_COMMIT_TAG}-amd64
+      auto_tag: false
+      default_labels: false
+      provenance: false
+      build_args:
+        SOURCE_DATE_EPOCH: "0"
+      dry_run: true
+      output: type=oci,dest=scratch/tag-release/image-amd64.tar
+
+  image-arm64:
+    image: woodpeckerci/plugin-docker-buildx:6.1.2@sha256:d26b69cbe748b8a219c707e7889d5ffb3f9214bc3c480c30fe857ff85954267c
+    depends_on: [linux-arm64]
+    when: *tag-release
+    settings:
+      # Only COPYs the already-executed static arm64 binary; no RUN or emulation.
+      dockerfile: Dockerfile.prebuilt
+      context: scratch/tag-release/image-arm64
+      repo: git.kjuulh.io/grund/grund
+      platforms: linux/arm64
+      tags: ${CI_COMMIT_TAG}-arm64
+      auto_tag: false
+      default_labels: false
+      provenance: false
+      build_args:
+        SOURCE_DATE_EPOCH: "0"
+      dry_run: true
+      output: type=oci,dest=scratch/tag-release/image-arm64.tar
+
+  publish-verified-release:
+    image: alpine:3.24.0
+    depends_on: [lint, proto, contract, guest-image, image-amd64, image-arm64]
+    when: *tag-release
+    environment:
+      REGISTRY_TOKEN:
+        from_secret: release_token
+    commands:
+      - apk add --no-cache python3 skopeo git ca-certificates
+      # Archive inspection compares the packaged /grund with each verified
+      # download before any side effect. Existing registry tags must match.
+      - python3 tools/release.py merge-images
+      - python3 tools/release.py publish-image
+      # Payloads, then SHA256SUMS, then public byte verification, then the Gitea
+      # release. No mutable latest package, image, or download is ever written.
+      - python3 tools/release.py publish
+
+  release-postgres:
+    image: postgres:18-alpine
+    depends_on: []
+    detach: true
+    when: *tag-release
+    environment:
+      POSTGRES_DB: grund_release
+      POSTGRES_USER: grund
+      POSTGRES_PASSWORD: grund-release-disposable
+      POSTGRES_INITDB_ARGS: "-c fsync=off -c synchronous_commit=off -c full_page_writes=off"
+  release-nats:
+    image: nats:2.15-alpine
+    depends_on: []
+    detach: true
+    when: *tag-release
