@@ -26,7 +26,7 @@ def cpu_usage():
 
 def measure(arch, label, jobs, cgu=1, database=None, fresh_workspace=False, root_cgu=None):
     environment = os.environ.copy()
-    environment['SCCACHE_DIR'] = str(ROOT / 'scratch/no-lto-sccache')
+    environment['SCCACHE_DIR'] = str(ROOT / 'target/release-build/.ci-cache-sccache')
     environment.update({
         'CARGO_BUILD_JOBS': str(jobs), 'CARGO_INCREMENTAL': '0',
         'GRUND_RELEASE_BENCHMARK_VERSION': f'ciperf-{label}-{environment["CI_COMMIT_SHA"]}',
@@ -41,15 +41,15 @@ def measure(arch, label, jobs, cgu=1, database=None, fresh_workspace=False, root
         environment['GRUND_RELEASE_ROOT_CGU'] = str(root_cgu)
     if arch == 'amd64':
         environment.pop('CARGO_BUILD_TARGET', None)
-        target = 'target/release-build' if cgu == 1 else 'target/release-cgu16'
-        step = 'release' if cgu == 1 else 'release-native-cgu16'
+        target = 'target/release-build'
+        step = 'release'
     else:
         environment['CARGO_BUILD_TARGET'] = 'aarch64-unknown-linux-musl'
         target = 'target/release-arm64'
         step = 'release-arm64'
     environment['CARGO_TARGET_DIR'] = target
     total_started = time.monotonic()
-    restore = ['ci-cache', 'restore', step, '--preset', 'cargo']
+    restore = ['ci-cache', 'restore', step, '--preset', 'cargo', '--key-file', 'Cargo.toml']
     if arch == 'arm64':
         restore.extend(['--dir', 'scratch/tag-release/tooling'])
     if shutil.which('ci-cache'):
@@ -103,6 +103,9 @@ def main():
     os.chdir(ROOT)
     if os.environ.get('CI_PIPELINE_EVENT') != 'push' or os.environ.get('CI_COMMIT_TAG'):
         raise RuntimeError('release measurements require a non-tag push pipeline')
+    if os.environ.get('CI_MACHINE') != '0c1ad77f1697':
+        print('BENCHMARK_SKIPPED password comparison requires agent1', flush=True)
+        return
     print('RELEASE_CAPACITY ' + json.dumps({
         'agent': os.environ.get('CI_MACHINE', ''), 'logical_cpus': os.cpu_count(),
         'cpu_max': cgroup('cpu.max'), 'memory_max': cgroup('memory.max'),
@@ -113,9 +116,8 @@ def main():
         'CARGO_PROFILE_RELEASE_LTO': 'false',
         'CARGO_PROFILE_RELEASE_OPT_LEVEL': '3',
     })
-    measure('amd64', 'no-lto-cgu16-cold-j4', 4, cgu=16)
-    measure('amd64', 'no-lto-cgu16-warm-j4', 4, cgu=16,
-            database=os.environ['PERF_DATABASE_NOLTO'], fresh_workspace=True)
+    measure('amd64', 'no-lto-password-cgu1-j4', 4, cgu=16,
+            database=os.environ['PERF_DATABASE_NOLTO'])
 
 
 if __name__ == '__main__':

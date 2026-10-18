@@ -1,4 +1,4 @@
-# One chosen fast-build profile: cold then cached, with one real runtime sample.
+# One agent-matched password-path sample using the warm main release snapshot.
 # This branch creates no tag, uploads no cache and publishes no artifacts.
 when:
   - event: push
