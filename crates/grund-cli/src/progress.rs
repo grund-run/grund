@@ -72,10 +72,6 @@ impl Progress {
             bar.enable_steady_tick(Duration::from_millis(100));
             Some(bar)
         } else {
-            if self.enabled {
-                let _ = writeln!(diagnostics, "{label}...");
-                let _ = diagnostics.flush();
-            }
             None
         };
         let result = future.await.map_err(|mut error| {
@@ -86,17 +82,17 @@ impl Progress {
         });
         if self.enabled {
             let elapsed = started.elapsed().as_secs_f32();
-            let (symbol, status, color) = if result.is_ok() {
-                (if self.animated { "✓" } else { "OK" }, "done", "32")
+            let (symbol, suffix, color) = if result.is_ok() {
+                (if self.animated { "✓" } else { "OK" }, "", "32")
             } else {
-                (if self.animated { "✗" } else { "FAIL" }, "failed", "31")
+                (if self.animated { "✗" } else { "FAIL" }, ": failed", "31")
             };
             let symbol = if self.color {
                 format!("\x1b[{color}m{symbol}\x1b[0m")
             } else {
                 symbol.to_owned()
             };
-            let line = format!("{symbol} {label}: {status} ({elapsed:.1}s)");
+            let line = format!("{symbol} {label}{suffix} ({elapsed:.1}s)");
             if let Some(spinner) = spinner {
                 spinner.set_style(
                     ProgressStyle::with_template("{msg}")
