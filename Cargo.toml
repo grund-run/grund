@@ -67,6 +67,13 @@ codegen-units = 16
 panic = "abort"
 strip = true
 
+# Keep the password-hashing hot path in one unit without whole-program LTO.
+[profile.release.package.argon2]
+codegen-units = 1
+
+[profile.release.package.blake2]
+codegen-units = 1
+
 # Password hashing is the slow step of every sign-in; unoptimised it costs
 # seconds, which makes debug builds and their tests crawl.
 [profile.dev.package.argon2]
