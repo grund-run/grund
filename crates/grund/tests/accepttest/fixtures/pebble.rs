@@ -221,6 +221,16 @@ impl Pebble {
         }
     }
 
+    pub fn set_paused(&self, paused: bool) -> anyhow::Result<()> {
+        let child = self.pebble.as_ref().context("Pebble is not running")?;
+        let signal = if paused { "-STOP" } else { "-CONT" };
+        let status = Command::new("kill")
+            .args([signal, &child.id().to_string()])
+            .status()?;
+        anyhow::ensure!(status.success(), "kill {signal} failed");
+        Ok(())
+    }
+
     pub fn stop(&mut self) {
         if let Some(mut child) = self.pebble.take() {
             let _ = child.kill();

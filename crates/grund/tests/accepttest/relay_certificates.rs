@@ -874,6 +874,17 @@ async fn a_relay_beside_grund_serves_the_instances_own_certificate_under_both_na
 #[tokio::test]
 async fn a_relay_that_was_down_past_its_renewal_serves_its_stored_certificate_and_renews_when_it_is_back()
 -> anyhow::Result<()> {
+    use rustls::pki_types::{CertificateDer, ServerName, UnixTime, pem::PemObject};
+
+    #[derive(Debug)]
+    struct CertificateTime(UnixTime);
+
+    impl rustls::time_provider::TimeProvider for CertificateTime {
+        fn current_time(&self) -> Option<UnixTime> {
+            Some(self.0)
+        }
+    }
+
     if external_target().is_some() {
         return Ok(());
     }
@@ -903,28 +914,88 @@ async fn a_relay_that_was_down_past_its_renewal_serves_its_stored_certificate_an
     .map_err(|error| error.context(relay_log(&dir)))?;
 
     drop(relay);
-    tokio::time::sleep(Duration::from_secs(SHORT_PROFILE_SECONDS + 5)).await;
-    let back = Instant::now();
-    let relay = a_relay_process(&when, &dir, None, pebble.tls_port)?;
-    let started = eventually(
-        "the relay listening again",
-        Duration::from_secs(20),
+    let down = Instant::now();
+    let stored_chain = std::fs::read(dir.join("data/tls/chain.pem"))?;
+    let stored_leaf = CertificateDer::from_pem_slice(&stored_chain)?;
+    anyhow::ensure!(
+        stored_leaf.as_ref() == first,
+        "the relay persisted the certificate it served"
+    );
+    let stored_chain = String::from_utf8(stored_chain)?;
+    let expires_at: chrono::DateTime<chrono::Utc> = {
+        let mut connection =
+            <sqlx::PgConnection as sqlx::Connection>::connect(&database_url(&when)).await?;
+        sqlx::query_scalar(
+            "SELECT not_after FROM grund_certificates WHERE subject = $1 AND chain_pem = $2",
+        )
+        .bind(format!("relay:{host}"))
+        .bind(&stored_chain)
+        .fetch_one(&mut connection)
+        .await?
+    };
+    pebble.set_paused(true)?;
+    eventually(
+        "the stored certificate expired and due for renewal while the relay is down",
+        Duration::from_secs(SHORT_PROFILE_SECONDS + 5),
         || async {
-            tokio::net::TcpStream::connect(("127.0.0.1", pebble.tls_port)).await?;
+            let mut connection =
+                <sqlx::PgConnection as sqlx::Connection>::connect(&database_url(&when)).await?;
+            let expired_and_due: bool = sqlx::query_scalar(
+                "SELECT not_after < clock_timestamp() AND renew_at <= clock_timestamp() \
+                 FROM grund_certificates WHERE subject = $1 AND chain_pem = $2",
+            )
+            .bind(format!("relay:{host}"))
+            .bind(&stored_chain)
+            .fetch_one(&mut connection)
+            .await?;
+            anyhow::ensure!(
+                expired_and_due,
+                "the stored certificate is not yet expired and due for renewal"
+            );
             Ok(())
         },
     )
-    .await;
-    anyhow::ensure!(
-        started.is_ok(),
-        "the relay did not start:\n{}",
-        relay_log(&dir)
-    );
-    anyhow::ensure!(
-        relay_log(&dir).contains("serving the certificate kept on disk"),
-        "the relay did not serve its stored certificate first:\n{}",
-        relay_log(&dir)
-    );
+    .await
+    .map_err(|error| error.context(when.testcase.fixture.log()))?;
+    let downtime = down.elapsed();
+    let mut config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()?
+    .with_root_certificates(roots.clone())
+    .with_no_client_auth();
+    config.time_provider = Arc::new(CertificateTime(UnixTime::since_unix_epoch(
+        Duration::from_secs((expires_at.timestamp() - 1).try_into()?),
+    )));
+    let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
+    let back = Instant::now();
+    let relay = a_relay_process(&when, &dir, None, pebble.tls_port)?;
+    eventually(
+        "the restarted relay serving its exact stored certificate before renewal",
+        Duration::from_secs(20),
+        || async {
+            let tcp = tokio::net::TcpStream::connect(("127.0.0.1", pebble.tls_port)).await?;
+            let stream = tokio::time::timeout(
+                Duration::from_secs(10),
+                connector.connect(ServerName::try_from(host.clone())?, tcp),
+            )
+            .await??;
+            let leaf = stream
+                .get_ref()
+                .1
+                .peer_certificates()
+                .and_then(|chain| chain.first())
+                .ok_or_else(|| anyhow::anyhow!("the relay served no certificate"))?;
+            anyhow::ensure!(
+                leaf.as_ref() == first,
+                "the restarted relay did not serve its stored certificate first"
+            );
+            Ok(())
+        },
+    )
+    .await
+    .map_err(|error| error.context(relay_log(&dir)))?;
+    pebble.set_paused(false)?;
     let renewed = eventually(
         "a renewed certificate after the relay came back",
         Duration::from_secs(SHORT_PROFILE_SECONDS * 3),
@@ -944,8 +1015,7 @@ async fn a_relay_that_was_down_past_its_renewal_serves_its_stored_certificate_an
     })?;
     anyhow::ensure!(renewed != first);
     eprintln!(
-        "a relay down for {} s past its certificate's end renewed {:?} after it was back",
-        SHORT_PROFILE_SECONDS + 5,
+        "a relay down for {downtime:?}, past its certificate's expiry, renewed {:?} after it was back",
         back.elapsed()
     );
     drop(relay);

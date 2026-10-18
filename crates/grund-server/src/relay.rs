@@ -484,7 +484,7 @@ impl Component for RelayServer {
             .await
             .map_err(anyhow::Error::from)?;
         tracing::info!(
-            %address,
+            address = %listener.local_addr().map_err(anyhow::Error::from)?,
             url = config.relay_url.as_deref().unwrap_or_default(),
             tls = tls.is_some(),
             quic = ?config.relay_quic_address,

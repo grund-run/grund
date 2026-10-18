@@ -1431,7 +1431,7 @@ async fn an_agent_restarted_under_load_costs_no_request_and_the_edge_redials_it_
     let owner = stack.given.a_signed_in_account().await?;
     let org = owner.username.clone();
     let mut a = stack.a_machine(&org, "box-a").await?;
-    let b = stack.a_machine(&org, "box-b").await?;
+    let mut b = stack.a_machine(&org, "box-b").await?;
     stack.registry.publish("acme/steady", "1");
     stack
         .call(
@@ -1462,14 +1462,45 @@ async fn an_agent_restarted_under_load_costs_no_request_and_the_edge_redials_it_
     let name = stack.name_of(&org, "steady");
     stack.served(&name, Duration::from_secs(60)).await?;
 
+    let mut established = stack.connect(&name).await?;
+    anyhow::ensure!(established.get(&name, "/", &[]).await?.status == 200);
+    let mut database =
+        <sqlx::PgConnection as sqlx::Connection>::connect(&database_url(&stack.when)).await?;
+    let keys: Vec<(String, String)> = sqlx::query_as(
+        "SELECT pool_name, public_key FROM grund_machines WHERE pool_name IN ('box-a', 'box-b')",
+    )
+    .fetch_all(&mut database)
+    .await?;
+    let log = stack.edge_log();
+    let accepted = log
+        .lines()
+        .rev()
+        .find(|line| line.contains("edge.failover_attempt") && line.contains("accepted"))
+        .ok_or_else(|| anyhow::anyhow!("no accepted edge connection:\n{log}"))?;
+    let (machine_name, machine_key) = keys
+        .iter()
+        .find(|(_, key)| accepted.contains(&format!("machine_key={key}")))
+        .ok_or_else(|| {
+            anyhow::anyhow!("the accepted connection has no known machine:\n{accepted}")
+        })?;
+    let agent = if machine_name == "box-a" {
+        &mut a
+    } else {
+        &mut b
+    };
     let (tally, handles) = load(&stack, &name, 8);
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    let flowing = appears(Duration::from_secs(30), 7, || {
+        tally.ok.load(Relaxed) as usize
+    })
+    .await;
     let edge_log = |line: &'static str| {
         let dir = stack.edge_dir.clone();
+        let machine = format!("machine={machine_key}");
         move || {
             std::fs::read_to_string(dir.join("edge.log"))
                 .unwrap_or_default()
-                .matches(line)
+                .lines()
+                .filter(|entry| entry.contains(line) && entry.contains(&machine))
                 .count()
         }
     };
@@ -1477,22 +1508,30 @@ async fn an_agent_restarted_under_load_costs_no_request_and_the_edge_redials_it_
         edge_log("a machine closed its connection"),
         edge_log("a machine answers again"),
     );
-    let noticed = tokio::spawn(appears(Duration::from_secs(30), closed(), closed));
-    let redialed = tokio::spawn(appears(Duration::from_secs(60), answers(), answers));
-    let a_dir = a.dir.clone();
+    let (closed_before, answers_before) = (closed(), answers());
+    let agent_dir = agent.dir.clone();
     let taking = move || {
-        std::fs::read_to_string(a_dir.join("agent.log"))
+        std::fs::read_to_string(agent_dir.join("agent.log"))
             .unwrap_or_default()
             .matches("gate: taking entry streams")
             .count()
     };
     let taking_before = taking();
-    a.stop().await?;
+    agent.stop().await?;
     let stopped = Instant::now();
-    a.start()?;
-    let back = appears(Duration::from_secs(30), taking_before, taking).await;
-    let (noticed, redialed) = (noticed.await?, redialed.await?);
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    let noticed = appears(Duration::from_secs(1), closed_before, closed).await;
+    drop(established);
+    agent.start()?;
+    let (back, redialed) = tokio::join!(
+        appears(Duration::from_secs(30), taking_before, taking),
+        appears(Duration::from_secs(60), answers_before, answers),
+    );
+    let continued = appears(
+        Duration::from_secs(30),
+        tally.ok.load(Relaxed) as usize + 7,
+        || tally.ok.load(Relaxed) as usize,
+    )
+    .await;
     tally.stop.store(true, Relaxed);
     for handle in handles {
         let _ = handle.await;
@@ -1504,6 +1543,10 @@ async fn an_agent_restarted_under_load_costs_no_request_and_the_edge_redials_it_
         .map(|(b, r)| r.saturating_duration_since(b));
     eprintln!(
         "agent restarted under load: {ok} served, {failed} failed; the edge noticed {noticed_after:?} after the agent stopped, and redialed {redialed_after:?} after it was back"
+    );
+    anyhow::ensure!(
+        flowing.is_some() && continued.is_some(),
+        "the request load did not progress before and after the restart"
     );
     anyhow::ensure!(
         failed == 0,
@@ -1819,85 +1862,147 @@ async fn an_edge_reaches_the_relay_directly_when_its_public_gateway_stops_accept
     std::fs::write(&cert_file, leaf.pem())?;
     std::fs::write(&key_file, leaf_key.serialize_pem())?;
 
-    let reserved = std::net::TcpListener::bind("127.0.0.1:0")?;
-    let direct_port = reserved.local_addr()?.port();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let public_port = listener.local_addr()?.port();
-    drop(reserved);
     let public_url = format!("https://localhost:{public_port}");
-    let direct_url = format!("https://localhost:{direct_port}");
-    let forwarder = tokio::spawn(async move {
-        while let Ok((mut incoming, _)) = listener.accept().await {
-            tokio::spawn(async move {
-                if let Ok(mut upstream) = TcpStream::connect(("127.0.0.1", direct_port)).await {
-                    let _ = tokio::io::copy_bidirectional(&mut incoming, &mut upstream).await;
-                }
-            });
-        }
-    });
-    let relay_address = format!("127.0.0.1:{direct_port}");
     let Some(mut stack) = a_stack_with(&[
-        ("GRUND_RELAY_ADDRESS", &relay_address),
+        ("GRUND_RELAY_ADDRESS", "127.0.0.1:0"),
         ("GRUND_RELAY_URL", &public_url),
         ("GRUND_RELAY_TLS_CERT_FILE", cert_file.to_str().unwrap()),
         ("GRUND_RELAY_TLS_KEY_FILE", key_file.to_str().unwrap()),
+        ("GRUND_LOG_FORMAT", "json"),
     ])
     .await?
     else {
-        forwarder.abort();
         return Ok(());
     };
-    let owner = stack.given.a_signed_in_account().await?;
-    let org = owner.username.clone();
-    let mut agent = stack.a_machine(&org, "box-a").await?;
-    let record: Value = serde_json::from_slice(&std::fs::read(agent.dir.join("machine.json"))?)?;
-    anyhow::ensure!(
-        record["network"]["relay_urls"]
-            .as_array()
-            .is_some_and(|urls| urls.iter().any(|url| url.as_str() == Some(&public_url))),
-        "the machine must keep the public relay URL: {record:#}"
-    );
-    agent.stop().await?;
-    std::fs::copy(&ca_file, agent.dir.join("relay-ca.pem"))?;
-    agent.start()?;
-    stack.deploy(&org, "direct-relay", "1", 1).await?;
-    let running = stack
-        .until(
-            &org,
-            "direct-relay",
-            Duration::from_secs(40),
-            "one ready copy",
-            |app| running_replicas(app).len() == 1,
-        )
-        .await?;
-    write_remote_copies(
-        &[("box-a", &agent)],
-        "direct-relay",
-        &running_replicas(&running),
-    );
-    let name = stack.name_of(&org, "direct-relay");
-    stack.start_edge_with_relay(Some((&direct_url, &ca_file)))?;
-    stack.served(&name, Duration::from_secs(60)).await?;
-    let stored_routes = std::fs::read(stack.edge_dir.join("data/routes.pb"))?;
-    anyhow::ensure!(
-        stored_routes
-            .windows(public_url.len())
-            .any(|bytes| bytes == public_url.as_bytes())
-            && !stored_routes
-                .windows(direct_url.len())
-                .any(|bytes| bytes == direct_url.as_bytes()),
-        "the persisted route table must advertise only the public relay URL"
-    );
-    stack.edge = None;
-    forwarder.abort();
-    let _ = forwarder.await;
-    anyhow::ensure!(
-        TcpStream::connect(("127.0.0.1", public_port))
-            .await
-            .is_err(),
-        "the public relay gateway still accepts connections"
-    );
-    stack.start_edge_with_relay(Some((&direct_url, &ca_file)))?;
-    stack.served(&name, Duration::from_secs(60)).await?;
-    Ok(())
+    let started = Instant::now();
+    let direct_address: std::net::SocketAddr = loop {
+        let log = stack.when.testcase.fixture.log();
+        if let Some(address) = log
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter(|entry| entry["fields"]["message"] == "relay listening")
+            .find_map(|entry| {
+                entry["fields"]["address"]
+                    .as_str()?
+                    .parse::<std::net::SocketAddr>()
+                    .ok()
+                    .filter(|address| address.port() != 0)
+            })
+        {
+            break address;
+        }
+        anyhow::ensure!(
+            started.elapsed() < Duration::from_secs(60),
+            "the relay never reported its bound address:\n{log}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    let direct_url = format!("https://localhost:{}", direct_address.port());
+    let mut connections = tokio::task::JoinSet::new();
+    let (stop_accepting, mut stop_requested) = tokio::sync::oneshot::channel::<()>();
+    let (gateway_stopped, stopped) = tokio::sync::oneshot::channel::<()>();
+    let result = {
+        let gateway = async {
+            loop {
+                tokio::select! {
+                    _ = &mut stop_requested => break,
+                    accepted = listener.accept() => {
+                        let (mut incoming, _) = accepted?;
+                        connections.spawn(async move {
+                            if let Ok(mut upstream) = TcpStream::connect(direct_address).await {
+                                let _ = tokio::io::copy_bidirectional(&mut incoming, &mut upstream).await;
+                            }
+                        });
+                    }
+                    Some(joined) = connections.join_next(), if !connections.is_empty() => {
+                        joined?;
+                    }
+                }
+            }
+            drop(listener);
+            let _ = gateway_stopped.send(());
+            std::future::pending::<anyhow::Result<()>>().await
+        };
+        let scenario = async {
+            let owner = stack.given.a_signed_in_account().await?;
+            let org = owner.username.clone();
+            let mut agent = stack.a_machine(&org, "box-a").await?;
+            let record: Value =
+                serde_json::from_slice(&std::fs::read(agent.dir.join("machine.json"))?)?;
+            anyhow::ensure!(
+                record["network"]["relay_urls"]
+                    .as_array()
+                    .is_some_and(|urls| urls.iter().any(|url| url.as_str() == Some(&public_url))),
+                "the machine must keep the public relay URL: {record:#}"
+            );
+            agent.stop().await?;
+            std::fs::copy(&ca_file, agent.dir.join("relay-ca.pem"))?;
+            agent.start()?;
+            stack.deploy(&org, "direct-relay", "1", 1).await?;
+            let running = stack
+                .until(
+                    &org,
+                    "direct-relay",
+                    Duration::from_secs(40),
+                    "one ready copy",
+                    |app| running_replicas(app).len() == 1,
+                )
+                .await?;
+            write_remote_copies(
+                &[("box-a", &agent)],
+                "direct-relay",
+                &running_replicas(&running),
+            );
+            let name = stack.name_of(&org, "direct-relay");
+            stack.start_edge_with_relay(Some((&direct_url, &ca_file)))?;
+            stack.served(&name, Duration::from_secs(60)).await?;
+            let stored_routes = std::fs::read(stack.edge_dir.join("data/routes.pb"))?;
+            anyhow::ensure!(
+                stored_routes
+                    .windows(public_url.len())
+                    .any(|bytes| bytes == public_url.as_bytes())
+                    && !stored_routes
+                        .windows(direct_url.len())
+                        .any(|bytes| bytes == direct_url.as_bytes()),
+                "the persisted route table must advertise only the public relay URL"
+            );
+            let mut edge = stack
+                .edge
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("the initial edge was not running"))?;
+            edge.0.kill()?;
+            tokio::time::timeout(
+                Duration::from_secs(60),
+                tokio::task::spawn_blocking(move || edge.0.wait()),
+            )
+            .await???;
+            stop_accepting.send(()).map_err(|_| {
+                anyhow::anyhow!("the gateway stopped before shutdown was requested")
+            })?;
+            tokio::time::timeout(Duration::from_secs(60), stopped).await??;
+            let public_connection = tokio::time::timeout(
+                Duration::from_secs(60),
+                TcpStream::connect(("127.0.0.1", public_port)),
+            )
+            .await?;
+            anyhow::ensure!(
+                matches!(
+                    &public_connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused
+                ),
+                "the public relay gateway must refuse new connections: {public_connection:?}"
+            );
+            stack.start_edge_with_relay(Some((&direct_url, &ca_file)))?;
+            stack.served(&name, Duration::from_secs(60)).await?;
+            Ok(())
+        };
+        tokio::select! {
+            result = gateway => result,
+            result = scenario => result,
+        }
+    };
+    connections.shutdown().await;
+    result
 }
