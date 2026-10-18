@@ -527,6 +527,10 @@ and same-site only, not protection against whole-site loss. Hosted capacity
 is fixed; resizing is not supported. Redis syncs disk writes about once a second,
 so abrupt power loss can lose recent writes.
 
+On every start PostgreSQL restores its template host-auth rule and any missing
+default configuration files. This does not repair database files or make a
+snapshot database-consistent; test a restored copy before relying on it.
+
 The app overview shows host, port, database/user and the environment variables
 to set in another app. Secrets are separate per app. Owners and admins can
 explicitly reveal and copy a grund-generated template password: each successful

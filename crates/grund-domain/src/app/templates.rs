@@ -110,11 +110,7 @@ pub const CATALOGUE: &[Template] = &[
         title: "PostgreSQL",
         summary: "A relational database.",
         image: POSTGRES_IMAGE,
-        command: &[
-            "/bin/sh",
-            "-ec",
-            "chown postgres:postgres /var/lib/postgresql/data; exec /usr/local/bin/docker-entrypoint.sh postgres -c 'listen_addresses=*'",
-        ],
+        command: &["/bin/sh", "-ec", include_str!("postgres-start.sh")],
         env: &[
             ("POSTGRES_USER", "grund"),
             ("POSTGRES_DB", "grund"),

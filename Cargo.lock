@@ -1888,6 +1888,7 @@ dependencies = [
  "grund-cli",
  "grund-containers",
  "grund-crypto",
+ "grund-domain",
  "grund-ee",
  "grund-net",
  "grund-proto",
