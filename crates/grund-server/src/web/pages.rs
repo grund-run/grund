@@ -1474,6 +1474,7 @@ fn style_guide_fixture(csrf: String) -> StyleGuidePage {
     .map(
         |(name, image, address, internal)| crate::web::apps::ListingView {
             name: name.into(),
+            stack: None,
             tone: "muted",
             copies: 0,
             icon: crate::web::apps::image_icon(image),

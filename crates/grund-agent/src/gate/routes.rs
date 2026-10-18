@@ -92,7 +92,8 @@ pub fn endpoints_from(
             ready: reports
                 .iter()
                 .any(|r| r.replica_id == replica.replica_id && r.ready),
-            draining: replica.state.as_known() == Some(ReplicaState::REPLICA_STATE_DRAINING),
+            draining: replica.stopping
+                || replica.state.as_known() == Some(ReplicaState::REPLICA_STATE_DRAINING),
         })
         .collect()
 }
@@ -166,6 +167,8 @@ pub struct Candidate {
     pub local: bool,
     pub ready: bool,
     pub draining: bool,
+    /// Exclusive and explicitly stopping copies never accept drain fallback.
+    pub no_drain_fallback: bool,
 }
 
 /// An app placed here with a published port.
@@ -207,7 +210,7 @@ impl AppRoute {
     pub fn draining_fallback(&self) -> bool {
         self.local
             .iter()
-            .any(|c| c.ready && c.draining && !c.copy.ejected())
+            .any(|c| c.ready && c.draining && !c.no_drain_fallback && !c.copy.ejected())
     }
 
     /// A copy for one request (§8.2): two random choices on in-flight
@@ -240,7 +243,7 @@ impl AppRoute {
         let draining: Vec<&Candidate> = self
             .local
             .iter()
-            .filter(|c| c.ready && c.draining && !c.copy.ejected())
+            .filter(|c| c.ready && c.draining && !c.no_drain_fallback && !c.copy.ejected())
             .filter(fresh)
             .collect();
         (!draining.is_empty()).then(|| two_choices(&draining, random).clone())
@@ -380,8 +383,10 @@ pub fn build(
             upstream,
             local: true,
             ready,
-            draining: replica.state.as_known() == Some(ReplicaState::REPLICA_STATE_DRAINING)
+            draining: replica.stopping
+                || replica.state.as_known() == Some(ReplicaState::REPLICA_STATE_DRAINING)
                 || view.is_some_and(|v| v.draining),
+            no_drain_fallback: replica.exclusive || replica.stopping,
         });
     }
     let mut table = Table::default();
@@ -411,6 +416,7 @@ pub fn build(
                     local: false,
                     ready: true,
                     draining: false,
+                    no_drain_fallback: false,
                 }
             })
             .collect();

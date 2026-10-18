@@ -62,8 +62,8 @@ use buffa::Message;
 use buffa_types::google::protobuf::{Any, Empty};
 use grund_agent::{
     runtime::{
-        AppsCapabilities, ContainerRuntime, ContainerSpec, ContainerStatus, ImageRef, Probe,
-        REPLICA_LABEL, SPEC_HASH_LABEL, STOP_GRACE_LABEL, STOP_SIGNAL_LABEL, TaskState,
+        APP_ID_LABEL, AppsCapabilities, ContainerRuntime, ContainerSpec, ContainerStatus, ImageRef,
+        Probe, REPLICA_LABEL, SPEC_HASH_LABEL, STOP_GRACE_LABEL, STOP_SIGNAL_LABEL, TaskState,
         VOLUMES_LABEL, VolumeBind,
     },
     volume,
@@ -1219,7 +1219,7 @@ impl ContainerRuntime for Containerd {
             })
             .collect();
         let mut statuses = Vec::with_capacity(containers.len());
-        for c in containers {
+        for mut c in containers {
             let state = match tasks.get(&c.id) {
                 Some(process) => task_state(Some(process)),
                 None => match self.get_task(&c.id).await {
@@ -1246,7 +1246,8 @@ impl ContainerRuntime for Containerd {
             });
             statuses.push(ContainerStatus {
                 state,
-                spec_hash: c.labels.get(SPEC_HASH_LABEL).cloned().unwrap_or_default(),
+                spec_hash: c.labels.remove(SPEC_HASH_LABEL).unwrap_or_default(),
+                app_id: c.labels.remove(APP_ID_LABEL).unwrap_or_default(),
                 id: c.id,
                 network_resolver,
                 stop_signal,

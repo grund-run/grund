@@ -125,6 +125,10 @@ pub struct AppReplica {
     /// Whether its machine last reported it ready.
     #[serde(default)]
     pub ready: bool,
+    /// Relative stack service names (`service.stack`) in this signed network
+    /// only. They answer with these ready replica addresses, never a VIP.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
 }
 
 /// The most ports one replica may accept, as apps.md §15 allows an app.
@@ -318,6 +322,12 @@ impl MembershipList {
                     || iid <= 0xffff
                     || !addresses.insert(r.address)
                     || !is_label(&r.app)
+                    || r.aliases.iter().any(|alias| {
+                        let Some((service, stack)) = alias.split_once('.') else {
+                            return true;
+                        };
+                        !is_label(service) || !is_label(stack) || stack == "machines"
+                    })
                     || r.ports.len() > MAX_APP_PORTS
                     || r.ports.iter().any(|p| p.port == 0)
                 {
@@ -377,6 +387,16 @@ impl MembershipList {
             .map(|r| (member, r))
     }
 
+    /// Whether a relative app or stack-service name is in this signed network.
+    pub fn knows_app_name(&self, name: &str) -> bool {
+        self.members.iter().flat_map(|m| &m.apps).any(|r| {
+            r.app.eq_ignore_ascii_case(name)
+                || r.aliases
+                    .iter()
+                    .any(|alias| alias.eq_ignore_ascii_case(name))
+        })
+    }
+
     /// The addresses of `app`'s ready replicas on every member, compared as
     /// DNS does, ignoring ASCII case.
     pub fn ready_addresses(&self, app: &str) -> Vec<Ipv6Addr> {
@@ -384,7 +404,13 @@ impl MembershipList {
             .members
             .iter()
             .flat_map(|m| m.apps.iter())
-            .filter(|r| r.ready && r.app.eq_ignore_ascii_case(app))
+            .filter(|r| {
+                r.ready
+                    && (r.app.eq_ignore_ascii_case(app)
+                        || r.aliases
+                            .iter()
+                            .any(|alias| alias.eq_ignore_ascii_case(app)))
+            })
             .map(|r| r.address)
             .collect();
         out.sort();
@@ -504,6 +530,7 @@ mod tests {
                 port: 80,
             }],
             ready: true,
+            aliases: Vec::new(),
         };
         l.members[0].apps = vec![good.clone()];
         assert_eq!(l.validate(), Ok(()));
@@ -526,6 +553,33 @@ mod tests {
             ..good
         }];
         assert!(matches!(l.validate(), Err(MembershipError::BadApp(_))));
+    }
+
+    #[test]
+    fn signed_stack_aliases_cannot_escape_the_stack_dns_namespace() {
+        let mut membership = list();
+        membership.members[0].apps.push(AppReplica {
+            app: "store-web".into(),
+            replica_id: "web-1".into(),
+            address: replica_address(membership.prefix, 1, "web-1"),
+            ready: true,
+            ports: Vec::new(),
+            aliases: vec!["web.store".into()],
+        });
+        assert_eq!(membership.validate(), Ok(()));
+        for alias in [
+            "web",
+            "web.store.grund.internal",
+            "web.machines",
+            "Web.store",
+            "web..store",
+        ] {
+            membership.members[0].apps[0].aliases = vec![alias.into()];
+            assert!(
+                matches!(membership.validate(), Err(MembershipError::BadApp(_))),
+                "{alias}"
+            );
+        }
     }
 
     #[test]

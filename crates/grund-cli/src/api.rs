@@ -165,7 +165,7 @@ pub fn refusal(rpc: &str, status: u16, body: &[u8]) -> CliError {
     let hint = match code {
         Code::Unauthenticated => "run grund login, or set GRUND_TOKEN to a live token",
         Code::PermissionDenied if message.contains("token") => {
-            "a token of scope deploy reaches apps only; sign in with grund login or use a token of scope full"
+            "sign in with grund login or use a full organisation token for this change"
         }
         _ => "",
     };

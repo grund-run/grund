@@ -22,9 +22,7 @@ const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Filters for retained app output and live following.
 #[derive(Debug, Args)]
-pub struct LogsArgs {
-    #[arg(value_name = "APP")]
-    pub app: String,
+pub struct LogOptions {
     #[arg(
         long,
         help = "Drain all retained matching output, then follow until Ctrl-C; JSON lines or YAML documents"
@@ -62,11 +60,18 @@ pub struct LogsArgs {
     pub limit: u16,
 }
 
-/// The time range and identity filters for measured app usage.
+/// An app selector and its retained-output filters.
 #[derive(Debug, Args)]
-pub struct MetricsArgs {
+pub struct LogsArgs {
     #[arg(value_name = "APP")]
     pub app: String,
+    #[command(flatten)]
+    pub options: LogOptions,
+}
+
+/// The time range and identity filters for measured app usage.
+#[derive(Debug, Args)]
+pub struct MetricOptions {
     #[arg(long, default_value = "hour", value_parser = ["hour", "day", "week"], help = "Hour: 10-second buckets; day: 1-minute buckets; week: 10-minute buckets")]
     pub range: String,
     #[arg(
@@ -79,6 +84,15 @@ pub struct MetricsArgs {
     pub release: Option<u32>,
 }
 
+/// An app selector and its measured-usage filters.
+#[derive(Debug, Args)]
+pub struct MetricsArgs {
+    #[arg(value_name = "APP")]
+    pub app: String,
+    #[command(flatten)]
+    pub options: MetricOptions,
+}
+
 /// Reads one bounded page without modifying the app or the instance.
 pub async fn logs(api: &Api, org: &str, args: LogsArgs) -> CliResult<Output> {
     let request = logs_request(org, &args, Utc::now())?;
@@ -87,18 +101,18 @@ pub async fn logs(api: &Api, org: &str, args: LogsArgs) -> CliResult<Output> {
     let _ = writeln!(
         output.own,
         "One page, at most {} records. Use --follow to drain all retained matches and wait for more.",
-        args.limit
+        args.options.limit
     );
     Ok(output)
 }
 
 /// Reads measured buckets without filling missing values or missing buckets.
 pub async fn metrics(api: &Api, org: &str, args: MetricsArgs) -> CliResult<Output> {
-    let mut request = json!({"organisation": org, "name": args.app, "range": args.range});
-    if let Some(instance) = args.instance_id {
+    let mut request = json!({"organisation": org, "name": args.app, "range": args.options.range});
+    if let Some(instance) = args.options.instance_id {
         request["instance"] = json!(instance);
     }
-    if let Some(release) = args.release {
+    if let Some(release) = args.options.release {
         request["release"] = json!(release);
     }
     let answer = api.call(METRICS_RPC, request).await?;
@@ -106,19 +120,17 @@ pub async fn metrics(api: &Api, org: &str, args: MetricsArgs) -> CliResult<Outpu
 }
 
 /// Follows ingestion cursors, cancelling both requests and idle waits on Ctrl-C.
-pub async fn follow(ctx: &Ctx, args: LogsArgs) -> CliResult<()> {
+pub async fn follow(ctx: &Ctx, api: &Api, org: &str, args: LogsArgs) -> CliResult<()> {
     tokio::select! {
         signal = tokio::signal::ctrl_c() => signal.map_err(|error| {
             CliError::new(Code::Failed, format!("could not listen for Ctrl-C: {error}"))
         }),
-        result = follow_pages(ctx, args) => result,
+        result = follow_pages(ctx, api, org, args) => result,
     }
 }
 
-async fn follow_pages(ctx: &Ctx, args: LogsArgs) -> CliResult<()> {
-    let api = ctx.api()?;
-    let org = ctx.org(&api).await?;
-    let mut request = logs_request(&org, &args, Utc::now())?;
+async fn follow_pages(ctx: &Ctx, api: &Api, org: &str, args: LogsArgs) -> CliResult<()> {
+    let mut request = logs_request(org, &args, Utc::now())?;
     let stdout = std::io::stdout()
         .as_fd()
         .try_clone_to_owned()
@@ -238,28 +250,31 @@ fn output_error(error: io::Error) -> CliError {
 }
 
 fn logs_request(org: &str, args: &LogsArgs, now: DateTime<Utc>) -> CliResult<Value> {
-    let mut request = json!({"organisation": org, "name": args.app, "pageSize": args.limit});
-    if let Some(instance) = &args.instance_id {
+    let mut request =
+        json!({"organisation": org, "name": args.app, "pageSize": args.options.limit});
+    if let Some(instance) = &args.options.instance_id {
         request["instance"] = json!(instance);
     }
-    if let Some(release) = args.release {
+    if let Some(release) = args.options.release {
         request["release"] = json!(release);
     }
-    if let Some(search) = &args.search {
+    if let Some(search) = &args.options.search {
         if search.len() > 200 {
             return Err(CliError::usage("--search is at most 200 bytes").field("search"));
         }
         request["search"] = json!(search);
     }
-    if let Some(stream) = &args.stream {
+    if let Some(stream) = &args.options.stream {
         request["stream"] = json!(stream);
     }
     let since = args
+        .options
         .since
         .as_deref()
         .map(|text| parse_time(text, now, "since"))
         .transpose()?;
     let until = args
+        .options
         .until
         .as_deref()
         .map(|text| parse_time(text, now, "until"))
@@ -542,7 +557,7 @@ mod tests {
         let super::super::apps::AppsAction::Logs(args) = command.action else {
             panic!("expected logs")
         };
-        assert_eq!(args.instance_id.as_deref(), Some("copy-id"));
+        assert_eq!(args.options.instance_id.as_deref(), Some("copy-id"));
         for value in ["0", "1001"] {
             assert!(
                 crate::Standalone::try_parse_from([
@@ -577,14 +592,16 @@ mod tests {
         }
         let args = LogsArgs {
             app: "web".into(),
-            follow: false,
-            instance_id: None,
-            release: None,
-            since: Some("1m".into()),
-            until: Some("1h".into()),
-            search: None,
-            stream: None,
-            limit: 200,
+            options: LogOptions {
+                follow: false,
+                instance_id: None,
+                release: None,
+                since: Some("1m".into()),
+                until: Some("1h".into()),
+                search: None,
+                stream: None,
+                limit: 200,
+            },
         };
         assert!(logs_request("acme", &args, now).is_err());
     }

@@ -244,6 +244,8 @@ message Capabilities {
   // Updated agents subtract the system reserve before advertising capacity.
   // False keeps legacy total-capacity reports safe during a rolling update.
   bool resources_allocatable = 16;
+  // Supports stack-exclusive replacement and operation-fenced stop receipts.
+  bool stack_services = 17;
 }
 
 // One bounded host sample. Missing numeric fields mean unknown, not zero.
@@ -417,6 +419,16 @@ message Replica {
   // Resolve these IDs on this machine before starting a copy. A missing or
   // disallowed mount refuses the copy, never starts with an empty fallback.
   repeated VolumeMount volumes = 21;
+  // A stack singleton: never start a successor before its predecessor stops.
+  bool exclusive = 22;
+  // Drain and stop without recreating, including a replica without volumes.
+  bool stopping = 23;
+  // Absent keeps the legacy 30-second drain; zero drains immediately.
+  optional uint32 drain_seconds = 24;
+  // Echoed in status with the applied document generation to fence receipts.
+  string operation_id = 25;
+  // Relative stack DNS suffix, such as "shop.grund.internal".
+  string stack_search = 26;
 }
 
 message VolumeMount {
@@ -569,6 +581,10 @@ message ReplicaObserved {
   // A draining replica with no request or connection in flight through the
   // gate, so the instance may stop it before its drain ends (apps.md §12.3).
   bool idle = 8;
+  // The exact desired document snapshot processed by the apps loop, not merely
+  // the newest document received by the control loop. Zero means unconfirmed.
+  uint64 applied_generation = 9;
+  string operation_id = 10;
 }
 
 enum ReplicaObservedState {

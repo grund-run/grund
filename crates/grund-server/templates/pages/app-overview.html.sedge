@@ -32,7 +32,7 @@ props crate::web::apps::AppOverviewPage<'_> { app, running, releases, update, co
     }}
     <Fact label="Image updates" value={update.label} tone={update.tone} lines={&[(update.checked.as_str(), "")]} />
   </Facts>
-  <Para><a href="{app.base}/settings?edit=image">View image updates</a></Para>
+  {if app.stack.is_none() { <Para><a href="{app.base}/settings?edit=image">View image updates</a></Para> }}
 </Panel>
 {if let Some(connection) = connection {
   <Panel id="connection" title="Connect from your apps">
@@ -52,7 +52,7 @@ props crate::web::apps::AppOverviewPage<'_> { app, running, releases, update, co
       }}
     </Facts>
     <Para>{&connection.storage}</Para>
-    <Para><a href="{app.base}/settings?edit=volumes">Storage and recovery points</a></Para>
+    {if app.stack.is_none() { <Para><a href="{app.base}/settings?edit=volumes">Storage and recovery points</a></Para> }}
   </Panel>
 }}
 <Panel id="activity" title="Latest activity" action={Some((&releases_href, "All releases"))}>

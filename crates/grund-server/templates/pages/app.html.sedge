@@ -1,11 +1,20 @@
-use crate::templates::compiled::components::{ImageSprite, PageHead, AppMenu, Banner, Icon};
-props crate::web::apps::AppShellPage { slug, tab, tabs, app, waiting, notice, error, manages };
+use crate::templates::compiled::components::{ImageSprite, PageHead, AppMenu, Banner, Icon, Para, Menu, MenuItem};
+props crate::web::apps::AppShellPage { slug, tab, tabs, services, app, waiting, notice, error, manages };
 {let back = format!("/{slug}/apps");}
 
 <ImageSprite icons={&[app.icon]} />
 <PageHead title={&app.name} reference={app.image.as_deref()} back={Some((&back, "Back to apps"))} image={Some(app.icon)} state={Some((app.word, app.tone))}>
-  <AppMenu slug={slug} manages={*manages} name={&app.name} address={app.address.as_deref()} />
+  {if !services.is_empty() {
+    <Menu label="Stack services" icon_name="box">
+      {for (service, href) in services { <MenuItem label={service} href={href} icon_name="box" /> }}
+    </Menu>
+  } else {
+    <AppMenu slug={slug} manages={*manages && app.stack.is_none()} name={&app.name} address={app.address.as_deref()} />
+  }}
 </PageHead>
+{if let Some(stack) = &app.stack {
+  <Para>Service <strong>{&stack.service}</strong> belongs to <a href="/{slug}/stacks/{stack.name}">{&stack.name}</a>. Manage this app through its stack.</Para>
+}}
 <nav class="tabs" aria-label={&app.name}>
   {for item in tabs {
     <a class={if item.key == tab.as_str() { "tab is-active" } else { "tab" }} href={&item.href} aria-current={if item.key == tab.as_str() { Some("page") } else { None }}><Icon name={item.icon} class="icon-sm" />{item.label}</a>

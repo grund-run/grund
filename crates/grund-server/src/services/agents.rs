@@ -103,6 +103,8 @@ pub struct ReplicaReport {
     pub last_exit_code: i32,
     pub reason: String,
     pub idle: bool,
+    pub applied_generation: u64,
+    pub operation_id: Option<Uuid>,
 }
 
 /// A VM to place, as the caller asked for it.
@@ -331,6 +333,34 @@ impl Agents {
             {
                 self.state.wakes.apps_changed();
             }
+            if let Some(org) = caller.organisation_id {
+                let mut received = false;
+                for report in replicas
+                    .iter()
+                    .take(400)
+                    .filter(|r| matches!(r.state, "exited" | "failed"))
+                {
+                    let (Some(operation_id), Ok(generation)) = (
+                        report.operation_id,
+                        i64::try_from(report.applied_generation),
+                    ) else {
+                        continue;
+                    };
+                    received |= grund_store::apps::record_stack_receipt(
+                        &mut connection,
+                        org,
+                        caller.machine_id,
+                        report.replica_id,
+                        generation,
+                        operation_id,
+                    )
+                    .await?;
+                }
+                if received {
+                    self.state.wakes.apps_changed();
+                    self.state.wakes.documents_changed();
+                }
+            }
         }
         let refusals: Vec<String> = refusals
             .iter()
@@ -395,7 +425,22 @@ impl Agents {
         let Some(organisation_id) = host.pool_organisation_id else {
             return Ok(());
         };
+        let placement: bool = sqlx::query_scalar(
+            "SELECT CASE WHEN EXISTS(SELECT 1 FROM grund_stack_members WHERE organisation_id=$2) \
+             THEN pg_try_advisory_xact_lock(hashtextextended($1,0)) ELSE true END",
+        )
+        .bind(format!("grund-apps-placement:{organisation_id}"))
+        .bind(organisation_id)
+        .fetch_one(&mut *connection)
+        .await?;
+        anyhow::ensure!(
+            placement,
+            "app placement changed; retry publishing the document"
+        );
         let generation = agents::lock_generation(&mut *connection, host_machine_id).await? + 1;
+        let previous = agents::document(&mut *connection, host_machine_id)
+            .await?
+            .and_then(|document| agent::DesiredState::decode_from_slice(&document.payload).ok());
         let vms = agents::hosted_vms(&mut *connection, host_machine_id).await?;
         let placed = grund_store::apps::machine_replicas(&mut *connection, host_machine_id).await?;
         let mounts = grund_store::volumes::machine_mounts(
@@ -431,6 +476,68 @@ impl Agents {
         let volume_backend = self.state.volume_backend();
         for row in &placed {
             let mut replica = replica_message(row);
+            if let Some(member) =
+                grund_store::stacks::member(&mut *connection, organisation_id, row.app_id).await?
+            {
+                let stack =
+                    grund_store::stacks::get(&mut *connection, organisation_id, member.stack_id)
+                        .await?
+                        .ok_or_else(|| anyhow::anyhow!("stack member has no owning stack"))?;
+                let settings = stack
+                    .state
+                    .0
+                    .revisions
+                    .get(&stack.state.0.desired_revision)
+                    .and_then(|revision| revision.services.get(&member.service))
+                    .or_else(|| {
+                        stack
+                            .state
+                            .0
+                            .revisions
+                            .values()
+                            .rev()
+                            .find_map(|revision| revision.services.get(&member.service))
+                    })
+                    .map(|service| &service.settings)
+                    .ok_or_else(|| anyhow::anyhow!("stack member has no service settings"))?;
+                replica.exclusive = member.exclusive;
+                replica.stopping = member.stopping || row.state == "draining";
+                replica.drain_seconds = Some(settings.rollout.drain_seconds);
+                replica.operation_id = member
+                    .operation_id
+                    .map(|id| id.to_string())
+                    .unwrap_or_default();
+                replica.stack_search = format!("{}.grund.internal", stack.state.0.name);
+                let newly_stopping = replica.stopping
+                    && !previous.as_ref().is_some_and(|document| {
+                        document.replicas.iter().any(|old| {
+                            old.replica_id == replica.replica_id
+                                && old.stopping
+                                && old.operation_id == replica.operation_id
+                        })
+                    });
+                if newly_stopping {
+                    sqlx::query("DELETE FROM grund_replica_status WHERE replica_id=$1")
+                        .bind(row.replica_id)
+                        .execute(&mut *connection)
+                        .await?;
+                    sqlx::query("DELETE FROM grund_stack_receipts WHERE organisation_id=$1 AND stack_id=$2 AND replica_id=$3")
+                        .bind(organisation_id).bind(member.stack_id).bind(row.replica_id)
+                        .execute(&mut *connection).await?;
+                }
+                if replica.stopping && (member.required_generation == 0 || newly_stopping) {
+                    sqlx::query(
+                        "UPDATE grund_stack_members SET required_generation=$3 \
+                        WHERE organisation_id=$1 AND app_id=$2 AND operation_id=$4",
+                    )
+                    .bind(organisation_id)
+                    .bind(row.app_id)
+                    .bind(generation)
+                    .bind(member.operation_id)
+                    .execute(&mut *connection)
+                    .await?;
+                }
+            }
             let mut awaiting_block_receipt = false;
             for spec in &row.spec.0.volumes {
                 let Some(mount) = mounts
@@ -493,7 +600,14 @@ impl Agents {
                 }
                 if let std::collections::hash_map::Entry::Vacant(slot) = custom.entry(row.app_id) {
                     slot.insert(
-                        grund_store::domains::names_of_app(&mut *connection, row.app_id).await?,
+                        if grund_store::entry::public_name(&mut *connection, row.app_id)
+                            .await?
+                            .is_some()
+                        {
+                            grund_store::domains::names_of_app(&mut *connection, row.app_id).await?
+                        } else {
+                            Vec::new()
+                        },
                     );
                 }
                 replica.hostnames = addresses[&row.app_id]
@@ -520,6 +634,12 @@ impl Agents {
             .any(|r| r.volumes.iter().any(|v| v.block_device))
         {
             required_features.push("block-volumes".to_string());
+        }
+        if replicas
+            .iter()
+            .any(|replica| !replica.stack_search.is_empty())
+        {
+            required_features.push("stack-services".into());
         }
         let payload = agent::DesiredState {
             machine_id: host_machine_id.to_string(),

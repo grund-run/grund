@@ -33,6 +33,7 @@ pub mod pages;
 pub mod placement;
 pub mod registries;
 pub mod resources;
+pub mod stacks;
 pub mod time;
 pub mod tokens;
 
@@ -70,8 +71,7 @@ pub const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; 
 const PERMISSIONS_POLICY: &str =
     "camera=(), microphone=(), geolocation=(), payment=(), usb=(), browsing-topics=()";
 
-/// The largest request body grund accepts. The biggest form field is a
-/// 1024-byte password.
+/// The ordinary browser request bound. Stack files have a separate, bounded form route.
 pub const MAX_BODY_BYTES: usize = 16 * 1024;
 
 /// The whole HTTP surface. The security headers sit outside the timeout and
@@ -171,6 +171,14 @@ pub fn router(state: State) -> Router {
         )
         .route("/{org}/apps", get(apps::apps_page))
         .route("/{org}/deploy", get(apps::deploy_page).post(apps::create))
+        .route("/{org}/stacks", get(stacks::list))
+        .route(
+            "/{org}/stacks/deploy",
+            get(stacks::deploy_page).post(stacks::deploy),
+        )
+        .route("/{org}/stacks/deploy/preview", post(stacks::preview))
+        .route("/{org}/stacks/{stack}", get(stacks::detail))
+        .route("/{org}/stacks/{stack}/{action}", post(stacks::mutate))
         .route(
             "/{org}/domains",
             get(domains::domains_page).post(domains::add),
@@ -284,8 +292,9 @@ pub fn router(state: State) -> Router {
         .layer(middleware::from_fn(sedx::middleware))
         .layer(compression())
         .layer(middleware::from_fn(prefer_compression))
+        .layer(axum::extract::DefaultBodyLimit::max(4 * 1024 * 1024))
         .with_state(state.clone())
-        .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
+        .layer(middleware::from_fn(request_body_limit))
         .merge(static_files)
         .merge(
             crate::api::router(state.clone())
@@ -330,6 +339,41 @@ pub fn router(state: State) -> Router {
                     },
                 ),
         )
+}
+
+fn request_limit(path: &str) -> usize {
+    let mut segments = path.split('/');
+    if segments.next() == Some("")
+        && segments.next().is_some_and(|org| !org.is_empty())
+        && segments.next() == Some("stacks")
+        && segments.next() == Some("deploy")
+        && matches!(
+            (segments.next(), segments.next()),
+            (None, None) | (Some("preview"), None)
+        )
+    {
+        return 4 * 1024 * 1024;
+    }
+    MAX_BODY_BYTES
+}
+
+async fn request_body_limit(request: Request, next: Next) -> Response {
+    use tower::{Layer, ServiceExt};
+
+    let limit = request_limit(request.uri().path());
+    let service = next.map_request(
+        |request: axum::http::Request<tower_http::body::Limited<axum::body::Body>>| {
+            request.map(axum::body::Body::new)
+        },
+    );
+    let response = RequestBodyLimitLayer::new(limit)
+        .layer(service)
+        .oneshot(request)
+        .await;
+    match response {
+        Ok(response) => response.map(axum::body::Body::new),
+        Err(never) => match never {},
+    }
 }
 
 #[derive(Clone)]
@@ -491,6 +535,41 @@ mod tests {
     use http_body_util::BodyExt;
     use std::convert::Infallible;
     use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn large_stack_forms_do_not_raise_the_bound_on_other_browser_routes() {
+        let app = Router::new()
+            .fallback(post(|| async { StatusCode::NO_CONTENT }))
+            .layer(middleware::from_fn(request_body_limit));
+        for (path, bytes, expected) in [
+            ("/shop/stacks/deploy", 128 * 1024, StatusCode::NO_CONTENT),
+            (
+                "/shop/stacks/deploy/preview",
+                128 * 1024,
+                StatusCode::NO_CONTENT,
+            ),
+            ("/shop/deploy", 128 * 1024, StatusCode::PAYLOAD_TOO_LARGE),
+            (
+                "/shop/stacks/deploy",
+                4 * 1024 * 1024 + 1,
+                StatusCode::PAYLOAD_TOO_LARGE,
+            ),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(path)
+                        .header(header::CONTENT_LENGTH, bytes.to_string())
+                        .body(Body::from(vec![b'x'; bytes]))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected, "{path}");
+        }
+    }
 
     async fn encoded(
         accept: &'static str,

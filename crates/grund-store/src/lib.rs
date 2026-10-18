@@ -32,6 +32,7 @@ pub mod relays;
 pub mod sessions;
 pub mod setup_links;
 pub mod social;
+pub mod stacks;
 pub mod throttle;
 pub mod tokens;
 pub mod volumes;

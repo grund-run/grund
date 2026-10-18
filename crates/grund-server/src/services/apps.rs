@@ -27,7 +27,9 @@ use grund_config::app::{
 use grund_domain::app::{
     App, AppCommand, AppError, AppEvent, ExternalRelease, ReleaseSource, SecretVersion,
     placement::MachineView,
-    reconcile::{Observation, Observed, reconcile_with_volumes},
+    reconcile::{
+        Observation, Observed, StackPolicy, reconcile_with_policy, reconcile_with_volumes,
+    },
 };
 use grund_store::{
     apps::{self, AppRow, ReleaseRow, ReplicaRow},
@@ -61,6 +63,8 @@ pub const RELEASES_SHOWN: i64 = 100;
 pub enum AppsError {
     #[error("no such app")]
     NotFound,
+    #[error("this app is owned by stack {stack_id}; change it through the stack")]
+    StackOwned { stack_id: Uuid },
     #[error("an app of that name already exists")]
     NameTaken,
     #[error(
@@ -124,6 +128,7 @@ impl AppsError {
     pub fn reason(&self) -> &'static str {
         match self {
             AppsError::NotFound => "not_found",
+            AppsError::StackOwned { .. } => "stack_owned",
             AppsError::NameTaken => "name_taken",
             AppsError::NameReserved { .. } => "name_reserved_for_restore",
             AppsError::AppLimit => "app_limit",
@@ -144,6 +149,7 @@ impl AppsError {
             AppsError::UpdateNotOffered => "update_not_available",
             AppsError::UpdateRequestConflict => "idempotency_conflict",
             AppsError::ExternalOwnerConflict => "external_owner_conflict",
+            AppsError::Volume(VolumesError::StackOwned { .. }) => "stack_owned",
             AppsError::Volume(_) => "volume_invalid",
             AppsError::VolumeConfirmationRequired { .. } => "volume_confirmation_required",
             AppsError::Internal(_) => "internal",
@@ -158,6 +164,7 @@ impl From<WorkError> for AppsError {
         }
         match error {
             WorkError::App(AppError::NotFound) => AppsError::NotFound,
+            WorkError::App(AppError::StackOwned { stack_id }) => AppsError::StackOwned { stack_id },
             WorkError::App(AppError::ReleaseNotFound) => AppsError::ReleaseNotFound,
             WorkError::App(AppError::AlreadyExists) => AppsError::NameTaken,
             WorkError::App(AppError::ExternalOwnerConflict) => AppsError::ExternalOwnerConflict,
@@ -304,12 +311,53 @@ pub fn secret_name_for(variable: &str) -> String {
         .to_string()
 }
 
+pub(crate) async fn generate_template_credentials_in(
+    work: &mut Work<'_>,
+    sealing: &LessSafeKey,
+    actor: Uuid,
+    org: Uuid,
+    app_id: Uuid,
+    template: &grund_domain::app::templates::Template,
+) -> Result<Vec<SecretVersion>, AppsError> {
+    let mut versions = Vec::with_capacity(template.secret_variables.len());
+    for variable in template.secret_variables {
+        let name = secret_name_for(variable);
+        let mut bytes = [0u8; 32];
+        getrandom::fill(&mut bytes).map_err(anyhow::Error::from)?;
+        let mut value = [0u8; 64];
+        hex::encode_to_slice(bytes, &mut value).expect("a 32-byte secret is 64 hex bytes");
+        let (version, _) = apps::insert_secret(
+            work.sql(),
+            app_id,
+            org,
+            &name,
+            |version| seal(sealing, app_id, &name, version, &value),
+            actor,
+        )
+        .await?;
+        sqlx::query("INSERT INTO grund_template_credentials (organisation_id,app_id,name,version,template) VALUES ($1,$2,$3,$4,$5)")
+            .bind(org).bind(app_id).bind(&name).bind(version).bind(template.key)
+            .execute(&mut **work.sql()).await?;
+        versions.push(SecretVersion {
+            name,
+            version: version as u32,
+        });
+    }
+    Ok(versions)
+}
+
 /// An app as the API and dashboard show it.
 #[derive(Debug, Clone)]
 pub struct AppView {
     pub row: AppRow,
     pub replicas: Vec<ReplicaRow>,
     pub secrets: Vec<(String, i32, DateTime<Utc>)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AppStack {
+    pub name: String,
+    pub service: String,
 }
 
 /// An app as its organisation's list shows it.
@@ -324,6 +372,7 @@ pub struct AppListing {
     /// shared address, or its first bound domain in custom-only mode.
     pub address: Option<String>,
     pub update: ImageUpdate,
+    pub stack: Option<AppStack>,
 }
 
 /// One secret value of a replica.
@@ -703,11 +752,15 @@ impl Apps {
                 .into_iter()
                 .map(|(id, update)| (id, update.0))
                 .collect();
+        let mut stacks = self.stack_owners(organisation_id).await?;
         let mut connection = self.state.pool.acquire().await?;
         let mut listings = Vec::new();
         for view in self.list(organisation_id).await? {
             let release = running.remove(&view.row.app_id);
-            let mut listing = self.listed(&mut connection, slug, view, release).await?;
+            let stack = stacks.remove(&view.row.app_id);
+            let mut listing = self
+                .listed(&mut connection, slug, view, release, stack)
+                .await?;
             if let Some(update) = updates.remove(&listing.view.row.app_id) {
                 listing.update = update;
             }
@@ -716,36 +769,40 @@ impl Apps {
         Ok(listings)
     }
 
+    pub(crate) async fn stack_owners(
+        &self,
+        organisation_id: Uuid,
+    ) -> Result<std::collections::HashMap<Uuid, AppStack>, AppsError> {
+        let rows = sqlx::query_as::<_, (Uuid, String, String)>(
+            "SELECT member.app_id, stack.name, member.service \
+             FROM grund_stack_members member \
+             JOIN grund_stacks stack ON stack.organisation_id = member.organisation_id \
+                 AND stack.stack_id = member.stack_id \
+             WHERE member.organisation_id = $1",
+        )
+        .bind(organisation_id)
+        .fetch_all(&self.state.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(app, name, service)| (app, AppStack { name, service }))
+            .collect())
+    }
+
     async fn listed(
         &self,
         connection: &mut PgConnection,
         slug: &str,
         view: AppView,
         release: Option<apps::RunningRow>,
+        stack: Option<AppStack>,
     ) -> Result<AppListing, AppsError> {
         let address = match &release {
             Some(release) if publishes(&release.spec.0) => {
-                if let Some(assignment) = domains::managed_assignment(
-                    &mut *connection,
-                    view.row.organisation_id,
-                    view.row.app_id,
-                )
-                .await?
-                    && assignment.state == "bound"
-                    && assignment.app_id == Some(view.row.app_id)
-                    && !assignment.assignment_disabled
-                {
-                    Some(assignment.name)
-                } else if self.state.config.entry.app_domains
-                    == crate::config::AppDomains::CustomOnly
-                {
-                    domains::first_bound_name(&mut *connection, view.row.app_id).await?
-                } else {
-                    self.state
-                        .entry()
-                        .address(connection, view.row.app_id, &view.row.name, slug)
-                        .await?
-                }
+                self.state
+                    .entry()
+                    .address(connection, view.row.app_id, &view.row.name, slug)
+                    .await?
             }
             _ => None,
         };
@@ -762,6 +819,7 @@ impl Apps {
             spec: release.as_ref().map(|r| r.spec.0.clone()),
             deployed_at: release.map(|r| r.created_at),
             address,
+            stack,
         })
     }
 
@@ -770,6 +828,12 @@ impl Apps {
         organisation_id: Uuid,
         name: &str,
     ) -> Result<Option<AppsError>, AppsError> {
+        if grund_store::stacks::by_name(&self.state.pool, organisation_id, name)
+            .await?
+            .is_some()
+        {
+            return Ok(Some(AppsError::NameTaken));
+        }
         let row =
             apps::app_by_name_including_deleted(&self.state.pool, organisation_id, name).await?;
         Ok(row.map(|row| match (row.deleted_at, row.purge_after) {
@@ -819,6 +883,12 @@ impl Apps {
             .await
             .map_err(AppsError::from)?;
         domains::lock_hierarchy_policy(&mut **work.sql()).await?;
+        if grund_store::stacks::by_name(&mut **work.sql(), organisation_id, name.as_str())
+            .await?
+            .is_some()
+        {
+            return Err(AppsError::NameTaken);
+        }
         if apps::count_live_apps(&mut **work.sql(), organisation_id).await?
             >= MAX_APPS_PER_ORGANISATION
         {
@@ -883,26 +953,30 @@ impl Apps {
         &self,
         actor: Uuid,
         organisation_id: Uuid,
-        mut launch: Launch,
+        launch: Launch,
     ) -> Result<(AppName, ReleaseRow), AppsError> {
         let name = AppName::parse(&launch.name)?;
-        if let Some(key) = launch.generated_template {
-            let template = grund_domain::app::templates::find(key)
-                .filter(|template| template.storage.is_some() && template.unavailable.is_none())
-                .context("a generated-credential template exists")?;
-            if !launch.secrets.is_empty() {
-                return Err(anyhow::anyhow!("template credentials cannot be supplied").into());
-            }
-            for variable in template.secret_variables {
-                let mut bytes = [0u8; 32];
-                getrandom::fill(&mut bytes).map_err(anyhow::Error::from)?;
-                launch
-                    .secrets
-                    .push(((*variable).into(), hex::encode(bytes)));
-            }
+        let generated_template = launch
+            .generated_template
+            .map(|key| {
+                grund_domain::app::templates::find(key)
+                    .filter(|template| template.storage.is_some() && template.unavailable.is_none())
+                    .context("a generated-credential template exists")
+            })
+            .transpose()?;
+        if generated_template.is_some() && !launch.secrets.is_empty() {
+            return Err(anyhow::anyhow!("template credentials cannot be supplied").into());
         }
         let settings = AppSettings::validate(launch.settings)?;
         let mut spec = launch.spec;
+        if let Some(template) = generated_template {
+            for variable in template.secret_variables {
+                spec.secrets.push(SecretEnv {
+                    env: (*variable).into(),
+                    secret: secret_name_for(variable),
+                });
+            }
+        }
         let secret_names = attach_secrets(&mut spec, &launch.secrets)?;
         let detect = launch.detect_port.filter(|_| spec.ports.is_empty());
         probe(&spec, detect.as_ref())?;
@@ -928,6 +1002,12 @@ impl Apps {
         let app_id = Uuid::now_v7();
         let mut work = Work::begin(&self.state.events, Uuid::now_v7(), &actor.to_string()).await?;
         domains::lock_hierarchy_policy(&mut **work.sql()).await?;
+        if grund_store::stacks::by_name(&mut **work.sql(), organisation_id, name.as_str())
+            .await?
+            .is_some()
+        {
+            return Err(AppsError::NameTaken);
+        }
         if apps::count_live_apps(&mut **work.sql(), organisation_id).await?
             >= MAX_APPS_PER_ORGANISATION
         {
@@ -960,7 +1040,19 @@ impl Apps {
             return Err(AppsError::DomainRequired);
         }
         let key = sealing_key(&self.state);
-        let mut secret_versions = Vec::with_capacity(secret_names.len());
+        let mut secret_versions = if let Some(template) = generated_template {
+            generate_template_credentials_in(
+                &mut work,
+                &key,
+                actor,
+                organisation_id,
+                app_id,
+                template,
+            )
+            .await?
+        } else {
+            Vec::with_capacity(secret_names.len())
+        };
         for (secret, (_, value)) in secret_names.iter().zip(&launch.secrets) {
             let (version, _) = apps::insert_secret(
                 work.sql(),
@@ -971,21 +1063,16 @@ impl Apps {
                 actor,
             )
             .await?;
-            if let Some(template) = launch.generated_template {
-                sqlx::query("INSERT INTO grund_template_credentials (organisation_id,app_id,name,version,template) VALUES ($1,$2,$3,$4,$5)")
-                    .bind(organisation_id).bind(app_id).bind(secret).bind(version).bind(template)
-                    .execute(&mut **work.sql()).await?;
-            }
             secret_versions.push(SecretVersion {
                 name: secret.clone(),
                 version: version as u32,
             });
         }
-        if spec
-            .secrets
-            .iter()
-            .any(|read| !secret_names.contains(&read.secret))
-        {
+        if spec.secrets.iter().any(|read| {
+            !secret_versions
+                .iter()
+                .any(|version| version.name == read.secret)
+        }) {
             return Err(AppsError::Spec(SpecError {
                 field: "secrets".into(),
                 problem: "each secret of a new app needs an initial value".into(),
@@ -1136,14 +1223,37 @@ impl Apps {
         slug: &str,
         name: &str,
     ) -> Result<AppListing, AppsError> {
-        let view = self.get(organisation_id, name).await?;
+        let row = apps::app_by_name_including_deleted(&self.state.pool, organisation_id, name)
+            .await?
+            .ok_or(AppsError::NotFound)?;
+        let stack = match grund_store::stacks::member(&self.state.pool, organisation_id, row.app_id)
+            .await?
+        {
+            Some(member) => {
+                let row =
+                    grund_store::stacks::get(&self.state.pool, organisation_id, member.stack_id)
+                        .await?
+                        .ok_or_else(|| anyhow::anyhow!("owning stack read model is missing"))?;
+                Some(AppStack {
+                    name: row.state.0.name,
+                    service: member.service,
+                })
+            }
+            None => None,
+        };
+        if row.deleted_at.is_some() && stack.is_none() {
+            return Err(AppsError::NotFound);
+        }
+        let view = self.view(row).await?;
         let release = apps::running_releases(&self.state.pool, organisation_id)
             .await?
             .into_iter()
             .find(|r| r.app_id == view.row.app_id);
         let mut connection = self.state.pool.acquire().await?;
         let update = apps::update_check(&mut *connection, organisation_id, view.row.app_id).await?;
-        let mut listing = self.listed(&mut connection, slug, view, release).await?;
+        let mut listing = self
+            .listed(&mut connection, slug, view, release, stack)
+            .await?;
         if let Some(update) = update {
             listing.update = update.0;
         }
@@ -1932,6 +2042,20 @@ impl Apps {
         let row = self.live(organisation_id, name).await?;
         let key = sealing_key(&self.state);
         let mut tx = self.state.pool.begin().await?;
+        sqlx::query("SELECT 1 FROM es_streams WHERE stream_id=$1 FOR UPDATE")
+            .bind(format!("grund-app-{}", row.app_id))
+            .execute(&mut *tx)
+            .await?;
+        let stack_id: Option<Uuid> = sqlx::query_scalar(
+            "SELECT stack_id FROM grund_stack_members WHERE organisation_id=$1 AND app_id=$2",
+        )
+        .bind(organisation_id)
+        .bind(row.app_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(stack_id) = stack_id {
+            return Err(AppsError::StackOwned { stack_id });
+        }
         let (version, at) = apps::insert_secret(
             &mut tx,
             row.app_id,
@@ -2183,6 +2307,9 @@ impl Apps {
             if !app.deleted || !app.purge_after.is_some_and(|due| at >= due) {
                 continue;
             }
+            if let Some(stack_id) = app.stack_owner {
+                work.allow_stack(stack_id);
+            }
             let pending: bool = sqlx::query_scalar(
                 "SELECT EXISTS (SELECT 1 FROM grund_volumes WHERE app_id = $1 AND status = 'pending_deletion')"
             ).bind(id).fetch_one(&mut **work.sql()).await?;
@@ -2250,6 +2377,23 @@ impl Apps {
             .bind(format!("grund-apps-placement:{organisation_id}"))
             .execute(&mut **work.sql())
             .await?;
+        let membership =
+            grund_store::stacks::member(&mut **work.sql(), organisation_id, app_id).await?;
+        let stack = if let Some(member) = &membership {
+            let stack = work.load_stack(member.stack_id).await?;
+            work.allow_stack(member.stack_id);
+            Some(stack)
+        } else {
+            None
+        };
+        let membership = if membership.is_some() {
+            sqlx::query_as::<_, grund_store::stacks::Member>(
+                "SELECT organisation_id,stack_id,service,app_id,app_name,exclusive,enabled,stopping,operation_id,required_generation \
+                 FROM grund_stack_members WHERE organisation_id=$1 AND app_id=$2 FOR UPDATE",
+            ).bind(organisation_id).bind(app_id).fetch_optional(&mut **work.sql()).await?
+        } else {
+            None
+        };
         let before = apps::app_machines(&mut **work.sql(), app_id).await?;
         let reserved = apps::reservations(&mut **work.sql(), organisation_id, app_id).await?;
         let owned_volumes =
@@ -2257,6 +2401,65 @@ impl Apps {
         let stateful = !owned_volumes.is_empty();
         let hosted_storage = owned_volumes.iter().any(|v| v.size_gib.is_some());
         let app = work.load_app(app_id).await?;
+        if membership.as_ref().is_some_and(|member| {
+            !member.stopping
+                && (!member.enabled
+                    || stack
+                        .as_ref()
+                        .is_some_and(|stack| stack.status == grund_domain::stack::Status::Deleting))
+        }) {
+            work.commit().await?;
+            return Ok(false);
+        }
+        if let (Some(member), Some(stack)) = (&membership, &stack)
+            && !member.stopping
+            && !stack
+                .operation
+                .as_ref()
+                .is_some_and(|operation| operation.compensating)
+        {
+            let revision = stack
+                .revisions
+                .get(&stack.desired_revision)
+                .context("stack desired revision exists")?;
+            let service = revision
+                .services
+                .get(&member.service)
+                .context("stack member exists")?;
+            for dependency_name in &service.depends_on {
+                let dependency = revision
+                    .services
+                    .get(dependency_name)
+                    .context("dependency exists")?;
+                let dependency_app = work.load_app(dependency.app_id).await?;
+                let number = dependency.execution_release(
+                    dependency_name,
+                    stack.operation.as_ref(),
+                    &dependency_app,
+                );
+                if dependency_app.deleted
+                    || dependency_app.halted
+                    || dependency_app.current_release != Some(number)
+                    || dependency_app.rollout.is_some()
+                {
+                    work.commit().await?;
+                    return Ok(false);
+                }
+                let ready: bool = sqlx::query_scalar(
+                    "SELECT count(*) >= $4 FROM grund_replicas r \
+                     JOIN grund_replica_status status ON status.replica_id=r.replica_id AND status.machine_id=r.machine_id \
+                     JOIN grund_machine_presence presence ON presence.machine_id=r.machine_id \
+                     WHERE r.organisation_id=$1 AND r.app_id=$2 AND r.release=$3 AND r.state='running' AND status.state='running' \
+                       AND status.ready AND status.ready_since<=clock_timestamp()-($5::double precision*interval '1 second') \
+                       AND presence.last_seen_at>clock_timestamp()-interval '30 seconds'",
+                ).bind(organisation_id).bind(dependency.app_id).bind(number as i32)
+                    .bind(i64::from(dependency.settings.copies)).bind(f64::from(dependency.settings.rollout.min_ready_seconds)).fetch_one(&mut **work.sql()).await?;
+                if !ready {
+                    work.commit().await?;
+                    return Ok(false);
+                }
+            }
+        }
         let target = app.target().and_then(|number| app.release(number));
         let wanted = |name: &str| {
             target.is_some_and(|release| {
@@ -2313,6 +2516,15 @@ impl Apps {
             machines::organisation_machines(&mut **work.sql(), organisation_id).await?;
         let mut machines = Vec::with_capacity(candidates.len());
         for candidate in &candidates {
+            if stack.as_ref().is_some_and(|stack| {
+                stack.machine_id != Some(candidate.machine_id)
+                    || !candidate
+                        .capabilities
+                        .as_ref()
+                        .is_some_and(|c| c.0["stack_services"].as_bool() == Some(true))
+            }) {
+                continue;
+            }
             let backend_eligible = if hosted_storage && candidate.pool == "management" {
                 match &volume_backend {
                     Some(backend) => {
@@ -2367,17 +2579,46 @@ impl Apps {
             }
         }
         let now = Utc::now();
+        let terminal_receipts: Vec<Uuid> = if let Some(member) = &membership {
+            sqlx::query_scalar(
+                "SELECT receipt.replica_id FROM grund_stack_receipts receipt \
+                 JOIN grund_replicas r ON r.replica_id=receipt.replica_id AND r.machine_id=receipt.machine_id \
+                 WHERE receipt.organisation_id=$1 AND receipt.stack_id=$2 AND receipt.operation_id=$3 \
+                 AND receipt.generation >= $4 AND $4 > 0 AND r.app_id=$5",
+            ).bind(organisation_id).bind(member.stack_id).bind(member.operation_id)
+                .bind(member.required_generation).bind(app_id).fetch_all(&mut **work.sql()).await?
+        } else {
+            Vec::new()
+        };
         let (events, waiting) = work
             .app_decide(app_id, |app: &App| {
-                let decision = reconcile_with_volumes(
-                    app,
-                    &observations,
-                    &machines,
-                    &ended_lease_machines,
-                    now,
-                    stateful,
-                    &mut Uuid::now_v7,
-                );
+                let decision = if let Some(member) = &membership {
+                    reconcile_with_policy(
+                        app,
+                        &observations,
+                        &machines,
+                        &ended_lease_machines,
+                        now,
+                        stateful,
+                        Some(StackPolicy {
+                            exclusive: member.exclusive,
+                            strict_surge: true,
+                            stopping: member.stopping,
+                            terminal_receipts: &terminal_receipts,
+                        }),
+                        &mut Uuid::now_v7,
+                    )
+                } else {
+                    reconcile_with_volumes(
+                        app,
+                        &observations,
+                        &machines,
+                        &ended_lease_machines,
+                        now,
+                        stateful,
+                        &mut Uuid::now_v7,
+                    )
+                };
                 Ok((decision.events, decision.waiting))
             })
             .await?;
@@ -2559,6 +2800,16 @@ mod tests {
             require_restart_mutator(&mut connection, organisation_id, Uuid::now_v7()).await,
             Err(AppsError::NotFound)
         ));
+    }
+
+    #[test]
+    fn ownership_refusals_retain_the_owning_stack_and_stable_reason() {
+        let stack_id = Uuid::from_u128(42);
+        let error = AppsError::from(WorkError::App(AppError::StackOwned { stack_id }));
+        assert!(matches!(error, AppsError::StackOwned { stack_id: owner } if owner == stack_id));
+        assert_eq!(error.reason(), "stack_owned");
+        let volume = AppsError::Volume(VolumesError::StackOwned { stack_id });
+        assert_eq!(volume.reason(), "stack_owned");
     }
 
     #[test]

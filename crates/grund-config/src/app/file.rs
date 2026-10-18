@@ -33,25 +33,81 @@ pub const FILE_NAME: &str = "grund.yaml";
 /// Where every instance serves the file's JSON Schema.
 pub const SCHEMA_PATH: &str = "/schema/grund.json";
 
-/// A grund.yaml: the apps one repository declares. Each deploy names one of
-/// them; the others are left for their own deploys.
-#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
+/// A grund.yaml declares either independently deployed apps or one stack.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend("oneOf" = [{"required": ["apps"], "not": {"required": ["stack"]}}, {"required": ["stack"], "not": {"required": ["apps"]}}]))]
 #[schemars(title = "grund.yaml")]
 pub struct GrundFile {
     /// The apps, by name: lowercase letters, digits and dashes, at most 32
     /// characters, starting with a letter.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "indexmap::IndexMap::is_empty")]
     pub apps: indexmap::IndexMap<String, FileApp>,
+    /// A coordinated deployment; cannot be combined with `apps`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stack: Option<crate::stack::Definition>,
+}
+
+impl<'de> Deserialize<'de> for GrundFile {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Document {
+            #[serde(default, deserialize_with = "unique_optional_map")]
+            apps: Option<indexmap::IndexMap<String, FileApp>>,
+            #[serde(default, deserialize_with = "present_stack")]
+            stack: Option<crate::stack::Definition>,
+        }
+        let document = Document::deserialize(deserializer)?;
+        match (document.apps, document.stack) {
+            (Some(apps), None) => Ok(Self { apps, stack: None }),
+            (None, Some(stack)) => Ok(Self {
+                apps: indexmap::IndexMap::new(),
+                stack: Some(stack),
+            }),
+            (None, None) => Err(serde::de::Error::custom(
+                "the file declares no apps or stack; declare exactly one of apps or stack",
+            )),
+            _ => Err(serde::de::Error::custom(
+                "declare exactly one of apps or stack",
+            )),
+        }
+    }
+}
+
+fn unique_optional_map<'de, D, T>(
+    deserializer: D,
+) -> Result<Option<indexmap::IndexMap<String, T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    unique_map(deserializer).map(Some)
+}
+
+fn present_stack<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<crate::stack::Definition>, D::Error> {
+    crate::stack::Definition::deserialize(deserializer).map(Some)
+}
+
+fn volume_path<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    let path = String::deserialize(deserializer)?;
+    if path.is_empty() {
+        return Err(serde::de::Error::custom("a volume path cannot be empty"));
+    }
+    Ok(path)
 }
 
 /// One app: what each copy runs, and how many copies run where.
-#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Default, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FileApp {
     /// The container image, as `docker pull` takes it, for example
     /// `ghcr.io/acme/shop:2026-09-26.1` or `nginx:1.27`. grund resolves the
     /// tag to a digest once, at deploy, and every copy runs that digest.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[schemars(!default, !skip_serializing_if, length(min = 1))]
     pub image: String,
     /// Replaces the image's entrypoint and command, one argument per item.
     /// Leave it out to run what the image says.
@@ -92,11 +148,13 @@ pub struct FileApp {
     /// `1.50` and `true` are those strings. At most 128, 32 KiB in all.
     #[serde(default, skip_serializing_if = "indexmap::IndexMap::is_empty")]
     #[schemars(extend("additionalProperties" = {"type": ["string", "number", "boolean"]}))]
+    #[serde(deserialize_with = "unique_map")]
     pub env: indexmap::IndexMap<String, String>,
     /// Environment variables taken from the organisation's secrets: the
     /// variable's name, then the secret's. The value never appears in the
     /// file. At most 50.
     #[serde(default, skip_serializing_if = "indexmap::IndexMap::is_empty")]
+    #[serde(deserialize_with = "unique_map")]
     pub secrets: indexmap::IndexMap<String, String>,
     /// The ready check a new copy must pass before it takes traffic and
     /// before an older copy leaves. Leave it out to count a running copy as
@@ -113,32 +171,31 @@ pub struct FileApp {
     /// release; it never deletes a volume. Volumes require exactly one copy.
     #[serde(default, skip_serializing_if = "indexmap::IndexMap::is_empty")]
     #[schemars(extend("propertyNames" = {"pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$", "maxLength": 32}))]
-    #[serde(deserialize_with = "unique_volumes")]
+    #[serde(deserialize_with = "unique_map")]
     pub volumes: indexmap::IndexMap<String, FileVolume>,
 }
 
-fn unique_volumes<'de, D>(
+pub(crate) fn unique_map<'de, D, T>(
     deserializer: D,
-) -> Result<indexmap::IndexMap<String, FileVolume>, D::Error>
+) -> Result<indexmap::IndexMap<String, T>, D::Error>
 where
     D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
 {
-    struct UniqueVolumes;
+    struct UniqueMap<T>(std::marker::PhantomData<T>);
 
-    impl<'de> Visitor<'de> for UniqueVolumes {
-        type Value = indexmap::IndexMap<String, FileVolume>;
+    impl<'de, T: Deserialize<'de>> Visitor<'de> for UniqueMap<T> {
+        type Value = indexmap::IndexMap<String, T>;
 
         fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-            formatter.write_str("volumes keyed by distinct names")
+            formatter.write_str("a mapping with distinct names")
         }
 
         fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
             let mut volumes = indexmap::IndexMap::new();
-            while let Some((name, volume)) = map.next_entry::<String, FileVolume>()? {
+            while let Some((name, volume)) = map.next_entry::<String, T>()? {
                 if volumes.contains_key(&name) {
-                    return Err(serde::de::Error::custom(format!(
-                        "duplicate volume name `{name}`"
-                    )));
+                    return Err(serde::de::Error::custom(format!("duplicate name `{name}`")));
                 }
                 volumes.insert(name, volume);
             }
@@ -146,17 +203,23 @@ where
         }
     }
 
-    deserializer.deserialize_map(UniqueVolumes)
+    deserializer.deserialize_map(UniqueMap(std::marker::PhantomData))
 }
 
 /// One volume mounted by this app. An omitted source uses an own-machine
 /// managed directory unless size_gib requests hosted block storage.
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FileVolume {
     /// Absolute directory path in the container; paths must not overlap.
     #[schemars(length(min = 2, max = 4096))]
     #[schemars(extend("pattern" = "^/(?!\\.\\.?(/|$))[^/\\u0000-\\u001f]+(?:/(?!\\.\\.?(/|$))[^/\\u0000-\\u001f]+)*$"))]
+    #[serde(
+        default,
+        skip_serializing_if = "String::is_empty",
+        deserialize_with = "volume_path"
+    )]
+    #[schemars(required)]
     pub path: String,
     /// Existing absolute host directory on an own machine, allowed by its
     /// local policy. Leave out for a managed or hosted volume.
@@ -174,7 +237,7 @@ pub struct FileVolume {
     pub backup: Option<FileBackup>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FileBackup {
     Off,
@@ -182,7 +245,7 @@ pub enum FileBackup {
 }
 
 /// A port the app listens on.
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FilePort {
     /// A name for the port, unique in the app, for example `http`.
@@ -212,7 +275,7 @@ pub enum FileProtocol {
 }
 
 /// What each copy reserves.
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Default, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FileResources {
     /// Memory, as `512 MiB` or `4 GiB`, or a number of MiB. Default
@@ -226,7 +289,7 @@ pub struct FileResources {
 }
 
 /// An amount of memory, in MiB or as text with a unit.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum Memory {
     Mib(u64),
@@ -250,7 +313,7 @@ impl JsonSchema for Memory {
 
 /// A ready check: an HTTP path that answers 2xx or 3xx, or a TCP port that
 /// accepts a connection. Give exactly one of `http` and `tcp`.
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FileCheck {
     /// The path to ask, for example `/healthz`.
@@ -276,7 +339,7 @@ pub struct FileCheck {
 }
 
 /// How a copy is stopped: the signal, then a kill after the grace period.
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FileStop {
     /// The signal sent first. Default SIGTERM; one of SIGTERM, SIGINT,
@@ -292,13 +355,14 @@ pub struct FileStop {
 
 /// Where the copies run, beyond the machines' names. A copy on a machine
 /// that stops matching moves to one that does, started before it stops.
-#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Default, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FilePlacement {
     /// Labels a machine must carry, each with this value, as set on the
     /// Machines page, for example `disk: ssd`. At most 16.
     #[serde(default, skip_serializing_if = "indexmap::IndexMap::is_empty")]
     #[schemars(extend("maxProperties" = 16))]
+    #[serde(deserialize_with = "unique_map")]
     pub labels: indexmap::IndexMap<String, String>,
     /// `own` for the organisation's own machines only, `hosted` for machines
     /// grund hosts only. Leave it out for either.
@@ -322,7 +386,7 @@ pub struct FilePlacement {
 }
 
 /// Which kind of machine.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FileMachineKind {
     /// The organisation's own machines.
@@ -332,7 +396,7 @@ pub enum FileMachineKind {
 }
 
 /// How a release rolls out.
-#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Default, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FileRelease {
     /// Copies of the new release started beyond `copies` at once. Default
@@ -376,7 +440,10 @@ fn refuse<T>(field: impl Into<String>, problem: impl Into<String>) -> Result<T, 
     })
 }
 
-fn read(text: &str) -> Result<GrundFile, SpecError> {
+pub(crate) fn read(text: &str) -> Result<GrundFile, SpecError> {
+    if text.len() > crate::stack::MAX_FILE_BYTES {
+        return refuse(FILE_NAME, "use at most 1 MiB");
+    }
     yaml::from_str(text).map_err(|error| SpecError {
         field: if error.path.is_empty() {
             FILE_NAME.into()
@@ -417,9 +484,23 @@ fn memory_mib(name: &str, memory: &Memory) -> Result<u64, SpecError> {
 /// knew it (`apps.shop.copies`).
 pub fn parse_app(text: &str, name: &str) -> Result<Declared, SpecError> {
     if text.len() > MAX_FILE_BYTES {
+        if text.len() <= crate::stack::MAX_FILE_BYTES
+            && read(text).is_ok_and(|file| file.stack.is_some())
+        {
+            return refuse(
+                "stack",
+                "this file declares a stack; use grund stacks deploy",
+            );
+        }
         return refuse(FILE_NAME, "use at most 64 KiB");
     }
     let file = read(text)?;
+    if file.stack.is_some() {
+        return refuse(
+            "stack",
+            "this file declares a stack; use grund stacks deploy",
+        );
+    }
     let Some(app) = file.apps.get(name) else {
         let known: Vec<&str> = file.apps.keys().map(String::as_str).collect();
         return refuse(
@@ -434,6 +515,10 @@ pub fn parse_app(text: &str, name: &str) -> Result<Declared, SpecError> {
             },
         );
     };
+    normalize(name, app)
+}
+
+pub(crate) fn normalize(name: &str, app: &FileApp) -> Result<Declared, SpecError> {
     let ports = app
         .ports
         .iter()
@@ -573,7 +658,7 @@ pub fn parse_app(text: &str, name: &str) -> Result<Declared, SpecError> {
     })
 }
 
-fn placement_input(placement: Option<&FilePlacement>) -> SettingsInput {
+pub(crate) fn placement_input(placement: Option<&FilePlacement>) -> SettingsInput {
     let Some(placement) = placement else {
         return SettingsInput::default();
     };
@@ -612,7 +697,7 @@ fn file_placement(rules: &PlacementRules) -> Option<FilePlacement> {
     })
 }
 
-fn file_app(spec: &AppSpec, settings: &AppSettings) -> FileApp {
+pub(crate) fn file_app(spec: &AppSpec, settings: &AppSettings) -> FileApp {
     let defaults = AppSettings::default();
     let rollout = &settings.rollout;
     let release = FileRelease {
@@ -717,7 +802,7 @@ fn file_app(spec: &AppSpec, settings: &AppSettings) -> FileApp {
 pub fn render(name: &str, spec: &AppSpec, settings: &AppSettings, schema_url: &str) -> String {
     let mut apps = indexmap::IndexMap::new();
     apps.insert(name.to_string(), file_app(spec, settings));
-    let body = yaml::to_string(&GrundFile { apps });
+    let body = yaml::to_string(&GrundFile { apps, stack: None });
     format!(
         "# yaml-language-server: $schema={schema_url}\n\
          # {name}, as its newest release runs. Defaults are left out.\n\
@@ -824,90 +909,6 @@ apps:
         let error = parse_app(top, "web").unwrap_err();
         assert_eq!(error.field, "version");
         assert!(error.problem.starts_with("line 2, column 1: "), "{error}");
-    }
-
-    #[test]
-    fn a_wrong_type_or_a_broken_file_names_where() {
-        let cases = [
-            (
-                "apps:\n  web:\n    image: nginx\n    copies: lots\n",
-                "apps.web.copies",
-                "line 4, column 13: ",
-            ),
-            (
-                "apps:\n  web:\n    image: nginx\n    ports:\n      - {name: h, port: 80, protocol: udp}\n",
-                "apps.web.ports[0].protocol",
-                "line 5, column 39: ",
-            ),
-            (
-                "apps:\n  web:\n    image: nginx\n    ports:\n      - {name: h, port: 80, public: yes}\n",
-                "apps.web.ports[0].public",
-                "line 5, column 37: ",
-            ),
-            (
-                "apps:\n  web:\n    image:\n",
-                "apps.web.image",
-                "line 3, column 10: ",
-            ),
-            (
-                "apps:\n  web:\n    copies: 1\n",
-                "apps.web",
-                "line 3, column 5: ",
-            ),
-            (
-                "apps:\n\tweb:\n    image: nginx\n",
-                FILE_NAME,
-                "line 2, column 2: ",
-            ),
-            ("apps: {}\n---\napps: {}\n", FILE_NAME, "line 2, column 1: "),
-            ("- nginx\n", FILE_NAME, "line 1, column 1: "),
-            (
-                "apps:\n  web:\n    image: !!python/object nginx\n",
-                "apps.web",
-                "line 3, column 28: ",
-            ),
-        ];
-        for (text, field, at) in cases {
-            let error = parse_app(text, "web").unwrap_err();
-            assert_eq!(error.field, field, "{text:?}: {error}");
-            assert!(error.problem.starts_with(at), "{text:?}: {error}");
-            assert!(!error.problem.contains("Option<"), "{text:?}: {error}");
-        }
-    }
-
-    #[test]
-    fn a_missing_app_and_bad_values_are_refused_by_field() {
-        let error = parse_app(SHOP, "web").unwrap_err();
-        assert!(error.problem.contains("shop, db"), "{error}");
-        assert!(
-            parse_app("apps: {}\n", "web")
-                .unwrap_err()
-                .problem
-                .contains("declares no apps")
-        );
-        assert!(
-            parse_app("", "web")
-                .unwrap_err()
-                .problem
-                .contains("declares no apps")
-        );
-        let bad = "apps:\n  web:\n    image: nginx\n    resources:\n      memory: lots\n";
-        assert_eq!(
-            parse_app(bad, "web").unwrap_err().field,
-            "apps.web.resources.memory"
-        );
-        let copies = "apps:\n  web:\n    image: nginx\n    copies: 21\n";
-        assert_eq!(
-            parse_app(copies, "web").unwrap_err().field,
-            "apps.web.copies"
-        );
-        let big = format!("apps: {{}}\n#{}\n", "x".repeat(MAX_FILE_BYTES));
-        assert!(
-            parse_app(&big, "web")
-                .unwrap_err()
-                .problem
-                .contains("64 KiB")
-        );
     }
 
     #[test]

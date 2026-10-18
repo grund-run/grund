@@ -82,6 +82,10 @@
           "description": "The VM runtime runs with root rather than in user namespaces.",
           "type": "boolean"
         },
+        "stackServices": {
+          "description": "Supports stack-exclusive replacement and operation-fenced stop receipts.",
+          "type": "boolean"
+        },
         "usage": {
           "allOf": [
             {
@@ -2895,6 +2899,260 @@
         }
       },
       "title": "grund.registry.v1.SetRegistryLoginResponse",
+      "type": "object"
+    },
+    "grund.stack.v1.DeleteStackResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "stack": {
+          "$ref": "#/$defs/grund.stack.v1.Stack"
+        }
+      },
+      "title": "grund.stack.v1.DeleteStackResponse",
+      "type": "object"
+    },
+    "grund.stack.v1.DeployStackResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "stack": {
+          "$ref": "#/$defs/grund.stack.v1.Stack"
+        }
+      },
+      "title": "grund.stack.v1.DeployStackResponse",
+      "type": "object"
+    },
+    "grund.stack.v1.GetStackResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "stack": {
+          "$ref": "#/$defs/grund.stack.v1.Stack"
+        }
+      },
+      "title": "grund.stack.v1.GetStackResponse",
+      "type": "object"
+    },
+    "grund.stack.v1.ListStacksResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "nextPageToken": {
+          "type": "string"
+        },
+        "stacks": {
+          "items": {
+            "$ref": "#/$defs/grund.stack.v1.Stack"
+          },
+          "type": "array"
+        }
+      },
+      "title": "grund.stack.v1.ListStacksResponse",
+      "type": "object"
+    },
+    "grund.stack.v1.RestartStackResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "stack": {
+          "$ref": "#/$defs/grund.stack.v1.Stack"
+        }
+      },
+      "title": "grund.stack.v1.RestartStackResponse",
+      "type": "object"
+    },
+    "grund.stack.v1.RestoreStackResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "stack": {
+          "$ref": "#/$defs/grund.stack.v1.Stack"
+        }
+      },
+      "title": "grund.stack.v1.RestoreStackResponse",
+      "type": "object"
+    },
+    "grund.stack.v1.RollbackStackResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "stack": {
+          "$ref": "#/$defs/grund.stack.v1.Stack"
+        }
+      },
+      "title": "grund.stack.v1.RollbackStackResponse",
+      "type": "object"
+    },
+    "grund.stack.v1.Service": {
+      "additionalProperties": false,
+      "description": "A desired service with fresh observations of its actual running copies.",
+      "properties": {
+        "appId": {
+          "type": "string"
+        },
+        "appName": {
+          "description": "Stable backing app name for existing per-app inspection operations.",
+          "type": "string"
+        },
+        "copies": {
+          "type": "integer"
+        },
+        "desiredRelease": {
+          "description": "Desired execution number; 0 is not assigned yet. Old copies may still run.",
+          "type": "integer"
+        },
+        "exclusive": {
+          "type": "boolean"
+        },
+        "image": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "observedRunningReleases": {
+          "description": "Includes old/draining executions; empty is no fresh observation, not exit proof.",
+          "items": {
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "ready": {
+          "type": "integer"
+        },
+        "status": {
+          "type": "string"
+        },
+        "template": {
+          "description": "Catalogue identity pinned in this revision; empty for an image service.",
+          "type": "string"
+        },
+        "volumeIntents": {
+          "description": "Desired mounts only, not evidence that a backing volume exists.",
+          "items": {
+            "$ref": "#/$defs/grund.stack.v1.VolumeIntent"
+          },
+          "type": "array"
+        }
+      },
+      "title": "grund.stack.v1.Service",
+      "type": "object"
+    },
+    "grund.stack.v1.Stack": {
+      "additionalProperties": false,
+      "properties": {
+        "address": {
+          "type": "string"
+        },
+        "failure": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "machineId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "operation": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "integer"
+        },
+        "services": {
+          "items": {
+            "$ref": "#/$defs/grund.stack.v1.Service"
+          },
+          "type": "array"
+        },
+        "status": {
+          "type": "string"
+        },
+        "version": {
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "volumes": {
+          "description": "Includes retained removed-service data, not just desired mounts.",
+          "items": {
+            "$ref": "#/$defs/grund.stack.v1.Volume"
+          },
+          "type": "array"
+        },
+        "yaml": {
+          "description": "Submitted configuration, containing secret names but never secret values.",
+          "type": "string"
+        }
+      },
+      "title": "grund.stack.v1.Stack",
+      "type": "object"
+    },
+    "grund.stack.v1.Volume": {
+      "additionalProperties": false,
+      "description": "Actual organisation-scoped owned data; no provider identifiers or credentials.",
+      "properties": {
+        "appId": {
+          "type": "string"
+        },
+        "appName": {
+          "type": "string"
+        },
+        "purgeAfter": {
+          "description": "Scheduled purge deadline, if any; expiry does not prove physical erasure.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "retained": {
+          "description": "Not a desired mount: retained data from a removed service or mount.",
+          "type": "boolean"
+        },
+        "service": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "storage": {
+          "$ref": "#/$defs/grund.stack.v1.VolumeIntent"
+        },
+        "volumeId": {
+          "type": "string"
+        }
+      },
+      "title": "grund.stack.v1.Volume",
+      "type": "object"
+    },
+    "grund.stack.v1.VolumeIntent": {
+      "additionalProperties": false,
+      "description": "A mount request, never an observed volume identity or state.",
+      "properties": {
+        "backupPolicy": {
+          "description": "not_available for own_local; otherwise off or daily_snapshots_requested.",
+          "type": "string"
+        },
+        "backupRequested": {
+          "description": "A request does not establish that a verified recovery point exists.",
+          "type": "boolean"
+        },
+        "kind": {
+          "description": "own_local has no enforced quota; hosted_sized is fixed-capacity without resize.",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "sizeGib": {
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        }
+      },
+      "title": "grund.stack.v1.VolumeIntent",
       "type": "object"
     },
     "grund.token.v1.CreateTokenResponse": {
@@ -12762,6 +13020,1283 @@
       ],
       "stdin": "the secret's value; one final newline is dropped",
       "summary": "Store a new version of a secret, its value read from stdin. Releases name it with grund apps set APP secret-env"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "default": "grund.yaml",
+          "flag": "--file",
+          "name": "file",
+          "short": "-f",
+          "type": "string",
+          "value_name": "FILE"
+        },
+        {
+          "description": "Update only this service; the file must still describe the complete unchanged bundle",
+          "flag": "--service",
+          "name": "service",
+          "type": "string",
+          "value_name": "SERVICE"
+        },
+        {
+          "description": "Explicitly refresh this template service's pinned catalogue expansion",
+          "flag": "--refresh-template",
+          "name": "refresh_template",
+          "type": "string",
+          "value_name": "REFRESH_TEMPLATE"
+        },
+        {
+          "description": "Explicitly authorize removal of this omitted service, retaining its data; repeat for each removed service",
+          "flag": "--confirm-remove",
+          "name": "confirmed_removals",
+          "repeated": true,
+          "type": "string",
+          "value_name": "SERVICE"
+        },
+        {
+          "description": "Prompt without echo for an initial app secret; repeat for more. Values are never command-line arguments",
+          "flag": "--secret",
+          "name": "secrets",
+          "repeated": true,
+          "type": "string",
+          "value_name": "SERVICE/NAME"
+        },
+        {
+          "description": "Read initial secrets from a protected stdin JSON object: {service:{name:value}}; never printed",
+          "flag": "--secrets-stdin",
+          "name": "secrets_stdin",
+          "type": "boolean",
+          "value_name": "SECRETS_STDIN"
+        },
+        {
+          "description": "Require this stack version; by default read the current version first",
+          "flag": "--expected-version",
+          "name": "expected_version",
+          "type": "integer",
+          "value_name": "EXPECTED_VERSION"
+        },
+        {
+          "description": "Reuse this key with the same --expected-version for identical retries; default: a new UUID",
+          "flag": "--idempotency-key",
+          "name": "idempotency_key",
+          "type": "string",
+          "value_name": "IDEMPOTENCY_KEY"
+        },
+        {
+          "description": "Wait for the operation to succeed; report failed or halted operations as exit 9",
+          "flag": "--wait",
+          "name": "wait",
+          "type": "boolean",
+          "value_name": "WAIT"
+        },
+        {
+          "default": "1800",
+          "description": "Maximum seconds to wait",
+          "flag": "--timeout",
+          "name": "timeout",
+          "type": "integer",
+          "value_name": "TIMEOUT"
+        },
+        {
+          "description": "Resolve the deployment preview, or show the mutation request, without changing anything",
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund stacks deploy",
+      "destructive": false,
+      "dry_run": true,
+      "examples": [
+        "grund stacks deploy -f grund.yaml --wait",
+        "grund stacks deploy -f grund.yaml --service web --dry-run",
+        "grund stacks deploy --secrets-stdin < protected-secrets.json"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.stack.v1.DeployStackResponse"
+      },
+      "path": "stacks deploy",
+      "rpcs": [
+        "grund.stack.v1.StackService/PreviewStack",
+        "grund.stack.v1.StackService/DeployStack",
+        "grund.stack.v1.StackService/GetStack"
+      ],
+      "stdin": "with --secrets-stdin: a protected JSON object {service:{name:value}}; otherwise --secret SERVICE/NAME prompts without echo",
+      "summary": "Deploy a complete stack, or preview the resolved bundle without changes"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "default": "50",
+          "flag": "--page-size",
+          "name": "page_size",
+          "type": "integer",
+          "value_name": "PAGE_SIZE"
+        },
+        {
+          "flag": "--page-token",
+          "name": "page_token",
+          "type": "string",
+          "value_name": "PAGE_TOKEN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund stacks list",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund stacks list --page-size 50 --json"
+      ],
+      "mutates": false,
+      "output": {
+        "$ref": "#/$defs/grund.stack.v1.ListStacksResponse"
+      },
+      "path": "stacks list",
+      "rpcs": [
+        "grund.stack.v1.StackService/ListStacks"
+      ],
+      "summary": "One bounded page of the organisation's stacks"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "stack",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "STACK"
+        }
+      ],
+      "audience": "client",
+      "command": "grund stacks status",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund stacks status shop --json"
+      ],
+      "mutates": false,
+      "output": {
+        "$ref": "#/$defs/grund.stack.v1.GetStackResponse"
+      },
+      "path": "stacks status",
+      "rpcs": [
+        "grund.stack.v1.StackService/GetStack"
+      ],
+      "summary": "Actual stack and per-service readiness, placement and operation failure"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "stack",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "STACK"
+        },
+        {
+          "flag": "--service",
+          "name": "service",
+          "required": true,
+          "type": "string",
+          "value_name": "SERVICE"
+        },
+        {
+          "description": "Drain all retained matching output, then follow until Ctrl-C; JSON lines or YAML documents",
+          "flag": "--follow",
+          "name": "follow",
+          "type": "boolean",
+          "value_name": "FOLLOW"
+        },
+        {
+          "description": "Only this app instance; --instance URL still selects the server",
+          "flag": "--instance-id",
+          "name": "instance_id",
+          "type": "string",
+          "value_name": "ID"
+        },
+        {
+          "description": "Only this release number",
+          "flag": "--release",
+          "name": "release",
+          "type": "integer",
+          "value_name": "N"
+        },
+        {
+          "description": "Observed at or after RFC3339 time or duration ago (30s, 15m, 1h30m, 1d, 1w)",
+          "flag": "--since",
+          "name": "since",
+          "type": "string",
+          "value_name": "TIME"
+        },
+        {
+          "description": "Observed before RFC3339 time or duration ago; relative times are fixed when starting",
+          "flag": "--until",
+          "name": "until",
+          "type": "string",
+          "value_name": "TIME"
+        },
+        {
+          "description": "Case-insensitive literal substring, at most 200 bytes",
+          "flag": "--search",
+          "name": "search",
+          "type": "string",
+          "value_name": "TEXT"
+        },
+        {
+          "description": "Only this output stream; combined is older output without separate streams",
+          "enum": [
+            "stdout",
+            "stderr",
+            "combined"
+          ],
+          "flag": "--stream",
+          "name": "stream",
+          "type": "string",
+          "value_name": "STREAM"
+        },
+        {
+          "default": "200",
+          "description": "Maximum records for one read; with --follow, records per page, not a total limit",
+          "flag": "--limit",
+          "name": "limit",
+          "type": "integer",
+          "value_name": "N"
+        }
+      ],
+      "audience": "client",
+      "command": "grund stacks logs",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund stacks logs shop --service web --follow",
+        "grund stacks logs shop --service web --since 1h --instance-id INSTANCE --release 3 --search timeout --json"
+      ],
+      "mutates": false,
+      "output": {
+        "$ref": "#/$defs/grund.app.v1.ListAppLogsResponse"
+      },
+      "path": "stacks logs",
+      "rpcs": [
+        "grund.stack.v1.StackService/GetStack",
+        "grund.app.v1.AppTelemetryService/ListAppLogs"
+      ],
+      "summary": "Read one service's retained output, or follow it"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "stack",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "STACK"
+        },
+        {
+          "flag": "--service",
+          "name": "service",
+          "required": true,
+          "type": "string",
+          "value_name": "SERVICE"
+        },
+        {
+          "default": "hour",
+          "description": "Hour: 10-second buckets; day: 1-minute buckets; week: 10-minute buckets",
+          "enum": [
+            "hour",
+            "day",
+            "week"
+          ],
+          "flag": "--range",
+          "name": "range",
+          "type": "string",
+          "value_name": "RANGE"
+        },
+        {
+          "description": "Only this app instance; --instance URL still selects the server",
+          "flag": "--instance-id",
+          "name": "instance_id",
+          "type": "string",
+          "value_name": "ID"
+        },
+        {
+          "description": "Only this release number",
+          "flag": "--release",
+          "name": "release",
+          "type": "integer",
+          "value_name": "N"
+        }
+      ],
+      "audience": "client",
+      "command": "grund stacks metrics",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund stacks metrics shop --service postgres --range day"
+      ],
+      "mutates": false,
+      "output": {
+        "$ref": "#/$defs/grund.app.v1.GetAppMetricsResponse"
+      },
+      "path": "stacks metrics",
+      "rpcs": [
+        "grund.stack.v1.StackService/GetStack",
+        "grund.app.v1.AppTelemetryService/GetAppMetrics"
+      ],
+      "summary": "Measured CPU and memory for one service, including unknown values and gaps"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "stack",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "STACK"
+        },
+        {
+          "flag": "--service",
+          "name": "service",
+          "type": "string",
+          "value_name": "SERVICE"
+        },
+        {
+          "description": "Require this stack version; by default read the current version first",
+          "flag": "--expected-version",
+          "name": "expected_version",
+          "type": "integer",
+          "value_name": "EXPECTED_VERSION"
+        },
+        {
+          "description": "Reuse this key with the same --expected-version for identical retries; default: a new UUID",
+          "flag": "--idempotency-key",
+          "name": "idempotency_key",
+          "type": "string",
+          "value_name": "IDEMPOTENCY_KEY"
+        },
+        {
+          "description": "Wait for the operation to succeed; report failed or halted operations as exit 9",
+          "flag": "--wait",
+          "name": "wait",
+          "type": "boolean",
+          "value_name": "WAIT"
+        },
+        {
+          "default": "1800",
+          "description": "Maximum seconds to wait",
+          "flag": "--timeout",
+          "name": "timeout",
+          "type": "integer",
+          "value_name": "TIMEOUT"
+        },
+        {
+          "description": "Resolve the deployment preview, or show the mutation request, without changing anything",
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund stacks restart",
+      "destructive": false,
+      "dry_run": true,
+      "examples": [
+        "grund stacks restart shop --service web --wait"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.stack.v1.RestartStackResponse"
+      },
+      "path": "stacks restart",
+      "rpcs": [
+        "grund.stack.v1.StackService/GetStack",
+        "grund.stack.v1.StackService/RestartStack"
+      ],
+      "summary": "Restart the stack, or one service, without changing the bundle"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "stack",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "STACK"
+        },
+        {
+          "flag": "--revision",
+          "name": "revision",
+          "required": true,
+          "type": "integer",
+          "value_name": "REVISION"
+        },
+        {
+          "description": "Require this stack version; by default read the current version first",
+          "flag": "--expected-version",
+          "name": "expected_version",
+          "type": "integer",
+          "value_name": "EXPECTED_VERSION"
+        },
+        {
+          "description": "Reuse this key with the same --expected-version for identical retries; default: a new UUID",
+          "flag": "--idempotency-key",
+          "name": "idempotency_key",
+          "type": "string",
+          "value_name": "IDEMPOTENCY_KEY"
+        },
+        {
+          "description": "Wait for the operation to succeed; report failed or halted operations as exit 9",
+          "flag": "--wait",
+          "name": "wait",
+          "type": "boolean",
+          "value_name": "WAIT"
+        },
+        {
+          "default": "1800",
+          "description": "Maximum seconds to wait",
+          "flag": "--timeout",
+          "name": "timeout",
+          "type": "integer",
+          "value_name": "TIMEOUT"
+        },
+        {
+          "description": "Resolve the deployment preview, or show the mutation request, without changing anything",
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund stacks rollback",
+      "destructive": false,
+      "dry_run": true,
+      "examples": [
+        "grund stacks rollback shop --revision 2 --wait"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.stack.v1.RollbackStackResponse"
+      },
+      "path": "stacks rollback",
+      "rpcs": [
+        "grund.stack.v1.StackService/GetStack",
+        "grund.stack.v1.StackService/RollbackStack"
+      ],
+      "summary": "Deploy an earlier complete stack revision; this does not rewind data"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "stack",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "STACK"
+        },
+        {
+          "description": "Do not ask; required without an interactive terminal",
+          "flag": "--yes",
+          "name": "yes",
+          "type": "boolean",
+          "value_name": "YES"
+        },
+        {
+          "description": "Require this stack version; by default read the current version first",
+          "flag": "--expected-version",
+          "name": "expected_version",
+          "type": "integer",
+          "value_name": "EXPECTED_VERSION"
+        },
+        {
+          "description": "Reuse this key with the same --expected-version for identical retries; default: a new UUID",
+          "flag": "--idempotency-key",
+          "name": "idempotency_key",
+          "type": "string",
+          "value_name": "IDEMPOTENCY_KEY"
+        },
+        {
+          "description": "Wait for the operation to succeed; report failed or halted operations as exit 9",
+          "flag": "--wait",
+          "name": "wait",
+          "type": "boolean",
+          "value_name": "WAIT"
+        },
+        {
+          "default": "1800",
+          "description": "Maximum seconds to wait",
+          "flag": "--timeout",
+          "name": "timeout",
+          "type": "integer",
+          "value_name": "TIMEOUT"
+        },
+        {
+          "description": "Resolve the deployment preview, or show the mutation request, without changing anything",
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund stacks delete",
+      "destructive": true,
+      "dry_run": true,
+      "examples": [
+        "grund stacks delete shop --yes --wait"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.stack.v1.DeleteStackResponse"
+      },
+      "path": "stacks delete",
+      "rpcs": [
+        "grund.stack.v1.StackService/GetStack",
+        "grund.stack.v1.StackService/DeleteStack"
+      ],
+      "summary": "Stop every service; retained volumes remain recoverable"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "stack",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "STACK"
+        },
+        {
+          "description": "Require this stack version; by default read the current version first",
+          "flag": "--expected-version",
+          "name": "expected_version",
+          "type": "integer",
+          "value_name": "EXPECTED_VERSION"
+        },
+        {
+          "description": "Reuse this key with the same --expected-version for identical retries; default: a new UUID",
+          "flag": "--idempotency-key",
+          "name": "idempotency_key",
+          "type": "string",
+          "value_name": "IDEMPOTENCY_KEY"
+        },
+        {
+          "description": "Wait for the operation to succeed; report failed or halted operations as exit 9",
+          "flag": "--wait",
+          "name": "wait",
+          "type": "boolean",
+          "value_name": "WAIT"
+        },
+        {
+          "default": "1800",
+          "description": "Maximum seconds to wait",
+          "flag": "--timeout",
+          "name": "timeout",
+          "type": "integer",
+          "value_name": "TIMEOUT"
+        },
+        {
+          "description": "Resolve the deployment preview, or show the mutation request, without changing anything",
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund stacks restore",
+      "destructive": false,
+      "dry_run": true,
+      "examples": [
+        "grund stacks restore shop --wait"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.stack.v1.RestoreStackResponse"
+      },
+      "path": "stacks restore",
+      "rpcs": [
+        "grund.stack.v1.StackService/GetStack",
+        "grund.stack.v1.StackService/RestoreStack"
+      ],
+      "summary": "Restore a deleted stack and its retained data before expiry"
     },
     {
       "args": [

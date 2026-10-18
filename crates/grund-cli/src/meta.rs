@@ -76,6 +76,94 @@ const fn with_stdin(leaf: Leaf, stdin: &'static str) -> Leaf {
 
 /// Every client command.
 pub const LEAVES: &[Leaf] = &[
+    with_stdin(
+        write(
+            "stacks deploy",
+            "grund.stack.v1.DeployStackResponse",
+            &[
+                "grund.stack.v1.StackService/PreviewStack",
+                "grund.stack.v1.StackService/DeployStack",
+                "grund.stack.v1.StackService/GetStack",
+            ],
+            &[
+                "grund stacks deploy -f grund.yaml --wait",
+                "grund stacks deploy -f grund.yaml --service web --dry-run",
+                "grund stacks deploy --secrets-stdin < protected-secrets.json",
+            ],
+        ),
+        "with --secrets-stdin: a protected JSON object {service:{name:value}}; otherwise --secret SERVICE/NAME prompts without echo",
+    ),
+    read(
+        "stacks list",
+        "grund.stack.v1.ListStacksResponse",
+        &["grund.stack.v1.StackService/ListStacks"],
+        &["grund stacks list --page-size 50 --json"],
+    ),
+    read(
+        "stacks status",
+        "grund.stack.v1.GetStackResponse",
+        &["grund.stack.v1.StackService/GetStack"],
+        &["grund stacks status shop --json"],
+    ),
+    read(
+        "stacks logs",
+        "grund.app.v1.ListAppLogsResponse",
+        &[
+            "grund.stack.v1.StackService/GetStack",
+            "grund.app.v1.AppTelemetryService/ListAppLogs",
+        ],
+        &[
+            "grund stacks logs shop --service web --follow",
+            "grund stacks logs shop --service web --since 1h --instance-id INSTANCE --release 3 --search timeout --json",
+        ],
+    ),
+    read(
+        "stacks metrics",
+        "grund.app.v1.GetAppMetricsResponse",
+        &[
+            "grund.stack.v1.StackService/GetStack",
+            "grund.app.v1.AppTelemetryService/GetAppMetrics",
+        ],
+        &["grund stacks metrics shop --service postgres --range day"],
+    ),
+    write(
+        "stacks restart",
+        "grund.stack.v1.RestartStackResponse",
+        &[
+            "grund.stack.v1.StackService/GetStack",
+            "grund.stack.v1.StackService/RestartStack",
+        ],
+        &["grund stacks restart shop --service web --wait"],
+    ),
+    write(
+        "stacks rollback",
+        "grund.stack.v1.RollbackStackResponse",
+        &[
+            "grund.stack.v1.StackService/GetStack",
+            "grund.stack.v1.StackService/RollbackStack",
+        ],
+        &["grund stacks rollback shop --revision 2 --wait"],
+    ),
+    Leaf {
+        output: "grund.stack.v1.DeleteStackResponse",
+        ..destroy(
+            "stacks delete",
+            &[
+                "grund.stack.v1.StackService/GetStack",
+                "grund.stack.v1.StackService/DeleteStack",
+            ],
+            &["grund stacks delete shop --yes --wait"],
+        )
+    },
+    write(
+        "stacks restore",
+        "grund.stack.v1.RestoreStackResponse",
+        &[
+            "grund.stack.v1.StackService/GetStack",
+            "grund.stack.v1.StackService/RestoreStack",
+        ],
+        &["grund stacks restore shop --wait"],
+    ),
     write(
         "install",
         "grund.cli.v1.HostInstallation",

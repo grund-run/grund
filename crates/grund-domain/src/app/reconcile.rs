@@ -101,6 +101,16 @@ pub struct Decision {
     pub waiting: Vec<Waiting>,
 }
 
+/// Stack rollout constraints and terminal receipts fenced by the caller against
+/// the current operation and the generation of each replica's drain document.
+#[derive(Debug, Clone, Copy)]
+pub struct StackPolicy<'a> {
+    pub exclusive: bool,
+    pub strict_surge: bool,
+    pub stopping: bool,
+    pub terminal_receipts: &'a [Uuid],
+}
+
 struct Pass<'a> {
     work: App,
     events: Vec<AppEvent>,
@@ -109,6 +119,7 @@ struct Pass<'a> {
     machines: &'a [MachineView],
     ended_lease_machines: &'a [(Uuid, bool)],
     stateful: bool,
+    policy: Option<StackPolicy<'a>>,
     now: DateTime<Utc>,
 }
 
@@ -193,6 +204,9 @@ impl Pass<'_> {
         prefer: Option<Uuid>,
         new_id: &mut dyn FnMut() -> Uuid,
     ) -> Result<Uuid, Unplaceable> {
+        if self.strict_surge_full() {
+            return Err(Unplaceable::InsufficientResources);
+        }
         let usage = |machine_id: Uuid| self.usage(machine_id);
         let chosen = placement::place(
             release,
@@ -219,6 +233,17 @@ impl Pass<'_> {
             }
             Err(unplaceable) => Err(unplaceable),
         }
+    }
+
+    fn strict_surge_full(&self) -> bool {
+        self.policy.is_some_and(|policy| policy.strict_surge)
+            && self
+                .work
+                .replicas
+                .iter()
+                .filter(|replica| replica.slot < self.work.settings.copies)
+                .count()
+                >= (self.work.settings.copies + self.work.settings.rollout.max_surge) as usize
     }
 
     fn fits_without(&self, release: &Release, leaving: &Replica) -> bool {
@@ -293,6 +318,30 @@ pub fn reconcile_with_volumes(
     stateful: bool,
     new_id: &mut dyn FnMut() -> Uuid,
 ) -> Decision {
+    reconcile_with_policy(
+        app,
+        observations,
+        machines,
+        ended_lease_machines,
+        now,
+        stateful,
+        None,
+        new_id,
+    )
+}
+
+/// Reconciles stack-owned replicas without weakening ordinary app behavior.
+#[allow(clippy::too_many_arguments)]
+pub fn reconcile_with_policy(
+    app: &App,
+    observations: &[Observation],
+    machines: &[MachineView],
+    ended_lease_machines: &[(Uuid, bool)],
+    now: DateTime<Utc>,
+    stateful: bool,
+    policy: Option<StackPolicy<'_>>,
+    new_id: &mut dyn FnMut() -> Uuid,
+) -> Decision {
     let mut pass = Pass {
         work: app.clone(),
         events: Vec::new(),
@@ -302,17 +351,24 @@ pub fn reconcile_with_volumes(
         ended_lease_machines,
         now,
         stateful,
+        policy,
     };
     if !app.exists || app.deleted {
         return Decision::default();
     }
     drain_ended_leases(&mut pass);
-    let lost_slots = if stateful {
+    let lost_slots = if stateful || policy.is_some_and(|p| p.exclusive || p.stopping) {
         BTreeSet::new()
     } else {
         lose_replicas(&mut pass)
     };
     finish_drains(&mut pass);
+    if policy.is_some_and(|p| p.stopping) {
+        for replica in pass.running() {
+            pass.drain(replica.replica_id, DrainReason::Deleted);
+        }
+        return pass.into_decision();
+    }
     if pass.work.halted {
         return pass.into_decision();
     }
@@ -349,7 +405,7 @@ fn drain_ended_leases(pass: &mut Pass<'_>) {
             if state == ReplicaState::Running {
                 pass.drain(id, DrainReason::LeaseEnded);
             }
-            if detached {
+            if detached && pass.policy.is_none() {
                 let now = pass.now;
                 pass.emit(AppEvent::ReplicaRemoved {
                     replica_id: id,
@@ -408,6 +464,9 @@ fn finish_drains(pass: &mut Pass<'_>) {
         .iter()
         .filter(|r| r.state == ReplicaState::Draining)
         .filter(|r| {
+            if let Some(policy) = pass.policy {
+                return policy.terminal_receipts.contains(&r.replica_id);
+            }
             if pass.stateful {
                 pass.connected(r.machine_id)
                     && pass.observation(r.replica_id).is_some_and(|o| {
@@ -519,7 +578,7 @@ fn fail_rollout(pass: &mut Pass<'_>, reason: String) {
     if !rolled_back {
         return;
     }
-    if pass.stateful {
+    if pass.stateful || pass.policy.is_some() {
         for replica in pass
             .running()
             .into_iter()
@@ -550,7 +609,9 @@ fn fail_rollout_on_a_bad_replica(pass: &mut Pass<'_>) {
     let Some(release) = pass.work.release(rollout.to).cloned() else {
         return;
     };
-    if pass.stateful && pass.running().iter().any(|r| !pass.connected(r.machine_id)) {
+    if (pass.stateful || pass.policy.is_some_and(|p| p.exclusive))
+        && pass.running().iter().any(|r| !pass.connected(r.machine_id))
+    {
         return;
     }
     let reason = pass
@@ -625,7 +686,7 @@ fn converge(pass: &mut Pass<'_>, lost_slots: &BTreeSet<u32>, new_id: &mut dyn Fn
             .collect();
         in_slot.sort_by_key(|r| std::cmp::Reverse(r.placement));
         let newest = in_slot.iter().find(|r| r.release == target.number).cloned();
-        if pass.stateful
+        if (pass.stateful || pass.policy.is_some_and(|p| p.exclusive))
             && !pass.work.replicas.is_empty()
             && pass
                 .work
@@ -636,10 +697,14 @@ fn converge(pass: &mut Pass<'_>, lost_slots: &BTreeSet<u32>, new_id: &mut dyn Fn
             continue;
         }
         if let Some(newest) = newest {
-            if pass.stateful && !pass.connected(newest.machine_id) {
+            if (pass.stateful || pass.policy.is_some_and(|p| p.exclusive))
+                && !pass.connected(newest.machine_id)
+            {
                 continue;
             }
-            if pass.stateful && pass.misplaced(&newest) {
+            if (pass.stateful || pass.policy.is_some_and(|p| p.exclusive))
+                && pass.misplaced(&newest)
+            {
                 continue;
             }
             if pass.misplaced(&newest) {
@@ -701,7 +766,7 @@ fn converge(pass: &mut Pass<'_>, lost_slots: &BTreeSet<u32>, new_id: &mut dyn Fn
             continue;
         };
         let running_in_range = pass.running().iter().filter(|r| r.slot < copies).count() as u32;
-        if pass.stateful {
+        if pass.stateful || pass.policy.is_some_and(|p| p.exclusive) {
             if pass.connected(old.machine_id) {
                 pass.drain(old.replica_id, DrainReason::Replaced);
             }
@@ -717,14 +782,18 @@ fn converge(pass: &mut Pass<'_>, lost_slots: &BTreeSet<u32>, new_id: &mut dyn Fn
             ) {
                 Ok(_) => {}
                 Err(Unplaceable::InsufficientResources)
-                    if (copies == 1 || pass.unavailable_slots(copies) == 0)
+                    if !pass.policy.is_some_and(|p| p.strict_surge)
+                        && (copies == 1 || pass.unavailable_slots(copies) == 0)
                         && pass.fits_without(&target, &old) =>
                 {
                     pass.drain(old.replica_id, DrainReason::NoRoom);
                 }
                 Err(unplaceable) => pass.wait(slot, unplaceable, &target),
             }
-        } else if max_unavailable > 0 && pass.unavailable_slots(copies) < max_unavailable {
+        } else if !pass.policy.is_some_and(|p| p.strict_surge)
+            && max_unavailable > 0
+            && pass.unavailable_slots(copies) < max_unavailable
+        {
             pass.drain(old.replica_id, DrainReason::Replaced);
         }
     }
@@ -761,6 +830,15 @@ fn converge(pass: &mut Pass<'_>, lost_slots: &BTreeSet<u32>, new_id: &mut dyn Fn
 }
 
 fn finish_rollout(pass: &mut Pass<'_>) {
+    if pass.policy.is_some()
+        && pass
+            .work
+            .replicas
+            .iter()
+            .any(|r| r.state == ReplicaState::Draining)
+    {
+        return;
+    }
     let Some(rollout) = pass.work.rollout.clone() else {
         return;
     };
@@ -796,7 +874,10 @@ fn finish_rollout(pass: &mut Pass<'_>) {
 }
 
 fn repair_spread(pass: &mut Pass<'_>, new_id: &mut dyn FnMut() -> Uuid) {
-    if pass.stateful {
+    if pass.stateful || pass.policy.is_some_and(|p| p.exclusive) {
+        return;
+    }
+    if pass.strict_surge_full() {
         return;
     }
     if pass.work.rollout.is_some() || !pass.waiting.is_empty() || !pass.events.is_empty() {
@@ -1532,6 +1613,197 @@ mod tests {
         world.settled();
         assert!(world.decide().events.is_empty());
         assert!(world.decide().events.is_empty());
+    }
+
+    fn stack_decision(world: &World, policy: StackPolicy<'_>) -> Decision {
+        reconcile_with_policy(
+            &world.app,
+            &world.observed(),
+            &world.machines,
+            &[],
+            world.now,
+            false,
+            Some(policy),
+            &mut || Uuid::from_u128(9000),
+        )
+    }
+
+    #[test]
+    fn a_strict_stack_rollout_without_surge_room_keeps_the_old_ready_copy() {
+        let mut world = World::new(1, vec![machine(1, 1024)]);
+        world.deploy(512, Behaviour::Healthy);
+        world.settled();
+        let old = world.app.replicas[0].replica_id;
+        world.deploy(512, Behaviour::Healthy);
+        let decision = stack_decision(
+            &world,
+            StackPolicy {
+                exclusive: false,
+                strict_surge: true,
+                stopping: false,
+                terminal_receipts: &[],
+            },
+        );
+        assert!(decision.events.is_empty(), "{decision:?}");
+        assert_eq!(decision.waiting.len(), 1);
+        assert_eq!(world.available()[0].replica_id, old);
+    }
+
+    #[test]
+    fn unacknowledged_stack_drains_keep_consuming_the_strict_surge_budget() {
+        let mut world = World::new(2, vec![machine(1, 16384)]);
+        world.configure(SettingsInput {
+            max_surge: Some(1),
+            ..Default::default()
+        });
+        world.deploy(128, Behaviour::Healthy);
+        world.settled();
+        world.deploy(128, Behaviour::Healthy);
+        let policy = StackPolicy {
+            exclusive: false,
+            strict_surge: true,
+            stopping: false,
+            terminal_receipts: &[],
+        };
+        for _ in 0..40 {
+            let decision = reconcile_with_policy(
+                &world.app,
+                &world.observed(),
+                &world.machines,
+                &[],
+                world.now,
+                false,
+                Some(policy),
+                &mut Uuid::now_v7,
+            );
+            for event in decision.events {
+                world.app.apply(&event);
+            }
+            assert!(
+                world.app.replicas.len() <= 3,
+                "draining processes still consume capacity"
+            );
+            world.tick(1);
+        }
+        assert_eq!(world.app.replicas.len(), 3);
+        let draining: Vec<_> = world
+            .app
+            .replicas
+            .iter()
+            .filter(|replica| replica.state == ReplicaState::Draining)
+            .map(|replica| replica.replica_id)
+            .collect();
+        assert_eq!(
+            draining.len(),
+            1,
+            "the second slot must wait for the first stop receipt"
+        );
+        assert_eq!(
+            world
+                .app
+                .replicas
+                .iter()
+                .filter(|replica| replica.release == 2)
+                .count(),
+            1
+        );
+        let decision = reconcile_with_policy(
+            &world.app,
+            &world.observed(),
+            &world.machines,
+            &[],
+            world.now,
+            false,
+            Some(StackPolicy {
+                terminal_receipts: &draining,
+                ..policy
+            }),
+            &mut Uuid::now_v7,
+        );
+        assert!(
+            decision
+                .events
+                .iter()
+                .any(|event| matches!(event, AppEvent::ReplicaPlaced { release: 2, .. }))
+        );
+        for event in decision.events {
+            world.app.apply(&event);
+        }
+        assert_eq!(world.app.replicas.len(), 3);
+    }
+
+    #[test]
+    fn an_exclusive_stack_never_replaces_a_writer_from_a_stale_terminal_observation() {
+        let mut world = World::new(1, vec![machine(1, 4096)]);
+        world.deploy(512, Behaviour::Healthy);
+        world.settled();
+        let old = world.app.replicas[0].replica_id;
+        world.deploy(512, Behaviour::Healthy);
+        let policy = StackPolicy {
+            exclusive: true,
+            strict_surge: false,
+            stopping: false,
+            terminal_receipts: &[],
+        };
+        let draining = stack_decision(&world, policy);
+        assert!(matches!(draining.events.as_slice(),
+            [AppEvent::ReplicaDraining { replica_id, .. }] if *replica_id == old));
+        world.app.apply(&draining.events[0]);
+        let stale = &mut world.observations.get_mut(&old).unwrap().0;
+        stale.state = Observed::Exited;
+        stale.idle = true;
+        world.now += Duration::minutes(10);
+        world.machines[0].last_seen = Some(world.now);
+        assert!(stack_decision(&world, policy).events.is_empty());
+        let receipts = [old];
+        let stopped = stack_decision(
+            &world,
+            StackPolicy {
+                terminal_receipts: &receipts,
+                ..policy
+            },
+        );
+        assert!(
+            matches!(stopped.events.as_slice(), [
+            AppEvent::ReplicaRemoved { replica_id, .. },
+            AppEvent::ReplicaPlaced { release: 2, .. },
+        ] if *replica_id == old),
+            "{stopped:?}"
+        );
+    }
+
+    #[test]
+    fn stopping_a_stack_waits_for_receipts_and_never_recreates_its_replicas() {
+        let mut world = World::new(2, vec![machine(1, 4096)]);
+        world.deploy(512, Behaviour::Healthy);
+        world.settled();
+        let ids: Vec<_> = world.app.replicas.iter().map(|r| r.replica_id).collect();
+        let policy = StackPolicy {
+            exclusive: false,
+            strict_surge: true,
+            stopping: true,
+            terminal_receipts: &[],
+        };
+        let draining = stack_decision(&world, policy);
+        assert_eq!(draining.events.len(), 2);
+        for event in &draining.events {
+            assert!(matches!(event, AppEvent::ReplicaDraining { .. }));
+            world.app.apply(event);
+        }
+        assert!(stack_decision(&world, policy).events.is_empty());
+        let stopped = stack_decision(
+            &world,
+            StackPolicy {
+                terminal_receipts: &ids,
+                ..policy
+            },
+        );
+        for event in &stopped.events {
+            assert!(matches!(event, AppEvent::ReplicaRemoved { .. }));
+            world.app.apply(event);
+        }
+        assert!(world.app.replicas.is_empty());
+        assert!(stack_decision(&world, policy).events.is_empty());
     }
 
     #[test]

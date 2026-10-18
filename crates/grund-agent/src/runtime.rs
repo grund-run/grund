@@ -22,6 +22,8 @@ use serde::{Deserialize, Serialize};
 
 /// The label every grund container carries: its replica id.
 pub const REPLICA_LABEL: &str = "grund.replica";
+/// The immutable app identity retained after a replica leaves the desired document.
+pub const APP_ID_LABEL: &str = "grund.app-id";
 /// The label holding the hash of the spec it was created from.
 pub const SPEC_HASH_LABEL: &str = "grund.spec-hash";
 /// The label holding its stop signal, so a replica that left the document is
@@ -121,6 +123,8 @@ pub enum TaskState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContainerStatus {
     pub id: String,
+    /// From [`APP_ID_LABEL`], so replacement fences never affect another app.
+    pub app_id: String,
     /// From [`SPEC_HASH_LABEL`]; empty when missing.
     pub spec_hash: String,
     pub state: TaskState,
@@ -276,8 +280,8 @@ pub trait ContainerRuntime: Send + Sync {
 
     /// Sends the stop signal, waits up to the grace, then kills, and removes
     /// the container with its snapshot and network namespace. An unknown id
-    /// succeeds. Each call is independent: the agent runs stops side by side
-    /// and never waits on one before a start (apps.md §7.3 rule 2).
+    /// succeeds. Stops run concurrently; exclusive successors wait for their
+    /// own app's predecessors, not unrelated apps (apps.md §7.3 rule 2).
     fn remove(
         &self,
         id: &str,

@@ -179,6 +179,10 @@ pub enum AppEvent {
         created_by: Uuid,
         created_at: DateTime<Utc>,
     },
+    StackOwnershipAssigned {
+        stack_id: Uuid,
+        at: DateTime<Utc>,
+    },
     /// The settings in force, all of them.
     Configured {
         settings: AppSettings,
@@ -290,6 +294,8 @@ pub struct App {
     pub name: Option<AppName>,
     #[serde(default)]
     pub external_owner: Option<(String, String, String)>,
+    #[serde(default)]
+    pub stack_owner: Option<Uuid>,
     pub settings: AppSettings,
     pub releases: Vec<Release>,
     pub current_release: Option<u32>,
@@ -347,6 +353,9 @@ impl mire::Aggregate for App {
                 self.organisation_id = *organisation_id;
                 self.name = Some(name.clone());
                 self.settings = settings.clone();
+            }
+            AppEvent::StackOwnershipAssigned { stack_id, .. } => {
+                self.stack_owner = Some(*stack_id);
             }
             AppEvent::Configured { settings, .. } => self.settings = settings.clone(),
             AppEvent::ReleaseCreated { release } => {
@@ -489,6 +498,10 @@ pub enum AppCommand {
         settings: AppSettings,
         at: DateTime<Utc>,
     },
+    AssignStack {
+        stack_id: Uuid,
+        at: DateTime<Utc>,
+    },
     /// Replaces the settings; the same settings again change nothing.
     Configure {
         actor: Uuid,
@@ -554,6 +567,8 @@ pub enum AppError {
     RestartNoBase,
     #[error("the running release changed before the restart")]
     RestartStale,
+    #[error("this app belongs to stack {stack_id}")]
+    StackOwned { stack_id: Uuid },
 }
 
 impl mire::Command for AppCommand {
@@ -602,6 +617,11 @@ impl mire::Command for AppCommand {
         }
         match self {
             AppCommand::Create { .. } => unreachable!("handled above"),
+            AppCommand::AssignStack { stack_id, at } => match app.stack_owner {
+                Some(owner) if owner == stack_id => Ok(Vec::new()),
+                Some(stack_id) => Err(AppError::StackOwned { stack_id }),
+                None => Ok(vec![AppEvent::StackOwnershipAssigned { stack_id, at }]),
+            },
             AppCommand::Configure {
                 actor,
                 settings,
@@ -806,6 +826,31 @@ mod tests {
         .handle(&App::default())
         .unwrap();
         fold(&events)
+    }
+
+    #[test]
+    fn stack_ownership_is_durable_idempotent_and_cannot_be_reassigned() {
+        let mut app = created();
+        let stack_id = Uuid::from_u128(42);
+        let command = AppCommand::AssignStack { stack_id, at: at() };
+        let events = command.clone().handle(&app).unwrap();
+        assert!(matches!(events.as_slice(),
+            [AppEvent::StackOwnershipAssigned { stack_id: owner, .. }] if *owner == stack_id));
+        for event in events {
+            app.apply(&event);
+        }
+        assert!(command.handle(&app).unwrap().is_empty());
+        assert_eq!(
+            AppCommand::AssignStack {
+                stack_id: Uuid::from_u128(43),
+                at: at(),
+            }
+            .handle(&app),
+            Err(AppError::StackOwned { stack_id })
+        );
+        let snapshot = serde_json::to_vec(&app).unwrap();
+        assert_eq!(serde_json::from_slice::<App>(&snapshot).unwrap(), app);
+        assert_eq!(app.stack_owner, Some(stack_id));
     }
 
     fn release(app: &App) -> Vec<AppEvent> {

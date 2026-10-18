@@ -39,8 +39,8 @@ use crate::{
     services::{
         app_telemetry::AppTelemetryState,
         apps::{
-            AppListing, AppView, ApplyImageUpdate, AppsError, AppsState, Change, DeployInput,
-            Launch,
+            AppListing, AppStack, AppView, ApplyImageUpdate, AppsError, AppsState, Change,
+            DeployInput, Launch,
         },
         backups::BackupsState,
         domains::DomainsState,
@@ -147,6 +147,7 @@ fn health(view: &AppView, now: DateTime<Utc>) -> Health {
     let current = row.current_release.map(i64::from);
     let ready = current.map_or(0, |c| ready_copies(view, c, now));
     let (word, tone) = match row.rollout.as_ref().and_then(|r| r["state"].as_str()) {
+        _ if row.deleted_at.is_some() => ("Deleted", "muted"),
         _ if row.halted => ("Failed", "danger"),
         Some("in_progress") => ("Rolling out", "blue"),
         Some("failed") => ("Failed", "danger"),
@@ -228,6 +229,7 @@ pub struct ListingView {
     pub public: bool,
     pub update_label: &'static str,
     pub update_tone: &'static str,
+    pub stack: Option<AppStack>,
 }
 
 /// An app as a list row or card shows it.
@@ -249,6 +251,7 @@ pub fn listing_view(listing: &AppListing) -> ListingView {
         update_tone: update_words(listing.update.state).1,
         address: listing.address.clone(),
         public: listing.spec.as_ref().is_some_and(publishes),
+        stack: listing.stack.clone(),
         internal: listing
             .spec
             .as_ref()
@@ -422,6 +425,7 @@ pub struct ListQuery {
 pub struct RestorableApp {
     pub name: String,
     pub status: String,
+    pub stack: Option<AppStack>,
 }
 
 fn notice_words(done: &str) -> &'static str {
@@ -499,11 +503,21 @@ pub async fn apps_page(
         .await
         .map_err(|e| PageError::from(anyhow::anyhow!(e)))?;
     let restorable = if membership.role == "owner" {
-        let mut rows: Vec<RestorableApp> = state
+        let deleted = state
             .apps()
             .restorable(membership.organisation_id)
             .await
-            .map_err(|e| PageError::from(anyhow::anyhow!(e)))?
+            .map_err(|e| PageError::from(anyhow::anyhow!(e)))?;
+        let mut stacks = if deleted.is_empty() {
+            std::collections::HashMap::new()
+        } else {
+            state
+                .apps()
+                .stack_owners(membership.organisation_id)
+                .await
+                .map_err(|e| PageError::from(anyhow::anyhow!(e)))?
+        };
+        let mut rows: Vec<RestorableApp> = deleted
             .into_iter()
             .filter_map(|row| {
                 let deleted_at = row.deleted_at?;
@@ -519,6 +533,7 @@ pub async fn apps_page(
                     }
                     .to_string(),
                     name: row.name,
+                    stack: stacks.remove(&row.app_id),
                 })
             })
             .collect();
@@ -2145,6 +2160,7 @@ pub struct AppIdentity {
     pub internal: Option<String>,
     pub word: &'static str,
     pub tone: &'static str,
+    pub stack: Option<AppStack>,
 }
 
 pub struct RunningRelease {
@@ -2173,6 +2189,7 @@ pub struct AppShellPage {
     pub slug: String,
     pub tab: String,
     pub tabs: Vec<AppTab>,
+    pub services: Vec<(String, String)>,
     pub app: AppIdentity,
     pub waiting: Vec<String>,
     pub notice: String,
@@ -2442,13 +2459,30 @@ pub(super) async fn app_view(
         .releases_for(listing.view.row.app_id)
         .await
         .map_err(|e| PageError::from(anyhow::anyhow!(e)))?;
-    let update = ImageUpdateView::new(
+    let update = ImageUpdateView::new(if listing.view.row.deleted_at.is_some() {
+        listing.update.clone()
+    } else {
         apps.get_update(membership.organisation_id, name)
             .await
-            .map_err(|e| PageError::from(anyhow::anyhow!(e)))?,
-    );
+            .map_err(|e| PageError::from(anyhow::anyhow!(e)))?
+    });
     let view = &listing.view;
+    let stack_owned = listing.stack.is_some();
     let base = format!("/{slug}/apps/{}", view.row.name);
+    let services = if stack_owned && matches!(tab, "logs" | "metrics") {
+        grund_store::stacks::live_service_links(
+            &state.pool,
+            membership.organisation_id,
+            view.row.app_id,
+        )
+        .await
+        .map_err(PageError::from)?
+        .into_iter()
+        .map(|(service, app)| (service, format!("/{slug}/apps/{app}/{tab}")))
+        .collect()
+    } else {
+        Vec::new()
+    };
     let telemetry_html = if matches!(tab, "logs" | "metrics") {
         super::app_telemetry::render(
             state,
@@ -2459,7 +2493,7 @@ pub(super) async fn app_view(
             &base,
             tab,
             refused.telemetry,
-            if tab == "logs" {
+            if tab == "logs" && !stack_owned {
                 super::app_telemetry::RestartControls {
                     action: format!("{base}/restart"),
                     csrf: browser.csrf_token(),
@@ -2491,55 +2525,60 @@ pub(super) async fn app_view(
     };
     let now = Utc::now();
     let volume_rows = if tab == "settings" {
-        apps.volumes(membership.organisation_id, &view.row.name)
+        state
+            .volumes()
+            .list(membership.organisation_id, view.row.app_id)
             .await
             .map_err(|e| PageError::from(anyhow::anyhow!(e)))?
     } else {
         Vec::new()
     };
-    let selected_volume =
-        if tab == "settings" && refused.edit == "volumes" && !refused.volume.is_empty() {
-            let chosen = Uuid::parse_str(&refused.volume)
-                .ok()
-                .filter(|id| volume_rows.iter().any(|row| row.volume_id == *id));
-            if let Some(id) = chosen {
-                let backups = state.backups();
-                let destination = backups
-                    .get(membership.organisation_id, view.row.app_id, id)
-                    .await
-                    .map_err(|e| PageError::from(anyhow::anyhow!(e)))?;
-                let points = backups
-                    .list_points(membership.organisation_id, view.row.app_id, id)
-                    .await
-                    .map_err(|e| PageError::from(anyhow::anyhow!(e)))?
-                    .into_iter()
-                    .map(|point| RecoveryPointItem {
-                        id: point.snapshot_id,
-                        completed: when(point.completed_at),
-                        verified: when(point.verified_at),
-                    })
-                    .collect();
-                Some(VolumeDetail {
-                    id: id.to_string(),
-                    backup_enabled: destination.enabled,
-                    backup_version: destination.version,
-                    endpoint: destination.endpoint,
-                    bucket: destination.bucket,
-                    next_due: destination
-                        .next_due
-                        .map_or_else(|| "Not scheduled".into(), when),
-                    last_verified: destination
-                        .last_verified
-                        .map_or_else(|| "No verified recovery point".into(), when),
-                    last_error: destination.last_error,
-                    points,
+    let selected_volume = if !stack_owned
+        && tab == "settings"
+        && refused.edit == "volumes"
+        && !refused.volume.is_empty()
+    {
+        let chosen = Uuid::parse_str(&refused.volume)
+            .ok()
+            .filter(|id| volume_rows.iter().any(|row| row.volume_id == *id));
+        if let Some(id) = chosen {
+            let backups = state.backups();
+            let destination = backups
+                .get(membership.organisation_id, view.row.app_id, id)
+                .await
+                .map_err(|e| PageError::from(anyhow::anyhow!(e)))?;
+            let points = backups
+                .list_points(membership.organisation_id, view.row.app_id, id)
+                .await
+                .map_err(|e| PageError::from(anyhow::anyhow!(e)))?
+                .into_iter()
+                .map(|point| RecoveryPointItem {
+                    id: point.snapshot_id,
+                    completed: when(point.completed_at),
+                    verified: when(point.verified_at),
                 })
-            } else {
-                return Ok(redirect(&format!("{base}/settings?edit=volumes")));
-            }
+                .collect();
+            Some(VolumeDetail {
+                id: id.to_string(),
+                backup_enabled: destination.enabled,
+                backup_version: destination.version,
+                endpoint: destination.endpoint,
+                bucket: destination.bucket,
+                next_due: destination
+                    .next_due
+                    .map_or_else(|| "Not scheduled".into(), when),
+                last_verified: destination
+                    .last_verified
+                    .map_or_else(|| "No verified recovery point".into(), when),
+                last_error: destination.last_error,
+                points,
+            })
         } else {
-            None
-        };
+            return Ok(redirect(&format!("{base}/settings?edit=volumes")));
+        }
+    } else {
+        None
+    };
     let mut volume_summary = volume_summary(volume_rows, now);
     let window = state.config.volume_delete_window.as_secs();
     volume_summary.window = if window.is_multiple_of(86_400) {
@@ -2730,7 +2769,9 @@ pub(super) async fn app_view(
     } else {
         None
     };
-    let edit = if refused.part.is_empty() {
+    let edit = if stack_owned {
+        ""
+    } else if refused.part.is_empty() {
         refused.edit.as_str()
     } else {
         refused.part
@@ -3005,6 +3046,7 @@ pub(super) async fn app_view(
                     icon,
                 })
                 .collect(),
+            services,
             app: AppIdentity {
                 name: view.row.name.clone(),
                 base: base.clone(),
@@ -3018,6 +3060,7 @@ pub(super) async fn app_view(
                     .and_then(|spec| internal_address(&view.row.name, spec)),
                 word: health.word,
                 tone: health.tone,
+                stack: listing.stack.clone(),
             },
             waiting,
             notice,
@@ -4786,6 +4829,7 @@ mod tests {
             internal: None,
             word: "Live",
             tone: "ok",
+            stack: None,
         };
         let update = ImageUpdateView::new(ImageUpdate {
             base_release: 7,
@@ -4859,5 +4903,210 @@ mod tests {
         assert!(!reader.contains("/updates/apply"));
         assert!(!reader.contains("/updates/check"));
         assert!(reader.contains("sha256:catalogue"));
+    }
+
+    #[test]
+    fn stack_members_link_their_owner_without_offering_independent_settings() {
+        let shell = AppShellPage {
+            slug: "team".into(),
+            tab: "settings".into(),
+            tabs: Vec::new(),
+            services: Vec::new(),
+            app: AppIdentity {
+                name: "shop-db".into(),
+                base: "/team/apps/shop-db".into(),
+                icon: "image",
+                image: Some("postgres:18".into()),
+                address: None,
+                domains: Vec::new(),
+                internal: None,
+                word: "Deleted",
+                tone: "muted",
+                stack: Some(AppStack {
+                    name: "shop".into(),
+                    service: "db".into(),
+                }),
+            },
+            waiting: Vec::new(),
+            notice: String::new(),
+            error: String::new(),
+            manages: true,
+        };
+        let shell_html = crate::templates::compiled::pages::app::render(&shell);
+        assert!(shell_html.contains("href=\"/team/stacks/shop\""));
+        assert!(!shell_html.contains("?edit="));
+        let items = Some(SettingItems {
+            configured: vec![SettingItem {
+                key: "image",
+                title: "Image",
+                icon: "layers",
+                value: Some("postgres:18".into()),
+            }],
+            more: Vec::new(),
+        });
+        let edits = [
+            SettingsEdit::Image {
+                image: "postgres:18".into(),
+            },
+            SettingsEdit::Copies {
+                copies: "1".into(),
+                auto_rollback: true,
+            },
+            SettingsEdit::Secrets {
+                rows: Vec::new(),
+                variable: String::new(),
+            },
+            SettingsEdit::Volumes {
+                summary: volume_summary(Vec::new(), Utc::now()),
+                name: String::new(),
+                path: String::new(),
+                selected: None,
+                source: String::new(),
+                size_gib: String::new(),
+                backup: false,
+            },
+            SettingsEdit::File {
+                content: None,
+                rows: 0,
+                href: String::new(),
+            },
+            SettingsEdit::Delete(volume_summary(Vec::new(), Utc::now())),
+        ];
+        let empty = std::collections::BTreeMap::new();
+        let update = ImageUpdateView::new(ImageUpdate::not_checked(
+            1,
+            "postgres:18".into(),
+            "sha256:base".into(),
+        ));
+        for owner in [false, true] {
+            for edit in &edits {
+                let html =
+                    crate::templates::compiled::pages::app_settings::render(&AppSettingsPage {
+                        app: &shell.app,
+                        items: &items,
+                        edit,
+                        next: Some(2),
+                        manages: true,
+                        owner,
+                        form: crate::templates::FormState {
+                            csrf: "session-csrf",
+                            errors: &empty,
+                            banners: &empty,
+                        },
+                        options: SettingsOptions::default(),
+                        update: &update,
+                    });
+                assert!(html.contains("postgres:18"));
+                assert!(!html.contains("<form"));
+                assert!(!html.contains("?edit="));
+            }
+        }
+        let connection = Some(TemplateConnection {
+            environment: Vec::new(),
+            credential: Some(("PGPASSWORD".into(), "database-password".into())),
+            storage: String::new(),
+        });
+        for manages in [false, true] {
+            let html = crate::templates::compiled::pages::app_overview::render(&AppOverviewPage {
+                app: &shell.app,
+                running: &None,
+                releases: &[],
+                update: &update,
+                connection: &connection,
+                manages,
+                csrf: "session-csrf",
+            });
+            assert_eq!(
+                html.contains("action=\"/team/apps/shop-db/credentials/reveal\""),
+                manages,
+            );
+            assert!(!html.contains("/secrets"));
+            if manages {
+                assert!(html.contains("name=\"csrf\" value=\"session-csrf\""));
+                assert!(html.contains("name=\"variable\" value=\"database-password\""));
+            }
+        }
+        let listing = ListingView {
+            name: shell.app.name.clone(),
+            tone: "muted",
+            copies: 1,
+            icon: "image",
+            image: "postgres:18".into(),
+            address: None,
+            internal: None,
+            public: false,
+            update_label: "Not checked",
+            update_tone: "muted",
+            stack: shell.app.stack.clone(),
+        };
+        let mut html = String::new();
+        sedge_rt::Render::render(
+            &crate::templates::compiled::components::AppRow {
+                slug: "team",
+                manages: true,
+                app: &listing,
+            },
+            &mut html,
+        );
+        assert!(html.contains("href=\"/team/apps/shop-db\""));
+        assert!(html.contains("href=\"/team/stacks/shop\""));
+        assert!(!html.contains("?edit="));
+        let mut standalone = listing;
+        standalone.stack = None;
+        let mut html = String::new();
+        sedge_rt::Render::render(
+            &crate::templates::compiled::components::AppRow {
+                slug: "team",
+                manages: true,
+                app: &standalone,
+            },
+            &mut html,
+        );
+        for edit in ["image", "copies", "delete"] {
+            assert!(html.contains(&format!("/team/apps/shop-db/settings?edit={edit}")));
+        }
+    }
+
+    #[test]
+    fn deleted_stack_members_restore_only_through_their_stack() {
+        let list = AppSearch {
+            q: String::new(),
+            sort: "name".into(),
+            view: "list".into(),
+        };
+        let page = AppsPage {
+            slug: "team".into(),
+            list_href: String::new(),
+            grid_href: String::new(),
+            all_href: String::new(),
+            icons: Vec::new(),
+            apps: Vec::new(),
+            restorable: vec![
+                RestorableApp {
+                    name: "shop-db".into(),
+                    status: "Retained".into(),
+                    stack: Some(AppStack {
+                        name: "shop".into(),
+                        service: "db".into(),
+                    }),
+                },
+                RestorableApp {
+                    name: "standalone".into(),
+                    status: "Retained".into(),
+                    stack: None,
+                },
+            ],
+            total: 2,
+            list: &list,
+            sorts: SORTS,
+            notice: "",
+            error: "",
+            manages: true,
+            csrf: "session-csrf",
+        };
+        let html = crate::templates::compiled::pages::apps::render(&page);
+        assert!(html.contains("href=\"/team/stacks/shop\""));
+        assert!(!html.contains("action=\"/team/apps/shop-db/restore\""));
+        assert!(html.contains("action=\"/team/apps/standalone/restore\""));
     }
 }

@@ -1,4 +1,4 @@
-use crate::templates::compiled::components::{ImageSprite, ImageLogoNotices, PageHead, ListTools, Banner, Para, Items, AppRow, EmptyState, AddCard, Panel, Rows, Row, PostButton};
+use crate::templates::compiled::components::{ImageSprite, ImageLogoNotices, PageHead, ListTools, Banner, Para, Items, AppRow, EmptyState, AddCard, Panel, Rows, Row, PostButton, Button};
 props crate::web::apps::AppsPage<'_> { slug, list_href, grid_href, all_href, icons, apps, restorable, total, list, sorts, notice, error, manages, csrf };
 
 <ImageSprite icons={icons} />
@@ -23,7 +23,11 @@ props crate::web::apps::AppsPage<'_> { slug, list_href, grid_href, all_href, ico
   <Panel id="restorable-apps" title="Deleted apps">
     <Rows>{for app in restorable {
       <Row name={&app.name} sub={&app.status} icon_name="box" tone="muted">
-        <:end><PostButton action="/{slug}/apps/{app.name}/restore" csrf={csrf} label="Restore" kind="secondary" size="sm" /></:end>
+        <:end>{if let Some(stack) = &app.stack {
+          <Button href="/{slug}/stacks/{stack.name}" label="View stack" kind="secondary" size="sm" />
+        } else {
+          <PostButton action="/{slug}/apps/{app.name}/restore" csrf={csrf} label="Restore" kind="secondary" size="sm" />
+        }}</:end>
       </Row>
     }}</Rows>
   </Panel>

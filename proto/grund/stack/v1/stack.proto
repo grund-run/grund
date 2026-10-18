@@ -1,0 +1,212 @@
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+package grund.stack.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// Members read stacks; owners and admins mutate them. Sessions retain their role
+// permissions. Stack changes require a full organisation token; deploy and
+// app-limited tokens are read-only and receive permission_denied with
+// "stack changes need a full token" for mutations. App-limited reads require
+// every owned app, including retained children and data, in the token allowlist.
+// Otherwise Get/Preview return not_found and List omits the stack before paging.
+// A scoped-token preview requires an existing authorised stack.
+// Foreign organisations are not_found. Once authorised, missing stacks are
+// not_found; a forbidden mutation does not disclose whether its target exists.
+// Mutations require a 1–128 byte printable ASCII idempotency key and the current
+// expected_version; omit expected_version only to create a stack. A stale version is aborted.
+service StackService {
+  // Resolves the complete bundle without creating credentials or deployment intent.
+  rpc PreviewStack(PreviewStackRequest) returns (PreviewStackResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  rpc DeployStack(DeployStackRequest) returns (DeployStackResponse);
+  rpc GetStack(GetStackRequest) returns (GetStackResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  rpc ListStacks(ListStacksRequest) returns (ListStacksResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  rpc RestartStack(RestartStackRequest) returns (RestartStackResponse);
+  rpc RollbackStack(RollbackStackRequest) returns (RollbackStackResponse);
+  // Stops services in reverse dependency order; retained data remains recoverable.
+  rpc DeleteStack(DeleteStackRequest) returns (DeleteStackResponse);
+  rpc RestoreStack(RestoreStackRequest) returns (RestoreStackResponse);
+}
+
+// A desired service with fresh observations of its actual running copies.
+message Service {
+  string name = 1;
+  string app_id = 2;
+  string image = 3;
+  string status = 4;
+  uint32 ready = 5;
+  uint32 copies = 6;
+  // Desired execution number; 0 is not assigned yet. Old copies may still run.
+  uint32 desired_release = 7;
+  bool exclusive = 8;
+  // Stable backing app name for existing per-app inspection operations.
+  string app_name = 9;
+  // Catalogue identity pinned in this revision; empty for an image service.
+  string template = 10;
+  // Desired mounts only, not evidence that a backing volume exists.
+  repeated VolumeIntent volume_intents = 11;
+  // Includes old/draining executions; empty is no fresh observation, not exit proof.
+  repeated uint32 observed_running_releases = 12;
+}
+
+// A mount request, never an observed volume identity or state.
+message VolumeIntent {
+  string name = 1;
+  string path = 2;
+  // own_local has no enforced quota; hosted_sized is fixed-capacity without resize.
+  string kind = 3;
+  optional uint64 size_gib = 4;
+  // A request does not establish that a verified recovery point exists.
+  bool backup_requested = 5;
+  // not_available for own_local; otherwise off or daily_snapshots_requested.
+  string backup_policy = 6;
+}
+
+// Actual organisation-scoped owned data; no provider identifiers or credentials.
+message Volume {
+  string service = 1;
+  string app_id = 2;
+  string app_name = 3;
+  string volume_id = 4;
+  VolumeIntent storage = 5;
+  string status = 6;
+  // Not a desired mount: retained data from a removed service or mount.
+  bool retained = 7;
+  // Scheduled purge deadline, if any; expiry does not prove physical erasure.
+  google.protobuf.Timestamp purge_after = 8;
+}
+
+message Stack {
+  string id = 1;
+  string name = 2;
+  string status = 3;
+  int64 version = 4;
+  uint32 revision = 5;
+  string machine_id = 6;
+  string address = 7;
+  repeated Service services = 8;
+  string operation = 9;
+  string failure = 10;
+  // Submitted configuration, containing secret names but never secret values.
+  string yaml = 11;
+  // Includes retained removed-service data, not just desired mounts.
+  repeated Volume volumes = 12;
+}
+
+message Preview {
+  string name = 1;
+  int64 expected_version = 2;
+  repeated Service services = 3;
+  uint64 memory_mib = 4;
+  uint64 cpu_millis = 5;
+  uint64 peak_memory_mib = 6;
+  uint64 peak_cpu_millis = 7;
+  string selected_machine = 8;
+  string waiting = 9;
+  // Current service names absent from the proposed complete bundle; their data is retained.
+  repeated string removed_services = 10;
+}
+
+// A write-only initial value in the service's backing app secret store.
+message LaunchSecret {
+  string service = 1;
+  string name = 2;
+  string value = 3;
+}
+
+message PreviewStackRequest {
+  string organisation = 1;
+  // Raw stack file, at most 1 MiB before protobuf/JSON encoding.
+  string yaml = 2;
+  // Empty selects all services. Nonselected definitions must remain unchanged.
+  string service = 3;
+  // Explicitly refresh this template service's pinned catalogue expansion.
+  string refresh_template = 4;
+}
+message PreviewStackResponse {
+  Preview preview = 1;
+}
+message DeployStackRequest {
+  string organisation = 1;
+  string yaml = 2;
+  string service = 3;
+  string refresh_template = 4;
+  optional int64 expected_version = 5;
+  string idempotency_key = 6;
+  repeated LaunchSecret secrets = 7;
+  // Must exactly name the removed services from preview; omission never authorizes removal.
+  // Requires a signed-in owner/admin or a full organisation token.
+  repeated string confirmed_removals = 8;
+}
+message DeployStackResponse {
+  Stack stack = 1;
+}
+message GetStackRequest {
+  string organisation = 1;
+  string name = 2;
+}
+message GetStackResponse {
+  Stack stack = 1;
+}
+message ListStacksRequest {
+  string organisation = 1;
+  // Default 50, maximum 100. Negative values are invalid.
+  int32 page_size = 2;
+  // Opaque continuation bound to this organisation; never an offset.
+  string page_token = 3;
+}
+message ListStacksResponse {
+  repeated Stack stacks = 1;
+  string next_page_token = 2;
+}
+message RestartStackRequest {
+  string organisation = 1;
+  string name = 2;
+  string service = 3;
+  optional int64 expected_version = 4;
+  string idempotency_key = 5;
+}
+message RestartStackResponse {
+  Stack stack = 1;
+}
+message RollbackStackRequest {
+  string organisation = 1;
+  string name = 2;
+  uint32 revision = 3;
+  optional int64 expected_version = 4;
+  string idempotency_key = 5;
+}
+message RollbackStackResponse {
+  Stack stack = 1;
+}
+message DeleteStackRequest {
+  string organisation = 1;
+  string name = 2;
+  optional int64 expected_version = 3;
+  string idempotency_key = 4;
+}
+message DeleteStackResponse {
+  Stack stack = 1;
+}
+message RestoreStackRequest {
+  string organisation = 1;
+  string name = 2;
+  optional int64 expected_version = 3;
+  string idempotency_key = 4;
+}
+message RestoreStackResponse {
+  Stack stack = 1;
+}
+
+// Stable machine-readable refusal category; error messages are not identifiers.
+message ErrorReason {
+  string reason = 1;
+}

@@ -61,7 +61,8 @@ use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
 use crate::runtime::{
-    AppsCapabilities, ContainerRuntime, ContainerSpec, ContainerStatus, ImageRef, Probe, TaskState,
+    APP_ID_LABEL, AppsCapabilities, ContainerRuntime, ContainerSpec, ContainerStatus, ImageRef,
+    Probe, TaskState,
 };
 
 /// The simulated runtime.
@@ -549,7 +550,7 @@ impl ContainerRuntime for SimulatedContainers {
             let Some(record) = self.read(id) else {
                 continue;
             };
-            let record = self.advance(record)?;
+            let mut record = self.advance(record)?;
             if matches!(record.state, TaskState::Running { .. }) {
                 self.listen(&record);
             } else {
@@ -558,6 +559,7 @@ impl ContainerRuntime for SimulatedContainers {
             records.push(record.clone());
             statuses.push(ContainerStatus {
                 id: record.spec.id.clone(),
+                app_id: record.spec.labels.remove(APP_ID_LABEL).unwrap_or_default(),
                 spec_hash: record.spec.spec_hash.clone(),
                 network_resolver: record.spec.resolv_conf.as_deref().and_then(|contents| {
                     contents.lines().find_map(|line| {

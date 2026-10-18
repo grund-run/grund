@@ -336,6 +336,27 @@ async fn a_draining_copy_gets_nothing_new_unless_nothing_else_answers_and_report
 }
 
 #[tokio::test]
+async fn an_exclusive_or_stopping_stack_copy_never_accepts_drain_fallback_traffic() {
+    for exclusive in [false, true] {
+        let backends = Arc::new(Backends::default());
+        backends.start("old").await;
+        let gate = Gate::new(backends, Limits::default());
+        let mut copy = replica("old", "store-web", ReplicaState::REPLICA_STATE_DRAINING);
+        copy.exclusive = exclusive;
+        copy.stopping = !exclusive;
+        let doc = document(vec![copy]);
+        gate.update(Some(&doc), &ready(&doc, &["old"]), &[]);
+        assert_eq!(
+            gate.admit("store-web-kasper.grund.test"),
+            grund_entry::Answer::NoReadyCopy,
+        );
+        let mut sender = connection(&gate, "store-web-kasper.grund.test").await;
+        let (status, _, _) = get(&mut sender, "store-web-kasper.grund.test", "/", &[]).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+}
+
+#[tokio::test]
 async fn with_no_ready_copy_here_a_ready_copy_elsewhere_serves_and_the_client_is_asked_to_reconnect()
  {
     let backends = Arc::new(Backends::default());

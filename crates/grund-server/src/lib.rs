@@ -177,6 +177,7 @@ pub async fn serve(
         .add(health::Checks::new(&state))
         .add(projections::Projections::new(&state))
         .add(services::apps::AppReconciler::new(state.clone()))
+        .add(services::stacks::Worker::new(state.clone()))
         .add(services::backups::BackupScheduler::new(state.clone()))
         .add(services::agent_updates::AgentUpdateMonitor::new(
             state.clone(),

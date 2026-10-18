@@ -49,7 +49,15 @@ props crate::web::apps::AppSettingsPage<'_> { app, items, edit, next, manages, o
 {let release_note = format!("Saving makes release v{}.", next.unwrap_or(0));}
 
 <Section id="settings" title="Settings" first={Some(true)}>
-  {if items.is_none() {
+  {if app.stack.is_some() {
+    {if let Some(items) = items {
+      <Panel id="configured" title="Configured"><Rows>{for item in &items.configured {
+        <Row name={item.title} sub={item.value.as_deref().unwrap_or("")} icon_name={item.icon} plain />
+      }}</Rows></Panel>
+    } else {
+      <EmptyState title="No release yet" text="This service is managed by its stack." />
+    }}
+  } else if items.is_none() {
     <EmptyState title="No release yet" text="Deploy one to set anything." />
   } else {
     {match edit {

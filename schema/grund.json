@@ -2,6 +2,70 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
   "definitions": {
+    "Definition": {
+      "additionalProperties": false,
+      "description": "The complete desired stack, before catalogue and image resolution.",
+      "properties": {
+        "machines": {
+          "description": "Candidate machine names; omitted means any eligible organisation machine.",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 50,
+          "type": "array"
+        },
+        "name": {
+          "description": "Organisation-scoped identity, starting with a lowercase letter, at most 32 characters.",
+          "maxLength": 32,
+          "minLength": 1,
+          "not": {
+            "const": "machines"
+          },
+          "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+          "type": "string"
+        },
+        "placement": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HardPlacement"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Only kind and labels are allowed: stacks always place together."
+        },
+        "public": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PublicTarget"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The single public HTTP or h2c endpoint; omitted means private."
+        },
+        "services": {
+          "additionalProperties": {
+            "$ref": "#/definitions/StackService"
+          },
+          "description": "Services in declaration order. Duplicate names are refused.",
+          "maxProperties": 10,
+          "minProperties": 1,
+          "propertyNames": {
+            "maxLength": 32,
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "name",
+        "services"
+      ],
+      "type": "object"
+    },
     "FileApp": {
       "additionalProperties": false,
       "description": "One app: what each copy runs, and how many copies run where.",
@@ -55,6 +119,7 @@
         },
         "image": {
           "description": "The container image, as `docker pull` takes it, for example\n`ghcr.io/acme/shop:2026-09-26.1` or `nginx:1.27`. grund resolves the\ntag to a digest once, at deploy, and every copy runs that digest.",
+          "minLength": 1,
           "type": "string"
         },
         "machines": {
@@ -490,9 +555,33 @@
           ]
         }
       },
-      "required": [
-        "path"
-      ],
+      "type": "object"
+    },
+    "HardPlacement": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/FileMachineKind"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "not": {
+            "const": "hosted"
+          }
+        },
+        "labels": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "maxProperties": 16,
+          "type": "object"
+        }
+      },
       "type": "object"
     },
     "Memory": {
@@ -507,17 +596,366 @@
           "type": "string"
         }
       ]
+    },
+    "PublicTarget": {
+      "additionalProperties": false,
+      "description": "One selected service port exposed at the stack address.",
+      "properties": {
+        "port": {
+          "type": "string"
+        },
+        "service": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "service",
+        "port"
+      ],
+      "type": "object"
+    },
+    "StackService": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "restart": {
+                "const": "exclusive"
+              }
+            },
+            "required": [
+              "restart"
+            ]
+          },
+          "then": {
+            "properties": {
+              "copies": {
+                "const": 1
+              },
+              "release": {
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "max_surge"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "max_unavailable"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "release": {
+              "properties": {
+                "max_surge": {
+                  "minimum": 1
+                }
+              }
+            }
+          }
+        }
+      ],
+      "description": "One app: what each copy runs, and how many copies run where.",
+      "oneOf": [
+        {
+          "not": {
+            "required": [
+              "template"
+            ]
+          },
+          "properties": {
+            "volumes": {
+              "additionalProperties": {
+                "required": [
+                  "path"
+                ]
+              }
+            }
+          },
+          "required": [
+            "image"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "image"
+            ]
+          },
+          "properties": {
+            "check": false,
+            "command": false,
+            "copies": {
+              "const": 1
+            },
+            "env": false,
+            "ports": false,
+            "secrets": false,
+            "volumes": {
+              "additionalProperties": false,
+              "properties": {
+                "data": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "backup": {
+                      "enum": [
+                        "off",
+                        "daily"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "template"
+          ]
+        }
+      ],
+      "properties": {
+        "check": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/FileCheck"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The ready check a new copy must pass before it takes traffic and\nbefore an older copy leaves. Leave it out to count a running copy as\nready."
+        },
+        "command": {
+          "description": "Replaces the image's entrypoint and command, one argument per item.\nLeave it out to run what the image says.",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 64,
+          "type": "array"
+        },
+        "copies": {
+          "description": "How many copies run. Default 1, at most 20.",
+          "format": "uint32",
+          "maximum": 20,
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "depends_on": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 9,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "env": {
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          },
+          "description": "Environment variables, by name. A value is kept as written: `8080`,\n`1.50` and `true` are those strings. At most 128, 32 KiB in all.",
+          "type": "object"
+        },
+        "image": {
+          "description": "The container image, as `docker pull` takes it, for example\n`ghcr.io/acme/shop:2026-09-26.1` or `nginx:1.27`. grund resolves the\ntag to a digest once, at deploy, and every copy runs that digest.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "ports": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "port": {
+                "maximum": 65535,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "protocol": {
+                "enum": [
+                  "http",
+                  "h2c",
+                  "tcp"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "port"
+            ],
+            "type": "object"
+          },
+          "maxItems": 8,
+          "type": "array"
+        },
+        "release": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/FileRelease"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How a new release replaces the copies of the one before."
+        },
+        "resources": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/FileResources"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What each copy reserves on its machine. Default 512 MiB and 1 CPU."
+        },
+        "restart": {
+          "enum": [
+            "rolling",
+            "exclusive"
+          ],
+          "type": "string"
+        },
+        "secrets": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Environment variables taken from the organisation's secrets: the\nvariable's name, then the secret's. The value never appears in the\nfile. At most 50.",
+          "type": "object"
+        },
+        "stop": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/FileStop"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How a copy is stopped."
+        },
+        "template": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "volumes": {
+          "additionalProperties": {
+            "additionalProperties": false,
+            "description": "One volume mounted by this app. An omitted source uses an own-machine\nmanaged directory unless size_gib requests hosted block storage.",
+            "properties": {
+              "backup": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/FileBackup"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "`daily` opts into daily backups (requires a configured destination).\nOmitted or `off` means no scheduled backups."
+              },
+              "path": {
+                "description": "Absolute directory path in the container; paths must not overlap.",
+                "maxLength": 4096,
+                "minLength": 2,
+                "pattern": "^/(?!\\.\\.?(/|$))[^/\\u0000-\\u001f]+(?:/(?!\\.\\.?(/|$))[^/\\u0000-\\u001f]+)*$",
+                "type": "string"
+              },
+              "size_gib": {
+                "description": "Hosted block volume capacity in GiB (1 to 4096). Leave out for an\nown-machine directory with no promised quota.",
+                "format": "uint64",
+                "maximum": 4096,
+                "minimum": 1,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "source": {
+                "description": "Existing absolute host directory on an own machine, allowed by its\nlocal policy. Leave out for a managed or hosted volume.",
+                "maxLength": 4096,
+                "pattern": "^/(?!\\.\\.?(/|$))[^/\\u0000-\\u001f]+(?:/(?!\\.\\.?(/|$))[^/\\u0000-\\u001f]+)*$",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "propertyNames": {
+            "maxLength": 32,
+            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
     }
   },
-  "description": "A grund.yaml: the apps one repository declares. Each deploy names one of\nthem; the others are left for their own deploys.",
+  "description": "A grund.yaml declares either independently deployed apps or one stack.",
+  "oneOf": [
+    {
+      "not": {
+        "required": [
+          "stack"
+        ]
+      },
+      "required": [
+        "apps"
+      ]
+    },
+    {
+      "not": {
+        "required": [
+          "apps"
+        ]
+      },
+      "required": [
+        "stack"
+      ]
+    }
+  ],
   "properties": {
     "apps": {
       "additionalProperties": {
         "$ref": "#/definitions/FileApp"
       },
-      "default": {},
       "description": "The apps, by name: lowercase letters, digits and dashes, at most 32\ncharacters, starting with a letter.",
       "type": "object"
+    },
+    "stack": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Definition"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "A coordinated deployment; cannot be combined with `apps`."
     }
   },
   "title": "grund.yaml",

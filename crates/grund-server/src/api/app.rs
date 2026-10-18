@@ -92,6 +92,7 @@ fn failed(error: AppsError) -> ConnectError {
         | AppsError::UpdateRequestConflict
         | AppsError::DomainConfiguration(_) => ConnectError::already_exists(message),
         AppsError::NameTaken
+        | AppsError::StackOwned { .. }
         | AppsError::NameReserved { .. }
         | AppsError::AppLimit
         | AppsError::DomainRequired
@@ -1300,6 +1301,35 @@ impl AppService for AppApi {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stack_ownership_refusals_expose_identity_without_changing_the_error_contract() {
+        let stack_id = uuid::Uuid::from_u128(42);
+        for cause in [
+            AppsError::StackOwned { stack_id },
+            AppsError::Volume(crate::services::volumes::VolumesError::StackOwned { stack_id }),
+        ] {
+            let error = failed(cause);
+            assert_eq!(error.code, connectrpc::ErrorCode::FailedPrecondition);
+            assert!(
+                error
+                    .message
+                    .as_deref()
+                    .unwrap()
+                    .contains(&stack_id.to_string())
+            );
+            let expected = ErrorDetail::from_message(
+                "grund.app.v1.ErrorReason",
+                &ErrorReason {
+                    reason: "stack_owned".into(),
+                    ..Default::default()
+                },
+            );
+            assert_eq!(error.details.len(), 1);
+            assert_eq!(error.details[0].type_url, expected.type_url);
+            assert_eq!(error.details[0].value, expected.value);
+        }
+    }
 
     #[test]
     fn a_spec_survives_the_wire_both_ways() {

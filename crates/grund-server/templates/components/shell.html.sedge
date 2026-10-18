@@ -54,6 +54,7 @@ component Sidebar(viewer: &TypedViewer, section: &str, csrf: &str, footer: Optio
     <ul class="nav">
       <OrgNavItem slug={org.slug.as_str()} icon_name="home" label="Overview" active={*section == "overview"} />
       <OrgNavItem slug={org.slug.as_str()} suffix="/apps" icon_name="grid" label="Apps" active={*section == "apps" || *section == "deploy"} />
+      <OrgNavItem slug={org.slug.as_str()} suffix="/stacks" icon_name="layers" label="Stacks" active={*section == "stacks" || *section == "stack-deploy"} />
       <OrgNavItem slug={org.slug.as_str()} suffix="/machines" icon_name="server" label="Machines" active={*section == "machines" || *section == "machine-add"} />
       <OrgNavItem slug={org.slug.as_str()} suffix="/domains" icon_name="globe" label="Domains" active={*section == "domains"} />
       <OrgNavItem slug={org.slug.as_str()} suffix="/templates" icon_name="template" label="Templates" active={*section == "templates"} />
@@ -91,8 +92,8 @@ component Sidebar(viewer: &TypedViewer, section: &str, csrf: &str, footer: Optio
 </nav>
 }
 component TopbarAction(org: &TypedOrg, section: &str, state: &str) {
-{if org.manages && *section != "deploy" && *section != "machine-add" && *section != "pool" && *section != "admin" && *section != "billing" && *section != "notifications" && *section != "org-settings" && *section != "members" {
-  <span class="topbar-end"><a class="btn btn-primary{if !state.is_empty() { " is-" } else { "" }}{state}" href="/{org.slug}{if *section == "machines" { "/machines/add" } else { "/deploy" }}"><Icon name="plus" class="icon-sm" /><span class="btn-label">{if *section == "machines" { Add machine } else { Deploy app }}</span></a></span>
+{if org.manages && *section != "deploy" && *section != "stack-deploy" && *section != "machine-add" && *section != "pool" && *section != "admin" && *section != "billing" && *section != "notifications" && *section != "org-settings" && *section != "members" {
+  <span class="topbar-end"><a class="btn btn-primary{if !state.is_empty() { " is-" } else { "" }}{state}" href="/{org.slug}{if *section == "machines" { "/machines/add" } else if *section == "stacks" { "/stacks/deploy" } else { "/deploy" }}"><Icon name="plus" class="icon-sm" /><span class="btn-label">{if *section == "machines" { Add machine } else if *section == "stacks" { Deploy stack } else { Deploy app }}</span></a></span>
 }}
 }
 component NotificationBell(count: i64, active: bool, state: &str) {

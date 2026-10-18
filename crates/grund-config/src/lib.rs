@@ -4,4 +4,5 @@
 pub mod app;
 pub mod labels;
 pub mod names;
+pub mod stack;
 pub mod yaml;

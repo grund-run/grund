@@ -134,13 +134,9 @@ pub fn answer(query: &[u8], list: Option<&MembershipList>) -> Outcome {
     }
     if let Some(app) = name
         .strip_suffix(&format!(".{ZONE}"))
-        .filter(|label| !label.contains('.'))
+        .filter(|relative| !relative.ends_with(".machines"))
     {
-        let known = list
-            .members
-            .iter()
-            .flat_map(|m| m.apps.iter())
-            .any(|r| r.app.eq_ignore_ascii_case(app));
+        let known = list.knows_app_name(app);
         if !known {
             return Outcome::Reply(reply(query, Some(&question), Rcode::NxDomain, &[]));
         }
@@ -433,6 +429,7 @@ mod tests {
             address: replica_address(prefix, slot, id),
             ports: vec![],
             ready,
+            aliases: vec!["web.store".into()],
         };
         l.members[0].apps = vec![replica(1, "r-1", true), replica(1, "r-2", false)];
         l.members[1].apps = vec![replica(2, "r-3", true)];
@@ -460,6 +457,38 @@ mod tests {
         assert_eq!(rcode(&unknown), 3);
         let a = reply_to("shop.grund.internal", TYPE_A, Some(&l));
         assert_eq!((rcode(&a), aaaa(&a)), (0, vec![]));
+    }
+
+    #[test]
+    fn stack_aliases_resolve_only_ready_replicas_in_the_current_organisations_membership() {
+        let own = with_apps();
+        let response = reply_to("WEB.Store.grund.internal", TYPE_AAAA, Some(&own));
+        assert_eq!(rcode(&response), Rcode::NoError as u8);
+        assert_eq!(aaaa(&response), own.ready_addresses("shop"));
+        let question_end = Question::parse(&response).unwrap().end;
+        assert_eq!(
+            u32::from_be_bytes(
+                response[question_end + 6..question_end + 10]
+                    .try_into()
+                    .unwrap()
+            ),
+            5,
+        );
+        let mut foreign = with_apps();
+        foreign.network_id = "another-organisation".into();
+        for replica in foreign
+            .members
+            .iter_mut()
+            .flat_map(|member| &mut member.apps)
+        {
+            replica.aliases.clear();
+        }
+        let denied = reply_to("web.store.grund.internal", TYPE_AAAA, Some(&foreign));
+        assert_eq!(rcode(&denied), Rcode::NxDomain as u8);
+        assert!(aaaa(&denied).is_empty());
+        let ipv4 = reply_to("web.store.grund.internal", TYPE_A, Some(&own));
+        assert_eq!(rcode(&ipv4), Rcode::NoError as u8);
+        assert!(aaaa(&ipv4).is_empty());
     }
 
     #[test]

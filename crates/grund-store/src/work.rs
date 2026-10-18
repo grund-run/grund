@@ -19,6 +19,7 @@ use grund_domain::{
     custom_domain::{Domain, DomainCommand, DomainError, DomainEvent},
     machine::{Machine, MachineCommand, MachineError, MachineEvent},
     organisation::{Organisation, OrganisationCommand, OrganisationError, OrganisationEvent},
+    stack::{Command as StackCommand, Error as StackError, Event as StackEvent, Stack},
     volume::{Volume, VolumeCommand, VolumeError, VolumeEvent},
 };
 use mire::{AggregateRoot, EventMetadata, EventStore, EventStoreError, Snapshot, TransactionScope};
@@ -44,6 +45,8 @@ pub enum WorkError {
     Domain(#[from] DomainError),
     #[error(transparent)]
     Volume(#[from] VolumeError),
+    #[error(transparent)]
+    Stack(#[from] StackError),
     #[error("event store: {0}")]
     Events(#[from] EventStoreError),
     #[error("database: {0}")]
@@ -71,6 +74,7 @@ enum Touched {
     App(Uuid, App, i64, i64),
     Domain(Uuid, Domain, i64, i64),
     Volume(Uuid, Volume, i64, i64),
+    Stack(Uuid, Stack, i64, i64),
 }
 
 /// A transaction spanning the event log, the read models and plain tables.
@@ -79,6 +83,7 @@ pub struct Work<'a> {
     scope: TransactionScope<'a>,
     metadata: EventMetadata,
     touched: Vec<Touched>,
+    stack_owner: Option<Uuid>,
 }
 
 impl<'a> Work<'a> {
@@ -98,6 +103,7 @@ impl<'a> Work<'a> {
                 actor: Some(actor.to_string()),
             },
             touched: Vec::new(),
+            stack_owner: None,
         })
     }
 
@@ -232,6 +238,11 @@ impl<'a> Work<'a> {
         decide: impl FnOnce(&App) -> Result<(Vec<AppEvent>, T), AppError>,
     ) -> Result<(Vec<AppEvent>, T), WorkError> {
         let mut root = self.load::<App>(app_id).await?;
+        if let Some(stack_id) = root.state.stack_owner
+            && Some(stack_id) != self.stack_owner
+        {
+            return Err(AppError::StackOwned { stack_id }.into());
+        }
         let base = root.version;
         let (events, found) = decide(&root.state)?;
         if events.is_empty() {
@@ -247,6 +258,39 @@ impl<'a> Work<'a> {
         self.touched
             .push(Touched::App(app_id, root.state, base, root.version));
         Ok((events, found))
+    }
+
+    /// Authorizes child decisions only for this explicitly selected owning stack.
+    pub fn allow_stack(&mut self, stack_id: Uuid) {
+        self.stack_owner = Some(stack_id);
+    }
+
+    /// Loads the owning stack under its stream lock.
+    pub async fn load_stack(&mut self, id: Uuid) -> Result<Stack, WorkError> {
+        Ok(self.load::<Stack>(id).await?.state)
+    }
+
+    /// Records and projects a stack decision in the same transaction as its apps.
+    pub async fn stack(
+        &mut self,
+        id: Uuid,
+        command: StackCommand,
+    ) -> Result<Vec<StackEvent>, WorkError> {
+        let mut root = self.load::<Stack>(id).await?;
+        let base = root.version;
+        let events = mire::Command::handle(command, &root.state)?;
+        if events.is_empty() {
+            return Ok(events);
+        }
+        root.set_metadata(self.metadata.clone());
+        root.record_many(events.clone());
+        self.scope.save(&mut root).await?;
+        for (offset, event) in events.iter().enumerate() {
+            crate::stacks::apply(id, base + 1 + offset as i64, event, self.scope.tx()).await?;
+        }
+        self.touched
+            .push(Touched::Stack(id, root.state, base, root.version));
+        Ok(events)
     }
 
     /// Records and projects a volume decision in this app's transaction.
@@ -462,6 +506,11 @@ impl<'a> Work<'a> {
         &mut self.scope
     }
 
+    /// Whether this transaction recorded changes through its core aggregate methods.
+    pub fn has_changes(&self) -> bool {
+        !self.touched.is_empty()
+    }
+
     /// Commits, then snapshots every aggregate whose version crossed a
     /// snapshot boundary, in the background.
     pub async fn commit(self) -> Result<(), WorkError> {
@@ -494,6 +543,9 @@ impl<'a> Work<'a> {
                 }
                 Touched::Volume(id, state, before, after) => {
                     snapshot::<Volume>(store, id, state, before, after)
+                }
+                Touched::Stack(id, state, before, after) => {
+                    snapshot::<Stack>(store, id, state, before, after)
                 }
             }
         }

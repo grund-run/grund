@@ -174,6 +174,13 @@ pub enum DomainEvent {
         generated_by: Uuid,
         generated_at: DateTime<Utc>,
     },
+    /// The owning stack selected another child without releasing its hostname.
+    GeneratedReassigned {
+        previous_app_id: Uuid,
+        app_id: Uuid,
+        reassigned_by: Uuid,
+        reassigned_at: DateTime<Utc>,
+    },
     /// Whether automatic allocation may restore this app's assignment.
     AppDomainAllocationSet {
         enabled: bool,
@@ -285,6 +292,12 @@ impl mire::Aggregate for Domain {
                 self.parent_domain = Some(parent_domain.clone());
                 self.managed_app_id = Some(*managed_app_id);
             }
+            DomainEvent::GeneratedReassigned { app_id, .. } => {
+                self.managed_app_id = Some(*app_id);
+                if self.app_id.is_some() {
+                    self.app_id = Some(*app_id);
+                }
+            }
             DomainEvent::AppDomainAllocationSet { enabled, .. } => {
                 self.assignment_disabled = !enabled;
             }
@@ -333,6 +346,14 @@ pub enum DomainCommand {
     /// generated names remain owned by their managed app.
     Bind {
         actor: Uuid,
+        app_id: Uuid,
+        at: DateTime<Utc>,
+    },
+    /// Transfers only an expected generated assignment. The service must prove
+    /// both apps belong to the same locked stack before issuing this command.
+    ReassignGenerated {
+        actor: Uuid,
+        expected_app_id: Uuid,
         app_id: Uuid,
         at: DateTime<Utc>,
     },
@@ -470,6 +491,29 @@ impl mire::Command for DomainCommand {
                     verified_at: at,
                 }],
             },
+            DomainCommand::ReassignGenerated {
+                actor,
+                expected_app_id,
+                app_id,
+                at,
+            } => {
+                if domain.parent_domain_id.is_none()
+                    || domain.managed_app_id != Some(expected_app_id)
+                    || domain.app_id.is_some_and(|bound| bound != expected_app_id)
+                {
+                    return Err(DomainError::ManagedAppMismatch);
+                }
+                if expected_app_id == app_id {
+                    Vec::new()
+                } else {
+                    vec![DomainEvent::GeneratedReassigned {
+                        previous_app_id: expected_app_id,
+                        app_id,
+                        reassigned_by: actor,
+                        reassigned_at: at,
+                    }]
+                }
+            }
             DomainCommand::Bind { actor, app_id, at } => {
                 if domain.verified_at.is_none() {
                     return Err(DomainError::NotVerified);
@@ -835,6 +879,67 @@ mod tests {
                     .is_ok()
             );
         }
+    }
+
+    #[test]
+    fn generated_reassignment_preserves_authority_hostname_and_allocation_preferences() {
+        for disabled in [false, true] {
+            let mut domain = generated().state;
+            domain.assignment_disabled = disabled;
+            if disabled {
+                domain.app_id = None;
+            }
+            let before = domain.clone();
+            let replacement = Uuid::from_u128(2);
+            let events = DomainCommand::ReassignGenerated {
+                actor: Uuid::nil(),
+                expected_app_id: Uuid::from_u128(1),
+                app_id: replacement,
+                at: at(),
+            }
+            .handle(&domain)
+            .unwrap();
+            for event in events {
+                domain.apply(&event);
+                assert!(domain.app_id.is_none() || domain.app_id == domain.managed_app_id);
+            }
+            assert_eq!(domain.managed_app_id, Some(replacement));
+            assert_eq!(
+                domain.app_id,
+                if disabled { None } else { Some(replacement) }
+            );
+            domain.managed_app_id = before.managed_app_id;
+            domain.app_id = before.app_id;
+            assert_eq!(domain, before);
+        }
+    }
+
+    #[test]
+    fn a_stale_generated_owner_or_binding_cannot_be_reassigned() {
+        let original = generated().state;
+        let command = || DomainCommand::ReassignGenerated {
+            actor: Uuid::nil(),
+            expected_app_id: Uuid::from_u128(9),
+            app_id: Uuid::from_u128(2),
+            at: at(),
+        };
+        assert_eq!(
+            command().handle(&original),
+            Err(DomainError::ManagedAppMismatch)
+        );
+        let mut stale_binding = original.clone();
+        stale_binding.app_id = Some(Uuid::from_u128(9));
+        assert_eq!(
+            DomainCommand::ReassignGenerated {
+                actor: Uuid::nil(),
+                expected_app_id: Uuid::from_u128(1),
+                app_id: Uuid::from_u128(2),
+                at: at(),
+            }
+            .handle(&stale_binding),
+            Err(DomainError::ManagedAppMismatch)
+        );
+        assert_eq!(original.managed_app_id, Some(Uuid::from_u128(1)));
     }
 
     #[test]

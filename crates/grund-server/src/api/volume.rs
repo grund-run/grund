@@ -130,6 +130,15 @@ fn failed(error: VolumesError) -> ConnectError {
     let message = error.to_string();
     match error {
         VolumesError::NotFound => ConnectError::not_found(message),
+        VolumesError::StackOwned { .. } => ConnectError::failed_precondition(message).with_detail(
+            connectrpc::ErrorDetail::from_message(
+                "grund.app.v1.ErrorReason",
+                &grund_proto::grund::app::v1::ErrorReason {
+                    reason: "stack_owned".into(),
+                    ..Default::default()
+                },
+            ),
+        ),
         VolumesError::Conflict => ConnectError::aborted(message),
         VolumesError::NotPendingDeletion => ConnectError::failed_precondition(message),
         VolumesError::Invalid(_) | VolumesError::SourceChanged(_) => {
@@ -695,5 +704,34 @@ impl VolumeService for VolumeApi {
             repository_password,
             ..Default::default()
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stack_ownership_refusals_are_typed_preconditions_with_the_owning_identity() {
+        let stack_id = Uuid::from_u128(42);
+        let error = failed(VolumesError::StackOwned { stack_id });
+        assert_eq!(error.code, connectrpc::ErrorCode::FailedPrecondition);
+        assert!(
+            error
+                .message
+                .as_deref()
+                .unwrap()
+                .contains(&stack_id.to_string())
+        );
+        let expected = connectrpc::ErrorDetail::from_message(
+            "grund.app.v1.ErrorReason",
+            &grund_proto::grund::app::v1::ErrorReason {
+                reason: "stack_owned".into(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(error.details.len(), 1);
+        assert_eq!(error.details[0].type_url, expected.type_url);
+        assert_eq!(error.details[0].value, expected.value);
     }
 }

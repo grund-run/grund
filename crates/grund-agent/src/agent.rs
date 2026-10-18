@@ -48,7 +48,13 @@ use crate::{
 };
 
 /// Features this agent knows how to apply.
-pub const KNOWN_FEATURES: &[&str] = &["machines", "replicas", "volumes", "block-volumes"];
+pub const KNOWN_FEATURES: &[&str] = &[
+    "machines",
+    "replicas",
+    "volumes",
+    "block-volumes",
+    "stack-services",
+];
 
 /// The largest document the agent decodes (apps.md §15).
 pub const MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
@@ -148,6 +154,7 @@ pub enum Refusal {
     Older,
     UnknownFeature(String),
     MissingBlockFeature,
+    MissingStackFeature,
     NoTrustKey,
     /// Signed by a key other than the one pinned.
     UnknownKey,
@@ -170,6 +177,7 @@ impl std::fmt::Display for Refusal {
             Refusal::Older => f.write_str("document is not newer than the one applied"),
             Refusal::UnknownFeature(name) => write!(f, "document requires unknown feature {name}"),
             Refusal::MissingBlockFeature => f.write_str("document mounts a block volume without requiring block-volumes"),
+            Refusal::MissingStackFeature => f.write_str("document coordinates stack services without requiring stack-services"),
             Refusal::NoTrustKey => f.write_str("this machine pinned no organisation key"),
             Refusal::UnknownKey => f.write_str("document is signed by a key this machine did not pin"),
             Refusal::Same => f.write_str("document is the one applied"),
@@ -235,6 +243,19 @@ pub fn verify(
         && !state.required_features.iter().any(|f| f == "block-volumes")
     {
         return Err(Refusal::MissingBlockFeature);
+    }
+    if state.replicas.iter().any(|replica| {
+        replica.exclusive
+            || replica.stopping
+            || replica.drain_seconds.is_some()
+            || !replica.operation_id.is_empty()
+            || !replica.stack_search.is_empty()
+    }) && !state
+        .required_features
+        .iter()
+        .any(|feature| feature == "stack-services")
+    {
+        return Err(Refusal::MissingStackFeature);
     }
     Ok(state)
 }
@@ -1058,6 +1079,7 @@ async fn round<R: VmRuntime, C: ContainerRuntime>(
                     free_memory_mib: capabilities.free_memory_mib,
                     apps: apps.apps && policy.apps,
                     volumes: apps.apps && policy.apps,
+                    stack_services: apps.apps && policy.apps,
                     arch: apps.arch.clone(),
                     memory_mib: apps.memory_mib,
                     cpu_millis: apps.cpu_millis,
@@ -1609,6 +1631,46 @@ mod tests {
             Err(Refusal::MissingBlockFeature)
         );
         document.required_features.push("block-volumes".into());
+        let (payload, signature) = signed(&key, &document);
+        assert_eq!(
+            verify(
+                &record,
+                &trust,
+                "k",
+                &payload,
+                &signature,
+                &Applied::default()
+            ),
+            Ok(document)
+        );
+    }
+
+    #[test]
+    fn a_signed_exclusive_restart_requires_stack_feature_negotiation() {
+        let key = SigningKey::from_bytes(&[6; 32]);
+        let record = record(&key);
+        let trust = key.verifying_key();
+        let mut document = state(4);
+        document
+            .replicas
+            .push(grund_proto::grund::agent::v1::Replica {
+                exclusive: true,
+                operation_id: "operation".into(),
+                ..Default::default()
+            });
+        let (payload, signature) = signed(&key, &document);
+        assert_eq!(
+            verify(
+                &record,
+                &trust,
+                "k",
+                &payload,
+                &signature,
+                &Applied::default()
+            ),
+            Err(Refusal::MissingStackFeature)
+        );
+        document.required_features.push("stack-services".into());
         let (payload, signature) = signed(&key, &document);
         assert_eq!(
             verify(

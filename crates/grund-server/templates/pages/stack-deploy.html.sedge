@@ -1,0 +1,63 @@
+use crate::templates::FormState;
+use crate::templates::compiled::components::{PageHead, Panel, Form, HiddenField, CodeField, Field, PairsField, Actions, Button, Para, Facts, Fact, Rows, Row, EmptyState, FieldError};
+props crate::web::stacks::DeployPage<'_> { slug, manages, csrf, form, preview, errors, secret_names };
+{let state = FormState { csrf, errors, banners: &std::collections::BTreeMap::new() };}
+
+<PageHead title="Deploy stack" />
+{if *manages {
+  {if let Some(plan) = preview {
+    <Panel id="stack-preview" title="Preview">
+      <Facts>
+        <Fact label="Name" value={&plan.name} />
+        <Fact label="Memory" value={&format!("{} MiB", plan.memory_mib)} />
+        <Fact label="CPU" value={&format!("{}m", plan.cpu_millis)} />
+        <Fact label="Peak memory during update" value={&format!("{} MiB", plan.peak_memory_mib)} />
+        <Fact label="Peak CPU during update" value={&format!("{}m", plan.peak_cpu_millis)} />
+        <Fact label="Selected machine" value={&plan.selected_machine.map(|id| id.to_string()).unwrap_or_else(|| "Not selected".into())} />
+      </Facts>
+      {if let Some(waiting) = &plan.waiting { <Para>{waiting}</Para> }}
+      <Rows>{for service in &plan.services {
+        <Row name={&service.name} sub={&crate::web::stacks::service_source(service)} icon_name="box" status_text={Some(&service.status)} detail={&format!("{} copies", service.copies)} />
+      }}</Rows>
+      {for service in plan.services.iter().filter(|service| service.exclusive && (form.service.is_empty() || form.service == service.name)) {
+        <Para>{service.name}: restarting briefly interrupts this service.</Para>
+      }}
+      {if !plan.removed_services.is_empty() {
+        <Para>Services to remove: {plan.removed_services.join(", ")}. Their retained data remains recoverable until retention expires.</Para>
+      }}
+    </Panel>
+    {if plan.services.iter().any(|service| !service.volume_intents.is_empty()) {
+      <Panel id="stack-preview-storage" title="Requested storage">
+        <Rows>{for service in &plan.services {
+          {for volume in &service.volume_intents {
+            <Row name={&format!("{}/{}", service.name, volume.name)} sub={&volume.path} detail={&crate::web::stacks::storage_policy(volume)} icon_name="disk" />
+          }}
+        }}</Rows>
+      </Panel>
+    }}
+  }}
+  <Panel>
+    <Form action={if preview.is_some() { format!("/{slug}/stacks/deploy") } else { format!("/{slug}/stacks/deploy/preview") }} form={Some(&state)} autocomplete={Some("off")} refused={!errors.is_empty()}>
+      <HiddenField name="expected_version" value={&form.expected_version} />
+      <HiddenField name="key" value={&form.key} />
+      {for field in ["expected_version", "key", "operation"] { {if let Some(message) = errors.get(field) { <FieldError text={message} /> }} }}
+      <CodeField name="file" label="Stack file" filename="grund.yaml" value={&form.file} rows={18} required error={state.error("file").unwrap_or("")} hint="Maximum 1 MiB. Secret values belong in Launch secrets, not in this file." />
+      {if form.service.is_empty() {
+        <HiddenField name="service" value="" />
+      } else {
+        <HiddenField name="service" value={&form.service} />
+        <Para>Only {form.service} is updated. Keep every other service unchanged in the complete file.</Para>
+      }}
+      <Field name="refresh_template" label="Update template" value={&form.refresh_template} hint="Optional service name. Refreshes its pinned template definition." form={Some(&state)} />
+      <Field name="confirmed_removals" label="Confirm service removals" value={&form.confirmed_removals} required={preview.is_some_and(|plan| !plan.removed_services.is_empty())} hint="To remove services, type every listed service name separated by commas. Leave empty when no services are removed. Retained data is not purged." form={Some(&state)} />
+      <PairsField name="secrets" label="Launch secrets" secret pairs_owned={secret_names} blank={1} key_label="service.NAME" value_label="Secret value" error={state.error("secrets").unwrap_or("")} hint={if errors.is_empty() { "Use service.NAME for each binding. Values are stored separately from the file and never shown again." } else { "Enter secret values again. A refused form never shows them." }} />
+      {if preview.is_none() && !secret_names.is_empty() { <Para>Enter secret values after previewing the file.</Para> }}
+      <Actions>
+        <Button label="Cancel" href="/{slug}/stacks" kind="secondary" />
+        <Button label={if preview.is_some() { "Deploy stack" } else { "Preview" }} />
+      </Actions>
+    </Form>
+  </Panel>
+} else {
+  <EmptyState title="Your role does not deploy stacks" text="Owners and admins deploy them." />
+}}

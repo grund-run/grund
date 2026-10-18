@@ -468,7 +468,7 @@ server without that service reports that hosted machines are only available
 on grund's hosted service, rather than a raw RPC error. Ordinary `machines
 add` still enrolls your own machine and never rents one.
 
-- Nouns: `login`, `logout`, `whoami`, `orgs`, `apps`, `volumes`,
+- Nouns: `login`, `logout`, `whoami`, `orgs`, `apps`, `stacks`, `volumes`,
   `machines`, `domains`, `members`, `invitations`, `tokens`, `registries`.
 - `--json` (or `-o json`, or `GRUND_OUTPUT=json`) on every command prints one
   JSON document: the protobuf JSON of the API's answer, or of a
@@ -613,6 +613,41 @@ editors using yaml-language-server) complete and check the file. In the
 dashboard, an app's Settings has its newest release as this file, to copy,
 download, or edit and apply. An unknown key is refused with its line,
 column and path.
+
+### Stacks
+
+A stack owns several services on one existing capable machine or VM; it
+creates neither a VM nor a shared localhost namespace. Private services remain
+organisation-private, not isolated from other stacks. Agents must support stacks.
+`placement.kind: hosted` is refused; stacks cannot request hosted machine rental.
+Use top-level `stack` with `name` and `services` instead of `apps`: at most ten
+services and 1 MiB of raw YAML per file. The same [file schema](schema/grund.json) describes both.
+Services use app fields or a catalogue `template`. A whole env value such as
+`${{ database.url }}`, with `depends_on: [database]`, delivers an encrypted
+connection binding without copying credentials into the file.
+Prefix a whole expression with an extra `$` (`$${{ database.url }}`) to deliver it literally.
+
+```sh
+grund stacks deploy -f grund.yaml --dry-run
+grund stacks deploy -f grund.yaml --wait
+grund stacks restart shop --wait
+grund stacks logs shop --service web --follow
+grund stacks metrics shop --service database --range hour
+```
+
+`--service web` updates only that service and refuses hidden sibling changes.
+Removing a service also needs its explicit `--confirm-remove NAME`; omission
+never purges data. Stack deletion drains and fences writers before the existing
+[data-recovery window](#app-volumes-on-your-own-machines) begins. **A singleton
+stateful restart briefly interrupts that service.** Rollback pins images and
+secret versions, not database contents. Change backing apps through their stack;
+`grund stacks --help` lists lifecycle commands and protected secret input.
+
+Strict rolling services require positive `release.max_surge`; there is no stop-first fallback.
+A failed first deployment retains its owned data without starting a deletion deadline.
+Accepting Restore cancels child and volume deletion deadlines before waiting for capacity.
+For explicit retries, reuse both `--idempotency-key` and the original `--expected-version`.
+
 
 ### Database templates
 
@@ -786,10 +821,13 @@ What a token can do:
 - Its scope is chosen when it is made. `deploy` (the default) may call
   `CreateApp`, `GetApp`, `ListApps`, `Deploy`, `ListReleases`, `Rollback`,
   `Scale`, `ConfigureApp`, `SetSecret` and explicit app-image checks/updates.
-  `full` may also delete apps and
-  manage machines, custom domains, members, invitations and registry
-  logins. Neither reaches the account, sessions, tokens, or creating,
-  renaming and deleting organisations: those get `permission_denied`.
+  `full` may also change stacks, delete apps and manage machines, custom domains,
+  members, invitations and registry logins. Stack changes need a full organisation
+  token; otherwise the CLI says `stack changes need a full token`. Deploy tokens
+  have read-only stack access. App-limited tokens can read a stack only when their
+  allowlist covers its current and retained backing apps. A narrower stack-deploy
+  grant is not available. Neither scope reaches the account, sessions, tokens, or
+  creating, renaming and deleting organisations: those get `permission_denied`.
 - It expires after 7, 30, 90 or 365 days, chosen when it is made. Owners and
   admins see and revoke every token of the organisation, members their own.
   A revoked or expired token is `unauthenticated` from the next call.

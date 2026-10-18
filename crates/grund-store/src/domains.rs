@@ -121,6 +121,24 @@ pub async fn apply_domain(
             .execute(&mut *connection)
             .await?;
         }
+        DomainEvent::GeneratedReassigned {
+            app_id,
+            reassigned_at,
+            ..
+        } => {
+            sqlx::query(
+                "UPDATE grund_domains SET managed_app_id=$2, \
+                 app_id=CASE WHEN state='bound' THEN $2 ELSE app_id END, \
+                 bound_at=CASE WHEN state='bound' THEN $3 ELSE bound_at END,stream_version=$4 \
+                 WHERE domain_id=$1 AND stream_version<$4",
+            )
+            .bind(domain_id)
+            .bind(app_id)
+            .bind(reassigned_at)
+            .bind(version)
+            .execute(&mut *connection)
+            .await?;
+        }
         DomainEvent::AppDomainAllocationSet { enabled, .. } => {
             sqlx::query(
                 "UPDATE grund_domains SET assignment_disabled = $2, stream_version = $3 \
@@ -656,6 +674,60 @@ mod tests {
         work.domain(domain_id, command).await.unwrap();
         work.commit().await.unwrap();
         domain_id
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn public_child_reassignment_keeps_the_real_hostname_authority_and_certificate(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
+        let events = event_store(&pool).await;
+        let (org, old_app, new_app) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+        let parent = parent(&events, org, "apps.example.com").await;
+        let child = generated(&events, org, parent, old_app, "shop.apps.example.com").await;
+        want_certificate(
+            &pool,
+            child,
+            org,
+            "shop.apps.example.com",
+            "https://ca.invalid/directory",
+            "test-profile",
+        )
+        .await?;
+        let before = by_name(&pool, org, "shop.apps.example.com").await?.unwrap();
+        let certificate: serde_json::Value =
+            sqlx::query_scalar("SELECT to_jsonb(c) FROM grund_certificates c WHERE subject=$1")
+                .bind(certificate_subject(child))
+                .fetch_one(&pool)
+                .await?;
+        let mut work = Work::begin(&events, Uuid::now_v7(), "test").await?;
+        work.domain(
+            child,
+            DomainCommand::ReassignGenerated {
+                actor: Uuid::nil(),
+                expected_app_id: old_app,
+                app_id: new_app,
+                at: Utc::now(),
+            },
+        )
+        .await?;
+        work.commit().await?;
+        let after = by_name(&pool, org, "shop.apps.example.com").await?.unwrap();
+        assert_eq!(after.domain_id, child);
+        assert_eq!(after.managed_app_id, Some(new_app));
+        assert_eq!(after.app_id, Some(new_app));
+        assert_eq!(after.name, before.name);
+        assert_eq!(after.token, before.token);
+        assert_eq!(after.parent_domain_id, before.parent_domain_id);
+        assert_eq!(after.parent_domain, before.parent_domain);
+        assert_eq!(after.verified_at, before.verified_at);
+        assert_eq!(after.assignment_disabled, before.assignment_disabled);
+        let retained: serde_json::Value =
+            sqlx::query_scalar("SELECT to_jsonb(c) FROM grund_certificates c WHERE subject=$1")
+                .bind(certificate_subject(child))
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(retained, certificate);
+        Ok(())
     }
 
     #[sqlx::test(migrations = false)]

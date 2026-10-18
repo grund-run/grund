@@ -17,6 +17,8 @@ use uuid::Uuid;
 pub enum VolumesError {
     #[error("no such volume of this app")]
     NotFound,
+    #[error("this volume is owned by stack {stack_id}; change it through the stack")]
+    StackOwned { stack_id: Uuid },
     #[error("a volume named {0} already exists with another source")]
     SourceChanged(String),
     #[error("the volume changed; read it again before changing it")]
@@ -671,6 +673,9 @@ impl Volumes {
         if !owner.exists || owner.deleted || owner.organisation_id != org {
             return Err(VolumesError::NotFound);
         }
+        if let Some(stack_id) = owner.stack_owner {
+            return Err(VolumesError::StackOwned { stack_id });
+        }
         let row = volumes::volume(&mut **work.sql(), org, app, volume_id)
             .await
             .map_err(anyhow::Error::from)?
@@ -790,6 +795,9 @@ impl Volumes {
         if !owner.exists || owner.deleted || owner.organisation_id != org {
             return Err(VolumesError::NotFound);
         }
+        if let Some(stack_id) = owner.stack_owner {
+            return Err(VolumesError::StackOwned { stack_id });
+        }
         match volumes::reserve_receipt(work.sql(), org, app, key, "create_volume", hash, id)
             .await
             .map_err(anyhow::Error::from)?
@@ -829,6 +837,9 @@ impl Volumes {
         let owner = work.load_app(app).await.map_err(volume_work)?;
         if !owner.exists || owner.deleted || owner.organisation_id != org {
             return Err(VolumesError::NotFound);
+        }
+        if let Some(stack_id) = owner.stack_owner {
+            return Err(VolumesError::StackOwned { stack_id });
         }
         let row = volumes::volume(&mut **work.sql(), org, app, id)
             .await
@@ -925,6 +936,9 @@ impl Volumes {
         if !owner.exists || owner.deleted || owner.organisation_id != org {
             return Err(VolumesError::NotFound);
         }
+        if let Some(stack_id) = owner.stack_owner {
+            return Err(VolumesError::StackOwned { stack_id });
+        }
         let row = volumes::volume(&mut **work.sql(), org, app, id)
             .await
             .map_err(anyhow::Error::from)?
@@ -978,6 +992,20 @@ impl Volumes {
         let owner = work.load_app(app).await.map_err(volume_work)?;
         if !owner.exists || owner.organisation_id != org {
             return Err(VolumesError::NotFound);
+        }
+        if let Some(stack_id) = owner.stack_owner {
+            let stack = grund_store::stacks::get(&mut **work.sql(), org, stack_id)
+                .await
+                .map_err(anyhow::Error::from)?
+                .ok_or(VolumesError::NotFound)?
+                .state
+                .0;
+            if !owner.deleted
+                || stack.operation.is_some()
+                || stack.status != grund_domain::stack::Status::Deleted
+            {
+                return Err(VolumesError::StackOwned { stack_id });
+            }
         }
         let row = volumes::volume(&mut **work.sql(), org, app, id)
             .await
@@ -1135,6 +1163,9 @@ pub enum Operation {
 
 fn volume_work(error: grund_store::work::WorkError) -> VolumesError {
     match error {
+        grund_store::work::WorkError::App(grund_domain::app::AppError::StackOwned { stack_id }) => {
+            VolumesError::StackOwned { stack_id }
+        }
         grund_store::work::WorkError::Volume(VolumeError::SourceChanged) => {
             VolumesError::SourceChanged("volume".into())
         }

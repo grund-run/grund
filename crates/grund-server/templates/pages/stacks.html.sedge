@@ -1,0 +1,15 @@
+use crate::templates::compiled::components::{PageHead, Rows, Row, EmptyState, Button, Para};
+props crate::web::stacks::ListPage<'_> { slug, stacks, next };
+
+<PageHead title="Stacks" />
+{if stacks.is_empty() {
+  <EmptyState title="No stacks" />
+} else {
+  <Rows>{for stack in *stacks {
+    {let (label, tone) = crate::web::stacks::status(&stack.status);}
+    <Row name={&stack.name} href="/{slug}/stacks/{stack.name}" icon_name="layers" sub={&format!("Revision {} · {} services", stack.revision, stack.services.len())} detail={stack.address.as_deref().unwrap_or("Private")} status_text={Some(label)} status_tone={tone} />
+  }}</Rows>
+}}
+{if let Some(after) = next {
+  <Para><Button label="Next" kind="secondary" href="/{slug}/stacks?after={after}" /></Para>
+}}

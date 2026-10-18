@@ -625,9 +625,13 @@ impl Domains {
         actor: Uuid,
         organisation_id: Uuid,
         app_id: Uuid,
-        app_name: &str,
+        _app_name: &str,
     ) -> Result<(), DomainsError> {
         domains::lock_hierarchy_policy(&mut **work.sql()).await?;
+        let Some(app_name) = grund_store::entry::public_name(&mut **work.sql(), app_id).await?
+        else {
+            return Ok(());
+        };
         let Some(parent) = domains::configured_parent(&mut **work.sql(), organisation_id).await?
         else {
             return Ok(());
@@ -671,11 +675,114 @@ impl Domains {
             .await?;
         } else {
             self.lock_apps(work, &mut [app_id]).await?;
-            let name = app_hostname(app_name, &parent.name)?;
+            let name = app_hostname(&app_name, &parent.name)?;
             self.generate_in(work, actor, organisation_id, app_id, name, &parent)
                 .await?;
         }
         self.publish_apps(work.sql(), &[app_id]).await?;
+        Ok(())
+    }
+
+    /// Moves the stack's real public bindings when its selected child changes.
+    /// The caller commits this with RevisionRequested and wakes documents.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn rebind_stack_public_in(
+        &self,
+        work: &mut Work<'_>,
+        actor: Uuid,
+        organisation_id: Uuid,
+        stack_id: Uuid,
+        previous: Option<Uuid>,
+        selected: Option<Uuid>,
+        stack_name: &str,
+    ) -> Result<(), DomainsError> {
+        domains::lock_hierarchy_policy(&mut **work.sql()).await?;
+        let stack = work.load_stack(stack_id).await?;
+        if stack.organisation_id != organisation_id || stack.name != stack_name {
+            return Err(DomainsError::NotFound);
+        }
+        let public = stack
+            .revisions
+            .get(&stack.desired_revision)
+            .and_then(|revision| {
+                revision
+                    .public_service
+                    .as_ref()
+                    .and_then(|name| revision.services.get(name))
+                    .map(|service| service.app_id)
+            });
+        if public != selected {
+            return Err(DomainsError::NamespaceConflict(
+                "the stack's public service changed".into(),
+            ));
+        }
+        let members =
+            grund_store::stacks::members(&mut **work.sql(), organisation_id, stack_id).await?;
+        let mut apps: Vec<_> = members.iter().map(|member| member.app_id).collect();
+        apps.sort_unstable();
+        if previous
+            .into_iter()
+            .chain(selected)
+            .any(|id| !apps.contains(&id))
+        {
+            return Err(DomainsError::NamespaceConflict(
+                "public bindings require the same owning stack".into(),
+            ));
+        }
+        self.lock_apps(work, &mut apps).await?;
+        for app_id in apps.iter().copied() {
+            let app = work.load_app(app_id).await?;
+            if app.organisation_id != organisation_id || app.stack_owner != Some(stack_id) {
+                return Err(DomainsError::NamespaceConflict(
+                    "public bindings require the same owning stack".into(),
+                ));
+            }
+        }
+        let Some(selected) = selected else {
+            self.publish_apps(work.sql(), &apps).await?;
+            return Ok(());
+        };
+        let rows = domains::list(&mut **work.sql(), organisation_id).await?;
+        let sources: Vec<_> = rows
+            .into_iter()
+            .filter(|row| {
+                row.managed_app_id
+                    .or(row.app_id)
+                    .is_some_and(|id| id != selected && apps.contains(&id))
+            })
+            .collect();
+        let moved_bound = sources.iter().filter(|row| row.app_id.is_some()).count() as i64;
+        if domains::count_bound(&mut **work.sql(), selected).await? + moved_bound > MAX_PER_APP {
+            return Err(DomainsError::AppLimit);
+        }
+        for row in sources {
+            let row = self.lock_binding(work, &row).await?;
+            if let Some(owner) = row.managed_app_id {
+                work.domain(
+                    row.domain_id,
+                    DomainCommand::ReassignGenerated {
+                        actor,
+                        expected_app_id: owner,
+                        app_id: selected,
+                        at: Utc::now(),
+                    },
+                )
+                .await?;
+            } else if row.app_id.is_some() {
+                work.domain(
+                    row.domain_id,
+                    DomainCommand::Bind {
+                        actor,
+                        app_id: selected,
+                        at: Utc::now(),
+                    },
+                )
+                .await?;
+            }
+        }
+        self.allocate_app_domain_in(work, actor, organisation_id, selected, stack_name)
+            .await?;
+        self.publish_apps(work.sql(), &apps).await?;
         Ok(())
     }
 

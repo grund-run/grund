@@ -11,6 +11,7 @@ pub mod notifications;
 pub mod orgs;
 pub mod registries;
 pub mod selfdesc;
+pub mod stacks;
 pub mod system;
 pub mod system_update;
 pub mod tokens;
@@ -35,6 +36,7 @@ pub const CLIENT_NOUNS: &[&str] = &[
     "whoami",
     "orgs",
     "apps",
+    "stacks",
     "volumes",
     "machines",
     "domains",
@@ -72,6 +74,10 @@ pub enum Command {
         about = "Apps: list, status, logs, CPU and memory, deploy, change a setting, roll back, delete"
     )]
     Apps(Box<apps::AppsCommand>),
+    #[command(
+        about = "Stacks: deploy several services together, inspect readiness, restart, roll back, delete, restore"
+    )]
+    Stacks(Box<stacks::StacksCommand>),
     #[command(about = "App-owned volumes: list, show, create, attach, detach, delete, purge")]
     Volumes(volumes::VolumesCommand),
     #[command(about = "Machines: list, add your own, labels, out of service, remove")]
@@ -121,6 +127,7 @@ impl Command {
             Command::Whoami(a) => &a.global,
             Command::Orgs(c) => &c.global,
             Command::Apps(c) => &c.global,
+            Command::Stacks(c) => &c.global,
             Command::Volumes(c) => &c.global,
             Command::Machines(c) => &c.global,
             Command::Domains(c) => &c.global,
@@ -154,11 +161,24 @@ pub async fn execute(
         Command::Whoami(args) => auth::whoami(ctx, args).await?,
         Command::Orgs(command) => orgs::run(ctx, command.action).await?,
         Command::Apps(command) => match command.action {
-            apps::AppsAction::Logs(args) if args.follow => {
-                app_telemetry::follow(ctx, args).await?;
+            apps::AppsAction::Logs(args) if args.options.follow => {
+                let api = ctx.api()?;
+                let org = ctx.org(&api).await?;
+                app_telemetry::follow(ctx, &api, &org, args).await?;
                 return Ok(None);
             }
             action => apps::run(ctx, action).await?,
+        },
+        Command::Stacks(command) => match command.action {
+            stacks::StacksAction::Logs {
+                stack,
+                service,
+                options,
+            } if options.follow => {
+                stacks::follow(ctx, &stack, &service, options).await?;
+                return Ok(None);
+            }
+            action => stacks::run(ctx, action).await?,
         },
         Command::Volumes(command) => volumes::run(ctx, command.action).await?,
         Command::Machines(command) => machines::run(ctx, command.action).await?,

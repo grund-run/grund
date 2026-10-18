@@ -1,0 +1,95 @@
+use crate::templates::FormState;
+use crate::web::stacks::Action;
+use crate::templates::compiled::components::{PageHead, Panel, Facts, Fact, External, Para, Rows, Row, EmptyState, Menu, MenuItem, Form, HiddenField, Field, FieldError, Actions, Button};
+props crate::web::stacks::DetailPage<'_> { slug, stack, manages, csrf, action, form, errors };
+{let base = format!("/{slug}/stacks/{}", stack.name);}
+{let state = FormState { csrf, errors, banners: &std::collections::BTreeMap::new() };}
+{let (label, tone) = crate::web::stacks::status(&stack.status);}
+
+<PageHead title={&stack.name} state={Some((label, tone))}>
+  {if *manages {
+    <Menu label="Stack actions" icon_name="more">
+      {if stack.status == "deleted" {
+        <MenuItem label="Restore" href="{base}?action=restore" icon_name="undo" />
+      } else {
+        <MenuItem label="Deploy file" href="/{slug}/stacks/deploy?stack={stack.name}" icon_name="file" />
+        <MenuItem label="Restart all services" href="{base}?action=restart" icon_name="undo" />
+        <MenuItem label="Roll back" href="{base}?action=rollback" icon_name="layers" />
+        <MenuItem label="Delete…" href="{base}?action=delete" icon_name="trash" danger />
+      }}
+    </Menu>
+  }}
+</PageHead>
+<Panel>
+  <Facts>
+    <Fact label="Address">
+      {if let Some(address) = &stack.address { <External href="https://{address}" label={address} /> } else { Private }}
+    </Fact>
+    <Fact label="Selected machine">
+      {if let Some(machine) = stack.machine_id {
+        {let machine = machine.to_string();}
+        <a href="/{slug}/machines/{machine}">{machine}</a>
+      } else { Not selected }}
+    </Fact>
+    <Fact label="Revision" value={&stack.revision.to_string()} />
+    <Fact label="Version" value={&stack.version.to_string()} />
+    {if let Some(operation) = &stack.operation { <Fact label="Operation" value={operation} /> }}
+  </Facts>
+  {if let Some(failure) = &stack.failure { <Para>{failure}</Para> }}
+</Panel>
+<Panel id="stack-services" title="Services">
+  <Rows>{for service in &stack.services {
+    {let (service_status, service_tone) = crate::web::stacks::status(&service.status);}
+    <Row name={&service.name} sub={&crate::web::stacks::service_source(service)} detail={&crate::web::stacks::service_progress(service)} icon_name="box" status_text={Some(service_status)} status_tone={service_tone}>
+      <:end>
+        <Menu label={&format!("Actions for {}", service.name)} icon_name="more">
+          <MenuItem label="Logs" href="/{slug}/apps/{service.app_name}/logs" icon_name="file" />
+          <MenuItem label="Metrics" href="/{slug}/apps/{service.app_name}/metrics" icon_name="bars" />
+          {if *manages && stack.status != "deleted" {
+            <MenuItem label="Update service" href="/{slug}/stacks/deploy?stack={stack.name}&service={service.name}" icon_name="layers" />
+            <MenuItem label="Restart service" href="{base}?action=restart&service={service.name}" icon_name="undo" />
+          }}
+        </Menu>
+      </:end>
+    </Row>
+  }}</Rows>
+  {for service in stack.services.iter().filter(|service| service.exclusive) {
+    <Para>{service.name}: restarting briefly interrupts this service.</Para>
+  }}
+</Panel>
+{for (retained, title, id) in [(false, "Storage", "stack-storage"), (true, "Retained data", "stack-retained-storage")] {
+  {if stack.volumes.iter().any(|volume| volume.retained == retained) {
+    <Panel id={id} title={title}>
+      <Rows>{for volume in stack.volumes.iter().filter(|volume| volume.retained == retained) {
+        <Row name={&format!("{}/{}", volume.service, volume.storage.name)} sub={&volume.storage.path} detail={&crate::web::stacks::volume_detail(volume)} href="/{slug}/apps/{volume.app_name}/storage" icon_name="disk" status_text={Some(&volume.status)} status_tone="muted" />
+      }}</Rows>
+    </Panel>
+  }}
+}}
+{if stack.volumes.is_empty() {
+  <Panel id="stack-storage" title="Storage">
+    <EmptyState title="No owned volumes" />
+  </Panel>
+}}
+{if *manages && *action != Action::None {
+  <Panel id="stack-action" title={action.label()}>
+    <Form action="{base}/{action.path()}" form={Some(&state)} refused={!errors.is_empty()}>
+      <HiddenField name="expected_version" value={&form.expected_version} />
+      <HiddenField name="key" value={&form.key} />
+      <HiddenField name="service" value={&form.service} />
+      {for field in ["expected_version", "key", "operation", "file"] { {if let Some(message) = errors.get(field) { <FieldError text={message} /> }} }}
+      {if *action == Action::Restart {
+        <Para>{if form.service.is_empty() { All services will restart. } else { Only {form.service} will restart. }}</Para>
+      } else if *action == Action::Rollback {
+        <Field name="revision" label="Revision" kind="number" value={&form.revision} min={Some("1")} required form={Some(&state)} />
+        <Para>Rolling back does not restore stored data or reverse database migrations.</Para>
+      } else if *action == Action::Delete {
+        <Field name="confirmation" label="Stack name" value={&form.confirmation} hint="Enter the stack name to confirm deletion." required autocomplete="off" form={Some(&state)} />
+      }}
+      <Actions>
+        <Button label="Cancel" href={&base} kind="secondary" />
+        <Button label={action.label()} kind={if *action == Action::Delete { "danger" } else { "secondary" }} />
+      </Actions>
+    </Form>
+  </Panel>
+}}

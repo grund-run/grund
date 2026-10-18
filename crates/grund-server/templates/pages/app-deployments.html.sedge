@@ -29,7 +29,7 @@ props crate::web::apps::AppDeploymentsPage<'_> { app, replicas, crowded, release
           {if !release.note.is_empty() { <Row name="Note" sub={&release.note} plain /> }}
           {if let Some(reason) = &release.reason { <Row name="What happened" sub={reason} plain /> }}
         </Rows>
-        {if *manages && !release.live {
+        {if *manages && app.stack.is_none() && !release.live {
           <Actions note="Makes a new release with v{release.number}'s image and settings, and the secrets' newest values.">
             <PostButton action="{app.base}/releases/{release.number}/rollback" csrf={csrf} label={release.again} kind="secondary" size="sm" />
           </Actions>

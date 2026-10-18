@@ -22,9 +22,12 @@
 //! without a preflight either. A call that presents an `Authorization`
 //! header is judged by the token alone, never by a cookie beside it.
 //!
-//! A token of scope `deploy` may call only the procedures [`AUTHORIZATION`]
-//! marks [`Requirement::SessionOrToken`]: the app deploy and volume read/create
-//! procedures CI needs, but not deletion, restoration or backup-key export.
+//! A token of scope `deploy` reaches procedures [`AUTHORIZATION`] marks
+//! [`Requirement::SessionOrToken`]. Stack handlers preserve organisation and role
+//! precedence before requiring a full organisation token for every mutation;
+//! deploy tokens can only read stacks, subject to their existing app allowlists.
+//! The app deploy and volume read/create procedures CI needs remain available,
+//! but not app deletion, restoration or backup-key export.
 //! A token of scope `full` also calls those marked
 //! [`Requirement::SessionOrFullToken`]: app deletion and restoration, volume
 //! attach/detach/delete/restore, backup configuration and key export, machines,
@@ -51,6 +54,7 @@ pub mod organisation;
 pub mod registry;
 pub mod relay_access;
 pub mod relay_enrollment;
+pub mod stack;
 pub mod token;
 pub mod volume;
 
@@ -83,6 +87,7 @@ use grund_proto::grund::{
     organisation::v1::ORGANISATION_SERVICE_SERVICE_NAME,
     registry::v1::REGISTRY_SERVICE_SERVICE_NAME,
     relay::v1::RELAY_ENROLLMENT_SERVICE_SERVICE_NAME,
+    stack::v1::STACK_SERVICE_SERVICE_NAME,
     token::v1::TOKEN_SERVICE_SERVICE_NAME,
 };
 use subtle::ConstantTimeEq;
@@ -166,6 +171,38 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
     ),
     (
         "/grund.app.v1.AppTelemetryService/GetAppMetrics",
+        Requirement::SessionOrToken,
+    ),
+    (
+        "/grund.stack.v1.StackService/PreviewStack",
+        Requirement::SessionOrToken,
+    ),
+    (
+        "/grund.stack.v1.StackService/DeployStack",
+        Requirement::SessionOrToken,
+    ),
+    (
+        "/grund.stack.v1.StackService/GetStack",
+        Requirement::SessionOrToken,
+    ),
+    (
+        "/grund.stack.v1.StackService/ListStacks",
+        Requirement::SessionOrToken,
+    ),
+    (
+        "/grund.stack.v1.StackService/RestartStack",
+        Requirement::SessionOrToken,
+    ),
+    (
+        "/grund.stack.v1.StackService/RollbackStack",
+        Requirement::SessionOrToken,
+    ),
+    (
+        "/grund.stack.v1.StackService/DeleteStack",
+        Requirement::SessionOrToken,
+    ),
+    (
+        "/grund.stack.v1.StackService/RestoreStack",
         Requirement::SessionOrToken,
     ),
     (
@@ -626,6 +663,10 @@ pub fn router(state: State) -> axum::Router {
             service.clone(),
         )
         .route_service(
+            &format!("/{STACK_SERVICE_SERVICE_NAME}/{{method}}"),
+            stack_service(state.clone()),
+        )
+        .route_service(
             &format!("/{VOLUME_SERVICE_SERVICE_NAME}/{{method}}"),
             volume_service(state.clone()),
         )
@@ -784,6 +825,32 @@ pub fn app_service(state: State) -> ConnectRpcService {
                 .with_default_timeout(Duration::from_secs(30)),
         )
         .with_interceptor(authorize)
+}
+
+/// Worst-case JSON escaping of 1 MiB raw YAML plus the bounded launch-input envelope.
+pub const MAX_STACK_REQUEST_BYTES: usize =
+    6 * grund_config::stack::MAX_FILE_BYTES + 2 * 1024 * 1024;
+/// Bound decoded allocations independently from the wire limit.
+pub const MAX_STACK_MEMORY_BYTES: usize = 8 * 1024 * 1024;
+
+pub fn stack_service(state: State) -> ConnectRpcService {
+    let authorize = Authorize::new(&state);
+    ConnectRpcService::new(
+        connectrpc::Router::new().add_service(Arc::new(stack::StackApi::new(state))),
+    )
+    .with_limits(
+        Limits::default()
+            .with_max_request_body_size(MAX_STACK_REQUEST_BYTES)
+            .with_max_message_size(MAX_STACK_REQUEST_BYTES)
+            .with_element_memory_limit(MAX_STACK_MEMORY_BYTES),
+    )
+    .with_deadline_policy(
+        DeadlinePolicy::new()
+            .with_min(Duration::from_millis(5))
+            .with_max(Duration::from_secs(30))
+            .with_default_timeout(Duration::from_secs(30)),
+    )
+    .with_interceptor(authorize)
 }
 
 pub fn volume_service(state: State) -> ConnectRpcService {
@@ -1272,7 +1339,7 @@ pub fn authorized_with_extensions(
             .is_some_and(|token| token.apps.is_some())
     {
         return Err(ConnectError::permission_denied(
-            "an app-limited deploy token cannot manage volumes",
+            "an app-limited token cannot manage volumes",
         ));
     }
     match requirement {
@@ -1449,6 +1516,7 @@ mod tests {
     };
     use grund_proto::grund::notification::v1 as notify;
 
+    use grund_proto::grund::stack::v1 as stack_proto;
     use grund_proto::grund::{
         agent::v1 as agent, app::v1 as app_proto, certificates::v1 as certificates_proto,
         machine::v1 as machine, organisation::v1 as org, volume::v1 as volume_proto,
@@ -2240,6 +2308,67 @@ mod tests {
         }
     }
 
+    struct UnusedStacks;
+    #[allow(refining_impl_trait)]
+    impl stack_proto::StackService for UnusedStacks {
+        async fn preview_stack(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, stack_proto::PreviewStackRequest>,
+        ) -> ServiceResult<stack_proto::PreviewStackResponse> {
+            unreachable!()
+        }
+        async fn deploy_stack(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, stack_proto::DeployStackRequest>,
+        ) -> ServiceResult<stack_proto::DeployStackResponse> {
+            unreachable!()
+        }
+        async fn get_stack(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, stack_proto::GetStackRequest>,
+        ) -> ServiceResult<stack_proto::GetStackResponse> {
+            unreachable!()
+        }
+        async fn list_stacks(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, stack_proto::ListStacksRequest>,
+        ) -> ServiceResult<stack_proto::ListStacksResponse> {
+            unreachable!()
+        }
+        async fn restart_stack(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, stack_proto::RestartStackRequest>,
+        ) -> ServiceResult<stack_proto::RestartStackResponse> {
+            unreachable!()
+        }
+        async fn rollback_stack(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, stack_proto::RollbackStackRequest>,
+        ) -> ServiceResult<stack_proto::RollbackStackResponse> {
+            unreachable!()
+        }
+        async fn delete_stack(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, stack_proto::DeleteStackRequest>,
+        ) -> ServiceResult<stack_proto::DeleteStackResponse> {
+            unreachable!()
+        }
+        async fn restore_stack(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, stack_proto::RestoreStackRequest>,
+        ) -> ServiceResult<stack_proto::RestoreStackResponse> {
+            unreachable!()
+        }
+    }
+
     fn context(path: &str, callers: &[&str]) -> RequestContext {
         let mut extensions = http::Extensions::new();
         for caller in callers {
@@ -2333,6 +2462,20 @@ mod tests {
         ]
         .into_iter()
         .map(|m| format!("/grund.app.v1.AppService/{m}").leak() as &str)
+        .chain(
+            [
+                "PreviewStack",
+                "DeployStack",
+                "GetStack",
+                "ListStacks",
+                "RestartStack",
+                "RollbackStack",
+                "DeleteStack",
+                "RestoreStack",
+            ]
+            .into_iter()
+            .map(|m| format!("/grund.stack.v1.StackService/{m}").leak() as &str),
+        )
         .chain([
             "/grund.app.v1.AppTelemetryService/ListAppLogs",
             "/grund.app.v1.AppTelemetryService/GetAppMetrics",
@@ -2353,6 +2496,25 @@ mod tests {
             authorized(&context(path, &["session"])).unwrap();
             let error = authorized(&context(path, &[])).unwrap_err();
             assert_eq!(error.code, connectrpc::ErrorCode::Unauthenticated, "{path}");
+        }
+    }
+
+    #[test]
+    fn app_scoped_tokens_reach_stack_reads_for_resource_authorization() {
+        for method in ["PreviewStack", "GetStack", "ListStacks"] {
+            let path = format!("/grund.stack.v1.StackService/{method}");
+            let mut extensions = http::Extensions::new();
+            extensions.insert(TokenCaller {
+                account_id: Uuid::now_v7(),
+                token_id: Uuid::now_v7(),
+                organisation_id: Uuid::now_v7(),
+                scope: TokenScope::Deploy,
+                apps: Some(Arc::from(vec!["web".to_string()])),
+            });
+            let ctx = RequestContext::new(http::HeaderMap::new())
+                .with_path(&path)
+                .with_extensions(extensions);
+            authorized(&ctx).unwrap();
         }
     }
 
@@ -2559,6 +2721,7 @@ mod tests {
             .add_service(Arc::new(UnusedAgent))
             .add_service(Arc::new(UnusedMachineUpdates))
             .add_service(Arc::new(UnusedApps))
+            .add_service(Arc::new(UnusedStacks))
             .add_service(Arc::new(UnusedVolumes))
             .add_service(Arc::new(UnusedDomains))
             .add_service(Arc::new(UnusedNotifications))

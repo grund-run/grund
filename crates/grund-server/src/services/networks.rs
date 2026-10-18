@@ -391,6 +391,7 @@ fn app_replicas(
         ports.dedup();
         out.entry(e.machine_id).or_default().push(AppReplica {
             app: e.app_name.clone(),
+            aliases: e.stack_alias.iter().cloned().collect(),
             address: replica_address(prefix, *slot, &id),
             replica_id: id,
             ports,
@@ -541,6 +542,48 @@ mod tests {
             direct_addrs: Vec::new(),
             direct_addrs_at: None,
         }
+    }
+
+    #[test]
+    fn stack_aliases_add_a_namespace_without_replacing_existing_app_dns_names() {
+        let machine = Uuid::now_v7();
+        let prefix: Ipv6Addr = "fd00:1::".parse().unwrap();
+        let spec = grund_config::app::spec::AppSpec {
+            image: "nginx".into(),
+            command: Vec::new(),
+            ports: Vec::new(),
+            memory_mib: 128,
+            cpu_millis: 100,
+            env: Vec::new(),
+            volumes: Vec::new(),
+            secrets: Vec::new(),
+            check: None,
+            stop: Default::default(),
+        };
+        let endpoints = [
+            grund_store::apps::EndpointRow {
+                replica_id: Uuid::now_v7(),
+                machine_id: machine,
+                app_name: "generated-web".into(),
+                stack_alias: Some("web.shop".into()),
+                spec: sqlx::types::Json(spec.clone()),
+                ready: true,
+            },
+            grund_store::apps::EndpointRow {
+                replica_id: Uuid::now_v7(),
+                machine_id: machine,
+                app_name: "ordinary".into(),
+                stack_alias: None,
+                spec: sqlx::types::Json(spec),
+                ready: true,
+            },
+        ];
+        let replicas = app_replicas(prefix, &[slot(1, machine, "key", None)], &endpoints);
+        let replicas = &replicas[&machine];
+        assert_eq!(replicas[0].app, "generated-web");
+        assert_eq!(replicas[0].aliases, ["web.shop"]);
+        assert_eq!(replicas[1].app, "ordinary");
+        assert!(replicas[1].aliases.is_empty());
     }
 
     #[test]

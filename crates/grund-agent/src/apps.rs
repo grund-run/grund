@@ -74,7 +74,8 @@ use crate::{
     agent::Link,
     policy::Policy,
     runtime::{
-        ContainerRuntime, ContainerSpec, ContainerStatus, ImageRef, Probe, TaskState, VolumeBind,
+        APP_ID_LABEL, ContainerRuntime, ContainerSpec, ContainerStatus, ImageRef, Probe, TaskState,
+        VolumeBind,
     },
     secrets, volume,
 };
@@ -242,6 +243,10 @@ fn container_hash(replica: &Replica, resolver: Option<Ipv6Addr>) -> String {
             h.update(base.as_bytes());
             h.update(b"\nnetwork-v1 ");
             h.update(resolver.to_string().as_bytes());
+            if !replica.stack_search.is_empty() {
+                h.update(b"\nsearch ");
+                h.update(replica.stack_search.as_bytes());
+            }
             hex::encode(h.finalize())
         }
     }
@@ -320,6 +325,14 @@ fn spec(
     volumes: Vec<VolumeBind>,
     roots: &[PathBuf],
 ) -> Result<ContainerSpec, String> {
+    if !replica.stack_search.is_empty()
+        && !replica
+            .stack_search
+            .strip_suffix(".grund.internal")
+            .is_some_and(|name| grund_config::app::spec::AppName::parse(name).is_ok())
+    {
+        return Err("invalid stack DNS search suffix".into());
+    }
     let image = replica.image.as_option().ok_or("no image")?;
     let reference = grund_config::app::spec::ImageReference::parse(&image.reference)
         .map_err(|e| e.to_string())?;
@@ -341,7 +354,7 @@ fn spec(
     let stop = replica.stop.as_option();
     let mut labels = BTreeMap::new();
     labels.insert("grund.app".to_string(), replica.app.clone());
-    labels.insert("grund.app-id".to_string(), replica.app_id.clone());
+    labels.insert(APP_ID_LABEL.to_string(), replica.app_id.clone());
     labels.insert("grund.release".to_string(), replica.release.to_string());
     labels.insert("grund.slot".to_string(), replica.slot.to_string());
     let volume_roots = if volumes.is_empty() {
@@ -370,10 +383,24 @@ fn spec(
         )),
         labels,
         spec_hash: container_hash(replica, net.map(|n| n.resolver)),
-        resolv_conf: net.map(|n| format!("nameserver {}\n", n.resolver)),
+        resolv_conf: net.map(|n| {
+            if replica.stack_search.is_empty() {
+                format!("nameserver {}\n", n.resolver)
+            } else {
+                format!(
+                    "nameserver {}\nsearch {}\n",
+                    n.resolver, replica.stack_search
+                )
+            }
+        }),
         volumes,
         volume_roots,
     })
+}
+
+struct PendingStop {
+    app_id: String,
+    task: JoinHandle<()>,
 }
 
 /// The apps loop's state between passes.
@@ -388,7 +415,7 @@ pub struct Apps<C> {
     tracked: HashMap<String, Tracked>,
     pulls: HashMap<String, JoinHandle<Result<(), String>>>,
     pull_failed: HashMap<String, (String, Instant)>,
-    stops: HashMap<String, JoinHandle<()>>,
+    stops: HashMap<String, PendingStop>,
     secrets: secrets::Values,
     last_reports: Vec<ReplicaObserved>,
     network: Option<NetworkAccess>,
@@ -649,10 +676,10 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
     }
 
     fn stop(&mut self, status: &ContainerStatus) {
-        if self.stops.get(&status.id).is_some_and(|h| !h.is_finished()) {
+        if self.stopping(&status.id) {
             return;
         }
-        self.detach(&status.id.clone());
+        self.detach(&status.id);
         let runtime = self.runtime.clone();
         let (id, signal, grace) = (
             status.id.clone(),
@@ -662,16 +689,21 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
         tracing::info!(replica = %id, %signal, grace_s = grace.as_secs(), "stopping a replica");
         self.stops.insert(
             status.id.clone(),
-            tokio::spawn(async move {
-                if let Err(error) = runtime.remove(&id, &signal, grace).await {
-                    tracing::warn!(replica = %id, error = %format!("{error:#}"), "could not stop a replica");
-                }
-            }),
+            PendingStop {
+                app_id: status.app_id.clone(),
+                task: tokio::spawn(async move {
+                    if let Err(error) = runtime.remove(&id, &signal, grace).await {
+                        tracing::warn!(replica = %id, error = %format!("{error:#}"), "could not stop a replica");
+                    }
+                }),
+            },
         );
     }
 
     fn stopping(&self, id: &str) -> bool {
-        self.stops.get(id).is_some_and(|h| !h.is_finished())
+        self.stops
+            .get(id)
+            .is_some_and(|stop| !stop.task.is_finished())
     }
 
     fn erase_deleted(&self, desired: Option<&DesiredState>, mounted: &[(String, VolumeBind)]) {
@@ -799,7 +831,7 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
     }
 
     async fn pass_with_network(&mut self, net: Option<Net>, now: Instant) -> anyhow::Result<()> {
-        self.stops.retain(|_, h| !h.is_finished());
+        self.stops.retain(|_, stop| !stop.task.is_finished());
         let desired = self.shared.desired.lock().expect("shared lock").clone();
         crate::telemetry_final::remember(&self.shared, desired.as_ref());
         let wanted: Vec<Replica> = desired
@@ -896,8 +928,9 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
         let mut probes = Vec::new();
         for replica in &wanted {
             let id = replica.replica_id.clone();
-            if !replica.volumes.is_empty()
-                && replica.state.as_known() == Some(ReplicaState::REPLICA_STATE_DRAINING)
+            if (!replica.volumes.is_empty() || replica.exclusive || replica.stopping)
+                && (replica.stopping
+                    || replica.state.as_known() == Some(ReplicaState::REPLICA_STATE_DRAINING))
             {
                 let since = *self
                     .tracked
@@ -912,7 +945,10 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                     .expect("shared lock")
                     .contains(&id);
                 if let Some(container) = containers.iter().find(|c| c.id == id) {
-                    if idle || now.duration_since(since) >= Duration::from_secs(30) {
+                    if idle
+                        || now.duration_since(since)
+                            >= Duration::from_secs(u64::from(replica.drain_seconds.unwrap_or(30)))
+                    {
                         self.stop(container);
                         reports.insert(
                             id,
@@ -928,7 +964,7 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                             report(
                                 replica,
                                 ReplicaObservedState::REPLICA_OBSERVED_STATE_RUNNING,
-                                "finishing in-flight requests before stopping its volume writer",
+                                "finishing in-flight requests before stopping",
                             ),
                         );
                     }
@@ -953,8 +989,37 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                 }
                 continue;
             }
-            if !replica.volumes.is_empty() {
-                self.tracked.entry(id.clone()).or_default().draining_since = None;
+            self.tracked.entry(id.clone()).or_default().draining_since = None;
+            if replica.exclusive
+                && (wanted
+                    .iter()
+                    .any(|other| other.replica_id != id && other.app_id == replica.app_id)
+                    || containers.iter().any(|container| {
+                        container.app_id == replica.app_id
+                            && !wanted_ids.contains(container.id.as_str())
+                    })
+                    || self.stops.iter().any(|(other, stop)| {
+                        other != &id && stop.app_id == replica.app_id && !stop.task.is_finished()
+                    }))
+            {
+                let current = containers.iter().find(|c| c.id == id);
+                if let Some(container) = current {
+                    self.stop(container);
+                }
+                let state = if current.is_some() || self.stopping(&id) {
+                    ReplicaObservedState::REPLICA_OBSERVED_STATE_STOPPING
+                } else {
+                    ReplicaObservedState::REPLICA_OBSERVED_STATE_STARTING
+                };
+                reports.insert(
+                    id,
+                    report(
+                        replica,
+                        state,
+                        "waiting for the previous exclusive copy to stop",
+                    ),
+                );
+                continue;
             }
             if let Some(reason) = self.policy.refuses(replica) {
                 refusals.push(format!("replica {id} of {}: {reason}", replica.app));
@@ -962,12 +1027,13 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                 if let Some(container) = current {
                     self.stop(container);
                 }
-                let state =
-                    if !replica.volumes.is_empty() && (current.is_some() || self.stopping(&id)) {
-                        ReplicaObservedState::REPLICA_OBSERVED_STATE_STOPPING
-                    } else {
-                        ReplicaObservedState::REPLICA_OBSERVED_STATE_REFUSED
-                    };
+                let state = if (!replica.volumes.is_empty() || replica.exclusive)
+                    && (current.is_some() || self.stopping(&id))
+                {
+                    ReplicaObservedState::REPLICA_OBSERVED_STATE_STOPPING
+                } else {
+                    ReplicaObservedState::REPLICA_OBSERVED_STATE_REFUSED
+                };
                 reports.insert(id, report(replica, state, &reason));
                 continue;
             }
@@ -1316,6 +1382,8 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                     observed.reason = tracked.readiness.reason.clone();
                 }
             }
+            observed.applied_generation = desired.as_ref().map_or(0, |d| d.generation);
+            observed.operation_id = replica.operation_id.clone();
             if let Some(tracked) = tracked {
                 observed.restarts = tracked.restarts;
                 observed.last_exit_code = tracked.last_exit_code;
@@ -1366,7 +1434,8 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                     .tracked
                     .get(&replica.replica_id)
                     .is_some_and(|t| t.readiness.ready),
-                draining: replica.state.as_known() == Some(ReplicaState::REPLICA_STATE_DRAINING),
+                draining: replica.stopping
+                    || replica.state.as_known() == Some(ReplicaState::REPLICA_STATE_DRAINING),
             });
         }
         self.shared.endpoints.0.send_if_modified(|current| {
@@ -1661,10 +1730,11 @@ mod tests {
             state.container = Some(ContainerStatus {
                 id: spec.id.clone(),
                 spec_hash: spec.spec_hash.clone(),
-                network_resolver: spec
-                    .resolv_conf
-                    .as_deref()
-                    .and_then(|conf| conf.strip_prefix("nameserver ")?.trim().parse().ok()),
+                app_id: spec.labels.get(APP_ID_LABEL).cloned().unwrap_or_default(),
+                network_resolver: spec.resolv_conf.as_deref().and_then(|conf| {
+                    conf.lines()
+                        .find_map(|line| line.strip_prefix("nameserver ")?.trim().parse().ok())
+                }),
                 state: TaskState::Running {
                     pid: state.next_pid,
                 },
@@ -1751,8 +1821,8 @@ mod tests {
         apps.pass_with_network(Some(network()), began)
             .await
             .unwrap();
-        for (_, task) in apps.stops.drain() {
-            task.await.unwrap();
+        for (_, stop) in apps.stops.drain() {
+            stop.task.await.unwrap();
         }
         assert_eq!(
             apps.runtime.list().await.unwrap().as_slice(),
@@ -1933,6 +2003,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stopping_another_app_keeps_the_exclusive_service_running() {
+        let (mut apps, shared, dir) = harness("exclusive-unrelated-stop");
+        let mut database = replica("database", &[]);
+        database.app_id = "database-app".into();
+        database.exclusive = true;
+        let mut web = replica("web", &[]);
+        web.app_id = "web-app".into();
+        let image = web.image.as_option().unwrap();
+        apps.runtime
+            .pull(
+                &ImageRef {
+                    reference: image.reference.clone(),
+                    digest: image.digest.clone(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        set(&shared, vec![database.clone(), web]);
+        for _ in 0..3 {
+            apps.pass().await.unwrap();
+        }
+        let before = apps
+            .runtime
+            .list()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|container| container.id == "database")
+            .unwrap();
+        assert!(matches!(before.state, TaskState::Running { .. }));
+        set(&shared, vec![database]);
+        apps.pass().await.unwrap();
+        for stop in apps.stops.values_mut() {
+            (&mut stop.task).await.unwrap();
+        }
+        assert_eq!(apps.runtime.list().await.unwrap(), vec![before]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_exclusive_successor_waits_for_its_own_app_to_stop() {
+        let (mut apps, shared, dir) = harness("exclusive-own-stop");
+        let mut previous = replica("previous", &[]);
+        previous.app_id = "writer-app".into();
+        previous.exclusive = true;
+        let mut successor = previous.clone();
+        successor.replica_id = "successor".into();
+        successor.release = 2;
+        let image = previous.image.as_option().unwrap();
+        apps.runtime
+            .pull(
+                &ImageRef {
+                    reference: image.reference.clone(),
+                    digest: image.digest.clone(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        set(&shared, vec![previous]);
+        apps.pass().await.unwrap();
+        apps.pass().await.unwrap();
+        apps.pass().await.unwrap();
+        let before = apps.runtime.list().await.unwrap();
+        assert!(matches!(before[0].state, TaskState::Running { .. }));
+        set(&shared, vec![successor]);
+        apps.pass().await.unwrap();
+        assert_eq!(apps.runtime.list().await.unwrap(), before);
+        for stop in apps.stops.values_mut() {
+            (&mut stop.task).await.unwrap();
+        }
+        apps.pass().await.unwrap();
+        apps.pass().await.unwrap();
+        let running = apps.runtime.list().await.unwrap();
+        let [running] = running.as_slice() else {
+            panic!("the predecessor must be gone before exactly one successor runs");
+        };
+        assert_eq!(running.id, "successor");
+        assert_eq!(running.app_id, "writer-app");
+        assert!(matches!(running.state, TaskState::Running { .. }));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn a_killed_replica_is_restarted_at_once_and_then_after_its_back_off() {
         let (mut apps, shared, dir) = harness("kill");
         set(&shared, vec![replica("r1", &[])]);
@@ -2082,6 +2237,7 @@ mod tests {
         apps.stops
             .remove("r1")
             .expect("the real change stops the old process")
+            .task
             .await
             .unwrap();
         apps.pass_with_network(None, began + Duration::from_secs(2))
@@ -2150,6 +2306,7 @@ mod tests {
         apps.stops
             .remove("r1")
             .expect("the observed process can now be replaced")
+            .task
             .await
             .unwrap();
         {
@@ -2314,6 +2471,102 @@ mod tests {
         assert!(
             apps.runtime.list().await.unwrap().is_empty(),
             "draining writer was recreated"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn stack_copies_honor_custom_drains_and_report_exact_stop_generations_without_recreating()
+    {
+        for exclusive in [false, true] {
+            let (mut apps, shared, dir) = harness(if exclusive {
+                "exclusive-stack-drain"
+            } else {
+                "stopping-stack-drain"
+            });
+            let mut copy = replica("copy", &[]);
+            copy.app_id = "stack-service".into();
+            copy.exclusive = exclusive;
+            set(&shared, vec![copy.clone()]);
+            for _ in 0..4 {
+                apps.pass().await.unwrap();
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            }
+            assert_eq!(apps.runtime.list().await.unwrap().len(), 1);
+            copy.state = ReplicaState::REPLICA_STATE_DRAINING.into();
+            copy.stopping = !exclusive;
+            copy.drain_seconds = Some(90);
+            copy.operation_id = "restart-operation".into();
+            *shared.desired.lock().expect("shared lock") = Some(DesiredState {
+                generation: 42,
+                replicas: vec![copy],
+                ..Default::default()
+            });
+            apps.pass().await.unwrap();
+            apps.tracked.get_mut("copy").unwrap().draining_since =
+                Some(Instant::now() - Duration::from_secs(31));
+            apps.pass().await.unwrap();
+            assert_eq!(apps.runtime.list().await.unwrap().len(), 1);
+            assert_eq!(
+                state_of(&shared, "copy").0,
+                Some(ReplicaObservedState::REPLICA_OBSERVED_STATE_RUNNING)
+            );
+            apps.tracked.get_mut("copy").unwrap().draining_since =
+                Some(Instant::now() - Duration::from_secs(91));
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                apps.pass().await.unwrap();
+                if state_of(&shared, "copy").0
+                    == Some(ReplicaObservedState::REPLICA_OBSERVED_STATE_EXITED)
+                {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "stack copy did not stop");
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            {
+                let reports = shared.reports.lock().expect("shared lock");
+                let receipt = reports.iter().find(|r| r.replica_id == "copy").unwrap();
+                assert_eq!(receipt.applied_generation, 42);
+                assert_eq!(receipt.operation_id, "restart-operation");
+            }
+            shared
+                .desired
+                .lock()
+                .expect("shared lock")
+                .as_mut()
+                .unwrap()
+                .generation = 43;
+            apps.pass().await.unwrap();
+            assert!(apps.runtime.list().await.unwrap().is_empty());
+            assert_eq!(
+                shared.reports.lock().expect("shared lock")[0].applied_generation,
+                43
+            );
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_document_with_two_exclusive_service_copies_cannot_start_two_writers() {
+        let (mut apps, shared, dir) = harness("exclusive-stack-conflict");
+        let mut first = replica("first", &[]);
+        first.app_id = "stack-service".into();
+        first.exclusive = true;
+        let mut second = first.clone();
+        second.replica_id = "second".into();
+        set(&shared, vec![first, second]);
+        for _ in 0..3 {
+            apps.pass().await.unwrap();
+        }
+        assert!(apps.runtime.list().await.unwrap().is_empty());
+        assert_eq!(
+            state_of(&shared, "first").0,
+            Some(ReplicaObservedState::REPLICA_OBSERVED_STATE_STARTING)
+        );
+        assert_eq!(
+            state_of(&shared, "second").0,
+            Some(ReplicaObservedState::REPLICA_OBSERVED_STATE_STARTING)
         );
         std::fs::remove_dir_all(dir).unwrap();
     }

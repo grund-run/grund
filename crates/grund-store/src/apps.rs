@@ -65,7 +65,7 @@ pub async fn apply_app(
         return Ok(());
     }
     match event {
-        AppEvent::Created { .. } => {}
+        AppEvent::Created { .. } | AppEvent::StackOwnershipAssigned { .. } => {}
         AppEvent::Configured {
             settings,
             configured_by,
@@ -1158,6 +1158,34 @@ pub async fn record_reports(
     Ok(changed)
 }
 
+/// Accepts a terminal stop receipt only for this tenant's current placement and
+/// operation, after its first signed drain document, never a future generation.
+pub async fn record_stack_receipt(
+    connection: &mut PgConnection,
+    organisation_id: Uuid,
+    machine_id: Uuid,
+    replica_id: Uuid,
+    generation: i64,
+    operation_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query(
+        "INSERT INTO grund_stack_receipts(organisation_id,stack_id,operation_id,replica_id,machine_id,generation) \
+         SELECT member.organisation_id,member.stack_id,$5,r.replica_id,r.machine_id,$4 \
+         FROM grund_stack_members member \
+         JOIN grund_replicas r ON r.app_id=member.app_id AND r.organisation_id=member.organisation_id \
+         JOIN grund_machines machine ON machine.machine_id=r.machine_id AND machine.pool_organisation_id=member.organisation_id AND machine.state <> 'revoked' \
+         JOIN grund_machine_documents document ON document.machine_id=r.machine_id \
+         WHERE member.organisation_id=$1 AND r.machine_id=$2 AND r.replica_id=$3 \
+           AND r.state='draining' AND member.operation_id=$5 AND member.required_generation>0 \
+           AND $4>=member.required_generation AND $4<=document.generation \
+         ON CONFLICT(organisation_id,stack_id,operation_id,replica_id) DO UPDATE \
+           SET generation=EXCLUDED.generation,received_at=clock_timestamp() \
+           WHERE grund_stack_receipts.machine_id=EXCLUDED.machine_id \
+             AND grund_stack_receipts.generation<EXCLUDED.generation",
+    ).bind(organisation_id).bind(machine_id).bind(replica_id).bind(generation).bind(operation_id)
+        .execute(connection).await?.rows_affected()>0)
+}
+
 /// The status rows of one machine's replicas, to tell what a report
 /// changed.
 pub async fn machine_statuses(
@@ -1225,6 +1253,7 @@ pub struct EndpointRow {
     pub replica_id: Uuid,
     pub machine_id: Uuid,
     pub app_name: String,
+    pub stack_alias: Option<String>,
     pub spec: Json<grund_config::app::spec::AppSpec>,
     pub ready: bool,
 }
@@ -1237,11 +1266,14 @@ pub async fn organisation_endpoints(
 ) -> Result<Vec<EndpointRow>, sqlx::Error> {
     sqlx::query_as(
         "SELECT r.replica_id, r.machine_id, a.name AS app_name, rel.spec, \
-           COALESCE(s.ready, false) AS ready \
+           COALESCE(s.ready, false) AS ready, \
+           CASE WHEN stack.status <> 'deleted' THEN member.service || '.' || stack.name END AS stack_alias \
          FROM grund_replicas r \
          JOIN grund_apps a ON a.app_id = r.app_id AND a.deleted_at IS NULL \
          JOIN grund_releases rel ON rel.app_id = r.app_id AND rel.number = r.release \
          LEFT JOIN grund_replica_status s ON s.replica_id = r.replica_id AND s.machine_id = r.machine_id \
+         LEFT JOIN grund_stack_members member ON member.organisation_id=r.organisation_id AND member.app_id=r.app_id \
+         LEFT JOIN grund_stacks stack ON stack.organisation_id=member.organisation_id AND stack.stack_id=member.stack_id \
          WHERE r.organisation_id = $1 AND r.state = 'running' \
          ORDER BY r.machine_id, r.replica_id",
     )
@@ -1290,31 +1322,67 @@ pub async fn ended_lease_machines(
     .await
 }
 
-/// App replicas and whole VMs reserved per organisation machine.
+/// Other apps, durable stack reservations and whole VMs held per machine.
 pub async fn reservations(
     executor: impl PgExecutor<'_>,
     organisation_id: Uuid,
     except_app: Uuid,
 ) -> Result<Vec<Reservation>, sqlx::Error> {
+    resource_reservations(executor, organisation_id, except_app, None).await
+}
+
+/// Shared machine occupancy excluding the stack whose full transition is being admitted.
+pub async fn reservations_for_stack(
+    executor: impl PgExecutor<'_>,
+    organisation_id: Uuid,
+    except_stack: Option<Uuid>,
+) -> Result<Vec<Reservation>, sqlx::Error> {
+    resource_reservations(executor, organisation_id, Uuid::nil(), except_stack).await
+}
+
+async fn resource_reservations(
+    executor: impl PgExecutor<'_>,
+    organisation_id: Uuid,
+    except_app: Uuid,
+    except_stack: Option<Uuid>,
+) -> Result<Vec<Reservation>, sqlx::Error> {
     sqlx::query_as(
-        "WITH held AS ( \
-           SELECT r.machine_id, (rel.spec->>'memory_mib')::bigint AS memory_mib, \
-             (rel.spec->>'cpu_millis')::bigint AS cpu_millis, a.name, r.state = 'running' AS running \
-           FROM grund_replicas r JOIN grund_releases rel ON rel.app_id = r.app_id AND rel.number = r.release \
-           JOIN grund_apps a ON a.app_id = r.app_id \
-           WHERE r.organisation_id = $1 AND r.app_id <> $2 \
+        "WITH own_stack AS (SELECT stack_id FROM grund_stack_members WHERE organisation_id=$1 AND app_id=$2), \
+         actual AS ( \
+           SELECT r.machine_id, member.stack_id, \
+             sum((rel.spec->>'memory_mib')::bigint)::bigint AS memory_mib, \
+             sum((rel.spec->>'cpu_millis')::bigint)::bigint AS cpu_millis, \
+             array_agg(DISTINCT a.name) FILTER (WHERE r.state='running') AS apps \
+           FROM grund_replicas r JOIN grund_releases rel ON rel.app_id=r.app_id AND rel.number=r.release \
+           JOIN grund_apps a ON a.app_id=r.app_id \
+           LEFT JOIN grund_stack_members member ON member.organisation_id=r.organisation_id AND member.app_id=r.app_id \
+           WHERE r.organisation_id=$1 AND r.app_id<>$2 \
+             AND ($4::uuid IS NULL OR member.stack_id IS DISTINCT FROM $4) \
+           GROUP BY r.machine_id,member.stack_id), \
+         stack_held AS ( \
+           SELECT COALESCE(actual.machine_id,stack.machine_id) AS machine_id, \
+             GREATEST(COALESCE(actual.memory_mib,0),COALESCE(stack.reserved_memory_mib,0)) AS memory_mib, \
+             GREATEST(COALESCE(actual.cpu_millis,0),COALESCE(stack.reserved_cpu_millis,0)) AS cpu_millis, \
+             COALESCE(actual.apps,'{}') AS apps \
+           FROM actual FULL JOIN (SELECT * FROM grund_stacks WHERE organisation_id=$1 AND machine_id IS NOT NULL \
+             AND stack_id NOT IN (SELECT stack_id FROM own_stack) \
+             AND ($4::uuid IS NULL OR stack_id<>$4)) stack \
+             ON stack.stack_id=actual.stack_id AND stack.machine_id=actual.machine_id), \
+         held AS ( \
+           SELECT machine_id,memory_mib,cpu_millis,apps FROM stack_held \
            UNION ALL \
-           SELECT v.host_machine_id, v.memory_mib::bigint + $3, v.vcpus::bigint * 1000, NULL::text, false \
-           FROM grund_vms v WHERE v.organisation_id = $1 AND (v.state = 'running' \
-             OR COALESCE(v.observed_state, '') NOT IN ('stopped', 'exited', 'failed')) \
-         ) SELECT machine_id, COALESCE(sum(memory_mib), 0)::bigint AS memory_mib, \
-           COALESCE(sum(cpu_millis), 0)::bigint AS cpu_millis, \
-           COALESCE(array_agg(DISTINCT name) FILTER (WHERE running), '{}') AS apps \
+           SELECT v.host_machine_id,v.memory_mib::bigint+$3,v.vcpus::bigint*1000,'{}'::text[] \
+           FROM grund_vms v WHERE v.organisation_id=$1 AND (v.state='running' \
+             OR COALESCE(v.observed_state,'') NOT IN ('stopped','exited','failed'))) \
+         SELECT machine_id,sum(memory_mib)::bigint AS memory_mib,sum(cpu_millis)::bigint AS cpu_millis, \
+           COALESCE((SELECT array_agg(DISTINCT name) FROM held names CROSS JOIN LATERAL unnest(names.apps) name \
+             WHERE names.machine_id=held.machine_id),'{}') AS apps \
          FROM held GROUP BY machine_id",
     )
     .bind(organisation_id)
     .bind(except_app)
     .bind(crate::agents::VM_MEMORY_OVERHEAD_MIB)
+    .bind(except_stack)
     .fetch_all(executor)
     .await
 }
@@ -1449,6 +1517,144 @@ mod hosted_loss_tests {
     use grund_config::app::spec::{AppName, AppSettings};
 
     #[sqlx::test(migrations = "./migrations")]
+    async fn stack_admission_combines_durable_peaks_actual_copies_and_whole_vms_once(
+        pool: sqlx::PgPool,
+    ) -> anyhow::Result<()> {
+        let org = Uuid::now_v7();
+        let machine = Uuid::now_v7();
+        let stack_a = Uuid::now_v7();
+        let stack_b = Uuid::now_v7();
+        let empty_stack = Uuid::now_v7();
+        let app_a = Uuid::now_v7();
+        let mut connection = pool.acquire().await?;
+        sqlx::query(
+            "INSERT INTO grund_organisations(organisation_id,slug,kind,created_at,stream_version) \
+             VALUES($1,'capacity-test','personal',clock_timestamp(),1)",
+        )
+        .bind(org)
+        .execute(&mut *connection)
+        .await?;
+        sqlx::query(
+            "INSERT INTO grund_machines(machine_id,pool,home_organisation_id,name,state,public_key, \
+             pool_organisation_id,pool_name,minted_by,registered_at,key_registered_at,stream_version) \
+             VALUES($1,'organisation',$2,'worker','active',repeat('a',64),$2,'worker','test',clock_timestamp(),clock_timestamp(),1)",
+        )
+        .bind(machine)
+        .bind(org)
+        .execute(&mut *connection)
+        .await?;
+        for (id, name, memory, cpu) in [
+            (stack_a, "first", 512_i64, 200_i64),
+            (stack_b, "second", 128, 100),
+            (empty_stack, "pending", 96, 60),
+        ] {
+            sqlx::query(
+                "INSERT INTO grund_stacks(organisation_id,stack_id,name,state,status,machine_id, \
+                 reserved_memory_mib,reserved_cpu_millis,stream_version) \
+                 VALUES($1,$2,$3,'{}','deploying',$4,$5,$6,1)",
+            )
+            .bind(org)
+            .bind(id)
+            .bind(name)
+            .bind(machine)
+            .bind(memory)
+            .bind(cpu)
+            .execute(&mut *connection)
+            .await?;
+        }
+        for (id, name, owner, memory, cpu, state) in [
+            (app_a, "main", Some(stack_a), 256, 200, "running"),
+            (
+                Uuid::now_v7(),
+                "sibling",
+                Some(stack_a),
+                128,
+                100,
+                "draining",
+            ),
+            (Uuid::now_v7(), "other", Some(stack_b), 256, 80, "running"),
+            (Uuid::now_v7(), "plain", None, 64, 25, "running"),
+        ] {
+            apply_app(
+                id,
+                1,
+                &AppEvent::Created {
+                    organisation_id: org,
+                    name: AppName::parse(name)?,
+                    settings: AppSettings::default(),
+                    created_by: Uuid::nil(),
+                    created_at: Utc::now(),
+                },
+                &mut connection,
+            )
+            .await?;
+            sqlx::query(
+                "INSERT INTO grund_releases(app_id,number,spec,image_digest,source,created_by,created_at) \
+                 VALUES($1,1,$2,'sha256:'||repeat('a',64),'file',$3,clock_timestamp())",
+            )
+            .bind(id).bind(serde_json::json!({"memory_mib": memory, "cpu_millis": cpu}))
+            .bind(Uuid::nil()).execute(&mut *connection).await?;
+            sqlx::query(
+                "INSERT INTO grund_replicas(replica_id,app_id,organisation_id,machine_id,slot,release,placement,state,placed_at) \
+                 VALUES($1,$2,$3,$4,0,1,0,$5,clock_timestamp())",
+            )
+            .bind(Uuid::now_v7()).bind(id).bind(org).bind(machine).bind(state)
+            .execute(&mut *connection).await?;
+            if let Some(owner) = owner {
+                sqlx::query(
+                    "INSERT INTO grund_stack_members(organisation_id,stack_id,service,app_id,app_name,exclusive) \
+                     VALUES($1,$2,$3,$4,$3,false)",
+                )
+                .bind(org).bind(owner).bind(name).bind(id).execute(&mut *connection).await?;
+            }
+        }
+        let vm = Uuid::now_v7();
+        let digest = "a".repeat(64);
+        crate::agents::insert_vm(
+            &mut *connection,
+            &crate::agents::NewVm {
+                vm_id: vm,
+                organisation_id: org,
+                host_machine_id: machine,
+                name: "guest",
+                vcpus: 2,
+                memory_mib: 1024,
+                disk_gib: 8,
+                kernel_url: "https://artifacts.example/kernel",
+                kernel_sha256: &digest,
+                rootfs_url: "https://artifacts.example/rootfs",
+                rootfs_sha256: &digest,
+                created_by: Uuid::nil(),
+            },
+        )
+        .await?;
+        let held = reservations(&mut *connection, org, Uuid::nil()).await?;
+        assert_eq!(held.len(), 1);
+        assert_eq!((held[0].memory_mib, held[0].cpu_millis), (2080, 2485));
+        assert_eq!(held[0].apps.len(), 3);
+        assert!(!held[0].apps.iter().any(|name| name == "sibling"));
+        let held = reservations(&mut *connection, org, app_a).await?;
+        assert_eq!((held[0].memory_mib, held[0].cpu_millis), (1696, 2285));
+        let held = reservations_for_stack(&mut *connection, org, Some(stack_a)).await?;
+        assert_eq!((held[0].memory_mib, held[0].cpu_millis), (1568, 2185));
+        crate::agents::set_vm_state(&mut *connection, vm, "stopped").await?;
+        let held = reservations_for_stack(&mut *connection, org, Some(stack_a)).await?;
+        assert_eq!((held[0].memory_mib, held[0].cpu_millis), (1568, 2185));
+        sqlx::query("UPDATE grund_vms SET observed_state='exited' WHERE vm_id=$1")
+            .bind(vm)
+            .execute(&mut *connection)
+            .await?;
+        let held = reservations_for_stack(&mut *connection, org, Some(stack_a)).await?;
+        assert_eq!((held[0].memory_mib, held[0].cpu_millis), (416, 185));
+        assert!(
+            reservations_for_stack(&mut *connection, Uuid::now_v7(), Some(stack_a))
+                .await?
+                .is_empty()
+        );
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
     async fn app_loss_survives_projection_replay_with_host_and_completed_snapshot(
         pool: sqlx::PgPool,
     ) -> anyhow::Result<()> {
@@ -1499,6 +1705,210 @@ mod hosted_loss_tests {
                 .await?
                 .is_none()
         );
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn stack_stop_receipts_are_tenant_placement_operation_and_generation_fenced(
+        pool: sqlx::PgPool,
+    ) -> anyhow::Result<()> {
+        let (org, stack, app, machine, replica, operation) = (
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+        );
+        let mut connection = pool.acquire().await?;
+        sqlx::query(
+            "INSERT INTO grund_organisations(organisation_id,slug,kind,created_at,stream_version) \
+            VALUES($1,'receipt-test','personal',clock_timestamp(),1)",
+        )
+        .bind(org)
+        .execute(&mut *connection)
+        .await?;
+        apply_app(
+            app,
+            1,
+            &AppEvent::Created {
+                organisation_id: org,
+                name: AppName::parse("owned")?,
+                settings: AppSettings::default(),
+                created_by: Uuid::nil(),
+                created_at: Utc::now(),
+            },
+            &mut connection,
+        )
+        .await?;
+        sqlx::query("INSERT INTO grund_machines(machine_id,pool,home_organisation_id,name,state,public_key, \
+            pool_organisation_id,pool_name,minted_by,registered_at,key_registered_at,stream_version) \
+            VALUES($1,'organisation',$2,'worker','active',repeat('a',64),$2,'worker','test',clock_timestamp(),clock_timestamp(),1)")
+            .bind(machine).bind(org).execute(&mut *connection).await?;
+        sqlx::query(
+            "INSERT INTO grund_stacks(organisation_id,stack_id,name,state,status,stream_version) \
+            VALUES($1,$2,'shop','{}','deploying',1)",
+        )
+        .bind(org)
+        .bind(stack)
+        .execute(&mut *connection)
+        .await?;
+        sqlx::query("INSERT INTO grund_stack_members(organisation_id,stack_id,service,app_id,app_name,exclusive, \
+            operation_id,required_generation) VALUES($1,$2,'web',$3,'owned',true,$4,20)")
+            .bind(org).bind(stack).bind(app).bind(operation).execute(&mut *connection).await?;
+        sqlx::query("INSERT INTO grund_replicas(replica_id,app_id,organisation_id,machine_id,slot,release,placement,state,placed_at) \
+            VALUES($1,$2,$3,$4,0,1,0,'draining',clock_timestamp())")
+            .bind(replica).bind(app).bind(org).bind(machine).execute(&mut *connection).await?;
+        crate::agents::lock_generation(&mut connection, machine).await?;
+        crate::agents::store_document(
+            &mut *connection,
+            machine,
+            100,
+            Uuid::now_v7(),
+            &[],
+            &[0; 64],
+            Utc::now(),
+        )
+        .await?;
+        for (tenant, host, id, generation, op) in [
+            (Uuid::now_v7(), machine, replica, 20, operation),
+            (org, Uuid::now_v7(), replica, 20, operation),
+            (org, machine, Uuid::now_v7(), 20, operation),
+            (org, machine, replica, 19, operation),
+            (org, machine, replica, 101, operation),
+            (org, machine, replica, 20, Uuid::now_v7()),
+        ] {
+            assert!(
+                !record_stack_receipt(&mut connection, tenant, host, id, generation, op).await?
+            );
+        }
+        sqlx::query("UPDATE grund_replicas SET state='running' WHERE replica_id=$1")
+            .bind(replica)
+            .execute(&mut *connection)
+            .await?;
+        assert!(
+            !record_stack_receipt(&mut connection, org, machine, replica, 20, operation).await?
+        );
+        sqlx::query("UPDATE grund_replicas SET state='draining' WHERE replica_id=$1")
+            .bind(replica)
+            .execute(&mut *connection)
+            .await?;
+        assert!(record_stack_receipt(&mut connection, org, machine, replica, 20, operation).await?);
+        assert!(
+            !record_stack_receipt(&mut connection, org, machine, replica, 20, operation).await?
+        );
+        sqlx::query(
+            "UPDATE grund_stack_members SET operation_id=$2,required_generation=80 WHERE app_id=$1",
+        )
+        .bind(app)
+        .bind(Uuid::now_v7())
+        .execute(&mut *connection)
+        .await?;
+        assert!(
+            !record_stack_receipt(&mut connection, org, machine, replica, 90, operation).await?
+        );
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn owned_app_mutations_reject_before_the_decision_and_leave_no_partial_projection(
+        pool: sqlx::PgPool,
+    ) -> anyhow::Result<()> {
+        use crate::work::{Work, WorkError};
+        use grund_domain::app::{AppCommand, AppError};
+        let events = mire::EventStore::new(pool.clone());
+        events.migrate().await?;
+        let (app, org, stack) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+        let mut work = Work::begin(&events, Uuid::now_v7(), "test").await?;
+        work.app(
+            app,
+            AppCommand::Create {
+                actor: Uuid::nil(),
+                organisation_id: org,
+                name: AppName::parse("owned")?,
+                settings: AppSettings::default(),
+                at: Utc::now(),
+            },
+        )
+        .await?;
+        work.app(
+            app,
+            AppCommand::AssignStack {
+                stack_id: stack,
+                at: Utc::now(),
+            },
+        )
+        .await?;
+        work.commit().await?;
+        let version = super::app(&pool, app).await?.unwrap().stream_version;
+        for authorized_stack in [None, Some(Uuid::now_v7())] {
+            let mut work = Work::begin(&events, Uuid::now_v7(), "test").await?;
+            if let Some(stack_id) = authorized_stack {
+                work.allow_stack(stack_id);
+            }
+            let result = work
+                .app_decide(app, |_| -> Result<(Vec<AppEvent>, ()), AppError> {
+                    panic!("an unauthorized decision must not run")
+                })
+                .await;
+            assert!(matches!(
+                result,
+                Err(WorkError::App(AppError::StackOwned { stack_id })) if stack_id == stack
+            ));
+            drop(work);
+            let row = super::app(&pool, app).await?.unwrap();
+            assert_eq!(row.stream_version, version);
+            assert_eq!(row.settings.0.copies, 1);
+        }
+        let mut work = Work::begin(&events, Uuid::now_v7(), "test").await?;
+        work.allow_stack(stack);
+        work.app(
+            app,
+            AppCommand::Configure {
+                actor: Uuid::nil(),
+                settings: AppSettings::default().with_copies(2)?,
+                at: Utc::now(),
+            },
+        )
+        .await?;
+        work.commit().await?;
+        assert_eq!(super::app(&pool, app).await?.unwrap().settings.0.copies, 2);
+        let at = Utc::now();
+        let mut work = Work::begin(&events, Uuid::now_v7(), "test").await?;
+        work.allow_stack(stack);
+        work.app(
+            app,
+            AppCommand::Delete {
+                actor: Uuid::nil(),
+                at,
+                purge_after: at + chrono::Duration::days(7),
+            },
+        )
+        .await?;
+        work.commit().await?;
+        let version = super::app(&pool, app).await?.unwrap().stream_version;
+        let mut work = Work::begin(&events, Uuid::now_v7(), "test").await?;
+        let result = work
+            .app(
+                app,
+                AppCommand::Restore {
+                    actor: Uuid::nil(),
+                    at,
+                },
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(WorkError::App(AppError::StackOwned { stack_id })) if stack_id == stack
+        ));
+        drop(work);
+        let row = super::app(&pool, app).await?.unwrap();
+        assert_eq!(row.stream_version, version);
+        assert_eq!(
+            row.deleted_at.unwrap().timestamp_micros(),
+            at.timestamp_micros()
+        );
+        assert_eq!(row.settings.0.copies, 2);
         Ok(())
     }
 }

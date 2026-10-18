@@ -87,6 +87,7 @@ impl AgentService for AgentApi {
                     "free_memory_mib": c.free_memory_mib,
                     "apps": c.apps,
                     "volumes": c.volumes,
+                    "stack_services": c.stack_services,
                     "arch": c.arch.chars().take(16).collect::<String>(),
                     "memory_mib": c.memory_mib,
                     "cpu_millis": c.cpu_millis,
@@ -389,6 +390,8 @@ impl AgentService for AgentApi {
                     last_exit_code: r.last_exit_code,
                     reason: r.reason.chars().take(500).collect(),
                     idle: r.idle,
+                    applied_generation: r.applied_generation,
+                    operation_id: Uuid::parse_str(r.operation_id).ok(),
                 })
             })
             .collect();

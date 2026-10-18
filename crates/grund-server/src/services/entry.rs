@@ -101,9 +101,15 @@ impl Entry {
         &self,
         executor: &mut sqlx::PgConnection,
         app_id: Uuid,
-        app_name: &str,
+        _app_name: &str,
         slug: &str,
     ) -> anyhow::Result<Option<String>> {
+        let Some(app_name) = grund_store::entry::public_name(&mut *executor, app_id).await? else {
+            return Ok(None);
+        };
+        if let Some(name) = grund_store::domains::first_bound_name(&mut *executor, app_id).await? {
+            return Ok(Some(name));
+        }
         let Some(domain) = self.app_domain() else {
             return Ok(None);
         };
