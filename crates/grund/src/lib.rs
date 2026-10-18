@@ -13,6 +13,8 @@
 //! - `join`: register this machine with an instance, with a one-time setup
 //!   code (the machine agent, `grund-agent`);
 //! - `agent`: keep it connected, and run the VMs its desired state asks for;
+//! - `machine-follow`: inspect or pause this machine's explicit update opt-in;
+//! - `agent-updates`: inspect, pause or resume the instance's machine rollout;
 //! - `relay`: a relay for an instance's machines, on a host of its own;
 //! - `relays`: mint enrollment tokens for relays, revoke and list them;
 //! - `edge`: the entry edge, which terminates TLS for app addresses and
@@ -100,6 +102,16 @@ enum Command {
     Join(grund_agent::join::JoinArgs),
     #[command(about = "Keep this machine connected to its instance and run what it asks for")]
     Agent(AgentCommand),
+    #[command(hide = true)]
+    AgentSupervisor(grund_agent::supervisor::SupervisorArgs),
+    #[command(
+        about = "Inspect, pause or resume this machine's explicitly enabled update following"
+    )]
+    MachineFollow(grund_agent::supervisor::FollowArgs),
+    #[command(
+        about = "Inspect, pause or resume machine updates using the instance's local database"
+    )]
+    AgentUpdates(AgentUpdatesCommand),
     #[command(
         about = "Run a relay for an instance's machines: iroh's relay and QUIC address discovery, admitting only the keys the instance does"
     )]
@@ -118,6 +130,37 @@ enum Command {
     Edges(grund_server::relays_command::EdgesCommand),
     #[command(flatten)]
     Client(grund_cli::Command),
+}
+
+#[derive(clap::Args)]
+struct AgentUpdatesCommand {
+    #[command(flatten)]
+    database: grund_server::config::DatabaseArgs,
+    #[command(subcommand)]
+    action: AgentUpdatesAction,
+}
+
+#[derive(Subcommand)]
+enum AgentUpdatesAction {
+    Status,
+    Pause,
+    Resume,
+}
+
+async fn agent_updates(command: AgentUpdatesCommand) -> anyhow::Result<()> {
+    use std::io::Write;
+
+    use grund_server::services::agent_updates::{pause, resume, status};
+
+    let state = match command.action {
+        AgentUpdatesAction::Status => status(&command.database).await?,
+        AgentUpdatesAction::Pause => pause(&command.database).await?,
+        AgentUpdatesAction::Resume => resume(&command.database).await?,
+    };
+    let mut output = std::io::stdout().lock();
+    serde_json::to_writer_pretty(&mut output, &state)?;
+    output.write_all(b"\n")?;
+    Ok(())
 }
 
 #[derive(clap::Args)]
@@ -286,6 +329,7 @@ pub async fn run_with_extensions(
 ) -> anyhow::Result<()> {
     grund_server::health::set_revision(revision);
     grund_server::health::set_build_time(built);
+    grund_server::health::set_package(grund_cli::VERSION);
     grund_crypto::install_default();
     let args: Vec<String> = std::env::args().collect();
     let cli = match Cli::try_parse_from(&args) {
@@ -299,7 +343,13 @@ pub async fn run_with_extensions(
         let status = grund_cli::run(command, Cli::command(), revision).await;
         std::process::exit(status);
     }
-    let to_stderr = matches!(cli.command, Command::Doctor(_) | Command::SetupLink(_));
+    let to_stderr = matches!(
+        cli.command,
+        Command::Doctor(_)
+            | Command::SetupLink(_)
+            | Command::MachineFollow(_)
+            | Command::AgentUpdates(_)
+    );
     let service = match &cli.command {
         Command::Serve(_) => Some("grund"),
         Command::Relay(_) => Some("grund-relay"),
@@ -326,6 +376,9 @@ pub async fn run_with_extensions(
         Command::Probe(args) => probe::run(&args),
         Command::Doctor(command) => doctor(command).await,
         Command::Join(args) => grund_agent::join::run(&args).await,
+        Command::AgentSupervisor(args) => grund_agent::supervisor::run(&args).await,
+        Command::MachineFollow(args) => grund_agent::supervisor::policy(&args),
+        Command::AgentUpdates(command) => agent_updates(command).await,
         Command::Relay(command) => grund_server::relay_command::run(command).await,
         Command::Relays(command) => grund_server::relays_command::run(command).await,
         Command::Edge(command) => grund_server::edge::run(command).await,

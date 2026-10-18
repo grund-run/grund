@@ -28,6 +28,7 @@ use crate::state::State;
 
 static REVISION: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
 static BUILD_TIME: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+static PACKAGE: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
 
 /// Records the commit this binary was built from. The binary crate calls it
 /// once, before anything else: the revision is compiled there, not here, so
@@ -41,6 +42,16 @@ pub fn set_revision(revision: &'static str) {
 /// "unknown" if it never was.
 pub fn revision() -> &'static str {
     REVISION.get().copied().unwrap_or("unknown")
+}
+
+/// Records the exact public release tag compiled into the binary's CLI.
+pub fn set_package(package: &'static str) {
+    let _ = PACKAGE.set(package);
+}
+
+/// The release package identity, or an empty value for an unnamed source build.
+pub fn package() -> &'static str {
+    PACKAGE.get().copied().unwrap_or("")
 }
 
 /// Records when the shipped binary was built; local builds say "local".

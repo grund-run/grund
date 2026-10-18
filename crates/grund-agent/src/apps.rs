@@ -46,6 +46,7 @@
 //! with loopback only and is checked inside its namespace. What it reaches
 //! and what reaches it is published for the gate ([`Shared::endpoints`]).
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     path::PathBuf,
@@ -179,6 +180,8 @@ pub struct Shared {
     pub reports: Mutex<Vec<ReplicaObserved>>,
     /// Why the machine refused a replica, for the next status report.
     pub refusals: Mutex<Vec<String>>,
+    /// Whether the apps loop successfully observed the runtimes its desired work requires.
+    pub runtime_ready: AtomicBool,
     /// The main loop applied a new document.
     pub document: Notify,
     /// Something a report carries changed: report now.
@@ -536,6 +539,9 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
     pub async fn run(mut self) {
         loop {
             if let Err(error) = self.pass().await {
+                if self.shared.runtime_ready.swap(false, Ordering::Relaxed) {
+                    self.shared.changed.notify_one();
+                }
                 tracing::warn!(error = %format!("{error:#}"), "apps pass failed; trying again");
             }
             tokio::select! {
@@ -736,7 +742,7 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
             let containers = match self.runtime.list().await {
                 Ok(containers) => containers,
                 Err(_) => {
-                    self.publish(Vec::new(), Vec::new());
+                    self.publish(Vec::new(), Vec::new(), true);
                     return Ok(());
                 }
             };
@@ -755,7 +761,7 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                 }
             }
             self.erase_deleted(desired.as_ref(), &[]);
-            self.publish(Vec::new(), Vec::new());
+            self.publish(Vec::new(), Vec::new(), true);
             return Ok(());
         }
         if let Err(error) = self.runtime.prepare().await {
@@ -770,7 +776,7 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                     ),
                 );
             }
-            self.publish(reports.into_values().collect(), refusals);
+            self.publish(reports.into_values().collect(), refusals, false);
             return Ok(());
         }
         let containers = self.runtime.list().await?;
@@ -1264,7 +1270,7 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
             changed
         });
         self.release_unused_blocks(desired.as_ref(), &mounted);
-        self.publish(reports.into_values().collect(), refusals);
+        self.publish(reports.into_values().collect(), refusals, true);
         self.erase_deleted(desired.as_ref(), &mounted);
         Ok(())
     }
@@ -1429,7 +1435,12 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
         }
     }
 
-    fn publish(&mut self, reports: Vec<ReplicaObserved>, refusals: Vec<String>) {
+    fn publish(
+        &mut self,
+        reports: Vec<ReplicaObserved>,
+        refusals: Vec<String>,
+        runtime_ready: bool,
+    ) {
         let changed = reports.len() != self.last_reports.len()
             || reports.iter().zip(&self.last_reports).any(|(a, b)| {
                 a.replica_id != b.replica_id
@@ -1440,7 +1451,12 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
         *self.shared.reports.lock().expect("shared lock") = reports.clone();
         *self.shared.refusals.lock().expect("shared lock") = refusals;
         self.last_reports = reports;
-        if changed {
+        let runtime_changed = self
+            .shared
+            .runtime_ready
+            .swap(runtime_ready, Ordering::Relaxed)
+            != runtime_ready;
+        if changed || runtime_changed {
             self.shared.changed.notify_one();
         }
     }
@@ -1496,6 +1512,30 @@ mod tests {
 
     use super::*;
     use crate::simulated::SimulatedContainers;
+
+    #[tokio::test]
+    async fn an_unavailable_required_runtime_never_reports_update_readiness() {
+        let (_, shared, dir) = harness("update-runtime-health");
+        let mut apps = Apps::new(
+            Arc::new(crate::runtime::NoContainers),
+            None,
+            shared.clone(),
+            Policy::default(),
+            dir.clone(),
+            &[9; 32],
+        );
+        set(&shared, vec![replica("required", &[])]);
+        apps.pass().await.unwrap();
+        assert!(!shared.runtime_ready.load(Ordering::Relaxed));
+        assert_eq!(
+            state_of(&shared, "required").0,
+            Some(ReplicaObservedState::REPLICA_OBSERVED_STATE_FAILED)
+        );
+        set(&shared, Vec::new());
+        apps.pass().await.unwrap();
+        assert!(shared.runtime_ready.load(Ordering::Relaxed));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn the_back_off_is_the_kubelets_but_the_first_restart_is_at_once() {

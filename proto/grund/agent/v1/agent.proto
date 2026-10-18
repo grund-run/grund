@@ -199,6 +199,12 @@ message SignedMembershipList {
 message HeartbeatRequest {
   string agent_version = 1;
   Capabilities capabilities = 2;
+  // Process boot identity and public build used for independently observed
+  // update health. Older agents leave these empty and cannot finalize updates.
+  string boot_id = 3;
+  string public_revision = 4;
+  // True only after this boot has initialized its machine runtime.
+  bool update_ready = 5;
 }
 
 message Capabilities {

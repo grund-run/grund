@@ -7,6 +7,7 @@
 //! these types, which is why they live apart from the server.
 
 pub mod account;
+pub mod agent_updates;
 pub mod app;
 pub mod custom_domain;
 pub mod doctor;

@@ -23,6 +23,8 @@ pub(crate) mod release;
 pub(crate) const ROOT: &str = "/opt/grund";
 const SERVER_UNIT: &str = "/etc/systemd/system/grund-server.service";
 const AGENT_MARKER: &str = "/var/lib/grund/.installer-agent";
+const UPDATER_UNIT: &str = "/etc/systemd/system/grund-agent-updater.service";
+const UPDATE_LOCK: &str = "/var/lib/grund/.update.lock";
 const AGENT_INSTALLER: &str = include_str!("../../../grund-agent/install.sh");
 const SERVER_SERVICE: &str = "# grund-managed-server-v1\n[Unit]\nDescription=grund self-hosted server\nWants=network-online.target\nAfter=network-online.target docker.service\nRequires=docker.service\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nWorkingDirectory=/opt/grund\nExecStart=/usr/bin/docker compose --project-directory /opt/grund up --no-build -d --wait --wait-timeout 180\nExecStop=/usr/bin/docker compose --project-directory /opt/grund stop\nTimeoutStartSec=300\nTimeoutStopSec=180\nUMask=0077\n\n[Install]\nWantedBy=multi-user.target\n";
 
@@ -430,14 +432,16 @@ pub async fn install(_ctx: &Ctx, args: InstallArgs) -> CliResult<Output> {
             ));
         }
     };
-    if args.url.is_some()
-        && args.code.is_none()
-        && !Path::new("/var/lib/grund/agent/machine.json").is_file()
-    {
+    let updater_data = installed_updater_data_dir().await?;
+    let agent_data = updater_data
+        .as_deref()
+        .unwrap_or(Path::new("/var/lib/grund/agent"));
+    if args.url.is_some() && args.code.is_none() && !agent_data.join("machine.json").is_file() {
         return Err(CliError::usage(
             "a new machine installation requires --code; registered machines keep their identity",
         ));
     }
+    refuse_agent_recovery(agent_data)?;
     if let Some(version) = &args.version {
         release::Version::parse(version)?;
     }
@@ -464,7 +468,7 @@ pub async fn install(_ctx: &Ctx, args: InstallArgs) -> CliResult<Output> {
     {
         return Err(
             CliError::new(Code::Conflict, "reinstall never changes the server release")
-                .hint("use an update-capable grund release with a complete backup; install never changes the existing server version"),
+                .hint("use grund update server --version TAG"),
         );
     }
     if present(Path::new(SERVER_UNIT))?
@@ -487,6 +491,16 @@ pub async fn install(_ctx: &Ctx, args: InstallArgs) -> CliResult<Output> {
     } else {
         None
     };
+    secure_directory(Path::new("/var/lib/grund"))?;
+    let agent_lock = lock(Path::new(UPDATE_LOCK))?;
+    let locked_updater_data = installed_updater_data_dir().await?;
+    if locked_updater_data != updater_data {
+        return Err(CliError::new(
+            Code::Conflict,
+            "machine updater configuration changed before the installation lock; retry",
+        ));
+    }
+    refuse_agent_recovery(agent_data)?;
     if args.domain.is_some() {
         refuse_server_recovery(root)?;
     }
@@ -500,7 +514,7 @@ pub async fn install(_ctx: &Ctx, args: InstallArgs) -> CliResult<Output> {
     {
         return Err(
             CliError::new(Code::Conflict, "reinstall never changes the server release")
-                .hint("use an update-capable grund release with a complete backup; install never changes the existing server version"),
+                .hint("use grund update server --version TAG"),
         );
     }
     let selected = previous
@@ -578,6 +592,7 @@ pub async fn install(_ctx: &Ctx, args: InstallArgs) -> CliResult<Output> {
         )
         .await?;
     }
+    drop(agent_lock);
     agent_install(
         staging.path(),
         &binary,
@@ -607,6 +622,119 @@ fn managed_command(unit: &str, command: &str) -> bool {
             .and_then(|value| value.strip_prefix(command))
             .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with(' '))
     })
+}
+
+fn updater_data_dir(unit: &str) -> CliResult<PathBuf> {
+    let command = "/usr/local/lib/grund/agent/updater agent-supervisor";
+    let mut start = None;
+    let mut environment_data = false;
+    for line in unit.lines().map(str::trim) {
+        if line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        match key.trim() {
+            "EnvironmentFile" => {
+                return Err(CliError::new(
+                    Code::Conflict,
+                    "machine updater uses EnvironmentFile; its data directory cannot be safely resolved",
+                ));
+            }
+            "Environment" if value.contains("GRUND_AGENT_DATA_DIR") => environment_data = true,
+            "ExecStart" if start.replace(value).is_some() => {
+                return Err(CliError::new(
+                    Code::Conflict,
+                    "machine updater must have exactly one managed ExecStart",
+                ));
+            }
+            _ => {}
+        }
+    }
+    let start = start.ok_or_else(|| {
+        CliError::new(
+            Code::Conflict,
+            "machine updater must have exactly one managed ExecStart",
+        )
+    })?;
+    if start == command && !environment_data {
+        return Ok(PathBuf::from("/var/lib/grund/agent"));
+    }
+    let data = start
+        .strip_prefix(command)
+        .and_then(|args| args.strip_prefix(" --data-dir "))
+        .filter(|data| {
+            data.starts_with('/')
+                && data
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"_./-".contains(&b))
+        })
+        .ok_or_else(|| {
+            CliError::new(
+                Code::Conflict,
+                "machine updater must use a managed command with one simple absolute --data-dir",
+            )
+        })?;
+    Ok(PathBuf::from(data))
+}
+
+async fn installed_updater_data_dir() -> CliResult<Option<PathBuf>> {
+    let path = Path::new(UPDATER_UNIT);
+    if !present(path)? {
+        return Ok(None);
+    }
+    let unit = read_managed(path)?;
+    let data = updater_data_dir(&unit)?;
+    let overrides = run(
+        Command::new("/usr/bin/systemctl").args([
+            "show",
+            "--value",
+            "--property=EnvironmentFiles",
+            "--property=DropInPaths",
+            "grund-agent-updater.service",
+        ]),
+        "inspect machine updater overrides",
+    )
+    .await?;
+    if !overrides.iter().all(u8::is_ascii_whitespace) {
+        return Err(CliError::new(
+            Code::Conflict,
+            "machine updater uses EnvironmentFile or drop-ins; its data directory cannot be safely resolved",
+        ));
+    }
+    if !unit
+        .lines()
+        .any(|line| line.trim_start().starts_with("ExecStart=") && line.contains(" --data-dir "))
+    {
+        let environment = run(
+            Command::new("/usr/bin/systemctl").args([
+                "show",
+                "--value",
+                "--property=Environment",
+                "grund-agent-updater.service",
+            ]),
+            "inspect machine updater environment",
+        )
+        .await?;
+        if String::from_utf8_lossy(&environment).contains("GRUND_AGENT_DATA_DIR") {
+            return Err(CliError::new(
+                Code::Conflict,
+                "machine updater environment overrides its implicit data directory; use an explicit managed --data-dir",
+            ));
+        }
+    }
+    Ok(Some(data))
+}
+
+fn refuse_agent_recovery(data_dir: &Path) -> CliResult<()> {
+    if present(&data_dir.join("update-journal.json"))? {
+        return Err(CliError::new(
+            Code::Conflict,
+            "machine has an unresolved update journal; resolve it before installing or uninstalling",
+        ));
+    }
+    Ok(())
 }
 
 fn managed_agent() -> CliResult<bool> {
@@ -647,28 +775,24 @@ pub async fn uninstall(ctx: &Ctx, args: UninstallArgs) -> CliResult<Output> {
         }
     }
     let agent = !matches!(args.scope, Scope::Server) && managed_agent()?;
-    if agent && present(Path::new("/var/lib/grund/agent/update-journal.json"))? {
-        return Err(CliError::new(
-            Code::Conflict,
-            "machine has an unresolved update journal; resolve it before uninstalling",
-        ));
+    let updater_data = if agent {
+        installed_updater_data_dir().await?
+    } else {
+        None
+    };
+    let agent_data = updater_data
+        .as_deref()
+        .unwrap_or(Path::new("/var/lib/grund/agent"));
+    if agent {
+        refuse_agent_recovery(agent_data)?;
     }
     let mut removed = Vec::new();
     if server {
         removed.push("grund-server.service");
     }
     if agent {
-        let updater = Path::new("/etc/systemd/system/grund-agent-updater.service");
+        let updater = Path::new(UPDATER_UNIT);
         if present(updater)? {
-            if !managed_command(
-                &read_managed(updater)?,
-                "/usr/local/lib/grund/agent/updater agent-supervisor",
-            ) {
-                return Err(CliError::new(
-                    Code::Conflict,
-                    "machine updater unit is unmanaged",
-                ));
-            }
             removed.push("grund-agent-updater.service");
         }
         removed.push("grund-agent.service");
@@ -696,15 +820,18 @@ pub async fn uninstall(ctx: &Ctx, args: UninstallArgs) -> CliResult<Output> {
         None
     };
     let _agent_lock = if agent {
-        Some(lock(Path::new("/var/lib/grund/.update.lock"))?)
+        Some(lock(Path::new(UPDATE_LOCK))?)
     } else {
         None
     };
-    if agent && present(Path::new("/var/lib/grund/agent/update-journal.json"))? {
-        return Err(CliError::new(
-            Code::Conflict,
-            "machine update began before the uninstall lock; resolve it first",
-        ));
+    if agent {
+        if installed_updater_data_dir().await? != updater_data {
+            return Err(CliError::new(
+                Code::Conflict,
+                "machine updater configuration changed before the uninstall lock; retry",
+            ));
+        }
+        refuse_agent_recovery(agent_data)?;
     }
     for unit in &removed {
         run(
@@ -729,6 +856,39 @@ pub async fn uninstall(ctx: &Ctx, args: UninstallArgs) -> CliResult<Output> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_custom_updater_journal_fences_reinstall_and_uninstall() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("custom-agent");
+        fs::create_dir(&data).unwrap();
+        let unit = format!(
+            "[Service]\nExecStart=/usr/local/lib/grund/agent/updater agent-supervisor --data-dir {}\n",
+            data.display()
+        );
+        let preserved = updater_data_dir(&unit).unwrap();
+        assert!(refuse_agent_recovery(&preserved).is_ok());
+        fs::write(data.join("update-journal.json"), b"unresolved").unwrap();
+        assert_eq!(
+            refuse_agent_recovery(&preserved).unwrap_err().code,
+            Code::Conflict
+        );
+    }
+
+    #[test]
+    fn ambiguous_or_unresolved_updater_directories_are_refused() {
+        let command = "ExecStart=/usr/local/lib/grund/agent/updater agent-supervisor";
+        for unit in [
+            format!("{command} --data-dir /srv/grund --data-dir /other\n"),
+            format!("{command}\n{command} --data-dir /srv/grund\n"),
+            format!("EnvironmentFile=/etc/grund.env\n{command} --data-dir /srv/grund\n"),
+            format!("Environment=GRUND_AGENT_DATA_DIR=/srv/grund\n{command}\n"),
+            format!("{command} --data-dir /srv/grund%h\n"),
+            format!("{command} --data-dir relative\n"),
+        ] {
+            assert!(updater_data_dir(&unit).is_err(), "{unit}");
+        }
+    }
 
     #[test]
     fn uninstall_rejects_similarly_named_or_commented_unmanaged_commands() {

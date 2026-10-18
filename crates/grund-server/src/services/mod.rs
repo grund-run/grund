@@ -5,6 +5,7 @@
 
 pub mod account_events;
 pub mod accounts;
+pub mod agent_updates;
 pub mod agents;
 pub mod apps;
 pub mod backups;
@@ -30,6 +31,7 @@ pub mod tokens;
 pub mod volumes;
 
 pub use accounts::AccountsState;
+pub use agent_updates::AgentUpdatesState;
 pub use backups::BackupsState;
 pub use device_logins::DeviceLoginsState;
 pub use domains::DomainsState;

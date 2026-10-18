@@ -37,6 +37,7 @@
 
 pub mod account;
 pub mod agent;
+mod agent_updates;
 pub mod app;
 pub mod certificates;
 pub mod domain;
@@ -67,7 +68,10 @@ use connectrpc::{
 use grund_proto::grund::volume::v1::VOLUME_SERVICE_SERVICE_NAME;
 use grund_proto::grund::{
     account::v1::ACCOUNT_SERVICE_SERVICE_NAME,
-    agent::v1::{AGENT_SERVICE_SERVICE_NAME, MACHINE_ENROLLMENT_SERVICE_SERVICE_NAME},
+    agent::v1::{
+        AGENT_SERVICE_SERVICE_NAME, MACHINE_ENROLLMENT_SERVICE_SERVICE_NAME,
+        MACHINE_UPDATE_SERVICE_SERVICE_NAME,
+    },
     app::v1::APP_SERVICE_SERVICE_NAME,
     certificates::v1::CERTIFICATE_SERVICE_SERVICE_NAME,
     domain::v1::DOMAIN_SERVICE_SERVICE_NAME,
@@ -285,6 +289,18 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
     ),
     (
         "/grund.agent.v1.AgentService/GetLease",
+        Requirement::Machine,
+    ),
+    (
+        "/grund.agent.v1.MachineUpdateService/PollUpdate",
+        Requirement::Machine,
+    ),
+    (
+        "/grund.agent.v1.MachineUpdateService/BeginUpdate",
+        Requirement::Machine,
+    ),
+    (
+        "/grund.agent.v1.MachineUpdateService/ReportUpdate",
         Requirement::Machine,
     ),
     (
@@ -663,6 +679,10 @@ pub fn router(state: State) -> axum::Router {
             axum::Router::new()
                 .route_service(
                     &format!("/{AGENT_SERVICE_SERVICE_NAME}/{{method}}"),
+                    service.clone(),
+                )
+                .route_service(
+                    &format!("/{MACHINE_UPDATE_SERVICE_SERVICE_NAME}/{{method}}"),
                     service,
                 )
                 .layer(middleware::from_fn_with_state(
@@ -1029,7 +1049,10 @@ pub fn connect_router(state: State) -> connectrpc::Router {
         .add_service(Arc::new(edge::EdgeEnrollmentApi::new(state.clone())))
         .add_service(Arc::new(login::LoginApi::new(state.clone())))
         .add_service(Arc::new(token::TokenApi::new(state.clone())))
-        .add_service(Arc::new(agent::AgentApi::new(state.clone())));
+        .add_service(Arc::new(agent::AgentApi::new(state.clone())))
+        .add_service(Arc::new(agent_updates::MachineUpdateApi::new(
+            state.clone(),
+        )));
     state.extensions.iter().fold(router, |router, extension| {
         extension.connect_services(router, &state)
     })
@@ -1568,6 +1591,35 @@ mod tests {
             _: RequestContext,
             _: ServiceRequest<'_, machine::ListVmsRequest>,
         ) -> ServiceResult<machine::ListVmsResponse> {
+            unreachable!()
+        }
+    }
+
+    struct UnusedMachineUpdates;
+
+    #[allow(refining_impl_trait)]
+    impl agent::MachineUpdateService for UnusedMachineUpdates {
+        async fn poll_update(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, agent::PollUpdateRequest>,
+        ) -> ServiceResult<agent::PollUpdateResponse> {
+            unreachable!()
+        }
+
+        async fn begin_update(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, agent::BeginUpdateRequest>,
+        ) -> ServiceResult<agent::BeginUpdateResponse> {
+            unreachable!()
+        }
+
+        async fn report_update(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, agent::ReportUpdateRequest>,
+        ) -> ServiceResult<agent::ReportUpdateResponse> {
             unreachable!()
         }
     }
@@ -2149,6 +2201,7 @@ mod tests {
                         machine_id: Uuid::now_v7(),
                         organisation_id: None,
                         endpoint_key_prefix: [b'0'; 12],
+                        registration_key: "0".repeat(64),
                     });
                 }
                 "token" | "full_token" => {
@@ -2416,6 +2469,7 @@ mod tests {
             .add_service(Arc::new(UnusedEdgeEnrollment))
             .add_service(Arc::new(UnusedCertificates))
             .add_service(Arc::new(UnusedAgent))
+            .add_service(Arc::new(UnusedMachineUpdates))
             .add_service(Arc::new(UnusedApps))
             .add_service(Arc::new(UnusedVolumes))
             .add_service(Arc::new(UnusedDomains))

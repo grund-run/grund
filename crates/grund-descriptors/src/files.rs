@@ -4,6 +4,7 @@ pub const FILES: &[&str] = &[
     "grund/agent/v1/agent.proto",
     "grund/app/v1/app.proto",
     "grund/agent/v1/enrollment.proto",
+    "grund/agent/v1/updates.proto",
     "grund/certificates/v1/certificates.proto",
     "grund/cli/v1/cli.proto",
     "grund/domain/v1/domain.proto",

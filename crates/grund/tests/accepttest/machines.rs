@@ -1,3 +1,4 @@
+use anyhow::Context;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use serde_json::{Value, json};
@@ -460,6 +461,64 @@ pub(super) async fn signed_agent_call(
         ],
     )
     .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn machine_update_calls_require_the_machine_key_and_respect_disabled_following()
+-> anyhow::Result<()> {
+    let Some((given, when, then)) = testcase_with_mail().await? else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let (key, registration) = a_member(&when, &then, &owner.username, "following").await?;
+    let machine_id = registration["machineId"].as_str().context("machine id")?;
+    for procedure in ["PollUpdate", "BeginUpdate", "ReportUpdate"] {
+        when.calling(
+            &format!("/grund.agent.v1.MachineUpdateService/{procedure}"),
+            "{}",
+        )
+        .await?;
+        then.status(401)?.connect_code("unauthenticated")?;
+    }
+    let path = "/grund.agent.v1.MachineUpdateService/PollUpdate";
+    let body = json!({
+        "following": false,
+        "architecture": "x86_64",
+        "revision": "a".repeat(40),
+        "bootId": uuid::Uuid::now_v7().to_string(),
+    })
+    .to_string();
+    let stranger = a_machine_key();
+    for (signer, expected) in [(&stranger, 401), (&key, 200)] {
+        let signed_at = now();
+        let message = format!(
+            "grund-agent-request-v1\n{path}\n{signed_at}\n{}",
+            hex::encode(Sha256::digest(body.as_bytes()))
+        );
+        when.calling_with(
+            path,
+            &body,
+            &[
+                ("x-grund-machine", machine_id),
+                ("x-grund-signed-at", &signed_at.to_string()),
+                (
+                    "x-grund-signature",
+                    &STANDARD.encode(signer.sign(message.as_bytes()).to_bytes()),
+                ),
+            ],
+        )
+        .await?;
+        then.status(expected)?;
+        if expected == 200 {
+            anyhow::ensure!(
+                json(&then)?["offer"].is_null(),
+                "a machine with following disabled received an update offer"
+            );
+        } else {
+            then.connect_code("unauthenticated")?;
+        }
+    }
     Ok(())
 }
 

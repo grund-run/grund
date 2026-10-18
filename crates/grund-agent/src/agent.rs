@@ -60,6 +60,12 @@ pub const MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
 /// first.
 pub const CALL_DEADLINE_MS: u64 = 14_000;
 
+const MAX_UPDATE_RESPONSE_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, thiserror::Error)]
+#[error("machine update response exceeds 64 KiB")]
+struct UpdateResponseTooLarge;
+
 /// The file keeping what the agent applied last.
 pub const APPLIED_FILE: &str = "applied.json";
 
@@ -214,6 +220,19 @@ pub struct Link {
 }
 
 impl Link {
+    /// Opens the signed control link using only the machine's enrolled identity.
+    pub fn from_record(record: &Record, data_dir: &Path) -> anyhow::Result<Self> {
+        Ok(Self {
+            http: std::sync::Arc::new(std::sync::Mutex::new(std::sync::Arc::new(
+                join::http_client()?,
+            ))),
+            network_changed: tokio::sync::watch::Sender::new(0),
+            origin: record.instance_url.clone(),
+            machine_id: record.machine_id.clone(),
+            key: join::machine_key(data_dir)?,
+        })
+    }
+
     pub(crate) fn reset_http(&self) -> anyhow::Result<()> {
         let fresh = std::sync::Arc::new(join::http_client()?);
         *self.http.lock().expect("agent HTTP client lock") = fresh;
@@ -239,7 +258,17 @@ impl Link {
         procedure: &str,
         request: &Req,
     ) -> anyhow::Result<Resp> {
-        let path = format!("/grund.agent.v1.AgentService/{procedure}");
+        self.call_service("AgentService", procedure, request).await
+    }
+
+    /// Calls a machine-authenticated service with the existing signed request protocol.
+    pub async fn call_service<Req: Message, Resp: Message>(
+        &self,
+        service: &str,
+        procedure: &str,
+        request: &Req,
+    ) -> anyhow::Result<Resp> {
+        let path = format!("/grund.agent.v1.{service}/{procedure}");
         let body = request.encode_to_vec();
         let signed_at = unix_now();
         let message = format!(
@@ -260,9 +289,27 @@ impl Link {
             .body(body)
             .send();
         let exchange = async {
-            let response = request.await?;
+            let mut response = request.await?;
             let status = response.status();
-            Ok::<_, reqwest::Error>((status, response.bytes().await?))
+            let bytes = if service == "MachineUpdateService" {
+                if response
+                    .content_length()
+                    .is_some_and(|length| length > MAX_UPDATE_RESPONSE_BYTES as u64)
+                {
+                    return Err(anyhow::Error::new(UpdateResponseTooLarge));
+                }
+                let mut bytes = Vec::new();
+                while let Some(chunk) = response.chunk().await? {
+                    if bytes.len() + chunk.len() > MAX_UPDATE_RESPONSE_BYTES {
+                        return Err(anyhow::Error::new(UpdateResponseTooLarge));
+                    }
+                    bytes.extend_from_slice(&chunk);
+                }
+                bytes.into()
+            } else {
+                response.bytes().await?
+            };
+            Ok::<_, anyhow::Error>((status, bytes))
         };
         let outcome = if let Some(changed) = changed.as_mut() {
             tokio::select! {
@@ -273,7 +320,11 @@ impl Link {
             exchange.await
         };
         if procedure == "Heartbeat"
-            && outcome.as_ref().is_err_and(reqwest::Error::is_timeout)
+            && outcome.as_ref().is_err_and(|error| {
+                error
+                    .downcast_ref::<reqwest::Error>()
+                    .is_some_and(reqwest::Error::is_timeout)
+            })
             && let Err(error) = self.reset_http_if(&http)
         {
             tracing::warn!(error = %format!("{error:#}"), "could not replace a timed-out machine control connection");
@@ -444,6 +495,8 @@ pub async fn run<R: VmRuntime, C: ContainerRuntime + 'static>(
         applied: &applied,
         shared: &shared,
         gate: &gate,
+        boot_id: uuid::Uuid::now_v7(),
+        update_ready: std::sync::atomic::AtomicBool::new(false),
     };
     let lease_changed = crate::lease::changed(link.clone(), registered.clone(), lease.clone());
     tokio::pin!(lease_changed);
@@ -848,6 +901,8 @@ struct Round<'a, R, C> {
     applied: &'a tokio::sync::Mutex<Applied>,
     shared: &'a Shared,
     gate: &'a crate::gate::Gate,
+    boot_id: uuid::Uuid,
+    update_ready: std::sync::atomic::AtomicBool,
 }
 
 async fn round<R: VmRuntime, C: ContainerRuntime>(
@@ -865,7 +920,10 @@ async fn round<R: VmRuntime, C: ContainerRuntime>(
         applied,
         shared,
         gate,
+        ..
     } = context;
+    let boot_id = context.boot_id;
+    let public_revision = crate::supervisor::public_revision();
     let capabilities = runtime.capabilities().await;
     let apps = containers.capabilities().await;
     let apps_reason = if !policy.apps {
@@ -879,6 +937,11 @@ async fn round<R: VmRuntime, C: ContainerRuntime>(
             "Heartbeat",
             &HeartbeatRequest {
                 agent_version: env!("CARGO_PKG_VERSION").to_string(),
+                boot_id: boot_id.to_string(),
+                public_revision: public_revision.to_string(),
+                update_ready: context
+                    .update_ready
+                    .load(std::sync::atomic::Ordering::Relaxed),
                 capabilities: buffa::MessageField::from(Capabilities {
                     kvm: capabilities.kvm,
                     root: capabilities.root,
@@ -945,6 +1008,10 @@ async fn round<R: VmRuntime, C: ContainerRuntime>(
         replica.idle = idle.contains(&replica.replica_id);
     }
     let volume_deletions = { shared.volume_deletions.lock().expect("shared lock").clone() };
+    let update_ready = refusals.is_empty()
+        && shared
+            .runtime_ready
+            .load(std::sync::atomic::Ordering::Relaxed);
     let _: ReportStatusResponse = link
         .call(
             "ReportStatus",
@@ -959,6 +1026,20 @@ async fn round<R: VmRuntime, C: ContainerRuntime>(
             },
         )
         .await?;
+    context
+        .update_ready
+        .store(update_ready, std::sync::atomic::Ordering::Relaxed);
+    crate::supervisor::record_health(
+        data_dir,
+        &crate::supervisor::Health {
+            machine_id: record.machine_id.clone(),
+            registration_key: hex::encode(link.key.verifying_key().to_bytes()),
+            boot_id,
+            revision: public_revision.to_string(),
+            ready: update_ready,
+            observed_at_unix: unix_now(),
+        },
+    )?;
     Ok(beat.heartbeat_interval_seconds)
 }
 
@@ -1181,6 +1262,108 @@ mod tests {
             generation,
             payload: hex::encode(payload),
         }
+    }
+
+    #[tokio::test]
+    async fn update_control_rejects_oversized_unsigned_success_and_error_bodies()
+    -> anyhow::Result<()> {
+        use grund_proto::grund::agent::v1::{
+            PollUpdateRequest, PollUpdateResponse, SignedMachineUpdate,
+        };
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        grund_crypto::install_default();
+        let directory =
+            std::env::temp_dir().join(format!("grund-update-response-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir(&directory)?;
+        let key = join::machine_key(&directory)?;
+        for (status, chunked) in [
+            ("200 OK", false),
+            ("500 Internal Server Error", false),
+            ("200 OK", true),
+            ("500 Internal Server Error", true),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+            let mut enrolled = record(&key);
+            enrolled.instance_url = format!("http://{}", listener.local_addr()?);
+            let link = Link::from_record(&enrolled, &directory)?;
+            let body = PollUpdateResponse {
+                offer: buffa::MessageField::from(SignedMachineUpdate {
+                    payload: vec![b'x'; MAX_UPDATE_RESPONSE_BYTES + 1],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }
+            .encode_to_vec();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await?;
+                let mut request = [0; 4096];
+                let mut used = 0;
+                let (end, length) = loop {
+                    anyhow::ensure!(
+                        used < request.len(),
+                        "test request headers exceeded the fixed buffer"
+                    );
+                    let count = socket.read(&mut request[used..]).await?;
+                    anyhow::ensure!(count > 0, "test client closed before sending headers");
+                    used += count;
+                    if let Some(end) = request[..used]
+                        .windows(4)
+                        .position(|part| part == b"\r\n\r\n")
+                    {
+                        let end = end + 4;
+                        let length = std::str::from_utf8(&request[..end])?
+                            .lines()
+                            .filter_map(|line| line.split_once(':'))
+                            .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                            .map(|(_, value)| value.trim().parse::<usize>())
+                            .transpose()?
+                            .unwrap_or(0);
+                        break (end, length);
+                    }
+                };
+                anyhow::ensure!(
+                    length <= request.len() - end,
+                    "test request body exceeded the fixed buffer"
+                );
+                if used < end + length {
+                    socket.read_exact(&mut request[used..end + length]).await?;
+                }
+                let framing = if chunked {
+                    "Transfer-Encoding: chunked".into()
+                } else {
+                    format!("Content-Length: {}", body.len())
+                };
+                socket
+                    .write_all(
+                        format!("HTTP/1.1 {status}\r\n{framing}\r\nConnection: close\r\n\r\n")
+                            .as_bytes(),
+                    )
+                    .await?;
+                if chunked {
+                    let _ = socket
+                        .write_all(format!("{:x}\r\n", body.len()).as_bytes())
+                        .await;
+                    let _ = socket.write_all(&body).await;
+                    let _ = socket.write_all(b"\r\n0\r\n\r\n").await;
+                } else {
+                    let _ = socket.write_all(&body).await;
+                }
+                Ok::<_, anyhow::Error>(())
+            });
+            let answer = link
+                .call_service::<_, PollUpdateResponse>(
+                    "MachineUpdateService",
+                    "PollUpdate",
+                    &PollUpdateRequest::default(),
+                )
+                .await;
+            let error = answer.expect_err("oversized update control reply was accepted");
+            assert!(error.is::<UpdateResponseTooLarge>());
+            server.await??;
+        }
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
     }
 
     #[tokio::test]

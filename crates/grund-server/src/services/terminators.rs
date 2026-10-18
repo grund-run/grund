@@ -346,6 +346,7 @@ mod tests {
             machine_id: uuid::Uuid::now_v7(),
             organisation_id: None,
             endpoint_key_prefix: [b'0'; 12],
+            registration_key: "0".repeat(64),
         });
         assert!(machine.names().is_empty() && machine.subject().is_none());
         assert!(machine.subject_for(&names(&["a.example.com"])).is_none());

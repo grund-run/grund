@@ -11,6 +11,10 @@
 
 use grund_domain::{
     account::{Account, AccountCommand, AccountError, AccountEvent},
+    agent_updates::{
+        AgentUpdates, Command as AgentUpdatesCommand, Error as AgentUpdatesError,
+        Event as AgentUpdatesEvent, rollout_id,
+    },
     app::{App, AppCommand, AppError, AppEvent},
     custom_domain::{Domain, DomainCommand, DomainError, DomainEvent},
     machine::{Machine, MachineCommand, MachineError, MachineEvent},
@@ -28,6 +32,8 @@ use crate::projections;
 pub enum WorkError {
     #[error(transparent)]
     Account(#[from] AccountError),
+    #[error(transparent)]
+    AgentUpdates(#[from] AgentUpdatesError),
     #[error(transparent)]
     Organisation(#[from] OrganisationError),
     #[error(transparent)]
@@ -59,6 +65,7 @@ impl WorkError {
 
 enum Touched {
     Account(Uuid, Account, i64, i64),
+    AgentUpdates(Uuid, AgentUpdates, i64, i64),
     Organisation(Uuid, Organisation, i64, i64),
     Machine(Uuid, Machine, i64, i64),
     App(Uuid, App, i64, i64),
@@ -164,6 +171,20 @@ impl<'a> Work<'a> {
         machine_id: Uuid,
         command: MachineCommand,
     ) -> Result<Vec<MachineEvent>, WorkError> {
+        let lifecycle_at = match &command {
+            MachineCommand::Register { .. }
+            | MachineCommand::DeclarePorts { .. }
+            | MachineCommand::SetLabels { .. } => None,
+            MachineCommand::Lease { at, .. }
+            | MachineCommand::EndLease { at, .. }
+            | MachineCommand::Reregister { at, .. }
+            | MachineCommand::LinkProvider { at, .. }
+            | MachineCommand::Revoke { at, .. }
+            | MachineCommand::SetInService { at, .. } => Some(*at),
+        };
+        if let Some(at) = lifecycle_at {
+            self.guard_machine_update(machine_id, at).await?;
+        }
         let mut root = self.load::<Machine>(machine_id).await?;
         let base = root.version;
         let events = mire::Command::handle(command, &root.state)?;
@@ -309,6 +330,113 @@ impl<'a> Work<'a> {
     pub async fn load_app(&mut self, app_id: Uuid) -> Result<App, WorkError> {
         Ok(self.load::<App>(app_id).await?.state)
     }
+    /// Serializes a lifecycle or provider migration against executable replacement.
+    pub async fn guard_machine_update(
+        &mut self,
+        machine_id: Uuid,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), WorkError> {
+        let rollout = self.load_agent_updates().await?;
+        if let Some(attempt) = rollout
+            .active
+            .filter(|attempt| attempt.machine_id == machine_id)
+        {
+            if attempt.authorized_at.is_some() {
+                return Err(AgentUpdatesError::LifecycleBlocked.into());
+            }
+            self.agent_updates(AgentUpdatesCommand::Cancel {
+                fence: attempt.fence(),
+                at,
+            })
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Loads the singleton after an advisory lock that also serializes creation.
+    pub async fn load_agent_updates(&mut self) -> Result<AgentUpdates, WorkError> {
+        Ok(self.load_agent_updates_root().await?.state)
+    }
+
+    async fn load_agent_updates_root(&mut self) -> Result<AggregateRoot<AgentUpdates>, WorkError> {
+        sqlx::query("SELECT pg_advisory_xact_lock(7428173965021841::bigint)")
+            .execute(&mut **self.scope.tx())
+            .await?;
+        self.load::<AgentUpdates>(rollout_id()).await
+    }
+
+    /// Decides and projects an implicit singleton command in this transaction.
+    pub async fn agent_updates(
+        &mut self,
+        command: AgentUpdatesCommand,
+    ) -> Result<Vec<AgentUpdatesEvent>, WorkError> {
+        let mut root = self.load_agent_updates_root().await?;
+        let base = root.version;
+        let events = mire::Command::handle(command, &root.state)?;
+        if events.is_empty() {
+            return Ok(events);
+        }
+        root.set_metadata(self.metadata.clone());
+        root.record_many(events.clone());
+        self.scope.save(&mut root).await?;
+        for (offset, event) in events.iter().enumerate() {
+            crate::agent_updates::apply_agent_updates(
+                base + 1 + offset as i64,
+                event,
+                self.scope.tx(),
+            )
+            .await?;
+        }
+        self.touched.push(Touched::AgentUpdates(
+            rollout_id(),
+            root.state,
+            base,
+            root.version,
+        ));
+        Ok(events)
+    }
+
+    /// Records disposable health evidence in the caller's heartbeat transaction.
+    pub async fn record_update_observation(
+        &mut self,
+        machine_id: Uuid,
+        registration_key: &str,
+        boot_id: Uuid,
+        revision: &str,
+        ready: bool,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), WorkError> {
+        crate::agent_updates::record_update_observation(
+            self.scope.tx(),
+            machine_id,
+            registration_key,
+            boot_id,
+            revision,
+            ready,
+            at,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Reads the latest independently observed heartbeat inside this transaction.
+    pub async fn update_observation(
+        &mut self,
+        machine_id: Uuid,
+    ) -> Result<Option<crate::agent_updates::UpdateObservation>, WorkError> {
+        Ok(crate::agent_updates::update_observation(&mut **self.scope.tx(), machine_id).await?)
+    }
+
+    /// Replays a terminal attempt after newer machines have completed.
+    pub async fn completed_update_attempt(
+        &mut self,
+        attempt_id: Uuid,
+    ) -> Result<Option<grund_domain::agent_updates::Attempt>, WorkError> {
+        Ok(
+            crate::agent_updates::completed_update_attempt(&mut **self.scope.tx(), attempt_id)
+                .await?,
+        )
+    }
 
     async fn load<A: Snapshot>(&mut self, id: Uuid) -> Result<AggregateRoot<A>, WorkError> {
         let id = id.to_string();
@@ -342,6 +470,9 @@ impl<'a> Work<'a> {
             match touched {
                 Touched::Account(id, state, before, after) => {
                     snapshot::<Account>(store, id, state, before, after)
+                }
+                Touched::AgentUpdates(id, state, before, after) => {
+                    snapshot::<AgentUpdates>(store, id, state, before, after)
                 }
                 Touched::Organisation(id, state, before, after) => {
                     snapshot::<Organisation>(store, id, state, before, after)

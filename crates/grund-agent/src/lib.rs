@@ -23,6 +23,7 @@ pub mod resolved;
 pub mod runtime;
 pub mod secrets;
 pub mod simulated;
+pub mod supervisor;
 mod usage;
 pub mod vm;
 pub mod volume;

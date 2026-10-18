@@ -75,6 +75,10 @@ pub struct ServeConfig {
     #[arg(long, env = "GRUND_LISTEN", default_value = "127.0.0.1:8080")]
     pub listen: SocketAddr,
 
+    /// Stops new machine updates in addition to the durable operator pause.
+    #[arg(long, env = "GRUND_AGENT_UPDATES_PAUSED", default_value_t = false, action = clap::ArgAction::Set)]
+    pub agent_updates_paused: bool,
+
     /// The origin people reach grund at, e.g. https://app.grund.sh. Links in
     /// mail point here, cookies are scoped to it, and a form posted from any
     /// other origin is refused. Plain http only for loopback, unless

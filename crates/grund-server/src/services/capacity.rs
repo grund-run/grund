@@ -3,6 +3,7 @@
 
 use crate::state::State;
 use chrono::{DateTime, Utc};
+pub use grund_domain::agent_updates::ProviderUpdateFence;
 use std::{any::Any, future::Future, pin::Pin, sync::Arc};
 
 /// Why a call to the provider did not do what was asked.
@@ -24,6 +25,14 @@ pub type InventorySize = (String, String, String);
 /// Provider operations used by the shared machine service.
 pub trait CapacityProvider: Any + Send + Sync {
     fn as_any(&self) -> &dyn Any;
+    fn acquire_machine_update_fence<'a>(
+        &'a self,
+        reservation: &'a ProviderUpdateFence,
+    ) -> CapacityFuture<'a, Result<bool, CapacityError>>;
+    fn release_machine_update_fence<'a>(
+        &'a self,
+        reservation: &'a ProviderUpdateFence,
+    ) -> CapacityFuture<'a, Result<u64, CapacityError>>;
     fn offers(&self) -> CapacityFuture<'_, Result<Vec<Offer>, CapacityError>>;
     fn inventory_sizes(&self) -> CapacityFuture<'_, Result<Vec<InventorySize>, CapacityError>>;
     fn get_provision<'a>(
@@ -78,6 +87,26 @@ pub struct Offer {
 impl Capacity {
     pub fn enabled(&self) -> bool {
         matches!(self, Self::Provider(_))
+    }
+
+    pub async fn acquire_machine_update_fence(
+        &self,
+        reservation: &ProviderUpdateFence,
+    ) -> Result<bool, CapacityError> {
+        match self {
+            Self::None => Err(CapacityError::NotConfigured),
+            Self::Provider(provider) => provider.acquire_machine_update_fence(reservation).await,
+        }
+    }
+
+    pub async fn release_machine_update_fence(
+        &self,
+        reservation: &ProviderUpdateFence,
+    ) -> Result<u64, CapacityError> {
+        match self {
+            Self::None => Err(CapacityError::NotConfigured),
+            Self::Provider(provider) => provider.release_machine_update_fence(reservation).await,
+        }
     }
 
     pub async fn offers(&self) -> Result<Vec<Offer>, CapacityError> {

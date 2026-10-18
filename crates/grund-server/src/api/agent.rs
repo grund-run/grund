@@ -20,6 +20,7 @@ use uuid::Uuid;
 
 use crate::{
     services::{
+        AgentUpdatesState,
         agents::{AgentsState, HEARTBEAT_INTERVAL_SECONDS, MachineCaller, ReplicaReport},
         apps::AppsState,
         backups::BackupsState,
@@ -138,6 +139,22 @@ impl AgentService for AgentApi {
             .heartbeat(&caller, request.agent_version, &capabilities)
             .await
             .map_err(internal)?;
+        if !request.boot_id.is_empty() {
+            let boot_id = Uuid::parse_str(request.boot_id)
+                .ok()
+                .filter(|id| !id.is_nil())
+                .ok_or_else(|| ConnectError::invalid_argument("invalid update boot id"))?;
+            self.state
+                .agent_updates()
+                .observe(
+                    &caller,
+                    boot_id,
+                    request.public_revision,
+                    request.update_ready,
+                )
+                .await
+                .map_err(internal)?;
+        }
         Response::ok(HeartbeatResponse {
             generation: generation as u64,
             heartbeat_interval_seconds: HEARTBEAT_INTERVAL_SECONDS,

@@ -412,6 +412,7 @@ impl Machines {
                 return Ok(EnrollOutcome::KeyReused);
             }
             Err(WorkError::Machine(_)) => return Ok(EnrollOutcome::TokenInvalid),
+            Err(WorkError::AgentUpdates(_)) => return Ok(EnrollOutcome::TokenInvalid),
             Err(error) => {
                 return Ok(match error.unique_violation().as_deref() {
                     Some("grund_machines_key_idx") => EnrollOutcome::KeyReused,
@@ -857,6 +858,7 @@ pub fn refused(
 ) -> anyhow::Result<Option<ChangeOutcome>> {
     Ok(match result {
         Ok(_) => None,
+        Err(WorkError::AgentUpdates(_)) => Some(ChangeOutcome::NotAvailable),
         Err(WorkError::Machine(error)) => Some(match error {
             MachineError::NotFound => ChangeOutcome::NotFound,
             MachineError::NotAvailable => ChangeOutcome::NotAvailable,

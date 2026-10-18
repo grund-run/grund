@@ -6,6 +6,7 @@
 //! replicas starting together are safe.
 
 pub mod accounts;
+pub mod agent_updates;
 pub mod agents;
 pub mod api_tokens;
 pub mod apps;

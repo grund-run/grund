@@ -213,6 +213,36 @@ What compose deliberately does not do:
   `docker compose up -d`. These commands apply to checkouts, not to the
   installer-managed `/opt/grund` deployment.
 
+### Machines following their instance (checkout)
+
+This checkout adds machine build following; alpha.6 and earlier do not have it.
+The feature-capable installer explicitly enables following and installs a
+retained `grund-agent-updater.service`. Existing agents need one installer
+rerun from a feature-capable instance; response fields alone cannot give a
+legacy agent safe rollback.
+
+Following replaces only `/usr/local/lib/grund/agent/grund`, not the CLI or
+server. It targets the instance's exact public build, not the newest release.
+The updater independently verifies artifacts from grund's fixed public registry;
+checksums are not release signatures. An unpublished or unsupported build leaves
+the current agent running. One machine is authorized at a time across the instance.
+Health verification and durable finalize precede the next machine; verified
+rollback pauses the rollout, and uncertain authorization retains its slot.
+
+Local root controls stop new authorization, not recovery of an existing attempt:
+
+```sh
+sudo /usr/local/lib/grund/agent/grund machine-follow status
+sudo /usr/local/lib/grund/agent/grund machine-follow pause
+sudo /usr/local/lib/grund/agent/grund machine-follow resume
+```
+
+An instance operator runs `/grund agent-updates status`,
+`/grund agent-updates pause` or `/grund agent-updates resume` inside the configured
+server container. Do not restore an older coordinator database while following
+is enabled: pause first, then reconcile machine journals and provider grants
+before resuming. Automatic following is not a cross-system recovery protocol.
+
 ## The binary
 
 One binary, `grund`, with subcommands: `serve` (the control plane),
@@ -229,8 +259,9 @@ without changing anything, one line per check (`ok`, `warn`, `fail` or
 with `--json`. The exit code is 1 when any check fails. `grund serve --help` lists every setting with
 its environment variable.
 
-grund sends no telemetry and runs no background release checks. Explicit
-install/update commands contact the public release registry.
+grund sends no telemetry. CLI and server updates are explicit; install/update
+commands contact the public release registry. Following machines also contact
+that registry when their instance offers a different public build.
 With `GRUND_ACCOUNT_EVENT_URL` and `GRUND_ACCOUNT_EVENT_TOKEN`,
 an instance queues one account event after the owner's email is confirmed and
 POSTs it to the operator's configured endpoint. The event includes the account

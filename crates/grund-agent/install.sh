@@ -20,6 +20,10 @@
 #   --binary FILE    use an already SHA-256-verified local grund release
 #   --prepare-only   install prerequisites and the unit without joining;
 #                    an existing registered machine is still restarted
+#   Following is explicitly enabled on first bootstrap. Later installs keep
+#   /var/lib/grund/agent/follow.json, including an owner's local pause.
+#   grund-agent-updater.service retains its own known-good executable; only
+#   the dedicated agent runtime is automatically replaced.
 #
 # What it does, as root, each step checked:
 #   1. grund: the build this instance selects for a device, checked against a
@@ -106,8 +110,79 @@ command -v sha256sum >/dev/null || fail "sha256sum is required (coreutils)"
 command -v flock >/dev/null || fail "flock is required (util-linux)"
 command -v sync >/dev/null || fail "sync is required (coreutils)"
 [ ! -L /etc/systemd/system/grund-agent.service ] || fail "the agent unit must not be a symbolic link"
-previous_arguments="" legacy_unit=""
+[ ! -L /etc/systemd/system/grund-agent-updater.service ] || fail "the updater unit must not be a symbolic link"
+read_updater_configuration() {
+  updater_data="" updater_unit_sha=missing
+  [ ! -L /etc/systemd/system/grund-agent-updater.service ] ||
+    fail "the updater unit must not be a symbolic link"
+  if [ ! -e /etc/systemd/system/grund-agent-updater.service ]; then return; fi
+  [ -f /etc/systemd/system/grund-agent-updater.service ] ||
+    fail "the updater unit must be a regular file"
+  [ "$(stat -c %u /etc/systemd/system/grund-agent-updater.service)" = 0 ] &&
+    [ -z "$(find /etc/systemd/system/grund-agent-updater.service -maxdepth 0 -perm /022 -print)" ] ||
+    fail "the updater unit must be root-owned and not writable by other users"
+  updater_unit_sha="$(sha256sum /etc/systemd/system/grund-agent-updater.service | cut -d ' ' -f 1)"
+  [ "$(grep -Ec '^[[:space:]]*ExecStart[[:space:]]*=' /etc/systemd/system/grund-agent-updater.service)" = 1 ] ||
+    fail "the existing updater must have exactly one managed ExecStart"
+  updater_start="$(sed -n 's/^[[:space:]]*ExecStart[[:space:]]*=//p' /etc/systemd/system/grund-agent-updater.service | sed 's/[[:space:]]*$//')"
+  case "$updater_start" in
+    "/usr/local/lib/grund/agent/updater agent-supervisor") updater_data=/var/lib/grund/agent ;;
+    "/usr/local/lib/grund/agent/updater agent-supervisor --data-dir "*)
+      updater_data="${updater_start#'/usr/local/lib/grund/agent/updater agent-supervisor --data-dir '}"
+      case "$updater_data" in
+        /*) ;;
+        *) fail "the updater data directory must be absolute" ;;
+      esac
+      case "$updater_data" in
+        *[!A-Za-z0-9_./-]*) fail "the updater requires one unambiguous simple --data-dir" ;;
+      esac
+      ;;
+    *) fail "the existing updater command is not installer-managed" ;;
+  esac
+  updater_overrides="$(systemctl show --value --property=EnvironmentFiles --property=DropInPaths grund-agent-updater.service)" ||
+    fail "cannot inspect existing updater overrides; nothing was changed"
+  case "$updater_overrides" in
+    *[![:space:]]*) fail "the updater uses EnvironmentFile or drop-ins; its identity cannot be safely resolved" ;;
+  esac
+  if grep -Eq '^[[:space:]]*EnvironmentFile[[:space:]]*=' /etc/systemd/system/grund-agent-updater.service; then
+    fail "the updater uses EnvironmentFile; its identity cannot be safely resolved"
+  fi
+  if [ "$updater_start" = "/usr/local/lib/grund/agent/updater agent-supervisor" ]; then
+    updater_environment_data="$(systemctl show -p Environment --value grund-agent-updater.service)" ||
+      fail "cannot inspect the existing updater environment"
+    case "$updater_environment_data" in
+      *GRUND_AGENT_DATA_DIR*) fail "the updater must name its overridden data directory explicitly" ;;
+    esac
+    if grep -Eq '^[[:space:]]*Environment[[:space:]]*=.*GRUND_AGENT_DATA_DIR' /etc/systemd/system/grund-agent-updater.service; then
+      fail "the updater must name its overridden data directory explicitly"
+    fi
+  fi
+}
+read_updater_configuration
+preserved_updater_data="$updater_data"
+preserved_updater_sha="$updater_unit_sha"
+check_existing_agent_configuration() {
+  [ ! -L /etc/systemd/system/grund-agent.service ] ||
+    fail "the agent unit must not be a symbolic link"
+  if [ ! -e /etc/systemd/system/grund-agent.service ]; then return; fi
+  [ -f /etc/systemd/system/grund-agent.service ] ||
+    fail "the agent unit must be a regular file"
+  [ "$(stat -c %u /etc/systemd/system/grund-agent.service)" = 0 ] &&
+    [ -z "$(find /etc/systemd/system/grund-agent.service -maxdepth 0 -perm /022 -print)" ] ||
+    fail "the agent unit must be root-owned and not writable by other users"
+  agent_overrides="$(systemctl show --value --property=EnvironmentFiles --property=DropInPaths grund-agent.service)" ||
+    fail "cannot inspect the existing agent overrides; nothing was changed"
+  case "$agent_overrides" in
+    *[![:space:]]*) fail "the agent uses EnvironmentFile or drop-ins; its identity cannot be safely resolved" ;;
+  esac
+  if grep -Eq '^[[:space:]]*EnvironmentFile[[:space:]]*=' /etc/systemd/system/grund-agent.service; then
+    fail "the agent uses EnvironmentFile; its identity cannot be safely resolved"
+  fi
+}
+check_existing_agent_configuration
+previous_arguments="" legacy_unit="" agent_unit_sha=missing environment_data=""
 if [ -f /etc/systemd/system/grund-agent.service ]; then
+  agent_unit_sha="$(sha256sum /etc/systemd/system/grund-agent.service | cut -d ' ' -f 1)"
   previous_exec="$(sed -n 's/^ExecStart=//p' /etc/systemd/system/grund-agent.service)"
   case "$previous_exec" in
     "/usr/local/bin/grund agent "*)
@@ -116,21 +191,27 @@ if [ -f /etc/systemd/system/grund-agent.service ]; then
       previous_arguments="${previous_exec#'/usr/local/lib/grund/agent/grund agent '}" ;;
     *) fail "existing grund-agent.service has an unmanaged ExecStart; preserve it manually before installing" ;;
   esac
-  environment_files="$(systemctl show -p EnvironmentFiles --value grund-agent.service)" ||
-    fail "cannot inspect the existing agent environment; nothing was changed"
-  if [ -n "$environment_files" ] ||
-    grep -Eq '^[[:space:]]*EnvironmentFile[[:space:]]*=' /etc/systemd/system/grund-agent.service; then
-    fail "the existing agent uses EnvironmentFile; this installer cannot safely resolve that identity, so nothing was changed"
-  fi
-  case "$previous_arguments" in
-    *--data-dir*) fail "this installer cannot migrate a custom agent data directory; nothing was changed" ;;
-  esac
-  environment_data="$(systemctl show -p Environment --value grund-agent.service | tr ' ' '\n' | sed -n 's/^GRUND_AGENT_DATA_DIR=//p')"
-  if [ -n "$environment_data" ] && [ "$environment_data" != /var/lib/grund/agent ]; then
-    fail "this installer cannot migrate a custom agent data directory; nothing was changed"
-  fi
 fi
-for directory in /var/lib/grund /usr/local/lib/grund /usr/local/lib/grund/agent; do
+agent_data=/var/lib/grund/agent
+if [ -f /etc/systemd/system/grund-agent.service ]; then
+  environment_data="$(systemctl show -p Environment --value grund-agent.service | tr ' ' '\n' | sed -n 's/^GRUND_AGENT_DATA_DIR=//p')"
+  argument_data="$(printf '%s\n' "$previous_arguments" | sed -n -e 's/.*--data-dir \([^ ]*\).*/\1/p' -e 's/.*--data-dir=\([^ ]*\).*/\1/p')"
+  agent_data="${argument_data:-${environment_data:-$agent_data}}"
+fi
+case "$agent_data" in
+  /*) ;;
+  *) fail "the existing agent data directory must be absolute" ;;
+esac
+case "$agent_data" in
+  *[!A-Za-z0-9_./-]*) fail "the installer cannot preserve this data-directory spelling; use a simple absolute path" ;;
+esac
+if [ -n "$updater_data" ]; then
+  if [ -f /etc/systemd/system/grund-agent.service ] && [ "$agent_data" != "$updater_data" ]; then
+    fail "the agent and preserved updater name different identity directories; nothing was changed"
+  fi
+  agent_data="$updater_data"
+fi
+for directory in /var/lib/grund "$agent_data" /usr/local/lib/grund /usr/local/lib/grund/agent; do
   [ ! -L "$directory" ] || fail "$directory must not be a symbolic link"
   if [ -e "$directory" ]; then
     [ -d "$directory" ] && [ "$(stat -c %u "$directory")" = 0 ] ||
@@ -144,14 +225,35 @@ done
 [ ! -L /var/lib/grund/.update.lock ] || fail "the update lock must not be a symbolic link"
 exec 9>/var/lib/grund/.update.lock
 flock -n 9 || fail "another agent installation or update is running"
+read_updater_configuration
+[ "$updater_data" = "$preserved_updater_data" ] && [ "$updater_unit_sha" = "$preserved_updater_sha" ] ||
+  fail "the updater configuration changed before the update lock; rerun the installer"
+check_existing_agent_configuration
+locked_agent_sha=missing
+if [ -f /etc/systemd/system/grund-agent.service ]; then
+  locked_agent_sha="$(sha256sum /etc/systemd/system/grund-agent.service | cut -d ' ' -f 1)"
+  locked_environment_data="$(systemctl show -p Environment --value grund-agent.service | tr ' ' '\n' | sed -n 's/^GRUND_AGENT_DATA_DIR=//p')"
+  [ "$locked_environment_data" = "$environment_data" ] ||
+    fail "the agent identity environment changed before the update lock; rerun the installer"
+fi
+[ "$locked_agent_sha" = "$agent_unit_sha" ] ||
+  fail "the agent configuration changed before the update lock; rerun the installer"
 runtime_binary=/usr/local/lib/grund/agent/grund
 [ ! -L "$runtime_binary" ] || fail "the runtime must not be a symbolic link"
-[ ! -e /var/lib/grund/agent/update-journal.json ] ||
+[ ! -L /usr/local/lib/grund/agent/updater ] || fail "the retained updater must not be a symbolic link"
+[ ! -L "$agent_data/follow.json" ] || fail "local following policy must not be a symbolic link"
+[ ! -e "$agent_data/update-journal.json" ] && [ ! -L "$agent_data/update-journal.json" ] ||
   fail "an agent update is unresolved; let its supervisor finish before installing"
 url="${url%/}"
 
 work="$(mktemp -d)"
 staged="" switched="" unit_written="" old_active="" old_enabled="" unit_staged="" legacy_repair="" snapshot=""
+updater_written="" updater_new="" policy_new="" old_updater_active="" old_updater_enabled=""
+if systemctl is-active --quiet grund-agent-updater.service; then old_updater_active=1; fi
+if systemctl is-enabled --quiet grund-agent-updater.service; then old_updater_enabled=1; fi
+if [ -f /etc/systemd/system/grund-agent-updater.service ]; then
+  cp -p /etc/systemd/system/grund-agent-updater.service "$work/previous-updater.service"
+fi
 if systemctl is-active --quiet grund-agent.service; then old_active=1; fi
 if systemctl is-enabled --quiet grund-agent.service; then old_enabled=1; fi
 if [ -f /etc/systemd/system/grund-agent.service ]; then
@@ -162,6 +264,20 @@ cleanup() {
   trap - EXIT
   if [ "$result" != 0 ] && { [ -n "$switched" ] || [ -n "$legacy_repair" ]; }; then
     echo "install.sh: installation failed; restoring the retained runtime and dedicated unit" >&2
+    if [ -n "$updater_written" ]; then
+      systemctl stop grund-agent-updater.service || true
+      if [ -f "$work/previous-updater.service" ]; then
+        install -m 0644 "$work/previous-updater.service" /etc/systemd/system/grund-agent-updater.service
+      else
+        systemctl disable grund-agent-updater.service >/dev/null 2>&1 || true
+        rm -f /etc/systemd/system/grund-agent-updater.service
+      fi
+      if [ -z "$old_updater_enabled" ]; then systemctl disable grund-agent-updater.service >/dev/null 2>&1 || true; fi
+      systemctl daemon-reload || true
+      if [ -n "$old_updater_active" ]; then systemctl restart grund-agent-updater.service || true; fi
+    fi
+    [ -z "$updater_new" ] || rm -f /usr/local/lib/grund/agent/updater
+    [ -z "$policy_new" ] || rm -f "$agent_data/follow.json"
     if [ -n "$unit_written" ] || [ -n "$legacy_repair" ]; then systemctl stop grund-agent.service || true; fi
     if [ -f /usr/local/lib/grund/agent/grund.install-previous ]; then
       mv -f /usr/local/lib/grund/agent/grund.install-previous "$runtime_binary"
@@ -250,6 +366,8 @@ install_runtime() {
   [ "$(sha256sum "$source" | cut -d ' ' -f 1)" = "$(sha256sum "$staged" | cut -d ' ' -f 1)" ] ||
     fail "the runtime source changed while copying"
   "$staged" --version >/dev/null || fail "the runtime does not report its version"
+  "$staged" agent-supervisor --identity >/dev/null ||
+    fail "this release cannot bootstrap safe machine following; use a feature-capable public release"
   sync "$staged"
 }
 
@@ -348,14 +466,14 @@ fi
 
 switch_runtime
 
-if [ -f /var/lib/grund/agent/machine.json ]; then
+if [ -f "$agent_data/machine.json" ]; then
   step "already registered; keeping this device's identity"
 elif [ -n "$prepare_only" ]; then
   step "agent installed; enrollment waits for the owner's machine setup code"
 else
   [ -n "$code" ] || fail "give the setup code from $url's Machines page: --code grund_join_..."
   step "registering with $url"
-  "$runtime_binary" join --url "$url" --name "${name:-$(uname -n)}" "$code"
+  "$runtime_binary" join --url "$url" --data-dir "$agent_data" --name "${name:-$(uname -n)}" "$code"
 fi
 
 step "grund-agent.service"
@@ -368,13 +486,16 @@ else
   echo "    systemd ${systemd_version:-?} has no DelegateSubgroup (254+): VMs run without cgroup limits"
 fi
 runtime_arguments="${previous_arguments:---vm-runtime $runtime --vm-firecracker /usr/local/bin/firecracker --vm-jailer /usr/local/bin/jailer}"
+if [ ! -f "$work/previous.service" ]; then
+  runtime_arguments="$runtime_arguments --data-dir $agent_data"
+fi
 cat > "$work/grund-agent.service" <<UNIT
 [Unit]
 Description=grund agent: keeps this machine connected to its grund instance
 Documentation=https://git.kjuulh.io/grund/grund
 After=network-online.target
 Wants=network-online.target
-ConditionPathExists=/var/lib/grund/agent/machine.json
+ConditionPathExists=$agent_data/machine.json
 
 [Service]
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -405,7 +526,7 @@ sync /etc/systemd/system
 printf 'grund-agent-v1\n' > "$work/managed-agent"
 systemctl daemon-reload
 systemctl enable grund-agent.service >/dev/null 2>&1
-if [ -f /var/lib/grund/agent/machine.json ]; then
+if [ -f "$agent_data/machine.json" ]; then
   systemctl restart grund-agent.service
   sleep 3
   systemctl is-active --quiet grund-agent.service || { journalctl -u grund-agent --no-pager -n 20; fail "grund-agent.service did not stay up"; }
@@ -414,4 +535,57 @@ if [ -f /var/lib/grund/agent/machine.json ]; then
 else
   echo "    enabled; not started until this machine is registered"
 fi
+if [ ! -e /usr/local/lib/grund/agent/updater ]; then
+  updater_new=1
+  staged="$(mktemp /usr/local/lib/grund/agent/.updater.XXXXXX)"
+  install -m 0755 "$runtime_binary" "$staged"
+  sync "$staged"
+  mv -f "$staged" /usr/local/lib/grund/agent/updater
+  staged=""
+  sync /usr/local/lib/grund/agent
+fi
+updater_environment="$(sed -n '/^Environment/p' "$work/grund-agent.service")"
+cat > "$work/grund-agent-updater.service" <<UNIT
+[Unit]
+Description=grund machine update supervisor
+Documentation=https://git.kjuulh.io/grund/grund
+After=network-online.target grund-agent.service
+Wants=network-online.target grund-agent.service
+ConditionPathExists=$agent_data/machine.json
+
+[Service]
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+$updater_environment
+ExecStart=/usr/local/lib/grund/agent/updater agent-supervisor --data-dir $agent_data
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+if [ -f "$work/previous-updater.service" ]; then
+  cp -p "$work/previous-updater.service" "$work/grund-agent-updater.service"
+fi
+unit_staged="$(mktemp /etc/systemd/system/.grund-agent-updater.service.XXXXXX)"
+install -m 0644 "$work/grund-agent-updater.service" "$unit_staged"
+sync "$unit_staged"
+updater_written=1
+mv -f "$unit_staged" /etc/systemd/system/grund-agent-updater.service
+unit_staged=""
+sync /etc/systemd/system
+if [ ! -e "$agent_data/follow.json" ]; then
+  policy_new=1
+  printf '{"enabled":true,"paused":false}\n' > "$work/follow.json"
+  install -m 0600 "$work/follow.json" "$agent_data/follow.json"
+  sync "$agent_data/follow.json"
+  sync "$agent_data"
+fi
+systemctl daemon-reload
+systemctl enable grund-agent-updater.service >/dev/null 2>&1
+if [ -f "$agent_data/machine.json" ]; then
+  systemctl restart grund-agent-updater.service
+  sleep 1
+  systemctl is-active --quiet grund-agent-updater.service || fail "the retained update supervisor did not start"
+fi
+echo "    following enabled unless paused locally: grund machine-follow status"
 install -m 0600 "$work/managed-agent" /var/lib/grund/.installer-agent

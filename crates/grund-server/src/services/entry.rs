@@ -262,25 +262,65 @@ impl Entry {
         }
     }
 
-    /// An extension's short-lived warning before a managed machine migrates.
-    /// A later migration cannot be cleared by an earlier completion.
+    /// Holds executable updates durably until this migration's matching clear.
+    /// Traffic draining remains soft and independently expires after its deadline.
     pub async fn set_migration_pause(
         &self,
         provider_machine_id: &str,
         migration_id: Uuid,
         paused: bool,
     ) -> anyhow::Result<bool> {
+        let mut work = grund_store::work::Work::begin(
+            &self.state.events,
+            Uuid::now_v7(),
+            "machine:provider-migration",
+        )
+        .await?;
+        let rollout = work.load_agent_updates().await?;
+        let now = Utc::now();
+        if !rollout.initialized {
+            work.agent_updates(grund_domain::agent_updates::Command::Initialize { at: now })
+                .await?;
+        }
+        let machine_id: Option<Uuid> = sqlx::query_scalar(
+            "SELECT machine_id FROM grund_machines WHERE provider_machine_id = $1 \
+             AND pool = 'management' AND state <> 'revoked' ORDER BY registered_at DESC LIMIT 1",
+        )
+        .bind(provider_machine_id)
+        .fetch_optional(&mut **work.sql())
+        .await?;
+        let Some(machine_id) = machine_id else {
+            return Ok(false);
+        };
+        if paused {
+            work.guard_machine_update(machine_id, now).await?;
+            work.agent_updates(grund_domain::agent_updates::Command::HoldMigration {
+                machine_id,
+                migration_id,
+                at: now,
+            })
+            .await?;
+        } else {
+            work.agent_updates(grund_domain::agent_updates::Command::ClearMigration {
+                machine_id,
+                migration_id,
+                at: now,
+            })
+            .await?;
+        }
         let found = grund_store::entry::set_migration_pause(
-            &self.state.pool,
+            &mut **work.sql(),
             provider_machine_id,
             migration_id,
             paused,
         )
         .await?;
-        if found {
-            self.state.wakes.documents_changed();
+        if !found {
+            return Ok(false);
         }
-        Ok(found)
+        work.commit().await?;
+        self.state.wakes.documents_changed();
+        Ok(true)
     }
 
     /// Adds an edge's report of entry bytes, once per report id.

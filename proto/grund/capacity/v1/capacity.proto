@@ -72,6 +72,17 @@ service CapacityService {
   rpc CordonInventoryHost(CordonInventoryHostRequest) returns (CordonInventoryHostResponse);
   rpc UncordonInventoryHost(UncordonInventoryHostRequest) returns (UncordonInventoryHostResponse);
   rpc DrainInventoryHost(DrainInventoryHostRequest) returns (DrainInventoryHostResponse);
+
+  // A provider-backed agent needs this durable fence before Core authorizes
+  // executable replacement. A denied/unavailable reservation never permits it.
+  rpc AcquireMachineUpdateFence(AcquireMachineUpdateFenceRequest) returns (AcquireMachineUpdateFenceResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  // Closes delayed acquisitions through sequence, but clears an existing grant
+  // only for the matching attempt and sequence, never a different authorization.
+  rpc ReleaseMachineUpdateFence(ReleaseMachineUpdateFenceRequest) returns (ReleaseMachineUpdateFenceResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
 }
 
 message ProvisionMachineRequest {
@@ -214,3 +225,32 @@ message UncordonInventoryHostRequest { string host_id = 1; }
 message UncordonInventoryHostResponse { InventoryHost host = 1; }
 message DrainInventoryHostRequest { string host_id = 1; }
 message DrainInventoryHostResponse { InventoryHost host = 1; }
+
+// A failed_precondition detail on SetMigrationPause that forbids migration,
+// rather than merely declining best-effort traffic draining. Providers abort
+// before queuing snapshot work for reason machine_update_in_progress.
+message MigrationVeto {
+  string reason = 1;
+}
+
+message AcquireMachineUpdateFenceRequest {
+  // Immutable attempt UUID; repeats with different fields are refused.
+  string idempotency_key = 1;
+  string provider_machine_id = 2;
+  // Stable instance management signing-key UUID, not a credential.
+  string controller_id = 3;
+  string attempt_id = 4;
+  // Persisted monotonically increasing Core attempt sequence, never wall time.
+  uint64 sequence = 5;
+}
+message AcquireMachineUpdateFenceResponse { bool allowed = 1; }
+message ReleaseMachineUpdateFenceRequest {
+  string idempotency_key = 1;
+  string provider_machine_id = 2;
+  string controller_id = 3;
+  string attempt_id = 4;
+  // Core has durably cancelled or safely completed this exact attempt.
+  // Advance the closed watermark without clearing a different held attempt.
+  uint64 sequence = 5;
+}
+message ReleaseMachineUpdateFenceResponse { uint64 closed_through_sequence = 1; }

@@ -1,0 +1,74 @@
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+package grund.agent.v1;
+
+// Every call uses AgentService's machine-key signed request authentication.
+// One instance-wide durable attempt serializes updates across organisations.
+service MachineUpdateService {
+  // A following machine may receive one signed, expiring offer. Polling is
+  // idempotent while that offer remains active; it never authorizes a restart.
+  rpc PollUpdate(PollUpdateRequest) returns (PollUpdateResponse);
+  // Rechecks pause, generation, registration and machine lifecycle fences.
+  // The attempt id is the idempotency key; retrying cannot begin another attempt.
+  rpc BeginUpdate(BeginUpdateRequest) returns (BeginUpdateResponse);
+  // Health retains the slot and returns a bound finalize permit. Only committed
+  // or independently verified rollback reports release the slot. Replays of the
+  // completed attempts are accepted after a lost acknowledgement.
+  rpc ReportUpdate(ReportUpdateRequest) returns (ReportUpdateResponse);
+}
+
+message PollUpdateRequest {
+  bool following = 1;
+  // x86_64 or aarch64; the supervisor independently resolves public artifacts.
+  string architecture = 2;
+  // Exact public forty-character lowercase hexadecimal revision.
+  string revision = 3;
+  // Random process boot UUID, not the host operating system boot id.
+  string boot_id = 4;
+}
+
+message PollUpdateResponse {
+  SignedMachineUpdate offer = 1;
+}
+
+message BeginUpdateRequest {
+  string attempt_id = 1;
+  uint64 generation = 2;
+  // The boot being replaced. Candidate health must come from a different boot.
+  string boot_id = 3;
+}
+
+message BeginUpdateResponse {
+  bool authorized = 1;
+}
+
+message ReportUpdateRequest {
+  string attempt_id = 1;
+  uint64 generation = 2;
+  // candidate_health, committed, rolled_back or failed.
+  string phase = 3;
+  string boot_id = 4;
+  string revision = 5;
+  // A bounded safe failure code, never executable output or provider text.
+  string failure_code = 6;
+}
+
+message ReportUpdateResponse {
+  bool accepted = 1;
+  SignedMachineUpdate finalize = 2;
+}
+
+// Ed25519 over "grund-machine-update-v1\n" followed by the exact JSON payload.
+// The verifier requires its enrollment-pinned trust key and every attempt fence.
+// Offers have kind="offer", attempt_id, machine_id, registration_key,
+// generation, previous_revision, target={revision,package}, expires_at_unix.
+// Finalize permits have the same fields, kind="finalize", boot_id and permit=true.
+// Finalize expiry belongs to the permit, not the original offer's expiry.
+// Package is only main-<revision>, vX.Y.Z or vX.Y.Z-alpha.N; never a URL.
+message SignedMachineUpdate {
+  bytes payload = 1;
+  bytes signature = 2;
+  string key_id = 3;
+}

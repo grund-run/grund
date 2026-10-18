@@ -73,6 +73,8 @@ pub struct MachineCaller {
     pub organisation_id: Option<Uuid>,
     /// First twelve ASCII hex bytes of the verified iroh endpoint key.
     pub endpoint_key_prefix: [u8; 12],
+    /// The complete registration public key that authenticated this request.
+    pub registration_key: String,
 }
 
 /// The bytes an agent signs for one request.
@@ -192,6 +194,7 @@ impl Agents {
             machine_id,
             organisation_id: row.pool_organisation_id,
             endpoint_key_prefix,
+            registration_key: row.public_key.expect("verified registration has a key"),
         }))
     }
 

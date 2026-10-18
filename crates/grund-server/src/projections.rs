@@ -40,6 +40,10 @@ impl Projections {
                 grund_store::projections::MachineProjection,
             )
             .subscribe_transactional(
+                grund_store::agent_updates::SUBSCRIPTION,
+                grund_store::agent_updates::AgentUpdatesProjection,
+            )
+            .subscribe_transactional(
                 grund_store::projections::APP_SUBSCRIPTION,
                 grund_store::projections::AppProjection,
             )

@@ -177,6 +177,9 @@ pub async fn serve(
         .add(projections::Projections::new(&state))
         .add(services::apps::AppReconciler::new(state.clone()))
         .add(services::backups::BackupScheduler::new(state.clone()))
+        .add(services::agent_updates::AgentUpdateMonitor::new(
+            state.clone(),
+        ))
         .add(services::entry::EntryKeys::new(state.clone()))
         .add(services::maintenance::Sweeper::new(state.clone()))
         .add(extension::ExtensionWork(state.clone()))
