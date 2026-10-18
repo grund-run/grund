@@ -194,6 +194,7 @@ pub async fn apply_app(
                     "image": release.spec.image,
                     "source": release.source.as_str(),
                     "rollback_of": release.rollback_of,
+                    "note": release.note,
                     "by": release.created_by,
                 }),
             )
@@ -204,6 +205,7 @@ pub async fn apply_app(
             from,
             to,
             started_at,
+            serial,
         } => {
             sqlx::query("UPDATE grund_apps SET rollout = $2 WHERE app_id = $1")
                 .bind(app_id)
@@ -213,6 +215,7 @@ pub async fn apply_app(
                     "to": to,
                     "state": "in_progress",
                     "started_at": started_at,
+                    "serial": serial,
                 }))
                 .execute(&mut *connection)
                 .await?;
@@ -223,7 +226,7 @@ pub async fn apply_app(
                 version,
                 *started_at,
                 "rollout_started",
-                json!({ "from": from, "to": to }),
+                json!({ "from": from, "to": to, "serial": serial }),
             )
             .await?;
         }

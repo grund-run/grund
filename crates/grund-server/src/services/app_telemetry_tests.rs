@@ -1026,3 +1026,102 @@ async fn loss_metadata_expires_for_old_deleted_apps_but_survives_active_and_reco
         0
     );
 }
+
+#[sqlx::test]
+async fn separate_capture_evidence_survives_log_filters_but_not_expiry_or_instance_removal(
+    pool: PgPool,
+) {
+    let mut state = state(pool).await;
+    let owner = placed(&state).await;
+    let other = placed(&state).await;
+    let org = owner.identity.organisation_id;
+    let app_id = owner.identity.app_id;
+    let separate = batch(
+        &owner.identity,
+        "separate output",
+        Utc::now() - Duration::hours(2),
+    );
+    assert_eq!(
+        signed(&state, &owner, &separate, true).await.0,
+        StatusCode::OK
+    );
+    let mut combined = batch(&owner.identity, "legacy output", Utc::now());
+    let mut payload = ExportLogsServiceRequest::decode(combined.logs_otlp.as_ref()).unwrap();
+    payload.resource_logs[0].scope_logs[0].log_records[0].attributes[0] =
+        attr("log.iostream", Value::StringValue("combined".into()));
+    combined.logs_otlp = payload.encode_to_vec();
+    assert_eq!(
+        signed(&state, &owner, &combined, true).await.0,
+        StatusCode::OK
+    );
+    let filtered = state
+        .app_telemetry()
+        .logs(
+            org,
+            app_id,
+            &app::ListAppLogsRequest {
+                stream: "combined".into(),
+                search: "legacy".into(),
+                page_size: 1,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        filtered
+            .logs
+            .iter()
+            .map(|log| (log.stream.as_str(), log.body.as_str()))
+            .collect::<Vec<_>>(),
+        [("combined", "legacy output")]
+    );
+    assert_eq!(
+        state
+            .app_telemetry()
+            .separate_capture(org, app_id)
+            .await
+            .unwrap(),
+        [owner.identity.instance_id]
+    );
+    assert!(
+        state
+            .app_telemetry()
+            .separate_capture(other.identity.organisation_id, app_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        state
+            .app_telemetry()
+            .separate_capture(org, other.identity.app_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    Arc::make_mut(&mut state.config).app_log_retention_hours = 1;
+    assert!(
+        state
+            .app_telemetry()
+            .separate_capture(org, app_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    Arc::make_mut(&mut state.config).app_log_retention_hours = 24;
+    sqlx::query("DELETE FROM grund_replicas WHERE organisation_id=$1 AND replica_id=$2")
+        .bind(org)
+        .bind(owner.identity.instance_id)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    assert!(
+        state
+            .app_telemetry()
+            .separate_capture(org, app_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}

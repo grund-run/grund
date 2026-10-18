@@ -275,6 +275,29 @@ pub async fn logs(
         .bind(org).bind(app).bind(filter.after).bind(filter.through).bind(retention).bind(filter.instance).bind(filter.release).bind(filter.since).bind(filter.until).bind(filter.search).bind(filter.stream).bind(filter.limit).fetch_all(pool).await
 }
 
+/// Current instances with retained separate-stream evidence, independent of log filters.
+pub async fn separate_capture(
+    pool: &PgPool,
+    org: Uuid,
+    app: Uuid,
+    retention: i64,
+) -> Result<Vec<Uuid>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT DISTINCT l.instance_id FROM grund_app_logs l \
+         JOIN grund_app_telemetry_instances i \
+           ON i.organisation_id=l.organisation_id AND i.instance_id=l.instance_id AND i.app_id=l.app_id \
+         WHERE l.organisation_id=$1 AND l.app_id=$2 AND i.stopped_at IS NULL \
+           AND l.stream IN ('stdout','stderr') \
+           AND l.observed_at > statement_timestamp() - make_interval(secs => $3::bigint::double precision) \
+           AND EXISTS(SELECT 1 FROM grund_apps a WHERE a.organisation_id=$1 AND a.app_id=$2 AND a.deleted_at IS NULL)",
+    )
+    .bind(org)
+    .bind(app)
+    .bind(retention)
+    .fetch_all(pool)
+    .await
+}
+
 /// One instance bucket; null usage values are never filled with zero.
 #[derive(FromRow)]
 pub struct MetricRow {

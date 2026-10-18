@@ -613,6 +613,14 @@ impl AppTelemetry {
         })
     }
 
+    /// Positive separate-stream evidence for current instances, independent of display filters.
+    pub async fn separate_capture(&self, org: Uuid, app_id: Uuid) -> Result<Vec<Uuid>> {
+        Ok(
+            store::separate_capture(&self.state.pool, org, app_id, self.policy().log_seconds)
+                .await?,
+        )
+    }
+
     /// Reads measured instance buckets; no synthetic zeros or interpolation.
     pub async fn metrics(
         &self,

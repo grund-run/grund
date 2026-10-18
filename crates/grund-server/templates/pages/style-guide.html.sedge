@@ -2,13 +2,14 @@ use crate::templates::compiled::layouts::App;
 use crate::templates::compiled::components::{Contents, Specimen, Demos, Column, Labelled, Swatches, Borders, TypeScale, SpaceScale, Radii, IconGrid, Icon, ImageIcon, ImageSprite, Button, ButtonAdvanced, CopyButton, ShortId, RelativeTime, RowPill, Mark, Tag, Para, LinkMore, External, IconLink, PageHead, Section, Panel, Tabs, Status, StatusLine, Pill, IconFact, Callout, Stats, EmptyState, AddCard, Code, DnsRecords, Rows, Row, Items, AppRow, AppMenu, MachineRow, ListTools, Links, Link, Tiles, Tile, Timeline, Event, Menu, MenuItem, Banner, PostButton, Search, SelectForm, Form, Field, Grid, Actions, ToggleField, PairsField, CodeField, ChipsField, ChoiceLinks, Facts, Fact, Endpoint, ChoiceField, ChoiceCard, StepperField, Group, RangeField, Expanders, Expander, Nav, NavItem, TopbarAction};
 use crate::templates::compiled::components::{InvitationRows, InboxColumn, NotificationRows, NotificationBell, OrganisationPage, ImageLogoNotices};
 use crate::templates::compiled::components::{Select, DomainName};
+use crate::templates::compiled::components::{TimeSeries, DataTable, OutputRow, LogOutput};
 props crate::web::pages::StyleGuidePage { viewer, csrf, swatches, sprite_icons, gallery, icons, apps, machines };
 
 <App title="Style guide" viewer={viewer} csrf={csrf} title_org={Some(false)}>
   <ImageSprite icons={icons.as_slice()} />
   <PageHead title="Style guide" />
   <Para kind="hint">The components live in <code>templates/components/</code>: <code>ui</code> (basics and page parts), <code>forms</code>, <code>lists</code>, <code>shell</code>, <code>images</code> and <code>catalogue</code>. Pages under <code>pages/</code> compose typed components, with no page-specific class rules.</Para>
-  <Contents parts={&[("sg-tokens", "Tokens"), ("sg-icons", "Icons"), ("sg-buttons", "Buttons and links"), ("sg-heads", "Page and section heads"), ("sg-status", "Status and tags"), ("sg-messages", "Callouts and messages"), ("sg-empty", "Empty states and notes"), ("sg-code", "Code"), ("sg-forms", "Forms"), ("sg-choices", "Panels, facts, choices and steppers"), ("sg-rows", "Rows, links and timelines"), ("sg-items", "Apps, menus and list tools"), ("sg-shell", "Shell")]} />
+  <Contents parts={&[("sg-tokens", "Tokens"), ("sg-icons", "Icons"), ("sg-buttons", "Buttons and links"), ("sg-heads", "Page and section heads"), ("sg-status", "Status and tags"), ("sg-messages", "Callouts and messages"), ("sg-empty", "Empty states and notes"), ("sg-code", "Code"), ("sg-forms", "Forms"), ("sg-choices", "Panels, facts, choices and steppers"), ("sg-rows", "Rows, links and timelines"), ("sg-items", "Apps, menus and list tools"), ("sg-telemetry", "Charts and output"), ("sg-shell", "Shell")]} />
 
   <Section id="sg-tokens" title="Tokens">
     <Specimen title="Layer scale" code="var(--bg) → var(--bg-raised) → var(--surface) → var(--surface-hover) → var(--popover)" note="Page, sidebar and input, card, raised row, popover. Body text stays at least 8.87:1, muted 5.60:1, links 6.33:1. Dividers stay at least 2.12:1 against adjacent layers; control edges at least 3.96:1. The mint focus ring is 6.97:1 on the popover.">
@@ -276,6 +277,37 @@ props crate::web::pages::StyleGuidePage { viewer, csrf, swatches, sprite_icons, 
     <Specimen title="Apps as a grid" code={r#"<Items view="grid">{for app in apps { <AppRow slug={org} manages={true} app={app} /> }}</Items>"#} note="The same rows as cards."><Items view="grid">{for app in apps.iter().take(3) { <AppRow slug="nord-studio" manages app={app} /> }}</Items></Specimen>
     <Specimen title="Machines" code={r#"<Items view="list">{for machine in machines { <MachineRow slug={org} manages={true} machine={machine} csrf={csrf} /> }}</Items>"#} note="machine_row: the server icon, the name with its kind (Hosted) and labels as tags (three, then +N), a plain pill and one more fact under it, the icon facts it reported at the right (disk only once its agent reports it), and machine_menu, whose actions post at once through menu_post."><Items view="list">{for machine in machines { <MachineRow slug="nord-studio" manages machine={machine} csrf={csrf} /> }}</Items></Specimen>
     <Specimen title="Menu" code={r#"<Menu label="Actions for storefront" icon_name="more" open={false}><MenuItem href={url} icon_name="grid" label="Details" danger={false} external={false} state="" /></Menu>"#} note="A details element, so it opens without script; the script closes it on Escape (focus back on the button) or a click elsewhere. Items link to where the action lives; a destructive one is danger and ends in … when it leads to a confirmation."><Demos><Labelled label="closed"><Menu label="Actions for storefront" icon_name="more"><MenuItem href="#sg-items" icon_name="grid" label="Details" /></Menu></Labelled></Demos><Column><Menu label="Actions for api" icon_name="more" open><MenuItem href="#sg-items" icon_name="external" label="Open" external /><MenuItem href="#sg-items" icon_name="grid" label="Details" state="hover" /><MenuItem href="#sg-items" icon_name="clock" label="Releases" /><MenuItem href="#sg-items" icon_name="trash" label="Delete…" danger /></Menu></Column></Specimen>
+  </Section>
+  <Section id="sg-telemetry" title="Charts and output">
+    <Specimen title="Time series" code={r#"<TimeSeries chart={chart} />"#} note="Example values, not live measurements. Solid average, dotted maximum and dashed reservation use shared colour tokens. Unknown buckets break every series; isolated samples remain visible. Shaded offline intervals show disconnection from the instance, not app shutdown. SVG geometry scales to the available width.">
+      {for (memory, empty) in [(false, false), (true, false), (false, true)] {
+        {let chart = crate::web::app_telemetry::chart_specimen(memory, empty);}
+        <TimeSeries chart={&chart} />
+      }}
+    </Specimen>
+    <Specimen title="Unknown evicted coverage" code={r#"<TimeSeries chart={chart} />"#} note="Example quota eviction, distinct from authoritative machine disconnection.">
+      {let chart = { let mut chart = crate::web::app_telemetry::chart_specimen(true, false); for gap in &mut chart.gaps { gap.offline = false; gap.label = "Example: coverage unknown (received history evicted)".into(); } chart };}
+      <TimeSeries chart={&chart} />
+    </Specimen>
+    <Specimen title="Output table" code={r#"<DataTable caption="Output" headings={headings}><OutputRow log={log} /></DataTable>"#} note="Example output. Every cell has a phone label. Bodies are escaped text, control bytes are visible, and truncated records are marked.">
+      {let log = crate::web::app_telemetry::LogView { cursor: "example".into(), at: "2026-10-18 12:00:00 UTC".into(), instance: "019a0000-0000-7000-8000-000000000001".into(), release: 3, stream: "stdout".into(), body: crate::web::app_telemetry::inert_text("Example: <script> is text, \u{001b}[31m is inert.\nA second line."), truncated: true };}
+      <DataTable caption="Example output" headings={&["Collected", "Instance", "Stream", "Output"]} wide_end><OutputRow log={&log} /></DataTable>
+    </Specimen>
+    <Specimen title="Empty output and follow state" code={r#"<LogOutput organisation={org} name={name} query={query} logs={logs} cursor={cursor} error={error} loss={loss} since_json={since} until_json={until} />"#} note="No invented log records. Follow is opt-in; updates append only output, retaining the app frame.">
+      {let query = crate::web::app_telemetry::TelemetryQuery::default();}
+      <LogOutput organisation="example" name="example" query={&query} logs={&[]} cursor="" error="" loss="Example: no known records removed." since_json="" until_json="" />
+    </Specimen>
+    <Specimen title="Disconnected delivery coverage" code={r#"<LogOutput query={query} gaps={gaps} />"#} note="Example authoritative outage. No log emission or lost-record count is inferred from an interval without received measurement coverage.">
+      {let query = crate::web::app_telemetry::TelemetryQuery::default();}
+      {let gaps = vec!["2026-10-18 04:00:00 UTC – 2026-10-18 12:00:00 UTC · instance example-instance · machine example-machine: not received (machine offline)".to_string()];}
+      <LogOutput organisation="example" name="example" query={&query} gaps={&gaps} />
+    </Specimen>
+    <Specimen title="Legacy combined output" code={r#"<LogOutput organisation={org} name={name} query={query} logs={combined_logs} />"#} note="Example legacy output. The capture limitation appears only when combined records are present. No historical cutoff date is inferred from collection time.">
+      {let query = crate::web::app_telemetry::TelemetryQuery::default();}
+      {let logs = vec![crate::web::app_telemetry::LogView { cursor: "legacy-example".into(), at: "2026-10-18 12:00:00 UTC".into(), instance: "019a0000-0000-7000-8000-000000000001".into(), release: 2, stream: "combined".into(), body: "Example combined stdout/stderr output.".into(), truncated: false }];}
+      {let restart = crate::web::app_telemetry::RestartControls { action: "#sg-telemetry".into(), csrf: csrf.to_string(), manages: true, single_copy: true, current_instances: vec!["019a0000-0000-7000-8000-000000000001".into()], separate_instances: Vec::new() };}
+      <LogOutput organisation="example" name="example" query={&query} logs={&logs} restart={Some(&restart)} />
+    </Specimen>
   </Section>
   <Section id="sg-shell" title="Shell">
     <Specimen title="Nav items" code={r#"<Nav><NavItem href="/{org}/apps" icon_name="grid" label="Apps" active={section == "apps"} /></Nav>"#} note="The App layout owns the sidebar, organisation switcher and top bar. The top bar shows search, the unread bell and, where applicable, the single primary action. A page passes section to mark its current item."><Column><Nav><NavItem href="#sg-shell" icon_name="home" label="Overview" /><NavItem href="#sg-shell" icon_name="grid" label="Apps (current)" active /><NavItem href="#sg-shell" icon_name="server" label="Machines (hover)" state="hover" /></Nav></Column></Specimen>

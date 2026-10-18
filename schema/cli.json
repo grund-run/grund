@@ -911,7 +911,7 @@
           "type": "string"
         },
         "rollbackOf": {
-          "description": "For a rollback: the release it copies.",
+          "description": "For a rollback or explicit restart: the pinned release it copies.",
           "type": "integer"
         },
         "secretVersions": {

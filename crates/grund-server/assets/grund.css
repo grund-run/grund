@@ -3262,3 +3262,180 @@ a.endpoint-text:hover {
     min-width: 0;
   }
 }
+
+.chart {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+  margin: 0;
+}
+
+.chart-title {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.chart-plot {
+  width: 100%;
+  height: 12rem;
+  overflow: visible;
+}
+
+.chart-axis,
+.chart-grid {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.chart-grid {
+  stroke-dasharray: 3 5;
+}
+
+.chart-offline {
+  fill: var(--orange);
+  fill-opacity: 0.16;
+  stroke: var(--orange);
+  stroke-dasharray: 3 5;
+}
+
+.chart-unknown {
+  fill: var(--border);
+  fill-opacity: 0.24;
+  stroke: var(--text-2);
+  stroke-dasharray: 2 3;
+}
+
+
+.chart-measured {
+  color: var(--accent-text);
+}
+
+.chart-maximum {
+  color: var(--blue);
+}
+
+.chart-reservation {
+  color: var(--orange);
+}
+
+.chart-series {
+  stroke: currentColor;
+  fill: currentColor;
+}
+
+.chart-reservation path {
+  stroke-dasharray: 6 4;
+}
+
+.chart-maximum path {
+  stroke-dasharray: 2 3;
+}
+
+.chart-scale,
+.chart-times,
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  color: var(--text-2);
+  font-size: var(--text-xs);
+}
+
+.chart-scale,
+.chart-times {
+  justify-content: space-between;
+}
+
+.chart-legend {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chart-key {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.chart-key span {
+  width: 1.5rem;
+  border-top: 2px solid currentColor;
+}
+
+.chart-key.chart-reservation span {
+  border-top-style: dashed;
+}
+
+.chart-key.chart-maximum span {
+  border-top-style: dotted;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: var(--text-sm);
+}
+
+.data-table th,
+.data-table td {
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.data-table th {
+  color: var(--text-2);
+  font-weight: 500;
+}
+
+.text-output {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+}
+
+@media (max-width: 700px) {
+  .data-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+
+  .data-table,
+  .data-table tbody,
+  .data-table tr,
+  .data-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .data-table tr {
+    padding: var(--space-3) 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .data-table td {
+    border: 0;
+    padding: var(--space-2) 0;
+  }
+
+  .data-table td::before {
+    display: block;
+    content: attr(data-label);
+    color: var(--muted);
+    font-size: var(--text-xs);
+  }
+}
+
+.data-table-wide-end th:last-child {
+  width: 50%;
+}

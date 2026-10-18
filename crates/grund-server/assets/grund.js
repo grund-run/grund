@@ -41,6 +41,198 @@
       }
     }
 
+    document.querySelectorAll("[data-log-output]").forEach(function (output) {
+      var signal = on.signal;
+      var following = output.dataset.logFollow === "on";
+      var status = output.querySelector("[data-log-status]");
+      var loss = output.querySelector("[data-log-loss]");
+      var gaps = output.querySelector("[data-log-gaps]");
+      var gapList = output.querySelector("[data-log-gap-list]");
+      var empty = output.querySelector("[data-log-empty]");
+      var legacy = output.querySelector("[data-log-legacy]");
+      var legacyThrough = output.querySelector("[data-log-legacy-through]");
+      if (!following && !output.querySelector("[data-log-restart]")) return;
+      var restartControls = output.querySelector("[data-log-restart]");
+      var currentInstances = new Set(restartControls ? restartControls.dataset.currentInstances.split(" ").filter(Boolean) : []);
+      var combinedInstances = new Set();
+      var separateInstances = new Set(restartControls ? JSON.parse(restartControls.dataset.separateInstances) : []);
+      var body = output.querySelector("tbody");
+      var cursor = output.dataset.logCursor;
+      var timer;
+      var trimmed = 0;
+      var seen = new Set(Array.from(body.rows, function (row) { return row.dataset.logCursor; }));
+      function captureStream(instance, stream) {
+        if (stream === "combined") combinedInstances.add(instance);
+        if (stream === "stdout" || stream === "stderr") separateInstances.add(instance);
+      }
+      Array.from(body.rows).forEach(function (row) {
+        captureStream(row.dataset.logInstance, row.dataset.logStream);
+      });
+      function needsRestart() {
+        return Array.from(currentInstances).some(function (instance) {
+          return combinedInstances.has(instance) && !separateInstances.has(instance);
+        });
+      }
+      async function refreshRestart() {
+        if (!restartControls || !needsRestart()) return;
+        restartControls.hidden = true;
+        var response = await fetch("/grund.app.v1.AppService/GetApp", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json", "Connect-Protocol-Version": "1" },
+          body: JSON.stringify({ organisation: output.dataset.logOrganisation, name: output.dataset.logName }),
+          signal: AbortSignal.any([signal, AbortSignal.timeout(15000)])
+        });
+        if (!response.ok) return;
+        var result = await response.json();
+        if (signal.aborted) return;
+        currentInstances = new Set(((result.app || {}).replicas || []).filter(function (replica) {
+          return replica.state === "REPLICA_STATE_RUNNING" || replica.state === "REPLICA_STATE_DRAINING" ||
+            replica.state === 1 || replica.state === 2;
+        }).map(function (replica) { return replica.replicaId; }));
+        restartControls.hidden = !needsRestart();
+      }
+      function inert(text) {
+        return String(text || "").replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, function (ch) {
+          return "\\u{" + ch.charCodeAt(0).toString(16).padStart(4, "0") + "}";
+        });
+      }
+      function append(log) {
+        if (seen.has(log.cursor)) return;
+        var collected = log.observedAt ? new Date(log.observedAt).toISOString().slice(0, 19).replace("T", " ") + " UTC" : "Not reported";
+        if (log.stream === "combined") {
+          legacy.hidden = false;
+          if (log.observedAt && collected > legacyThrough.textContent) legacyThrough.textContent = collected;
+        }
+        captureStream(log.instance, log.stream);
+        if (restartControls) restartControls.hidden = !needsRestart();
+        seen.add(log.cursor);
+        var row = document.createElement("tr");
+        row.dataset.logCursor = log.cursor;
+        row.dataset.logInstance = log.instance;
+        row.dataset.logStream = log.stream;
+        function cell(label) {
+          var td = document.createElement("td");
+          td.dataset.label = label;
+          row.appendChild(td);
+          return td;
+        }
+        var time = document.createElement("time");
+        time.textContent = collected;
+        cell("Collected").appendChild(time);
+        var identity = cell("Instance");
+        var code = document.createElement("code");
+        code.title = inert(log.instance);
+        code.textContent = inert(log.instance);
+        identity.append(code, document.createElement("br"), document.createTextNode("Release " + (log.release || 0)));
+        cell("Stream").textContent = inert(log.stream);
+        var text = cell("Output");
+        var pre = document.createElement("pre");
+        pre.className = "text-output";
+        pre.textContent = inert(log.body);
+        text.appendChild(pre);
+        if (log.truncated) {
+          var tag = document.createElement("span");
+          tag.className = "tag";
+          tag.textContent = "Truncated";
+          text.appendChild(tag);
+        }
+        body.appendChild(row);
+        while (body.rows.length > 1000) {
+          seen.delete(body.rows[0].dataset.logCursor);
+          body.rows[0].remove();
+          trimmed++;
+        }
+        empty.hidden = body.rows.length !== 0;
+      }
+      function schedule(delay) {
+        if (!signal.aborted) timer = setTimeout(poll, delay);
+      }
+      async function poll() {
+        if (signal.aborted) return;
+        if (document.visibilityState !== "visible") {
+          if (following) status.textContent = "Follow paused while this tab is hidden.";
+          schedule(3000);
+          return;
+        }
+        if (!following) {
+          try {
+            await refreshRestart();
+            if (!signal.aborted) status.textContent = "Follow paused.";
+          } catch (error) {
+            if (!signal.aborted) status.textContent = "Restart availability could not be checked. Retrying.";
+          }
+          if (needsRestart()) schedule(3000);
+          return;
+        }
+        var request = {
+          organisation: output.dataset.logOrganisation,
+          name: output.dataset.logName,
+          instance: output.dataset.logInstance,
+          release: Number(output.dataset.logRelease || 0),
+          search: output.dataset.logSearch,
+          stream: output.dataset.logStream,
+          pageSize: 200,
+          pageToken: cursor
+        };
+        if (output.dataset.logSince) request.since = output.dataset.logSince;
+        if (output.dataset.logUntil) request.until = output.dataset.logUntil;
+        try {
+          var response = await fetch("/grund.app.v1.AppTelemetryService/ListAppLogs", {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "Content-Type": "application/json", "Connect-Protocol-Version": "1" },
+            body: JSON.stringify(request),
+            signal: AbortSignal.any([signal, AbortSignal.timeout(15000)])
+          });
+          if (!response.ok) {
+            status.textContent = response.status === 401 || response.status === 403 || response.status === 404 ?
+              "Follow stopped. Reload to check your access." : "Live output could not be loaded. Apply filters to try again.";
+            return;
+          }
+          var result = await response.json();
+          if (signal.aborted) return;
+          (result.logs || []).forEach(append);
+          if (gaps && gapList) {
+            gapList.replaceChildren();
+            (result.gaps || []).filter(function (gap) { return gap.reason === "machine_offline" || gap.reason === "coverage_unknown"; }).slice(0, 1024).forEach(function (gap) {
+              var item = document.createElement("li");
+              item.textContent = gap.since + " – " + gap.until + " · instance " + gap.instance +
+                " · machine " + gap.machine + ": " + (gap.reason === "machine_offline" ? "not received (machine offline)" : "coverage unknown (received history evicted)");
+              gapList.appendChild(item);
+            });
+            gaps.hidden = !gapList.children.length;
+          }
+          await refreshRestart();
+          if (signal.aborted) return;
+          cursor = result.nextPageToken || cursor;
+          output.dataset.logCursor = cursor;
+          var next = output.querySelector("[data-log-next] a");
+          if (next) {
+            var href = new URL(next.href);
+            href.searchParams.set("cursor", cursor);
+            next.href = href.toString();
+          }
+          loss.textContent = "Known records removed by retention or organisation limits: " + (result.droppedRecords || "0") +
+            ". Collection and offline losses are not included. Eligible offline batch delivery window: " + (result.deliveryWindowHours ? result.deliveryWindowHours + " hours." : "not reported.") +
+            " Spool capacity can be tighter." + (trimmed ? " This view removed " + trimmed + " older rows to stay within 1000 rows." : "");
+          status.textContent = "Following new output. Updated " + new Date().toLocaleTimeString() + ".";
+          schedule((result.logs || []).length === 200 ? 100 : 3000);
+        } catch (error) {
+          if (signal.aborted) return;
+          status.textContent = "Live output is disconnected. Retrying in 3 seconds.";
+          schedule(3000);
+        }
+      }
+      signal.addEventListener("abort", function () { clearTimeout(timer); }, { once: true });
+      if (following) {
+        status.textContent = "Following new output.";
+        schedule(100);
+      } else if (needsRestart()) {
+        schedule(100);
+      }
+    });
+
     if (navigator.clipboard) {
       document.querySelectorAll("button[data-copy]").forEach(function (button) {
         button.hidden = false;

@@ -99,6 +99,12 @@ pub enum AppsError {
     UpdateRollout,
     #[error("the app needs a successful release before checking for updates")]
     UpdateNoBase,
+    #[error("wait for the active rollout before restarting the app")]
+    RestartRollout,
+    #[error("the app needs a running release before it can restart")]
+    RestartNoBase,
+    #[error("only an owner or admin can restart an app")]
+    RestartNotAllowed,
     #[error("this target was not offered by the running release's explicit check")]
     UpdateNotOffered,
     #[error("the update request key was already used for a different request")]
@@ -132,6 +138,9 @@ impl AppsError {
             AppsError::UpdateStale => "update_stale",
             AppsError::UpdateRollout => "rollout_in_progress",
             AppsError::UpdateNoBase => "update_no_base",
+            AppsError::RestartRollout => "rollout_in_progress",
+            AppsError::RestartNoBase => "restart_no_base",
+            AppsError::RestartNotAllowed => "not_allowed",
             AppsError::UpdateNotOffered => "update_not_available",
             AppsError::UpdateRequestConflict => "idempotency_conflict",
             AppsError::ExternalOwnerConflict => "external_owner_conflict",
@@ -153,6 +162,9 @@ impl From<WorkError> for AppsError {
             WorkError::App(AppError::AlreadyExists) => AppsError::NameTaken,
             WorkError::App(AppError::ExternalOwnerConflict) => AppsError::ExternalOwnerConflict,
             WorkError::App(AppError::RequestConflict) => AppsError::UpdateRequestConflict,
+            WorkError::App(AppError::RestartRollout) => AppsError::RestartRollout,
+            WorkError::App(AppError::RestartNoBase) => AppsError::RestartNoBase,
+            WorkError::App(AppError::RestartStale) => AppsError::VersionConflict,
             other => AppsError::Internal(other.into()),
         }
     }
@@ -546,35 +558,53 @@ fn deleted_name_conflict(
     }
 }
 
+async fn require_restart_mutator(
+    connection: &mut PgConnection,
+    organisation_id: Uuid,
+    actor: Uuid,
+) -> Result<(), AppsError> {
+    let role: Option<String> = sqlx::query_scalar(
+        "SELECT role FROM grund_memberships WHERE organisation_id = $1 \
+         AND account_id = $2 FOR SHARE",
+    )
+    .bind(organisation_id)
+    .bind(actor)
+    .fetch_optional(connection)
+    .await?;
+    match role.as_deref() {
+        Some("owner" | "admin") => Ok(()),
+        Some(_) => Err(AppsError::RestartNotAllowed),
+        None => Err(AppsError::NotFound),
+    }
+}
+
 impl Apps {
     async fn require_domain(
         &self,
         connection: &mut PgConnection,
         app_id: Uuid,
-        command: &AppCommand,
+        spec: &AppSpec,
     ) -> Result<(), AppsError> {
-        if let AppCommand::Release { spec, .. } = command {
-            let mode = self.state.config.entry.app_domains;
-            if mode == crate::config::AppDomains::CustomOnly && publishes(spec) {
-                let bound = grund_store::domains::count_bound(&mut *connection, app_id).await? > 0;
-                if !allows_public_release(mode, spec, bound) {
-                    return Err(AppsError::DomainRequired);
-                }
+        let mode = self.state.config.entry.app_domains;
+        if mode == crate::config::AppDomains::CustomOnly && publishes(spec) {
+            let bound = grund_store::domains::count_bound(&mut *connection, app_id).await? > 0;
+            if !allows_public_release(mode, spec, bound) {
+                return Err(AppsError::DomainRequired);
             }
-            if publishes(spec)
-                && let Some((directory, profile)) = self.state.certificates.ordering()
-            {
-                for domain in domains::bound_to(&mut *connection, app_id).await? {
-                    domains::want_certificate(
-                        &mut *connection,
-                        domain.domain_id,
-                        domain.organisation_id,
-                        &domain.name,
-                        &directory,
-                        &profile,
-                    )
-                    .await?;
-                }
+        }
+        if publishes(spec)
+            && let Some((directory, profile)) = self.state.certificates.ordering()
+        {
+            for domain in domains::bound_to(&mut *connection, app_id).await? {
+                domains::want_certificate(
+                    &mut *connection,
+                    domain.domain_id,
+                    domain.organisation_id,
+                    &domain.name,
+                    &directory,
+                    &profile,
+                )
+                .await?;
             }
         }
         Ok(())
@@ -1227,6 +1257,9 @@ impl Apps {
         lock_app_domain_policy(work.sql(), app_id).await?;
         let app = work.load_app(app_id).await?;
         let app_name = app.name.as_ref().ok_or(AppsError::NotFound)?;
+        if matches!(&release, AppCommand::Restart { .. }) {
+            require_restart_mutator(work.sql(), app.organisation_id, actor).await?;
+        }
         if let AppCommand::Release {
             request: Some(request),
             ..
@@ -1264,7 +1297,18 @@ impl Apps {
                 return Err(AppsError::VersionConflict);
             }
         }
-        self.require_domain(work.sql(), app_id, &release).await?;
+        let spec = match &release {
+            AppCommand::Release { spec, .. } => spec,
+            AppCommand::Restart {
+                expected_release, ..
+            } => {
+                &app.release(*expected_release)
+                    .ok_or(AppsError::RestartNoBase)?
+                    .spec
+            }
+            _ => unreachable!("record_release only makes releases"),
+        };
+        self.require_domain(work.sql(), app_id, spec).await?;
         if let Some(settings) = settings {
             work.app(
                 app_id,
@@ -1278,10 +1322,7 @@ impl Apps {
         }
         let app = work.load_app(app_id).await?;
         let org = app.organisation_id;
-        let specs = match &release {
-            AppCommand::Release { spec, .. } => &spec.volumes,
-            _ => unreachable!("record_release only makes releases"),
-        };
+        let specs = &spec.volumes;
         let current = grund_store::volumes::app_volumes(&mut **work.sql(), org, app_id).await?;
         if (!specs.is_empty() || !current.is_empty()) && app.settings.copies != 1 {
             return Err(AppsError::Spec(SpecError {
@@ -1319,7 +1360,11 @@ impl Apps {
     ) -> Result<ReleaseRow, AppsError> {
         let mut work = Work::begin(&self.state.events, Uuid::now_v7(), &actor.to_string()).await?;
         lock_app_domain_policy(work.sql(), app_id).await?;
-        self.require_domain(work.sql(), app_id, &release).await?;
+        let spec = match &release {
+            AppCommand::Release { spec, .. } => spec,
+            _ => unreachable!("preview_release only makes releases"),
+        };
+        self.require_domain(work.sql(), app_id, spec).await?;
         if let Some(settings) = settings {
             work.app(
                 app_id,
@@ -1665,6 +1710,36 @@ impl Apps {
         }
         self.record_release_guarded(actor, row.app_id, command, settings, expected_version)
             .await
+    }
+
+    /// Restarts the current pinned release serially, using the newest secrets.
+    /// Another rollout is never superseded and app rollout settings are unchanged.
+    pub async fn restart(
+        &self,
+        actor: Uuid,
+        organisation_id: Uuid,
+        name: &str,
+    ) -> Result<ReleaseRow, AppsError> {
+        let row = self.live(organisation_id, name).await?;
+        let number = row.current_release.ok_or(AppsError::RestartNoBase)?;
+        let running = apps::release(&self.state.pool, row.app_id, number)
+            .await?
+            .ok_or(AppsError::RestartNoBase)?;
+        let secret_versions = self.secret_versions(row.app_id, &running.spec.0).await?;
+        self.record_release_guarded(
+            actor,
+            row.app_id,
+            AppCommand::Restart {
+                actor,
+                expected_release: number as u32,
+                secret_versions,
+                rollout_id: Uuid::now_v7(),
+                at: Utc::now(),
+            },
+            None,
+            Some(row.stream_version),
+        )
+        .await
     }
 
     /// A new release copying `number`'s contents, with the secrets' newest
@@ -2436,6 +2511,56 @@ impl notmad::Component for AppReconciler {
 mod tests {
     use super::*;
 
+    #[sqlx::test]
+    async fn only_owners_and_admins_can_authorize_a_restart_in_their_own_organisation(
+        pool: sqlx::PgPool,
+    ) {
+        grund_store::migrate(&pool).await.unwrap();
+        let organisation_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO grund_organisations \
+             (organisation_id, slug, kind, created_at, stream_version) \
+             VALUES ($1, $2, 'shared', clock_timestamp(), 1)",
+        )
+        .bind(organisation_id)
+        .bind(format!(
+            "restart-{}",
+            &organisation_id.simple().to_string()[..20]
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+        for role in ["owner", "admin", "member"] {
+            let actor = Uuid::now_v7();
+            sqlx::query(
+                "INSERT INTO grund_memberships (organisation_id, account_id, role, stream_version) \
+                 VALUES ($1, $2, $3, 1)",
+            )
+            .bind(organisation_id)
+            .bind(actor)
+            .bind(role)
+            .execute(&pool)
+            .await
+            .unwrap();
+            let mut tx = pool.begin().await.unwrap();
+            let result = require_restart_mutator(&mut tx, organisation_id, actor).await;
+            if role == "member" {
+                assert!(matches!(result, Err(AppsError::RestartNotAllowed)));
+            } else {
+                assert!(result.is_ok());
+            }
+            assert!(matches!(
+                require_restart_mutator(&mut tx, Uuid::now_v7(), actor).await,
+                Err(AppsError::NotFound)
+            ));
+        }
+        let mut connection = pool.acquire().await.unwrap();
+        assert!(matches!(
+            require_restart_mutator(&mut connection, organisation_id, Uuid::now_v7()).await,
+            Err(AppsError::NotFound)
+        ));
+    }
+
     #[test]
     fn a_deleted_name_is_restorable_only_before_its_deadline() {
         let deleted_at = Utc::now();
@@ -2614,6 +2739,7 @@ mod tests {
                     from: Some(1),
                     to: 2,
                     started_at: now,
+                    serial: false,
                 },
             ] {
                 mire::Aggregate::apply(&mut app, &event);

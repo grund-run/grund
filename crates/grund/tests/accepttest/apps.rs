@@ -1800,19 +1800,18 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
         "the top bar's Deploy app is the page's only primary button"
     );
 
-    for (tab, words) in [
-        ("", "Latest activity"),
-        ("/deployments", "Releases"),
-        ("/logs", "Logs are coming"),
-        ("/metrics", "Metrics are coming"),
-        ("/settings", "Configured"),
-        ("/settings?edit=image", "The tag is resolved now."),
+    for tab in [
+        "",
+        "/deployments",
+        "/logs",
+        "/metrics",
+        "/settings",
+        "/settings?edit=image",
     ] {
         when.visiting(&format!("{page}{tab}")).await?;
         then.status(200)
             .and_then(|t| t.carries_the_security_headers())
             .and_then(|t| t.header("cache-control", "no-store"))
-            .and_then(|t| t.body_contains(words))
             .and_then(|t| t.body_lacks(" style="))
             .and_then(|t| t.body_lacks(" onclick="))
             .map_err(|error| error.context(format!("{page}{tab}")))?;
@@ -2101,5 +2100,128 @@ async fn storage_templates_refuse_unusable_targets_without_creating_an_app() -> 
     }
     let listed = call(&when, &then, "ListApps", json!({"organisation": org})).await?;
     assert!(listed["apps"].as_array().is_none_or(Vec::is_empty));
+    Ok(())
+}
+
+#[tokio::test]
+async fn restart_requires_a_genuine_manager_and_keeps_the_running_image_pinned()
+-> anyhow::Result<()> {
+    let registry = FakeRegistry::start().await?;
+    let Some((given, when, then)) =
+        testcase_configured(&[("GRUND_INSECURE_REGISTRIES", &registry.host)]).await?
+    else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let org = owner.username.as_str();
+    let _agent = a_machine(&when, &then, org, "restart-box").await?;
+    let digest = registry.publish("acme/restart", "1");
+    let image = registry.image("acme/restart", "1");
+    call(
+        &when,
+        &then,
+        "CreateApp",
+        json!({
+            "organisation": org, "name": "restart", "settings": quick(1)
+        }),
+    )
+    .await?;
+    then.status(200)?;
+    call(
+        &when,
+        &then,
+        "Deploy",
+        json!({
+            "organisation": org, "name": "restart", "spec": spec(&image, json!([]))
+        }),
+    )
+    .await?;
+    then.status(200)?;
+    until(
+        &when,
+        &then,
+        org,
+        "restart",
+        Duration::from_secs(30),
+        "first release live",
+        |app| live(app, 1),
+    )
+    .await?;
+    let action = format!("/{org}/apps/restart/restart");
+    let page = format!("/{org}/apps/restart/logs");
+    when.submitting_with_token(&action, "forged", &[]).await?;
+    then.status(403)?;
+    let (outsider, outsider_when, outsider_then) = given.testcase.another_browser();
+    outsider.a_signed_in_account().await?;
+    outsider_when
+        .submitting("/settings/sessions", &action, &[])
+        .await?;
+    outsider_then.status(404)?;
+    let (guest, guest_when, guest_then) = given.testcase.another_browser();
+    let member = guest.a_signed_in_account().await?;
+    when.inviting(org, &member.email, "member").await?;
+    then.status(303)?;
+    let link = guest_when
+        .the_mailed_link(
+            &member.email,
+            &format!("Join {org} on grund"),
+            "/invite?token=",
+        )
+        .await?;
+    guest_when.visiting(&link).await?;
+    let token = guest.last_token()?;
+    guest_when
+        .submitting_on_current_page("/invite", &[("token", &token)])
+        .await?;
+    guest_then.status(303)?;
+    guest_when.submitting(&page, &action, &[]).await?;
+    guest_then.status(403)?;
+    let history = call(
+        &when,
+        &then,
+        "ListReleases",
+        json!({
+            "organisation": org, "name": "restart"
+        }),
+    )
+    .await?;
+    then.status(200)?;
+    anyhow::ensure!(
+        history["releases"]
+            .as_array()
+            .is_some_and(|releases| releases.len() == 1),
+        "a refused restart changed release history"
+    );
+    registry.publish("acme/restart", "1");
+    when.submitting(&page, &action, &[]).await?;
+    then.status(303)?;
+    until(
+        &when,
+        &then,
+        org,
+        "restart",
+        Duration::from_secs(30),
+        "restarted release live",
+        |app| live(app, 2),
+    )
+    .await?;
+    let history = call(
+        &when,
+        &then,
+        "ListReleases",
+        json!({
+            "organisation": org, "name": "restart"
+        }),
+    )
+    .await?;
+    then.status(200)?;
+    let restarted = history["releases"]
+        .as_array()
+        .and_then(|releases| releases.iter().find(|release| release["number"] == 2))
+        .ok_or_else(|| anyhow::anyhow!("restart did not create the second release"))?;
+    anyhow::ensure!(
+        restarted["imageDigest"] == digest,
+        "restart resolved the moved tag instead of the running content"
+    );
     Ok(())
 }

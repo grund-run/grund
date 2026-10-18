@@ -405,7 +405,7 @@ message Release {
   // The secret versions this release was made with.
   repeated SecretInfo secret_versions = 5;
   ReleaseSource source = 6;
-  // For a rollback: the release it copies.
+  // For a rollback or explicit restart: the pinned release it copies.
   uint32 rollback_of = 7;
   // The account that made it, by name.
   string created_by = 8;

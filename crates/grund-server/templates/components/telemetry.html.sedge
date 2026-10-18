@@ -1,0 +1,68 @@
+use crate::templates::compiled::components::{EmptyState, Tag, Actions, Button, Para, PostButton};
+
+component TimeSeries(chart: &crate::web::app_telemetry::TimeSeriesChart) {
+  <figure class="chart">
+    <figcaption class="chart-title">{chart.title}</figcaption>
+    <p class="hint">{chart.summary}</p>
+    <div class="chart-scale"><span>{chart.ceiling} {chart.unit}</span><span>0 {chart.unit} baseline</span></div>
+    <svg class="chart-plot" viewBox="0 0 640 210" preserveAspectRatio="none" role="img" aria-label="{chart.title}: {chart.summary}">
+      <path class="chart-axis" d="M 48 20 V 180 H 604" fill="none" />
+      <path class="chart-grid" d="M 48 20 H 604 M 48 100 H 604" fill="none" />
+      {for gap in &chart.gaps {
+        <rect class={if gap.offline { "chart-offline" } else { "chart-unknown" }} x={gap.x} y="20" width={gap.width} height="160"><title>{gap.label}</title></rect>
+      }}
+      {for series in &chart.series {
+        <g class="chart-series chart-{series.kind}">
+          <path d={&series.path} fill="none" stroke-width="2" vector-effect="non-scaling-stroke" />
+          {for dot in &series.dots { <circle cx={dot.x} cy={dot.y} r="2.5"><title>{dot.label}</title></circle> }}
+        </g>
+      }}
+    </svg>
+    <div class="chart-times"><span>{chart.start}</span><span>{chart.end}</span></div>
+    <ul class="chart-legend" aria-label="Series">{for series in &chart.series { <li class="chart-key chart-{series.kind}"><span aria-hidden="true"></span>{series.label}</li> }}</ul>
+    {if !chart.gaps.is_empty() {
+      {if chart.gaps.iter().any(|gap| gap.offline) { <Para>not received (machine offline). The machine was disconnected from the instance; the app may still have been running. Received measurement coverage is excluded.</Para> }}
+      {if chart.gaps.iter().any(|gap| !gap.offline) { <Para>Coverage unknown: received history was evicted. Earlier missing coverage cannot be attributed to offline delivery.</Para> }}
+      <ul class="hint">{for gap in &chart.gaps { <li>{gap.label}</li> }}</ul>
+    }}
+  </figure>
+}
+
+component DataTable(caption: &str, headings: &[&str], wide_end: bool, children: Html) {
+  <table class={if *wide_end { "data-table data-table-wide-end" } else { "data-table" }}><caption class="visually-hidden">{caption}</caption><thead><tr>{for heading in headings.iter() { <th scope="col">{heading}</th> }}</tr></thead><tbody>{children}</tbody></table>
+}
+
+component OutputRow(log: &crate::web::app_telemetry::LogView) {
+  <tr data-log-cursor={&log.cursor} data-log-instance={&log.instance} data-log-stream={&log.stream}>
+    <td data-label="Collected"><time>{log.at}</time></td>
+    <td data-label="Instance"><code>{log.instance}</code><br>Release {log.release}</td>
+    <td data-label="Stream">{log.stream}</td>
+    <td data-label="Output"><pre class="text-output">{log.body}</pre>{if log.truncated { <Tag text="Truncated" /> }}</td>
+  </tr>
+}
+
+component LogOutput(organisation: &str, name: &str, query: &crate::web::app_telemetry::TelemetryQuery, logs: &[crate::web::app_telemetry::LogView], cursor: &str, next: &str, error: &str, loss: &str, gaps: &[String], since_json: &str, until_json: &str, restart: Option<&crate::web::app_telemetry::RestartControls>, live: bool) {
+  <div data-log-output={crate::templates::BareDataAttr(*live)} data-log-follow={if error.is_empty() && query.follow == "on" { Some("on") } else { None }} data-log-organisation={organisation} data-log-name={name} data-log-cursor={cursor} data-log-search={&query.search} data-log-instance={&query.instance} data-log-release={&query.release} data-log-stream={&query.stream} data-log-since={since_json} data-log-until={until_json}>
+    <p class="hint" role="status" data-log-status>{if !error.is_empty() { "Follow paused: output could not be loaded." } else if query.follow == "on" { "Follow selected. Live updates require JavaScript." } else { "Follow paused." }}</p>
+    <p class="hint" data-log-loss>{loss}</p>
+    <div data-log-gaps hidden={gaps.is_empty()}>
+      <Para>Offline means disconnected from the instance, not necessarily shut down. Unknown coverage means received history was evicted and earlier missing coverage cannot be attributed to offline delivery. Logs may have been quiet, buffered or replayed; individual records do not prove complete log coverage or how many records were lost.</Para>
+      <ul class="hint" data-log-gap-list>{for gap in gaps.iter() { <li>{gap}</li> }}</ul>
+    </div>
+    <div data-log-legacy hidden={!logs.iter().any(|log| log.stream == "combined")}>
+      <Para>Latest combined output in this view: <time data-log-legacy-through>{logs.iter().filter(|log| log.stream == "combined").map(|log| log.at.as_str()).max().unwrap_or("")}</time>.</Para>
+      <Para>Combined output from legacy capture cannot distinguish stdout from stderr. Interleaved output can leave secret fragments visible. Instances still using it have periodic truncation, not a strict capture bound. Their next ordinary restart, deploy, image update or rollback enables separate stdout/stderr and bounded capture.</Para>
+      {if let Some(restart) = restart.filter(|restart| restart.manages) {
+        <div data-log-restart data-current-instances={restart.current_instances.join(" ")} data-separate-instances={serde_json::to_string(&restart.separate_instances).expect("instance identifiers serialize")} hidden={!restart.required(logs)}>
+          {if restart.single_copy { <div data-single-copy-warning><Para>This app has one copy. Restarting can interrupt requests if a replacement cannot run alongside it.</Para></div> }}
+          <PostButton action={&restart.action} csrf={&restart.csrf} label="Restart to enable" kind="secondary" />
+        </div>
+      }}
+    </div>
+    <div data-log-empty hidden={!logs.is_empty() || !error.is_empty()}><EmptyState title="No matching output" text="No retained log records match these filters." /></div>
+    <DataTable caption="App output, in received order" headings={&["Collected", "Instance", "Stream", "Output"]} wide_end>
+      {for log in logs.iter() { <OutputRow log={log} /> }}
+    </DataTable>
+    {if error.is_empty() && !cursor.is_empty() { <div data-log-next><Actions><Button label="Load next page" href={next} kind="secondary" /></Actions></div> }}
+  </div>
+}

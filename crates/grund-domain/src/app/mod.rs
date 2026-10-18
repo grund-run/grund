@@ -162,6 +162,9 @@ pub struct Rollout {
     pub from: Option<u32>,
     pub to: u32,
     pub started_at: DateTime<Utc>,
+    /// An explicit restart replaces one slot at a time, including its drain.
+    #[serde(default)]
+    pub serial: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, mire::EventData)]
@@ -190,6 +193,8 @@ pub enum AppEvent {
         from: Option<u32>,
         to: u32,
         started_at: DateTime<Utc>,
+        #[serde(default)]
+        serial: bool,
     },
     ReplicaPlaced {
         replica_id: Uuid,
@@ -362,12 +367,14 @@ impl mire::Aggregate for App {
                 from,
                 to,
                 started_at,
+                serial,
             } => {
                 self.rollout = Some(Rollout {
                     rollout_id: *rollout_id,
                     from: *from,
                     to: *to,
                     started_at: *started_at,
+                    serial: *serial,
                 });
             }
             AppEvent::ReplicaPlaced {
@@ -467,7 +474,7 @@ impl mire::Aggregate for App {
 }
 
 impl mire::Snapshot for App {
-    const SNAPSHOT_VERSION: i32 = 6;
+    const SNAPSHOT_VERSION: i32 = 7;
     const SNAPSHOT_FREQUENCY: i64 = 100;
 }
 
@@ -505,6 +512,14 @@ pub enum AppCommand {
         rollout_id: Uuid,
         at: DateTime<Utc>,
     },
+    /// Copies the current pinned release without superseding another rollout.
+    Restart {
+        actor: Uuid,
+        expected_release: u32,
+        secret_versions: Vec<SecretVersion>,
+        rollout_id: Uuid,
+        at: DateTime<Utc>,
+    },
     Delete {
         actor: Uuid,
         at: DateTime<Utc>,
@@ -533,6 +548,12 @@ pub enum AppError {
     ExternalOwnerConflict,
     #[error("the update request key was already used for a different request")]
     RequestConflict,
+    #[error("wait for the active rollout before restarting the app")]
+    RestartRollout,
+    #[error("the app needs a running release before it can restart")]
+    RestartNoBase,
+    #[error("the running release changed before the restart")]
+    RestartStale,
 }
 
 impl mire::Command for AppCommand {
@@ -594,6 +615,48 @@ impl mire::Command for AppCommand {
                     configured_by: actor,
                     configured_at: at,
                 }])
+            }
+            AppCommand::Restart {
+                actor,
+                expected_release,
+                secret_versions,
+                rollout_id,
+                at,
+            } => {
+                if app.rollout.is_some() {
+                    return Err(AppError::RestartRollout);
+                }
+                if app.halted || app.current_release.is_none() {
+                    return Err(AppError::RestartNoBase);
+                }
+                if app.current_release != Some(expected_release) {
+                    return Err(AppError::RestartStale);
+                }
+                let running = app
+                    .release(expected_release)
+                    .ok_or(AppError::RestartNoBase)?;
+                let mut events = AppCommand::Release {
+                    actor,
+                    spec: running.spec.clone(),
+                    image_digest: running.image_digest.clone(),
+                    platforms: running.platforms.clone(),
+                    exposed_ports: running.exposed_ports.clone(),
+                    secret_versions,
+                    source: ReleaseSource::Dashboard,
+                    external_release: None,
+                    request: None,
+                    rollback_of: Some(expected_release),
+                    note: "Restart".into(),
+                    rollout_id,
+                    at,
+                }
+                .handle(app)?;
+                for event in &mut events {
+                    if let AppEvent::RolloutStarted { serial, .. } = event {
+                        *serial = true;
+                    }
+                }
+                Ok(events)
             }
             AppCommand::Release {
                 actor,
@@ -666,6 +729,7 @@ impl mire::Command for AppCommand {
                     from: app.current_release,
                     to: number,
                     started_at: at,
+                    serial: false,
                 });
                 Ok(events)
             }
@@ -788,6 +852,62 @@ mod tests {
             AppEvent::RolloutSuperseded { by: 2, .. }
         ));
         assert!(matches!(&second[2], AppEvent::RolloutStarted { to: 2, .. }));
+    }
+
+    #[test]
+    fn a_restart_pins_the_running_release_and_refuses_stale_or_concurrent_requests() {
+        let mut app = created();
+        let restart = |expected_release| AppCommand::Restart {
+            actor: Uuid::from_u128(12),
+            expected_release,
+            secret_versions: vec![SecretVersion {
+                name: "token".into(),
+                version: 4,
+            }],
+            rollout_id: Uuid::from_u128(13),
+            at: at(),
+        };
+        assert_eq!(restart(1).handle(&app), Err(AppError::RestartNoBase));
+        for event in release(&app) {
+            app.apply(&event);
+        }
+        assert_eq!(restart(1).handle(&app), Err(AppError::RestartRollout));
+        app.apply(&AppEvent::RolloutSucceeded {
+            rollout_id: Uuid::from_u128(9),
+            succeeded_at: at(),
+        });
+        app.apply(&AppEvent::CurrentReleaseSet {
+            release: 1,
+            set_at: at(),
+        });
+        assert_eq!(restart(2).handle(&app), Err(AppError::RestartStale));
+        let pinned = app.release(1).unwrap().clone();
+        let settings = app.settings.clone();
+        let events = restart(1).handle(&app).unwrap();
+        for event in &events {
+            app.apply(event);
+        }
+        let next = app.release(2).unwrap();
+        assert_eq!(next.spec, pinned.spec);
+        assert_eq!(next.image_digest, pinned.image_digest);
+        assert_eq!(next.platforms, pinned.platforms);
+        assert_eq!(next.exposed_ports, pinned.exposed_ports);
+        assert_eq!(next.secret_versions[0].version, 4);
+        assert_eq!(next.note, "Restart");
+        assert_eq!(app.settings, settings);
+        assert_eq!(app.current_release, Some(1));
+        assert!(app.rollout.as_ref().unwrap().serial);
+        let restored: App = serde_json::from_value(serde_json::to_value(&app).unwrap()).unwrap();
+        assert_eq!(restored, app);
+        let mut legacy = serde_json::to_value(app.rollout.as_ref().unwrap()).unwrap();
+        legacy.as_object_mut().unwrap().remove("serial");
+        assert!(!serde_json::from_value::<Rollout>(legacy).unwrap().serial);
+        let mut legacy_event = serde_json::to_value(&events[1]).unwrap();
+        legacy_event.as_object_mut().unwrap().remove("serial");
+        assert!(matches!(
+            serde_json::from_value::<AppEvent>(legacy_event).unwrap(),
+            AppEvent::RolloutStarted { serial: false, .. }
+        ));
     }
 
     #[test]

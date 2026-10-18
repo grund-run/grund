@@ -1,0 +1,23 @@
+use crate::templates::compiled::components::{Panel, Form, Field, Select, Grid, ToggleField, Actions, Button, Banner, Para, LogOutput};
+props crate::web::app_telemetry::LogsPage { action, organisation, name, query, logs, cursor, next, error, limits, loss, gaps, since_json, until_json, restart };
+
+<Panel id="log-filters" title="Logs">
+  <Banner text={error} tone="error" />
+  <Form action={action} method={Some("get")}>
+    <Field name="search" label="Search output" kind="search" value={&query.search} hint="Literal, case-insensitive text." />
+    <Grid>
+      <Field name="instance" label="Instance" value={&query.instance} placeholder={Some("Full instance identifier")} />
+      <Field name="release" label="Release" kind="number" value={&query.release} min={Some("1")} step={Some("1")} />
+      <Field name="since" label="Since" value={&query.since} placeholder={Some("2026-10-18T12:00:00Z")} hint="Collection time, including timezone." />
+      <Field name="until" label="Until" value={&query.until} placeholder={Some("2026-10-18T13:00:00Z")} hint="Leave empty to include new output." />
+      <Select name="stream" label="Stream" selected={&query.stream} options={&[("", "Every stream"), ("stdout", "stdout"), ("stderr", "stderr"), ("combined", "combined (legacy output)")]} />
+    </Grid>
+    <ToggleField name="follow" label="Follow new output" checked={query.follow == "on"} />
+    <Actions><Button label="Apply filters" kind="secondary" /></Actions>
+  </Form>
+</Panel>
+<Panel id="app-output" title="Output">
+  <Para text={limits} />
+  <Para>Times show when output was collected, not necessarily when the app wrote it. Output may contain sensitive information; known secret redaction is best effort.</Para>
+  <LogOutput organisation={organisation} name={name} query={query} logs={logs} cursor={cursor} next={next} error={error} loss={loss} gaps={gaps} since_json={since_json} until_json={until_json} restart={Some(restart)} live />
+</Panel>

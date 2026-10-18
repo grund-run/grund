@@ -37,6 +37,7 @@ use uuid::Uuid;
 
 use crate::{
     services::{
+        app_telemetry::AppTelemetryState,
         apps::{
             AppListing, AppView, ApplyImageUpdate, AppsError, AppsState, Change, DeployInput,
             Launch,
@@ -312,6 +313,10 @@ struct ReleaseWords {
     source: &'static str,
 }
 
+fn restarted(row: &ReleaseRow) -> bool {
+    row.source == "dashboard" && row.rollback_of.is_some()
+}
+
 fn release_words(row: &ReleaseRow) -> ReleaseWords {
     ReleaseWords {
         by: row
@@ -320,6 +325,7 @@ fn release_words(row: &ReleaseRow) -> ReleaseWords {
             .unwrap_or_else(|| "someone".into()),
         verb: match row.rollback_of {
             Some(number) if row.source == "rollback" => format!("Rolled back to v{number}"),
+            _ if restarted(row) => "Restarted".into(),
             _ => "Deployed".into(),
         },
         source: match row.source.as_str() {
@@ -368,6 +374,7 @@ fn release_view(row: &ReleaseRow, current: Option<i32>, now: DateTime<Utc>) -> R
             Some(number) if row.source == "rollback" => {
                 format!("v{} · rolled back to v{number}", row.number)
             }
+            _ if restarted(row) => format!("v{} · restart", row.number),
             _ => format!("v{} · deployed", row.number),
         },
         short_digest: digest.chars().take(12).collect(),
@@ -380,7 +387,11 @@ fn release_view(row: &ReleaseRow, current: Option<i32>, now: DateTime<Utc>) -> R
         at: when(row.created_at),
         ago: super::time::ago(row.created_at, now),
         iso: row.created_at.to_rfc3339(),
-        note: row.note.clone(),
+        note: if restarted(row) {
+            String::new()
+        } else {
+            row.note.clone()
+        },
         outcome,
         tone,
         state,
@@ -420,6 +431,7 @@ fn notice_words(done: &str) -> &'static str {
         "released" => "Saved as a new release. It is rolling out.",
         "update-checked" => "Image update check completed.",
         "image-updated" => "Image update released. It is rolling out.",
+        "restart-requested" => "Restart requested. It is rolling out as a new release.",
         "saved" => "Saved.",
         "secret" => "Secret stored. A release that reads it is rolling out.",
         "secret-removed" => "Secret removed. A release without it is rolling out.",
@@ -1611,6 +1623,8 @@ pub struct AppQuery {
     edit: String,
     #[serde(default)]
     volume: String,
+    #[serde(flatten)]
+    telemetry: super::app_telemetry::TelemetryQuery,
 }
 
 pub struct AppTab {
@@ -2050,6 +2064,7 @@ pub(super) struct Refused {
     pub(super) placement: Option<super::placement::PlacementForm>,
     pub(super) domain: Option<String>,
     pub(super) subdomain: Option<String>,
+    pub(super) telemetry: super::app_telemetry::TelemetryQuery,
 }
 
 macro_rules! app_page {
@@ -2080,6 +2095,7 @@ macro_rules! app_page {
                 Refused {
                     edit: query.edit,
                     volume: query.volume,
+                    telemetry: query.telemetry,
                     ..Refused::default()
                 },
             )
@@ -2101,12 +2117,12 @@ app_page!(
 app_page!(
     logs_page,
     "logs",
-    "`/{org}/apps/{app}/logs`: not built; the page says so."
+    "`/{org}/apps/{app}/logs`: searchable output and live follow."
 );
 app_page!(
     metrics_page,
     "metrics",
-    "`/{org}/apps/{app}/metrics`: not built; the page says so."
+    "`/{org}/apps/{app}/metrics`: measured CPU and memory against reservations."
 );
 app_page!(
     settings_page,
@@ -2234,11 +2250,6 @@ pub struct AppDeploymentsPage<'a> {
     pub releases: &'a [ReleaseView],
     pub manages: bool,
     pub csrf: &'a str,
-}
-
-pub struct AppSoonPage {
-    pub title: &'static str,
-    pub text: &'static str,
 }
 
 pub enum SettingsEdit {
@@ -2404,7 +2415,6 @@ pub struct AppDetailPage {
     pub releases: Vec<ReleaseView>,
     pub replicas: Vec<ReplicaView>,
     pub crowded: Option<String>,
-    pub soon: AppSoonPage,
     pub settings: AppSettingsData,
     pub update: ImageUpdateView,
 }
@@ -2439,6 +2449,46 @@ pub(super) async fn app_view(
     );
     let view = &listing.view;
     let base = format!("/{slug}/apps/{}", view.row.name);
+    let telemetry_html = if matches!(tab, "logs" | "metrics") {
+        super::app_telemetry::render(
+            state,
+            membership.organisation_id,
+            view.row.app_id,
+            slug,
+            name,
+            &base,
+            tab,
+            refused.telemetry,
+            if tab == "logs" {
+                super::app_telemetry::RestartControls {
+                    action: format!("{base}/restart"),
+                    csrf: browser.csrf_token(),
+                    manages: manages(membership),
+                    single_copy: view.row.settings.0.copies == 1,
+                    current_instances: view
+                        .replicas
+                        .iter()
+                        .filter(|replica| matches!(replica.state.as_str(), "running" | "draining"))
+                        .map(|replica| replica.replica_id.to_string())
+                        .collect(),
+                    separate_instances: if manages(membership) {
+                        state
+                            .app_telemetry()
+                            .separate_capture(membership.organisation_id, view.row.app_id)
+                            .await
+                            .map_err(PageError::from)?
+                    } else {
+                        Vec::new()
+                    },
+                }
+            } else {
+                Default::default()
+            },
+        )
+        .await
+    } else {
+        String::new()
+    };
     let now = Utc::now();
     let volume_rows = if tab == "settings" {
         apps.volumes(membership.organisation_id, &view.row.name)
@@ -2797,10 +2847,6 @@ pub(super) async fn app_view(
     } else {
         None
     };
-    let (soon_title, soon_text) = match tab {
-        "logs" => ("Logs are coming", "grund does not collect logs yet."),
-        _ => ("Metrics are coming", "grund does not collect metrics yet."),
-    };
     let bound = state
         .domains()
         .of_app(view.row.app_id)
@@ -2984,10 +3030,6 @@ pub(super) async fn app_view(
         replicas,
         crowded,
         update,
-        soon: AppSoonPage {
-            title: soon_title,
-            text: soon_text,
-        },
         settings: AppSettingsData {
             items: if tab == "settings" {
                 newest.map(|r| {
@@ -3076,7 +3118,7 @@ pub(super) async fn app_view(
                         options: setting_options(&page.settings.edit, &memory_values),
                     })
                 }
-                _ => crate::templates::compiled::pages::app_soon::render(&page.soon),
+                _ => telemetry_html,
             });
             sedge_rt::Render::render(
                 &crate::templates::compiled::components::ImageLogoNotices {
@@ -3151,6 +3193,7 @@ async fn refuse_setting(
             placement: None,
             domain: None,
             subdomain: None,
+            telemetry: Default::default(),
         },
     )
     .await
@@ -3610,6 +3653,7 @@ pub async fn apply_file(
             placement: None,
             domain: None,
             subdomain: None,
+            telemetry: Default::default(),
         },
     )
     .await
@@ -3743,6 +3787,7 @@ pub async fn set_secret(
             placement: None,
             domain: None,
             subdomain: None,
+            telemetry: Default::default(),
         },
     )
     .await
@@ -3901,6 +3946,46 @@ pub async fn remove_secret(
 pub struct CsrfForm {
     #[serde(default)]
     csrf: String,
+}
+
+/// `POST /{org}/apps/{app}/restart`: explicitly roll a new release of the running image.
+pub async fn restart(
+    AxumState(state): AxumState<State>,
+    browser: Browser,
+    uri: Uri,
+    Path((slug, name)): Path<(String, String)>,
+    Form(form): Form<CsrfForm>,
+) -> PageResult {
+    if !browser.form_is_genuine(&form.csrf) {
+        return forged(&state, &browser);
+    }
+    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
+    if !manages(&membership) {
+        return Ok(StatusCode::FORBIDDEN.into_response());
+    }
+    match state
+        .apps()
+        .restart(session.account_id, membership.organisation_id, &name)
+        .await
+    {
+        Ok(_) => Ok(redirect(&format!(
+            "/{slug}/apps/{name}/logs?done=restart-requested"
+        ))),
+        Err(AppsError::NotFound) => Ok(redirect(&format!("/{slug}/apps?error=gone"))),
+        Err(error) => {
+            app_view(
+                &state,
+                &browser,
+                &session,
+                &membership,
+                &name,
+                "logs",
+                (String::new(), sentence(&error)),
+                Refused::default(),
+            )
+            .await
+        }
+    }
 }
 
 /// `POST /{org}/apps/{app}/updates/check`: explicitly refresh cached image availability.

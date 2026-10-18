@@ -227,6 +227,8 @@ per-instance CPU and memory every ten seconds through their authenticated
 connection. Data stays in this instance's database; no extra service is required.
 Memory includes filesystem cache. Missing measurements are unknown, not zero.
 Owners, admins and members can read their organisation's live apps.
+In the dashboard, open an app's **Metrics** for hour/day/week charts against its
+reservations, or **Logs** for search, instance/release/time filters and follow.
 
 By default, each organisation retains up to 24 hours / 32 MiB of logs and seven
 days / 24 MiB of measurements, whichever bound is reached first. Accounting charges
@@ -252,6 +254,13 @@ silently. Exact known app secret values are redacted before offline-delivery spo
 and sending. Local capture files remain raw, private machine data. Interleaved output,
 especially legacy combined output, can retain secret fragments. Transformed secrets,
 unknown credentials and personal data are not detected.
+
+The log view keeps historical combined output labelled with its latest collected
+time, not a universal capture cutover date. Owners and admins can choose
+**Restart to enable**: the normal rolling path replaces one instance at a time,
+waiting for health and drain before the next. A single-copy app warns about
+possible interruption when a replacement cannot run alongside it. Stateful
+workloads keep their machine and volume fencing.
 
 **HTTPS.** With `GRUND_DOMAIN` set, grund terminates TLS itself on 443, with
 no proxy in front. It orders the certificate by ACME from Let's Encrypt

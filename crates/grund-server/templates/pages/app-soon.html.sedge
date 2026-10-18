@@ -1,4 +1,0 @@
-use crate::templates::compiled::components::EmptyState;
-props crate::web::apps::AppSoonPage { title, text };
-
-<EmptyState title={title} text={text} />

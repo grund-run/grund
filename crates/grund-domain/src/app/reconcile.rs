@@ -575,14 +575,49 @@ fn converge(pass: &mut Pass<'_>, lost_slots: &BTreeSet<u32>, new_id: &mut dyn Fn
         return;
     };
     let copies = pass.work.settings.copies;
-    let max_surge = pass.work.settings.rollout.max_surge;
-    let max_unavailable = pass.work.settings.rollout.max_unavailable;
+    let serial = pass.work.rollout.as_ref().is_some_and(|r| r.serial);
+    let max_surge = if serial {
+        pass.work.settings.rollout.max_surge.min(1)
+    } else {
+        pass.work.settings.rollout.max_surge
+    };
+    let max_unavailable = if serial {
+        pass.work.settings.rollout.max_unavailable.min(1)
+    } else {
+        pass.work.settings.rollout.max_unavailable
+    };
+    if serial
+        && pass
+            .work
+            .replicas
+            .iter()
+            .any(|r| r.state == ReplicaState::Draining)
+    {
+        return;
+    }
+    let serial_slot = if serial {
+        (0..copies).find(|slot| {
+            let mut ready = false;
+            for replica in pass.work.replicas.iter().filter(|r| r.slot == *slot) {
+                if replica.release != target.number {
+                    return true;
+                }
+                ready |= pass.available(replica);
+            }
+            !ready
+        })
+    } else {
+        None
+    };
     for replica in pass.running() {
         if replica.slot >= copies {
             pass.drain(replica.replica_id, DrainReason::ScaledDown);
         }
     }
     for slot in 0..copies {
+        if serial && serial_slot != Some(slot) {
+            continue;
+        }
         let mut in_slot: Vec<Replica> = pass
             .running()
             .into_iter()
@@ -739,7 +774,13 @@ fn finish_rollout(pass: &mut Pass<'_>) {
     let only_target = running
         .iter()
         .all(|r| r.release == rollout.to && r.slot < copies);
-    if every_slot_ready && only_target {
+    let drained = !rollout.serial
+        || pass
+            .work
+            .replicas
+            .iter()
+            .all(|r| r.state != ReplicaState::Draining);
+    if every_slot_ready && only_target && drained {
         let now = pass.now;
         pass.emit(AppEvent::RolloutSucceeded {
             rollout_id: rollout.rollout_id,
@@ -1072,6 +1113,25 @@ mod tests {
             number
         }
 
+        fn restart(&mut self, behaviour: Behaviour) -> u32 {
+            let number = self.app.latest_release().unwrap().number + 1;
+            self.behaviour.insert(number, behaviour);
+            for event in (AppCommand::Restart {
+                actor: Uuid::nil(),
+                expected_release: self.app.current_release.unwrap(),
+                secret_versions: Vec::new(),
+                rollout_id: Uuid::from_u128(u128::from(number)),
+                at: self.now,
+            })
+            .handle(&self.app)
+            .unwrap()
+            {
+                self.app.apply(&event);
+                self.log.push(event);
+            }
+            number
+        }
+
         fn observed(&self) -> Vec<Observation> {
             self.observations.values().map(|(o, _)| o.clone()).collect()
         }
@@ -1215,6 +1275,223 @@ mod tests {
         fn count(&self, matches: impl Fn(&AppEvent) -> bool) -> usize {
             self.log.iter().filter(|e| matches(e)).count()
         }
+    }
+
+    #[test]
+    fn a_three_copy_restart_waits_for_each_replacements_health_min_ready_and_drain() {
+        let mut world = World::new(3, vec![machine(1, 8192)]);
+        world.configure(SettingsInput {
+            max_surge: Some(3),
+            max_unavailable: Some(2),
+            ..Default::default()
+        });
+        world.deploy(512, Behaviour::Healthy);
+        world.settled();
+        let settings = world.app.settings.clone();
+        let target = world.restart(Behaviour::NeverReady);
+        world.pass();
+        world.run(20, |w| {
+            assert_eq!(
+                w.app
+                    .replicas
+                    .iter()
+                    .filter(|r| r.release == target)
+                    .count(),
+                1
+            );
+            assert_eq!(w.available().len(), 3);
+            assert!(
+                w.app
+                    .replicas
+                    .iter()
+                    .all(|r| r.state == ReplicaState::Running)
+            );
+        });
+        world.app = serde_json::from_value(serde_json::to_value(&world.app).unwrap()).unwrap();
+        for slot in 0..3 {
+            let replacement = world
+                .app
+                .replicas
+                .iter()
+                .find(|r| r.release == target && r.slot == slot)
+                .unwrap()
+                .replica_id;
+            world.tick(1);
+            let (observation, _) = world.observations.get_mut(&replacement).unwrap();
+            observation.ready = true;
+            observation.ever_ready = true;
+            observation.ready_since = Some(world.now);
+            let before = world.log.len();
+            world.pass();
+            world.tick(i64::from(settings.rollout.min_ready_seconds) - 1);
+            world.pass();
+            assert_eq!(
+                world.log.len(),
+                before,
+                "health alone does not bypass min_ready"
+            );
+            world.tick(1);
+            let drained = world.pass();
+            assert!(matches!(
+                drained.as_slice(),
+                [AppEvent::ReplicaDraining { .. }]
+            ));
+            let leaving = world
+                .app
+                .replicas
+                .iter()
+                .find(|r| r.slot == slot && r.release == 1)
+                .unwrap()
+                .replica_id;
+            let before = world.log.len();
+            world.run(5, |w| assert!(w.app.rollout.is_some()));
+            assert_eq!(
+                world.log.len(),
+                before,
+                "the next slot waits for the old drain"
+            );
+            world.observations.get_mut(&leaving).unwrap().0.idle = true;
+            let advanced = world.pass();
+            assert!(matches!(
+                advanced.first(),
+                Some(AppEvent::ReplicaRemoved { replica_id, .. }) if *replica_id == leaving
+            ));
+            if slot < 2 {
+                assert!(matches!(
+                    advanced.as_slice(),
+                    [
+                        AppEvent::ReplicaRemoved { .. },
+                        AppEvent::ReplicaPlaced { slot: next_slot, release, .. }
+                    ] if *next_slot == slot + 1 && *release == target
+                ));
+                assert_eq!(world.available().len(), 3);
+            }
+        }
+        assert_eq!(world.app.current_release, Some(target));
+        assert!(world.app.rollout.is_none());
+        assert_eq!(world.app.replicas.len(), 3);
+        assert_eq!(world.releases_running(), vec![target; 3]);
+        assert_eq!(world.app.settings, settings);
+    }
+
+    #[test]
+    fn a_failed_serial_restart_rolls_back_without_replacing_the_remaining_copies() {
+        let mut world = World::new(3, vec![machine(1, 8192)]);
+        world.configure(SettingsInput {
+            max_surge: Some(3),
+            max_unavailable: Some(2),
+            ..Default::default()
+        });
+        world.deploy(512, Behaviour::Healthy);
+        world.settled();
+        let old: BTreeSet<_> = world.app.replicas.iter().map(|r| r.replica_id).collect();
+        world.restart(Behaviour::NeverReady);
+        world.run(400, |w| assert!(w.available().len() >= 3));
+        assert_eq!(world.app.current_release, Some(1));
+        assert!(world.app.rollout.is_none());
+        assert!(!world.app.halted);
+        assert_eq!(
+            world
+                .app
+                .replicas
+                .iter()
+                .map(|r| r.replica_id)
+                .collect::<BTreeSet<_>>(),
+            old
+        );
+        assert_eq!(
+            world.count(|e| matches!(e, AppEvent::ReplicaPlaced { release: 2, .. })),
+            1
+        );
+    }
+
+    #[test]
+    fn a_single_stateful_restart_waits_for_writer_exit_even_after_the_drain_timeout() {
+        let mut world = World::new(1, vec![machine(1, 4096)]);
+        world.deploy(512, Behaviour::Healthy);
+        world.settled();
+        let old = world.app.replicas[0].replica_id;
+        world.restart(Behaviour::Healthy);
+        let mut ids = || Uuid::from_u128(9000);
+        let first = reconcile_with_volumes(
+            &world.app,
+            &world.observed(),
+            &world.machines,
+            &[],
+            world.now,
+            true,
+            &mut ids,
+        );
+        assert!(matches!(
+            first.events.as_slice(),
+            [AppEvent::ReplicaDraining { replica_id, .. }] if *replica_id == old
+        ));
+        world.app.apply(&first.events[0]);
+        world.tick(i64::from(world.app.settings.rollout.drain_seconds) + 1);
+        world.observations.get_mut(&old).unwrap().0.idle = true;
+        let waiting = reconcile_with_volumes(
+            &world.app,
+            &world.observed(),
+            &world.machines,
+            &[],
+            world.now,
+            true,
+            &mut ids,
+        );
+        assert!(
+            waiting.events.is_empty(),
+            "idle and elapsed drain do not fence a writer"
+        );
+        let mut observed = world.observed();
+        observed[0].state = Observed::Exited;
+        let stopped = reconcile_with_volumes(
+            &world.app,
+            &observed,
+            &world.machines,
+            &[],
+            world.now,
+            true,
+            &mut ids,
+        );
+        assert!(matches!(
+            stopped.events.as_slice(),
+            [
+                AppEvent::ReplicaRemoved { replica_id, .. },
+                AppEvent::ReplicaPlaced { release: 2, slot: 0, .. }
+            ] if *replica_id == old
+        ));
+    }
+
+    #[test]
+    fn a_single_copy_restart_without_surge_room_finishes_its_drain_before_starting() {
+        let mut world = World::new(1, vec![machine(1, 256 + 600)]);
+        world.deploy(512, Behaviour::Healthy);
+        world.settled();
+        let old = world.app.replicas[0].replica_id;
+        world.restart(Behaviour::Healthy);
+        assert!(matches!(
+            world.pass().as_slice(),
+            [AppEvent::ReplicaDraining {
+                replica_id,
+                reason: DrainReason::NoRoom,
+                ..
+            }] if *replica_id == old
+        ));
+        world.run(5, |w| {
+            assert_eq!(w.app.replicas.len(), 1);
+            assert_eq!(w.app.replicas[0].replica_id, old);
+        });
+        world.observations.get_mut(&old).unwrap().0.idle = true;
+        assert!(matches!(
+            world.pass().as_slice(),
+            [
+                AppEvent::ReplicaRemoved { replica_id, .. },
+                AppEvent::ReplicaPlaced { release: 2, slot: 0, .. }
+            ] if *replica_id == old
+        ));
+        world.settled();
+        assert_eq!(world.app.current_release, Some(2));
+        assert_eq!(world.app.replicas.len(), 1);
     }
 
     #[test]

@@ -18,6 +18,7 @@ macro_rules! member_or_return {
 }
 
 pub mod about;
+pub mod app_telemetry;
 pub mod apps;
 pub mod assets;
 pub mod browser;
@@ -189,6 +190,7 @@ pub fn router(state: State) -> Router {
         .route("/{org}/apps/{app}/logs", get(apps::logs_page))
         .route("/{org}/apps/{app}/metrics", get(apps::metrics_page))
         .route("/{org}/apps/{app}/settings", get(apps::settings_page))
+        .route("/{org}/apps/{app}/restart", post(apps::restart))
         .route("/{org}/apps/{app}/updates/check", post(apps::check_update))
         .route("/{org}/apps/{app}/updates/apply", post(apps::apply_update))
         .route("/{org}/apps/{app}/settings/copies", post(apps::configure))
