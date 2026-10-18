@@ -1,4 +1,4 @@
-use crate::templates::compiled::components::{EmptyState, Tag, Actions, Button, Para, PostButton, Icon};
+use crate::templates::compiled::components::{Tag, Icon};
 
 component TelemetryBar(bar: &crate::web::app_telemetry::Toolbar) {
   <form class="telemetry-bar" method="get" action={&bar.action} data-telemetry-bar>
@@ -33,34 +33,6 @@ component ChartCard(id: &str, title: &str, children: Html) {
     </header>
     <div class="chart-canvas" data-chart={id}>{children}</div>
   </section>
-}
-
-component TimeSeries(chart: &crate::web::app_telemetry::TimeSeriesChart) {
-  <figure class="chart">
-    <figcaption class="chart-title">{chart.title}</figcaption>
-    <p class="hint">{chart.summary}</p>
-    <div class="chart-scale"><span>{chart.ceiling} {chart.unit}</span><span>0 {chart.unit} baseline</span></div>
-    <svg class="chart-plot" viewBox="0 0 640 210" preserveAspectRatio="none" role="img" aria-label="{chart.title}: {chart.summary}">
-      <path class="chart-axis" d="M 48 20 V 180 H 604" fill="none" />
-      <path class="chart-grid" d="M 48 20 H 604 M 48 100 H 604" fill="none" />
-      {for gap in &chart.gaps {
-        <rect class={if gap.offline { "chart-offline" } else { "chart-unknown" }} x={gap.x} y="20" width={gap.width} height="160"><title>{gap.label}</title></rect>
-      }}
-      {for series in &chart.series {
-        <g class="chart-series chart-{series.kind}">
-          <path d={&series.path} fill="none" stroke-width="2" vector-effect="non-scaling-stroke" />
-          {for dot in &series.dots { <circle cx={dot.x} cy={dot.y} r="2.5"><title>{dot.label}</title></circle> }}
-        </g>
-      }}
-    </svg>
-    <div class="chart-times"><span>{chart.start}</span><span>{chart.end}</span></div>
-    <ul class="chart-legend" aria-label="Series">{for series in &chart.series { <li class="chart-key chart-{series.kind}"><span aria-hidden="true"></span>{series.label}</li> }}</ul>
-    {if !chart.gaps.is_empty() {
-      {if chart.gaps.iter().any(|gap| gap.offline) { <Para>not received (machine offline). The machine was disconnected from the instance; the app may still have been running. Received measurement coverage is excluded.</Para> }}
-      {if chart.gaps.iter().any(|gap| !gap.offline) { <Para>Coverage unknown: received history was evicted. Earlier missing coverage cannot be attributed to offline delivery.</Para> }}
-      <ul class="hint">{for gap in &chart.gaps { <li>{gap.label}</li> }}</ul>
-    }}
-  </figure>
 }
 
 component LogRow(line: &crate::web::app_telemetry::LogLine, instance: bool) {

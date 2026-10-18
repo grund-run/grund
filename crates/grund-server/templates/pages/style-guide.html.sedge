@@ -2,7 +2,7 @@ use crate::templates::compiled::layouts::App;
 use crate::templates::compiled::components::{Contents, Specimen, Demos, Column, Labelled, Swatches, Borders, TypeScale, SpaceScale, Radii, IconGrid, Icon, ImageIcon, ImageSprite, Button, ButtonAdvanced, CopyButton, ShortId, RelativeTime, RowPill, Mark, Tag, Para, LinkMore, External, IconLink, PageHead, Section, Panel, Tabs, Status, StatusLine, Pill, IconFact, Callout, Stats, EmptyState, AddCard, Code, DnsRecords, Rows, Row, Items, AppRow, AppMenu, MachineRow, ListTools, Links, Link, Tiles, Tile, Timeline, Event, Menu, MenuItem, Banner, PostButton, Search, SelectForm, Form, Field, Grid, Actions, ToggleField, PairsField, CodeField, ChipsField, ChoiceLinks, Facts, Fact, Endpoint, ChoiceField, ChoiceCard, StepperField, Group, RangeField, Expanders, Expander, Nav, NavItem, TopbarAction};
 use crate::templates::compiled::components::{InvitationRows, InboxColumn, NotificationRows, NotificationBell, OrganisationPage, ImageLogoNotices};
 use crate::templates::compiled::components::{Select, DomainName};
-use crate::templates::compiled::components::{TimeSeries, TelemetryBar, LogStream};
+use crate::templates::compiled::components::{ChartCard, TelemetryBar, LogStream};
 props crate::web::pages::StyleGuidePage { viewer, csrf, swatches, sprite_icons, gallery, icons, apps, machines };
 
 <App title="Style guide" viewer={viewer} csrf={csrf} title_org={Some(false)}>
@@ -279,15 +279,8 @@ props crate::web::pages::StyleGuidePage { viewer, csrf, swatches, sprite_icons, 
     <Specimen title="Menu" code={r#"<Menu label="Actions for storefront" icon_name="more" open={false}><MenuItem href={url} icon_name="grid" label="Details" danger={false} external={false} state="" /></Menu>"#} note="A details element, so it opens without script; the script closes it on Escape (focus back on the button) or a click elsewhere. Items link to where the action lives; a destructive one is danger and ends in … when it leads to a confirmation."><Demos><Labelled label="closed"><Menu label="Actions for storefront" icon_name="more"><MenuItem href="#sg-items" icon_name="grid" label="Details" /></Menu></Labelled></Demos><Column><Menu label="Actions for api" icon_name="more" open><MenuItem href="#sg-items" icon_name="external" label="Open" external /><MenuItem href="#sg-items" icon_name="grid" label="Details" state="hover" /><MenuItem href="#sg-items" icon_name="clock" label="Releases" /><MenuItem href="#sg-items" icon_name="trash" label="Delete…" danger /></Menu></Column></Specimen>
   </Section>
   <Section id="sg-telemetry" title="Charts and output">
-    <Specimen title="Time series" code={r#"<TimeSeries chart={chart} />"#} note="Example values, not live measurements. Solid average, dotted maximum and dashed reservation use shared colour tokens. Unknown buckets break every series; isolated samples remain visible. Shaded offline intervals show disconnection from the instance, not app shutdown. SVG geometry scales to the available width.">
-      {for (memory, empty) in [(false, false), (true, false), (false, true)] {
-        {let chart = crate::web::app_telemetry::chart_specimen(memory, empty);}
-        <TimeSeries chart={&chart} />
-      }}
-    </Specimen>
-    <Specimen title="Unknown evicted coverage" code={r#"<TimeSeries chart={chart} />"#} note="Example quota eviction, distinct from authoritative machine disconnection.">
-      {let chart = { let mut chart = crate::web::app_telemetry::chart_specimen(true, false); for gap in &mut chart.gaps { gap.offline = false; gap.label = "Example: coverage unknown (received history evicted)".into(); } chart };}
-      <TimeSeries chart={&chart} />
+    <Specimen title="Chart card" code={r#"<ChartCard id="cpu" title="CPU">…</ChartCard>"#} note="The frame of a live chart. telemetry.js fills the keys, the latest value and the canvas from the read RPCs; the server renders only what shows without script. Missing buckets are breaks, never zero.">
+      <ChartCard id="sg-chart" title="CPU"><p class="chart-empty">Example: No measurements in this range.</p></ChartCard>
     </Specimen>
     <Specimen title="Telemetry filters" code={r#"<TelemetryBar bar={bar} />"#} note="Example. Range links keep the search and instance; logs offer no range beyond retention. The instance picker appears only with more than one instance, and a window chosen on the volume chart shows as a chip that leads back.">
       {let bar = crate::web::app_telemetry::example_toolbar();}

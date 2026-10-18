@@ -1,6 +1,6 @@
 use buffa_types::google::protobuf::Timestamp;
 use chrono::{DateTime, Utc};
-use grund_proto::grund::app::v1::{AppMetricPoint, AppTelemetryGap, ListAppLogsRequest};
+use grund_proto::grund::app::v1::ListAppLogsRequest;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -368,37 +368,6 @@ pub struct LogsPage {
     pub restart: RestartControls,
 }
 
-pub struct ChartDot {
-    pub x: f64,
-    pub y: f64,
-    pub label: String,
-}
-
-pub struct ChartSeries {
-    pub label: &'static str,
-    pub kind: &'static str,
-    pub path: String,
-    pub dots: Vec<ChartDot>,
-}
-
-pub struct ChartGap {
-    pub x: f64,
-    pub width: f64,
-    pub label: String,
-    pub offline: bool,
-}
-
-pub struct TimeSeriesChart {
-    pub title: String,
-    pub unit: &'static str,
-    pub ceiling: String,
-    pub start: String,
-    pub end: String,
-    pub summary: String,
-    pub series: Vec<ChartSeries>,
-    pub gaps: Vec<ChartGap>,
-}
-
 pub struct MetricsPage {
     pub bar: Toolbar,
     pub error: String,
@@ -419,13 +388,6 @@ fn at(value: &Timestamp) -> Option<DateTime<Utc>> {
     u32::try_from(value.nanos)
         .ok()
         .and_then(|nanos| DateTime::from_timestamp(value.seconds, nanos))
-}
-
-fn display_time(value: Option<&Timestamp>) -> String {
-    value
-        .and_then(at)
-        .map(|value| value.format("%Y-%m-%d %H:%M:%S UTC").to_string())
-        .unwrap_or_else(|| "Not reported".into())
 }
 
 pub fn inert_text(value: &str) -> String {
@@ -580,133 +542,6 @@ pub async fn render(
     }
 }
 
-type MetricSeries = (
-    &'static str,
-    &'static str,
-    fn(&AppMetricPoint) -> Option<f64>,
-);
-
-fn chart(
-    title: &str,
-    memory: bool,
-    points: &[AppMetricPoint],
-    start: DateTime<Utc>,
-    end: DateTime<Utc>,
-    bucket: u32,
-) -> TimeSeriesChart {
-    let unit = if memory { "MiB" } else { "millicores" };
-    let scale = if memory { 1_048_576.0 } else { 1.0 };
-    let values: &[MetricSeries] = if memory {
-        &[
-            ("Average", "measured", |point| point.memory_bytes),
-            ("Maximum", "maximum", |point| point.memory_max_bytes),
-            ("Reservation", "reservation", |point| {
-                Some(point.reserved_memory_bytes as f64)
-            }),
-        ]
-    } else {
-        &[
-            ("Average", "measured", |point| point.cpu_millis),
-            ("Reservation", "reservation", |point| {
-                Some(f64::from(point.reserved_cpu_millis))
-            }),
-        ]
-    };
-    let ceiling = values
-        .iter()
-        .flat_map(|(_, _, value)| {
-            points
-                .iter()
-                .filter(|point| point.samples > 0)
-                .filter_map(value)
-        })
-        .filter(|value| value.is_finite() && *value >= 0.0)
-        .fold(0.0, f64::max);
-    let y_max = if ceiling > 0.0 { ceiling * 1.1 } else { scale };
-    let duration = (end - start).num_milliseconds().max(1) as f64;
-    let max_gap = chrono::Duration::seconds(i64::from(bucket));
-    let mut series = Vec::with_capacity(values.len());
-    let mut measured_peak = 0.0_f64;
-    let mut measured = 0_usize;
-    for (index, &(label, kind, value)) in values.iter().enumerate() {
-        let mut path = String::new();
-        let mut dots = Vec::new();
-        let mut previous = None;
-        let mut points = points
-            .iter()
-            .map(|point| {
-                if point.samples == 0 {
-                    return None;
-                }
-                point
-                    .at
-                    .as_option()
-                    .and_then(at)
-                    .zip(value(point))
-                    .filter(|(_, value)| value.is_finite() && *value >= 0.0)
-                    .filter(|(at, _)| *at >= start && *at <= end)
-            })
-            .peekable();
-        while let Some(current) = points.next() {
-            let Some((at, value)) = current else {
-                previous = None;
-                continue;
-            };
-            if index == 0 {
-                measured += 1;
-                measured_peak = measured_peak.max(value);
-            }
-            let x = 48.0 + (at - start).num_milliseconds() as f64 / duration * 556.0;
-            let y = 180.0 - value / y_max * 160.0;
-            let connected = previous
-                .is_some_and(|previous: DateTime<Utc>| at > previous && at - previous <= max_gap);
-            use std::fmt::Write;
-            let _ = write!(path, "{} {x:.2} {y:.2} ", if connected { "L" } else { "M" });
-            if !connected
-                && !points
-                    .peek()
-                    .and_then(Option::as_ref)
-                    .is_some_and(|(next, _)| *next > at && *next - at <= max_gap)
-            {
-                dots.push(ChartDot {
-                    x,
-                    y,
-                    label: format!(
-                        "{}: {:.2} {unit} at {}",
-                        label,
-                        value / scale,
-                        at.format("%Y-%m-%d %H:%M:%S UTC")
-                    ),
-                });
-            }
-            previous = Some(at);
-        }
-        series.push(ChartSeries {
-            label,
-            kind,
-            path,
-            dots,
-        });
-    }
-    TimeSeriesChart {
-        title: title.into(),
-        unit,
-        ceiling: format!("{:.1}", y_max / scale),
-        start: start.format("%d %b %H:%M UTC").to_string(),
-        end: end.format("%d %b %H:%M UTC").to_string(),
-        summary: if measured == 0 {
-            "No measurements received. Reservations alone do not measure usage.".into()
-        } else {
-            format!(
-                "{measured} measured buckets. Highest measured average: {:.2} {unit}. Missing buckets are gaps, not zero.",
-                measured_peak / scale
-            )
-        },
-        series,
-        gaps: Vec::new(),
-    }
-}
-
 /// Style-guide example lines: stdout, stderr, ANSI, an inert control byte and a truncated record.
 pub fn example_lines() -> Vec<LogLine> {
     let start = DateTime::from_timestamp(1_760_788_800, 0).unwrap();
@@ -772,91 +607,6 @@ pub fn example_toolbar() -> Toolbar {
         reset: "#sg-telemetry".into(),
     });
     bar
-}
-
-pub fn chart_specimen(memory: bool, empty: bool) -> TimeSeriesChart {
-    let start = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
-    let points = [Some(100.0), Some(160.0), None, Some(80.0), Some(120.0)]
-        .into_iter()
-        .enumerate()
-        .map(|(index, cpu_millis)| AppMetricPoint {
-            at: Timestamp::from_unix(start.timestamp() + index as i64 * 10, 0).into(),
-            cpu_millis,
-            memory_bytes: cpu_millis.map(|value| value * 1_048_576.0),
-            memory_max_bytes: cpu_millis.map(|value| value * 1.2 * 1_048_576.0),
-            reserved_memory_bytes: 256 * 1_048_576,
-            reserved_cpu_millis: 250,
-            samples: u32::from(cpu_millis.is_some()),
-            ..Default::default()
-        })
-        .collect::<Vec<_>>();
-    let mut chart = chart(
-        if memory {
-            "Example memory with offline coverage"
-        } else {
-            "Example CPU"
-        },
-        memory,
-        if empty { &[] } else { &points },
-        start,
-        start + chrono::Duration::seconds(40),
-        10,
-    );
-    if memory && !empty {
-        chart.gaps = chart_gaps(
-            &[AppTelemetryGap {
-                since: Timestamp::from_unix(start.timestamp() + 20, 0).into(),
-                until: Timestamp::from_unix(start.timestamp() + 30, 0).into(),
-                instance: "example-instance".into(),
-                machine: "example-machine".into(),
-                reason: "machine_offline".into(),
-                ..Default::default()
-            }],
-            "example-instance",
-            start,
-            start + chrono::Duration::seconds(40),
-        );
-    }
-    chart
-}
-
-fn gap_label(gap: &AppTelemetryGap) -> Option<String> {
-    let reason = match gap.reason.as_str() {
-        "machine_offline" => "not received (machine offline)",
-        "coverage_unknown" => "coverage unknown (received history evicted)",
-        _ => return None,
-    };
-    Some(format!(
-        "{} – {} · instance {} · machine {}: {reason}",
-        display_time(gap.since.as_option()),
-        display_time(gap.until.as_option()),
-        gap.instance,
-        gap.machine
-    ))
-}
-
-fn chart_gaps(
-    gaps: &[AppTelemetryGap],
-    instance: &str,
-    start: DateTime<Utc>,
-    end: DateTime<Utc>,
-) -> Vec<ChartGap> {
-    let duration = (end - start).num_milliseconds().max(1) as f64;
-    gaps.iter()
-        .filter(|gap| gap.instance == instance)
-        .take(1024)
-        .filter_map(|gap| {
-            let label = gap_label(gap)?;
-            let since = gap.since.as_option().and_then(at)?.max(start);
-            let until = gap.until.as_option().and_then(at)?.min(end);
-            (since < until).then(|| ChartGap {
-                x: 48.0 + (since - start).num_milliseconds() as f64 / duration * 556.0,
-                width: (until - since).num_milliseconds() as f64 / duration * 556.0,
-                label,
-                offline: gap.reason == "machine_offline",
-            })
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -968,83 +718,6 @@ mod tests {
         controls.manages = false;
         controls.current_instances.push("removed".into());
         assert!(!controls.required(&logs));
-    }
-
-    #[test]
-    fn missing_buckets_break_the_line_and_measured_zero_remains_visible() {
-        let start = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
-        let points = [0, 10, 30]
-            .into_iter()
-            .map(|offset| AppMetricPoint {
-                at: Timestamp::from_unix(start.timestamp() + offset, 0).into(),
-                cpu_millis: Some(0.0),
-                samples: 1,
-                reserved_cpu_millis: 250,
-                ..Default::default()
-            })
-            .collect::<Vec<_>>();
-        let chart = chart(
-            "CPU",
-            false,
-            &points,
-            start,
-            start + chrono::Duration::seconds(40),
-            10,
-        );
-        let usage = &chart.series[0];
-        assert_eq!(usage.path.matches('M').count(), 2);
-        assert_eq!(usage.path.matches('L').count(), 1);
-        assert_eq!(usage.dots.first().unwrap().y, 180.0);
-    }
-
-    #[test]
-    fn connected_samples_do_not_fill_line_dash_gaps_with_point_markers() {
-        let start = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
-        let points = (0..256)
-            .map(|index| AppMetricPoint {
-                at: Timestamp::from_unix(start.timestamp() + index * 10, 0).into(),
-                memory_bytes: Some(32.0 * 1_048_576.0),
-                memory_max_bytes: Some(40.0 * 1_048_576.0),
-                reserved_memory_bytes: 64 * 1_048_576,
-                samples: 1,
-                ..Default::default()
-            })
-            .collect::<Vec<_>>();
-        let chart = chart(
-            "Memory",
-            true,
-            &points,
-            start,
-            start + chrono::Duration::seconds(2560),
-            10,
-        );
-        for series in &chart.series {
-            assert!(series.dots.is_empty());
-            assert_eq!(series.path.matches('M').count(), 1);
-            assert_eq!(series.path.matches('L').count(), 255);
-        }
-    }
-
-    #[test]
-    fn an_unavailable_cpu_sample_is_not_drawn_as_zero() {
-        let start = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
-        let points = [AppMetricPoint {
-            at: Timestamp::from_unix(start.timestamp(), 0).into(),
-            cpu_millis: None,
-            reserved_cpu_millis: 250,
-            samples: 1,
-            ..Default::default()
-        }];
-        let chart = chart(
-            "CPU",
-            false,
-            &points,
-            start,
-            start + chrono::Duration::seconds(10),
-            10,
-        );
-        assert!(chart.series[0].dots.is_empty());
-        assert_eq!(chart.series[1].dots.len(), 1);
     }
 
     #[test]
