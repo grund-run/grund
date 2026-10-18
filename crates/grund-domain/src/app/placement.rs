@@ -33,6 +33,9 @@ pub struct MachineView {
     pub arch: String,
     pub memory_mib: u64,
     pub cpu_millis: u32,
+    /// True when memory and CPU already exclude the agent/runtime reserve.
+    #[serde(default)]
+    pub resources_allocatable: bool,
     /// What replicas of the organisation's other apps reserve on it.
     pub reserved_memory_mib: u64,
     pub reserved_cpu_millis: u32,
@@ -65,11 +68,19 @@ impl MachineView {
 
     /// Memory replicas may reserve here in all.
     pub fn allocatable_memory_mib(&self) -> u64 {
-        self.memory_mib.saturating_sub(RESERVED_MEMORY_MIB)
+        if self.resources_allocatable {
+            self.memory_mib
+        } else {
+            self.memory_mib.saturating_sub(RESERVED_MEMORY_MIB)
+        }
     }
 
     pub fn allocatable_cpu_millis(&self) -> u32 {
-        self.cpu_millis.saturating_sub(RESERVED_CPU_MILLIS)
+        if self.resources_allocatable {
+            self.cpu_millis
+        } else {
+            self.cpu_millis.saturating_sub(RESERVED_CPU_MILLIS)
+        }
     }
 
     /// Its failure domain under `spread_by`: the label's value, or the
@@ -335,6 +346,7 @@ mod tests {
             arch: "x86_64".into(),
             memory_mib: 4096,
             cpu_millis: 4000,
+            resources_allocatable: false,
             reserved_memory_mib: 0,
             reserved_cpu_millis: 0,
             max_replica_memory_mib: 0,
@@ -421,6 +433,54 @@ mod tests {
             None,
         );
         assert_eq!(chosen, Ok(Uuid::from_u128(1)));
+    }
+
+    #[test]
+    fn a_rolling_agent_update_reserves_system_resources_exactly_once() {
+        let legacy = machine(1, "legacy");
+        let mut updated = machine(2, "updated");
+        updated.memory_mib -= RESERVED_MEMORY_MIB;
+        updated.cpu_millis -= RESERVED_CPU_MILLIS;
+        updated.resources_allocatable = true;
+        let mut exact = release(legacy.allocatable_memory_mib(), &[]);
+        exact.spec.cpu_millis = legacy.allocatable_cpu_millis();
+        for host in [legacy, updated] {
+            let id = host.machine_id;
+            assert_eq!(
+                place_with(
+                    &exact,
+                    &AppSettings::default(),
+                    std::slice::from_ref(&host),
+                    HashMap::new(),
+                    None
+                ),
+                Ok(id)
+            );
+            let mut too_much = exact.clone();
+            too_much.spec.memory_mib += 1;
+            assert_eq!(
+                place_with(
+                    &too_much,
+                    &AppSettings::default(),
+                    std::slice::from_ref(&host),
+                    HashMap::new(),
+                    None
+                ),
+                Err(Unplaceable::InsufficientResources)
+            );
+            too_much = exact.clone();
+            too_much.spec.cpu_millis += 1;
+            assert_eq!(
+                place_with(
+                    &too_much,
+                    &AppSettings::default(),
+                    &[host],
+                    HashMap::new(),
+                    None
+                ),
+                Err(Unplaceable::InsufficientResources)
+            );
+        }
     }
 
     #[test]

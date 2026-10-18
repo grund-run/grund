@@ -133,6 +133,14 @@ pub fn refusal(rpc: &str, status: u16, body: &[u8]) -> CliError {
         .with_rpc(rpc);
     };
     let connect = error["code"].as_str().unwrap_or("unknown");
+    if connect == "unimplemented" && rpc.starts_with("grund.machine.v1.HostedMachineService/") {
+        let mut error = CliError::new(
+            Code::Unavailable,
+            "Hosted machines are only available on grund's hosted service.",
+        );
+        error.reason = "hosted_service_required".into();
+        return error;
+    }
     let message = error["message"].as_str().unwrap_or(connect).to_string();
     let reason = error["details"]
         .as_array()
@@ -197,6 +205,18 @@ fn varint(bytes: &[u8]) -> Option<(u64, &[u8])> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_absent_hosted_service_is_not_a_generic_rpc_failure() {
+        let error = refusal(
+            "grund.machine.v1.HostedMachineService/ListHostedOffers",
+            501,
+            br#"{"code":"unimplemented","message":"unknown service"}"#,
+        );
+        assert_eq!(error.code, Code::Unavailable);
+        assert_eq!(error.reason, "hosted_service_required");
+        assert!(error.rpc.is_empty());
+    }
 
     #[test]
     fn a_connect_error_becomes_a_code_with_its_reason() {

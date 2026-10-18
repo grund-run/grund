@@ -146,11 +146,24 @@ own binary at `/install`; the code's command selects that binary explicitly.
 A machine on another host needs HTTPS, below.
 
 Machines shows each machine's app and instance counts and reserved CPU, memory
-and disk against its capacity. Open one of your own machines to see its placed
-instances and volumes, linked to their apps, its software and last contact.
-`grund machines list` and `grund machines get MACHINE` expose the same data.
-Reservations include draining instances and virtual machines; unsized volumes
-and existing host directories are marked unbounded, not zero.
+and disk against its allocatable capacity. Open one of your own machines to see
+its placed instances and volumes, linked to their apps, its software and last
+contact. `grund machines list` and `grund machines get MACHINE` expose the same
+data. The runtime reserves 256 MiB and 250m CPU before placing apps. Older raw
+capacity reports are normalized by the server; updated agents report the net
+capacity explicitly.
+
+Virtual machines reserve their whole guest CPU and memory on the parent, plus
+128 MiB for the VM monitor; apps inside a VM reserve capacity on the guest,
+not a second time on the parent. App and VM allocation share the same capacity
+check: creating a VM on a cordoned or full machine is refused. A requested VM
+stop keeps its reservation until the machine reports a terminal state.
+Reservations also include draining app instances; unsized volumes and existing
+host directories are marked unbounded, not zero.
+
+Apps require cgroup v2, including inside a VM: CPU limits throttle, and memory
+limits can OOM-kill an app. An older own-machine guest without cgroup v2 reports
+apps unavailable; it needs an explicit guest-image update, not a silent restart.
 
 New agents also report whole-machine CPU, memory and data-filesystem usage
 and uptime with their five-second heartbeat. These are measurements, separate
@@ -339,6 +352,15 @@ grund domains app-domain example.com   # existing and future apps get <app>.exam
 grund domains subdomain shop storefront
 grund tokens create --name ci --scope deploy --apps shop --json
 ```
+
+On grund's hosted service, `grund machines offers` shows the available sizes
+and your whole-VM allowance; `grund machines add NAME --hosted --size SIZE
+--region REGION` saves a claim, including when capacity is waiting. Use
+`grund machines remove NAME --yes` to request its safe return. These commands
+use a public interface with a private provider implementation. A self-hosted
+server without that service reports that hosted machines are only available
+on grund's hosted service, rather than a raw RPC error. Ordinary `machines
+add` still enrolls your own machine and never rents one.
 
 - Nouns: `login`, `logout`, `whoami`, `orgs`, `apps`, `volumes`,
   `machines`, `domains`, `members`, `invitations`, `tokens`, `registries`.

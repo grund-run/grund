@@ -422,7 +422,7 @@ impl Firecracker {
             .fold((0u64, 0u64, 0u64), |(v, m, d), (_, s)| {
                 (
                     v + u64::from(s.vcpus),
-                    m + u64::from(s.memory_mib),
+                    m + u64::from(s.memory_mib) + cgroup::MEMORY_OVERHEAD_MIB,
                     d + u64::from(s.disk_gib),
                 )
             });
@@ -430,7 +430,9 @@ impl Firecracker {
         if vcpus + u64::from(shape.vcpus) > u64::from(budget.vcpus) {
             return Err("budget_exceeded: vcpus".into());
         }
-        if memory + u64::from(shape.memory_mib) > u64::from(budget.memory_mib) {
+        if memory + u64::from(shape.memory_mib) + cgroup::MEMORY_OVERHEAD_MIB
+            > u64::from(budget.memory_mib)
+        {
             return Err("budget_exceeded: memory".into());
         }
         if disk + u64::from(shape.disk_gib) > u64::from(budget.disk_gib) {
@@ -568,7 +570,11 @@ impl VmRuntime for Firecracker {
             .iter()
             .filter(|(id, _)| self.state_of(id) == VmState::Running)
             .fold((0u32, 0u32), |(v, m), (_, s)| {
-                (v.saturating_add(s.vcpus), m.saturating_add(s.memory_mib))
+                (
+                    v.saturating_add(s.vcpus),
+                    m.saturating_add(s.memory_mib)
+                        .saturating_add(cgroup::MEMORY_OVERHEAD_MIB as u32),
+                )
             });
         let egress = match &self.inner.bridge {
             None => false,
@@ -585,7 +591,10 @@ impl VmRuntime for Firecracker {
             root: self.inner.bridge.is_some(),
             egress,
             free_vcpus: budget.vcpus.saturating_sub(vcpus),
-            free_memory_mib: budget.memory_mib.saturating_sub(memory),
+            free_memory_mib: budget
+                .memory_mib
+                .saturating_sub(memory)
+                .saturating_sub(cgroup::MEMORY_OVERHEAD_MIB as u32),
         }
     }
 }
@@ -770,6 +779,41 @@ impl Drop for FileLock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_guest_cannot_take_the_vmm_memory_reserve() {
+        let dir = std::env::temp_dir().join(format!(
+            "gvm-{}",
+            &uuid::Uuid::now_v7().simple().to_string()[20..]
+        ));
+        let runtime = Firecracker::new(Config {
+            data_dir: dir.clone(),
+            firecracker: "/not-started".into(),
+            jailer: None,
+            network: Network::Isolated,
+            budget: Budget {
+                vcpus: 2,
+                memory_mib: 512,
+                disk_gib: 4,
+            },
+        })
+        .unwrap();
+        let mut shape = Shape {
+            vcpus: 1,
+            memory_mib: 512,
+            disk_gib: 1,
+            kernel_sha256: String::new(),
+            rootfs_sha256: String::new(),
+        };
+        assert_eq!(
+            runtime.reserve("a", &shape).unwrap_err(),
+            "budget_exceeded: memory"
+        );
+        shape.memory_mib = 384;
+        runtime.reserve("a", &shape).unwrap();
+        drop(runtime);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn the_root_disk_honours_the_guests_flushes() {

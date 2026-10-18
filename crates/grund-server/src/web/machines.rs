@@ -147,7 +147,9 @@ pub async fn machines_page(
 ) -> PageResult {
     let notice = match query.done.as_str() {
         "removed" => "Machine removed. Its key no longer works here.",
-        "hosted" => "Machine removed. Its key is being replaced.",
+        "return-requested" => {
+            "Return requested. Capacity is released after apps and stored data leave safely."
+        }
         "added" => "Machine added.",
         "running" => "Virtual machine placed. It joins as a machine once it boots.",
         "stopped" => "Virtual machine stopping.",
@@ -447,12 +449,16 @@ async fn machines_view(
                 actual: Default::default(),
                 name: &order.name,
                 labels: Vec::new(),
-                status: if order.state == "failed" {
-                    "Failed"
-                } else {
-                    "Joining"
+                status: match order.state.as_str() {
+                    "failed" => "Failed",
+                    "waiting" => "Waiting for capacity",
+                    "recovery_required" => "Operator recovery required",
+                    "returning" => "Returning",
+                    "returned" => "Returned",
+                    "cancelled" => "Cancelled",
+                    _ => "Joining",
                 },
-                tone: if order.state == "failed" {
+                tone: if matches!(order.state.as_str(), "failed" | "recovery_required") {
                     "danger"
                 } else {
                     "blue"
@@ -460,10 +466,14 @@ async fn machines_view(
                 tab: "",
                 search: order.name.to_lowercase(),
                 shown: form.tab.is_empty() && order.name.to_lowercase().contains(&form.q),
-                detail: if order.state == "failed" {
-                    "Machine could not join.".into()
-                } else {
-                    String::new()
+                detail: match order.state.as_str() {
+                    "failed" => "Machine could not join.".into(),
+                    "waiting" => {
+                        "Your request is saved. It will join when capacity is available.".into()
+                    }
+                    "returning" => "Waiting for apps and data to leave safely; stop any VMs first.".into(),
+                    "recovery_required" => "This older request needs operator reconciliation. No replacement has been created.".into(),
+                    _ => String::new(),
                 },
                 out_of_service: false,
                 leased: true,
@@ -477,6 +487,11 @@ async fn machines_view(
                 hosts_vms: false,
             }
         };
+        if order.state == "returning" {
+            item.status = "Returning";
+            item.tone = "muted";
+            item.detail = "Waiting for apps and data to leave safely; stop any VMs first.".into();
+        }
         item.id = order.id.to_string();
         machines.push(item);
     }

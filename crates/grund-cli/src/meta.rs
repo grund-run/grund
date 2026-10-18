@@ -545,6 +545,12 @@ pub const LEAVES: &[Leaf] = &[
         &["grund machines list --json"],
     ),
     read(
+        "machines offers",
+        "grund.machine.v1.ListHostedOffersResponse",
+        &["grund.machine.v1.HostedMachineService/ListHostedOffers"],
+        &["grund machines offers"],
+    ),
+    read(
         "machines get",
         "grund.machine.v1.GetMachineResponse",
         &[
@@ -556,8 +562,14 @@ pub const LEAVES: &[Leaf] = &[
     write(
         "machines add",
         "grund.cli.v1.MachineAdded",
-        &["grund.machine.v1.MachineService/CreateJoinToken"],
-        &["grund machines add web-2   # prints the command to run on the new machine"],
+        &[
+            "grund.machine.v1.MachineService/CreateJoinToken",
+            "grund.machine.v1.HostedMachineService/CreateHostedMachine",
+        ],
+        &[
+            "grund machines add web-2",
+            "grund machines add web-2 --hosted --size small",
+        ],
     ),
     write(
         "machines labels",
@@ -594,6 +606,7 @@ pub const LEAVES: &[Leaf] = &[
         &[
             "grund.machine.v1.MachineService/ListMachines",
             "grund.machine.v1.MachineService/RevokeMachine",
+            "grund.machine.v1.HostedMachineService/RemoveHostedMachine",
         ],
         &["grund machines remove web-1 --yes"],
     ),

@@ -380,8 +380,10 @@ enum ObservedState {
 
 message Waiting {
   uint32 slot = 1;
-  // no_machine, no_capability, no_architecture, insufficient_resources,
-  // refused_by_machine.
+  // Placement reasons include no_machine, no_matching_machine, no_capability,
+  // no_architecture, insufficient_resources and refused_by_machine.
+  // An optional capacity provider can supply a namespaced reason such as
+  // hosted_org_limit while preserving volume and recovery refusals.
   string reason = 2;
   // In words, for the customer.
   string message = 3;

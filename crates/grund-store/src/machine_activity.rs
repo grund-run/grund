@@ -33,9 +33,9 @@ pub struct MachineWorkload {
     pub measured_bytes: Option<i64>,
 }
 
-/// Every current pool member, including empty machines. App allocations use the
-/// same release reservations as placement; desired-running VMs reserve all three
-/// resources. Unsized managed volumes and host paths make disk totals incomplete.
+/// Every current pool member, including empty machines. VM reservations include
+/// the VMM reserve and remain held until a stopped VM is observed terminal.
+/// Unsized managed volumes and host paths make disk totals incomplete.
 pub async fn summaries(
     executor: impl PgExecutor<'_>,
     organisation_id: Uuid,
@@ -62,9 +62,11 @@ pub async fn summaries(
            GROUP BY v.machine_id \
          ), vms AS ( \
            SELECT v.host_machine_id AS machine_id, sum(v.vcpus::bigint * 1000)::bigint AS cpu_millis, \
-             sum(v.memory_mib)::bigint AS memory_mib, sum(v.disk_gib)::bigint AS disk_gib \
+             sum(v.memory_mib::bigint + $2)::bigint AS memory_mib, sum(v.disk_gib)::bigint AS disk_gib \
            FROM grund_vms v JOIN machines m ON m.machine_id = v.host_machine_id \
-           WHERE v.organisation_id = $1 AND v.state = 'running' GROUP BY v.host_machine_id \
+           WHERE v.organisation_id = $1 AND (v.state = 'running' \
+             OR COALESCE(v.observed_state, '') NOT IN ('stopped', 'exited', 'failed')) \
+           GROUP BY v.host_machine_id \
          ) \
          SELECT m.machine_id, COALESCE(i.apps, 0) AS apps, COALESCE(i.instances, 0) AS instances, \
            COALESCE(i.cpu_millis, 0) + COALESCE(vm.cpu_millis, 0) AS cpu_millis, \
@@ -76,6 +78,7 @@ pub async fn summaries(
          LEFT JOIN vms vm ON vm.machine_id = m.machine_id ORDER BY m.machine_id",
     )
     .bind(organisation_id)
+    .bind(crate::agents::VM_MEMORY_OVERHEAD_MIB)
     .fetch_all(executor)
     .await
 }
@@ -278,7 +281,7 @@ mod tests {
         }
         let summary = summaries(&pool, org).await?.remove(0);
         assert_eq!((summary.apps, summary.instances), (1, 2));
-        assert_eq!((summary.cpu_millis, summary.memory_mib), (2750, 3584));
+        assert_eq!((summary.cpu_millis, summary.memory_mib), (2750, 3712));
         assert_eq!(summary.disk_gib, 18);
         assert!(summary.disk_unbounded);
         let rows = workloads(&pool, org, machine).await?;
@@ -308,6 +311,83 @@ mod tests {
         sqlx::query("UPDATE grund_volumes SET status = 'deleted' WHERE organisation_id = $1 AND name = 'host'")
             .bind(org).execute(&pool).await?;
         assert!(!summaries(&pool, org).await?.remove(0).disk_unbounded);
+        let reserved = crate::apps::reservations(&pool, org, Uuid::nil()).await?;
+        let parent = reserved
+            .iter()
+            .find(|row| row.machine_id == machine)
+            .unwrap();
+        assert_eq!((parent.cpu_millis, parent.memory_mib), (2750, 3712));
+        let excluding_app = crate::apps::reservations(&pool, org, app).await?;
+        let parent = excluding_app
+            .iter()
+            .find(|row| row.machine_id == machine)
+            .unwrap();
+        assert_eq!((parent.cpu_millis, parent.memory_mib), (2000, 2176));
+        let child = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO grund_machines (machine_id, pool, home_organisation_id, name, state, public_key, \
+               pool_organisation_id, pool_name, minted_by, registered_at, key_registered_at, stream_version) \
+             VALUES ($1, 'organisation', $2, 'guest', 'active', repeat('d', 64), \
+               $2, 'guest', 'owner', clock_timestamp(), clock_timestamp(), 1)",
+        ).bind(child).bind(org).execute(&pool).await?;
+        sqlx::query("UPDATE grund_vms SET machine_id = $2, observed_state = NULL WHERE organisation_id = $1 AND state = 'running'")
+            .bind(org).bind(child).execute(&pool).await?;
+        let child_app = self::app(&pool, org, "guest-app").await?;
+        instance(&pool, org, child, child_app, 0, "running").await?;
+        let reserved = crate::apps::reservations(&pool, org, Uuid::nil()).await?;
+        assert_eq!(
+            reserved
+                .iter()
+                .find(|row| row.machine_id == machine)
+                .unwrap()
+                .memory_mib,
+            3712
+        );
+        assert_eq!(
+            reserved
+                .iter()
+                .find(|row| row.machine_id == child)
+                .unwrap()
+                .memory_mib,
+            512
+        );
+        sqlx::query("UPDATE grund_vms SET state = 'stopped', observed_state = 'running' WHERE organisation_id = $1 AND state = 'running'")
+            .bind(org).execute(&pool).await?;
+        let held = crate::apps::reservations(&pool, org, Uuid::nil()).await?;
+        assert_eq!(
+            held.iter()
+                .find(|row| row.machine_id == machine)
+                .unwrap()
+                .memory_mib,
+            3712
+        );
+        let summaries_held = summaries(&pool, org).await?;
+        assert_eq!(
+            summaries_held
+                .iter()
+                .find(|row| row.machine_id == machine)
+                .unwrap()
+                .memory_mib,
+            3712
+        );
+        sqlx::query("UPDATE grund_vms SET observed_state = 'stopped' WHERE organisation_id = $1")
+            .bind(org)
+            .execute(&pool)
+            .await?;
+        let released = crate::apps::reservations(&pool, org, Uuid::nil()).await?;
+        assert_eq!(
+            released
+                .iter()
+                .find(|row| row.machine_id == machine)
+                .unwrap()
+                .memory_mib,
+            1536
+        );
+        assert!(
+            crate::apps::reservations(&pool, Uuid::now_v7(), Uuid::nil())
+                .await?
+                .is_empty()
+        );
         Ok(())
     }
 

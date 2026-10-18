@@ -342,20 +342,10 @@ impl Agents {
             caller.machine_id,
             applied_generation as i64,
             &serde_json::json!(refusals),
+            observed,
             now,
         )
         .await?;
-        for (vm_id, state, reason) in observed.iter().take(200) {
-            let reason: Option<String> = reason.as_ref().map(|r| r.chars().take(500).collect());
-            agents::observe_vm(
-                &self.state.pool,
-                caller.machine_id,
-                *vm_id,
-                state,
-                reason.as_deref(),
-            )
-            .await?;
-        }
         if let Some(org) = caller.organisation_id {
             for (app_id, volume_id) in volume_deletions.iter().take(400) {
                 self.state
@@ -580,12 +570,30 @@ impl Agents {
         organisation_id: Uuid,
         request: &VmRequest,
     ) -> anyhow::Result<VmOutcome> {
-        let Some(host) = machines::organisation_machine(
-            &self.state.pool,
-            organisation_id,
-            request.host_machine_id,
+        let mut tx = self.state.pool.begin().await?;
+        let live: Option<Uuid> = sqlx::query_scalar(
+            "SELECT organisation_id FROM grund_organisations WHERE organisation_id=$1 AND deleted_at IS NULL FOR UPDATE",
         )
-        .await?
+        .bind(organisation_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if live.is_none() {
+            return Ok(VmOutcome::NotFound);
+        }
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(format!("grund-apps-placement:{organisation_id}"))
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "SELECT 1 FROM grund_machines WHERE machine_id=$1 AND pool_organisation_id=$2 FOR UPDATE",
+        )
+        .bind(request.host_machine_id)
+        .bind(organisation_id)
+        .execute(&mut *tx)
+        .await?;
+        let Some(host) =
+            machines::organisation_machine(&mut *tx, organisation_id, request.host_machine_id)
+                .await?
         else {
             return Ok(VmOutcome::NotFound);
         };
@@ -599,14 +607,37 @@ impl Agents {
         if let Some(problem) = invalid(request) {
             return Ok(VmOutcome::Invalid(problem));
         }
-        let pool = machines::organisation_machines(&self.state.pool, organisation_id).await?;
+        let reservations =
+            grund_store::apps::reservations(&mut *tx, organisation_id, Uuid::nil()).await?;
+        let capacity = crate::services::apps::machine_view(
+            &host,
+            reservations
+                .iter()
+                .find(|reservation| reservation.machine_id == request.host_machine_id),
+        );
+        let memory_mib = u64::from(request.memory_mib) + agents::VM_MEMORY_OVERHEAD_MIB as u64;
+        let cpu_millis = request.vcpus * 1000;
+        if memory_mib
+            > capacity
+                .allocatable_memory_mib()
+                .saturating_sub(capacity.reserved_memory_mib)
+            || cpu_millis
+                > capacity
+                    .allocatable_cpu_millis()
+                    .saturating_sub(capacity.reserved_cpu_millis)
+        {
+            return Ok(VmOutcome::CannotHost(
+                "That machine has insufficient unreserved CPU or memory for this VM and its overhead.".into(),
+            ));
+        }
+        let pool = machines::organisation_machines(&mut *tx, organisation_id).await?;
         if pool
             .iter()
             .any(|m| m.pool_name.as_deref() == Some(name.as_str()))
         {
             return Ok(VmOutcome::NameTaken);
         }
-        let running = agents::organisation_vms(&self.state.pool, organisation_id)
+        let running = agents::organisation_vms(&mut *tx, organisation_id)
             .await?
             .iter()
             .filter(|vm| vm.state == "running" && vm.machine_id.is_none())
@@ -616,7 +647,7 @@ impl Agents {
         }
         let vm_id = Uuid::now_v7();
         let inserted = agents::insert_vm(
-            &self.state.pool,
+            &mut *tx,
             &NewVm {
                 vm_id,
                 organisation_id,
@@ -643,7 +674,9 @@ impl Agents {
             }
             Err(error) => return Err(error.into()),
         }
-        self.publish(request.host_machine_id).await?;
+        self.publish_in(&mut tx, request.host_machine_id).await?;
+        tx.commit().await?;
+        self.state.wakes.documents_changed();
         Ok(match agents::vm(&self.state.pool, vm_id).await? {
             Some(vm) => VmOutcome::Done(Box::new(vm)),
             None => VmOutcome::NotFound,
@@ -659,9 +692,19 @@ impl Agents {
         else {
             return Ok(VmOutcome::NotFound);
         };
-        if vm.state != "stopped" {
-            agents::set_vm_state(&self.state.pool, vm_id, "stopped").await?;
-            self.publish(vm.host_machine_id).await?;
+        let mut tx = self.state.pool.begin().await?;
+        agents::lock_generation(&mut tx, vm.host_machine_id).await?;
+        let Some(vm) = agents::vm(&mut *tx, vm_id).await? else {
+            return Ok(VmOutcome::NotFound);
+        };
+        let changed = vm.state != "stopped";
+        if changed {
+            agents::set_vm_state(&mut *tx, vm_id, "stopped").await?;
+            self.publish_in(&mut tx, vm.host_machine_id).await?;
+        }
+        tx.commit().await?;
+        if changed {
+            self.state.wakes.documents_changed();
         }
         Ok(match agents::vm(&self.state.pool, vm_id).await? {
             Some(vm) => VmOutcome::Done(Box::new(vm)),
@@ -677,6 +720,9 @@ impl Agents {
 
 /// Why `host` cannot run a VM that registers, or `None` when it can.
 pub fn cannot_host(host: &MachineRow) -> Option<String> {
+    if host.cordoned_at.is_some() {
+        return Some("that machine is out of service".into());
+    }
     let capabilities = host.capabilities.as_ref().map(|c| &c.0);
     let has = |name: &str| {
         capabilities

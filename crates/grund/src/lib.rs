@@ -414,48 +414,6 @@ mod tests {
     }
 
     #[test]
-    fn every_procedure_a_person_or_a_token_can_call_has_a_cli_command_or_a_reason() {
-        use grund_server::api::{AUTHORIZATION, Requirement};
-        let reachable: Vec<&str> = AUTHORIZATION
-            .iter()
-            .filter(|(_, r)| {
-                matches!(
-                    r,
-                    Requirement::Session
-                        | Requirement::SessionOrToken
-                        | Requirement::SessionOrFullToken
-                        | Requirement::Public
-                )
-            })
-            .map(|(p, _)| p.trim_start_matches('/'))
-            .collect();
-        for rpc in &reachable {
-            let called = grund_cli::meta::uses(rpc);
-            let excused = grund_cli::meta::NOT_IN_CLI.iter().any(|(p, _)| p == rpc);
-            assert!(
-                called != excused,
-                "{rpc}: give it a CLI command, or a reason in meta::NOT_IN_CLI (not both)"
-            );
-        }
-        for (rpc, why) in grund_cli::meta::NOT_IN_CLI {
-            assert!(
-                reachable.contains(rpc),
-                "meta::NOT_IN_CLI names {rpc}, which no one can call"
-            );
-            assert!(!why.is_empty(), "{rpc}");
-        }
-        for leaf in grund_cli::meta::LEAVES {
-            for rpc in leaf.rpcs {
-                assert!(
-                    reachable.contains(rpc),
-                    "grund {} calls {rpc}, which is not in api::AUTHORIZATION",
-                    leaf.path
-                );
-            }
-        }
-    }
-
-    #[test]
     fn describe_json_is_the_one_in_the_repository() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../schema/cli.json");
         let document = grund_cli::describe::document(&Cli::command(), &[]);

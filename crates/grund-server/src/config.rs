@@ -950,6 +950,26 @@ pub struct CapacityArgs {
     /// ASCII characters.
     #[arg(long, env = "GRUND_CAPACITY_TOKEN", hide_env_values = true)]
     pub capacity_token: Option<String>,
+
+    /// Allow temporary hosted claims only while billing is intentionally off.
+    #[arg(long, env = "GRUND_HOSTED_INTERIM_ENABLED", default_value_t = true, action = clap::ArgAction::Set)]
+    pub hosted_interim_enabled: bool,
+
+    /// Whole hosted machines reserved per organisation while billing is off.
+    #[arg(long, env = "GRUND_HOSTED_INTERIM_MAX_MACHINES", default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..=100))]
+    pub hosted_interim_max_machines: u32,
+
+    /// Aggregate whole-VM vCPU allowance per organisation while billing is off.
+    #[arg(long, env = "GRUND_HOSTED_INTERIM_MAX_VCPUS", default_value_t = 2, value_parser = clap::value_parser!(u32).range(1..=6400))]
+    pub hosted_interim_max_vcpus: u32,
+
+    /// Aggregate whole-VM RAM allowance per organisation while billing is off.
+    #[arg(long, env = "GRUND_HOSTED_INTERIM_MAX_MEMORY_MIB", default_value_t = 4096, value_parser = clap::value_parser!(u64).range(128..=26_214_400))]
+    pub hosted_interim_max_memory_mib: u64,
+
+    /// Global provisional reservations across billing-off and sandbox organisations.
+    #[arg(long, env = "GRUND_HOSTED_PROVISIONAL_GLOBAL_CAP", default_value_t = 10, value_parser = clap::value_parser!(u32).range(0..=1000))]
+    pub hosted_provisional_global_cap: u32,
 }
 
 impl CapacityArgs {
@@ -1463,6 +1483,26 @@ mod tests {
         let mut config = Harness::try_parse_from(base.iter().chain(args).copied())?.serve;
         config.validate()?;
         Ok(config)
+    }
+
+    #[test]
+    fn provisional_capacity_defaults_to_ten_and_can_be_closed_or_bounded() {
+        assert_eq!(
+            parse(&[]).unwrap().capacity.hosted_provisional_global_cap,
+            10
+        );
+        for cap in [0, 1, 1000] {
+            let value = cap.to_string();
+            assert_eq!(
+                parse(&["--hosted-provisional-global-cap", &value])
+                    .unwrap()
+                    .capacity
+                    .hosted_provisional_global_cap,
+                cap
+            );
+        }
+        assert!(parse(&["--hosted-provisional-global-cap", "1001"]).is_err());
+        assert!(parse(&["--hosted-provisional-global-cap", "-1"]).is_err());
     }
 
     #[test]

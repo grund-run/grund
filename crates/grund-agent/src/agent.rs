@@ -953,6 +953,7 @@ async fn round<R: VmRuntime, C: ContainerRuntime>(
                     arch: apps.arch.clone(),
                     memory_mib: apps.memory_mib,
                     cpu_millis: apps.cpu_millis,
+                    resources_allocatable: apps.resources_allocatable,
                     apps_unavailable_reason: apps_reason,
                     max_replica_memory_mib: policy.max_replica_memory_mib,
                     max_replica_cpu_millis: policy.max_replica_cpu_millis,

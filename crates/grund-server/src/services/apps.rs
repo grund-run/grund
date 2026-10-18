@@ -432,7 +432,23 @@ fn observed(row: &apps::StatusRow) -> Option<Observation> {
 /// on it.
 pub fn machine_view(row: &machines::MachineRow, others: Option<&apps::Reservation>) -> MachineView {
     let capabilities = row.capabilities.as_ref().map(|c| &c.0);
-    let number = |key: &str| capabilities.and_then(|c| c[key].as_u64()).unwrap_or(0);
+    let resources_allocatable = capabilities
+        .and_then(|c| c["resources_allocatable"].as_bool())
+        .unwrap_or(false);
+    let number = |key: &str| {
+        let reported = capabilities.and_then(|c| c[key].as_u64()).unwrap_or(0);
+        if reported > 0 || resources_allocatable {
+            return reported;
+        }
+        match key {
+            "memory_mib" => row.facts.0["memory_mib"].as_u64().unwrap_or(0),
+            "cpu_millis" => row.facts.0["cpus"]
+                .as_u64()
+                .and_then(|cpus| cpus.checked_mul(1000))
+                .unwrap_or(0),
+            _ => 0,
+        }
+    };
     MachineView {
         machine_id: row.machine_id,
         name: row.pool_name.clone().unwrap_or_else(|| row.name.clone()),
@@ -446,6 +462,7 @@ pub fn machine_view(row: &machines::MachineRow, others: Option<&apps::Reservatio
             .to_string(),
         memory_mib: number("memory_mib"),
         cpu_millis: number("cpu_millis") as u32,
+        resources_allocatable,
         reserved_memory_mib: others.map_or(0, |o| o.memory_mib.max(0) as u64),
         reserved_cpu_millis: others.map_or(0, |o| o.cpu_millis.max(0) as u32),
         max_replica_memory_mib: number("max_replica_memory_mib"),
@@ -587,7 +604,35 @@ impl Apps {
     }
 
     /// The app with its replicas and secrets' names.
-    pub async fn view(&self, row: AppRow) -> Result<AppView, AppsError> {
+    pub async fn view(&self, mut row: AppRow) -> Result<AppView, AppsError> {
+        let capacity_wait = row.waiting.as_array().is_some_and(|waiting| {
+            waiting.iter().any(|item| {
+                matches!(
+                    item["reason"].as_str(),
+                    Some("no_machine" | "no_matching_machine" | "insufficient_resources")
+                )
+            })
+        });
+        if capacity_wait && row.settings.0.placement.kind == Some(MachineKind::Hosted) {
+            for extension in self.state.extensions.iter() {
+                if let Some(status) = extension
+                    .app_capacity_waiting(&self.state, row.organisation_id, row.app_id)
+                    .await?
+                    && let Some(waiting) = row.waiting.as_array_mut()
+                {
+                    for item in waiting {
+                        if matches!(
+                            item["reason"].as_str(),
+                            Some("no_machine" | "no_matching_machine" | "insufficient_resources")
+                        ) {
+                            item["reason"] = serde_json::json!(status.reason);
+                            item["message"] = serde_json::json!(status.message);
+                        }
+                    }
+                    break;
+                }
+            }
+        }
         Ok(AppView {
             replicas: apps::app_replicas(&self.state.pool, row.app_id).await?,
             secrets: apps::latest_secrets(&self.state.pool, row.app_id).await?,
@@ -2229,8 +2274,23 @@ impl Apps {
             .iter()
             .filter_map(observed)
             .collect();
-        let ended_lease_machines =
+        let mut ended_lease_machines =
             apps::ended_lease_machines(&mut **work.sql(), organisation_id, app_id).await?;
+        for extension in self.state.extensions.iter() {
+            for (machine_id, detached) in extension
+                .draining_app_machines(work.sql(), organisation_id, app_id)
+                .await?
+            {
+                if let Some((_, existing)) = ended_lease_machines
+                    .iter_mut()
+                    .find(|(machine, _)| *machine == machine_id)
+                {
+                    *existing &= detached;
+                } else {
+                    ended_lease_machines.push((machine_id, detached));
+                }
+            }
+        }
         let now = Utc::now();
         let (events, waiting) = work
             .app_decide(app_id, |app: &App| {

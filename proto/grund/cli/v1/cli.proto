@@ -7,6 +7,7 @@ package grund.cli.v1;
 import "google/protobuf/struct.proto";
 import "google/protobuf/timestamp.proto";
 import "grund/app/v1/app.proto";
+import "grund/machine/v1/machine.proto";
 import "grund/organisation/v1/organisation.proto";
 import "grund/token/v1/token.proto";
 
@@ -144,6 +145,8 @@ message MachineAdded {
   string install_command = 3;
   // Joins a machine that has grund already.
   string join_command = 4;
+  // Present for --hosted; state can be waiting, joining or active.
+  grund.machine.v1.Machine machine = 5;
 }
 
 // `grund apps status`.

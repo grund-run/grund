@@ -398,6 +398,7 @@ impl ContainerRuntime for SimulatedContainers {
             arch: std::env::consts::ARCH.to_string(),
             memory_mib: 4096,
             cpu_millis: 4000,
+            resources_allocatable: false,
         }
     }
 

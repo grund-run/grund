@@ -17,8 +17,9 @@ import "google/protobuf/timestamp.proto";
 // the machine, deleting them on confirmation or expiry; they are never returned in
 // inventory or logged. The machine registers itself with grund (`grund join`).
 //
-// Machine lifecycle requests carry idempotency_key; a repeat of the same
-// request returns its first answer. Read requests have no side effects.
+// Machine lifecycle requests carry idempotency_key; repeating a request must
+// not repeat its effect. Release retries report current terminal confirmation,
+// not a cached acceptance. Read requests have no side effects.
 // unavailable means the provider cannot act now; failed_precondition means capacity
 // is unplaceable or the requested machine cannot be acted on.
 service CapacityService {
@@ -29,7 +30,10 @@ service CapacityService {
   }
 
   // Resolves a timed-out provision without replaying its enrollment token.
-  // A missing/expired key (or one not provisioned for grund) returns found=false.
+  // Successful receipts persist. Lookup serializes with assignment of the same
+  // key before reading its receipt, so it waits for an in-flight provision.
+  // found=false means no committed provision for grund; after the original
+  // token expires, this also proves no validated attempt can commit later.
   rpc GetProvision(GetProvisionRequest) returns (GetProvisionResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
   }
@@ -42,6 +46,7 @@ service CapacityService {
   }
 
   // Stops the machine and gives it back; grund has revoked it first.
+  // released=false means stopping is still pending; retry until terminal proof.
   rpc ReleaseMachine(ReleaseMachineRequest) returns (ReleaseMachineResponse) {
     option idempotency_level = IDEMPOTENT;
   }
@@ -128,7 +133,11 @@ message ReleaseMachineRequest {
   string provider_machine_id = 2;
 }
 
-message ReleaseMachineResponse {}
+message ReleaseMachineResponse {
+  // True only once the provider proves the VM stopped/fenced or never started.
+  // Accepting a release/stop request is not proof. Absent/false fails closed.
+  bool released = 1;
+}
 
 message ListOffersRequest {}
 message ListOffersResponse { repeated CapacityOffer offers = 1; }

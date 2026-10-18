@@ -226,6 +226,89 @@ fn state_line(state: &TaskState) -> String {
     }
 }
 
+fn cgroup_counter(id: &str, file: &str, key: &str) -> anyhow::Result<u64> {
+    let text = std::fs::read_to_string(format!("/sys/fs/cgroup/grund/{id}/{file}"))?;
+    text.lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(' ')?;
+            (name == key).then(|| value.parse::<u64>().ok()).flatten()
+        })
+        .with_context(|| format!("{file} has no {key} counter"))
+}
+
+async fn limits(runtime: &Containerd) -> anyhow::Result<()> {
+    let caps = runtime.capabilities().await;
+    anyhow::ensure!(caps.apps, "apps unavailable: {}", caps.reason);
+    runtime.prepare().await?;
+    runtime.pull(&image_ref(), None).await?;
+    let cpu = spec(
+        "limit-cpu",
+        &["/bin/sh".into(), "-c".into(), "while :; do :; done".into()],
+    );
+    runtime.create(&cpu).await?;
+    let cpu_result = async {
+        let before_usage = cgroup_counter(&cpu.id, "cpu.stat", "usage_usec")?;
+        let before_throttled = cgroup_counter(&cpu.id, "cpu.stat", "nr_throttled")?;
+        let started = Instant::now();
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        let elapsed = started.elapsed().as_micros() as u64;
+        let usage = cgroup_counter(&cpu.id, "cpu.stat", "usage_usec")? - before_usage;
+        let throttled = cgroup_counter(&cpu.id, "cpu.stat", "nr_throttled")? - before_throttled;
+        say(format!(
+            "CPU_PROOF elapsed_usec={elapsed} usage_usec={usage} throttled_periods={throttled}"
+        ));
+        anyhow::ensure!(throttled > 0, "the over-cap app was never CPU throttled");
+        anyhow::ensure!(
+            usage > elapsed / 20 && usage < elapsed / 2,
+            "250m CPU app used {usage} us in {elapsed} us"
+        );
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    runtime.remove(&cpu.id, "SIGKILL", Duration::ZERO).await?;
+    cpu_result?;
+    let memory = spec(
+        "limit-memory",
+        &[
+            "/bin/awk".into(),
+            "BEGIN { s=\"x\"; for (i=0;i<28;i++) s=s s; print length(s); }".into(),
+        ],
+    );
+    runtime.create(&memory).await?;
+    let memory_result = async {
+        let started = Instant::now();
+        loop {
+            let state = runtime
+                .list()
+                .await?
+                .into_iter()
+                .find(|task| task.id == memory.id)
+                .context("memory task disappeared")?
+                .state;
+            if let TaskState::Exited { code, .. } = state {
+                let kills = cgroup_counter(&memory.id, "memory.events", "oom_kill")?;
+                say(format!(
+                    "MEMORY_PROOF limit_mib={} exit_code={code} oom_kills={kills}",
+                    memory.memory_mib
+                ));
+                anyhow::ensure!(code == 137 && kills > 0, "over-cap app was not OOM-killed");
+                break;
+            }
+            anyhow::ensure!(
+                started.elapsed() < Duration::from_secs(30),
+                "over-cap app survived 30 seconds"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    runtime
+        .remove(&memory.id, "SIGKILL", Duration::ZERO)
+        .await?;
+    memory_result
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     grund_crypto::install_default();
@@ -255,6 +338,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         "caps" => say(format!("capabilities {:?}", runtime.capabilities().await)),
+        "limits" => limits(&runtime).await?,
         "prepare" => {
             let t = Instant::now();
             runtime.prepare().await?;

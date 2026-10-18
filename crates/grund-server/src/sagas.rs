@@ -259,6 +259,16 @@ async fn conclude_deletion(state: &State, request: &ConcludeDeletion) -> anyhow:
     let organisation_id = Uuid::parse_str(&request.organisation_id)?;
     let request_id = Uuid::parse_str(&request.request_id)?;
     let now = Utc::now();
+    if request.allowed {
+        for extension in state.extensions.iter() {
+            anyhow::ensure!(
+                extension
+                    .prepare_organisation_deletion(state, organisation_id)
+                    .await?,
+                "organisation deletion is waiting for safe resource return"
+            );
+        }
+    }
     let mut work = Work::begin(&state.events, request_id, "organisation-deletion").await?;
     let deleted = if request.allowed {
         let events = work

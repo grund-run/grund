@@ -10,6 +10,11 @@ use crate::binaries::Arch;
 /// `CGROUP2_SUPER_MAGIC`: the filesystem of a cgroup v2 hierarchy.
 pub const CGROUP2_MAGIC: i64 = 0x6367_7270;
 
+/// Memory kept for the kernel's runtime allocations, agent, containerd and shims.
+pub const SYSTEM_MEMORY_RESERVE_MIB: u64 = 256;
+/// CPU kept for the agent, containerd and the operating system.
+pub const SYSTEM_CPU_RESERVE_MILLIS: u32 = 250;
+
 /// What the machine's kernel and files say, gathered by [`HostFacts::read`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HostFacts {
@@ -87,8 +92,11 @@ pub fn assess(facts: &HostFacts) -> AppsCapabilities {
                 .parse::<u64>()
                 .ok()
         })
-        .map_or(0, |kib| kib / 1024);
-    let cpu_millis = u32::try_from(facts.cpus.saturating_mul(1000)).unwrap_or(u32::MAX);
+        .map_or(0, |kib| kib / 1024)
+        .saturating_sub(SYSTEM_MEMORY_RESERVE_MIB);
+    let cpu_millis = u32::try_from(facts.cpus.saturating_mul(1000))
+        .unwrap_or(u32::MAX)
+        .saturating_sub(SYSTEM_CPU_RESERVE_MILLIS);
     let controllers: Vec<&str> = facts.controllers.split_whitespace().collect();
     let overlay = facts
         .filesystems
@@ -104,6 +112,8 @@ pub fn assess(facts: &HostFacts) -> AppsCapabilities {
         "cgroup v2 lacks the memory or cpu controller".to_string()
     } else if !overlay && !facts.overlay_module {
         "the kernel has no overlay filesystem".to_string()
+    } else if memory_mib == 0 || cpu_millis == 0 {
+        "no app capacity remains after the system reserve".to_string()
     } else {
         String::new()
     };
@@ -113,6 +123,7 @@ pub fn assess(facts: &HostFacts) -> AppsCapabilities {
         arch: facts.arch.clone(),
         memory_mib,
         cpu_millis,
+        resources_allocatable: true,
     }
 }
 
@@ -139,8 +150,8 @@ mod tests {
         assert!(caps.apps, "{}", caps.reason);
         assert_eq!(caps.reason, "");
         assert_eq!(caps.arch, "x86_64");
-        assert_eq!(caps.memory_mib, 1967);
-        assert_eq!(caps.cpu_millis, 2000);
+        assert_eq!(caps.memory_mib, 1711);
+        assert_eq!(caps.cpu_millis, 1750);
     }
 
     #[test]
@@ -177,5 +188,20 @@ mod tests {
         assert!(assess(&facts).apps);
         facts.arch = "aarch64".into();
         assert!(assess(&facts).apps);
+    }
+
+    #[test]
+    fn system_capacity_is_never_advertised_as_app_capacity() {
+        let mut facts = capable();
+        facts.meminfo = "MemTotal: 131072 kB\n".into();
+        facts.cpus = 1;
+        let caps = assess(&facts);
+        assert!(!caps.apps);
+        assert_eq!(caps.memory_mib, 0);
+        assert_eq!(caps.cpu_millis, 750);
+        assert_eq!(
+            caps.reason,
+            "no app capacity remains after the system reserve"
+        );
     }
 }

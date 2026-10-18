@@ -67,12 +67,16 @@
           ]
         },
         "memoryMib": {
-          "description": "The machine's memory and CPU, before grund's reserve for itself.",
+          "description": "Memory and CPU available to workloads when resources_allocatable is true; otherwise legacy totals before the agent/runtime reserve.",
           "pattern": "^-?[0-9]+$",
           "type": [
             "string",
             "integer"
           ]
+        },
+        "resourcesAllocatable": {
+          "description": "Updated agents subtract the system reserve before advertising capacity. False keeps legacy total-capacity reports safe during a rolling update.",
+          "type": "boolean"
         },
         "root": {
           "description": "The VM runtime runs with root rather than in user namespaces.",
@@ -1039,7 +1043,7 @@
           "type": "string"
         },
         "reason": {
-          "description": "no_machine, no_capability, no_architecture, insufficient_resources, refused_by_machine.",
+          "description": "Placement reasons include no_machine, no_matching_machine, no_capability, no_architecture, insufficient_resources and refused_by_machine. An optional capacity provider can supply a namespaced reason such as hosted_org_limit while preserving volume and recovery refusals.",
           "type": "string"
         },
         "slot": {
@@ -1472,6 +1476,14 @@
           "description": "Joins a machine that has grund already.",
           "type": "string"
         },
+        "machine": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/grund.machine.v1.Machine"
+            }
+          ],
+          "description": "Present for --hosted; state can be waiting, joining or active."
+        },
         "token": {
           "description": "grund_join_…: used once, valid until expires_at. Shown once.",
           "type": "string"
@@ -1881,6 +1893,88 @@
       "title": "grund.machine.v1.GetMachineResponse",
       "type": "object"
     },
+    "grund.machine.v1.HostedAllowance": {
+      "additionalProperties": false,
+      "description": "Aggregate whole-VM limits across an organisation, including reservations.",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "maxMachines": {
+          "type": "integer"
+        },
+        "maxMemoryMib": {
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "maxVcpus": {
+          "type": "integer"
+        },
+        "source": {
+          "description": "plan or billing_pending for enabled allowances; waiting_for_billing, allowance_disabled, needs_plan, or not_available for denied allowances. billing_pending is the temporary allowance, not a billing sync wait. Display only: no undecided price or allocation permission is implied.",
+          "type": "string"
+        }
+      },
+      "title": "grund.machine.v1.HostedAllowance",
+      "type": "object"
+    },
+    "grund.machine.v1.HostedOffer": {
+      "additionalProperties": false,
+      "properties": {
+        "available": {
+          "description": "False permits a waiting request unless waiting_reason prevents admission.",
+          "type": "boolean"
+        },
+        "diskGib": {
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "memoryMib": {
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "region": {
+          "type": "string"
+        },
+        "size": {
+          "type": "string"
+        },
+        "vcpus": {
+          "type": "integer"
+        }
+      },
+      "title": "grund.machine.v1.HostedOffer",
+      "type": "object"
+    },
+    "grund.machine.v1.HostedUsage": {
+      "additionalProperties": false,
+      "properties": {
+        "machines": {
+          "type": "integer"
+        },
+        "memoryMib": {
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "vcpus": {
+          "type": "integer"
+        }
+      },
+      "title": "grund.machine.v1.HostedUsage",
+      "type": "object"
+    },
     "grund.machine.v1.Lease": {
       "additionalProperties": false,
       "properties": {
@@ -1901,6 +1995,29 @@
         }
       },
       "title": "grund.machine.v1.Lease",
+      "type": "object"
+    },
+    "grund.machine.v1.ListHostedOffersResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "allowance": {
+          "$ref": "#/$defs/grund.machine.v1.HostedAllowance"
+        },
+        "offers": {
+          "items": {
+            "$ref": "#/$defs/grund.machine.v1.HostedOffer"
+          },
+          "type": "array"
+        },
+        "usage": {
+          "$ref": "#/$defs/grund.machine.v1.HostedUsage"
+        },
+        "waitingReason": {
+          "description": "trial_capacity_full prevents new trial claims without changing the allowance. Empty means no admission wait; unavailable physical capacity can still wait.",
+          "type": "string"
+        }
+      },
+      "title": "grund.machine.v1.ListHostedOffersResponse",
       "type": "object"
     },
     "grund.machine.v1.ListMachinesResponse": {
@@ -2039,7 +2156,9 @@
             "MACHINE_STATE_ACTIVE",
             "MACHINE_STATE_REVOKED",
             "MACHINE_STATE_JOINING",
-            "MACHINE_STATE_FAILED"
+            "MACHINE_STATE_FAILED",
+            "MACHINE_STATE_WAITING_CAPACITY",
+            "MACHINE_STATE_RECOVERY_REQUIRED"
           ],
           "type": "string"
         }
@@ -3428,6 +3547,55 @@
           "value_name": "CAPACITY_TOKEN"
         },
         {
+          "default": "true",
+          "description": "Allow temporary hosted claims only while billing is intentionally off",
+          "enum": [
+            "true",
+            "false"
+          ],
+          "env": "GRUND_HOSTED_INTERIM_ENABLED",
+          "flag": "--hosted-interim-enabled",
+          "name": "hosted_interim_enabled",
+          "type": "string",
+          "value_name": "HOSTED_INTERIM_ENABLED"
+        },
+        {
+          "default": "1",
+          "description": "Whole hosted machines reserved per organisation while billing is off",
+          "env": "GRUND_HOSTED_INTERIM_MAX_MACHINES",
+          "flag": "--hosted-interim-max-machines",
+          "name": "hosted_interim_max_machines",
+          "type": "integer",
+          "value_name": "HOSTED_INTERIM_MAX_MACHINES"
+        },
+        {
+          "default": "2",
+          "description": "Aggregate whole-VM vCPU allowance per organisation while billing is off",
+          "env": "GRUND_HOSTED_INTERIM_MAX_VCPUS",
+          "flag": "--hosted-interim-max-vcpus",
+          "name": "hosted_interim_max_vcpus",
+          "type": "integer",
+          "value_name": "HOSTED_INTERIM_MAX_VCPUS"
+        },
+        {
+          "default": "4096",
+          "description": "Aggregate whole-VM RAM allowance per organisation while billing is off",
+          "env": "GRUND_HOSTED_INTERIM_MAX_MEMORY_MIB",
+          "flag": "--hosted-interim-max-memory-mib",
+          "name": "hosted_interim_max_memory_mib",
+          "type": "integer",
+          "value_name": "HOSTED_INTERIM_MAX_MEMORY_MIB"
+        },
+        {
+          "default": "10",
+          "description": "Global provisional reservations across billing-off and sandbox organisations",
+          "env": "GRUND_HOSTED_PROVISIONAL_GLOBAL_CAP",
+          "flag": "--hosted-provisional-global-cap",
+          "name": "hosted_provisional_global_cap",
+          "type": "integer",
+          "value_name": "HOSTED_PROVISIONAL_GLOBAL_CAP"
+        },
+        {
           "description": "Where the relay listens (TCP), e.g. 0.0.0.0:8443. Its own listener, not GRUND_LISTEN: the relay's WebSocket upgrade needs an HTTP/1 loop that axum's server is not",
           "env": "GRUND_RELAY_ADDRESS",
           "flag": "--relay-address",
@@ -4428,6 +4596,55 @@
           "value_name": "CAPACITY_TOKEN"
         },
         {
+          "default": "true",
+          "description": "Allow temporary hosted claims only while billing is intentionally off",
+          "enum": [
+            "true",
+            "false"
+          ],
+          "env": "GRUND_HOSTED_INTERIM_ENABLED",
+          "flag": "--hosted-interim-enabled",
+          "name": "hosted_interim_enabled",
+          "type": "string",
+          "value_name": "HOSTED_INTERIM_ENABLED"
+        },
+        {
+          "default": "1",
+          "description": "Whole hosted machines reserved per organisation while billing is off",
+          "env": "GRUND_HOSTED_INTERIM_MAX_MACHINES",
+          "flag": "--hosted-interim-max-machines",
+          "name": "hosted_interim_max_machines",
+          "type": "integer",
+          "value_name": "HOSTED_INTERIM_MAX_MACHINES"
+        },
+        {
+          "default": "2",
+          "description": "Aggregate whole-VM vCPU allowance per organisation while billing is off",
+          "env": "GRUND_HOSTED_INTERIM_MAX_VCPUS",
+          "flag": "--hosted-interim-max-vcpus",
+          "name": "hosted_interim_max_vcpus",
+          "type": "integer",
+          "value_name": "HOSTED_INTERIM_MAX_VCPUS"
+        },
+        {
+          "default": "4096",
+          "description": "Aggregate whole-VM RAM allowance per organisation while billing is off",
+          "env": "GRUND_HOSTED_INTERIM_MAX_MEMORY_MIB",
+          "flag": "--hosted-interim-max-memory-mib",
+          "name": "hosted_interim_max_memory_mib",
+          "type": "integer",
+          "value_name": "HOSTED_INTERIM_MAX_MEMORY_MIB"
+        },
+        {
+          "default": "10",
+          "description": "Global provisional reservations across billing-off and sandbox organisations",
+          "env": "GRUND_HOSTED_PROVISIONAL_GLOBAL_CAP",
+          "flag": "--hosted-provisional-global-cap",
+          "name": "hosted_provisional_global_cap",
+          "type": "integer",
+          "value_name": "HOSTED_PROVISIONAL_GLOBAL_CAP"
+        },
+        {
           "description": "Where the relay listens (TCP), e.g. 0.0.0.0:8443. Its own listener, not GRUND_LISTEN: the relay's WebSocket upgrade needs an HTTP/1 loop that axum's server is not",
           "env": "GRUND_RELAY_ADDRESS",
           "flag": "--relay-address",
@@ -5256,6 +5473,55 @@
           "name": "capacity_token",
           "type": "string",
           "value_name": "CAPACITY_TOKEN"
+        },
+        {
+          "default": "true",
+          "description": "Allow temporary hosted claims only while billing is intentionally off",
+          "enum": [
+            "true",
+            "false"
+          ],
+          "env": "GRUND_HOSTED_INTERIM_ENABLED",
+          "flag": "--hosted-interim-enabled",
+          "name": "hosted_interim_enabled",
+          "type": "string",
+          "value_name": "HOSTED_INTERIM_ENABLED"
+        },
+        {
+          "default": "1",
+          "description": "Whole hosted machines reserved per organisation while billing is off",
+          "env": "GRUND_HOSTED_INTERIM_MAX_MACHINES",
+          "flag": "--hosted-interim-max-machines",
+          "name": "hosted_interim_max_machines",
+          "type": "integer",
+          "value_name": "HOSTED_INTERIM_MAX_MACHINES"
+        },
+        {
+          "default": "2",
+          "description": "Aggregate whole-VM vCPU allowance per organisation while billing is off",
+          "env": "GRUND_HOSTED_INTERIM_MAX_VCPUS",
+          "flag": "--hosted-interim-max-vcpus",
+          "name": "hosted_interim_max_vcpus",
+          "type": "integer",
+          "value_name": "HOSTED_INTERIM_MAX_VCPUS"
+        },
+        {
+          "default": "4096",
+          "description": "Aggregate whole-VM RAM allowance per organisation while billing is off",
+          "env": "GRUND_HOSTED_INTERIM_MAX_MEMORY_MIB",
+          "flag": "--hosted-interim-max-memory-mib",
+          "name": "hosted_interim_max_memory_mib",
+          "type": "integer",
+          "value_name": "HOSTED_INTERIM_MAX_MEMORY_MIB"
+        },
+        {
+          "default": "10",
+          "description": "Global provisional reservations across billing-off and sandbox organisations",
+          "env": "GRUND_HOSTED_PROVISIONAL_GLOBAL_CAP",
+          "flag": "--hosted-provisional-global-cap",
+          "name": "hosted_provisional_global_cap",
+          "type": "integer",
+          "value_name": "HOSTED_PROVISIONAL_GLOBAL_CAP"
         },
         {
           "description": "Where the relay listens (TCP), e.g. 0.0.0.0:8443. Its own listener, not GRUND_LISTEN: the relay's WebSocket upgrade needs an HTTP/1 loop that axum's server is not",
@@ -13669,6 +13935,101 @@
           "name": "json",
           "type": "boolean",
           "value_name": "JSON"
+        }
+      ],
+      "audience": "client",
+      "command": "grund machines offers",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund machines offers"
+      ],
+      "mutates": false,
+      "output": {
+        "$ref": "#/$defs/grund.machine.v1.ListHostedOffersResponse"
+      },
+      "path": "machines offers",
+      "rpcs": [
+        "grund.machine.v1.HostedMachineService/ListHostedOffers"
+      ],
+      "summary": "Show hosted sizes, capacity and this organisation's aggregate allowance"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
         },
         {
           "description": "Its name or id",
@@ -13794,6 +14155,34 @@
           "name": "dry_run",
           "type": "boolean",
           "value_name": "DRY_RUN"
+        },
+        {
+          "description": "Claim a hosted machine instead of making a setup code",
+          "flag": "--hosted",
+          "name": "hosted",
+          "type": "boolean",
+          "value_name": "HOSTED"
+        },
+        {
+          "description": "Hosted size from grund machines offers",
+          "flag": "--size",
+          "name": "size",
+          "type": "string",
+          "value_name": "SIZE"
+        },
+        {
+          "description": "Hosted region; omit when the size has only one",
+          "flag": "--region",
+          "name": "region",
+          "type": "string",
+          "value_name": "REGION"
+        },
+        {
+          "description": "Reuse this key to resume the same hosted request",
+          "flag": "--idempotency-key",
+          "name": "idempotency_key",
+          "type": "string",
+          "value_name": "IDEMPOTENCY_KEY"
         }
       ],
       "audience": "client",
@@ -13801,7 +14190,8 @@
       "destructive": false,
       "dry_run": true,
       "examples": [
-        "grund machines add web-2   # prints the command to run on the new machine"
+        "grund machines add web-2",
+        "grund machines add web-2 --hosted --size small"
       ],
       "mutates": true,
       "output": {
@@ -13809,9 +14199,10 @@
       },
       "path": "machines add",
       "rpcs": [
-        "grund.machine.v1.MachineService/CreateJoinToken"
+        "grund.machine.v1.MachineService/CreateJoinToken",
+        "grund.machine.v1.HostedMachineService/CreateHostedMachine"
       ],
-      "summary": "Mint a one-time setup code for a new machine and print the command that installs and joins it"
+      "summary": "Add your own machine, or claim hosted capacity with --hosted --size"
     },
     {
       "args": [
@@ -14271,7 +14662,8 @@
       "path": "machines remove",
       "rpcs": [
         "grund.machine.v1.MachineService/ListMachines",
-        "grund.machine.v1.MachineService/RevokeMachine"
+        "grund.machine.v1.MachineService/RevokeMachine",
+        "grund.machine.v1.HostedMachineService/RemoveHostedMachine"
       ],
       "summary": "Remove a machine from the organisation"
     },

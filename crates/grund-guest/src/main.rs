@@ -63,6 +63,10 @@ fn cstr(value: &str) -> CString {
 fn boot() {
     mount("proc", "/proc", "proc", 0);
     mount("sysfs", "/sys", "sysfs", 0);
+    mount("cgroup2", "/sys/fs/cgroup", "cgroup2", 0);
+    if let Err(error) = prepare_app_cgroups() {
+        log!("app cgroup delegation unavailable: {error}");
+    }
     if !Path::new("/dev/null").exists() {
         mount("devtmpfs", "/dev", "devtmpfs", 0);
     }
@@ -93,6 +97,18 @@ fn boot() {
         let _ = std::fs::create_dir_all("/etc");
         let _ = std::fs::write("/etc/resolv.conf", resolv);
     }
+}
+
+fn prepare_app_cgroups() -> std::io::Result<()> {
+    std::fs::write(
+        "/sys/fs/cgroup/cgroup.subtree_control",
+        "+cpu +memory +pids",
+    )?;
+    std::fs::create_dir_all("/sys/fs/cgroup/grund")?;
+    std::fs::write(
+        "/sys/fs/cgroup/grund/cgroup.subtree_control",
+        "+cpu +memory +pids",
+    )
 }
 
 const EXT4_IOC_RESIZE_FS: libc::c_ulong = 0x4008_6610;

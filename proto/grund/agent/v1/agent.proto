@@ -222,7 +222,8 @@ message Capabilities {
   bool apps = 6;
   // x86_64 or aarch64.
   string arch = 7;
-  // The machine's memory and CPU, before grund's reserve for itself.
+  // Memory and CPU available to workloads when resources_allocatable is true;
+  // otherwise legacy totals before the agent/runtime reserve.
   uint64 memory_mib = 8;
   uint32 cpu_millis = 9;
   // Why apps is false, for the user.
@@ -240,6 +241,9 @@ message Capabilities {
   // Optional measured host usage, separate from placement reservations.
   // Older agents do not report this snapshot.
   MachineUsage usage = 15;
+  // Updated agents subtract the system reserve before advertising capacity.
+  // False keeps legacy total-capacity reports safe during a rolling update.
+  bool resources_allocatable = 16;
 }
 
 // One bounded host sample. Missing numeric fields mean unknown, not zero.

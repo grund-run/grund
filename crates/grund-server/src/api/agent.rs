@@ -90,6 +90,7 @@ impl AgentService for AgentApi {
                     "arch": c.arch.chars().take(16).collect::<String>(),
                     "memory_mib": c.memory_mib,
                     "cpu_millis": c.cpu_millis,
+                    "resources_allocatable": c.resources_allocatable,
                     "apps_unavailable_reason": c.apps_unavailable_reason.chars().take(200).collect::<String>(),
                     "max_replica_memory_mib": c.max_replica_memory_mib,
                     "max_replica_cpu_millis": c.max_replica_cpu_millis,

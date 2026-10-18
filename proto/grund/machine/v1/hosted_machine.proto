@@ -1,0 +1,78 @@
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+package grund.machine.v1;
+
+import "grund/machine/v1/machine.proto";
+
+// Optional hosted capacity interface. Self-hosted servers do not implement it.
+// Implementations authenticate organisation membership and enforce aggregate
+// whole-machine allowances before reserving capacity.
+service HostedMachineService {
+  rpc ListHostedOffers(ListHostedOffersRequest) returns (ListHostedOffersResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // The key identifies one request within an organisation. Empty physical
+  // capacity saves a waiting machine; exhausted trial capacity refuses the claim.
+  rpc CreateHostedMachine(CreateHostedMachineRequest) returns (CreateHostedMachineResponse);
+  // Return can remain pending while workloads drain or volume safety prevents reuse.
+  rpc RemoveHostedMachine(RemoveHostedMachineRequest) returns (RemoveHostedMachineResponse);
+}
+
+message ListHostedOffersRequest {
+  string organisation = 1;
+}
+message HostedOffer {
+  string size = 1;
+  string region = 2;
+  int32 vcpus = 3;
+  int64 memory_mib = 4;
+  int64 disk_gib = 5;
+  // False permits a waiting request unless waiting_reason prevents admission.
+  bool available = 6;
+}
+message ListHostedOffersResponse {
+  repeated HostedOffer offers = 1;
+  HostedAllowance allowance = 2;
+  HostedUsage usage = 3;
+  // trial_capacity_full prevents new trial claims without changing the allowance.
+  // Empty means no admission wait; unavailable physical capacity can still wait.
+  string waiting_reason = 4;
+}
+// Aggregate whole-VM limits across an organisation, including reservations.
+message HostedAllowance {
+  bool enabled = 1;
+  uint32 max_machines = 2;
+  uint32 max_vcpus = 3;
+  uint64 max_memory_mib = 4;
+  // plan or billing_pending for enabled allowances; waiting_for_billing,
+  // allowance_disabled, needs_plan, or not_available for denied allowances.
+  // billing_pending is the temporary allowance, not a billing sync wait.
+  // Display only: no undecided price or allocation permission is implied.
+  string source = 5;
+}
+message HostedUsage {
+  uint32 machines = 1;
+  uint32 vcpus = 2;
+  uint64 memory_mib = 3;
+}
+message CreateHostedMachineRequest {
+  string organisation = 1;
+  string name = 2;
+  string size = 3;
+  string region = 4;
+  string idempotency_key = 5;
+}
+message CreateHostedMachineResponse {
+  Machine machine = 1;
+}
+message RemoveHostedMachineRequest {
+  string organisation = 1;
+  // Public request identifier, never a physical provider identifier.
+  string machine_id = 2;
+}
+message RemoveHostedMachineResponse {
+  // True means the return request was recorded, not necessarily physically finished.
+  bool removed = 1;
+}

@@ -115,6 +115,13 @@ pub(super) fn add_activity(
             "instances"
         }
     );
+    let capacity = crate::services::apps::machine_view(row, None);
+    if capacity.memory_mib > 0 || capacity.resources_allocatable {
+        item.facts[1].1 = machines::human_size(capacity.allocatable_memory_mib());
+    }
+    if capacity.cpu_millis > 0 || capacity.resources_allocatable {
+        item.facts[0].1 = format!("{} vCPU", cpu(u64::from(capacity.allocatable_cpu_millis())));
+    }
     let reserved = [
         cpu(summary.cpu_millis.max(0) as u64),
         machines::human_size(summary.memory_mib.max(0) as u64),
@@ -129,7 +136,7 @@ pub(super) fn add_activity(
     ];
     item.reserved = std::array::from_fn(|i| {
         format!(
-            "{} / {} reserved",
+            "{} reserved / {} allocatable",
             reserved[i],
             if item.facts[i].1.is_empty() {
                 "Not reported"

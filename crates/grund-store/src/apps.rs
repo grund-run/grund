@@ -1287,28 +1287,36 @@ pub async fn ended_lease_machines(
     .await
 }
 
-/// Memory and CPU the replicas of other apps reserve, per machine of the
-/// organisation.
+/// App replicas and whole VMs reserved per organisation machine.
 pub async fn reservations(
     executor: impl PgExecutor<'_>,
     organisation_id: Uuid,
     except_app: Uuid,
 ) -> Result<Vec<Reservation>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT r.machine_id, COALESCE(sum((rel.spec->>'memory_mib')::bigint), 0)::bigint AS memory_mib, \
-           COALESCE(sum((rel.spec->>'cpu_millis')::bigint), 0)::bigint AS cpu_millis, \
-           COALESCE(array_agg(DISTINCT a.name) FILTER (WHERE r.state = 'running'), '{}') AS apps \
-         FROM grund_replicas r JOIN grund_releases rel ON rel.app_id = r.app_id AND rel.number = r.release \
-         JOIN grund_apps a ON a.app_id = r.app_id \
-         WHERE r.organisation_id = $1 AND r.app_id <> $2 GROUP BY r.machine_id",
+        "WITH held AS ( \
+           SELECT r.machine_id, (rel.spec->>'memory_mib')::bigint AS memory_mib, \
+             (rel.spec->>'cpu_millis')::bigint AS cpu_millis, a.name, r.state = 'running' AS running \
+           FROM grund_replicas r JOIN grund_releases rel ON rel.app_id = r.app_id AND rel.number = r.release \
+           JOIN grund_apps a ON a.app_id = r.app_id \
+           WHERE r.organisation_id = $1 AND r.app_id <> $2 \
+           UNION ALL \
+           SELECT v.host_machine_id, v.memory_mib::bigint + $3, v.vcpus::bigint * 1000, NULL::text, false \
+           FROM grund_vms v WHERE v.organisation_id = $1 AND (v.state = 'running' \
+             OR COALESCE(v.observed_state, '') NOT IN ('stopped', 'exited', 'failed')) \
+         ) SELECT machine_id, COALESCE(sum(memory_mib), 0)::bigint AS memory_mib, \
+           COALESCE(sum(cpu_millis), 0)::bigint AS cpu_millis, \
+           COALESCE(array_agg(DISTINCT name) FILTER (WHERE running), '{}') AS apps \
+         FROM held GROUP BY machine_id",
     )
     .bind(organisation_id)
     .bind(except_app)
+    .bind(crate::agents::VM_MEMORY_OVERHEAD_MIB)
     .fetch_all(executor)
     .await
 }
 
-/// What the organisation's other apps hold on one machine.
+/// What the organisation's other apps and its VMs hold on one machine.
 #[derive(Debug, Clone, FromRow)]
 pub struct Reservation {
     pub machine_id: Uuid,

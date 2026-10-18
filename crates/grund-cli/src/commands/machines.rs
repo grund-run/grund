@@ -15,6 +15,7 @@ use crate::{
 };
 
 const SERVICE: &str = "grund.machine.v1.MachineService";
+const HOSTED: &str = "grund.machine.v1.HostedMachineService";
 
 /// `grund machines`.
 pub type MachinesCommand = Noun<MachinesAction>;
@@ -27,6 +28,8 @@ pub enum MachinesAction {
         long_about = "List the organisation's machines, connected or not, with app and instance counts, reserved versus total CPU, RAM and disk, and measured usage for the whole machine. Reservations are not actual usage. Missing reports are shown as Not reported; usage samples older than 30 seconds are Stale. JSON and YAML retain the complete API response."
     )]
     List,
+    #[command(about = "Show hosted sizes, capacity and this organisation's aggregate allowance")]
+    Offers,
     #[command(
         about = "Show a machine's details, workloads, reservations, and reported host usage",
         long_about = "Show every field returned for one machine, including its capabilities, labels, connection state, app and instance counts, reservations, workloads with desired and observed state, and available host telemetry with its sample time. Reservations are not actual usage; absent telemetry is not zero."
@@ -35,9 +38,7 @@ pub enum MachinesAction {
         #[arg(value_name = "MACHINE", help = "Its name or id")]
         machine: String,
     },
-    #[command(
-        about = "Mint a one-time setup code for a new machine and print the command that installs and joins it"
-    )]
+    #[command(about = "Add your own machine, or claim hosted capacity with --hosted --size")]
     Add {
         #[arg(
             value_name = "NAME",
@@ -52,6 +53,31 @@ pub enum MachinesAction {
         ttl: Option<u32>,
         #[arg(long, help = "Show the request instead of sending it")]
         dry_run: bool,
+        #[arg(
+            long,
+            conflicts_with = "ttl",
+            requires = "size",
+            help = "Claim a hosted machine instead of making a setup code"
+        )]
+        hosted: bool,
+        #[arg(
+            long,
+            requires = "hosted",
+            help = "Hosted size from grund machines offers"
+        )]
+        size: Option<String>,
+        #[arg(
+            long,
+            requires = "hosted",
+            help = "Hosted region; omit when the size has only one"
+        )]
+        region: Option<String>,
+        #[arg(
+            long,
+            requires = "hosted",
+            help = "Reuse this key to resume the same hosted request"
+        )]
+        idempotency_key: Option<String>,
     },
     #[command(about = "Show a machine's labels, or replace them with KEY=VALUE pairs")]
     Labels {
@@ -99,8 +125,8 @@ const MACHINES: &[(&str, &str)] = &[
     ("STATE", "/state"),
     ("APPS", "/apps"),
     ("INSTANCES", "/instances"),
-    ("CPU RESERVED/TOTAL", "/cpu"),
-    ("RAM RESERVED/TOTAL", "/memory"),
+    ("CPU RESERVED/ALLOCATABLE", "/cpu"),
+    ("RAM RESERVED/ALLOCATABLE", "/memory"),
     ("DISK RESERVED/TOTAL", "/disk"),
     ("HOST CPU USED", "/hostCpu"),
     ("HOST RAM USED", "/hostMemory"),
@@ -154,12 +180,26 @@ fn machine_list(answer: Value) -> Output {
                     .then(|| number(&activity[field]).unwrap_or(0))
             };
             let total = |field: &str| {
-                number(&capabilities[field]).filter(|value| *value > 0).or_else(|| {
-                    if field == "cpuMillis" {
-                        number(&machine["facts"]["cpus"]).and_then(|cpus| cpus.checked_mul(1000))
+                let allocatable = capabilities["resourcesAllocatable"].as_bool().unwrap_or(false);
+                let reported = number(&capabilities[field])
+                    .filter(|value| *value > 0 || (allocatable && field != "diskGib"))
+                    .or_else(|| {
+                        if field == "cpuMillis" {
+                            number(&machine["facts"]["cpus"]).and_then(|cpus| cpus.checked_mul(1000))
+                        } else {
+                            number(&machine["facts"][field])
+                        }.filter(|value| *value > 0)
+                    });
+                reported.map(|value| {
+                    if allocatable {
+                        value
                     } else {
-                        number(&machine["facts"][field])
-                    }.filter(|value| *value > 0)
+                        value.saturating_sub(match field {
+                            "cpuMillis" => 250,
+                            "memoryMib" => 256,
+                            _ => 0,
+                        })
+                    }
                 })
             };
             let disk_reserved = if activity["diskUnbounded"].as_bool().unwrap_or(false) {
@@ -254,11 +294,76 @@ pub async fn run(ctx: &Ctx, action: MachinesAction) -> CliResult<Output> {
                 .await?;
             Ok(Output::fields(answer))
         }
+        MachinesAction::Offers => {
+            let answer = api
+                .call(
+                    &format!("{HOSTED}/ListHostedOffers"),
+                    json!({"organisation": org}),
+                )
+                .await?;
+            let table = Output::table(
+                answer.clone(),
+                "/offers",
+                &[
+                    ("SIZE", "/size"),
+                    ("REGION", "/region"),
+                    ("VCPU", "/vcpus"),
+                    ("RAM MIB", "/memoryMib"),
+                    ("READY CAPACITY", "/available"),
+                ],
+            )
+            .render(Format::Text);
+            let allowance = &answer["allowance"];
+            let usage = &answer["usage"];
+            let source = match allowance["source"].as_str() {
+                Some("billing_pending") => "Billing pending",
+                Some("waiting_for_billing") => "Waiting for billing",
+                Some("allowance_disabled") => {
+                    "Hosted machines are turned off for this organisation"
+                }
+                Some("needs_plan") => "Needs a plan",
+                Some("plan") => "Plan allowance",
+                _ => "Not available",
+            };
+            let waiting = match answer["waitingReason"].as_str() {
+                Some("trial_capacity_full") => "Hosted capacity for trial organisations is full.\n",
+                _ => "",
+            };
+            let text = format!(
+                "{source}\nMachines: {} / {}; vCPU: {} / {}; RAM: {} / {} MiB\n{waiting}{table}",
+                number(&usage["machines"]).unwrap_or_default(),
+                number(&allowance["maxMachines"]).unwrap_or_default(),
+                number(&usage["vcpus"]).unwrap_or_default(),
+                number(&allowance["maxVcpus"]).unwrap_or_default(),
+                number(&usage["memoryMib"]).unwrap_or_default(),
+                number(&allowance["maxMemoryMib"]).unwrap_or_default()
+            );
+            Ok(Output::with_text(answer, text))
+        }
         MachinesAction::Add {
             name,
             ttl,
+            hosted,
+            size,
+            region,
+            idempotency_key,
             dry_run: preview,
         } => {
+            if hosted {
+                let name = name.ok_or_else(|| {
+                    CliError::usage("A hosted machine needs a name").field("name")
+                })?;
+                let request = json!({
+                    "organisation": org, "name": name, "size": size.unwrap_or_default(),
+                    "region": region.unwrap_or_default(),
+                    "idempotencyKey": idempotency_key.unwrap_or_else(|| uuid::Uuid::now_v7().to_string()),
+                });
+                let procedure = format!("{HOSTED}/CreateHostedMachine");
+                if preview {
+                    return Ok(dry_run(&[(procedure, request)], vec![]));
+                }
+                return api.call(&procedure, request).await.map(Output::fields);
+            }
             let mut request = json!({"organisation": org, "name": name.unwrap_or_default()});
             if let Some(ttl) = ttl {
                 request["ttlSeconds"] = json!(ttl);
@@ -335,19 +440,25 @@ pub async fn run(ctx: &Ctx, action: MachinesAction) -> CliResult<Output> {
         } => {
             let found = find(&api, &org, &machine).await?;
             let request = json!({"organisation": org, "machineId": found["machineId"]});
+            let hosted = found["hosted"].as_bool().unwrap_or(false);
+            let procedure = if hosted {
+                format!("{HOSTED}/RemoveHostedMachine")
+            } else {
+                format!("{SERVICE}/RevokeMachine")
+            };
             if preview {
-                return Ok(dry_run(
-                    &[(format!("{SERVICE}/RevokeMachine"), request)],
-                    vec![],
-                ));
+                return Ok(dry_run(&[(procedure, request)], vec![]));
             }
             ctx.confirm(
                 yes,
-                &format!("Remove machine {machine} from the organisation"),
+                &if hosted { format!("Give back hosted machine {machine} after its apps and stored data leave safely") } else { format!("Remove machine {machine} from the organisation") },
             )?;
-            api.call(&format!("{SERVICE}/RevokeMachine"), request)
-                .await?;
-            Ok(done(format!("Removed {machine}.")))
+            api.call(&procedure, request).await?;
+            Ok(done(if hosted {
+                format!("Return requested for {machine}.")
+            } else {
+                format!("Removed {machine}.")
+            }))
         }
     }
 }

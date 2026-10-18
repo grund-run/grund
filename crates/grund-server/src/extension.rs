@@ -23,6 +23,9 @@ use crate::{
 };
 use sqlx::{PgConnection, PgPool};
 
+/// Machine return intents and whether their app writers are physically detached.
+pub type AppDrainReceipts = Vec<(Uuid, bool)>;
+
 /// A way to sign in that an extension offers on the sign-in page.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct LoginProvider {
@@ -45,6 +48,12 @@ pub struct ExternalMachine {
     pub remove_href: String,
     /// A safe OS label for externally provisioned machines; physical host identity stays hidden.
     pub os: Option<&'static str>,
+}
+
+/// An extension's durable capacity refusal or wait, without provider details.
+pub struct CapacityWaiting {
+    pub reason: String,
+    pub message: String,
 }
 
 /// A virtual machine's public ID, physical machine ID and lease timestamp.
@@ -108,6 +117,17 @@ pub trait Extension: Send + Sync + 'static {
         Box::pin(async { Ok(None) })
     }
 
+    /// Queues safe extension-owned resource returns before organisation
+    /// deletion. False keeps the existing deletion saga waiting and its
+    /// members able to complete data recovery; no SQL transaction is open.
+    fn prepare_organisation_deletion<'a>(
+        &'a self,
+        _state: &'a State,
+        _organisation_id: Uuid,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<bool>> + Send + 'a>> {
+        Box::pin(async { Ok(true) })
+    }
+
     /// Records an extension-owned migration timeout in the current transaction.
     fn migration_timeout<'a>(
         &'a self,
@@ -118,6 +138,18 @@ pub trait Extension: Send + Sync + 'static {
         _at: DateTime<Utc>,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
         Box::pin(async { Ok(()) })
+    }
+
+    /// Extension-owned return intents before the public machine lease ends.
+    /// Scope receipts to this organisation and app; false retains replica identity
+    /// until physical detach is acknowledged. A generic cordon is not a return.
+    fn draining_app_machines<'a>(
+        &'a self,
+        _connection: &'a mut PgConnection,
+        _organisation_id: Uuid,
+        _app_id: Uuid,
+    ) -> Pin<Box<dyn Future<Output = Result<AppDrainReceipts, sqlx::Error>> + Send + 'a>> {
+        Box::pin(async { Ok(Vec::new()) })
     }
 
     /// A capacity provider for this instance, if this extension supplies one.
@@ -160,6 +192,17 @@ pub trait Extension: Send + Sync + 'static {
         _slug: &'a str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<ExternalMachine>>> + Send + 'a>> {
         Box::pin(async { Ok(Vec::new()) })
+    }
+
+    /// A durable extension-owned capacity wait, read without provisioning or
+    /// changing the app. The reason and safe message augment placement waits.
+    fn app_capacity_waiting<'a>(
+        &'a self,
+        _state: &'a State,
+        _organisation_id: Uuid,
+        _app_id: Uuid,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<CapacityWaiting>>> + Send + 'a>> {
+        Box::pin(async { Ok(None) })
     }
     /// Resolves an extension-owned identifier within its organisation.
     fn machine_alias<'a>(

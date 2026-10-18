@@ -237,6 +237,10 @@ enum MachineState {
   MACHINE_STATE_REVOKED = 5;
   MACHINE_STATE_JOINING = 6;
   MACHINE_STATE_FAILED = 7;
+  // A hosted request has reserved its allowance and is waiting for capacity.
+  MACHINE_STATE_WAITING_CAPACITY = 8;
+  // An older request has an uncertain provider outcome and needs operator reconciliation.
+  MACHINE_STATE_RECOVERY_REQUIRED = 9;
 }
 
 message CreateJoinTokenRequest {

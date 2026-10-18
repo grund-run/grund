@@ -141,6 +141,9 @@ pub struct AppsCapabilities {
     pub arch: String,
     pub memory_mib: u64,
     pub cpu_millis: u32,
+    /// Memory and CPU already exclude the system reserve; false is a legacy total.
+    #[serde(default)]
+    pub resources_allocatable: bool,
 }
 
 /// Runs containers on this machine.

@@ -428,7 +428,15 @@ async fn grund_join_says_why_a_refused_code_was_refused() -> anyhow::Result<()> 
 async fn grund_agent_once(dir: &std::path::Path) -> std::process::Output {
     let mut command = std::process::Command::new(crate::accepttest::fixtures::grund_binary());
     command
-        .args(["agent", "--once", "--vm-runtime", "simulated", "--data-dir"])
+        .args([
+            "agent",
+            "--once",
+            "--vm-runtime",
+            "simulated",
+            "--app-runtime",
+            "simulated",
+            "--data-dir",
+        ])
         .arg(dir)
         .env_clear()
         .env("RUST_LOG", "grund_agent=info");
@@ -595,6 +603,39 @@ async fn a_device_stays_connected_and_runs_a_vm_that_joins_the_same_organisation
         r#"{{"organisation": "{}", "onMachineId": "{device_id}", "name": "vm1", "vcpus": 1, "memoryMib": 512, "diskGib": 2, "image": {IMAGE}}}"#,
         owner.username
     );
+    for (vcpus, memory_mib) in [(64, 512), (1, 262_144)] {
+        let mut oversized: Value = serde_json::from_str(&run)?;
+        oversized["name"] = json!("does-not-fit");
+        oversized["vcpus"] = json!(vcpus);
+        oversized["memoryMib"] = json!(memory_mib);
+        when.calling(&format!("{MACHINES}/RunVm"), &oversized.to_string())
+            .await?;
+        then.status(400)?.connect_code("failed_precondition")?;
+    }
+    when.calling(
+        &format!("{MACHINES}/SetMachineInService"),
+        &json!({"organisation":owner.username,"machineId":device_id,"inService":false}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    when.calling(&format!("{MACHINES}/RunVm"), &run).await?;
+    then.status(400)?.connect_code("failed_precondition")?;
+    when.calling(
+        &format!("{MACHINES}/ListVms"),
+        &json!({"organisation":owner.username}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    anyhow::ensure!(
+        json(&then)?["vms"].as_array().is_none_or(Vec::is_empty),
+        "a draining host acquired a new VM"
+    );
+    when.calling(
+        &format!("{MACHINES}/SetMachineInService"),
+        &json!({"organisation":owner.username,"machineId":device_id,"inService":true}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
     when.calling(&format!("{MACHINES}/RunVm"), &run).await?;
     then.status(200)?;
     let vm_id = json(&then)?["vm"]["vmId"]

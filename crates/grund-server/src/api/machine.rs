@@ -212,12 +212,17 @@ fn external_machine(
     if let (Some(row), Some(os)) = (row, listing.os) {
         shown.facts = MessageField::from(facts(&row.facts.0, Some(os)));
     }
-    if row.is_none() {
-        shown.state = if listing.state == "failed" {
-            MachineState::MACHINE_STATE_FAILED.into()
-        } else {
-            MachineState::MACHINE_STATE_JOINING.into()
-        };
+    if listing.state == "returning" {
+        shown.state = MachineState::MACHINE_STATE_RETURNING.into();
+    } else if row.is_none() {
+        shown.state = match listing.state.as_str() {
+            "failed" => MachineState::MACHINE_STATE_FAILED,
+            "waiting" => MachineState::MACHINE_STATE_WAITING_CAPACITY,
+            "recovery_required" => MachineState::MACHINE_STATE_RECOVERY_REQUIRED,
+            "returned" | "cancelled" => MachineState::MACHINE_STATE_REVOKED,
+            _ => MachineState::MACHINE_STATE_JOINING,
+        }
+        .into();
     }
     shown
 }
@@ -315,6 +320,7 @@ fn capabilities(value: &serde_json::Value) -> agent::Capabilities {
             .to_string(),
         max_replica_memory_mib: value["max_replica_memory_mib"].as_u64().unwrap_or(0),
         max_replica_cpu_millis: value["max_replica_cpu_millis"].as_u64().unwrap_or(0) as u32,
+        resources_allocatable: value["resources_allocatable"].as_bool().unwrap_or(false),
         disk_gib: value["disk_gib"].as_u64().unwrap_or(0),
         usage: value
             .get("usage")

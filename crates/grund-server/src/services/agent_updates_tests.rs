@@ -110,7 +110,7 @@ impl CapacityProvider for Provider {
         _: &'a str,
         _: &'a [Uuid],
         _: &'a [(Uuid, Uuid)],
-    ) -> CapacityFuture<'a, Result<(), CapacityError>> {
+    ) -> CapacityFuture<'a, Result<bool, CapacityError>> {
         Box::pin(async { unrelated() })
     }
 }

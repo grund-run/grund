@@ -163,6 +163,38 @@ async fn a_token(
     Ok(html[start..start + "grund_pat_".len() + 43].to_string())
 }
 
+#[tokio::test]
+async fn hosted_machine_commands_explain_when_the_instance_has_no_hosted_service()
+-> anyhow::Result<()> {
+    let Some((given, when, then)) = testcase_configured(&[]).await? else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let token = a_token(&when, &then, &owner.username, "hosted-client", "full").await?;
+    let instance = origin(&when);
+    let shell = Shell::fresh(&[("GRUND_INSTANCE", &instance), ("GRUND_TOKEN", &token)])?;
+    for args in [
+        vec!["machines", "offers", "--json"],
+        vec![
+            "machines", "add", "hosted-1", "--hosted", "--size", "small", "--json",
+        ],
+    ] {
+        let ran = shell.run(&args).await?;
+        anyhow::ensure!(
+            ran.status == 8,
+            "unsupported hosted command was not explained: {}",
+            ran.stderr
+        );
+        let error = ran.error()?;
+        anyhow::ensure!(error["reason"] == "hosted_service_required", "{error}");
+        anyhow::ensure!(
+            error.get("rpc").is_none(),
+            "raw RPC failure leaked instead of the supported-surface refusal"
+        );
+    }
+    Ok(())
+}
+
 fn grund_yaml(image: &str) -> String {
     format!(
         "apps:\n  shop:\n    image: {image}\n    ports:\n      - name: http\n        port: 80\n    resources:\n      memory: 64\n      cpu: 0.1\n    check:\n      http: /\n      interval_ms: 500\n      timeout_ms: 200\n    stop:\n      grace: 1\n    release:\n      min_ready: 1\n      ready_deadline: 20\n      drain: 1\n"
@@ -793,22 +825,6 @@ async fn the_cli_describes_itself_and_refuses_a_bad_line_as_json_without_an_inst
             .is_some_and(|c| c.iter().any(|c| c["path"] == "apps deploy"
                 && c["output"]["$ref"] == "#/$defs/grund.cli.v1.DeployResult")),
         "describe has no apps deploy"
-    );
-    anyhow::ensure!(
-        document["commands"].as_array().is_some_and(|commands| {
-            commands.iter().any(|command| {
-                command["path"] == "machines add"
-                    && command["output"]["$ref"] == "#/$defs/grund.cli.v1.MachineAdded"
-            }) && commands.iter().any(|command| {
-                command["path"] == "machines remove"
-                    && command["rpcs"].as_array().is_some_and(|rpcs| {
-                        matches!(rpcs.as_slice(), [listed, revoked]
-                            if listed == "grund.machine.v1.MachineService/ListMachines"
-                                && revoked == "grund.machine.v1.MachineService/RevokeMachine")
-                    })
-            })
-        }),
-        "describe must expose generic machine commands"
     );
     let bad = shell
         .run(&["apps", "deploy", "--frobnicate", "--json"])

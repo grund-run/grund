@@ -456,6 +456,12 @@ impl<'a> Work<'a> {
         self.scope.tx()
     }
 
+    /// The event transaction, so extensions can record their aggregates and
+    /// inline projections atomically with core machine and app decisions.
+    pub fn scope(&mut self) -> &mut TransactionScope<'a> {
+        &mut self.scope
+    }
+
     /// Commits, then snapshots every aggregate whose version crossed a
     /// snapshot boundary, in the background.
     pub async fn commit(self) -> Result<(), WorkError> {

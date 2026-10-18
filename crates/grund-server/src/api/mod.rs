@@ -77,7 +77,7 @@ use grund_proto::grund::{
     domain::v1::DOMAIN_SERVICE_SERVICE_NAME,
     edge::v1::{EDGE_ENROLLMENT_SERVICE_SERVICE_NAME, EDGE_SERVICE_SERVICE_NAME},
     login::v1::DEVICE_LOGIN_SERVICE_SERVICE_NAME,
-    machine::v1::MACHINE_SERVICE_SERVICE_NAME,
+    machine::v1::{HOSTED_MACHINE_SERVICE_SERVICE_NAME, MACHINE_SERVICE_SERVICE_NAME},
     notification::v1::NOTIFICATION_SERVICE_SERVICE_NAME,
     organisation::v1::ORGANISATION_SERVICE_SERVICE_NAME,
     registry::v1::REGISTRY_SERVICE_SERVICE_NAME,
@@ -569,12 +569,15 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
 
 /// The API routes, to merge into the page router.
 pub fn router(state: State) -> axum::Router {
-    let extension_services: Vec<_> = state
+    let mut extension_services: Vec<_> = state
         .extensions
         .iter()
         .flat_map(|extension| extension.connect_service_names())
         .copied()
         .collect();
+    if !extension_services.contains(&HOSTED_MACHINE_SERVICE_SERVICE_NAME) {
+        extension_services.push(HOSTED_MACHINE_SERVICE_SERVICE_NAME);
+    }
     let service = ConnectRpcService::new(connect_router(state.clone()))
         .with_limits(
             Limits::default()

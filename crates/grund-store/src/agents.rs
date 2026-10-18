@@ -4,8 +4,11 @@
 
 use chrono::{DateTime, Utc};
 use serde_json::Value;
-use sqlx::{FromRow, PgConnection, PgExecutor};
+use sqlx::{FromRow, PgConnection, PgExecutor, PgPool};
 use uuid::Uuid;
+
+/// Host memory charged above each VM's configured guest RAM.
+pub const VM_MEMORY_OVERHEAD_MIB: i64 = 128;
 
 /// Records a heartbeat: the machine is alive now, with these capabilities.
 pub async fn heartbeat(
@@ -37,14 +40,18 @@ pub async fn heartbeat(
     .await
 }
 
-/// Records what the agent reported applying, and what it refused.
+/// Records one status snapshot while locking its desired-state generation.
+/// VM observations from an older document cannot acknowledge a later stop.
 pub async fn report(
-    executor: impl PgExecutor<'_>,
+    pool: &PgPool,
     machine_id: Uuid,
     applied_generation: i64,
     refusals: &Value,
+    observed: &[(Uuid, &'static str, Option<String>)],
     at: DateTime<Utc>,
 ) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let generation = lock_generation(&mut tx, machine_id).await?;
     sqlx::query(
         "INSERT INTO grund_machine_presence (machine_id, last_seen_at, applied_generation, refusals, reported_at) \
          VALUES ($1, $2, $3, $4, $2) \
@@ -56,9 +63,14 @@ pub async fn report(
     .bind(at)
     .bind(applied_generation)
     .bind(refusals)
-    .execute(executor)
+    .execute(&mut *tx)
     .await?;
-    Ok(())
+    if applied_generation >= generation {
+        for (vm_id, state, reason) in observed.iter().take(200) {
+            observe_vm(&mut *tx, machine_id, *vm_id, state, reason.as_deref()).await?;
+        }
+    }
+    tx.commit().await
 }
 
 /// A VM to insert.
@@ -170,23 +182,25 @@ pub async fn hosted_vms(
     .await
 }
 
-/// Asks for a VM to run or stop.
+/// Changes a VM's desired state, invalidating observations of its old state.
+/// The caller holds the host's document lock and publishes in the same transaction.
 pub async fn set_vm_state(
     executor: impl PgExecutor<'_>,
     vm_id: Uuid,
     state: &str,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE grund_vms SET state = $2, updated_at = clock_timestamp() WHERE vm_id = $1")
-        .bind(vm_id)
-        .bind(state)
-        .execute(executor)
-        .await?;
+    sqlx::query(
+        "UPDATE grund_vms SET state = $2, observed_state = NULL, observed_reason = NULL, \
+         updated_at = clock_timestamp() WHERE vm_id = $1 AND state <> $2",
+    )
+    .bind(vm_id)
+    .bind(state)
+    .execute(executor)
+    .await?;
     Ok(())
 }
 
-/// Records what the host said about one of its VMs. A VM of another host is
-/// left alone.
-pub async fn observe_vm(
+async fn observe_vm(
     executor: impl PgExecutor<'_>,
     host_machine_id: Uuid,
     vm_id: Uuid,
@@ -194,7 +208,7 @@ pub async fn observe_vm(
     reason: Option<&str>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "UPDATE grund_vms SET observed_state = $3, observed_reason = $4, updated_at = clock_timestamp() \
+        "UPDATE grund_vms SET observed_state = $3, observed_reason = left($4, 500), updated_at = clock_timestamp() \
          WHERE vm_id = $2 AND host_machine_id = $1",
     )
     .bind(host_machine_id)

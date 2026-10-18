@@ -1088,3 +1088,124 @@ async fn update_cache_is_tenant_scoped_and_hidden_as_soon_as_the_running_base_ch
             .unwrap()
     );
 }
+
+#[sqlx::test(migrations = false)]
+async fn vm_capacity_is_held_until_a_fresh_stop_acknowledgement(pool: PgPool) {
+    use grund_store::agents::{self, NewVm, VM_MEMORY_OVERHEAD_MIB};
+
+    async fn reserved(pool: &PgPool, org: Uuid, machine: Uuid) -> (i64, i64) {
+        let held = apps::reservations(pool, org, Uuid::nil())
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|row| row.machine_id == machine)
+            .unwrap();
+        (held.memory_mib, held.cpu_millis)
+    }
+
+    let events = store(&pool).await;
+    let org = Uuid::now_v7();
+    let host = Uuid::now_v7();
+    let guest = Uuid::now_v7();
+    for (name, machine) in [("on-host", host), ("in-guest", guest)] {
+        let app = create(&events, org, name).await;
+        let version = release(&events, app).await;
+        decide(&events, app, |_| {
+            vec![AppEvent::ReplicaPlaced {
+                replica_id: Uuid::now_v7(),
+                slot: 0,
+                release: version,
+                machine_id: machine,
+                placement: 0,
+                reason: PlaceReason::Rollout,
+                placed_at: Utc::now(),
+            }]
+        })
+        .await;
+    }
+    let vm = Uuid::now_v7();
+    let digest = "a".repeat(64);
+    agents::insert_vm(
+        &pool,
+        &NewVm {
+            vm_id: vm,
+            organisation_id: org,
+            host_machine_id: host,
+            name: "guest",
+            vcpus: 2,
+            memory_mib: 1024,
+            disk_gib: 8,
+            kernel_url: "https://artifacts.example/kernel",
+            kernel_sha256: &digest,
+            rootfs_url: "https://artifacts.example/rootfs.ext4",
+            rootfs_sha256: &digest,
+            created_by: Uuid::nil(),
+        },
+    )
+    .await
+    .unwrap();
+    agents::link_vm_machine(&pool, vm, guest).await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    agents::lock_generation(&mut tx, host).await.unwrap();
+    agents::store_document(&mut *tx, host, 1, Uuid::nil(), b"{}", &[0; 64], Utc::now())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    agents::report(
+        &pool,
+        host,
+        1,
+        &serde_json::json!([]),
+        &[(vm, "stopped", None)],
+        Utc::now(),
+    )
+    .await
+    .unwrap();
+    let whole_vm_and_app = (128 + 1024 + VM_MEMORY_OVERHEAD_MIB, 2100);
+    assert_eq!(reserved(&pool, org, host).await, whole_vm_and_app);
+    assert_eq!(reserved(&pool, org, guest).await, (128, 100));
+
+    let mut tx = pool.begin().await.unwrap();
+    agents::lock_generation(&mut tx, host).await.unwrap();
+    agents::set_vm_state(&mut *tx, vm, "stopped").await.unwrap();
+    agents::store_document(&mut *tx, host, 2, Uuid::nil(), b"{}", &[0; 64], Utc::now())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(reserved(&pool, org, host).await, whole_vm_and_app);
+
+    agents::report(
+        &pool,
+        host,
+        1,
+        &serde_json::json!([]),
+        &[(vm, "stopped", None)],
+        Utc::now(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(reserved(&pool, org, host).await, whole_vm_and_app);
+    agents::report(
+        &pool,
+        host,
+        2,
+        &serde_json::json!([]),
+        &[(vm, "running", None)],
+        Utc::now(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(reserved(&pool, org, host).await, whole_vm_and_app);
+    agents::report(
+        &pool,
+        host,
+        2,
+        &serde_json::json!([]),
+        &[(vm, "exited", None)],
+        Utc::now(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(reserved(&pool, org, host).await, (128, 100));
+}

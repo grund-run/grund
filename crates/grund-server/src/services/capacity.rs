@@ -56,13 +56,15 @@ pub trait CapacityProvider: Any + Send + Sync {
         token: &'a str,
         expiry: DateTime<Utc>,
     ) -> CapacityFuture<'a, Result<(), CapacityError>>;
+    /// True only when the provider proves this machine terminal or fenced.
+    /// An accepted asynchronous release must return false until that proof exists.
     fn release<'a>(
         &'a self,
         key: &'a str,
         provider_id: &'a str,
         accept_empty_volume_ids: &'a [uuid::Uuid],
         restored_volumes: &'a [(uuid::Uuid, uuid::Uuid)],
-    ) -> CapacityFuture<'a, Result<(), CapacityError>>;
+    ) -> CapacityFuture<'a, Result<bool, CapacityError>>;
 }
 
 #[derive(Clone, Default)]
@@ -171,7 +173,7 @@ impl Capacity {
         provider_id: &str,
         accept_empty_volume_ids: &[uuid::Uuid],
         restored_volumes: &[(uuid::Uuid, uuid::Uuid)],
-    ) -> Result<(), CapacityError> {
+    ) -> Result<bool, CapacityError> {
         match self {
             Self::None => Err(CapacityError::NotConfigured),
             Self::Provider(provider) => {

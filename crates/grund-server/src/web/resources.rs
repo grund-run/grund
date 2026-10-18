@@ -231,6 +231,7 @@ mod tests {
             arch: "x86_64".into(),
             memory_mib,
             cpu_millis,
+            resources_allocatable: false,
             reserved_memory_mib: 0,
             reserved_cpu_millis: 0,
             max_replica_memory_mib: cap_mib,
