@@ -18,6 +18,7 @@ const INTER: &[u8] = include_bytes!("../../assets/fonts/inter-latin.woff2");
 const MONO: &[u8] = include_bytes!("../../assets/fonts/jetbrains-mono-latin.woff2");
 const MARK: &str = include_str!("../../assets/mark.svg");
 const UPLOT: &str = include_str!("../../assets/vendor/uplot-1.6.32.min.js");
+const TELEMETRY: &str = include_str!("../../assets/telemetry.js");
 const CSS_BR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/grund.css.br"));
 const CSS_GZIP: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/grund.css.gz"));
 const JS_BR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/grund.js.br"));
@@ -28,6 +29,8 @@ const MARK_BR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/mark.svg.br"));
 const MARK_GZIP: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/mark.svg.gz"));
 const UPLOT_BR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/uplot.js.br"));
 const UPLOT_GZIP: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/uplot.js.gz"));
+const TELEMETRY_BR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/telemetry.js.br"));
+const TELEMETRY_GZIP: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/telemetry.js.gz"));
 
 /// The full texts of the fonts' licenses, for /licenses.
 pub const INTER_LICENSE: &str = include_str!("../../assets/licenses/inter.txt");
@@ -64,6 +67,14 @@ static UPLOT_ASSET: LazyLock<Asset> = LazyLock::new(|| {
         UPLOT.as_bytes(),
         UPLOT_BR,
         UPLOT_GZIP,
+        "text/javascript; charset=utf-8",
+    )
+});
+static TELEMETRY_ASSET: LazyLock<Asset> = LazyLock::new(|| {
+    Asset::compressed(
+        TELEMETRY.as_bytes(),
+        TELEMETRY_BR,
+        TELEMETRY_GZIP,
         "text/javascript; charset=utf-8",
     )
 });
@@ -128,6 +139,7 @@ pub fn warm_up() {
     LazyLock::force(&SEDX_ASSET);
     LazyLock::force(&MARK_ASSET);
     LazyLock::force(&UPLOT_ASSET);
+    LazyLock::force(&TELEMETRY_ASSET);
     LazyLock::force(&INTER_ASSET);
     LazyLock::force(&MONO_ASSET);
 }
@@ -140,6 +152,16 @@ pub fn js_href() -> String {
 /// Where signed-in pages load sedx's script from.
 pub fn sedx_href() -> String {
     format!("/static/sedx.js?v={}", SEDX_ASSET.version)
+}
+
+/// Where the telemetry tabs load the chart library from.
+pub fn uplot_href() -> String {
+    format!("/static/uplot.js?v={}", UPLOT_ASSET.version)
+}
+
+/// Where the telemetry tabs load their charts and live updates from.
+pub fn telemetry_href() -> String {
+    format!("/static/telemetry.js?v={}", TELEMETRY_ASSET.version)
 }
 
 /// Where pages link the stylesheet from.
@@ -184,6 +206,7 @@ pub async fn serve(
         "grund.js" => (&JS_ASSET, true),
         "sedx.js" => (&SEDX_ASSET, true),
         "uplot.js" => (&UPLOT_ASSET, true),
+        "telemetry.js" => (&TELEMETRY_ASSET, true),
         "fonts/inter-latin.woff2" => (&INTER_ASSET, false),
         "fonts/jetbrains-mono-latin.woff2" => (&MONO_ASSET, false),
         "favicon.svg" | "mark.svg" => (&MARK_ASSET, false),
@@ -382,6 +405,7 @@ mod tests {
             ("/static/grund.js", JS.as_bytes()),
             ("/static/sedx.js", sedx::JS.as_bytes()),
             ("/static/uplot.js", UPLOT.as_bytes()),
+            ("/static/telemetry.js", TELEMETRY.as_bytes()),
             ("/static/mark.svg", MARK.as_bytes()),
         ] {
             let identity = get(path, None, None).await;

@@ -2483,6 +2483,12 @@ pub(super) async fn app_view(
     } else {
         Vec::new()
     };
+    let live_instances: Vec<String> = view
+        .replicas
+        .iter()
+        .filter(|replica| matches!(replica.state.as_str(), "running" | "draining"))
+        .map(|replica| replica.replica_id.to_string())
+        .collect();
     let telemetry_html = if matches!(tab, "logs" | "metrics") {
         super::app_telemetry::render(
             state,
@@ -2499,12 +2505,7 @@ pub(super) async fn app_view(
                     csrf: browser.csrf_token(),
                     manages: manages(membership),
                     single_copy: view.row.settings.0.copies == 1,
-                    current_instances: view
-                        .replicas
-                        .iter()
-                        .filter(|replica| matches!(replica.state.as_str(), "running" | "draining"))
-                        .map(|replica| replica.replica_id.to_string())
-                        .collect(),
+                    current_instances: live_instances.clone(),
                     separate_instances: if manages(membership) {
                         state
                             .app_telemetry()
@@ -2518,6 +2519,7 @@ pub(super) async fn app_view(
             } else {
                 Default::default()
             },
+            &live_instances,
         )
         .await
     } else {

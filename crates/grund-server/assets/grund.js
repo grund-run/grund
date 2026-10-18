@@ -17,6 +17,20 @@
   var listening = null;
   var first = true;
   var refreshIndex = 0;
+  var loaded = {};
+
+  function load(src) {
+    if (!loaded[src]) {
+      loaded[src] = new Promise(function (resolve, reject) {
+        var script = document.createElement("script");
+        script.src = src;
+        script.onload = resolve;
+        script.onerror = function () { delete loaded[src]; reject(new Error(src)); };
+        document.head.append(script);
+      });
+    }
+    return loaded[src];
+  }
 
   function enhance() {
     if (listening) listening.abort();
@@ -40,6 +54,15 @@
         listening.signal.addEventListener("abort", function () { clearTimeout(timer); }, { once: true });
       }
     }
+
+    document.querySelectorAll("[data-telemetry]").forEach(function (root) {
+      var signal = listening.signal;
+      (root.dataset.telemetryScripts || "").split(" ").reduce(function (chain, src) {
+        return chain.then(function () { return load(src); });
+      }, Promise.resolve()).then(function () {
+        if (!signal.aborted) window.grundTelemetry.mount(root, signal);
+      });
+    });
 
     document.querySelectorAll("[data-log-output]").forEach(function (output) {
       var signal = on.signal;

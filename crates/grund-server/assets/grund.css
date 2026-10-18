@@ -60,6 +60,7 @@
   --violet: #b48fe6;
   --danger: #ef9a8f;
   --danger-surface: #2c1f1d;
+  --chart-grid: #2a3a2e;
 
   --space-1: 0.25rem;
   --space-2: 0.5rem;
@@ -2711,6 +2712,7 @@ a.endpoint-text:hover {
 .sg-violet { background: var(--violet); }
 .sg-danger { background: var(--danger); }
 .sg-danger-surface { background: var(--danger-surface); }
+.sg-chart-grid { background: var(--chart-grid); }
 
 .sg-scale {
   display: grid;
@@ -3438,4 +3440,321 @@ a.endpoint-text:hover {
 
 .data-table-wide-end th:last-child {
   width: 50%;
+}
+
+/* Telemetry tabs: one filter row, live charts (uPlot draws the canvas; the
+ * rules below are its frame), log volume and the log stream. */
+.telemetry {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.telemetry-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.telemetry-bar .select-wrap {
+  flex: 0 1 14rem;
+  min-width: 0;
+}
+
+.telemetry-bar .select {
+  min-height: 2.5rem;
+  padding-block: 0;
+}
+
+.telemetry-search {
+  flex: 1 1 18rem;
+}
+
+.telemetry-search input {
+  height: 2.5rem;
+}
+
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.segment {
+  padding: 0 var(--space-3);
+  border-left: 1px solid var(--chart-grid);
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  line-height: 2.375rem;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.segment:first-child {
+  border-left: 0;
+}
+
+.segment:hover,
+.segment.is-hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.segment[aria-current] {
+  background: var(--active);
+  color: var(--text);
+  font-weight: 500;
+}
+
+.segment-live::before {
+  content: "";
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  margin-right: var(--space-2);
+  border-radius: 50%;
+  background: var(--muted);
+  vertical-align: 0.05em;
+}
+
+.segment-live[aria-current]::before {
+  background: var(--accent);
+}
+
+.telemetry-zoom {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-1) 0 var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  color: var(--text-2);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.telemetry-zoom[hidden] {
+  display: none;
+}
+
+.telemetry-status {
+  color: var(--orange);
+  font-size: var(--text-xs);
+}
+
+.telemetry-status:empty {
+  display: none;
+}
+
+.chart-card {
+  min-width: 0;
+  padding: var(--space-3) var(--space-4) var(--space-2);
+  background: var(--bg-raised);
+  border: 1px solid var(--chart-grid);
+  border-radius: var(--radius);
+}
+
+.chart-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
+.chart-name {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.chart-keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text-2);
+  font-size: var(--text-xs);
+}
+
+.chart-keys li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.chart-swatch {
+  display: inline-block;
+  width: 0.625rem;
+  height: 0.625rem;
+  border-radius: 2px;
+}
+
+.swatch-0 { background: var(--accent); }
+.swatch-1 { background: var(--violet); }
+.swatch-2 { background: var(--blue); }
+.swatch-3 { background: var(--ok); }
+.swatch-stdout { background: var(--accent); }
+.swatch-stderr { background: var(--danger); }
+.swatch-combined { background: var(--blue); }
+
+.swatch-max,
+.swatch-reserved {
+  height: 0;
+  border-radius: 0;
+  border-top: 2px dotted var(--blue);
+}
+
+.swatch-reserved {
+  border-top: 2px dashed var(--orange);
+}
+
+.chart-now {
+  margin: 0 0 0 auto;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-canvas {
+  position: relative;
+  min-width: 0;
+  min-height: 7rem;
+}
+
+.chart-empty {
+  margin: 0;
+  padding: var(--space-8) 0;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  text-align: center;
+}
+
+.chart-tip {
+  position: absolute;
+  z-index: 2;
+  display: grid;
+  gap: 2px;
+  padding: var(--space-1) var(--space-2);
+  background: var(--popover);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.chart-tip[hidden] {
+  display: none;
+}
+
+.chart-tip div {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.chart-tip span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--text-2);
+}
+
+.chart-tip-head {
+  color: var(--text);
+}
+
+.telemetry-foot {
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--text-xs);
+}
+
+.uplot,
+.uplot canvas {
+  display: block;
+  width: 100%;
+}
+
+.uplot canvas {
+  position: relative;
+  height: 100%;
+}
+
+.u-wrap {
+  position: relative;
+  user-select: none;
+}
+
+.u-over,
+.u-under,
+.u-axis,
+.u-select,
+.u-cursor-x,
+.u-cursor-y,
+.u-cursor-pt {
+  position: absolute;
+}
+
+.u-under {
+  overflow: hidden;
+}
+
+.u-select {
+  background: var(--active);
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.u-cursor-x,
+.u-cursor-y,
+.u-cursor-pt {
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  will-change: transform;
+}
+
+.u-hz .u-cursor-x {
+  height: 100%;
+  border-right: 1px dashed var(--border-strong);
+}
+
+.u-cursor-pt {
+  border: 0 solid;
+  border-radius: 50%;
+  background-clip: padding-box !important;
+}
+
+.u-axis.u-off,
+.u-select.u-off,
+.u-cursor-x.u-off,
+.u-cursor-y.u-off,
+.u-cursor-pt.u-off {
+  display: none;
+}
+
+@media (max-width: 40rem) {
+  .segmented {
+    width: 100%;
+  }
+
+  .segment {
+    flex: 1;
+    padding: 0;
+    text-align: center;
+  }
+
+  .telemetry-bar .select-wrap {
+    flex: 1 1 100%;
+  }
+
+  .chart-card {
+    padding-inline: var(--space-3);
+  }
 }

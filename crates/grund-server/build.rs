@@ -17,6 +17,7 @@ fn main() {
         ("grund.js", "assets/grund.js"),
         ("mark.svg", "assets/mark.svg"),
         ("uplot.js", "assets/vendor/uplot-1.6.32.min.js"),
+        ("telemetry.js", "assets/telemetry.js"),
     ] {
         println!("cargo:rerun-if-changed={path}");
         let body = fs::read(path).expect("read static asset");

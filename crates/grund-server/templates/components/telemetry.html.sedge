@@ -1,4 +1,38 @@
-use crate::templates::compiled::components::{EmptyState, Tag, Actions, Button, Para, PostButton};
+use crate::templates::compiled::components::{EmptyState, Tag, Actions, Button, Para, PostButton, Icon};
+
+component TelemetryBar(bar: &crate::web::app_telemetry::Toolbar) {
+  <form class="telemetry-bar" method="get" action={&bar.action} data-telemetry-bar>
+    {if !bar.range.is_empty() { <input type="hidden" name="range" value={bar.range}> }}
+    {if let Some(search) = &bar.search {
+      <div class="search telemetry-search">
+        <label class="visually-hidden" for="app-log-search">Search output</label>
+        <Icon name="search" class="icon-sm search-icon" />
+        <input id="app-log-search" name="search" type="search" placeholder="Search output…" autocomplete="off" maxlength="200" value={search}>
+      </div>
+    }}
+    <nav class="segmented" aria-label="Time range">
+      {for link in &bar.ranges { <a class={if link.live { "segment segment-live" } else { "segment" }} href={&link.href} aria-current={if link.current { Some("true") } else { None }}>{link.label}</a> }}
+    </nav>
+    {if !bar.instances.is_empty() {
+      <label class="visually-hidden" for="telemetry-instance">Instance</label>
+      <span class="select-wrap"><select class="control select" id="telemetry-instance" name="instance" data-autosubmit>{for (value, label) in &bar.instances { <option value={value} selected={bar.instance == *value}>{label}</option> }}</select><Icon name="down" class="icon-sm select-chevron" /></span>
+    }}
+    <span class="telemetry-zoom" data-telemetry-zoom hidden></span>
+    <span class="telemetry-status" role="status" data-telemetry-status></span>
+    <button class="btn btn-secondary btn-sm js-hide" type="submit"><span>Apply</span></button>
+  </form>
+}
+
+component ChartCard(id: &str, title: &str, children: Html) {
+  <section class="chart-card" aria-labelledby="chart-{id}">
+    <header class="chart-head">
+      <h2 class="chart-name" id="chart-{id}">{title}</h2>
+      <ul class="chart-keys" aria-label="Series" data-chart-keys></ul>
+      <p class="chart-now" data-chart-now></p>
+    </header>
+    <div class="chart-canvas" data-chart={id}>{children}</div>
+  </section>
+}
 
 component TimeSeries(chart: &crate::web::app_telemetry::TimeSeriesChart) {
   <figure class="chart">

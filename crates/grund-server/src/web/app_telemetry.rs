@@ -1,10 +1,6 @@
-use std::collections::BTreeMap;
-
 use buffa_types::google::protobuf::Timestamp;
 use chrono::{DateTime, Utc};
-use grund_proto::grund::app::v1::{
-    AppMetricPoint, AppTelemetryGap, GetAppMetricsRequest, ListAppLogsRequest,
-};
+use grund_proto::grund::app::v1::{AppMetricPoint, AppTelemetryGap, ListAppLogsRequest};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -35,8 +31,8 @@ impl TelemetryQuery {
         if !matches!(self.stream.as_str(), "" | "stdout" | "stderr" | "combined") {
             return Err("Choose stdout, stderr, combined or every stream.".into());
         }
-        if !matches!(self.range.as_str(), "" | "hour" | "day" | "week") {
-            return Err("Choose hour, day or week.".into());
+        if range(&self.range).is_none() {
+            return Err("Choose live, 15m, 1h, 6h, 24h or 7d.".into());
         }
         if self.release.is_empty() {
             Ok(0)
@@ -50,6 +46,161 @@ impl TelemetryQuery {
                 })
         }
     }
+}
+
+/// A time range offered by the telemetry tabs, and the metrics range it reads.
+pub struct Range {
+    pub key: &'static str,
+    pub label: &'static str,
+    pub metrics: &'static str,
+    pub logs: bool,
+}
+
+pub const RANGES: [Range; 6] = [
+    Range {
+        key: "live",
+        label: "Live",
+        metrics: "hour",
+        logs: true,
+    },
+    Range {
+        key: "15m",
+        label: "15m",
+        metrics: "hour",
+        logs: true,
+    },
+    Range {
+        key: "1h",
+        label: "1h",
+        metrics: "hour",
+        logs: true,
+    },
+    Range {
+        key: "6h",
+        label: "6h",
+        metrics: "day",
+        logs: true,
+    },
+    Range {
+        key: "24h",
+        label: "24h",
+        metrics: "day",
+        logs: true,
+    },
+    Range {
+        key: "7d",
+        label: "7d",
+        metrics: "week",
+        logs: false,
+    },
+];
+
+/// Resolves a range key; empty is live, and the earlier hour/day/week links still work.
+pub fn range(key: &str) -> Option<&'static Range> {
+    let key = match key {
+        "" => "live",
+        "hour" => "1h",
+        "day" => "24h",
+        "week" => "7d",
+        key => key,
+    };
+    RANGES.iter().find(|range| range.key == key)
+}
+
+pub struct RangeLink {
+    pub label: &'static str,
+    pub href: String,
+    pub current: bool,
+    pub live: bool,
+}
+
+/// The one filter row of a telemetry tab.
+pub struct Toolbar {
+    pub action: String,
+    pub range: &'static str,
+    pub ranges: Vec<RangeLink>,
+    pub search: Option<String>,
+    pub instance: String,
+    pub instances: Vec<(String, String)>,
+}
+
+#[derive(Serialize)]
+struct Link<'a> {
+    #[serde(skip_serializing_if = "str::is_empty")]
+    range: &'a str,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    search: &'a str,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    instance: &'a str,
+}
+
+impl Toolbar {
+    fn new(
+        action: String,
+        query: &TelemetryQuery,
+        logs: bool,
+        current_instances: &[String],
+    ) -> Self {
+        let current = range(&query.range).unwrap_or(&RANGES[0]);
+        let ranges = RANGES
+            .iter()
+            .filter(|range| range.logs || !logs)
+            .map(|range| {
+                let link = Link {
+                    range: if range.key == "live" { "" } else { range.key },
+                    search: &query.search,
+                    instance: &query.instance,
+                };
+                let query = serde_urlencoded::to_string(&link).unwrap_or_default();
+                RangeLink {
+                    label: range.label,
+                    href: if query.is_empty() {
+                        action.clone()
+                    } else {
+                        format!("{action}?{query}")
+                    },
+                    current: range.key == current.key,
+                    live: range.key == "live",
+                }
+            })
+            .collect();
+        let mut instances: Vec<(String, String)> = current_instances
+            .iter()
+            .chain((!query.instance.is_empty()).then_some(&query.instance))
+            .map(|instance| (instance.clone(), short(instance)))
+            .collect();
+        instances.sort();
+        instances.dedup();
+        if instances.len() > 1 {
+            instances.insert(
+                0,
+                (
+                    String::new(),
+                    format!("All instances ({})", instances.len()),
+                ),
+            );
+        } else {
+            instances.clear();
+        }
+        Self {
+            action,
+            range: if current.key == "live" {
+                ""
+            } else {
+                current.key
+            },
+            ranges,
+            search: logs.then(|| query.search.clone()),
+            instance: query.instance.clone(),
+            instances,
+        }
+    }
+}
+
+/// The last four hex digits of an instance identifier, as the charts and log lines show it.
+pub fn short(instance: &str) -> String {
+    let digits: String = instance.chars().filter(char::is_ascii_hexdigit).collect();
+    digits[digits.len().saturating_sub(4)..].to_string()
 }
 
 pub struct LogView {
@@ -137,11 +288,10 @@ pub struct TimeSeriesChart {
 }
 
 pub struct MetricsPage {
-    pub action: String,
-    pub query: TelemetryQuery,
+    pub bar: Toolbar,
     pub error: String,
-    pub limits: String,
-    pub charts: Vec<TimeSeriesChart>,
+    pub organisation: String,
+    pub name: String,
 }
 
 fn time(value: &str) -> Result<Option<DateTime<Utc>>, String> {
@@ -189,6 +339,7 @@ pub async fn render(
     tab: &str,
     query: TelemetryQuery,
     restart: RestartControls,
+    instances: &[String],
 ) -> String {
     if tab == "logs" {
         let mut page = LogsPage {
@@ -304,101 +455,13 @@ pub async fn render(
         crate::templates::compiled::pages::app_logs::render(&page)
     } else {
         let mut page = MetricsPage {
-            action: format!("{base}/metrics"),
-            query,
+            bar: Toolbar::new(format!("{base}/metrics"), &query, false, instances),
             error: String::new(),
-            limits: String::new(),
-            charts: Vec::new(),
+            organisation: organisation.into(),
+            name: name.into(),
         };
-        match page.query.validate() {
-            Err(error) => page.error = error,
-            Ok(release) => {
-                let request = GetAppMetricsRequest {
-                    organisation: organisation.into(),
-                    name: name.into(),
-                    range: page.query.range.clone(),
-                    instance: page.query.instance.clone(),
-                    release,
-                    ..Default::default()
-                };
-                match state
-                    .app_telemetry()
-                    .metrics(organisation_id, app_id, &request)
-                    .await
-                {
-                    Err(error) => {
-                        tracing::warn!(error = %error, "app metrics query failed");
-                        page.error = error.downcast_ref::<crate::services::app_telemetry::Invalid>()
-                            .map(|error| error.to_string())
-                            .unwrap_or_else(|| "Measurements could not be loaded. Offline coverage is unknown. Check the filters and try again.".into());
-                    }
-                    Ok(response) => {
-                        page.limits = format!(
-                            "{} second buckets. Retained for up to {} days; {} bytes of accounted metric storage per organisation. Eligible offline batch delivery window: {} hours; spool capacity can be tighter.",
-                            response.bucket_seconds,
-                            response.retention_days,
-                            response.payload_limit_bytes,
-                            response.delivery_window_hours
-                        );
-                        if let Some((start, end)) = response
-                            .since
-                            .as_option()
-                            .and_then(at)
-                            .zip(response.until.as_option().and_then(at))
-                        {
-                            let mut instances: BTreeMap<(String, u32), Vec<AppMetricPoint>> =
-                                BTreeMap::new();
-                            for point in response.points {
-                                instances
-                                    .entry((point.instance.clone(), point.release))
-                                    .or_default()
-                                    .push(point);
-                            }
-                            for gap in &response.gaps {
-                                if !instances
-                                    .keys()
-                                    .any(|(instance, _)| instance == &gap.instance)
-                                {
-                                    instances.entry((gap.instance.clone(), 0)).or_default();
-                                }
-                            }
-                            if instances.len() > 32 {
-                                page.error = "More than 32 instances match. Filter by instance or release to draw charts.".into();
-                                instances.clear();
-                            }
-                            for ((instance, release), mut points) in instances {
-                                points.sort_by_key(|point| {
-                                    point.at.as_option().map(|at| (at.seconds, at.nanos))
-                                });
-                                let label = if release == 0 {
-                                    instance.clone()
-                                } else {
-                                    format!("{instance} · release {release}")
-                                };
-                                page.charts.push(chart(
-                                    &format!("CPU · {label}"),
-                                    false,
-                                    &points,
-                                    start,
-                                    end,
-                                    response.bucket_seconds,
-                                ));
-                                page.charts.push(chart(
-                                    &format!("Memory · {label}"),
-                                    true,
-                                    &points,
-                                    start,
-                                    end,
-                                    response.bucket_seconds,
-                                ));
-                                for chart in page.charts.iter_mut().rev().take(2) {
-                                    chart.gaps = chart_gaps(&response.gaps, &instance, start, end);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        if let Err(error) = query.validate() {
+            page.error = error;
         }
         crate::templates::compiled::pages::app_metrics::render(&page)
     }
@@ -619,6 +682,73 @@ fn chart_gaps(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn earlier_hour_day_and_week_links_open_the_matching_range_and_unknown_ones_are_refused() {
+        assert_eq!(range("").unwrap().key, "live");
+        assert_eq!(range("hour").unwrap().key, "1h");
+        assert_eq!(range("day").unwrap().metrics, "day");
+        assert_eq!(range("week").unwrap().key, "7d");
+        assert_eq!(range("6h").unwrap().metrics, "day");
+        assert!(range("30d").is_none());
+        let query = TelemetryQuery {
+            range: "30d".into(),
+            ..Default::default()
+        };
+        assert!(query.validate().is_err());
+    }
+
+    #[test]
+    fn range_links_keep_search_and_instance_and_logs_offer_no_range_beyond_retention() {
+        let instance = Uuid::from_u128(7).to_string();
+        let query = TelemetryQuery {
+            range: "6h".into(),
+            search: "a b".into(),
+            instance: instance.clone(),
+            ..Default::default()
+        };
+        let logs = Toolbar::new("/o/apps/a/logs".into(), &query, true, &[]);
+        assert!(!logs.ranges.iter().any(|link| link.label == "7d"));
+        let six = logs.ranges.iter().find(|link| link.current).unwrap();
+        assert_eq!(six.label, "6h");
+        assert_eq!(
+            six.href,
+            format!("/o/apps/a/logs?range=6h&search=a+b&instance={instance}")
+        );
+        let live = logs.ranges.iter().find(|link| link.live).unwrap();
+        assert!(!live.href.contains("range="));
+        let metrics = Toolbar::new("/o/apps/a/metrics".into(), &query, false, &[]);
+        assert!(metrics.search.is_none());
+        assert!(metrics.ranges.iter().any(|link| link.label == "7d"));
+    }
+
+    #[test]
+    fn the_instance_picker_appears_only_when_there_is_more_than_one_instance() {
+        let one = vec![Uuid::from_u128(1).to_string()];
+        let query = TelemetryQuery::default();
+        assert!(
+            Toolbar::new(String::new(), &query, false, &one)
+                .instances
+                .is_empty()
+        );
+        let two = vec![one[0].clone(), Uuid::from_u128(0xabcd).to_string()];
+        let bar = Toolbar::new(String::new(), &query, false, &two);
+        assert_eq!(
+            bar.instances[0],
+            (String::new(), "All instances (2)".into())
+        );
+        assert_eq!(bar.instances[2].1, "abcd");
+        let retired = TelemetryQuery {
+            instance: Uuid::from_u128(9).to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            Toolbar::new(String::new(), &retired, false, &one)
+                .instances
+                .len(),
+            3
+        );
+    }
 
     #[test]
     fn historical_combined_output_does_not_restart_replaced_or_upgraded_instances() {

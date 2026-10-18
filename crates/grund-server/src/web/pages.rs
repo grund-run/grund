@@ -1359,6 +1359,7 @@ pub const SWATCHES: &[(&str, &str)] = &[
     ("violet", "code, APIs, devices"),
     ("danger", "errors, destructive actions"),
     ("danger-surface", "behind errors and danger buttons"),
+    ("chart-grid", "chart grid lines and card edges"),
 ];
 
 const KNOWN_IMAGE_ICONS: &[&str] = &[

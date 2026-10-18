@@ -48,6 +48,17 @@ pub(crate) fn compiled_js_href() -> &'static str {
     &URL
 }
 
+pub(crate) fn compiled_telemetry_scripts() -> &'static str {
+    static URLS: LazyLock<String> = LazyLock::new(|| {
+        format!(
+            "{} {}",
+            crate::web::assets::uplot_href(),
+            crate::web::assets::telemetry_href()
+        )
+    });
+    &URLS
+}
+
 pub(crate) fn compiled_sedx_href() -> &'static str {
     static URL: LazyLock<String> = LazyLock::new(crate::web::assets::sedx_href);
     &URL

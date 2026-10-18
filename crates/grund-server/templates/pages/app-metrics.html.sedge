@@ -1,22 +1,10 @@
-use crate::templates::compiled::components::{Panel, Form, Field, Select, Grid, Actions, Button, Banner, Para, TimeSeries, EmptyState};
-props crate::web::app_telemetry::MetricsPage { action, query, error, limits, charts };
+use crate::templates::compiled::components::{TelemetryBar, ChartCard, Banner};
+props crate::web::app_telemetry::MetricsPage { bar, error, organisation, name };
 
-<Panel id="metric-filters" title="Metrics">
-  <Banner text={error} tone="error" />
-  <Form action={action} method={Some("get")}>
-    <Select name="range" label="Time range" selected={if query.range.is_empty() { "hour" } else { &query.range }} options={&[("hour", "Last hour"), ("day", "Last day"), ("week", "Last week")]} />
-    <Grid>
-      <Field name="instance" label="Instance" value={&query.instance} placeholder={Some("Full instance identifier")} />
-      <Field name="release" label="Release" kind="number" value={&query.release} min={Some("1")} step={Some("1")} />
-    </Grid>
-    <Actions><Button label="Apply filters" kind="secondary" /></Actions>
-  </Form>
-</Panel>
-<Panel id="app-measurements" title="CPU and memory">
-  <Para text={limits} />
-  <Para>Each chart shows one instance and release. CPU is measured in millicores: 1000 millicores = 1 vCPU. Memory is cgroup usage including filesystem cache, not process RSS. MiB = 1,048,576 bytes.</Para>
-  <Para>Lines stop at missing buckets; missing data is never zero. CPU is unknown before a second sample and after a counter reset. Reservations are shown only where samples were received.</Para>
-  <Para>Offline annotations identify disconnection from the instance, not app shutdown. Other missing coverage is unknown, including collection failures and data removed by retention or organisation limits. Absence of an offline annotation does not prove complete history.</Para>
-  {if error.is_empty() && charts.is_empty() { <EmptyState title="No measurements received" text="No retained measurements match this time range and these filters." /> }}
-  {for chart in charts { <TimeSeries chart={chart} /> }}
-</Panel>
+<div class="telemetry" data-telemetry="metrics" data-telemetry-organisation={organisation} data-telemetry-name={name} data-telemetry-range={bar.range} data-telemetry-instance={&bar.instance} data-telemetry-scripts={crate::templates::compiled_telemetry_scripts()}>
+  <TelemetryBar bar={bar} />
+  <Banner text={error} />
+  <ChartCard id="cpu" title="CPU"><p class="chart-empty js-hide">Charts need JavaScript.</p></ChartCard>
+  <ChartCard id="memory" title="Memory"><p class="chart-empty js-hide">Charts need JavaScript.</p></ChartCard>
+  <p class="telemetry-foot">CPU in millicores (1000 m = 1 vCPU). Memory includes file cache.</p>
+</div>
