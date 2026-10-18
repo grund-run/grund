@@ -526,6 +526,12 @@ pub enum Error {
     SameBoot,
     #[error("target generation is exhausted")]
     GenerationExhausted,
+    /// Another migration owns the hold; this is not an executable-update veto.
+    #[error("a different migration holds this machine")]
+    MigrationConflict,
+    /// A cleared migration cannot prepare again, even after its traffic pause expires.
+    #[error("this migration is already closed")]
+    MigrationClosed,
     #[error("machine lifecycle changes are blocked by an authorized update")]
     LifecycleBlocked,
     #[error("provider authorization is required")]
@@ -578,13 +584,13 @@ impl mire::Command for Command {
                     .get(&machine_id)
                     .is_some_and(|closed| migration_id <= *closed)
                 {
-                    return Err(Error::LifecycleBlocked);
+                    return Err(Error::MigrationClosed);
                 }
                 if let Some(current) = state.migration_holds.get(&machine_id) {
                     return if *current == migration_id {
                         Ok(vec![])
                     } else {
-                        Err(Error::LifecycleBlocked)
+                        Err(Error::MigrationConflict)
                     };
                 }
                 if state
@@ -1338,7 +1344,7 @@ mod tests {
                 at: at()
             }
             .handle(&state),
-            Err(Error::LifecycleBlocked)
+            Err(Error::MigrationClosed)
         );
         assert_eq!(
             Command::HoldMigration {
@@ -1358,6 +1364,15 @@ mod tests {
             },
         )
         .unwrap();
+        assert_eq!(
+            Command::HoldMigration {
+                machine_id,
+                migration_id: migration(3),
+                at: at()
+            }
+            .handle(&state),
+            Err(Error::MigrationConflict)
+        );
         decide(
             &mut state,
             Command::ClearMigration {
@@ -1386,7 +1401,7 @@ mod tests {
                 at: at()
             }
             .handle(&state),
-            Err(Error::LifecycleBlocked)
+            Err(Error::MigrationClosed)
         );
         decide(
             &mut state,
@@ -1446,7 +1461,7 @@ mod tests {
                 at: later
             }
             .handle(&state),
-            Err(Error::LifecycleBlocked)
+            Err(Error::MigrationClosed)
         );
     }
 
