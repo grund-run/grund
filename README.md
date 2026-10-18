@@ -65,8 +65,8 @@ welcome under Apache-2.0 with a sign-off ([CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ## Self-hosting
 
-Managed installation is implemented in this checkout. **The published alpha.3
-does not contain `grund install`**; select a release with `grund install --help`
+Managed installation is implemented in this checkout. **Published alpha.4 and
+earlier do not contain `grund install`**; select a release with `grund install --help`
 before using these commands. It requires Linux, root, systemd, Docker Engine
 and Docker Compose v2:
 
