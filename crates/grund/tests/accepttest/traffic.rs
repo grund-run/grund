@@ -252,6 +252,7 @@ impl Stack {
             .arg("--data-dir")
             .arg(self.edge_dir.join("data"))
             .env("RUST_LOG", "grund_server=debug,info")
+            .env("NO_COLOR", "1")
             .stdout(log.try_clone()?)
             .stderr(log);
         if let Some((url, ca)) = relay {
