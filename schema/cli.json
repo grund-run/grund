@@ -724,6 +724,10 @@
             "integer"
           ]
         },
+        "previousPageToken": {
+          "description": "Only with newest_first: reads the records before this page. Empty when the page reached the oldest retained match.",
+          "type": "string"
+        },
         "retentionHours": {
           "description": "Payload/retention bounds are not guarantees about physical database bytes.",
           "type": "integer"
