@@ -1,4 +1,4 @@
-use crate::templates::compiled::components::{Section, Panel, EmptyState, Form, HiddenField, Banner, Field, FieldError, Grid, Group, ChoiceField, ChoiceCard, ChipsField, StepperField, ToggleField, RangeField, PairsField, CodeField, Actions, Button, Rows, Row, PostButton, Para, Code, Links, Link, Tiles, Tile, Expanders, Expander, DomainSetup, DomainRecords, Select};
+use crate::templates::compiled::components::{Section, Panel, EmptyState, Form, HiddenField, Banner, Field, FieldError, Grid, Group, ChoiceField, ChoiceCard, ChipsField, StepperField, ToggleField, RangeField, PairsField, CodeField, Actions, Button, Rows, Row, PostButton, Para, Code, Links, Link, Tiles, Tile, Expanders, Expander, DomainName, DomainSetup, DomainActions, Select};
 use crate::templates::FormState;
 use crate::web::apps::SettingsEdit;
 use grund_domain::app::updates::UpdateState;
@@ -18,6 +18,30 @@ component SettingsForm(id: &str, title: &str, action: &str, cancel: &str, part: 
       </Form>
     } else { <Para kind="hint">Owners and admins change this.</Para> }}
   </Panel>
+}
+
+component AppDomain(domain: &crate::services::domains::DomainView, public: bool, edge_target: Option<&str>, here: &str, manages: bool, apps: &[(&str, &str)], subdomain: &str, form: &FormState<'_>) {
+  {let item = crate::web::domains::domain_context(domain, *public, *edge_target);}
+  {let slug = here.split('/').nth(1).unwrap_or("");}
+  <Section id={item.id.as_str()} title={&domain.name} first={Some(true)}>
+    <:title_content><DomainName name={&domain.name} /></:title_content>
+    <:end>{if *manages {
+      <DomainActions domain={&item} slug={slug} csrf={form.csrf} apps={apps} app_action="{here}/domains" open={domain.parent_domain.is_some() && form.error("subdomain").is_some()}>
+        {if let Some(parent) = &domain.parent_domain {
+          <Form action="{here}/domains" form={Some(form)}>
+            <HiddenField name="operation" value="subdomain" />
+            <Field name="subdomain" label="App subdomain" value={subdomain} hint="Saving replaces the previous app address and enables it." autocomplete="off" mono form={Some(form)} />
+            <Para kind="hint">.{parent}</Para>
+            <Button label="Save subdomain" kind="secondary" size="sm" />
+          </Form>
+        }}
+      </DomainActions>
+    }}</:end>
+    <DomainSetup domain={&item} slug={slug} csrf={form.csrf} manages={*manages} app_action="{here}/domains" refresh_href={here} refresh_fields={&[("edit", "domains")]} />
+    {if *manages && domain.state == "verified" && domain.parent_domain.is_none() {
+      <PostButton action="{here}/domains" csrf={form.csrf} label="Bind" kind="secondary" hidden={&[("operation", "bind"), ("domain", &domain.name)]} />
+    }}
+  </Section>
 }
 
 props crate::web::apps::AppSettingsPage<'_> { app, items, edit, next, manages, owner, form, options, update };
@@ -165,54 +189,29 @@ props crate::web::apps::AppSettingsPage<'_> { app, items, edit, next, manages, o
           </Grid>
         </SettingsForm>
       },
-      SettingsEdit::Domains { domains, apps, public, added_name, parent, subdomain, edge_target } => {
+      SettingsEdit::Domains { domains, apps: _, public, added_name, parent, subdomain, edge_target } => {
         <Panel id="domains" title="Custom domain">
           <Banner part={Some("domains")} form={Some(&form)} />
-          {if let Some(parent) = parent {
-            <Para kind="aside">Organisation app domain: <code>{parent}</code>.</Para>
-            {if *manages {
-              <Form action="{here}/domains" form={Some(&form)}>
-                <HiddenField name="operation" value="subdomain" />
-                <Field name="subdomain" label="App subdomain" value={subdomain.as_str()} hint={format!("One lowercase DNS label before .{parent}. Empty uses {}. Saving replaces the previous app address and re-enables an unbound address.", app.name)} autocomplete="off" mono form={Some(&form)} />
-                <Actions><Button label="Save subdomain" kind="secondary" /></Actions>
-              </Form>
-            }}
-          } else {
-            <Para kind="aside">No organisation app domain configured. <a href="/{app.base.split('/').nth(1).unwrap_or("")}/domains#custom">Set up app addresses in Domains</a>.</Para>
-          }}
-          {for domain in domains {
-            {let item = crate::web::domains::domain_context(domain, *public, edge_target.as_deref());}
-            <Section id={item.id.as_str()} title={&domain.name}>
-              <DomainSetup domain={&item} slug={app.base.split('/').nth(1).unwrap_or("")} compact refresh_href={here.as_str()} refresh_fields={&[("edit", "domains")]} />
-              <DomainRecords domain={&item} />
-              {if *manages {
-                <Actions>
-                  <PostButton action="{here}/domains" csrf={form.csrf} label="Check now" kind="secondary" hidden={&[("operation", "check"), ("domain", &domain.name)]} />
-                  {if domain.state == "verified" && domain.parent_domain.is_none() {
-                    <PostButton action="{here}/domains" csrf={form.csrf} label="Bind" kind="secondary" hidden={&[("operation", "bind"), ("domain", &domain.name)]} />
-                  }}
-                  {if domain.state == "bound" {
-                    <PostButton action="{here}/domains" csrf={form.csrf} label="Unbind" kind="secondary" hidden={&[("operation", "unbind"), ("domain", &domain.name)]} />
-                  }}
-                </Actions>
-                {if domain.state == "bound" && domain.parent_domain.is_none() && !apps.is_empty() {
-                  <Form action="{here}/domains" form={Some(&form)} layout={Some("row")}>
-                    <HiddenField name="operation" value="move" /><HiddenField name="domain" value={&domain.name} />
-                    <Select name="target" id="move-{domain.name}" label="Move to app" options={&options.apps} required />
-                    <Button label="Move" kind="secondary" />
-                  </Form>
-                }}
-              }}
-            </Section>
+          {for domain in domains.iter().filter(|domain| !domain.is_app_domain && domain.parent_domain.is_none()) {
+            <AppDomain domain={domain} public={*public} edge_target={edge_target.as_deref()} here={here.as_str()} manages={*manages} apps={&options.apps} subdomain={subdomain} form={&form} />
           }}
           {if *manages {
+            <Expander title="Add a domain" id="add-domain" open={form.error("domain").is_some() || !domains.iter().any(|domain| !domain.is_app_domain && domain.parent_domain.is_none())}>
             <Form action="{here}/domains" form={Some(&form)} layout={Some("row")}>
               <HiddenField name="operation" value="add" />
-              <Field name="domain" label="Domain" value={added_name.as_str()} hint="Add the records, then Check now to verify and bind." autocomplete="off" required mono form={Some(&form)} />
+              <Field name="domain" label="Domain" value={added_name.as_str()} autocomplete="off" required mono form={Some(&form)} />
               <Button label="Add domain" kind="secondary" />
             </Form>
+            </Expander>
           }}
         </Panel>
+        {if parent.is_some() {
+          <Panel id="organisation-domain" title="Organisation app domain">
+            {for domain in domains.iter().filter(|domain| domain.parent_domain.is_some()) {
+              <AppDomain domain={domain} public={*public} edge_target={edge_target.as_deref()} here={here.as_str()} manages={*manages} apps={&options.apps} subdomain={subdomain} form={&form} />
+            }}
+          </Panel>
+        }}
       },
       SettingsEdit::Volumes { summary, name, path, source, size_gib, selected, backup } => {
         {if let Some(detail) = selected {

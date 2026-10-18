@@ -30,10 +30,6 @@ async fn app_address_forms_preserve_refusals_and_require_explicit_restoration_af
     let configure = format!("/{org}/domains/app-domain");
     let settings = format!("/{org}/apps/hello/settings?edit=domains");
     let save = format!("/{org}/apps/hello/settings/domains");
-    when.visiting(&settings).await?;
-    then.body_contains("Set up app addresses in Domains")?;
-    when.visiting(&domains).await?;
-    then.body_contains("Use for app addresses")?;
     when.posting_raw(&configure, &[("name", &parent)], Some(&when.form_origin()))
         .await?;
     then.status(403)?;
@@ -57,10 +53,7 @@ async fn app_address_forms_preserve_refusals_and_require_explicit_restoration_af
         .body_contains(&original)?
         .body_lacks(&format!("_grund.{original}"))?;
     when.visiting(&settings).await?;
-    then.body_contains("name=\"subdomain\"")?
-        .body_contains("value=\"hello\"")?
-        .body_contains(&format!("sedx-target=\"domain-{original}-progress\""))?
-        .body_contains("name=\"edit\" value=\"domains\"")?;
+    then.body_contains("value=\"hello\"")?;
     when.submitting_on_current_page(
         &save,
         &[("operation", "subdomain"), ("subdomain", "bad.label")],
@@ -69,19 +62,6 @@ async fn app_address_forms_preserve_refusals_and_require_explicit_restoration_af
     then.status(422)?
         .body_contains("value=\"bad.label\"")?
         .body_contains("aria-invalid=\"true\"")?;
-    let html = then.body()?;
-    let section_start = format!("id=\"domain-{original}\"");
-    let child = html
-        .split_once(&section_start)
-        .and_then(|(_, rest)| rest.split_once("</section>"))
-        .map(|(section, _)| section)
-        .ok_or_else(|| anyhow::anyhow!("the generated app address has no settings section"))?;
-    anyhow::ensure!(
-        child.matches("data-domain-step=").count() == 6
-            && !child.contains("value=\"move\"")
-            && !child.contains("name=\"subdomain\""),
-        "generated address progress must retain all six steps without a Move action or editable form"
-    );
     anyhow::ensure!(
         status_of(when, then, &org, &original).await?["app"] == "hello",
         "a refused label replaced the current app address"

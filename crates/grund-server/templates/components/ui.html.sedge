@@ -93,22 +93,27 @@ component PageHead(title: &str, reference: Option<&str>, back: Option<(&str, &st
 component StatusLine(text: &str, tone: &str, id: &str) {
 <p class="status-line" id={if id.is_empty() { None } else { Some(id) }}><Status text={text} tone={tone} /></p>
 }
-component Section(id: &str, title: &str, count: Option<usize>, more: Option<(&str, &str)>, first: Option<bool>, stack: Option<bool>, children: Html) {
+component DomainName(name: &str) {
+<span class="domain-name">{for label in name.split_inclusive('.') { {label}{if label.ends_with('.') { <wbr> }} }}</span>
+}
+component Section(id: &str, title: &str, title_content: Option<Html>, count: Option<usize>, more: Option<(&str, &str)>, first: Option<bool>, stack: Option<bool>, end: Option<Html>, children: Html) {
 <section class={if first.unwrap_or(false) && !stack.unwrap_or(false) { None } else if first.unwrap_or(false) { Some("section-stack") } else if stack.unwrap_or(false) { Some("section section-stack") } else { Some("section") }} aria-labelledby={id}>
   <div class="section-head">
-    <h2 class="section-title page-name" id={id}>{title}{if let Some(count) = count { <span class="count">{count}</span> }}</h2>
+    <h2 class="section-title page-name" id={id}>{if let Some(content) = title_content { {content} } else { {title} }}{if let Some(count) = count { <span class="count">{count}</span> }}</h2>
     {if let Some((href, label)) = more { <LinkMore href={href} label={label} /> }}
+    {if let Some(end) = end { {end} }}
   </div>
   {children}
 </section>
 }
-component Panel(id: &str, title: &str, action: Option<(&str, &str)>, tag: Option<&str>, children: Html) {
+component Panel(id: &str, title: &str, title_content: Option<Html>, action: Option<(&str, &str)>, tag: Option<&str>, end: Option<Html>, children: Html) {
 <section class="panel" aria-labelledby={(!title.is_empty() && !id.is_empty()).then_some(*id)}>
   {if !title.is_empty() {
   <div class="panel-head">
-    <h2 class="panel-title page-name" id={id}>{title}</h2>
+    <h2 class="panel-title page-name" id={id}>{if let Some(content) = title_content { {content} } else { {title} }}</h2>
     {if let Some(tag) = tag { <Tag text={tag} /> }}
     {if let Some((href, label)) = action { <ButtonAdvanced label={label} href={href} icon_name="arrow" kind="secondary" size="sm" icon_end /> }}
+    {if let Some(end) = end { {end} }}
   </div>
   }}
   {children}
@@ -179,18 +184,20 @@ component AddCard(href: &str, title: &str) {
 component Para(text: &str, kind: &str = "hint", hidden: bool, filter_empty: bool, children: Option<Html>) {
 <p class={kind} data-filter-empty={crate::templates::BareDataAttr(*filter_empty)} hidden={hidden}>{if let Some(children) = children { {children} } else { {text} }}</p>
 }
-component DnsRecords(records: &[(&str, &str, &str)], label: &str) {
+component DnsRecord(kind: &str, name: &str, value: &str) {
+<tr>
+  <td data-label="Type"><span class="dns-cell"><code>{kind}</code><CopyButton text={kind} label={format!("the {kind} record's type")} /></span></td>
+  <td data-label="Name"><span class="dns-cell"><code>{name}</code><CopyButton text={name} label={format!("the {kind} record's name")} /></span></td>
+  <td data-label="Value"><span class="dns-cell"><code>{value}</code><CopyButton text={value} label={format!("the {kind} record's value")} /></span></td>
+</tr>
+}
+component DnsRecords(records: &[(&str, &str, &str)], label: &str, children: Option<Html>) {
 <table class="dns-records">
   <caption class="visually-hidden">{label}</caption>
   <thead><tr><th scope="col">Type</th><th scope="col">Name</th><th scope="col">Value</th></tr></thead>
   <tbody>
-    {for record in records.iter() {
-      <tr>
-        <td data-label="Type"><code>{record.0}</code></td>
-        <td data-label="Name"><span class="dns-cell"><code>{record.1}</code><button class="icon-btn copy" type="button" data-copy={record.1} aria-label="Copy the {record.0} record's name" title="Copy" hidden><Icon name="copy" class="icon-sm" /></button></span></td>
-        <td data-label="Value"><span class="dns-cell"><code>{record.2}</code><button class="icon-btn copy" type="button" data-copy={record.2} aria-label="Copy the {record.0} record's value" title="Copy" hidden><Icon name="copy" class="icon-sm" /></button></span></td>
-      </tr>
-    }}
+    {for record in records.iter() { <DnsRecord kind={record.0} name={record.1} value={record.2} /> }}
+    {if let Some(children) = children { {children} }}
   </tbody>
 </table>
 }

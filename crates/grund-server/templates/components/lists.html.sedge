@@ -1,4 +1,4 @@
-use crate::templates::compiled::components::{CopyButton, DnsRecords, Expander, Expanders, External, HiddenField, Icon, IconFact, ImageIcon, Mark, Para, Pill, PostButton, ShortId, Status, StatusLine, Tag};
+use crate::templates::compiled::components::{Button, CopyButton, DnsRecord, DnsRecords, Expander, External, Form, HiddenField, Icon, IconFact, ImageIcon, Mark, Para, Pill, PostButton, Select, ShortId, Status, Tag};
 
 component Rows(children: Html) {
   <ul class="rows">{children}</ul>
@@ -23,59 +23,65 @@ component DomainStepFacts(step: &crate::web::domains::DomainStep<'_>) {
   Next retry: {if let Some(at) = step.next_retry_at { <time datetime={at.to_rfc3339()}>{at.format("%Y-%m-%d %H:%M:%S UTC").to_string()}</time> } else { Not scheduled }}
 }
 
-component DomainSetup(domain: &crate::web::domains::DomainItem<'_>, slug: &str, compact: bool, refresh_href: &str, refresh_fields: &[(&str, &str)]) {
+component DomainSetup(domain: &crate::web::domains::DomainItem<'_>, slug: &str, csrf: &str, manages: bool, app_action: &str, refresh_href: &str, refresh_fields: &[(&str, &str)]) {
 <div id="{domain.id}-progress" aria-label="Setup for {domain.name}">
-  <StatusLine text={domain.sentence.as_ref()} tone={domain.tone} />
-  {if *compact {
-    <Expanders>{for step in &domain.steps {
-      <Expander title={step.label} icon_name={match step.state_code { "done" => "ok", "failed" => "alert", "in_progress" => "clock", _ => "minus" }} tone={step.tone} state={Some((step.state, step.tone))} open={matches!(step.state_code, "failed" | "in_progress")}>
-        <Para kind="hint"><DomainStepFacts step={step} /></Para>
-      </Expander>
-    }}</Expanders>
-  } else {
+  <div class="section-head">
+    <Status text={domain.sentence.as_ref()} tone={domain.tone} />
+    {if *manages && (domain.refresh || domain.failed) {
+      {if app_action.is_empty() {
+        <PostButton action="/{slug}/domains/check" csrf={csrf} label="Check now" kind="secondary" size="sm" hidden={&[("name", domain.name)]} />
+      } else {
+        <PostButton action={app_action} csrf={csrf} label="Check now" kind="secondary" size="sm" hidden={&[("operation", "check"), ("domain", domain.name)]} />
+      }}
+    }}
+  </div>
+  {if !domain.records.is_empty() {
+    <DnsRecords label={format!("Records for {}", domain.name)}>{for (kind, name, value) in &domain.records {
+      <DnsRecord kind={kind} name={name.as_ref()} value={value} />
+    }}</DnsRecords>
+    {if domain.records.iter().any(|record| record.0 == "CNAME" && !record.1.starts_with("*.")) {
+      <Para kind="hint">For an apex domain, use your provider's ALIAS, ANAME or CNAME flattening with the same value.</Para>
+    }}
+  }}
+  <Expander title="Details" open={domain.failed} id="{domain.id}-details">
     <Rows>{for step in &domain.steps {
       <Row name={step.label} icon_name={match step.state_code { "done" => "ok", "failed" => "alert", "in_progress" => "clock", _ => "minus" }} tone={step.tone} status_text={Some(step.state)} status_tone={step.tone} end_active={Some(false)}>
         <:sub_content><DomainStepFacts step={step} /></:sub_content>
       </Row>
     }}</Rows>
-  }}
-  <Para kind="aside">Failed attempts: {domain.certificate_attempts}. Next attempt: {if let Some(at) = domain.certificate_next_attempt_at { <time datetime={at.to_rfc3339()}>{at.format("%Y-%m-%d %H:%M:%S UTC").to_string()}</time> } else { Not scheduled }}</Para>
+    <Para kind="aside">Failed attempts: {domain.certificate_attempts}. Next attempt: {if let Some(at) = domain.certificate_next_attempt_at { <time datetime={at.to_rfc3339()}>{at.format("%Y-%m-%d %H:%M:%S UTC").to_string()}</time> } else { Not scheduled }}</Para>
+    {if let Some(parent) = domain.parent_domain { <Para kind="aside">Ownership verified through <code>{parent}</code>.</Para> }}
+  </Expander>
   {if domain.refresh {
     <form method="get" action={if refresh_href.is_empty() { format!("/{slug}/domains") } else { refresh_href.to_string() }} sedx-target="{domain.id}-progress" data-refresh hidden>{for (name, value) in refresh_fields.iter() { <HiddenField name={name} value={value} /> }}</form>
   }}
 </div>
 }
 
-component DomainRecords(domain: &crate::web::domains::DomainItem<'_>) {
-  {if domain.state == "pending" && domain.parent_domain.is_none() {
-    <Para kind="aside">Add the TXT record, then check ownership.</Para>
-  }}
-  {if let Some(parent) = domain.parent_domain {
-    <Para kind="aside">Ownership verified through <code>{parent}</code>. No TXT record is needed for this app address.</Para>
-    {if let Some(app) = domain.managed_app {
-      <Para kind="aside">App address for <code>{app}</code>. {if domain.state == "verified" { Automatic assignment is disabled. Save the subdomain in this app's Settings to enable it again. }}</Para>
+component DomainActions(domain: &crate::web::domains::DomainItem<'_>, slug: &str, csrf: &str, apps: &[(&str, &str)], app_action: &str, open: bool, children: Option<Html>) {
+  <Menu label={format!("Actions for {}", domain.name)} icon_name="more" open={*open}>
+    {if domain.state == "bound" && domain.parent_domain.is_none() && !apps.is_empty() {
+      <li class="menu-text">
+        <Form action={if app_action.is_empty() { format!("/{slug}/domains/bind") } else { app_action.to_string() }} csrf={csrf}>
+          {if app_action.is_empty() { <HiddenField name="name" value={domain.name} /> } else { <HiddenField name="operation" value="move" /><HiddenField name="domain" value={domain.name} /> }}
+          <Select name={if app_action.is_empty() { "app" } else { "target" }} id="move-{domain.name}" label="Move to app" options={apps} selected={domain.app} required />
+          <Button label="Move" kind="secondary" size="sm" />
+        </Form>
+      </li>
     }}
-  }}
-  {if domain.is_app_domain {
-    <Para kind="aside">App addresses use <code>&lt;app-name&gt;.{domain.name}</code> by default. Each assigned address gets its own certificate; this does not request a wildcard certificate. The parent domain's app binding is independent.</Para>
-  }}
-  {if let Some(wildcard) = &domain.wildcard_name {
-    {if let Some(target) = domain.edge_target {
-      <Para kind="aside">Add this wildcard CNAME for app addresses. Only assigned app addresses are routed.</Para>
-      <DnsRecords records={&[("CNAME", wildcard.as_str(), target)]} label={format!("App address records for {}", domain.parent_domain.unwrap_or(domain.name))} />
-    } else {
-      <Para kind="aside">No edge target is configured for app addresses.</Para>
+    {if domain.state == "bound" {
+      {if app_action.is_empty() {
+        <MenuPost action="/{slug}/domains/unbind" csrf={csrf} icon_name="link" label="Unbind" hidden={&[("name", domain.name)]} />
+      } else {
+        <MenuPost action={app_action} csrf={csrf} icon_name="link" label="Unbind" hidden={&[("operation", "unbind"), ("domain", domain.name)]} />
+      }}
     }}
-  }}
-  {if domain.records.iter().any(|record| record.0 == "CNAME") {
-    <Para kind="aside">Point {domain.name} at grund with the CNAME record. For a domain at the top of its zone, use your provider's ALIAS, ANAME or CNAME flattening to the same address.</Para>
-  }}
-  {if domain.edge_target.is_none() && domain.wildcard_name.is_none() {
-    <Para kind="aside">No edge target is configured for this domain.</Para>
-  }}
-  {if !domain.records.is_empty() {
-    <DnsRecords records={&domain.records} label={format!("Records for {}", domain.name)} />
-  }}
+    {if (domain.state == "verified" || domain.state == "bound") && !domain.is_app_domain && domain.parent_domain.is_none() {
+      <MenuPost action="/{slug}/domains/app-domain" csrf={csrf} icon_name="globe" label="Use for app addresses" hidden={&[("name", domain.name)]} />
+    }}
+    {if domain.parent_domain.is_some() { {if let Some(children) = children { <li class="menu-text">{children}</li> }} }}
+    <MenuPost action="/{slug}/domains/remove" csrf={csrf} icon_name="trash" label="Remove" danger hidden={&[("name", domain.name)]} />
+  </Menu>
 }
 component InvitationRows(invitations: &[crate::web::pages::PendingInvitationView], csrf: &str) {
 <Rows>

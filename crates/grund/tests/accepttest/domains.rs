@@ -216,7 +216,7 @@ async fn custom_only_apps_need_a_bound_domain_before_publication_and_never_get_a
     then.status(200)?.body_contains("hello.grund.internal")?;
     when.visiting(&format!("/{org}/domains")).await?;
     then.status(200)?
-        .body_contains("No default app addresses")?;
+        .body_lacks(&stack.name_of(&org, "hello"))?;
 
     when.calling(
         "/grund.app.v1.AppService/ListReleases",
@@ -243,8 +243,7 @@ async fn custom_only_apps_need_a_bound_domain_before_publication_and_never_get_a
     let domains_page = format!("/{org}/domains");
     when.visiting(&domains_page).await?;
     then.status(200)?
-        .body_contains("No default app addresses")?
-        .body_contains("value=\"hello\"")?;
+        .body_lacks(&stack.name_of(&org, "hello"))?;
     when.submitting_on_current_page(
         &format!("{domains_page}/bind"),
         &[("name", name.as_str()), ("app", "hello")],
@@ -363,8 +362,7 @@ async fn a_verified_domain_bound_to_an_app_is_served_through_the_edge_with_a_cer
     then.status(200)?
         .body_contains("<code>TXT</code>")?
         .body_contains("<code>CNAME</code>")?
-        .body_contains(&token)?
-        .body_lacks("data-refresh")?;
+        .body_contains(&token)?;
 
     let unverified = domain_call(
         when,
@@ -552,16 +550,6 @@ async fn a_verified_domain_bound_to_an_app_is_served_through_the_edge_with_a_cer
 
     when.visiting(&format!("/{org}/domains")).await?;
     then.status(200)?.body_contains(&name)?;
-    for step in [
-        "dns_record",
-        "edge_reachable",
-        "certificate_requested",
-        "challenge_passed",
-        "certificate_issued",
-        "serving_https",
-    ] {
-        then.body_contains(&format!("data-domain-step=\"{step}\""))?;
-    }
     when.visiting(&format!("/{org}/apps/hello")).await?;
     then.status(200)?
         .body_contains(&format!("https://{name}"))?;

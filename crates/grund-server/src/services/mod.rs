@@ -12,6 +12,7 @@ pub mod backups;
 pub mod billing;
 pub mod capacity;
 pub mod device_logins;
+pub mod domain_status;
 pub mod domains;
 pub mod entitlements;
 pub mod entry;

@@ -26,6 +26,7 @@ use crate::{
     api::principal,
     services::{
         OrganisationsState,
+        domain_status::summarize,
         domains::{DomainView, DomainsError, DomainsState, Status},
     },
     state::State,
@@ -100,7 +101,8 @@ fn failed(error: DomainsError) -> ConnectError {
     ))
 }
 
-fn message(view: &DomainView) -> proto::Domain {
+fn message(view: &DomainView, edge_target: Option<&str>) -> proto::Domain {
+    let summary = summarize(view, edge_target);
     proto::Domain {
         name: view.name.clone(),
         status: match view.status {
@@ -142,6 +144,17 @@ fn message(view: &DomainView) -> proto::Domain {
         is_app_domain: view.is_app_domain,
         parent_domain: view.parent_domain.clone(),
         managed_app_name: view.managed_app_name.clone().unwrap_or_default(),
+        setup_summary: summary.sentence.into_owned(),
+        required_records: summary
+            .records
+            .into_iter()
+            .map(|(kind, name, value)| proto::DomainRequiredRecord {
+                r#type: kind.to_string(),
+                name: name.into_owned(),
+                value: value.to_string(),
+                ..Default::default()
+            })
+            .collect(),
         ..Default::default()
     }
 }
@@ -171,7 +184,15 @@ impl DomainService for DomainApi {
             })
             .collect();
         Response::ok(ListDomainsResponse {
-            domains: domains.iter().map(message).collect(),
+            domains: domains
+                .iter()
+                .map(|domain| {
+                    message(
+                        domain,
+                        self.state.config.entry.edges.first().map(String::as_str),
+                    )
+                })
+                .collect(),
             ..Default::default()
         })
     }
@@ -198,7 +219,10 @@ impl DomainService for DomainApi {
             return Err(ConnectError::not_found("no such domain"));
         }
         Response::ok(GetDomainResponse {
-            domain: MessageField::some(message(&domain)),
+            domain: MessageField::some(message(
+                &domain,
+                self.state.config.entry.edges.first().map(String::as_str),
+            )),
             ..Default::default()
         })
     }
@@ -216,7 +240,10 @@ impl DomainService for DomainApi {
             .await
             .map_err(failed)?;
         Response::ok(AddDomainResponse {
-            domain: MessageField::some(message(&domain)),
+            domain: MessageField::some(message(
+                &domain,
+                self.state.config.entry.edges.first().map(String::as_str),
+            )),
             ..Default::default()
         })
     }
@@ -234,7 +261,10 @@ impl DomainService for DomainApi {
             .await
             .map_err(failed)?;
         Response::ok(VerifyDomainResponse {
-            domain: MessageField::some(message(&domain)),
+            domain: MessageField::some(message(
+                &domain,
+                self.state.config.entry.edges.first().map(String::as_str),
+            )),
             ..Default::default()
         })
     }
@@ -258,7 +288,10 @@ impl DomainService for DomainApi {
             .await
             .map_err(failed)?;
         Response::ok(CheckDomainResponse {
-            domain: MessageField::some(message(&domain)),
+            domain: MessageField::some(message(
+                &domain,
+                self.state.config.entry.edges.first().map(String::as_str),
+            )),
             ..Default::default()
         })
     }
@@ -276,7 +309,10 @@ impl DomainService for DomainApi {
             .await
             .map_err(failed)?;
         Response::ok(BindDomainResponse {
-            domain: MessageField::some(message(&domain)),
+            domain: MessageField::some(message(
+                &domain,
+                self.state.config.entry.edges.first().map(String::as_str),
+            )),
             ..Default::default()
         })
     }
@@ -294,7 +330,10 @@ impl DomainService for DomainApi {
             .await
             .map_err(failed)?;
         Response::ok(UnbindDomainResponse {
-            domain: MessageField::some(message(&domain)),
+            domain: MessageField::some(message(
+                &domain,
+                self.state.config.entry.edges.first().map(String::as_str),
+            )),
             ..Default::default()
         })
     }
@@ -331,7 +370,10 @@ impl DomainService for DomainApi {
             .await
             .map_err(failed)?;
         Response::ok(ConfigureAppDomainResponse {
-            domain: MessageField::some(message(&domain)),
+            domain: MessageField::some(message(
+                &domain,
+                self.state.config.entry.edges.first().map(String::as_str),
+            )),
             ..Default::default()
         })
     }
@@ -354,7 +396,10 @@ impl DomainService for DomainApi {
             .await
             .map_err(failed)?;
         Response::ok(SetAppSubdomainResponse {
-            domain: MessageField::some(message(&domain)),
+            domain: MessageField::some(message(
+                &domain,
+                self.state.config.entry.edges.first().map(String::as_str),
+            )),
             ..Default::default()
         })
     }

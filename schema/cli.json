@@ -1687,12 +1687,23 @@
           "description": "In words, when status is DOMAIN_STATUS_ERROR.",
           "type": "string"
         },
+        "requiredRecords": {
+          "description": "Only outstanding ownership and routing records. Empty when no DNS change is needed. For a root domain, the provider must support ALIAS/ANAME or CNAME flattening.",
+          "items": {
+            "$ref": "#/$defs/grund.domain.v1.DomainRequiredRecord"
+          },
+          "type": "array"
+        },
         "setupSteps": {
           "description": "Six persisted setup observations, including waiting steps when unbound.",
           "items": {
             "$ref": "#/$defs/grund.domain.v1.DomainSetupStep"
           },
           "type": "array"
+        },
+        "setupSummary": {
+          "description": "One plain status derived from setup observations, not a stored certificate alone.",
+          "type": "string"
         },
         "status": {
           "enum": [
@@ -1718,6 +1729,25 @@
         }
       },
       "title": "grund.domain.v1.Domain",
+      "type": "object"
+    },
+    "grund.domain.v1.DomainRequiredRecord": {
+      "additionalProperties": false,
+      "description": "A DNS record still needed for ownership or routing, not a record already observed.",
+      "properties": {
+        "name": {
+          "description": "The complete DNS name, including a wildcard when parent authority applies.",
+          "type": "string"
+        },
+        "type": {
+          "description": "TXT or CNAME.",
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "title": "grund.domain.v1.DomainRequiredRecord",
       "type": "object"
     },
     "grund.domain.v1.DomainSetupStep": {
@@ -14282,6 +14312,116 @@
           "name": "json",
           "type": "boolean",
           "value_name": "JSON"
+        },
+        {
+          "description": "Include setup steps, diagnostics, timestamps and retry counts in text output",
+          "flag": "--details",
+          "name": "details",
+          "type": "boolean",
+          "value_name": "DETAILS"
+        }
+      ],
+      "audience": "client",
+      "command": "grund domains",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund domains",
+        "grund domains --details"
+      ],
+      "mutates": false,
+      "output": {
+        "$ref": "#/$defs/grund.domain.v1.ListDomainsResponse"
+      },
+      "path": "domains",
+      "rpcs": [
+        "grund.domain.v1.DomainService/ListDomains"
+      ],
+      "summary": "Custom domains: status, needed records, and setup actions"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "description": "Include setup steps, diagnostics, timestamps and retry counts in text output",
+          "flag": "--details",
+          "name": "details",
+          "type": "boolean",
+          "value_name": "DETAILS"
         }
       ],
       "audience": "client",
@@ -14289,7 +14429,8 @@
       "destructive": false,
       "dry_run": false,
       "examples": [
-        "grund domains list"
+        "grund domains list",
+        "grund domains list --details"
       ],
       "mutates": false,
       "output": {
@@ -14379,6 +14520,13 @@
           "value_name": "JSON"
         },
         {
+          "description": "Include setup steps, diagnostics, timestamps and retry counts in text output",
+          "flag": "--details",
+          "name": "details",
+          "type": "boolean",
+          "value_name": "DETAILS"
+        },
+        {
           "name": "domain",
           "positional": true,
           "required": true,
@@ -14391,7 +14539,8 @@
       "destructive": false,
       "dry_run": false,
       "examples": [
-        "grund domains get shop.example.com --json"
+        "grund domains get shop.example.com --json",
+        "grund domains get shop.example.com --details"
       ],
       "mutates": false,
       "output": {
@@ -14401,7 +14550,7 @@
       "rpcs": [
         "grund.domain.v1.DomainService/GetDomain"
       ],
-      "summary": "One domain: its TXT record, the app it is bound to, its certificate"
+      "summary": "One domain's status and the records still needed"
     },
     {
       "args": [
@@ -14479,6 +14628,13 @@
           "name": "json",
           "type": "boolean",
           "value_name": "JSON"
+        },
+        {
+          "description": "Include setup steps, diagnostics, timestamps and retry counts in text output",
+          "flag": "--details",
+          "name": "details",
+          "type": "boolean",
+          "value_name": "DETAILS"
         },
         {
           "name": "domain",
@@ -14590,6 +14746,13 @@
           "value_name": "JSON"
         },
         {
+          "description": "Include setup steps, diagnostics, timestamps and retry counts in text output",
+          "flag": "--details",
+          "name": "details",
+          "type": "boolean",
+          "value_name": "DETAILS"
+        },
+        {
           "name": "domain",
           "positional": true,
           "required": true,
@@ -14692,6 +14855,13 @@
           "value_name": "JSON"
         },
         {
+          "description": "Include setup steps, diagnostics, timestamps and retry counts in text output",
+          "flag": "--details",
+          "name": "details",
+          "type": "boolean",
+          "value_name": "DETAILS"
+        },
+        {
           "name": "domain",
           "positional": true,
           "required": true,
@@ -14792,6 +14962,13 @@
           "name": "json",
           "type": "boolean",
           "value_name": "JSON"
+        },
+        {
+          "description": "Include setup steps, diagnostics, timestamps and retry counts in text output",
+          "flag": "--details",
+          "name": "details",
+          "type": "boolean",
+          "value_name": "DETAILS"
         },
         {
           "name": "domain",
@@ -14911,6 +15088,13 @@
           "value_name": "JSON"
         },
         {
+          "description": "Include setup steps, diagnostics, timestamps and retry counts in text output",
+          "flag": "--details",
+          "name": "details",
+          "type": "boolean",
+          "value_name": "DETAILS"
+        },
+        {
           "name": "domain",
           "positional": true,
           "required": true,
@@ -15020,6 +15204,13 @@
           "value_name": "JSON"
         },
         {
+          "description": "Include setup steps, diagnostics, timestamps and retry counts in text output",
+          "flag": "--details",
+          "name": "details",
+          "type": "boolean",
+          "value_name": "DETAILS"
+        },
+        {
           "name": "domain",
           "positional": true,
           "required": true,
@@ -15127,6 +15318,13 @@
           "name": "json",
           "type": "boolean",
           "value_name": "JSON"
+        },
+        {
+          "description": "Include setup steps, diagnostics, timestamps and retry counts in text output",
+          "flag": "--details",
+          "name": "details",
+          "type": "boolean",
+          "value_name": "DETAILS"
         },
         {
           "name": "app",
@@ -15244,6 +15442,13 @@
           "name": "json",
           "type": "boolean",
           "value_name": "JSON"
+        },
+        {
+          "description": "Include setup steps, diagnostics, timestamps and retry counts in text output",
+          "flag": "--details",
+          "name": "details",
+          "type": "boolean",
+          "value_name": "DETAILS"
         },
         {
           "name": "domain",

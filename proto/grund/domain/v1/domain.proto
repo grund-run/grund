@@ -127,6 +127,15 @@ message DomainSetupStep {
   google.protobuf.Timestamp next_retry_at = 5;
 }
 
+// A DNS record still needed for ownership or routing, not a record already observed.
+message DomainRequiredRecord {
+  // TXT or CNAME.
+  string type = 1;
+  // The complete DNS name, including a wildcard when parent authority applies.
+  string name = 2;
+  string value = 3;
+}
+
 message Domain {
   // Lowercase, no trailing dot.
   string name = 1;
@@ -155,6 +164,11 @@ message Domain {
   optional string parent_domain = 15;
   // The app whose generated hostname this is, even after explicit unbinding.
   string managed_app_name = 16;
+  // One plain status derived from setup observations, not a stored certificate alone.
+  string setup_summary = 17;
+  // Only outstanding ownership and routing records. Empty when no DNS change is needed.
+  // For a root domain, the provider must support ALIAS/ANAME or CNAME flattening.
+  repeated DomainRequiredRecord required_records = 18;
 }
 
 message ListDomainsRequest {

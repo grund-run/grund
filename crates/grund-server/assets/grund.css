@@ -500,6 +500,10 @@ code,
   overflow-wrap: anywhere;
 }
 
+.domain-name {
+  overflow-wrap: normal;
+}
+
 .page-ref {
   display: flex;
   align-items: center;
@@ -2454,10 +2458,6 @@ a.endpoint-text:hover {
   vertical-align: middle;
 }
 
-.dns-records td:first-child {
-  width: 5rem;
-}
-
 .dns-cell {
   display: flex;
   align-items: center;
@@ -3207,8 +3207,7 @@ a.endpoint-text:hover {
     border-top: 1px solid var(--border);
   }
 
-  .dns-records td,
-  .dns-records td:first-child {
+  .dns-records td {
     width: auto;
     padding: var(--space-1) 0;
     border-top: 0;
@@ -3245,6 +3244,10 @@ a.endpoint-text:hover {
 }
 
 @media (max-width: 520px) {
+  .domain-name {
+    font-size: var(--text-xl);
+  }
+
   .btn-label,
   .sort label {
     position: absolute;

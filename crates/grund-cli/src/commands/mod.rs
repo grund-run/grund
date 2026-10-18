@@ -75,7 +75,7 @@ pub enum Command {
     Volumes(volumes::VolumesCommand),
     #[command(about = "Machines: list, add your own, labels, out of service, remove")]
     Machines(machines::MachinesCommand),
-    #[command(about = "Custom domains: add, verify, bind to an app, unbind, remove")]
+    #[command(about = "Custom domains: status, needed records, and setup actions")]
     Domains(domains::DomainsCommand),
     #[command(about = "Members of the organisation: list, invite, change a role, remove")]
     Members(members::MembersCommand),
@@ -155,7 +155,7 @@ pub async fn execute(
         Command::Apps(command) => apps::run(ctx, command.action).await?,
         Command::Volumes(command) => volumes::run(ctx, command.action).await?,
         Command::Machines(command) => machines::run(ctx, command.action).await?,
-        Command::Domains(command) => domains::run(ctx, command.action).await?,
+        Command::Domains(command) => domains::run(ctx, command).await?,
         Command::Members(command) => members::run_members(ctx, command.action).await?,
         Command::Invitations(command) => members::run_invitations(ctx, command.action).await?,
         Command::Notifications(command) => notifications::run(ctx, command).await?,

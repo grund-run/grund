@@ -78,14 +78,13 @@ pub struct DomainItem<'a> {
     pub app: &'a str,
     pub is_app_domain: bool,
     pub parent_domain: Option<&'a str>,
-    pub managed_app: Option<&'a str>,
-    pub wildcard_name: Option<String>,
-    pub edge_target: Option<&'a str>,
     pub sentence: Cow<'a, str>,
     pub tone: &'static str,
-    pub records: Vec<(&'static str, &'a str, &'a str)>,
+    pub records: Vec<(&'static str, Cow<'a, str>, &'a str)>,
     pub steps: Vec<DomainStep<'a>>,
     pub refresh: bool,
+    pub failed: bool,
+    pub working: bool,
     pub certificate_attempts: i32,
     pub certificate_next_attempt_at: Option<DateTime<Utc>>,
 }
@@ -100,7 +99,7 @@ pub struct DomainsPage<'a> {
     pub slug: &'a str,
     pub manages: bool,
     pub addresses: Vec<AppAddress<'a>>,
-    pub bindable_apps: Vec<&'a str>,
+    pub bindable_apps: Vec<(&'a str, &'a str)>,
     pub custom_only: bool,
     pub domains: Vec<DomainItem<'a>>,
     pub notice: &'static str,
@@ -128,64 +127,27 @@ pub(crate) fn domain_context<'a>(
     public: bool,
     edge_target: Option<&'a str>,
 ) -> DomainItem<'a> {
-    let app = domain.app_name.as_deref().unwrap_or("");
-    let serving = domain
-        .steps
-        .iter()
-        .any(|step| step.name == "serving_https" && step.state.as_str() == "done");
-    let (sentence, tone) = match domain.state.as_str() {
-        "pending" if domain.problem.is_some() => (
-            Cow::Borrowed(domain.problem.as_deref().unwrap_or_default()),
-            "danger",
-        ),
-        "pending" => (Cow::Borrowed("Waiting for its TXT record."), "orange"),
-        "verified" => (Cow::Borrowed("Domain verified. No app bound."), "blue"),
-        _ if !public => (
-            Cow::Owned(format!("Bound to {app}. No public HTTP port.")),
-            "blue",
-        ),
-        _ if serving => (
-            Cow::Owned(format!("Serving {app} at https://{}.", domain.name)),
-            "ok",
-        ),
-        _ if domain
-            .steps
-            .iter()
-            .any(|step| step.state.as_str() == "failed") =>
-        {
-            (Cow::Borrowed("Setup check failed."), "danger")
-        }
-        _ => (Cow::Borrowed("HTTPS setup not complete."), "orange"),
-    };
-    let pending = domain.state == "pending" && domain.parent_domain.is_none();
-    let mut records = Vec::with_capacity(
-        usize::from(pending) + usize::from(edge_target.is_some() && domain.parent_domain.is_none()),
-    );
-    if pending {
-        records.push(("TXT", domain.txt_name.as_str(), domain.txt_value.as_str()));
-    }
-    if let Some(target) = edge_target.filter(|_| domain.parent_domain.is_none()) {
-        records.push(("CNAME", domain.name.as_str(), target));
-    }
+    let summary = crate::services::domain_status::summarize(domain, edge_target);
+    let private = domain.state == "bound" && !public;
     DomainItem {
         id: format!("domain-{}", domain.name),
         name: &domain.name,
         state: &domain.state,
-        app,
+        app: domain.app_name.as_deref().unwrap_or(""),
         is_app_domain: domain.is_app_domain,
         parent_domain: domain.parent_domain.as_deref(),
-        managed_app: domain.managed_app_name.as_deref(),
-        wildcard_name: domain
-            .parent_domain
-            .as_deref()
-            .or_else(|| domain.is_app_domain.then_some(domain.name.as_str()))
-            .map(|parent| format!("*.{parent}")),
-        edge_target,
-        sentence,
-        tone,
-        records,
+        sentence: if private {
+            Cow::Borrowed("Not working: the app has no public HTTP port")
+        } else {
+            summary.sentence
+        },
+        tone: if private { "muted" } else { summary.tone },
+        records: if private { Vec::new() } else { summary.records },
         steps: domain.steps.iter().map(DomainStep::from).collect(),
-        refresh: domain.state == "bound" && !serving,
+        refresh: !summary.working
+            && (domain.state == "pending" || (domain.state == "bound" && public)),
+        failed: !private && summary.failed,
+        working: !private && summary.working,
         certificate_attempts: domain.certificate_attempts,
         certificate_next_attempt_at: domain.certificate_next_attempt_at,
     }
@@ -204,8 +166,18 @@ async fn domains_view(
         .listings(membership.organisation_id, &membership.slug)
         .await
         .map_err(|e| PageError::from(anyhow::anyhow!(e)))?;
+    let domain_rows = state
+        .domains()
+        .list(membership.organisation_id)
+        .await
+        .map_err(|e| PageError::from(anyhow::anyhow!(e)))?;
     let addresses: Vec<AppAddress<'_>> = listings
         .iter()
+        .filter(|listing| {
+            !domain_rows
+                .iter()
+                .any(|domain| listing.address.as_deref() == Some(domain.name.as_str()))
+        })
         .filter_map(|l| {
             l.address.as_deref().map(|address| AppAddress {
                 name: &l.view.row.name,
@@ -214,16 +186,16 @@ async fn domains_view(
         })
         .collect();
     let custom_only = state.config.entry.app_domains == crate::config::AppDomains::CustomOnly;
-    let bindable_apps: Vec<&str> = listings
+    let bindable_apps: Vec<(&str, &str)> = listings
         .iter()
         .filter(|listing| custom_only || listing.address.is_some())
-        .map(|listing| listing.view.row.name.as_str())
+        .map(|listing| {
+            (
+                listing.view.row.name.as_str(),
+                listing.view.row.name.as_str(),
+            )
+        })
         .collect();
-    let domain_rows = state
-        .domains()
-        .list(membership.organisation_id)
-        .await
-        .map_err(|e| PageError::from(anyhow::anyhow!(e)))?;
     let domains: Vec<DomainItem<'_>> = domain_rows
         .iter()
         .map(|domain| {

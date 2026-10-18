@@ -395,17 +395,19 @@ after the check. Multiple choices require `--candidate` or `--digest`.
 Stale checks and in-progress rollouts are refused. There are no scheduled checks
 or automatic app updates. Back up app data first: image rollback is not data restore.
 
-Domains and an app's Settings show the domain record, edge check, certificate
-request, challenge result, issued certificate and observed HTTPS separately,
-with check and retry times. `grund domains list` shows the same steps.
-Owners and admins can add, verify, bind, move, unbind and check domains from
-the app. Setup checks continue automatically; **Check now** queues a fresh
-check without bypassing a certificate authority's retry deadline.
+Domains and an app's Settings show one current status and only the DNS records
+still needed, with copy buttons. **Details** holds the setup observations,
+check and retry times, and failed-attempt count; it opens on failure. Move,
+Unbind and Remove are in each domain's actions menu. `grund domains` shows the
+same concise status; use `grund domains --details` for diagnostics.
+Setup pages refresh while waiting and stop when HTTPS is working.
+**Check now** queues a fresh check without bypassing a certificate authority's
+retry deadline.
 
 For organisation app addresses, verify a parent such as `example.com`, then
-choose **Use for app addresses** on Domains. Point `*.example.com` at the
-configured edge shown there. Existing and future apps get
-`<app>.example.com`; an owner or admin can choose another single-label name
+choose **Use for app addresses** in its actions menu on Domains. Point
+`*.example.com` at the configured edge shown for an address still awaiting DNS.
+Existing and future apps get `<app>.example.com`; an owner or admin can choose another single-label name
 in app Settings or with `grund domains subdomain`. Collisions are refused,
 and unbinding is an opt-out until explicitly restored. DNS control labels
 are reserved; `api`, `www` and `admin` remain usable on your own parent.

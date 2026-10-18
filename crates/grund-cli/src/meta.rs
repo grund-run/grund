@@ -598,16 +598,25 @@ pub const LEAVES: &[Leaf] = &[
         &["grund machines remove web-1 --yes"],
     ),
     read(
+        "domains",
+        "grund.domain.v1.ListDomainsResponse",
+        &["grund.domain.v1.DomainService/ListDomains"],
+        &["grund domains", "grund domains --details"],
+    ),
+    read(
         "domains list",
         "grund.domain.v1.ListDomainsResponse",
         &["grund.domain.v1.DomainService/ListDomains"],
-        &["grund domains list"],
+        &["grund domains list", "grund domains list --details"],
     ),
     read(
         "domains get",
         "grund.domain.v1.GetDomainResponse",
         &["grund.domain.v1.DomainService/GetDomain"],
-        &["grund domains get shop.example.com --json"],
+        &[
+            "grund domains get shop.example.com --json",
+            "grund domains get shop.example.com --details",
+        ],
     ),
     write(
         "domains add",
