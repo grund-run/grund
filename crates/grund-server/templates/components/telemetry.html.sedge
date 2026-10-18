@@ -3,6 +3,7 @@ use crate::templates::compiled::components::{EmptyState, Tag, Actions, Button, P
 component TelemetryBar(bar: &crate::web::app_telemetry::Toolbar) {
   <form class="telemetry-bar" method="get" action={&bar.action} data-telemetry-bar>
     {if !bar.range.is_empty() { <input type="hidden" name="range" value={bar.range}> }}
+    {if let Some(zoom) = &bar.zoom { <input type="hidden" name="since" value={&zoom.since}><input type="hidden" name="until" value={&zoom.until}> }}
     {if let Some(search) = &bar.search {
       <div class="search telemetry-search">
         <label class="visually-hidden" for="app-log-search">Search output</label>
@@ -17,7 +18,7 @@ component TelemetryBar(bar: &crate::web::app_telemetry::Toolbar) {
       <label class="visually-hidden" for="telemetry-instance">Instance</label>
       <span class="select-wrap"><select class="control select" id="telemetry-instance" name="instance" data-autosubmit>{for (value, label) in &bar.instances { <option value={value} selected={bar.instance == *value}>{label}</option> }}</select><Icon name="down" class="icon-sm select-chevron" /></span>
     }}
-    <span class="telemetry-zoom" data-telemetry-zoom hidden></span>
+    {if let Some(zoom) = &bar.zoom { <span class="telemetry-zoom">{zoom.label} UTC<a class="telemetry-unzoom" href={&zoom.reset} aria-label="Show the whole range">×</a></span> }}
     <span class="telemetry-status" role="status" data-telemetry-status></span>
     <button class="btn btn-secondary btn-sm js-hide" type="submit"><span>Apply</span></button>
   </form>
@@ -62,41 +63,21 @@ component TimeSeries(chart: &crate::web::app_telemetry::TimeSeriesChart) {
   </figure>
 }
 
-component DataTable(caption: &str, headings: &[&str], wide_end: bool, children: Html) {
-  <table class={if *wide_end { "data-table data-table-wide-end" } else { "data-table" }}><caption class="visually-hidden">{caption}</caption><thead><tr>{for heading in headings.iter() { <th scope="col">{heading}</th> }}</tr></thead><tbody>{children}</tbody></table>
-}
-
-component OutputRow(log: &crate::web::app_telemetry::LogView) {
-  <tr data-log-cursor={&log.cursor} data-log-instance={&log.instance} data-log-stream={&log.stream}>
-    <td data-label="Collected"><time>{log.at}</time></td>
-    <td data-label="Instance"><code>{log.instance}</code><br>Release {log.release}</td>
-    <td data-label="Stream">{log.stream}</td>
-    <td data-label="Output"><pre class="text-output">{log.body}</pre>{if log.truncated { <Tag text="Truncated" /> }}</td>
-  </tr>
-}
-
-component LogOutput(organisation: &str, name: &str, query: &crate::web::app_telemetry::TelemetryQuery, logs: &[crate::web::app_telemetry::LogView], cursor: &str, next: &str, error: &str, loss: &str, gaps: &[String], since_json: &str, until_json: &str, restart: Option<&crate::web::app_telemetry::RestartControls>, live: bool) {
-  <div data-log-output={crate::templates::BareDataAttr(*live)} data-log-follow={if error.is_empty() && query.follow == "on" { Some("on") } else { None }} data-log-organisation={organisation} data-log-name={name} data-log-cursor={cursor} data-log-search={&query.search} data-log-instance={&query.instance} data-log-release={&query.release} data-log-stream={&query.stream} data-log-since={since_json} data-log-until={until_json}>
-    <p class="hint" role="status" data-log-status>{if !error.is_empty() { "Follow paused: output could not be loaded." } else if query.follow == "on" { "Follow selected. Live updates require JavaScript." } else { "Follow paused." }}</p>
-    <p class="hint" data-log-loss>{loss}</p>
-    <div data-log-gaps hidden={gaps.is_empty()}>
-      <Para>Offline means disconnected from the instance, not necessarily shut down. Unknown coverage means received history was evicted and earlier missing coverage cannot be attributed to offline delivery. Logs may have been quiet, buffered or replayed; individual records do not prove complete log coverage or how many records were lost.</Para>
-      <ul class="hint" data-log-gap-list>{for gap in gaps.iter() { <li>{gap}</li> }}</ul>
-    </div>
-    <div data-log-legacy hidden={!logs.iter().any(|log| log.stream == "combined")}>
-      <Para>Latest combined output in this view: <time data-log-legacy-through>{logs.iter().filter(|log| log.stream == "combined").map(|log| log.at.as_str()).max().unwrap_or("")}</time>.</Para>
-      <Para>Combined output from legacy capture cannot distinguish stdout from stderr. Interleaved output can leave secret fragments visible. Instances still using it have periodic truncation, not a strict capture bound. Their next ordinary restart, deploy, image update or rollback enables separate stdout/stderr and bounded capture.</Para>
-      {if let Some(restart) = restart.filter(|restart| restart.manages) {
-        <div data-log-restart data-current-instances={restart.current_instances.join(" ")} data-separate-instances={serde_json::to_string(&restart.separate_instances).expect("instance identifiers serialize")} hidden={!restart.required(logs)}>
-          {if restart.single_copy { <div data-single-copy-warning><Para>This app has one copy. Restarting can interrupt requests if a replacement cannot run alongside it.</Para></div> }}
-          <PostButton action={&restart.action} csrf={&restart.csrf} label="Restart to enable" kind="secondary" />
-        </div>
-      }}
-    </div>
-    <div data-log-empty hidden={!logs.is_empty() || !error.is_empty()}><EmptyState title="No matching output" text="No retained log records match these filters." /></div>
-    <DataTable caption="App output, in received order" headings={&["Collected", "Instance", "Stream", "Output"]} wide_end>
-      {for log in logs.iter() { <OutputRow log={log} /> }}
-    </DataTable>
-    {if error.is_empty() && !cursor.is_empty() { <div data-log-next><Actions><Button label="Load next page" href={next} kind="secondary" /></Actions></div> }}
+component LogRow(line: &crate::web::app_telemetry::LogLine, instance: bool) {
+  <div class={if line.stream == "stderr" { "log-line log-err" } else { "log-line" }} data-cursor={&line.cursor}>
+    <time class="log-time" datetime={&line.iso} title={&line.title}>{line.clock}<span class="log-ms">{line.millis}</span></time>
+    {if *instance { <span class="log-instance" title={&line.instance}>{line.short}</span> }}
+    <pre class="log-body">{for span in &line.spans { <span class={&span.class}>{span.text}</span> }}{if line.truncated { <Tag text="Truncated" /> }}</pre>
   </div>
+}
+
+component LogStream(lines: &[crate::web::app_telemetry::LogLine], instance: bool, older: &str) {
+  <section class="log-stream" aria-label="Output">
+    <div class="log-lines" role="log" tabindex="0" data-log-lines>
+      {if !older.is_empty() { <a class="log-older js-hide" href={older}>Older lines</a> }}
+      {for line in lines.iter() { <LogRow line={line} instance={*instance} /> }}
+      <p class="log-empty" data-log-empty hidden={!lines.is_empty()}>No output in this range.</p>
+    </div>
+    <button class="log-resume" type="button" data-log-resume hidden>Resume</button>
+  </section>
 }

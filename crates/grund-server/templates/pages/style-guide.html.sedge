@@ -2,7 +2,7 @@ use crate::templates::compiled::layouts::App;
 use crate::templates::compiled::components::{Contents, Specimen, Demos, Column, Labelled, Swatches, Borders, TypeScale, SpaceScale, Radii, IconGrid, Icon, ImageIcon, ImageSprite, Button, ButtonAdvanced, CopyButton, ShortId, RelativeTime, RowPill, Mark, Tag, Para, LinkMore, External, IconLink, PageHead, Section, Panel, Tabs, Status, StatusLine, Pill, IconFact, Callout, Stats, EmptyState, AddCard, Code, DnsRecords, Rows, Row, Items, AppRow, AppMenu, MachineRow, ListTools, Links, Link, Tiles, Tile, Timeline, Event, Menu, MenuItem, Banner, PostButton, Search, SelectForm, Form, Field, Grid, Actions, ToggleField, PairsField, CodeField, ChipsField, ChoiceLinks, Facts, Fact, Endpoint, ChoiceField, ChoiceCard, StepperField, Group, RangeField, Expanders, Expander, Nav, NavItem, TopbarAction};
 use crate::templates::compiled::components::{InvitationRows, InboxColumn, NotificationRows, NotificationBell, OrganisationPage, ImageLogoNotices};
 use crate::templates::compiled::components::{Select, DomainName};
-use crate::templates::compiled::components::{TimeSeries, DataTable, OutputRow, LogOutput};
+use crate::templates::compiled::components::{TimeSeries, TelemetryBar, LogStream};
 props crate::web::pages::StyleGuidePage { viewer, csrf, swatches, sprite_icons, gallery, icons, apps, machines };
 
 <App title="Style guide" viewer={viewer} csrf={csrf} title_org={Some(false)}>
@@ -289,24 +289,13 @@ props crate::web::pages::StyleGuidePage { viewer, csrf, swatches, sprite_icons, 
       {let chart = { let mut chart = crate::web::app_telemetry::chart_specimen(true, false); for gap in &mut chart.gaps { gap.offline = false; gap.label = "Example: coverage unknown (received history evicted)".into(); } chart };}
       <TimeSeries chart={&chart} />
     </Specimen>
-    <Specimen title="Output table" code={r#"<DataTable caption="Output" headings={headings}><OutputRow log={log} /></DataTable>"#} note="Example output. Every cell has a phone label. Bodies are escaped text, control bytes are visible, and truncated records are marked.">
-      {let log = crate::web::app_telemetry::LogView { cursor: "example".into(), at: "2026-10-18 12:00:00 UTC".into(), instance: "019a0000-0000-7000-8000-000000000001".into(), release: 3, stream: "stdout".into(), body: crate::web::app_telemetry::inert_text("Example: <script> is text, \u{001b}[31m is inert.\nA second line."), truncated: true };}
-      <DataTable caption="Example output" headings={&["Collected", "Instance", "Stream", "Output"]} wide_end><OutputRow log={&log} /></DataTable>
+    <Specimen title="Telemetry filters" code={r#"<TelemetryBar bar={bar} />"#} note="Example. Range links keep the search and instance; logs offer no range beyond retention. The instance picker appears only with more than one instance, and a window chosen on the volume chart shows as a chip that leads back.">
+      {let bar = crate::web::app_telemetry::example_toolbar();}
+      <TelemetryBar bar={&bar} />
     </Specimen>
-    <Specimen title="Empty output and follow state" code={r#"<LogOutput organisation={org} name={name} query={query} logs={logs} cursor={cursor} error={error} loss={loss} since_json={since} until_json={until} />"#} note="No invented log records. Follow is opt-in; updates append only output, retaining the app frame.">
-      {let query = crate::web::app_telemetry::TelemetryQuery::default();}
-      <LogOutput organisation="example" name="example" query={&query} logs={&[]} cursor="" error="" loss="Example: no known records removed." since_json="" until_json="" />
-    </Specimen>
-    <Specimen title="Disconnected delivery coverage" code={r#"<LogOutput query={query} gaps={gaps} />"#} note="Example authoritative outage. No log emission or lost-record count is inferred from an interval without received measurement coverage.">
-      {let query = crate::web::app_telemetry::TelemetryQuery::default();}
-      {let gaps = vec!["2026-10-18 04:00:00 UTC – 2026-10-18 12:00:00 UTC · instance example-instance · machine example-machine: not received (machine offline)".to_string()];}
-      <LogOutput organisation="example" name="example" query={&query} gaps={&gaps} />
-    </Specimen>
-    <Specimen title="Legacy combined output" code={r#"<LogOutput organisation={org} name={name} query={query} logs={combined_logs} />"#} note="Example legacy output. The capture limitation appears only when combined records are present. No historical cutoff date is inferred from collection time.">
-      {let query = crate::web::app_telemetry::TelemetryQuery::default();}
-      {let logs = vec![crate::web::app_telemetry::LogView { cursor: "legacy-example".into(), at: "2026-10-18 12:00:00 UTC".into(), instance: "019a0000-0000-7000-8000-000000000001".into(), release: 2, stream: "combined".into(), body: "Example combined stdout/stderr output.".into(), truncated: false }];}
-      {let restart = crate::web::app_telemetry::RestartControls { action: "#sg-telemetry".into(), csrf: csrf.to_string(), manages: true, single_copy: true, current_instances: vec!["019a0000-0000-7000-8000-000000000001".into()], separate_instances: Vec::new() };}
-      <LogOutput organisation="example" name="example" query={&query} logs={&logs} restart={Some(&restart)} />
+    <Specimen title="Log stream" code={r#"<LogStream lines={lines} instance={true} older={href} />"#} note="Example output, not live records. UTC collection times; the title holds the exact time and says it is collection time. stderr has a red rule. Colour, bold and dim ANSI codes style text; every other control or direction character stays visible and inert.">
+      {let lines = crate::web::app_telemetry::example_lines();}
+      <LogStream lines={&lines} instance older="" />
     </Specimen>
   </Section>
   <Section id="sg-shell" title="Shell">

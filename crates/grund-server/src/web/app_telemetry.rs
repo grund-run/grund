@@ -11,40 +11,21 @@ use crate::{services::app_telemetry::AppTelemetryState, state::State};
 pub struct TelemetryQuery {
     pub search: String,
     pub instance: String,
-    pub release: String,
+    pub range: String,
     pub since: String,
     pub until: String,
-    pub stream: String,
-    pub range: String,
-    pub follow: String,
-    pub cursor: String,
+    pub before: String,
 }
 
 impl TelemetryQuery {
-    fn validate(&self) -> Result<u32, String> {
+    fn validate(&self) -> Result<&'static Range, String> {
         if !self.instance.is_empty() && Uuid::parse_str(&self.instance).is_err() {
             return Err("Instance must be a full instance identifier.".into());
         }
         if self.search.len() > 200 || self.search.contains('\0') {
             return Err("Search must be at most 200 bytes and cannot contain a null byte.".into());
         }
-        if !matches!(self.stream.as_str(), "" | "stdout" | "stderr" | "combined") {
-            return Err("Choose stdout, stderr, combined or every stream.".into());
-        }
-        if range(&self.range).is_none() {
-            return Err("Choose live, 15m, 1h, 6h, 24h or 7d.".into());
-        }
-        if self.release.is_empty() {
-            Ok(0)
-        } else {
-            self.release
-                .parse::<u32>()
-                .ok()
-                .filter(|release| *release > 0 && *release <= i32::MAX as u32)
-                .ok_or_else(|| {
-                    "Release must be a positive whole number below 2,147,483,648.".into()
-                })
-        }
+        range(&self.range).ok_or_else(|| "Choose live, 15m, 1h, 6h, 24h or 7d.".into())
     }
 }
 
@@ -53,6 +34,7 @@ pub struct Range {
     pub key: &'static str,
     pub label: &'static str,
     pub metrics: &'static str,
+    pub seconds: i64,
     pub logs: bool,
 }
 
@@ -61,36 +43,42 @@ pub const RANGES: [Range; 6] = [
         key: "live",
         label: "Live",
         metrics: "hour",
+        seconds: 900,
         logs: true,
     },
     Range {
         key: "15m",
         label: "15m",
         metrics: "hour",
+        seconds: 900,
         logs: true,
     },
     Range {
         key: "1h",
         label: "1h",
         metrics: "hour",
+        seconds: 3600,
         logs: true,
     },
     Range {
         key: "6h",
         label: "6h",
         metrics: "day",
+        seconds: 21600,
         logs: true,
     },
     Range {
         key: "24h",
         label: "24h",
         metrics: "day",
+        seconds: 86400,
         logs: true,
     },
     Range {
         key: "7d",
         label: "7d",
         metrics: "week",
+        seconds: 604800,
         logs: false,
     },
 ];
@@ -122,6 +110,15 @@ pub struct Toolbar {
     pub search: Option<String>,
     pub instance: String,
     pub instances: Vec<(String, String)>,
+    pub zoom: Option<Zoom>,
+}
+
+/// A time window chosen on the volume chart, with the link that leaves it.
+pub struct Zoom {
+    pub label: String,
+    pub since: String,
+    pub until: String,
+    pub reset: String,
 }
 
 #[derive(Serialize)]
@@ -193,6 +190,7 @@ impl Toolbar {
             search: logs.then(|| query.search.clone()),
             instance: query.instance.clone(),
             instances,
+            zoom: None,
         }
     }
 }
@@ -203,14 +201,129 @@ pub fn short(instance: &str) -> String {
     digits[digits.len().saturating_sub(4)..].to_string()
 }
 
-pub struct LogView {
+/// A run of log text with the classes its ANSI SGR codes selected.
+pub struct Span {
+    pub class: String,
+    pub text: String,
+}
+
+pub struct LogLine {
     pub cursor: String,
-    pub at: String,
+    pub iso: String,
+    pub clock: String,
+    pub millis: String,
+    pub title: String,
     pub instance: String,
-    pub release: u32,
+    pub short: String,
     pub stream: String,
-    pub body: String,
+    pub spans: Vec<Span>,
     pub truncated: bool,
+}
+
+impl LogLine {
+    fn new(log: grund_proto::grund::app::v1::AppLog) -> Self {
+        let observed = log.observed_at.as_option().and_then(at);
+        Self {
+            iso: observed
+                .map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+                .unwrap_or_default(),
+            clock: observed
+                .map(|at| at.format("%H:%M:%S").to_string())
+                .unwrap_or_else(|| "--:--:--".into()),
+            millis: observed
+                .map(|at| at.format("%.3f").to_string())
+                .unwrap_or_default(),
+            title: observed
+                .map(|at| {
+                    format!(
+                        "Collected {}. Collection time, not necessarily when the app wrote it.",
+                        at.format("%Y-%m-%d %H:%M:%S%.3f UTC")
+                    )
+                })
+                .unwrap_or_else(|| "Collection time not reported.".into()),
+            short: short(&log.instance),
+            instance: log.instance,
+            stream: log.stream,
+            spans: ansi(&log.body),
+            truncated: log.truncated,
+            cursor: log.cursor,
+        }
+    }
+}
+
+/// Splits app output into styled runs. Only colour, bold and dim SGR codes
+/// style text; every other control or direction character stays visible as
+/// an inert `\u{…}` escape, so output cannot move the cursor or reorder text.
+pub fn ansi(body: &str) -> Vec<Span> {
+    let mut spans: Vec<Span> = Vec::new();
+    let mut bold = false;
+    let mut dim = false;
+    let mut colour: Option<&'static str> = None;
+    let mut rest = body;
+    let mut push = |text: &str, bold: bool, dim: bool, colour: Option<&'static str>| {
+        if text.is_empty() {
+            return;
+        }
+        let class = [
+            bold.then_some("ansi-bold"),
+            dim.then_some("ansi-dim"),
+            colour,
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ");
+        match spans.last_mut() {
+            Some(last) if last.class == class => last.text.push_str(&inert_text(text)),
+            _ => spans.push(Span {
+                class,
+                text: inert_text(text),
+            }),
+        }
+    };
+    while let Some(start) = rest.find("\u{1b}[") {
+        let params = &rest[start + 2..];
+        let end = params.find(|ch: char| !(ch.is_ascii_digit() || ch == ';'));
+        match end {
+            Some(end) if params[end..].starts_with('m') => {
+                push(&rest[..start], bold, dim, colour);
+                let mut codes = params[..end].split(';');
+                while let Some(code) = codes.next() {
+                    match code.parse::<u8>().unwrap_or(0) {
+                        38 | 48 => {
+                            let skip = if codes.next() == Some("2") { 3 } else { 1 };
+                            codes.by_ref().take(skip).for_each(drop);
+                        }
+                        0 => (bold, dim, colour) = (false, false, None),
+                        1 => bold = true,
+                        2 => dim = true,
+                        22 => (bold, dim) = (false, false),
+                        39 => colour = None,
+                        code @ (31..=36 | 91..=96) => {
+                            colour = Some(
+                                [
+                                    "ansi-red",
+                                    "ansi-green",
+                                    "ansi-yellow",
+                                    "ansi-blue",
+                                    "ansi-magenta",
+                                    "ansi-cyan",
+                                ][usize::from(code % 30 - 1)],
+                            )
+                        }
+                        _ => {}
+                    }
+                }
+                rest = &params[end + 1..];
+            }
+            _ => {
+                push(&rest[..start + 1], bold, dim, colour);
+                rest = &rest[start + 1..];
+            }
+        }
+    }
+    push(rest, bold, dim, colour);
+    spans
 }
 
 #[derive(Default)]
@@ -224,7 +337,7 @@ pub struct RestartControls {
 }
 
 impl RestartControls {
-    pub fn required(&self, logs: &[LogView]) -> bool {
+    pub fn required(&self, logs: &[LogLine]) -> bool {
         self.manages
             && self.current_instances.iter().any(|instance| {
                 !Uuid::parse_str(instance).is_ok_and(|id| self.separate_instances.contains(&id))
@@ -240,19 +353,18 @@ impl RestartControls {
 }
 
 pub struct LogsPage {
-    pub action: String,
+    pub bar: Toolbar,
+    pub error: String,
     pub organisation: String,
     pub name: String,
-    pub query: TelemetryQuery,
-    pub logs: Vec<LogView>,
-    pub cursor: String,
-    pub next: String,
-    pub error: String,
-    pub limits: String,
-    pub loss: String,
-    pub gaps: Vec<String>,
-    pub since_json: String,
-    pub until_json: String,
+    pub lines: Vec<LogLine>,
+    pub instances: bool,
+    pub since: String,
+    pub until: String,
+    pub forward: String,
+    pub older: String,
+    pub older_href: String,
+    pub foot: String,
     pub restart: RestartControls,
 }
 
@@ -342,61 +454,69 @@ pub async fn render(
     instances: &[String],
 ) -> String {
     if tab == "logs" {
+        let mut bar = Toolbar::new(format!("{base}/logs"), &query, true, instances);
         let mut page = LogsPage {
-            action: format!("{base}/logs"),
+            instances: !bar.instances.is_empty() && query.instance.is_empty(),
+            bar: Toolbar::new(String::new(), &TelemetryQuery::default(), true, &[]),
+            error: String::new(),
             organisation: organisation.into(),
             name: name.into(),
-            query,
-            logs: Vec::new(),
-            cursor: String::new(),
-            next: String::new(),
-            error: String::new(),
-            limits: String::new(),
-            loss: String::new(),
-            gaps: Vec::new(),
-            since_json: String::new(),
-            until_json: String::new(),
+            lines: Vec::new(),
+            since: String::new(),
+            until: String::new(),
+            forward: String::new(),
+            older: String::new(),
+            older_href: String::new(),
+            foot: String::new(),
             restart,
         };
         let request = (|| {
-            let release = page.query.validate()?;
-            let since = time(&page.query.since)?;
-            let until = time(&page.query.until)?;
-            if since
-                .zip(until)
-                .is_some_and(|(since, until)| since >= until)
-            {
-                return Err("Since must be before until.".to_string());
+            let range = query.validate()?;
+            let now = Utc::now();
+            let zoomed = time(&query.since)?.zip(time(&query.until)?);
+            if let Some((since, until)) = zoomed {
+                if since >= until || until - since > chrono::Duration::days(7) {
+                    return Err("Choose a time window of at most seven days.".to_string());
+                }
+                bar.zoom = Some(Zoom {
+                    label: format!("{}–{}", since.format("%H:%M"), until.format("%H:%M")),
+                    since: query.since.clone(),
+                    until: query.until.clone(),
+                    reset: bar
+                        .ranges
+                        .iter()
+                        .find(|link| link.current)
+                        .map(|link| link.href.clone())
+                        .unwrap_or_default(),
+                });
             }
-            if since
-                .zip(until)
-                .is_some_and(|(since, until)| until - since > chrono::Duration::days(7))
-            {
-                return Err("Time ranges cannot exceed seven days.".to_string());
-            }
-            page.since_json = since.map(|at| at.to_rfc3339()).unwrap_or_default();
-            page.until_json = until.map(|at| at.to_rfc3339()).unwrap_or_default();
+            let (since, until) = zoomed.map_or_else(
+                || {
+                    let since = now - chrono::Duration::seconds(range.seconds);
+                    (
+                        DateTime::from_timestamp(since.timestamp(), 0).unwrap_or(since),
+                        None,
+                    )
+                },
+                |(since, until)| (since, Some(until)),
+            );
+            let stamp = |at: DateTime<Utc>| {
+                Timestamp::from_unix(at.timestamp(), at.timestamp_subsec_nanos() as i32)
+            };
+            page.since = since.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true);
+            page.until = until
+                .map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true))
+                .unwrap_or_default();
             Ok(ListAppLogsRequest {
                 organisation: organisation.into(),
                 name: name.into(),
-                instance: page.query.instance.clone(),
-                release,
-                since: since
-                    .map(|at| {
-                        Timestamp::from_unix(at.timestamp(), at.timestamp_subsec_nanos() as i32)
-                            .into()
-                    })
-                    .unwrap_or_default(),
-                until: until
-                    .map(|at| {
-                        Timestamp::from_unix(at.timestamp(), at.timestamp_subsec_nanos() as i32)
-                            .into()
-                    })
-                    .unwrap_or_default(),
-                search: page.query.search.clone(),
-                stream: page.query.stream.clone(),
+                instance: query.instance.clone(),
+                since: stamp(since).into(),
+                until: until.map(|at| stamp(at).into()).unwrap_or_default(),
+                search: query.search.clone(),
                 page_size: 200,
-                page_token: page.query.cursor.clone(),
+                page_token: query.before.clone(),
+                newest_first: true,
                 ..Default::default()
             })
         })();
@@ -409,49 +529,42 @@ pub async fn render(
             {
                 Err(error) => {
                     tracing::warn!(error = %error, "app logs query failed");
-                    page.error = error.downcast_ref::<crate::services::app_telemetry::Invalid>()
+                    page.error = error
+                        .downcast_ref::<crate::services::app_telemetry::Invalid>()
                         .map(|error| error.to_string())
-                        .unwrap_or_else(|| "Logs could not be loaded. Offline coverage is unknown. Check the filters and try again.".into());
+                        .unwrap_or_else(|| "Logs could not be loaded. Try again.".into());
                 }
                 Ok(response) => {
-                    page.gaps = response.gaps.iter().filter_map(gap_label).collect();
-                    page.cursor = response.next_page_token;
-                    page.logs = response
-                        .logs
-                        .into_iter()
-                        .map(|log| LogView {
-                            cursor: log.cursor,
-                            at: display_time(log.observed_at.as_option()),
-                            instance: log.instance,
-                            release: log.release,
-                            stream: log.stream,
-                            body: inert_text(&log.body),
-                            truncated: log.truncated,
-                        })
-                        .collect();
-                    page.limits = format!(
-                        "Retained for up to {} hours; {} bytes of accounted log storage per organisation. Oldest output is removed at either limit. Eligible offline batch delivery window: {} hours; spool capacity can be tighter.",
+                    page.forward = response.next_page_token;
+                    page.older = response.previous_page_token;
+                    if !page.older.is_empty() {
+                        let older = TelemetryQuery {
+                            before: page.older.clone(),
+                            range: bar.range.into(),
+                            ..query
+                        };
+                        page.older_href = format!(
+                            "{}?{}",
+                            bar.action,
+                            serde_urlencoded::to_string(&older).unwrap_or_default()
+                        );
+                    }
+                    page.lines = response.logs.into_iter().map(LogLine::new).collect();
+                    page.foot = format!(
+                        "Kept {} hours, up to {} MiB per organisation.",
                         response.retention_hours,
-                        response.payload_limit_bytes,
-                        response.delivery_window_hours
+                        response.payload_limit_bytes / 1_048_576
                     );
-                    page.loss = format!(
-                        "Known records removed by retention or organisation limits: {}. Collection and offline losses are not included.",
-                        response.dropped_records
-                    );
-                    let next_query = TelemetryQuery {
-                        cursor: page.cursor.clone(),
-                        ..page.query
-                    };
-                    page.next = format!(
-                        "{}?{}",
-                        page.action,
-                        serde_urlencoded::to_string(&next_query).unwrap_or_default()
-                    );
-                    page.query = next_query;
+                    if response.dropped_records > 0 {
+                        page.foot.push_str(&format!(
+                            " {} older records were removed at these limits.",
+                            response.dropped_records
+                        ));
+                    }
                 }
             },
         }
+        page.bar = bar;
         crate::templates::compiled::pages::app_logs::render(&page)
     } else {
         let mut page = MetricsPage {
@@ -592,6 +705,73 @@ fn chart(
         series,
         gaps: Vec::new(),
     }
+}
+
+/// Style-guide example lines: stdout, stderr, ANSI, an inert control byte and a truncated record.
+pub fn example_lines() -> Vec<LogLine> {
+    let start = DateTime::from_timestamp(1_760_788_800, 0).unwrap();
+    [
+        (
+            "stdout",
+            "GET /api/orders 200 \u{1b}[2m12ms\u{1b}[0m",
+            false,
+        ),
+        (
+            "stdout",
+            "\u{1b}[32mINFO\u{1b}[0m worker: processed batch size=64",
+            false,
+        ),
+        (
+            "stderr",
+            "\u{1b}[31;1mERROR\u{1b}[0m payment provider timeout after 5000ms",
+            false,
+        ),
+        (
+            "stderr",
+            "\u{1b}[33mWARN\u{1b}[0m <script> is text and \u{1b}]0;title\u{7} is inert",
+            false,
+        ),
+        ("stdout", "Example: a record cut at the 8 KiB limit", true),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, (stream, body, truncated))| {
+        LogLine::new(grund_proto::grund::app::v1::AppLog {
+            cursor: format!("example-{index}"),
+            observed_at: Timestamp::from_unix(start.timestamp() + index as i64, 125_000_000).into(),
+            instance: format!("019a0000-0000-7000-8000-00000000{:04x}", 0x3f2a + index % 2),
+            stream: stream.into(),
+            body: body.into(),
+            truncated,
+            ..Default::default()
+        })
+    })
+    .collect()
+}
+
+/// A style-guide example of the logs filter row, zoomed into a window.
+pub fn example_toolbar() -> Toolbar {
+    let query = TelemetryQuery {
+        range: "1h".into(),
+        search: "timeout".into(),
+        ..Default::default()
+    };
+    let mut bar = Toolbar::new(
+        "#sg-telemetry".into(),
+        &query,
+        true,
+        &[
+            "019a0000-0000-7000-8000-000000003f2a".into(),
+            "019a0000-0000-7000-8000-000000009c1e".into(),
+        ],
+    );
+    bar.zoom = Some(Zoom {
+        label: "10:34–10:37".into(),
+        since: "2026-10-18T10:34:00Z".into(),
+        until: "2026-10-18T10:37:00Z".into(),
+        reset: "#sg-telemetry".into(),
+    });
+    bar
 }
 
 pub fn chart_specimen(memory: bool, empty: bool) -> TimeSeriesChart {
@@ -757,14 +937,12 @@ mod tests {
             current_instances: vec!["running".into(), "draining".into()],
             ..Default::default()
         };
-        let record = |instance: &str, stream: &str| LogView {
-            cursor: String::new(),
-            at: String::new(),
-            instance: instance.into(),
-            release: 1,
-            stream: stream.into(),
-            body: String::new(),
-            truncated: false,
+        let record = |instance: &str, stream: &str| {
+            LogLine::new(grund_proto::grund::app::v1::AppLog {
+                instance: instance.into(),
+                stream: stream.into(),
+                ..Default::default()
+            })
         };
         let mut logs = vec![record("removed", "combined")];
         assert!(!controls.required(&logs));
@@ -872,20 +1050,47 @@ mod tests {
     #[test]
     fn app_output_cannot_supply_markup_or_terminal_and_direction_controls() {
         use sedge_rt::Render;
-        let log = LogView {
+        let line = LogLine::new(grund_proto::grund::app::v1::AppLog {
             cursor: "1".into(),
-            at: "now".into(),
             instance: "instance".into(),
-            release: 1,
-            stream: "stdout".into(),
-            body: inert_text("<script>alert(1)</script>\u{001b}[31m\u{202e}"),
+            stream: "stderr".into(),
+            body: "<script>alert(1)</script>\u{1b}[31mred\u{1b}[2J\u{1b}]0;t\u{7}\u{202e}".into(),
             truncated: true,
-        };
+            ..Default::default()
+        });
         let mut html = String::new();
-        crate::templates::compiled::components::OutputRow { log: &log }.render(&mut html);
+        crate::templates::compiled::components::LogRow {
+            line: &line,
+            instance: true,
+        }
+        .render(&mut html);
         assert!(!html.contains("<script>"));
-        assert!(!html.contains('\u{001b}'));
+        assert!(!html.contains('\u{1b}'));
+        assert!(!html.contains('\u{7}'));
         assert!(!html.contains('\u{202e}'));
-        assert!(html.contains("\\u{001b}"));
+        assert!(html.contains(
+            r#"<span class="ansi-red">red\u{001b}[2J\u{001b}]0;t\u{0007}\u{202e}</span>"#
+        ));
+    }
+
+    #[test]
+    fn colour_bold_and_dim_codes_style_text_and_resets_end_them() {
+        let spans =
+            ansi("a\u{1b}[1;32mb\u{1b}[22mc\u{1b}[0md\u{1b}[94me\u{1b}[39mf\u{1b}[38;5;2mg");
+        let runs: Vec<(&str, &str)> = spans
+            .iter()
+            .map(|span| (span.class.as_str(), span.text.as_str()))
+            .collect();
+        assert_eq!(
+            runs,
+            [
+                ("", "a"),
+                ("ansi-bold ansi-green", "b"),
+                ("ansi-green", "c"),
+                ("", "d"),
+                ("ansi-blue", "e"),
+                ("", "fg"),
+            ]
+        );
     }
 }
