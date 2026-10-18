@@ -27,6 +27,21 @@ use crate::{services::agents::MachineCaller, state::State};
 #[error("{0}")]
 pub struct Invalid(pub &'static str);
 
+const FORWARD: u8 = 1;
+const BACKWARD: u8 = 2;
+const VOLUME_BUCKETS: i64 = 180;
+const VOLUME_STEPS: [i64; 16] = [
+    1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600,
+];
+
+/// The smallest bucket that covers `seconds` in at most 180 buckets.
+pub fn volume_bucket(seconds: i64) -> i64 {
+    VOLUME_STEPS
+        .into_iter()
+        .find(|step| seconds <= step * VOLUME_BUCKETS)
+        .unwrap_or(VOLUME_STEPS[VOLUME_STEPS.len() - 1])
+}
+
 fn valid(condition: bool, message: &'static str) -> Result<()> {
     if !condition {
         return Err(Invalid(message).into());
@@ -459,8 +474,12 @@ impl AppTelemetry {
     }
 
     fn token(&self, org: Uuid, app: Uuid, filter: &[u8; 32], cursor: i64) -> String {
+        self.mint(FORWARD, org, app, filter, cursor)
+    }
+
+    fn mint(&self, kind: u8, org: Uuid, app: Uuid, filter: &[u8; 32], cursor: i64) -> String {
         let mut bytes = Vec::with_capacity(105);
-        bytes.push(1);
+        bytes.push(kind);
         bytes.extend_from_slice(org.as_bytes());
         bytes.extend_from_slice(app.as_bytes());
         bytes.extend_from_slice(filter);
@@ -476,6 +495,10 @@ impl AppTelemetry {
         if token.is_empty() {
             return Ok(0);
         }
+        self.read(FORWARD, token, org, app, filter)
+    }
+
+    fn read(&self, kind: u8, token: &str, org: Uuid, app: Uuid, filter: &[u8; 32]) -> Result<i64> {
         valid(token.len() <= 160, "invalid page token")?;
         let bytes = URL_SAFE_NO_PAD
             .decode(token)
@@ -487,7 +510,7 @@ impl AppTelemetry {
         mac.verify_slice(&bytes[73..])
             .map_err(|_| Invalid("invalid page token"))?;
         valid(
-            bytes[0] == 1
+            bytes[0] == kind
                 && bytes[1..17] == *org.as_bytes()
                 && bytes[17..33] == *app.as_bytes()
                 && bytes[33..65] == *filter,
@@ -537,8 +560,19 @@ impl AppTelemetry {
         bound.page_size = 0;
         bound.organisation.clear();
         bound.name.clear();
+        bound.newest_first = false;
         let filter: [u8; 32] = Sha256::digest(bound.encode_to_vec()).into();
-        let after = self.cursor(&request.page_token, org, app_id, &filter)?;
+        let (after, before) = match (request.newest_first, request.page_token.is_empty()) {
+            (false, _) => (
+                self.cursor(&request.page_token, org, app_id, &filter)?,
+                None,
+            ),
+            (true, true) => (0, Some(i64::MAX)),
+            (true, false) => (
+                0,
+                Some(self.read(BACKWARD, &request.page_token, org, app_id, &filter)?),
+            ),
+        };
         let through = store::highwater(&self.state.pool, org).await?;
         valid(after <= through, "page token is ahead of retained cursor")?;
         let size = if request.page_size == 0 {
@@ -561,14 +595,21 @@ impl AppTelemetry {
                 after,
                 through,
                 limit: size,
+                before,
             },
             policy.log_seconds,
         )
         .await?;
-        let next = if rows.len() == size as usize {
+        let next = if rows.len() == size as usize && before.is_none() {
             rows.last().map_or(through, |r| r.cursor)
         } else {
             through
+        };
+        let previous = match rows.first() {
+            Some(first) if before.is_some() && rows.len() == size as usize => {
+                self.mint(BACKWARD, org, app_id, &filter, first.cursor)
+            }
+            _ => String::new(),
         };
         let logs = rows
             .into_iter()
@@ -604,11 +645,86 @@ impl AppTelemetry {
         Ok(app::ListAppLogsResponse {
             logs,
             next_page_token: self.token(org, app_id, &filter, next),
+            previous_page_token: previous,
             retention_hours: self.state.config.app_log_retention_hours,
             payload_limit_bytes: policy.log_bytes as u64,
             dropped_records: store::losses(&self.state.pool, org, app_id).await? as u64,
             gaps,
             delivery_window_hours: self.state.config.app_telemetry_batch_max_age_hours,
+            ..Default::default()
+        })
+    }
+
+    /// Counts already-authorized live app logs per stream and bucket.
+    pub async fn volume(
+        &self,
+        org: Uuid,
+        app_id: Uuid,
+        request: &app::GetAppLogVolumeRequest,
+    ) -> Result<app::GetAppLogVolumeResponse> {
+        valid(
+            request.search.len() <= 200 && !request.search.contains('\0'),
+            "invalid search",
+        )?;
+        let instance = if request.instance.is_empty() {
+            None
+        } else {
+            Some(id(&request.instance)?)
+        };
+        valid(request.release <= i32::MAX as u32, "invalid release")?;
+        let policy = self.policy();
+        let until = request_time(request.until.as_option())?.unwrap_or_else(Utc::now);
+        let since = request_time(request.since.as_option())?
+            .unwrap_or(until - Duration::seconds(policy.log_seconds));
+        valid(
+            since < until && until - since <= Duration::days(7),
+            "invalid time range; maximum seven days",
+        )?;
+        let bucket = volume_bucket((until - since).num_seconds().max(1));
+        let release = (request.release > 0).then_some(request.release as i32);
+        let buckets = store::volume(
+            &self.state.pool,
+            org,
+            app_id,
+            instance,
+            release,
+            since,
+            until,
+            &request.search,
+            bucket,
+            policy.log_seconds,
+        )
+        .await?
+        .into_iter()
+        .map(|row| app::AppLogVolumeBucket {
+            at: timestamp(row.at).into(),
+            stdout: row.stdout as u64,
+            stderr: row.stderr as u64,
+            combined: row.combined as u64,
+            ..Default::default()
+        })
+        .collect();
+        let gaps = grund_store::app_telemetry_gaps::query(
+            &self.state.pool,
+            org,
+            app_id,
+            instance,
+            release,
+            since.max(Utc::now() - Duration::seconds(policy.log_seconds)),
+            until,
+        )
+        .await
+        .map_err(gap_error)?
+        .into_iter()
+        .map(gap_message)
+        .collect();
+        Ok(app::GetAppLogVolumeResponse {
+            buckets,
+            bucket_seconds: bucket as u32,
+            since: timestamp(since).into(),
+            until: timestamp(until).into(),
+            gaps,
+            retention_hours: self.state.config.app_log_retention_hours,
             ..Default::default()
         })
     }

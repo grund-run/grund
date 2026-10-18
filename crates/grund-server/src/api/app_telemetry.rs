@@ -122,6 +122,21 @@ impl app::AppTelemetryService for AppTelemetryApi {
             .map_err(failed)?;
         Response::ok(response)
     }
+
+    async fn get_app_log_volume(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, app::GetAppLogVolumeRequest>,
+    ) -> ServiceResult<app::GetAppLogVolumeResponse> {
+        let (org, app) = self.app(&ctx, request.organisation, request.name).await?;
+        let response = self
+            .state
+            .app_telemetry()
+            .volume(org, app, &request.to_owned_message())
+            .await
+            .map_err(failed)?;
+        Response::ok(response)
+    }
 }
 
 /// Existing-machine-key ingestion service, never a public OTLP endpoint.

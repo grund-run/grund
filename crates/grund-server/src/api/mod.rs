@@ -174,6 +174,10 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
         Requirement::SessionOrToken,
     ),
     (
+        "/grund.app.v1.AppTelemetryService/GetAppLogVolume",
+        Requirement::SessionOrToken,
+    ),
+    (
         "/grund.stack.v1.StackService/PreviewStack",
         Requirement::SessionOrToken,
     ),
@@ -2479,6 +2483,7 @@ mod tests {
         .chain([
             "/grund.app.v1.AppTelemetryService/ListAppLogs",
             "/grund.app.v1.AppTelemetryService/GetAppMetrics",
+            "/grund.app.v1.AppTelemetryService/GetAppLogVolume",
             "/grund.token.v1.TokenService/GetCurrentToken",
             "/grund.domain.v1.DomainService/GetDomain",
             "/grund.domain.v1.DomainService/ListDomains",
@@ -2701,6 +2706,13 @@ mod tests {
             _: RequestContext,
             _: ServiceRequest<'_, grund_proto::grund::app::v1::GetAppMetricsRequest>,
         ) -> ServiceResult<grund_proto::grund::app::v1::GetAppMetricsResponse> {
+            unreachable!()
+        }
+        async fn get_app_log_volume(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, grund_proto::grund::app::v1::GetAppLogVolumeRequest>,
+        ) -> ServiceResult<grund_proto::grund::app::v1::GetAppLogVolumeResponse> {
             unreachable!()
         }
     }

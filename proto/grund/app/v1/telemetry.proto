@@ -14,6 +14,11 @@ service AppTelemetryService {
   rpc GetAppMetrics(GetAppMetricsRequest) returns (GetAppMetricsResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
   }
+  // Retained log record counts per stream and time bucket, over the same
+  // filters, access and retention as ListAppLogs. Empty buckets are omitted.
+  rpc GetAppLogVolume(GetAppLogVolumeRequest) returns (GetAppLogVolumeResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
 }
 message ListAppLogsRequest {
   string organisation = 1;
@@ -34,7 +39,12 @@ message ListAppLogsRequest {
   int32 page_size = 9;
   // Opaque server ingestion cursor scoped to app and filters. Empty starts at
   // retained history; retain the returned token for follow, even on empty pages.
+  // With newest_first, pass previous_page_token here to read further back.
   string page_token = 10;
+  // Return the newest matching records instead of the oldest, still oldest
+  // cursor first within the page. next_page_token then follows forward from
+  // this response; previous_page_token reads the page before.
+  bool newest_first = 11;
 }
 message AppLog {
   string cursor = 1;
@@ -72,6 +82,9 @@ message ListAppLogsResponse {
   repeated AppTelemetryGap gaps = 6;
   // Maximum accepted batch age; spool capacity can impose a tighter limit.
   uint32 delivery_window_hours = 7;
+  // Only with newest_first: reads the records before this page. Empty when
+  // the page reached the oldest retained match.
+  string previous_page_token = 8;
 }
 message GetAppMetricsRequest {
   string organisation = 1;
@@ -106,4 +119,35 @@ message GetAppMetricsResponse {
   repeated AppTelemetryGap gaps = 8;
   // Maximum accepted batch age; spool capacity can impose a tighter limit.
   uint32 delivery_window_hours = 9;
+}
+message GetAppLogVolumeRequest {
+  string organisation = 1;
+  string name = 2;
+  // App replica_id, as returned by AppService/GetApp. Empty: every instance.
+  string instance = 3;
+  // 0 means every release.
+  uint32 release = 4;
+  // Inclusive collector-observation lower bound. Unset: the retention window.
+  google.protobuf.Timestamp since = 5;
+  // Exclusive collector-observation upper bound. Unset: now.
+  google.protobuf.Timestamp until = 6;
+  // Literal case-insensitive substring, at most 200 bytes.
+  string search = 7;
+}
+message AppLogVolumeBucket {
+  // Bucket start, aligned to multiples of bucket_seconds since the Unix epoch.
+  google.protobuf.Timestamp at = 1;
+  uint64 stdout = 2;
+  uint64 stderr = 3;
+  uint64 combined = 4;
+}
+message GetAppLogVolumeResponse {
+  // Oldest first; buckets without retained records are omitted, not zero-filled.
+  repeated AppLogVolumeBucket buckets = 1;
+  // Chosen by the server so that at most 180 buckets cover the range.
+  uint32 bucket_seconds = 2;
+  google.protobuf.Timestamp since = 3;
+  google.protobuf.Timestamp until = 4;
+  repeated AppTelemetryGap gaps = 5;
+  uint32 retention_hours = 6;
 }

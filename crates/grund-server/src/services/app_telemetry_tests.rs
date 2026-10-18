@@ -1125,3 +1125,256 @@ async fn separate_capture_evidence_survives_log_filters_but_not_expiry_or_instan
             .is_empty()
     );
 }
+
+fn streamed(
+    identity: &Identity,
+    body: &str,
+    at: chrono::DateTime<Utc>,
+    stream: &str,
+) -> agent::ExportTelemetryRequest {
+    let mut request = batch(identity, body, at);
+    let mut logs = ExportLogsServiceRequest::decode(request.logs_otlp.as_ref()).unwrap();
+    logs.resource_logs[0].scope_logs[0].log_records[0].attributes[0] =
+        attr("log.iostream", Value::StringValue(stream.into()));
+    request.logs_otlp = logs.encode_to_vec();
+    request
+}
+
+#[sqlx::test]
+async fn newest_first_pages_back_without_gaps_and_its_token_follows_forward(pool: PgPool) {
+    let state = state(pool).await;
+    let owner = placed(&state).await;
+    let (org, app) = (owner.identity.organisation_id, owner.identity.app_id);
+    for index in 0..5 {
+        let record = batch(&owner.identity, &format!("line {index}"), Utc::now());
+        assert_eq!(
+            signed(&state, &owner, &record, true).await.0,
+            StatusCode::OK
+        );
+    }
+    let bodies = |response: &app::ListAppLogsResponse| {
+        response
+            .logs
+            .iter()
+            .map(|log| log.body.clone())
+            .collect::<Vec<_>>()
+    };
+    let newest = app::ListAppLogsRequest {
+        newest_first: true,
+        page_size: 2,
+        ..Default::default()
+    };
+    let last = state.app_telemetry().logs(org, app, &newest).await.unwrap();
+    assert_eq!(bodies(&last), ["line 3", "line 4"]);
+    let back = app::ListAppLogsRequest {
+        page_token: last.previous_page_token.clone(),
+        ..newest.clone()
+    };
+    let middle = state.app_telemetry().logs(org, app, &back).await.unwrap();
+    assert_eq!(bodies(&middle), ["line 1", "line 2"]);
+    let first = state
+        .app_telemetry()
+        .logs(
+            org,
+            app,
+            &app::ListAppLogsRequest {
+                page_token: middle.previous_page_token.clone(),
+                ..newest.clone()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(bodies(&first), ["line 0"]);
+    assert!(first.previous_page_token.is_empty());
+
+    let late = batch(&owner.identity, "line 5", Utc::now());
+    assert_eq!(signed(&state, &owner, &late, true).await.0, StatusCode::OK);
+    let forward = app::ListAppLogsRequest {
+        page_token: middle.next_page_token.clone(),
+        ..Default::default()
+    };
+    let followed = state
+        .app_telemetry()
+        .logs(org, app, &forward)
+        .await
+        .unwrap();
+    assert_eq!(bodies(&followed), ["line 5"]);
+
+    let backwards_as_forward = app::ListAppLogsRequest {
+        page_token: last.previous_page_token.clone(),
+        ..Default::default()
+    };
+    assert!(
+        state
+            .app_telemetry()
+            .logs(org, app, &backwards_as_forward)
+            .await
+            .is_err()
+    );
+    let forward_as_backwards = app::ListAppLogsRequest {
+        page_token: last.next_page_token.clone(),
+        ..newest.clone()
+    };
+    assert!(
+        state
+            .app_telemetry()
+            .logs(org, app, &forward_as_backwards)
+            .await
+            .is_err()
+    );
+    let other_filter = app::ListAppLogsRequest {
+        search: "line".into(),
+        ..back
+    };
+    assert!(
+        state
+            .app_telemetry()
+            .logs(org, app, &other_filter)
+            .await
+            .is_err()
+    );
+}
+
+async fn volume_query(
+    state: &State,
+    slug: &str,
+    account: Uuid,
+    request: app::GetAppLogVolumeRequest,
+) -> (StatusCode, Vec<u8>) {
+    let mut connection = state.pool.acquire().await.unwrap();
+    let (token, _) = state
+        .sessions()
+        .start_cli(&mut connection, account, &Default::default())
+        .await
+        .unwrap();
+    drop(connection);
+    let request = app::GetAppLogVolumeRequest {
+        organisation: slug.into(),
+        name: "app".into(),
+        ..request
+    };
+    let request = Request::builder()
+        .method("POST")
+        .uri("/grund.app.v1.AppTelemetryService/GetAppLogVolume")
+        .header("content-type", "application/proto")
+        .header("connect-protocol-version", "1")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(request.encode_to_vec()))
+        .unwrap();
+    let response = crate::api::router(state.clone())
+        .oneshot(request)
+        .await
+        .unwrap();
+    let status = response.status();
+    (
+        status,
+        axum::body::to_bytes(response.into_body(), 16 * 1024 * 1024)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+}
+
+#[sqlx::test]
+async fn log_volume_counts_each_stream_per_bucket_for_members_of_the_app_only(pool: PgPool) {
+    let state = state(pool).await;
+    let owner = placed(&state).await;
+    let other = placed(&state).await;
+    let now = Utc::now();
+    let minute = |at: chrono::DateTime<Utc>| {
+        chrono::DateTime::from_timestamp(at.timestamp() / 60 * 60, 0).unwrap()
+    };
+    let earlier = minute(now) - Duration::minutes(10);
+    for (offset, stream, body) in [
+        (5, "stdout", "GET /a"),
+        (6, "stdout", "GET /b"),
+        (7, "stderr", "timeout"),
+        (65, "stderr", "TIMEOUT again"),
+    ] {
+        let record = streamed(
+            &owner.identity,
+            body,
+            earlier + Duration::seconds(offset),
+            stream,
+        );
+        assert_eq!(
+            signed(&state, &owner, &record, true).await.0,
+            StatusCode::OK
+        );
+    }
+    let foreign = batch(&other.identity, "not mine", earlier);
+    assert_eq!(
+        signed(&state, &other, &foreign, true).await.0,
+        StatusCode::OK
+    );
+    let account = Uuid::now_v7();
+    sqlx::query("INSERT INTO grund_memberships (organisation_id,account_id,role,stream_version) VALUES ($1,$2,'member',1)").bind(owner.identity.organisation_id).bind(account).execute(&state.pool).await.unwrap();
+
+    let window = app::GetAppLogVolumeRequest {
+        since: Timestamp::from_unix(earlier.timestamp(), 0).into(),
+        until: Timestamp::from_unix((earlier + Duration::hours(3)).timestamp(), 0).into(),
+        ..Default::default()
+    };
+    let (status, bytes) = volume_query(&state, &owner.slug, account, window.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    let volume = app::GetAppLogVolumeResponse::decode_from_slice(&bytes).unwrap();
+    assert_eq!(volume.bucket_seconds, 60);
+    let counts = volume
+        .buckets
+        .iter()
+        .map(|bucket| {
+            (
+                bucket.at.as_option().unwrap().seconds - earlier.timestamp(),
+                bucket.stdout,
+                bucket.stderr,
+                bucket.combined,
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(counts, [(0, 2, 1, 0), (60, 0, 1, 0)]);
+
+    let searched = app::GetAppLogVolumeRequest {
+        search: "timeout".into(),
+        ..window.clone()
+    };
+    let (_, bytes) = volume_query(&state, &owner.slug, account, searched).await;
+    let volume = app::GetAppLogVolumeResponse::decode_from_slice(&bytes).unwrap();
+    let errors: u64 = volume.buckets.iter().map(|bucket| bucket.stderr).sum();
+    let output: u64 = volume.buckets.iter().map(|bucket| bucket.stdout).sum();
+    assert_eq!((output, errors), (0, 2));
+
+    assert_eq!(
+        volume_query(&state, &other.slug, account, window.clone())
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        volume_query(&state, &owner.slug, Uuid::now_v7(), window.clone())
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    let too_long = app::GetAppLogVolumeRequest {
+        until: Timestamp::from_unix((earlier + Duration::days(8)).timestamp(), 0).into(),
+        ..window
+    };
+    assert_eq!(
+        volume_query(&state, &owner.slug, account, too_long).await.0,
+        StatusCode::BAD_REQUEST
+    );
+}
+
+#[test]
+fn log_volume_uses_at_most_180_buckets_for_every_offered_range() {
+    for (seconds, bucket) in [
+        (900, 5),
+        (3600, 30),
+        (6 * 3600, 120),
+        (86400, 600),
+        (7 * 86400, 3600),
+    ] {
+        assert_eq!(volume_bucket(seconds), bucket);
+        assert!(seconds / bucket <= 180);
+    }
+}

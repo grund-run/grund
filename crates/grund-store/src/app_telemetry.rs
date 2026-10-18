@@ -250,6 +250,9 @@ pub struct LogFilter<'a> {
     pub after: i64,
     pub through: i64,
     pub limit: i64,
+    /// Read the newest `limit` records below this cursor (and at most
+    /// `through`) instead of the oldest above `after`.
+    pub before: Option<i64>,
 }
 
 /// The latest committed tenant ingestion cursor; absent tenants start at zero.
@@ -264,6 +267,8 @@ pub async fn highwater(pool: &PgPool, org: Uuid) -> Result<i64, sqlx::Error> {
 }
 
 /// Returns only live-app retained logs, with literal rather than pattern search.
+/// Newest-first reads walk the cursor index backwards and return the page in
+/// ascending cursor order, like forward reads.
 pub async fn logs(
     pool: &PgPool,
     org: Uuid,
@@ -271,8 +276,55 @@ pub async fn logs(
     filter: LogFilter<'_>,
     retention: i64,
 ) -> Result<Vec<LogRow>, sqlx::Error> {
-    sqlx::query_as("SELECT l.cursor,l.observed_at,l.instance_id,l.machine_id,l.release,l.stream,l.body,l.truncated FROM grund_app_logs l WHERE l.organisation_id = $1 AND l.app_id = $2 AND EXISTS(SELECT 1 FROM grund_apps a WHERE a.organisation_id = $1 AND a.app_id = $2 AND a.deleted_at IS NULL) AND l.cursor > $3 AND l.cursor <= $4 AND l.observed_at > statement_timestamp() - make_interval(secs => $5::bigint::double precision) AND ($6::uuid IS NULL OR l.instance_id = $6) AND ($7::int IS NULL OR l.release = $7) AND ($8::timestamptz IS NULL OR l.observed_at >= $8) AND ($9::timestamptz IS NULL OR l.observed_at < $9) AND ($10 = '' OR strpos(lower(l.body), lower($10)) > 0) AND ($11 = '' OR l.stream = $11) ORDER BY l.cursor LIMIT $12")
-        .bind(org).bind(app).bind(filter.after).bind(filter.through).bind(retention).bind(filter.instance).bind(filter.release).bind(filter.since).bind(filter.until).bind(filter.search).bind(filter.stream).bind(filter.limit).fetch_all(pool).await
+    const FORWARD: &str = "SELECT l.cursor,l.observed_at,l.instance_id,l.machine_id,l.release,l.stream,l.body,l.truncated FROM grund_app_logs l WHERE l.organisation_id = $1 AND l.app_id = $2 AND EXISTS(SELECT 1 FROM grund_apps a WHERE a.organisation_id = $1 AND a.app_id = $2 AND a.deleted_at IS NULL) AND l.cursor > $3 AND l.cursor <= $4 AND l.observed_at > statement_timestamp() - make_interval(secs => $5::bigint::double precision) AND ($6::uuid IS NULL OR l.instance_id = $6) AND ($7::int IS NULL OR l.release = $7) AND ($8::timestamptz IS NULL OR l.observed_at >= $8) AND ($9::timestamptz IS NULL OR l.observed_at < $9) AND ($10 = '' OR strpos(lower(l.body), lower($10)) > 0) AND ($11 = '' OR l.stream = $11) ORDER BY l.cursor LIMIT $12";
+    const NEWEST: &str = "SELECT * FROM (SELECT l.cursor,l.observed_at,l.instance_id,l.machine_id,l.release,l.stream,l.body,l.truncated FROM grund_app_logs l WHERE l.organisation_id = $1 AND l.app_id = $2 AND EXISTS(SELECT 1 FROM grund_apps a WHERE a.organisation_id = $1 AND a.app_id = $2 AND a.deleted_at IS NULL) AND l.cursor < $3 AND l.cursor <= $4 AND l.observed_at > statement_timestamp() - make_interval(secs => $5::bigint::double precision) AND ($6::uuid IS NULL OR l.instance_id = $6) AND ($7::int IS NULL OR l.release = $7) AND ($8::timestamptz IS NULL OR l.observed_at >= $8) AND ($9::timestamptz IS NULL OR l.observed_at < $9) AND ($10 = '' OR strpos(lower(l.body), lower($10)) > 0) AND ($11 = '' OR l.stream = $11) ORDER BY l.cursor DESC LIMIT $12) page ORDER BY cursor";
+    let (sql, bound) = match filter.before {
+        Some(before) => (NEWEST, before),
+        None => (FORWARD, filter.after),
+    };
+    sqlx::query_as(sql)
+        .bind(org)
+        .bind(app)
+        .bind(bound)
+        .bind(filter.through)
+        .bind(retention)
+        .bind(filter.instance)
+        .bind(filter.release)
+        .bind(filter.since)
+        .bind(filter.until)
+        .bind(filter.search)
+        .bind(filter.stream)
+        .bind(filter.limit)
+        .fetch_all(pool)
+        .await
+}
+
+/// One time bucket of retained log record counts per stream.
+#[derive(FromRow)]
+pub struct VolumeRow {
+    pub at: DateTime<Utc>,
+    pub stdout: i64,
+    pub stderr: i64,
+    pub combined: i64,
+}
+
+/// Counts live-app retained logs per epoch-aligned bucket over the log filters;
+/// buckets without records are absent.
+#[allow(clippy::too_many_arguments)]
+pub async fn volume(
+    pool: &PgPool,
+    org: Uuid,
+    app: Uuid,
+    instance: Option<Uuid>,
+    release: Option<i32>,
+    since: DateTime<Utc>,
+    until: DateTime<Utc>,
+    search: &str,
+    bucket: i64,
+    retention: i64,
+) -> Result<Vec<VolumeRow>, sqlx::Error> {
+    sqlx::query_as("SELECT date_bin(make_interval(secs => $9::bigint::double precision), l.observed_at, 'epoch'::timestamptz) AS at, count(*) FILTER (WHERE l.stream = 'stdout') AS stdout, count(*) FILTER (WHERE l.stream = 'stderr') AS stderr, count(*) FILTER (WHERE l.stream = 'combined') AS combined FROM grund_app_logs l WHERE l.organisation_id = $1 AND l.app_id = $2 AND EXISTS(SELECT 1 FROM grund_apps a WHERE a.organisation_id = $1 AND a.app_id = $2 AND a.deleted_at IS NULL) AND l.observed_at >= $5 AND l.observed_at < $6 AND l.observed_at > statement_timestamp() - make_interval(secs => $8::bigint::double precision) AND ($3::uuid IS NULL OR l.instance_id = $3) AND ($4::int IS NULL OR l.release = $4) AND ($7 = '' OR strpos(lower(l.body), lower($7)) > 0) GROUP BY 1 ORDER BY 1")
+        .bind(org).bind(app).bind(instance).bind(release).bind(since).bind(until).bind(search).bind(retention).bind(bucket).fetch_all(pool).await
 }
 
 /// Current instances with retained separate-stream evidence, independent of log filters.
