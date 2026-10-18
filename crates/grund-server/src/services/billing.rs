@@ -11,7 +11,10 @@
 
 use std::{
     collections::HashMap,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -48,6 +51,8 @@ pub struct AccountDetails {
     pub pending_plan: String,
     pub past_due: bool,
     pub cancelled: bool,
+    pub incomplete: bool,
+    pub paused: bool,
     pub complimentary: bool,
     pub complimentary_reason: String,
     pub complimentary_expires_at: Option<String>,
@@ -63,6 +68,31 @@ pub struct AccountDetails {
     pub cancel_at_period_end: bool,
     pub usage: Option<UsageDetails>,
     pub invoices: Vec<InvoiceDetails>,
+    pub hosted_entitlement: Option<HostedEntitlement>,
+    /// Display-only; allocation always uses `hosted_entitlement_now`.
+    pub hosted_entitlement_reason: HostedEntitlementReason,
+}
+
+/// Absolute hosted capacity authority. Disabled or zero limits never imply a
+/// fallback allowance; existing machines are not removed by this value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostedEntitlement {
+    pub enabled: bool,
+    pub max_machines: u32,
+    pub max_vcpus: u32,
+    pub max_memory_mib: u64,
+}
+
+/// An account-page explanation, never hosted allocation authority.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum HostedEntitlementReason {
+    #[default]
+    Unspecified,
+    Granted,
+    OrganisationNotSynced,
+    AllowanceDisabled,
+    NoPlan,
+    BillingLiveNoMapping,
 }
 
 /// Observed usage from delivered hourly provider samples in the current period.
@@ -86,6 +116,9 @@ pub struct InvoiceDetails {
     pub currency: String,
     pub status: String,
     pub document_available: bool,
+    pub refunded_amount_cents: Option<i64>,
+    pub refunded_tax_amount_cents: Option<i64>,
+    pub financial_status: String,
 }
 
 /// Whether an organisation may be deleted, as far as billing is concerned.
@@ -148,13 +181,14 @@ pub struct Remote {
     http: reqwest::Client,
     redirect_origins: Vec<String>,
     accounts: Mutex<HashMap<Uuid, CachedAccount>>,
+    refresh_generation: AtomicU64,
 }
 
 struct CachedAccount {
     view: Option<BillingView>,
     fetched_at: Option<Instant>,
     refresh_after: Instant,
-    refreshing: bool,
+    refreshing: Option<u64>,
 }
 
 impl Billing {
@@ -184,6 +218,7 @@ impl Billing {
                 .collect(),
             http,
             accounts: Mutex::new(HashMap::new()),
+            refresh_generation: AtomicU64::new(1),
         })))
     }
 
@@ -207,20 +242,21 @@ impl Billing {
                     view: None,
                     fetched_at: None,
                     refresh_after: now,
-                    refreshing: false,
+                    refreshing: None,
                 });
             let view = account
                 .fetched_at
                 .filter(|fetched_at| now.duration_since(*fetched_at) <= ACCOUNT_MAX_STALE)
                 .and_then(|_| account.view.clone())
                 .unwrap_or(BillingView::Unavailable);
-            let refresh = !account.refreshing && now >= account.refresh_after;
-            if refresh {
-                account.refreshing = true;
+            let refresh = (account.refreshing.is_none() && now >= account.refresh_after)
+                .then(|| remote.refresh_generation.fetch_add(1, Ordering::Relaxed));
+            if let Some(generation) = refresh {
+                account.refreshing = Some(generation);
             }
             (view, refresh)
         };
-        if refresh {
+        if let Some(generation) = refresh {
             let remote = remote.clone();
             tokio::spawn(async move {
                 let body = serde_json::json!({ "organisationId": organisation_id.to_string() });
@@ -228,25 +264,7 @@ impl Billing {
                     .call("GetAccount", &body, Some(READ_TIMEOUT))
                     .await
                     .map(|answer| view_from_response(&answer));
-                let now = Instant::now();
-                if let Err(error) = &result {
-                    tracing::warn!(error = %error, "billing account unavailable");
-                }
-                let mut accounts = remote.accounts.lock();
-                let account = accounts
-                    .get_mut(&organisation_id)
-                    .expect("refreshing account exists");
-                account.refreshing = false;
-                match result {
-                    Ok(view) => {
-                        account.view = Some(view);
-                        account.fetched_at = Some(now);
-                        account.refresh_after = now + ACCOUNT_REFRESH;
-                    }
-                    Err(_) => {
-                        account.refresh_after = now + ACCOUNT_RETRY;
-                    }
-                }
+                remote.finish_account_refresh(organisation_id, generation, result);
             });
         }
         view
@@ -267,6 +285,26 @@ impl Billing {
                 BillingView::Unavailable
             }
         }
+    }
+
+    /// Fetches allocation authority without using the display cache. `None`
+    /// means billing is deliberately unconfigured; missing remote authority
+    /// and transport/decoding failures return an error, never a free fallback.
+    pub async fn hosted_entitlement_now(
+        &self,
+        organisation_id: Uuid,
+    ) -> Result<Option<HostedEntitlement>, BillingError> {
+        let Billing::Remote(remote) = self else {
+            return Ok(None);
+        };
+        let body = serde_json::json!({"organisationId": organisation_id.to_string()});
+        let answer = remote
+            .call("GetAccount", &body, Some(READ_TIMEOUT))
+            .await
+            .map_err(|_| BillingError::Unavailable)?;
+        decode_hosted_entitlement(&answer["account"])
+            .map(Some)
+            .ok_or(BillingError::Unavailable)
     }
 
     /// Waits for one account read when a billing page has no usable cached value.
@@ -300,7 +338,7 @@ impl Billing {
                     view: Some(view.clone()),
                     fetched_at: Some(now),
                     refresh_after: now + ACCOUNT_REFRESH,
-                    refreshing: false,
+                    refreshing: None,
                 },
             );
         }
@@ -405,6 +443,34 @@ enum CallError {
 }
 
 impl Remote {
+    fn finish_account_refresh(
+        &self,
+        organisation_id: Uuid,
+        generation: u64,
+        result: Result<BillingView, CallError>,
+    ) {
+        let now = Instant::now();
+        if let Err(error) = &result {
+            tracing::warn!(error = %error, "billing account unavailable");
+        }
+        let mut accounts = self.accounts.lock();
+        let Some(account) = accounts.get_mut(&organisation_id) else {
+            return;
+        };
+        if account.refreshing != Some(generation) {
+            return;
+        }
+        account.refreshing = None;
+        match result {
+            Ok(view) => {
+                account.view = Some(view);
+                account.fetched_at = Some(now);
+                account.refresh_after = now + ACCOUNT_REFRESH;
+            }
+            Err(_) => account.refresh_after = now + ACCOUNT_RETRY,
+        }
+    }
+
     async fn call(
         &self,
         method: &str,
@@ -466,6 +532,45 @@ fn json_i64(value: &serde_json::Value) -> Option<i64> {
         .or_else(|| value.as_i64())
 }
 
+fn decode_hosted_entitlement(account: &serde_json::Value) -> Option<HostedEntitlement> {
+    let value = account.get("hostedEntitlement")?.as_object()?;
+    let number = |key| match value.get(key) {
+        None | Some(serde_json::Value::Null) => Some(0),
+        Some(value) => value
+            .as_str()
+            .and_then(|raw| raw.parse::<u64>().ok())
+            .or_else(|| value.as_u64()),
+    };
+    let enabled = match value.get("enabled") {
+        None | Some(serde_json::Value::Null) => false,
+        Some(value) => value.as_bool()?,
+    };
+    Some(HostedEntitlement {
+        enabled,
+        max_machines: u32::try_from(number("maxMachines")?).ok()?,
+        max_vcpus: u32::try_from(number("maxVcpus")?).ok()?,
+        max_memory_mib: number("maxMemoryMib")?,
+    })
+}
+
+fn decode_hosted_entitlement_reason(value: &serde_json::Value) -> HostedEntitlementReason {
+    use HostedEntitlementReason::*;
+    match (value.as_str(), value.as_u64()) {
+        (Some("HOSTED_ENTITLEMENT_REASON_GRANTED"), _) | (_, Some(1)) => Granted,
+        (Some("HOSTED_ENTITLEMENT_REASON_ORGANISATION_NOT_SYNCED"), _) | (_, Some(2)) => {
+            OrganisationNotSynced
+        }
+        (Some("HOSTED_ENTITLEMENT_REASON_ALLOWANCE_DISABLED"), _) | (_, Some(3)) => {
+            AllowanceDisabled
+        }
+        (Some("HOSTED_ENTITLEMENT_REASON_NO_PLAN"), _) | (_, Some(4)) => NoPlan,
+        (Some("HOSTED_ENTITLEMENT_REASON_BILLING_LIVE_NO_MAPPING"), _) | (_, Some(5)) => {
+            BillingLiveNoMapping
+        }
+        _ => Unspecified,
+    }
+}
+
 fn view_from_response(answer: &serde_json::Value) -> BillingView {
     let account = &answer["account"];
     let Some(plan) = account["plan"].as_str().filter(|plan| !plan.is_empty()) else {
@@ -473,7 +578,13 @@ fn view_from_response(answer: &serde_json::Value) -> BillingView {
     };
     if !matches!(
         account["status"].as_str(),
-        Some("ACCOUNT_STATUS_ACTIVE" | "ACCOUNT_STATUS_PAST_DUE" | "ACCOUNT_STATUS_CANCELLED")
+        Some(
+            "ACCOUNT_STATUS_ACTIVE"
+                | "ACCOUNT_STATUS_PAST_DUE"
+                | "ACCOUNT_STATUS_CANCELLED"
+                | "ACCOUNT_STATUS_INCOMPLETE"
+                | "ACCOUNT_STATUS_PAUSED"
+        )
     ) {
         return BillingView::Unavailable;
     }
@@ -513,6 +624,12 @@ fn view_from_response(answer: &serde_json::Value) -> BillingView {
                 currency: currency.to_owned(),
                 status: status.to_owned(),
                 document_available: invoice["documentAvailable"].as_bool().unwrap_or(false),
+                refunded_amount_cents: json_i64(&invoice["refundedAmountCents"]),
+                refunded_tax_amount_cents: json_i64(&invoice["refundedTaxAmountCents"]),
+                financial_status: invoice["financialStatus"]
+                    .as_str()
+                    .unwrap_or("unknown")
+                    .to_owned(),
             })
         })
         .collect();
@@ -521,6 +638,8 @@ fn view_from_response(answer: &serde_json::Value) -> BillingView {
         pending_plan: account["pendingPlan"].as_str().unwrap_or("").to_owned(),
         past_due: account["status"].as_str() == Some("ACCOUNT_STATUS_PAST_DUE"),
         cancelled: account["status"].as_str() == Some("ACCOUNT_STATUS_CANCELLED"),
+        incomplete: account["status"].as_str() == Some("ACCOUNT_STATUS_INCOMPLETE"),
+        paused: account["status"].as_str() == Some("ACCOUNT_STATUS_PAUSED"),
         complimentary: account["complimentary"].as_bool().unwrap_or(false),
         complimentary_reason: account["complimentaryReason"]
             .as_str()
@@ -549,6 +668,10 @@ fn view_from_response(answer: &serde_json::Value) -> BillingView {
         cancel_at_period_end: account["cancelAtPeriodEnd"].as_bool().unwrap_or(false),
         usage,
         invoices,
+        hosted_entitlement: decode_hosted_entitlement(account),
+        hosted_entitlement_reason: decode_hosted_entitlement_reason(
+            &account["hostedEntitlementReason"],
+        ),
     }))
 }
 
@@ -620,7 +743,190 @@ pub async fn queue_change(
 
 #[cfg(test)]
 mod tests {
-    use super::{BillingView, view_from_response};
+    use super::*;
+
+    #[test]
+    fn authoritative_entitlement_preserves_denial_and_unsigned_limit_boundaries() {
+        assert_eq!(
+            decode_hosted_entitlement(&serde_json::json!({"hostedEntitlement": {}})),
+            Some(HostedEntitlement {
+                enabled: false,
+                max_machines: 0,
+                max_vcpus: 0,
+                max_memory_mib: 0
+            }),
+        );
+        let expected = HostedEntitlement {
+            enabled: true,
+            max_machines: 1,
+            max_vcpus: 2,
+            max_memory_mib: 4096,
+        };
+        for memory in [serde_json::json!(4096), serde_json::json!("4096")] {
+            assert_eq!(
+                decode_hosted_entitlement(&serde_json::json!({
+                    "hostedEntitlement": {"enabled":true,"maxMachines":1,"maxVcpus":2,"maxMemoryMib":memory}
+                })),
+                Some(expected)
+            );
+        }
+        for malformed in [
+            serde_json::json!({"enabled":"true"}),
+            serde_json::json!({"maxMachines":4294967296_u64}),
+            serde_json::json!({"maxVcpus":-1}),
+            serde_json::json!({"maxMemoryMib":"18446744073709551616"}),
+            serde_json::json!({"maxMemoryMib":1.5}),
+        ] {
+            assert_eq!(
+                decode_hosted_entitlement(&serde_json::json!({
+                    "hostedEntitlement": malformed,
+                })),
+                None
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn remote_absence_and_outage_never_become_the_unconfigured_allowance() {
+        assert_eq!(
+            Billing::Free
+                .hosted_entitlement_now(Uuid::now_v7())
+                .await
+                .unwrap(),
+            None
+        );
+        for (status, answer, expected) in [
+            (
+                axum::http::StatusCode::OK,
+                serde_json::json!({"account":{
+                    "plan":"Free", "status":"ACCOUNT_STATUS_ACTIVE",
+                    "hostedEntitlementReason":"HOSTED_ENTITLEMENT_REASON_GRANTED"
+                }}),
+                None,
+            ),
+            (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                serde_json::json!({}),
+                None,
+            ),
+            (
+                axum::http::StatusCode::OK,
+                serde_json::json!({"account":{
+                    "plan":"Free", "status":"ACCOUNT_STATUS_ACTIVE",
+                    "hostedEntitlement":{},
+                    "hostedEntitlementReason":"HOSTED_ENTITLEMENT_REASON_GRANTED"
+                }}),
+                Some(HostedEntitlement {
+                    enabled: false,
+                    max_machines: 0,
+                    max_vcpus: 0,
+                    max_memory_mib: 0,
+                }),
+            ),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                axum::serve(
+                    listener,
+                    axum::Router::new().route(
+                        "/grund.billing.v1.BillingService/GetAccount",
+                        axum::routing::post(move || async move { (status, axum::Json(answer)) }),
+                    ),
+                )
+                .await
+                .unwrap();
+            });
+            let billing = Billing::new(&BillingArgs {
+                billing_url: Some(url),
+                billing_token: Some("local-test-token".into()),
+                ..Default::default()
+            })
+            .unwrap();
+            let organisation = Uuid::now_v7();
+            if status == axum::http::StatusCode::OK {
+                let BillingView::Account(display) = billing.account_for_page(organisation).await
+                else {
+                    panic!("display-only reason was not available");
+                };
+                assert_eq!(
+                    display.hosted_entitlement_reason,
+                    HostedEntitlementReason::Granted
+                );
+            }
+            let actual = billing.hosted_entitlement_now(organisation).await;
+            match expected {
+                Some(expected) => assert_eq!(actual.unwrap(), Some(expected)),
+                None => assert!(matches!(actual, Err(BillingError::Unavailable))),
+            }
+            server.abort();
+        }
+    }
+
+    #[test]
+    fn an_old_refresh_cannot_replace_a_newer_account_observation() {
+        let billing = Billing::new(&BillingArgs {
+            billing_url: Some("http://127.0.0.1:1".into()),
+            billing_token: Some("local-test-token".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        let Billing::Remote(remote) = &billing else {
+            unreachable!()
+        };
+        let organisation = Uuid::now_v7();
+        let now = Instant::now();
+        let latest = view_from_response(&serde_json::json!({
+            "account": {"plan":"Business", "status":"ACCOUNT_STATUS_ACTIVE"}
+        }));
+        remote.accounts.lock().insert(
+            organisation,
+            CachedAccount {
+                view: Some(latest.clone()),
+                fetched_at: Some(now),
+                refresh_after: now + ACCOUNT_REFRESH,
+                refreshing: Some(2),
+            },
+        );
+        remote.finish_account_refresh(
+            organisation,
+            1,
+            Ok(view_from_response(&serde_json::json!({
+                "account": {"plan":"Homelab", "status":"ACCOUNT_STATUS_ACTIVE"}
+            }))),
+        );
+        assert_eq!(billing.account(organisation), latest);
+    }
+
+    #[test]
+    fn a_refresh_completed_after_invalidation_does_not_recreate_or_panic() {
+        let billing = Billing::new(&BillingArgs {
+            billing_url: Some("http://127.0.0.1:1".into()),
+            billing_token: Some("local-test-token".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        let Billing::Remote(remote) = &billing else {
+            unreachable!()
+        };
+        let organisation = Uuid::now_v7();
+        billing.invalidate_account(organisation);
+        remote.finish_account_refresh(organisation, 1, Ok(BillingView::Free));
+        assert!(!remote.accounts.lock().contains_key(&organisation));
+    }
+
+    #[test]
+    fn incomplete_and_paused_payments_remain_observable_without_claiming_active() {
+        for status in ["ACCOUNT_STATUS_INCOMPLETE", "ACCOUNT_STATUS_PAUSED"] {
+            let response = serde_json::json!({
+                "account": {"plan": "Pro", "status": status}
+            });
+            assert!(
+                matches!(view_from_response(&response), BillingView::Account(_)),
+                "{status} must remain visible so owners can repair payment"
+            );
+        }
+    }
 
     #[test]
     fn account_decoder_preserves_observed_usage_and_omits_missing_history() {

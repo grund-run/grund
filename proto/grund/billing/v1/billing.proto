@@ -49,6 +49,15 @@ service BillingService {
     option idempotency_level = IDEMPOTENT;
   }
   rpc SetComplimentary(SetComplimentaryRequest) returns (SetComplimentaryResponse);
+  // Operator-only diagnostics. The trusted caller authorizes operator access.
+  rpc ListProviderCommands(ListProviderCommandsRequest) returns (ListProviderCommandsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // Operator attests no provider effect, or that a legacy checkout is closed
+  // and unpaid. Never repeats a provider mutation or treats absence as proof.
+  rpc ResolveProviderCommand(ResolveProviderCommandRequest) returns (ResolveProviderCommandResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
 }
 
 message GetAccountRequest {
@@ -90,6 +99,30 @@ message Account {
   UsagePeriod usage = 18;
   // At most 20 recent observed orders, newest first; no provider secrets.
   repeated BillingInvoice invoices = 19;
+  // Presence is authoritative, including disabled or zero limits. Missing
+  // authority or a failed billing read never grants an interim allowance.
+  HostedEntitlement hosted_entitlement = 20;
+  // Display-only explanation. Never grants allocation or replaces fresh
+  // hosted_entitlement authority, including when this reason is GRANTED.
+  HostedEntitlementReason hosted_entitlement_reason = 21;
+}
+
+// Absolute organisation-wide ceilings, including reserved/provisioning hosted
+// machines. A denial blocks new allocation, never removes existing machines.
+message HostedEntitlement {
+  bool enabled = 1;
+  uint32 max_machines = 2;
+  uint32 max_vcpus = 3;
+  uint64 max_memory_mib = 4;
+}
+
+enum HostedEntitlementReason {
+  HOSTED_ENTITLEMENT_REASON_UNSPECIFIED = 0;
+  HOSTED_ENTITLEMENT_REASON_GRANTED = 1;
+  HOSTED_ENTITLEMENT_REASON_ORGANISATION_NOT_SYNCED = 2;
+  HOSTED_ENTITLEMENT_REASON_ALLOWANCE_DISABLED = 3;
+  HOSTED_ENTITLEMENT_REASON_NO_PLAN = 4;
+  HOSTED_ENTITLEMENT_REASON_BILLING_LIVE_NO_MAPPING = 5;
 }
 
 message UsagePeriod {
@@ -118,6 +151,13 @@ message BillingInvoice {
   // Only true after Polar reports an invoice document was generated.
   bool document_available = 6;
   google.protobuf.Timestamp observed_at = 7;
+  // Provider refunded_amount observation, absent when unknown. Refunded tax
+  // is reported separately; this field alone is not a gross-refund guarantee.
+  optional int64 refunded_amount_cents = 8;
+  // unknown, pending, paid, partially_refunded, refunded or void. Refunds
+  // do not independently decide entitlement or remove running machines.
+  string financial_status = 9;
+  optional int64 refunded_tax_amount_cents = 10;
 }
 
 message GetInvoiceLinkRequest {
@@ -137,6 +177,9 @@ enum AccountStatus {
   // A payment failed; owners should update payment details.
   ACCOUNT_STATUS_PAST_DUE = 2;
   ACCOUNT_STATUS_CANCELLED = 3;
+  // Payment or checkout has not completed; not proof of a paid entitlement.
+  ACCOUNT_STATUS_INCOMPLETE = 4;
+  ACCOUNT_STATUS_PAUSED = 5;
 }
 
 message RecordOrganisationRequest {
@@ -259,3 +302,38 @@ message SetComplimentaryRequest {
 message SetComplimentaryResponse {
   Account account = 1;
 }
+
+message ProviderCommand {
+  string command_id = 1;
+  string method = 2;
+  google.protobuf.Timestamp created_at = 3;
+}
+
+message ListProviderCommandsRequest {
+  string organisation_id = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListProviderCommandsResponse {
+  repeated ProviderCommand commands = 1;
+  string next_page_token = 2;
+}
+
+enum ProviderCommandOutcome {
+  PROVIDER_COMMAND_OUTCOME_UNSPECIFIED = 0;
+  PROVIDER_COMMAND_OUTCOME_NOT_APPLIED = 1;
+  // A created legacy checkout is confirmed closed/unpaid, with no current
+  // subscription. This is not a claim that session creation never happened.
+  PROVIDER_COMMAND_OUTCOME_CHECKOUT_CLOSED = 2;
+}
+
+message ResolveProviderCommandRequest {
+  string organisation_id = 1;
+  string command_id = 2;
+  string actor_id = 3;
+  string reason = 4;
+  ProviderCommandOutcome outcome = 5;
+}
+
+message ResolveProviderCommandResponse {}

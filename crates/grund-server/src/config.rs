@@ -466,6 +466,11 @@ pub struct BillingArgs {
     /// Permit test checkout and plan changes against sandbox outside production.
     #[arg(long = "billing-sandbox-checkout", env = "GRUND_BILLING_SANDBOX_CHECKOUT", default_value_t = false, action = clap::ArgAction::Set)]
     pub sandbox_checkout: bool,
+
+    /// Permit new live checkout and plan changes. Turning this off preserves
+    /// payment management and existing provider obligations.
+    #[arg(long = "billing-live-checkout", env = "GRUND_BILLING_LIVE_CHECKOUT", default_value_t = false, action = clap::ArgAction::Set)]
+    pub live_checkout: bool,
 }
 
 /// The provider environment behind the billing service.
@@ -489,6 +494,12 @@ impl BillingArgs {
 
     /// Whether customer-initiated checkout or plan changes may reach billing.
     pub fn checkout_allowed(&self) -> bool {
+        matches!(self.mode(), BillingMode::Live) && self.live_checkout
+            || matches!(self.mode(), BillingMode::Sandbox) && self.sandbox_checkout
+    }
+
+    /// Existing live customers can repair payment even when new sales stop.
+    pub fn payment_management_allowed(&self) -> bool {
         matches!(self.mode(), BillingMode::Live)
             || matches!(self.mode(), BillingMode::Sandbox) && self.sandbox_checkout
     }
@@ -989,6 +1000,10 @@ impl BillingArgs {
         anyhow::ensure!(
             !self.sandbox_checkout || self.mode() == BillingMode::Sandbox,
             "GRUND_BILLING_SANDBOX_CHECKOUT requires GRUND_BILLING_MODE=sandbox"
+        );
+        anyhow::ensure!(
+            !self.live_checkout || self.mode() == BillingMode::Live,
+            "GRUND_BILLING_LIVE_CHECKOUT requires GRUND_BILLING_MODE=live"
         );
         anyhow::ensure!(
             self.billing_redirect_origins.is_none() || self.enabled(),
@@ -1516,6 +1531,37 @@ mod tests {
     }
 
     #[test]
+    fn live_billing_can_keep_obligations_connected_without_accepting_new_sales() {
+        let config = parse(&[
+            "--billing-url",
+            "http://billing:8080",
+            "--billing-token",
+            "0123456789abcdef0123456789abcdef",
+            "--billing-mode",
+            "live",
+        ])
+        .unwrap();
+        assert!(config.billing.enabled());
+        assert_eq!(config.billing.mode(), BillingMode::Live);
+        assert!(!config.billing.checkout_allowed());
+        assert!(config.billing.payment_management_allowed());
+        let enabled = parse(&[
+            "--billing-url",
+            "http://billing:8080",
+            "--billing-token",
+            "0123456789abcdef0123456789abcdef",
+            "--billing-mode",
+            "live",
+            "--billing-live-checkout",
+            "true",
+        ])
+        .unwrap();
+        assert!(enabled.billing.checkout_allowed());
+        assert!(enabled.billing.payment_management_allowed());
+        assert!(parse(&["--billing-live-checkout", "true"]).is_err());
+    }
+
+    #[test]
     fn sandbox_checkout_is_opt_in_and_never_allowed_on_the_production_origin() {
         let billing = [
             "--billing-url",
@@ -1549,8 +1595,6 @@ mod tests {
             "--billing-mode",
         ];
         assert!(parse(&[&args[..], &["off"]].concat()).is_err());
-        let live = parse(&[&args[..], &["live"]].concat()).unwrap();
-        assert!(live.billing.checkout_allowed());
         assert!(parse(&["--billing-mode", "live"]).is_err());
         for sandbox_origin in [
             "https://sandbox.polar.sh",

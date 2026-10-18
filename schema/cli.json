@@ -3399,6 +3399,19 @@
           "value_name": "SANDBOX_CHECKOUT"
         },
         {
+          "default": "false",
+          "description": "Permit new live checkout and plan changes. Turning this off preserves payment management and existing provider obligations",
+          "enum": [
+            "true",
+            "false"
+          ],
+          "env": "GRUND_BILLING_LIVE_CHECKOUT",
+          "flag": "--billing-live-checkout",
+          "name": "live_checkout",
+          "type": "string",
+          "value_name": "LIVE_CHECKOUT"
+        },
+        {
           "description": "The capacity provider, e.g. http://fleet:8080, reached from grund's servers only. grund calls `grund.capacity.v1.CapacityService` on it. Set with GRUND_CAPACITY_TOKEN",
           "env": "GRUND_CAPACITY_URL",
           "flag": "--capacity-url",
@@ -4386,6 +4399,19 @@
           "value_name": "SANDBOX_CHECKOUT"
         },
         {
+          "default": "false",
+          "description": "Permit new live checkout and plan changes. Turning this off preserves payment management and existing provider obligations",
+          "enum": [
+            "true",
+            "false"
+          ],
+          "env": "GRUND_BILLING_LIVE_CHECKOUT",
+          "flag": "--billing-live-checkout",
+          "name": "live_checkout",
+          "type": "string",
+          "value_name": "LIVE_CHECKOUT"
+        },
+        {
           "description": "The capacity provider, e.g. http://fleet:8080, reached from grund's servers only. grund calls `grund.capacity.v1.CapacityService` on it. Set with GRUND_CAPACITY_TOKEN",
           "env": "GRUND_CAPACITY_URL",
           "flag": "--capacity-url",
@@ -5201,6 +5227,19 @@
           "name": "sandbox_checkout",
           "type": "string",
           "value_name": "SANDBOX_CHECKOUT"
+        },
+        {
+          "default": "false",
+          "description": "Permit new live checkout and plan changes. Turning this off preserves payment management and existing provider obligations",
+          "enum": [
+            "true",
+            "false"
+          ],
+          "env": "GRUND_BILLING_LIVE_CHECKOUT",
+          "flag": "--billing-live-checkout",
+          "name": "live_checkout",
+          "type": "string",
+          "value_name": "LIVE_CHECKOUT"
         },
         {
           "description": "The capacity provider, e.g. http://fleet:8080, reached from grund's servers only. grund calls `grund.capacity.v1.CapacityService` on it. Set with GRUND_CAPACITY_TOKEN",
