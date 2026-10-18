@@ -9,6 +9,8 @@ import sys
 ROOT = Path(__file__).resolve().parent.parent
 VERSION = "v0.0.0-alpha.999999"
 BRANCH = "ci/ciperf-shared-tag"
+# Cargo's tools/* workspace glob treats a source-tree __pycache__ as a crate.
+sys.dont_write_bytecode = True
 
 spec = importlib.util.spec_from_file_location("release", ROOT / "tools/release.py")
 release = importlib.util.module_from_spec(spec)
