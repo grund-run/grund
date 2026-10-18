@@ -111,7 +111,7 @@ props crate::web::pages::StyleGuidePage { viewer, csrf, swatches, sprite_icons, 
         </Form>
       </Panel>
     </Specimen>
-    <Specimen title="Field states and widths" code={r#"<Field name="name" label="Name" hint={hint} width={Some("md")} /><Field name="port" label="Port" kind="number" required={false} width={Some("sm")} /><Field name="name" label="Name" error={error} /><Field name="email" label="Email" value={email} disabled={true} />"#} note="required=false marks the label Optional. error sets aria-invalid and points aria-describedby at the message; disabled shows a known value that is not sent. width: sm (11 rem) for a number, md (26 rem) for a name.">
+    <Specimen title="Field states and widths" code={r#"<Field name="name" label="Name" hint={hint} width={Some("md")} /><Field name="port" label="Port" kind="number" required={false} width={Some("sm")} /><Field name="name" label="Name" error={error} /><Field name="email" label="Email" value={email} disabled={true} />"#} note="required=false marks the label Optional. error sets aria-invalid and points aria-describedby at the message; disabled shows a known value that is not sent. width: sm (11 rem) for a number, md (26 rem) for a name. When a name repeats elsewhere on the page, set a unique id; it also identifies the label and hint or error.">
       <Column>
         <Field name="sg-rest" label="Name" hint="Letters a–z, digits and single hyphens." required width={Some("md")} />
         <Field name="sg-port" label="Port" kind="number" value="8080" hint="Found from the image when empty." width={Some("sm")} />

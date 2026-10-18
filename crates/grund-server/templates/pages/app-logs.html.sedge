@@ -4,7 +4,7 @@ props crate::web::app_telemetry::LogsPage { action, organisation, name, query, l
 <Panel id="log-filters" title="Logs">
   <Banner text={error} tone="error" />
   <Form action={action} method={Some("get")}>
-    <Field name="search" label="Search output" kind="search" value={&query.search} hint="Literal, case-insensitive text." />
+    <Field name="search" id={Some("app-log-search")} label="Search output" kind="search" value={&query.search} hint="Literal, case-insensitive text." />
     <Grid>
       <Field name="instance" label="Instance" value={&query.instance} placeholder={Some("Full instance identifier")} />
       <Field name="release" label="Release" kind="number" value={&query.release} min={Some("1")} step={Some("1")} />
