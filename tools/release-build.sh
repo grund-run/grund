@@ -18,7 +18,7 @@ if [ "$mode" = cache-arm64 ]; then
     [ -z "${CI_COMMIT_TAG:-}" ] && [ "$(git rev-parse HEAD)" = "$GRUND_REVISION" ] \
         || { echo "cache production requires an untagged matching checkout" >&2; exit 1; }
 else
-    python3 tools/release.py prepare
+    python3 tools/benchmark-shared-tag.py prepare
 fi
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$root/scratch/tag-release/target-$mode}"
 export CARGO_BUILD_JOBS=4 CARGO_INCREMENTAL=0
@@ -57,5 +57,5 @@ if [ "$mode" = cache-arm64 ]; then
 else
     RUSTFLAGS="-C linker=$linker" cargo zigbuild --locked --release -p grund --bin grund --target aarch64-unknown-linux-musl
     cp "$CARGO_TARGET_DIR/aarch64-unknown-linux-musl/release/grund" scratch/tag-release/dist/grund-linux-arm64
-    python3 tools/release.py verify-arm64
+    python3 tools/benchmark-shared-tag.py verify-arm64
 fi
