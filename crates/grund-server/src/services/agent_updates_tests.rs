@@ -164,17 +164,17 @@ async fn state(pool: sqlx::PgPool, provider: Option<Arc<Provider>>) -> State {
     }
 }
 
-async fn offered(state: &State, managed: bool) -> (MachineCaller, Uuid, Uuid) {
+async fn registered(state: &State, managed: bool) -> (MachineCaller, Uuid) {
     use grund_domain::machine::{MachineCommand, MachineFacts, MachineKey, Pool};
     let now = Utc::now();
     let machine_id = Uuid::now_v7();
     let boot_id = Uuid::now_v7();
-    let attempt_id = Uuid::now_v7();
+    let key = [if managed { 7 } else { 8 }; 32];
     let caller = MachineCaller {
         machine_id,
         organisation_id: None,
         endpoint_key_prefix: [b'0'; 12],
-        registration_key: "07".repeat(32),
+        registration_key: hex::encode(key),
     };
     let mut work = Work::begin(&state.events, Uuid::now_v7(), "test")
         .await
@@ -183,8 +183,13 @@ async fn offered(state: &State, managed: bool) -> (MachineCaller, Uuid, Uuid) {
         machine_id,
         MachineCommand::Register {
             pool: Pool::Management,
-            name: grund_config::names::MachineName::parse("test-machine").unwrap(),
-            key: MachineKey::from_bytes(&[7; 32]).unwrap(),
+            name: grund_config::names::MachineName::parse(if managed {
+                "managed-machine"
+            } else {
+                "own-machine"
+            })
+            .unwrap(),
+            key: MachineKey::from_bytes(&key).unwrap(),
             token_id: Uuid::now_v7(),
             minted_by: "account:test".into(),
             facts: MachineFacts::default(),
@@ -213,6 +218,17 @@ async fn offered(state: &State, managed: bool) -> (MachineCaller, Uuid, Uuid) {
     work.agent_updates(Command::Initialize { at: now })
         .await
         .unwrap();
+    work.commit().await.unwrap();
+    (caller, boot_id)
+}
+
+async fn offered(state: &State, managed: bool) -> (MachineCaller, Uuid, Uuid) {
+    let (caller, boot_id) = registered(state, managed).await;
+    let attempt_id = Uuid::now_v7();
+    let now = Utc::now();
+    let mut work = Work::begin(&state.events, Uuid::now_v7(), "test")
+        .await
+        .unwrap();
     work.agent_updates(Command::Select {
         target: PublicBuild::main(&"b".repeat(40)).unwrap(),
         at: now,
@@ -221,7 +237,7 @@ async fn offered(state: &State, managed: bool) -> (MachineCaller, Uuid, Uuid) {
     .unwrap();
     work.agent_updates(Command::Offer {
         attempt_id,
-        machine_id,
+        machine_id: caller.machine_id,
         registration_key: caller.registration_key.clone(),
         generation: 1,
         previous_revision: "a".repeat(40),
@@ -240,6 +256,52 @@ async fn rollout(state: &State) -> AgentUpdates {
         .unwrap()
         .unwrap()
         .0
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_machine_without_following_cannot_reserve_or_steal_the_update_slot(pool: sqlx::PgPool) {
+    let state = state(pool, None).await;
+    let (managed, boot) = registered(&state, true).await;
+    assert!(
+        state
+            .agent_updates()
+            .poll(&managed, false, "x86_64", &"a".repeat(40), boot)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        !state
+            .agent_updates()
+            .begin(&managed, Uuid::now_v7(), 0, boot)
+            .await
+            .unwrap()
+    );
+    let idle = rollout(&state).await;
+    assert!(idle.active.is_none());
+    assert_eq!(idle.attempt_sequence, 0);
+    assert!(idle.pending_provider_release.is_none());
+
+    let (following, attempt, following_boot) = offered(&state, false).await;
+    assert!(
+        state
+            .agent_updates()
+            .begin(&following, attempt, 1, following_boot)
+            .await
+            .unwrap()
+    );
+    let rejected = state
+        .agent_updates()
+        .begin(&managed, attempt, 1, boot)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        rejected.downcast_ref::<grund_domain::agent_updates::Error>(),
+        Some(&grund_domain::agent_updates::Error::StaleFence)
+    );
+    let authorized = rollout(&state).await.active.unwrap();
+    assert_eq!(authorized.machine_id, following.machine_id);
+    assert_eq!(authorized.phase, Phase::Authorized);
 }
 
 #[sqlx::test(migrations = false)]

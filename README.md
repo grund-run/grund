@@ -277,6 +277,10 @@ retained `grund-agent-updater.service`. Existing agents need one installer
 rerun from a feature-capable instance; response fields alone cannot give a
 legacy agent safe rollback.
 
+This updater requires systemd. Hosted machines are updated by their hosting
+provider, not by this updater; automatic hosted guest-image rollout is not
+available yet.
+
 Following replaces only `/usr/local/lib/grund/agent/grund`, not the CLI or
 server. It targets the instance's exact public build, not the newest release.
 The updater independently verifies artifacts from grund's fixed public registry;
