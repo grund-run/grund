@@ -215,6 +215,7 @@ async fn wait_ready(runtime: &Containerd, id: &str, probe: &Probe) -> anyhow::Re
 
 fn state_line(state: &TaskState) -> String {
     match state {
+        TaskState::Unknown => "unknown".into(),
         TaskState::Created => "created".into(),
         TaskState::Running { pid } => format!("running pid={pid}"),
         TaskState::Exited {

@@ -11,15 +11,16 @@
 //! - **Missing**: pull its image by digest (in the background, so one slow
 //!   pull holds up nothing else), fetch its secrets, create, start.
 //! - **A different spec** under the same id: remove, then create again.
-//!   While the private network is configured but not up yet, for the first
-//!   [`NETWORK_GRACE`] after the agent starts, a running container is kept:
-//!   its spec includes the network, which the plan cannot see yet, and
-//!   recreating it would bounce every copy at each agent restart.
+//!   A running container keeps its last applied resolver in the comparison
+//!   while the private network is unavailable, so losing network configuration
+//!   cannot turn an unchanged container into a different spec.
 //! - **Created, with no process**: start one. A reboot leaves containerd the
 //!   container and nothing else; if its process cannot start (the files it
 //!   was created with are gone, or the entrypoint is), the container is
 //!   removed and created again from the document, on the exits' back-off,
 //!   reported starting after the first failure and failed from the second.
+//! - **Unknown process state**: report uncertainty and leave it alone until
+//!   the runtime can observe its process again.
 //! - **Exited**: restart at once, then after 10 s, 20 s, 40 s, … capped at
 //!   5 minutes, and forget the back-off after 10 minutes of running
 //!   ([`backoff`], the kubelet's schedule except for the first restart).
@@ -89,12 +90,6 @@ pub const BACKOFF_RESET: Duration = Duration::from_secs(600);
 
 /// The longest a restart waits.
 pub const BACKOFF_CAP: Duration = Duration::from_secs(300);
-
-/// How long after the agent starts a running container is kept while the
-/// private network is configured but not up yet. Past it, a spec that
-/// differs is recreated with or without the network, so a mesh that never
-/// comes up cannot hold a real change back forever.
-pub const NETWORK_GRACE: Duration = Duration::from_secs(60);
 
 /// How long a failed pull or create waits before it is tried again.
 pub const RETRY_FAILED: Duration = Duration::from_secs(10);
@@ -235,15 +230,15 @@ fn start_failed(replica: &Replica, tracked: &Tracked) -> ReplicaObserved {
     report(replica, state, &tracked.start_failure)
 }
 
-fn container_hash(replica: &Replica, net: Option<&Net>) -> String {
+fn container_hash(replica: &Replica, resolver: Option<Ipv6Addr>) -> String {
     let base = spec_hash(replica);
-    match net {
+    match resolver {
         None => base,
-        Some(net) => {
+        Some(resolver) => {
             let mut h = Sha256::new();
             h.update(base.as_bytes());
             h.update(b"\nnetwork-v1 ");
-            h.update(net.resolver.to_string().as_bytes());
+            h.update(resolver.to_string().as_bytes());
             hex::encode(h.finalize())
         }
     }
@@ -371,7 +366,7 @@ fn spec(
                 .unwrap_or(30),
         )),
         labels,
-        spec_hash: container_hash(replica, net),
+        spec_hash: container_hash(replica, net.map(|n| n.resolver)),
         resolv_conf: net.map(|n| format!("nameserver {}\n", n.resolver)),
         volumes,
         volume_roots,
@@ -397,7 +392,6 @@ pub struct Apps<C> {
     attached: HashMap<String, Ipv6Addr>,
     netns_of: HashMap<String, PathBuf>,
     forwards: HashMap<String, Vec<crate::forward::Forward>>,
-    began: Instant,
 }
 
 impl<C: ContainerRuntime + 'static> Apps<C> {
@@ -430,7 +424,6 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
             attached: HashMap::new(),
             netns_of: HashMap::new(),
             forwards: HashMap::new(),
-            began: Instant::now(),
         }
     }
 
@@ -725,6 +718,10 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
 
     /// One pass: observe, plan, act, check, report.
     pub async fn pass(&mut self) -> anyhow::Result<()> {
+        self.pass_with_network(self.net(), Instant::now()).await
+    }
+
+    async fn pass_with_network(&mut self, net: Option<Net>, now: Instant) -> anyhow::Result<()> {
         self.stops.retain(|_, h| !h.is_finished());
         let desired = self.shared.desired.lock().expect("shared lock").clone();
         let wanted: Vec<Replica> = desired
@@ -790,7 +787,6 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
         } else {
             Vec::new()
         };
-        let net = self.net();
         let wanted_ids: HashSet<&str> = wanted.iter().map(|r| r.replica_id.as_str()).collect();
         for container in &containers {
             if !wanted_ids.contains(container.id.as_str()) {
@@ -815,7 +811,7 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
         {
             tracing::warn!(error = %format!("{error:#}"), "could not keep the secrets cache");
         }
-        let now = Instant::now();
+        let mut runtime_ready = true;
         let mut probes = Vec::new();
         for replica in &wanted {
             let id = replica.replica_id.clone();
@@ -976,13 +972,27 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                 );
                 continue;
             }
-            let hash = container_hash(replica, net.as_ref());
-            let network_coming = self.network.is_some()
-                && net.is_none()
-                && now.duration_since(self.began) < NETWORK_GRACE;
+            if existing.is_some_and(|c| c.state == TaskState::Unknown) {
+                runtime_ready = false;
+                self.tracked.entry(id.clone()).or_default().readiness = Readiness::default();
+                reports.insert(
+                    id.clone(),
+                    report(
+                        replica,
+                        ReplicaObservedState::REPLICA_OBSERVED_STATE_STARTING,
+                        "runtime task state unavailable; waiting to observe its process",
+                    ),
+                );
+                continue;
+            }
+            let resolver = net.as_ref().map(|n| n.resolver).or_else(|| {
+                existing
+                    .filter(|c| matches!(c.state, TaskState::Running { .. }))
+                    .and_then(|c| c.network_resolver)
+            });
+            let hash = container_hash(replica, resolver);
             if let Some(container) = existing
                 && container.spec_hash != hash
-                && (!network_coming || !replica.volumes.is_empty())
             {
                 self.stop(container);
                 reports.insert(
@@ -1002,6 +1012,9 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                 tracing::warn!(replica = %id, %reason, "could not give a running replica its address again");
             }
             match existing.map(|c| &c.state) {
+                Some(TaskState::Unknown) => {
+                    unreachable!("unknown task state is handled before spec reconciliation")
+                }
                 None => {
                     let waiting = self
                         .tracked
@@ -1031,26 +1044,39 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                             ReplicaObservedState::REPLICA_OBSERVED_STATE_STARTING,
                             "",
                         ),
-                        Err(error) => {
-                            let tracked = self.tracked.entry(id.clone()).or_default();
-                            tracked.start_failures += 1;
-                            let wait = backoff(tracked.start_failures);
-                            tracked.recreate_at = Some(now + wait);
-                            tracked.start_failure =
-                                format!("its process could not start: {error:#}");
-                            tracing::warn!(
-                                replica = %id,
-                                error = %format!("{error:#}"),
-                                failures = tracked.start_failures,
-                                wait_s = wait.as_secs(),
-                                "could not start a replica's process in its container; creating the container again after its back-off"
-                            );
-                            let state = start_failed(replica, tracked);
-                            if let Some(container) = existing {
-                                self.stop(container);
+                        Err(error) => match self.runtime.remove_stopped(&id).await {
+                            Ok(true) => {
+                                self.detach(&id);
+                                let tracked = self.tracked.entry(id.clone()).or_default();
+                                tracked.start_failures += 1;
+                                let wait = backoff(tracked.start_failures);
+                                tracked.recreate_at = Some(now + wait);
+                                tracked.start_failure =
+                                    format!("its process could not start: {error:#}");
+                                tracing::warn!(
+                                    replica = %id,
+                                    error = %format!("{error:#}"),
+                                    failures = tracked.start_failures,
+                                    wait_s = wait.as_secs(),
+                                    "could not start a replica's process in its container; creating the container again after its back-off"
+                                );
+                                start_failed(replica, tracked)
                             }
-                            state
-                        }
+                            outcome => {
+                                runtime_ready = false;
+                                tracing::warn!(
+                                    replica = %id,
+                                    error = %format!("{error:#}"),
+                                    cleanup = ?outcome,
+                                    "could not confirm process recovery; retaining its container"
+                                );
+                                report(
+                                    replica,
+                                    ReplicaObservedState::REPLICA_OBSERVED_STATE_STARTING,
+                                    "runtime process recovery is uncertain; waiting to observe it",
+                                )
+                            }
+                        },
                     };
                     reports.insert(id.clone(), state);
                 }
@@ -1270,7 +1296,7 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
             changed
         });
         self.release_unused_blocks(desired.as_ref(), &mounted);
-        self.publish(reports.into_values().collect(), refusals, true);
+        self.publish(reports.into_values().collect(), refusals, runtime_ready);
         self.erase_deleted(desired.as_ref(), &mounted);
         Ok(())
     }
@@ -1513,6 +1539,199 @@ mod tests {
     use super::*;
     use crate::simulated::SimulatedContainers;
 
+    #[derive(Default)]
+    struct RecoveryRuntime(tokio::sync::Mutex<RecoveryState>);
+
+    #[derive(Default)]
+    struct RecoveryState {
+        container: Option<ContainerStatus>,
+        next_pid: u32,
+        creates: u32,
+        restarts: u32,
+        removes: u32,
+        recovery_error_after_created_list: bool,
+    }
+
+    impl ContainerRuntime for RecoveryRuntime {
+        async fn capabilities(&self) -> crate::runtime::AppsCapabilities {
+            crate::runtime::AppsCapabilities {
+                apps: true,
+                ..Default::default()
+            }
+        }
+
+        async fn prepare(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn has_image(&self, _: &ImageRef) -> anyhow::Result<bool> {
+            Ok(true)
+        }
+
+        async fn pull(&self, _: &ImageRef, _: Option<&str>) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn create(&self, spec: &ContainerSpec) -> anyhow::Result<()> {
+            let mut state = self.0.lock().await;
+            anyhow::ensure!(state.container.is_none(), "the container already exists");
+            state.next_pid += 1;
+            state.creates += 1;
+            state.container = Some(ContainerStatus {
+                id: spec.id.clone(),
+                spec_hash: spec.spec_hash.clone(),
+                network_resolver: spec
+                    .resolv_conf
+                    .as_deref()
+                    .and_then(|conf| conf.strip_prefix("nameserver ")?.trim().parse().ok()),
+                state: TaskState::Running {
+                    pid: state.next_pid,
+                },
+                stop_signal: spec.stop_signal.clone(),
+                stop_grace: spec.stop_grace,
+            });
+            Ok(())
+        }
+
+        async fn restart(&self, id: &str) -> anyhow::Result<()> {
+            let mut state = self.0.lock().await;
+            anyhow::ensure!(
+                state.container.as_ref().is_some_and(|c| c.id == id),
+                "the container does not exist"
+            );
+            if state.recovery_error_after_created_list {
+                state.recovery_error_after_created_list = false;
+                anyhow::bail!("runtime task inspection unavailable");
+            }
+            state.next_pid += 1;
+            state.restarts += 1;
+            let pid = state.next_pid;
+            state.container.as_mut().unwrap().state = TaskState::Running { pid };
+            Ok(())
+        }
+
+        async fn remove(&self, id: &str, _: &str, _: Duration) -> anyhow::Result<()> {
+            let mut state = self.0.lock().await;
+            if state.container.as_ref().is_some_and(|c| c.id == id) {
+                state.removes += 1;
+                state.container = None;
+            }
+            Ok(())
+        }
+
+        async fn remove_stopped(&self, id: &str) -> anyhow::Result<bool> {
+            let mut state = self.0.lock().await;
+            if state.container.as_ref().is_some_and(|container| {
+                container.id == id
+                    && matches!(
+                        container.state,
+                        TaskState::Running { .. } | TaskState::Unknown
+                    )
+            }) {
+                return Ok(false);
+            }
+            if state
+                .container
+                .as_ref()
+                .is_some_and(|container| container.id == id)
+            {
+                state.removes += 1;
+                state.container = None;
+            }
+            Ok(true)
+        }
+
+        async fn list(&self) -> anyhow::Result<Vec<ContainerStatus>> {
+            let state = self.0.lock().await;
+            let mut containers: Vec<_> = state.container.iter().cloned().collect();
+            if state.recovery_error_after_created_list
+                && let Some(container) = containers.first_mut()
+            {
+                container.state = TaskState::Created;
+            }
+            Ok(containers)
+        }
+
+        async fn probe(&self, _: &str, _: &Probe, _: Duration) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn recovery_errors_never_remove_a_task_that_started_after_observation() {
+        let (mut apps, shared, dir) = recovery_harness("recovery-error").await;
+        let before = apps.runtime.list().await.unwrap().remove(0);
+        apps.runtime
+            .0
+            .lock()
+            .await
+            .recovery_error_after_created_list = true;
+        let began = Instant::now();
+        apps.pass_with_network(Some(network()), began)
+            .await
+            .unwrap();
+        for (_, task) in apps.stops.drain() {
+            task.await.unwrap();
+        }
+        assert_eq!(
+            apps.runtime.list().await.unwrap().as_slice(),
+            std::slice::from_ref(&before)
+        );
+        assert_eq!(
+            state_of(&shared, "r1").0,
+            Some(ReplicaObservedState::REPLICA_OBSERVED_STATE_STARTING)
+        );
+        apps.pass_with_network(Some(network()), began + Duration::from_secs(1))
+            .await
+            .unwrap();
+        let after = apps.runtime.list().await.unwrap().remove(0);
+        assert_eq!(pid(&after), pid(&before));
+        assert!(state_of(&shared, "r1").1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn network() -> Net {
+        Net {
+            mesh: Mesh::new(
+                iroh::SecretKey::from_bytes(&[7; 32]).public(),
+                grund_net::mesh::MeshConfig {
+                    tun_name: "grund-test".into(),
+                    relays: Vec::new(),
+                },
+            ),
+            prefix: "fd12:3456:789a::".parse().unwrap(),
+            slot: 1,
+            resolver: "fd12:3456:789a:1::53".parse().unwrap(),
+        }
+    }
+
+    async fn recovery_harness(name: &str) -> (Apps<RecoveryRuntime>, Arc<Shared>, PathBuf) {
+        let (_, shared, dir) = harness(name);
+        let runtime = Arc::new(RecoveryRuntime::default());
+        let replica = replica("r1", &[]);
+        runtime
+            .create(&spec(&replica, &[], Some(&network()), Vec::new(), &[]).unwrap())
+            .await
+            .unwrap();
+        set(&shared, vec![replica]);
+        let apps = Apps::new(
+            runtime,
+            None,
+            shared.clone(),
+            Policy::default(),
+            dir.clone(),
+            &[9; 32],
+        );
+        (apps, shared, dir)
+    }
+
+    fn pid(status: &ContainerStatus) -> u32 {
+        match status.state {
+            TaskState::Running { pid } => pid,
+            ref state => panic!("expected a running process, got {state:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn an_unavailable_required_runtime_never_reports_update_readiness() {
         let (_, shared, dir) = harness("update-runtime-health");
@@ -1693,39 +1912,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_running_replica_is_kept_while_the_private_network_is_not_up_yet() {
-        let (mut apps, shared, dir) = harness("netwait");
-        set(&shared, vec![replica("r1", &[])]);
-        for _ in 0..3 {
-            apps.pass().await.unwrap();
-            tokio::time::sleep(Duration::from_millis(30)).await;
+    async fn a_networked_replica_keeps_its_pid_through_a_long_network_loss_and_restoration() {
+        let (mut apps, shared, dir) = recovery_harness("netwait").await;
+        let before = apps.runtime.list().await.unwrap().remove(0);
+        let began = Instant::now();
+        for seconds in [0, 61, 601] {
+            apps.pass_with_network(None, began + Duration::from_secs(seconds))
+                .await
+                .unwrap();
+            assert_eq!(apps.runtime.list().await.unwrap(), vec![before.clone()]);
+            assert_eq!(
+                state_of(&shared, "r1"),
+                (
+                    Some(ReplicaObservedState::REPLICA_OBSERVED_STATE_RUNNING),
+                    true,
+                    0,
+                )
+            );
+            assert!(shared.runtime_ready.load(Ordering::Relaxed));
+            assert!(apps.stops.is_empty());
         }
-        let path = dir.join("runtime/containers/r1.json");
-        let record = std::fs::read_to_string(&path).unwrap();
-        let hash = container_hash(&replica("r1", &[]), None);
-        std::fs::write(&path, record.replace(&hash, "hash-with-the-network")).unwrap();
-        let (_list, lists) = tokio::sync::watch::channel(None);
-        let mut apps = apps.with_network(NetworkAccess {
-            lists,
-            mesh: Arc::new(std::sync::OnceLock::new()),
-            own: "own".into(),
-        });
-        for _ in 0..3 {
-            apps.pass().await.unwrap();
-            tokio::time::sleep(Duration::from_millis(30)).await;
+        apps.pass_with_network(Some(network()), began + Duration::from_secs(602))
+            .await
+            .unwrap();
+        let after = apps.runtime.list().await.unwrap().remove(0);
+        assert_eq!(pid(&after), pid(&before));
+        assert_eq!(after, before);
+        assert!(state_of(&shared, "r1").1);
+        assert!(apps.stops.is_empty());
+        {
+            let state = apps.runtime.0.lock().await;
+            assert_eq!((state.creates, state.restarts, state.removes), (1, 0, 0));
         }
-        let (state, ready, restarts) = state_of(&shared, "r1");
-        assert_eq!(
-            state,
-            Some(ReplicaObservedState::REPLICA_OBSERVED_STATE_RUNNING)
-        );
-        assert!(ready && restarts == 0);
-        assert!(
-            std::fs::read_to_string(&path)
-                .unwrap()
-                .contains("hash-with-the-network"),
-            "the container was not created again"
-        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1770,34 +1988,93 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_changed_spec_is_recreated_once_the_wait_for_the_network_is_over() {
-        let (mut apps, shared, dir) = harness("netgrace");
-        set(&shared, vec![replica("r1", &[])]);
-        for _ in 0..3 {
-            apps.pass().await.unwrap();
-            tokio::time::sleep(Duration::from_millis(30)).await;
+    async fn a_real_spec_change_replaces_an_offline_networked_replica_and_starts_without_network() {
+        let (mut apps, shared, dir) = recovery_harness("netchange").await;
+        let original_pid = pid(&apps.runtime.list().await.unwrap().remove(0));
+        let began = Instant::now();
+        apps.pass_with_network(None, began).await.unwrap();
+        let changed = replica("r1", &[("VERSION", "2")]);
+        set(&shared, vec![changed.clone()]);
+        apps.pass_with_network(None, began + Duration::from_secs(1))
+            .await
+            .unwrap();
+        apps.stops
+            .remove("r1")
+            .expect("the real change stops the old process")
+            .await
+            .unwrap();
+        apps.pass_with_network(None, began + Duration::from_secs(2))
+            .await
+            .unwrap();
+        apps.pass_with_network(None, began + Duration::from_secs(3))
+            .await
+            .unwrap();
+        let current = apps.runtime.list().await.unwrap().remove(0);
+        assert_ne!(pid(&current), original_pid);
+        assert_eq!(current.network_resolver, None);
+        assert_eq!(current.spec_hash, spec_hash(&changed));
+        assert!(state_of(&shared, "r1").1);
+        {
+            let state = apps.runtime.0.lock().await;
+            assert_eq!((state.creates, state.restarts, state.removes), (2, 0, 1));
         }
-        let path = dir.join("runtime/containers/r1.json");
-        let record = std::fs::read_to_string(&path).unwrap();
-        let hash = container_hash(&replica("r1", &[]), None);
-        std::fs::write(&path, record.replace(&hash, "an-older-spec")).unwrap();
-        let (_list, lists) = tokio::sync::watch::channel(None);
-        let mut apps = apps.with_network(NetworkAccess {
-            lists,
-            mesh: Arc::new(std::sync::OnceLock::new()),
-            own: "own".into(),
-        });
-        apps.began = Instant::now() - NETWORK_GRACE - Duration::from_secs(1);
-        for _ in 0..10 {
-            apps.pass().await.unwrap();
-            tokio::time::sleep(Duration::from_millis(30)).await;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_unknown_task_is_not_replaced_for_a_changed_spec_until_its_process_is_observed() {
+        let (mut apps, shared, dir) = recovery_harness("unknown").await;
+        let before = apps.runtime.list().await.unwrap().remove(0);
+        let began = Instant::now();
+        apps.pass_with_network(None, began).await.unwrap();
+        assert!(state_of(&shared, "r1").1);
+        apps.runtime
+            .0
+            .lock()
+            .await
+            .container
+            .as_mut()
+            .unwrap()
+            .state = TaskState::Unknown;
+        set(&shared, vec![replica("r1", &[("VERSION", "2")])]);
+        for seconds in [1, 61, 601] {
+            apps.pass_with_network(None, began + Duration::from_secs(seconds))
+                .await
+                .unwrap();
+            assert_eq!(
+                state_of(&shared, "r1"),
+                (
+                    Some(ReplicaObservedState::REPLICA_OBSERVED_STATE_STARTING),
+                    false,
+                    0,
+                )
+            );
+            assert!(!shared.runtime_ready.load(Ordering::Relaxed));
+            assert!(apps.stops.is_empty());
+            let state = apps.runtime.0.lock().await;
+            assert_eq!((state.creates, state.restarts, state.removes), (1, 0, 0));
+            assert_eq!(state.container.as_ref().unwrap().state, TaskState::Unknown);
         }
-        assert!(
-            !std::fs::read_to_string(&path)
-                .unwrap_or_default()
-                .contains("an-older-spec"),
-            "past the grace, the changed spec was recreated without the network"
-        );
+        apps.runtime
+            .0
+            .lock()
+            .await
+            .container
+            .as_mut()
+            .unwrap()
+            .state = before.state;
+        apps.pass_with_network(None, began + Duration::from_secs(602))
+            .await
+            .unwrap();
+        apps.stops
+            .remove("r1")
+            .expect("the observed process can now be replaced")
+            .await
+            .unwrap();
+        {
+            let state = apps.runtime.0.lock().await;
+            assert_eq!((state.creates, state.restarts, state.removes), (1, 0, 1));
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 

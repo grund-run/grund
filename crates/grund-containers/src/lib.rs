@@ -268,11 +268,11 @@ pub fn signal_number(name: &str) -> Option<u32> {
     u32::try_from(number).ok()
 }
 
-/// The status the agent sees for a container's task, `None` meaning it has
-/// none.
+/// The status the agent sees for a container's task. Missing or unrecognised
+/// process data is not authoritative evidence that the task is absent.
 pub fn task_state(process: Option<&Process>) -> TaskState {
     let Some(process) = process else {
-        return TaskState::Created;
+        return TaskState::Unknown;
     };
     match process.status.as_known() {
         Some(Status::RUNNING | Status::PAUSED | Status::PAUSING) => {
@@ -285,7 +285,8 @@ pub fn task_state(process: Option<&Process>) -> TaskState {
                 .as_option()
                 .map_or(0, |t| t.seconds * 1000 + i64::from(t.nanos / 1_000_000)),
         },
-        _ => TaskState::Created,
+        Some(Status::CREATED) => TaskState::Created,
+        _ => TaskState::Unknown,
     }
 }
 
@@ -478,7 +479,12 @@ impl Containerd {
             ..Default::default()
         };
         match self.client().tasks().get(request).await {
-            Ok(response) => Ok(response.into_owned().process.into_option()),
+            Ok(response) => response
+                .into_owned()
+                .process
+                .into_option()
+                .with_context(|| format!("containerd get task {id} returned no process"))
+                .map(Some),
             Err(e) if not_found(&e) => Ok(None),
             Err(e) => Err(failed("get a task", e)),
         }
@@ -716,6 +722,36 @@ impl Containerd {
             Err(e) => Err(failed("delete the task", e)),
         }
     }
+
+    async fn delete_container(&self, id: &str) -> anyhow::Result<()> {
+        let request = DeleteContainerRequest {
+            id: id.into(),
+            ..Default::default()
+        };
+        match self.client().containers().delete(request).await {
+            Ok(_) => {}
+            Err(e) if not_found(&e) => {}
+            Err(e) => return Err(failed("delete the container", e)),
+        }
+        let request = RemoveSnapshotRequest {
+            snapshotter: SNAPSHOTTER.into(),
+            key: id.into(),
+            ..Default::default()
+        };
+        match self.client().snapshots().remove(request).await {
+            Ok(_) => {}
+            Err(e) if not_found(&e) => {}
+            Err(e) => return Err(failed("remove the container's snapshot", e)),
+        }
+        match std::fs::remove_file(self.config.resolv_conf(id)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                return Err(e).context("remove the container's resolv.conf");
+            }
+            _ => {}
+        }
+        netns::remove(&self.config.netns_dir(), id)
+            .with_context(|| format!("remove container {id}'s network namespace"))
+    }
 }
 
 fn any(type_url: &str, message: &impl Message) -> Any {
@@ -947,8 +983,21 @@ impl ContainerRuntime for Containerd {
             .await?
             .with_context(|| format!("no container {id}"))?;
         self.check_volume_binds(&container, volumes, roots)?;
-        let sigkill = u32::try_from(libc::SIGKILL).unwrap_or(9);
-        self.stop_task(id, sigkill, Duration::ZERO).await?;
+        match self
+            .get_task(id)
+            .await?
+            .as_ref()
+            .map(|p| task_state(Some(p)))
+        {
+            Some(TaskState::Running { .. }) => return Ok(()),
+            Some(TaskState::Unknown) => {
+                anyhow::bail!("containerd task {id} has an unknown state; recovery deferred");
+            }
+            Some(TaskState::Created | TaskState::Exited { .. }) => {
+                self.delete_task(id).await?;
+            }
+            None => {}
+        }
         self.start_task(&container, volumes, roots).await
     }
 
@@ -956,33 +1005,22 @@ impl ContainerRuntime for Containerd {
         valid_id(id)?;
         let number = signal_number(signal).with_context(|| format!("unknown signal {signal:?}"))?;
         self.stop_task(id, number, grace).await?;
-        let request = DeleteContainerRequest {
-            id: id.into(),
-            ..Default::default()
-        };
-        match self.client().containers().delete(request).await {
-            Ok(_) => {}
-            Err(e) if not_found(&e) => {}
-            Err(e) => return Err(failed("delete the container", e)),
+        self.delete_container(id).await
+    }
+
+    async fn remove_stopped(&self, id: &str) -> anyhow::Result<bool> {
+        valid_id(id)?;
+        if self.get_task(id).await?.is_some_and(|process| {
+            matches!(
+                task_state(Some(&process)),
+                TaskState::Running { .. } | TaskState::Unknown
+            )
+        }) {
+            return Ok(false);
         }
-        let request = RemoveSnapshotRequest {
-            snapshotter: SNAPSHOTTER.into(),
-            key: id.into(),
-            ..Default::default()
-        };
-        match self.client().snapshots().remove(request).await {
-            Ok(_) => {}
-            Err(e) if not_found(&e) => {}
-            Err(e) => return Err(failed("remove the container's snapshot", e)),
-        }
-        match std::fs::remove_file(self.config.resolv_conf(id)) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-                return Err(e).context("remove the container's resolv.conf");
-            }
-            _ => {}
-        }
-        netns::remove(&self.config.netns_dir(), id)
-            .with_context(|| format!("remove container {id}'s network namespace"))
+        self.delete_task(id).await?;
+        self.delete_container(id).await?;
+        Ok(true)
     }
 
     async fn network_namespace(&self, id: &str) -> anyhow::Result<Option<PathBuf>> {
@@ -1044,19 +1082,41 @@ impl ContainerRuntime for Containerd {
                 (id, p)
             })
             .collect();
-        let mut statuses: Vec<ContainerStatus> = containers
-            .into_iter()
-            .map(|c| {
-                let (stop_signal, stop_grace) = stop_settings(&c.labels);
-                ContainerStatus {
-                    state: task_state(tasks.get(&c.id)),
-                    spec_hash: c.labels.get(SPEC_HASH_LABEL).cloned().unwrap_or_default(),
-                    id: c.id,
-                    stop_signal,
-                    stop_grace,
-                }
-            })
-            .collect();
+        let mut statuses = Vec::with_capacity(containers.len());
+        for c in containers {
+            let state = match tasks.get(&c.id) {
+                Some(process) => task_state(Some(process)),
+                None => match self.get_task(&c.id).await {
+                    Ok(Some(process)) => task_state(Some(&process)),
+                    Ok(None) => TaskState::Created,
+                    Err(error) => {
+                        tracing::warn!(
+                            id = %c.id,
+                            error = %error,
+                            "task omitted from containerd list could not be inspected; recovery deferred"
+                        );
+                        TaskState::Unknown
+                    }
+                },
+            };
+            let (stop_signal, stop_grace) = stop_settings(&c.labels);
+            let network_resolver = c.labels.get(RESOLV_CONF_LABEL).and_then(|contents| {
+                contents.lines().find_map(|line| {
+                    let mut words = line.split_whitespace();
+                    (words.next()? == "nameserver")
+                        .then(|| words.next()?.parse().ok())
+                        .flatten()
+                })
+            });
+            statuses.push(ContainerStatus {
+                state,
+                spec_hash: c.labels.get(SPEC_HASH_LABEL).cloned().unwrap_or_default(),
+                id: c.id,
+                network_resolver,
+                stop_signal,
+                stop_grace,
+            });
+        }
         statuses.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(statuses)
     }
@@ -1070,6 +1130,9 @@ impl ContainerRuntime for Containerd {
         probe::run(Some(path), probe.clone(), timeout).await
     }
 }
+
+#[cfg(test)]
+mod recovery_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1153,7 +1216,7 @@ mod tests {
 
     #[test]
     fn task_status_becomes_the_agents_state() {
-        assert_eq!(task_state(None), TaskState::Created);
+        assert_eq!(task_state(None), TaskState::Unknown);
         let running = Process {
             pid: 42,
             status: Status::RUNNING.into(),

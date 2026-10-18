@@ -10,7 +10,13 @@
 //! on `/run/grund/containerd.sock`), never another runtime's on the same
 //! machine.
 
-use std::{collections::BTreeMap, future::Future, net::IpAddr, path::PathBuf, time::Duration};
+use std::{
+    collections::BTreeMap,
+    future::Future,
+    net::{IpAddr, Ipv6Addr},
+    path::PathBuf,
+    time::Duration,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -95,6 +101,9 @@ pub struct ContainerSpec {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum TaskState {
+    /// The runtime could not authoritatively determine the task's state.
+    /// Recovery must leave it untouched until a later observation succeeds.
+    Unknown,
     /// The container exists and has no process (never started, or its
     /// process was cleaned up).
     Created,
@@ -115,6 +124,10 @@ pub struct ContainerStatus {
     /// From [`SPEC_HASH_LABEL`]; empty when missing.
     pub spec_hash: String,
     pub state: TaskState,
+    /// The last applied network resolver, recovered from the runtime's
+    /// persisted resolver configuration rather than the current network.
+    #[serde(default)]
+    pub network_resolver: Option<Ipv6Addr>,
     /// From the stop labels, or `SIGTERM` and 30 s when missing.
     pub stop_signal: String,
     pub stop_grace: Duration,
@@ -195,7 +208,10 @@ pub trait ContainerRuntime: Send + Sync {
     fn create(&self, spec: &ContainerSpec) -> impl Future<Output = anyhow::Result<()>> + Send;
 
     /// Starts a new process for an existing container whose process exited
-    /// or was never started, discarding the old one.
+    /// or was never started, discarding only a known non-running task.
+    /// A task found running is adopted; an unknown state is left untouched.
+    /// Recovery never signals a task that starts after its inspection;
+    /// a runtime refusing to discard that now-running task defers recovery.
     fn restart(&self, id: &str) -> impl Future<Output = anyhow::Result<()>> + Send;
     /// A restart of a stateful container must provide freshly validated
     /// mounts from the currently signed document and machine-local policy.
@@ -219,6 +235,11 @@ pub trait ContainerRuntime: Send + Sync {
         signal: &str,
         grace: Duration,
     ) -> impl Future<Output = anyhow::Result<()>> + Send;
+
+    /// Removes a stopped or absent task and its container without sending a signal.
+    /// Returns false for a running or unknown task; inspection or deletion errors
+    /// defer recovery. A running task racing deletion is never signalled.
+    fn remove_stopped(&self, id: &str) -> impl Future<Output = anyhow::Result<bool>> + Send;
 
     /// Every container the runtime has in its namespace.
     fn list(&self) -> impl Future<Output = anyhow::Result<Vec<ContainerStatus>>> + Send;
@@ -282,6 +303,10 @@ impl ContainerRuntime for NoContainers {
 
     async fn remove(&self, _id: &str, _signal: &str, _grace: Duration) -> anyhow::Result<()> {
         Ok(())
+    }
+
+    async fn remove_stopped(&self, _id: &str) -> anyhow::Result<bool> {
+        Ok(true)
     }
 
     async fn list(&self) -> anyhow::Result<Vec<ContainerStatus>> {

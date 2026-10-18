@@ -497,6 +497,11 @@ impl ContainerRuntime for SimulatedContainers {
         let mut record = self
             .read(id)
             .with_context(|| format!("no container {id}"))?;
+        match record.state {
+            TaskState::Running { .. } => return Ok(()),
+            TaskState::Unknown => anyhow::bail!("task state is unknown; recovery deferred"),
+            TaskState::Created | TaskState::Exited { .. } => {}
+        }
         anyhow::ensure!(
             !record.task_lost,
             "create the task: the files its container was created with are gone"
@@ -506,6 +511,17 @@ impl ContainerRuntime for SimulatedContainers {
         };
         record.started_at_ms = now_ms();
         self.write(&record)
+    }
+
+    async fn remove_stopped(&self, id: &str) -> anyhow::Result<bool> {
+        let Some(record) = self.read(id) else {
+            return Ok(!self.path(id).try_exists()?);
+        };
+        if matches!(record.state, TaskState::Running { .. } | TaskState::Unknown) {
+            return Ok(false);
+        }
+        self.remove(id, "SIGTERM", Duration::ZERO).await?;
+        Ok(true)
     }
 
     async fn remove(&self, id: &str, _signal: &str, _grace: Duration) -> anyhow::Result<()> {
@@ -543,6 +559,14 @@ impl ContainerRuntime for SimulatedContainers {
             statuses.push(ContainerStatus {
                 id: record.spec.id.clone(),
                 spec_hash: record.spec.spec_hash.clone(),
+                network_resolver: record.spec.resolv_conf.as_deref().and_then(|contents| {
+                    contents.lines().find_map(|line| {
+                        let mut words = line.split_whitespace();
+                        (words.next()? == "nameserver")
+                            .then(|| words.next()?.parse().ok())
+                            .flatten()
+                    })
+                }),
                 state: record.state.clone(),
                 stop_signal: record.spec.stop_signal.clone(),
                 stop_grace: record.spec.stop_grace,

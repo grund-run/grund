@@ -289,6 +289,12 @@ the current agent running. One machine is authorized at a time across the instan
 Health verification and durable finalize precede the next machine; verified
 rollback pauses the rollout, and uncertain authorization retains its slot.
 
+For unchanged app specs, restarting the agent preserves running apps. Missing
+runtime observations are unknown, not proof that a process stopped. A running
+container retains its last applied network identity while control-plane or
+private-network configuration is unavailable; that temporary loss does not
+recreate it.
+
 Local root controls stop new authorization, not recovery of an existing attempt:
 
 ```sh
