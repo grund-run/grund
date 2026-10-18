@@ -269,6 +269,8 @@ impl Pass<'_> {
 
 /// Decides the next steps for `app`. `new_id` gives each new replica its
 /// id. Pure: the same inputs give the same decision.
+/// Explicit Hosted placement keeps capacity waits pending past the rollout
+/// deadline; each placed replica still has its normal readiness deadline.
 pub fn reconcile(
     app: &App,
     observations: &[Observation],
@@ -696,8 +698,19 @@ fn converge(pass: &mut Pass<'_>, lost_slots: &BTreeSet<u32>, new_id: &mut dyn Fn
     {
         let deadline =
             Duration::seconds(i64::from(pass.work.settings.rollout.ready_deadline_seconds));
+        let awaiting_capacity = pass.work.settings.placement.kind
+            == Some(grund_config::app::spec::MachineKind::Hosted)
+            && pass.waiting.iter().all(|waiting| {
+                matches!(
+                    waiting.reason,
+                    Unplaceable::NoMachine
+                        | Unplaceable::NoMatchingMachine
+                        | Unplaceable::InsufficientResources
+                )
+            });
         if let Some(waiting) = pass.waiting.first().cloned()
             && pass.now - rollout.started_at >= deadline
+            && !awaiting_capacity
         {
             fail_rollout(
                 pass,
@@ -1511,17 +1524,83 @@ mod tests {
 
     #[test]
     fn a_release_that_cannot_be_placed_until_its_deadline_fails() {
-        let mut world = World::new(1, vec![machine(1, 4096)]);
-        world.deploy(512, Behaviour::Healthy);
-        world.settled();
-        world.deploy(8192, Behaviour::Healthy);
-        world.run(301, |_| {});
-        let reason = world.log.iter().find_map(|e| match e {
-            AppEvent::RolloutFailed { reason, .. } => Some(reason.clone()),
-            _ => None,
+        for kind in [None, Some(grund_config::app::spec::MachineKind::Own)] {
+            let mut world = World::new(1, vec![machine(1, 4096)]);
+            world.app.settings.placement.kind = kind;
+            world.deploy(512, Behaviour::Healthy);
+            world.settled();
+            world.deploy(8192, Behaviour::Healthy);
+            world.run(301, |_| {});
+            let reason = world.log.iter().find_map(|e| match e {
+                AppEvent::RolloutFailed { reason, .. } => Some(reason.clone()),
+                _ => None,
+            });
+            assert!(reason.expect("failed").contains("couldn't be placed"));
+            assert_eq!(world.releases_running(), vec![1]);
+        }
+    }
+
+    #[test]
+    fn hosted_capacity_waits_keep_the_rollout_until_a_machine_can_take_it() {
+        use grund_config::app::spec::MachineKind;
+
+        for (machines, reason) in [
+            (Vec::new(), Unplaceable::NoMachine),
+            (vec![machine(1, 4096)], Unplaceable::NoMatchingMachine),
+            (
+                vec![MachineView {
+                    kind: MachineKind::Hosted,
+                    ..machine(1, 512)
+                }],
+                Unplaceable::InsufficientResources,
+            ),
+        ] {
+            let mut world = World::new(1, machines);
+            world.app.settings.placement.kind = Some(MachineKind::Hosted);
+            world.deploy(512, Behaviour::Healthy);
+            world.run(601, |_| {});
+            assert!(world.app.rollout.is_some(), "{reason:?}");
+            assert_eq!(world.app.current_release, None);
+            assert!(world.app.replicas.is_empty());
+            assert_eq!(world.waiting[0].reason, reason);
+
+            world.machines.push(MachineView {
+                kind: MachineKind::Hosted,
+                last_seen: Some(world.now),
+                ..machine(2, 4096)
+            });
+            world.settled();
+            assert_eq!(world.app.current_release, Some(1));
+            assert_eq!(world.releases_running(), vec![1]);
+            assert_eq!(world.placed(PlaceReason::Rollout).len(), 1);
+        }
+    }
+
+    #[test]
+    fn waiting_for_hosted_capacity_does_not_waive_a_placed_replicas_readiness_deadline() {
+        use grund_config::app::spec::MachineKind;
+
+        let mut world = World::new(1, Vec::new());
+        world.app.settings.placement.kind = Some(MachineKind::Hosted);
+        world.deploy(512, Behaviour::NeverReady);
+        world.run(601, |_| {});
+        world.machines.push(MachineView {
+            kind: MachineKind::Hosted,
+            last_seen: Some(world.now),
+            ..machine(1, 4096)
         });
-        assert!(reason.expect("failed").contains("couldn't be placed"));
-        assert_eq!(world.releases_running(), vec![1]);
+        world.pass();
+        world.run(299, |_| {});
+        assert!(world.app.rollout.is_some());
+        world.run(2, |_| {});
+        assert!(world.app.rollout.is_none());
+        assert_eq!(world.app.current_release, None);
+        assert!(
+            world
+                .log
+                .iter()
+                .any(|event| matches!(event, AppEvent::RolloutFailed { .. }))
+        );
     }
 
     #[test]
