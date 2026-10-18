@@ -148,15 +148,17 @@ async fn probe(command: &mut Command) -> Option<Vec<u8>> {
 }
 
 pub(super) async fn docker(progress: &Progress) -> CliResult<()> {
-    let engine = Path::new("/usr/bin/docker").is_file();
-    let compose_ready = if engine {
+    let engine =
+        Path::new("/usr/sbin/dockerd").is_file() || Path::new("/usr/bin/dockerd").is_file();
+    let client = Path::new("/usr/bin/docker").is_file();
+    let compose_ready = if client {
         probe(Command::new("/usr/bin/docker").args(["compose", "version", "--short"]))
             .await
             .is_some_and(|version| compose_v2(String::from_utf8_lossy(&version).trim()))
     } else {
         false
     };
-    if !engine || !compose_ready {
+    if !engine || !client || !compose_ready {
         let os = fs::read_to_string("/etc/os-release").map_err(io)?;
         let distribution = distribution(&os)?;
         progress
@@ -198,14 +200,37 @@ pub(super) async fn docker(progress: &Progress) -> CliResult<()> {
             Some(found.ok_or_else(|| failed(format!("{distribution}'s configured packages do not provide Docker's compose tool version 2 or later."))
                 .hint("Use a supported Debian or Ubuntu release with that package in its distribution repositories; no third-party install script is run."))?)
         };
-        let packages = [(!engine).then_some("docker.io"), compose_package];
-        let names = match packages {
-            [Some(engine), Some(compose)] => format!("{engine}, {compose}"),
-            [Some(package), None] | [None, Some(package)] => package.to_owned(),
-            [None, None] => String::new(),
+        let client_package = if !client
+            && probe(Command::new("/usr/bin/apt-cache").args([
+                "show",
+                "--no-all-versions",
+                "docker-cli",
+            ]))
+            .await
+            .is_some_and(|output| !output.is_empty())
+        {
+            Some("docker-cli")
+        } else {
+            None
         };
+        let packages = [
+            (!engine).then_some("docker.io"),
+            client_package,
+            compose_package,
+        ];
+        let mut label = String::with_capacity(96);
+        label.push_str("Installing Docker (");
+        label.push_str(distribution);
+        label.push_str(" packages: ");
+        let mut separator = "";
+        for package in packages.into_iter().flatten() {
+            label.push_str(separator);
+            label.push_str(package);
+            separator = ", ";
+        }
+        label.push(')');
         progress.step(
-            &format!("Installing Docker ({distribution} packages: {names})"),
+            &label,
             "Check the package manager's configuration and internet connection, then run grund install again.",
             async {
                 run(Command::new("/usr/bin/apt-get")
@@ -225,8 +250,15 @@ pub(super) async fn docker(progress: &Progress) -> CliResult<()> {
                     "start Docker",
                 )
                 .await?;
-                super::platform(true).await
+                Ok(())
             },
+        )
+        .await?;
+    progress
+        .step(
+            "Checking Docker tools",
+            "Install Docker's command-line tools from this machine's package repositories, then run grund install again.",
+            super::platform(true),
         )
         .await
 }

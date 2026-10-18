@@ -67,13 +67,18 @@ welcome under Apache-2.0 with a sign-off ([CONTRIBUTING.md](CONTRIBUTING.md)).
 
 Managed installation is available from `v0.0.0-alpha.5`; CLI and managed
 server updates are available from `v0.0.0-alpha.6`. The no-argument local
-flow below is new after alpha.9: alphas .5 through .9 still require a
-domain or an existing-instance setup code.
+flow below is available from alpha.10: alphas .5 through .9 still require
+a domain or an existing-instance setup code.
 
-Installation requires Linux, root and systemd. If Docker is missing on
-Debian or Ubuntu, the installer announces and installs the distribution's
-own packages. On other distributions, install Docker Engine and Docker
-Compose v2 first; grund does not run a third-party installation script.
+Installation requires Linux, root and systemd. If Docker or its client
+tools are missing on Debian or Ubuntu, the installer announces and
+installs the distribution's own packages. On other distributions, install
+Docker Engine and Docker Compose v2 first; grund does not run a third-party
+installation script.
+
+**Fresh Debian 13 with alpha.10:** install `docker.io`, `docker-cli` and
+`docker-compose` first. Its automatic setup omitted the separate client
+package; this checkout corrects that omission.
 
 ### Start without a domain
 
