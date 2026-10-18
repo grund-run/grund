@@ -94,6 +94,10 @@
           ],
           "description": "Optional measured host usage, separate from placement reservations. Older agents do not report this snapshot."
         },
+        "vmReplacementVersion": {
+          "description": "0 means unsupported. Version 1 stages and physically fences guest roots; an older host must never receive replacement work.",
+          "type": "integer"
+        },
         "volumes": {
           "description": "This agent can verify app-owned volume identities and writable mounts. Absent on older agents: the scheduler must not place stateful apps there.",
           "type": "boolean"
@@ -3668,6 +3672,19 @@
           "value_name": "AGENT_UPDATES_PAUSED"
         },
         {
+          "default": "false",
+          "description": "Enables explicit own-VM replacement only after every server understands its events",
+          "enum": [
+            "true",
+            "false"
+          ],
+          "env": "GRUND_VM_UPDATES_ENABLED",
+          "flag": "--vm-updates-enabled",
+          "name": "vm_updates_enabled",
+          "type": "string",
+          "value_name": "VM_UPDATES_ENABLED"
+        },
+        {
           "description": "The origin people reach grund at, e.g. https://app.grund.sh. Links in mail point here, cookies are scoped to it, and a form posted from any other origin is refused. Plain http only for loopback, unless GRUND_DEV_MODE is on. Default: https://<GRUND_DOMAIN> when that is set, else http://localhost:8080",
           "env": "GRUND_PUBLIC_URL",
           "flag": "--public-url",
@@ -4795,6 +4812,19 @@
           "value_name": "AGENT_UPDATES_PAUSED"
         },
         {
+          "default": "false",
+          "description": "Enables explicit own-VM replacement only after every server understands its events",
+          "enum": [
+            "true",
+            "false"
+          ],
+          "env": "GRUND_VM_UPDATES_ENABLED",
+          "flag": "--vm-updates-enabled",
+          "name": "vm_updates_enabled",
+          "type": "string",
+          "value_name": "VM_UPDATES_ENABLED"
+        },
+        {
           "description": "The origin people reach grund at, e.g. https://app.grund.sh. Links in mail point here, cookies are scoped to it, and a form posted from any other origin is refused. Plain http only for loopback, unless GRUND_DEV_MODE is on. Default: https://<GRUND_DOMAIN> when that is set, else http://localhost:8080",
           "env": "GRUND_PUBLIC_URL",
           "flag": "--public-url",
@@ -5743,6 +5773,19 @@
           "name": "agent_updates_paused",
           "type": "string",
           "value_name": "AGENT_UPDATES_PAUSED"
+        },
+        {
+          "default": "false",
+          "description": "Enables explicit own-VM replacement only after every server understands its events",
+          "enum": [
+            "true",
+            "false"
+          ],
+          "env": "GRUND_VM_UPDATES_ENABLED",
+          "flag": "--vm-updates-enabled",
+          "name": "vm_updates_enabled",
+          "type": "string",
+          "value_name": "VM_UPDATES_ENABLED"
         },
         {
           "description": "The origin people reach grund at, e.g. https://app.grund.sh. Links in mail point here, cookies are scoped to it, and a form posted from any other origin is refused. Plain http only for loopback, unless GRUND_DEV_MODE is on. Default: https://<GRUND_DOMAIN> when that is set, else http://localhost:8080",

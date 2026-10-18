@@ -697,3 +697,80 @@ async fn two_live_machines_cannot_share_a_name_in_one_pool_or_a_key_anywhere(poo
         Some("grund_machines_key_idx")
     );
 }
+
+#[sqlx::test(migrations = false)]
+async fn migration_42_applies_after_the_existing_43_or_newer_ledger(pool: PgPool) {
+    let baseline = sqlx::migrate::Migrator::with_migrations(
+        grund_store::MIGRATOR
+            .iter()
+            .filter(|migration| migration.version != 42)
+            .cloned()
+            .collect(),
+    );
+    baseline.run(&pool).await.unwrap();
+    let events = EventStore::new(pool.clone());
+    events.migrate().await.unwrap();
+    let username = name("pre42");
+    let account_id = register(&events, &username).await;
+    let before: Vec<(i64, Vec<u8>)> = sqlx::query_as(
+        "SELECT version,checksum FROM _sqlx_migrations WHERE success ORDER BY version",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert!(before.iter().any(|(version, _)| *version == 43));
+    assert!(!before.iter().any(|(version, _)| *version == 42));
+    for migration in grund_store::MIGRATOR
+        .iter()
+        .filter(|migration| migration.version > 42)
+    {
+        assert!(
+            before
+                .iter()
+                .any(|(version, _)| *version == migration.version)
+        );
+    }
+
+    grund_store::migrate(&pool).await.unwrap();
+    let mut after: Vec<(i64, Vec<u8>)> = sqlx::query_as(
+        "SELECT version,checksum FROM _sqlx_migrations WHERE success ORDER BY version",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert!(after.iter().any(|(version, _)| *version == 42));
+    after.retain(|(version, _)| *version != 42);
+    assert_eq!(after, before);
+    let viewer = accounts::viewer(&mut pool.acquire().await.unwrap(), account_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(viewer.username, username.as_str());
+    assert_eq!(viewer.memberships[0].role, "owner");
+
+    sqlx::query(
+        "INSERT INTO grund_agent_update_completed_attempts(attempt_id,attempt,stream_version) \
+         VALUES($1,$2,1)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(serde_json::json!({"phase":"cancelled"}))
+    .execute(&pool)
+    .await
+    .unwrap();
+    let error = sqlx::query(
+        "INSERT INTO grund_agent_update_completed_attempts(attempt_id,attempt,stream_version) \
+         VALUES($1,$2,2)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(serde_json::json!({"phase":"quiescing"}))
+    .execute(&pool)
+    .await
+    .unwrap_err();
+    assert_eq!(
+        error
+            .as_database_error()
+            .and_then(|error| error.code())
+            .as_deref(),
+        Some("23514")
+    );
+}

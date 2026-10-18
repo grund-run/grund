@@ -351,7 +351,29 @@ async fn a_bridged_guest_reaches_the_internet_but_not_private_addresses() {
         "the private address was dropped by grund's table"
     );
 
+    let legacy = dir.0.join(format!("vms/{OUT}"));
+    let legacy_pid: u32 = std::fs::read_to_string(legacy.join("firecracker.pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let raw_pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, legacy_pid, 0) };
+    assert!(raw_pidfd >= 0);
+    let pidfd =
+        unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(raw_pidfd as i32) };
+    std::fs::remove_file(legacy.join("process.json")).unwrap();
     vms.stop(OUT).await.unwrap();
+    let mut exited = libc::pollfd {
+        fd: std::os::fd::AsRawFd::as_raw_fd(&pidfd),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    assert_eq!(unsafe { libc::poll(&mut exited, 1, 0) }, 1);
+    assert!(exited.revents & libc::POLLIN != 0);
+    assert!(
+        !legacy.exists(),
+        "ordinary stop retires a proven legacy VM without replacement preparation"
+    );
     vms.stop(LAN).await.unwrap();
     for address in addresses {
         let tap = format!("/sys/class/net/grundvm{}", address.trim());

@@ -255,6 +255,11 @@ pub fn router(state: State) -> Router {
         .route("/{org}/machines/{machine}", get(machine_detail::page))
         .route("/{org}/machines/vms", post(machines::run_vm))
         .route("/{org}/machines/vms/{vm}/stop", post(machines::stop_vm))
+        .route("/{org}/machines/vms/{vm}/update", post(machines::update_vm))
+        .route(
+            "/{org}/machines/vms/{vm}/update/cancel",
+            post(machines::cancel_vm_update),
+        )
         .route("/{org}/machines/{machine}/remove", post(machines::remove))
         .route("/{org}/machines/{machine}/service", post(machines::service))
         .route("/{org}/machines/{machine}/labels", post(machines::labels))

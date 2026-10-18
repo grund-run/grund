@@ -75,6 +75,14 @@ pub struct MachineCaller {
     pub endpoint_key_prefix: [u8; 12],
     /// The complete registration public key that authenticated this request.
     pub registration_key: String,
+    /// Original timestamp covered by the verified request signature.
+    pub signed_at: DateTime<Utc>,
+}
+
+/// VM states and replacement receipts from one applied desired document.
+pub struct VmReports<'a> {
+    pub states: &'a [(Uuid, &'static str, Option<String>)],
+    pub updates: &'a [agents::HostVmObservation],
 }
 
 /// The bytes an agent signs for one request.
@@ -197,6 +205,7 @@ impl Agents {
             organisation_id: row.pool_organisation_id,
             endpoint_key_prefix,
             registration_key: row.public_key.expect("verified registration has a key"),
+            signed_at: at,
         }))
     }
 
@@ -206,6 +215,8 @@ impl Agents {
         caller: &MachineCaller,
         agent_version: &str,
         capabilities: &serde_json::Value,
+        runtime_ready: bool,
+        guest_boot: Option<agents::GuestBootObservation>,
     ) -> anyhow::Result<i64> {
         let version: String = agent_version.chars().take(64).collect();
         let recovering = agents::heartbeat(
@@ -214,6 +225,17 @@ impl Agents {
             &version,
             capabilities,
             Utc::now(),
+        )
+        .await?;
+        agents::record_runtime_heartbeat(
+            &self.state.pool,
+            caller.machine_id,
+            &agents::RuntimeHeartbeat {
+                registration_key: caller.registration_key.clone(),
+                signed_at: caller.signed_at,
+                runtime_ready,
+                guest_boot,
+            },
         )
         .await?;
         if recovering {
@@ -300,7 +322,7 @@ impl Agents {
         &self,
         caller: &MachineCaller,
         applied_generation: u64,
-        observed: &[(Uuid, &'static str, Option<String>)],
+        observed: VmReports<'_>,
         refusals: &[String],
         replicas: Option<&[ReplicaReport]>,
         volume_deletions: &[(Uuid, Uuid)],
@@ -367,13 +389,27 @@ impl Agents {
             .take(20)
             .map(|r| r.chars().take(300).collect())
             .collect();
-        agents::report(
+        let applied_generation = i64::try_from(applied_generation)?;
+        let runtime = agents::RuntimeReport {
+            registration_key: caller.registration_key.clone(),
+            signed_at: caller.signed_at,
+            applied_generation,
+            reports_replicas: replicas.is_some(),
+            replicas_running: replicas.is_some_and(|reports| {
+                reports
+                    .iter()
+                    .any(|report| !matches!(report.state, "exited" | "failed" | "refused"))
+            }),
+            refusals: refusals.clone(),
+            vm_updates: observed.updates.iter().take(200).cloned().collect(),
+        };
+        agents::report_authenticated(
             &self.state.pool,
             caller.machine_id,
-            applied_generation as i64,
             &serde_json::json!(refusals),
-            observed,
+            observed.states,
             now,
+            &runtime,
         )
         .await?;
         if let Some(org) = caller.organisation_id {
@@ -442,6 +478,12 @@ impl Agents {
             .await?
             .and_then(|document| agent::DesiredState::decode_from_slice(&document.payload).ok());
         let vms = agents::hosted_vms(&mut *connection, host_machine_id).await?;
+        let active = agents::active_vm_update(&mut *connection, host_machine_id)
+            .await?
+            .filter(|attempt| {
+                attempt.organisation_id == organisation_id
+                    && host.public_key.as_deref() == Some(attempt.host_registration_key.as_str())
+            });
         let placed = grund_store::apps::machine_replicas(&mut *connection, host_machine_id).await?;
         let mounts = grund_store::volumes::machine_mounts(
             &mut *connection,
@@ -465,7 +507,17 @@ impl Agents {
             )
             .await?;
         let now = Utc::now();
-        let machines: Vec<agent::Vm> = vms.iter().map(vm_message).collect();
+        let machines: Vec<agent::Vm> = vms
+            .iter()
+            .map(|vm| {
+                let mut message = vm_message(vm);
+                if let Some(attempt) = active.as_ref().filter(|attempt| attempt.vm_id == vm.vm_id) {
+                    message.state = agent::VmDesiredState::VM_DESIRED_STATE_RUNNING.into();
+                    message.update = vm_update_message(attempt).into();
+                }
+                message
+            })
+            .collect();
         let entry = self.state.entry();
         let slug = grund_store::entry::organisation_slug(&mut *connection, organisation_id)
             .await?
@@ -812,17 +864,34 @@ impl Agents {
         else {
             return Ok(VmOutcome::NotFound);
         };
-        let mut tx = self.state.pool.begin().await?;
-        agents::lock_generation(&mut tx, vm.host_machine_id).await?;
-        let Some(vm) = agents::vm(&mut *tx, vm_id).await? else {
+        let mut work =
+            grund_store::work::Work::begin(&self.state.events, Uuid::now_v7(), "agent-vm-stop")
+                .await?;
+        let updates = work.load_agent_updates().await?;
+        if updates
+            .active
+            .as_ref()
+            .and_then(grund_domain::agent_updates::ActiveUpdate::vm)
+            .is_some_and(|attempt| {
+                attempt.host_machine_id == vm.host_machine_id
+                    || vm.machine_id == Some(attempt.guest_machine_id)
+            })
+        {
+            return Ok(VmOutcome::CannotHost("that VM is being updated".into()));
+        }
+        agents::lock_generation(work.sql(), vm.host_machine_id).await?;
+        let Some(vm) = agents::vm(&mut **work.sql(), vm_id)
+            .await?
+            .filter(|vm| vm.organisation_id == organisation_id)
+        else {
             return Ok(VmOutcome::NotFound);
         };
         let changed = vm.state != "stopped";
         if changed {
-            agents::set_vm_state(&mut *tx, vm_id, "stopped").await?;
-            self.publish_in(&mut tx, vm.host_machine_id).await?;
+            agents::set_vm_state(&mut **work.sql(), vm_id, "stopped").await?;
+            self.publish_in(work.sql(), vm.host_machine_id).await?;
         }
-        tx.commit().await?;
+        work.commit().await?;
         if changed {
             self.state.wakes.documents_changed();
         }
@@ -1011,6 +1080,51 @@ fn vm_message(vm: &VmRow) -> agent::Vm {
     }
 }
 
+fn vm_update_message(attempt: &grund_domain::agent_updates::vm::VmAttempt) -> agent::VmUpdate {
+    use grund_domain::agent_updates::vm::Action;
+    let target = &attempt.target;
+    agent::VmUpdate {
+        version: 1,
+        attempt_id: attempt.id.to_string(),
+        sequence: attempt.operation.sequence,
+        action: match attempt.operation.action {
+            Action::Prepare => agent::VmUpdateAction::VM_UPDATE_ACTION_PREPARE,
+            Action::Quiesce => agent::VmUpdateAction::VM_UPDATE_ACTION_QUIESCE,
+            Action::StartCandidate => agent::VmUpdateAction::VM_UPDATE_ACTION_START_CANDIDATE,
+            Action::Commit => agent::VmUpdateAction::VM_UPDATE_ACTION_COMMIT,
+            Action::Rollback => agent::VmUpdateAction::VM_UPDATE_ACTION_ROLLBACK,
+            Action::ReleaseOld => agent::VmUpdateAction::VM_UPDATE_ACTION_RELEASE_OLD,
+        }
+        .into(),
+        image: agent::VmImage {
+            kernel: agent::Artifact {
+                url: target.kernel_url.clone(),
+                sha256: target.kernel_sha256.clone(),
+                ..Default::default()
+            }
+            .into(),
+            rootfs: agent::Artifact {
+                url: target.rootfs_url.clone(),
+                sha256: target.rootfs_sha256.clone(),
+                ..Default::default()
+            }
+            .into(),
+            ..Default::default()
+        }
+        .into(),
+        guest_machine_id: attempt.guest_machine_id.to_string(),
+        registration_key: hex::decode(&attempt.guest_registration_key)
+            .expect("authorized VM guest registration key is valid hex"),
+        launch_nonce: attempt.operation.launch_nonce.to_string(),
+        deadline: buffa_types::google::protobuf::Timestamp::from_unix(
+            attempt.operation.deadline.timestamp(),
+            attempt.operation.deadline.timestamp_subsec_nanos() as i32,
+        )
+        .into(),
+        ..Default::default()
+    }
+}
+
 /// Access to [`Agents`] from [`State`].
 pub trait AgentsState {
     fn agents(&self) -> Agents;
@@ -1027,6 +1141,173 @@ impl AgentsState for State {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
+    use std::sync::Arc;
+
+    #[derive(Parser)]
+    struct TestConfig {
+        #[command(flatten)]
+        config: crate::config::ServeConfig,
+    }
+
+    async fn state(pool: sqlx::PgPool) -> State {
+        grund_store::migrate(&pool).await.unwrap();
+        let mut config =
+            TestConfig::try_parse_from(["test", "--database-url", "postgres://unused/test"])
+                .unwrap()
+                .config;
+        config.license_key = None;
+        config.license_key_file = None;
+        let secret = Arc::new(crate::secrets::SecretKey::generate());
+        let events = mire::EventStore::new(pool.clone());
+        let certificates =
+            crate::certificates::Certificates::new(&config, pool.clone(), secret.clone());
+        let hearing = Arc::new(crate::hearing::Hearing::new(Utc::now()));
+        let health = crate::health::registry(
+            pool.clone(),
+            hearing.clone(),
+            None,
+            false,
+            &certificates,
+            &config,
+        );
+        let entitlements = Arc::new(crate::entitlements(&config).unwrap());
+        State {
+            config: Arc::new(config),
+            pool,
+            events: events.clone(),
+            nats: None,
+            secret,
+            certificates,
+            health,
+            passwords: crate::services::passwords::Passwords::new().unwrap(),
+            entitlements,
+            billing: crate::services::billing::Billing::Free,
+            capacity: crate::services::capacity::Capacity::None,
+            deletions: crate::sagas::Deletions::new(events),
+            extensions: Arc::new(Vec::new()),
+            started: std::time::Instant::now(),
+            wakes: crate::wakes::Wakes::default(),
+            hearing,
+        }
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn republishing_preserves_the_active_operation_and_stopping_cannot_bypass_its_slot(
+        pool: sqlx::PgPool,
+    ) {
+        use grund_domain::agent_updates::{Command, vm};
+        let state = state(pool).await;
+        let host = Uuid::now_v7();
+        let guest = Uuid::now_v7();
+        let organisation_id = Uuid::now_v7();
+        let vm_id = Uuid::now_v7();
+        let host_key = "a".repeat(64);
+        let source = "b".repeat(64);
+        sqlx::query(
+            "INSERT INTO grund_machines (machine_id,pool,name,state,public_key,pool_organisation_id, \
+               pool_name,minted_by,registered_at,key_registered_at,stream_version) \
+             VALUES ($1,'management','host','available',$2,$3,'host','test', \
+               clock_timestamp(),clock_timestamp(),1)",
+        ).bind(host).bind(&host_key).bind(organisation_id).execute(&state.pool).await.unwrap();
+        agents::insert_vm(
+            &state.pool,
+            &NewVm {
+                vm_id,
+                organisation_id,
+                host_machine_id: host,
+                name: "guest",
+                vcpus: 1,
+                memory_mib: 512,
+                disk_gib: 8,
+                kernel_url: "https://artifacts.example/old-kernel",
+                kernel_sha256: &source,
+                rootfs_url: "https://artifacts.example/old-rootfs",
+                rootfs_sha256: &source,
+                created_by: Uuid::nil(),
+            },
+        )
+        .await
+        .unwrap();
+        let now = Utc::now();
+        let mut work = grund_store::work::Work::begin(&state.events, Uuid::now_v7(), "test")
+            .await
+            .unwrap();
+        work.agent_updates(Command::Initialize { at: now })
+            .await
+            .unwrap();
+        work.agent_updates(Command::Vm(vm::Command::Request {
+            request: vm::Request {
+                id: Uuid::now_v7(),
+                vm_id,
+                organisation_id,
+                host_machine_id: host,
+                guest_machine_id: guest,
+                host_registration_key: host_key,
+                guest_registration_key: "c".repeat(64),
+                request_hash: "d".repeat(64),
+                fingerprint: "e".repeat(64),
+                source: vm::ImageIdentity {
+                    kernel_sha256: source.clone(),
+                    rootfs_sha256: source,
+                },
+                target: vm::Target {
+                    kernel_url: "https://artifacts.example/new-kernel".into(),
+                    kernel_sha256: "f".repeat(64),
+                    rootfs_url: "https://artifacts.example/new-rootfs".into(),
+                    rootfs_sha256: "1".repeat(64),
+                },
+                expected_update_version: 0,
+                original_in_service: true,
+                old_os_boot_id: None,
+                launch_nonce: Uuid::now_v7(),
+                deadline: now + Duration::minutes(5),
+            },
+            at: now,
+        }))
+        .await
+        .unwrap();
+        work.commit().await.unwrap();
+        state.agents().publish(host).await.unwrap();
+        let first = agents::document(&state.pool, host).await.unwrap().unwrap();
+        let original = agent::DesiredState::decode_from_slice(&first.payload).unwrap();
+        state.agents().publish(host).await.unwrap();
+        let second = agents::document(&state.pool, host).await.unwrap().unwrap();
+        let republished = agent::DesiredState::decode_from_slice(&second.payload).unwrap();
+        assert!(second.generation > first.generation);
+        assert_eq!(original.machines[0].update, republished.machines[0].update);
+        assert!(republished.machines[0].update.as_option().is_some());
+        assert_eq!(
+            republished.machines[0].state.as_known(),
+            Some(agent::VmDesiredState::VM_DESIRED_STATE_RUNNING)
+        );
+        assert!(matches!(
+            state.agents().stop_vm(Uuid::now_v7(), vm_id).await.unwrap(),
+            VmOutcome::NotFound
+        ));
+        assert!(matches!(
+            state
+                .agents()
+                .stop_vm(organisation_id, vm_id)
+                .await
+                .unwrap(),
+            VmOutcome::CannotHost(_)
+        ));
+        assert_eq!(
+            agents::vm(&state.pool, vm_id).await.unwrap().unwrap().state,
+            "running"
+        );
+        sqlx::query("UPDATE grund_machines SET public_key=$2 WHERE machine_id=$1")
+            .bind(host)
+            .bind("2".repeat(64))
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        state.agents().publish(host).await.unwrap();
+        let document = agents::document(&state.pool, host).await.unwrap().unwrap();
+        let desired = agent::DesiredState::decode_from_slice(&document.payload).unwrap();
+        assert!(desired.machines[0].update.as_option().is_none());
+    }
 
     #[test]
     fn the_request_message_binds_purpose_path_time_and_body() {

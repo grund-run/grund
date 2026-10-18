@@ -1055,6 +1055,7 @@ async fn round<R: VmRuntime, C: ContainerRuntime>(
     let public_revision = crate::supervisor::public_revision();
     let capabilities = runtime.capabilities().await;
     let apps = containers.capabilities().await;
+    let guest_boot_evidence = crate::guest_boot::evidence(*containers, record).await;
     let apps_reason = if !policy.apps {
         "this machine's owner turned apps off".to_string()
     } else {
@@ -1084,6 +1085,7 @@ async fn round<R: VmRuntime, C: ContainerRuntime>(
                     memory_mib: apps.memory_mib,
                     cpu_millis: apps.cpu_millis,
                     resources_allocatable: apps.resources_allocatable,
+                    vm_replacement_version: runtime.replacement_version(),
                     apps_unavailable_reason: apps_reason,
                     max_replica_memory_mib: policy.max_replica_memory_mib,
                     max_replica_cpu_millis: policy.max_replica_cpu_millis,
@@ -1091,6 +1093,7 @@ async fn round<R: VmRuntime, C: ContainerRuntime>(
                     usage: buffa::MessageField::from(usage),
                     ..Default::default()
                 }),
+                guest_boot_evidence: guest_boot_evidence.map(Into::into).unwrap_or_default(),
                 ..Default::default()
             },
         )
@@ -1148,7 +1151,7 @@ async fn round<R: VmRuntime, C: ContainerRuntime>(
             "ReportStatus",
             &ReportStatusRequest {
                 applied_generation,
-                machines: observed.iter().map(observed_message).collect(),
+                machines: observed,
                 refusals,
                 replicas,
                 volume_deletions,
@@ -1184,11 +1187,35 @@ async fn converge<R: VmRuntime>(
     record: &Record,
     runtime: &R,
     desired: Option<&DesiredState>,
-) -> anyhow::Result<Vec<VmStatus>> {
+) -> anyhow::Result<Vec<VmObserved>> {
     let observed = runtime.observe().await?;
     let empty = Vec::new();
     let wanted = desired.map_or(&empty, |d| &d.machines);
+    let mut update_vms = wanted.iter().filter(|vm| vm.update.as_option().is_some());
+    let _ = update_vms.next();
+    anyhow::ensure!(
+        update_vms.next().is_none(),
+        "multiple guest updates in one document"
+    );
+    let mut update_report = None;
     for vm in wanted {
+        if let Some(update) = vm.update.as_option() {
+            anyhow::ensure!(
+                vm.state.as_known() == Some(VmDesiredState::VM_DESIRED_STATE_RUNNING),
+                "guest update changed the base VM state"
+            );
+            let spec = spec(vm, vm::metadata(&vm.vm_id, &record.instance_url, "", ""));
+            update_report = Some(
+                crate::vm_updates::apply(
+                    runtime,
+                    &spec,
+                    update,
+                    desired.map_or(0, |document| document.generation),
+                )
+                .await,
+            );
+            continue;
+        }
         let current = observed.iter().find(|o| o.id == vm.vm_id);
         let running = matches!(
             current.map(|c| &c.state),
@@ -1239,7 +1266,19 @@ async fn converge<R: VmRuntime>(
             runtime.stop(&status.id).await?;
         }
     }
-    Ok(reported(runtime.observe().await?, wanted))
+    let mut final_states = reported(runtime.observe().await?, wanted);
+    if let Some(update) = update_report.as_ref()
+        && let Some(index) = final_states
+            .iter()
+            .position(|status| status.id == update.vm_id)
+    {
+        final_states.swap_remove(index);
+    }
+    Ok(final_states
+        .into_iter()
+        .map(observed_message)
+        .chain(update_report)
+        .collect())
 }
 
 fn reported(
@@ -1277,8 +1316,8 @@ fn spec(vm: &grund_proto::grund::agent::v1::Vm, mmds: serde_json::Value) -> VmSp
     }
 }
 
-fn observed_message(status: &VmStatus) -> VmObserved {
-    let (state, reason, exit_code) = match &status.state {
+fn observed_message(status: VmStatus) -> VmObserved {
+    let (state, reason, exit_code) = match status.state {
         VmState::Starting => (
             VmObservedState::VM_OBSERVED_STATE_STARTING,
             String::new(),
@@ -1291,12 +1330,10 @@ fn observed_message(status: &VmStatus) -> VmObserved {
             String::new(),
             code.unwrap_or(0),
         ),
-        VmState::Failed { reason } => {
-            (VmObservedState::VM_OBSERVED_STATE_FAILED, reason.clone(), 0)
-        }
+        VmState::Failed { reason } => (VmObservedState::VM_OBSERVED_STATE_FAILED, reason, 0),
     };
     VmObserved {
-        vm_id: status.id.clone(),
+        vm_id: status.id,
         state: state.into(),
         reason,
         exit_code,

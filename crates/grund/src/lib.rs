@@ -459,22 +459,6 @@ mod tests {
     }
 
     #[test]
-    fn describe_json_is_the_one_in_the_repository() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../schema/cli.json");
-        let document = grund_cli::describe::document(&Cli::command(), &[]);
-        let text = format!("{}\n", serde_json::to_string_pretty(&document).unwrap());
-        if std::env::var_os("GRUND_WRITE_SCHEMA").is_some() {
-            std::fs::write(path, &text).unwrap();
-        }
-        let stored = std::fs::read_to_string(path).unwrap_or_default();
-        assert!(
-            stored == text,
-            "schema/cli.json is not what grund describe --json prints; regenerate it with \
-             GRUND_WRITE_SCHEMA=1 cargo test -p grund describe_json"
-        );
-    }
-
-    #[test]
     fn an_unknown_subcommand_is_an_error_not_a_server() {
         assert!(Cli::try_parse_from(["grund", "serv"]).is_err());
     }

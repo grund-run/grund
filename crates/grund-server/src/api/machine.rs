@@ -11,15 +11,16 @@ use grund_domain::machine::{
 use grund_proto::grund::{
     agent::v1 as agent,
     machine::v1::{
-        CreateJoinTokenRequest, CreateJoinTokenResponse, DeclareMachinePortsRequest,
-        DeclareMachinePortsResponse, GetMachineRequest, GetMachineResponse,
-        GetOrganisationKeyRequest, GetOrganisationKeyResponse, ListMachinesRequest,
+        CancelVmUpdateRequest, CancelVmUpdateResponse, CreateJoinTokenRequest,
+        CreateJoinTokenResponse, DeclareMachinePortsRequest, DeclareMachinePortsResponse,
+        GetMachineRequest, GetMachineResponse, GetOrganisationKeyRequest,
+        GetOrganisationKeyResponse, GetVmUpdateRequest, GetVmUpdateResponse, ListMachinesRequest,
         ListMachinesResponse, ListVmsRequest, ListVmsResponse, Machine, MachineActivity,
         MachineRecoveryPolicy, MachineReplacement, MachineService, MachineState, MachineWorkload,
         NetworkPort as NetworkPortProto, NetworkTransport, RevokeMachineRequest,
         RevokeMachineResponse, RunVmRequest, RunVmResponse, SetMachineInServiceRequest,
         SetMachineInServiceResponse, SetMachineLabelsRequest, SetMachineLabelsResponse,
-        StopVmRequest, StopVmResponse, Vm,
+        StopVmRequest, StopVmResponse, UpdateVmRequest, UpdateVmResponse, Vm, VmUpdateStatus,
     },
 };
 use grund_store::{
@@ -30,7 +31,8 @@ use uuid::Uuid;
 use crate::{
     api::{Principal, principal},
     services::{
-        OrganisationsState,
+        AgentUpdatesState, OrganisationsState,
+        agent_updates::vm::{VmUpdateError, VmUpdateRequest, VmUpdateView},
         agents::{AgentsState, VmOutcome, VmRequest},
         machines::{Access, ChangeOutcome, MachinesState, MintOutcome, Minted, public_key_message},
     },
@@ -40,6 +42,38 @@ use crate::{
 fn internal(error: impl std::fmt::Display) -> ConnectError {
     tracing::error!(error = %error, "machine API call failed");
     ConnectError::internal("grund could not finish that")
+}
+
+fn vm_update_error(error: anyhow::Error) -> ConnectError {
+    match error.downcast_ref::<VmUpdateError>() {
+        Some(VmUpdateError::NotFound) => ConnectError::not_found("no such VM"),
+        Some(VmUpdateError::Invalid(reason)) => ConnectError::invalid_argument(*reason),
+        Some(VmUpdateError::Stale) => {
+            ConnectError::failed_precondition("VM update changed; refresh before trying again")
+        }
+        Some(VmUpdateError::Blocked(reason)) => ConnectError::failed_precondition(*reason),
+        Some(VmUpdateError::AlreadyExists) => {
+            ConnectError::already_exists("idempotency key was used for a different request")
+        }
+        None => internal(error),
+    }
+}
+
+fn vm_update_status(view: VmUpdateView) -> VmUpdateStatus {
+    VmUpdateStatus {
+        attempt_id: view.attempt_id.map(|id| id.to_string()).unwrap_or_default(),
+        vm_id: view.vm_id.to_string(),
+        phase: view.phase.into(),
+        paused: view.paused,
+        reason: view.reason.unwrap_or_default(),
+        available_rootfs_sha256: view.available_rootfs_sha256.unwrap_or_default(),
+        current_rootfs_sha256: view.current_rootfs_sha256,
+        update_version: view.update_version,
+        legacy_guest: view.legacy_guest,
+        eligible: view.eligible,
+        can_cancel: view.can_cancel,
+        ..Default::default()
+    }
 }
 
 fn timestamp<P: buffa::ProtoBox<Timestamp>>(at: DateTime<Utc>) -> MessageField<Timestamp, P> {
@@ -1042,6 +1076,92 @@ impl MachineService for MachineApi {
         })
     }
 
+    async fn update_vm(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, UpdateVmRequest>,
+    ) -> ServiceResult<UpdateVmResponse> {
+        let caller = principal(&ctx)?;
+        let membership = self
+            .member(&caller, request.organisation, Access::Manage)
+            .await?;
+        let vm_id =
+            Uuid::parse_str(request.vm_id).map_err(|_| ConnectError::not_found("no such VM"))?;
+        let update = self
+            .state
+            .agent_updates()
+            .request_vm_update(
+                membership.organisation_id,
+                vm_id,
+                &format!("account:{}", caller.account_id),
+                VmUpdateRequest {
+                    expected_version: request.expected_version,
+                    rootfs_sha256: request.rootfs_sha256.to_string(),
+                    idempotency_key: request.idempotency_key.to_string(),
+                },
+            )
+            .await
+            .map_err(vm_update_error)?;
+        Response::ok(UpdateVmResponse {
+            update: vm_update_status(update).into(),
+            ..Default::default()
+        })
+    }
+
+    async fn get_vm_update(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, GetVmUpdateRequest>,
+    ) -> ServiceResult<GetVmUpdateResponse> {
+        let caller = principal(&ctx)?;
+        let membership = self
+            .member(&caller, request.organisation, Access::Read)
+            .await?;
+        let vm_id =
+            Uuid::parse_str(request.vm_id).map_err(|_| ConnectError::not_found("no such VM"))?;
+        let update = self
+            .state
+            .agent_updates()
+            .vm_update(membership.organisation_id, vm_id)
+            .await
+            .map_err(vm_update_error)?;
+        Response::ok(GetVmUpdateResponse {
+            update: vm_update_status(update).into(),
+            ..Default::default()
+        })
+    }
+
+    async fn cancel_vm_update(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, CancelVmUpdateRequest>,
+    ) -> ServiceResult<CancelVmUpdateResponse> {
+        let caller = principal(&ctx)?;
+        let membership = self
+            .member(&caller, request.organisation, Access::Manage)
+            .await?;
+        let vm_id =
+            Uuid::parse_str(request.vm_id).map_err(|_| ConnectError::not_found("no such VM"))?;
+        let attempt_id = Uuid::parse_str(request.attempt_id)
+            .map_err(|_| ConnectError::invalid_argument("invalid attempt id"))?;
+        let update = self
+            .state
+            .agent_updates()
+            .cancel_vm_update(
+                membership.organisation_id,
+                vm_id,
+                &format!("account:{}", caller.account_id),
+                attempt_id,
+                request.idempotency_key,
+            )
+            .await
+            .map_err(vm_update_error)?;
+        Response::ok(CancelVmUpdateResponse {
+            update: vm_update_status(update).into(),
+            ..Default::default()
+        })
+    }
+
     async fn list_vms(
         &self,
         ctx: RequestContext,
@@ -1068,6 +1188,25 @@ impl MachineService for MachineApi {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_updates_and_request_key_conflicts_have_distinct_typed_refusals() {
+        assert_eq!(
+            vm_update_error(VmUpdateError::Stale.into()).code,
+            connectrpc::ErrorCode::FailedPrecondition
+        );
+        assert_eq!(
+            vm_update_error(VmUpdateError::AlreadyExists.into()).code,
+            connectrpc::ErrorCode::AlreadyExists
+        );
+    }
+
+    #[test]
+    fn unexpected_update_failures_never_expose_internal_details() {
+        let error = vm_update_error(anyhow::anyhow!("secret provider credential"));
+        assert_eq!(error.code, connectrpc::ErrorCode::Internal);
+        assert!(!error.to_string().contains("secret"));
+    }
     #[test]
     fn vm_hosts_never_expose_a_removed_management_machine_id() {
         let host = Uuid::now_v7();

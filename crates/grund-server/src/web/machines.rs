@@ -18,11 +18,13 @@ use grund_domain::{
 };
 use grund_store::{agents::VmRow, machines::MachineRow, organisations::Membership};
 use serde::Deserialize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 use crate::{
     services::{
+        AgentUpdatesState,
+        agent_updates::vm::{VmUpdateError, VmUpdateRequest, VmUpdateView},
         agents::{AgentsState, VmOutcome, VmRequest, cannot_host, connected},
         machines::{ChangeOutcome, MachinesState, MintOutcome},
         sessions::Session,
@@ -31,7 +33,7 @@ use crate::{
     web::{
         browser::Browser,
         orgs::Member,
-        pages::{PageResult, forged, redirect, signed_in_typed},
+        pages::{PageResult, forged, not_found_page, redirect, signed_in_typed},
     },
 };
 
@@ -69,6 +71,9 @@ pub struct VmItem<'a> {
     pub tone: &'static str,
     pub reason: Option<&'a str>,
     pub running: bool,
+    pub update: VmUpdateView,
+    pub update_key: String,
+    pub cancel_key: String,
 }
 
 pub struct EditingMachine<'a> {
@@ -153,6 +158,8 @@ pub async fn machines_page(
         "added" => "Machine added.",
         "running" => "Virtual machine placed. It joins as a machine once it boots.",
         "stopped" => "Virtual machine stopping.",
+        "vm-update" => "VM update requested.",
+        "vm-update-cancel" => "VM update cancellation requested.",
         "out-of-service" => "Machine out of service. Its copies are moving to other machines.",
         "in-service" => "Machine back in service.",
         "labels" => "Labels saved.",
@@ -344,7 +351,7 @@ pub(super) fn machine_context<'a>(
     }
 }
 
-fn vm_context(row: &VmRow) -> VmItem<'_> {
+fn vm_context(row: &VmRow, update: VmUpdateView) -> VmItem<'_> {
     let observed = row.observed_state.as_deref().unwrap_or("waiting");
     let tone = match observed {
         "running" => "ok",
@@ -362,6 +369,9 @@ fn vm_context(row: &VmRow) -> VmItem<'_> {
         tone,
         reason: row.observed_reason.as_deref(),
         running: row.state == "running",
+        update,
+        update_key: Uuid::now_v7().to_string(),
+        cancel_key: Uuid::now_v7().to_string(),
     }
 }
 
@@ -571,7 +581,22 @@ async fn machines_view(
         })
         .collect();
     let vm_rows = state.agents().vms(membership.organisation_id).await?;
-    let vms: Vec<VmItem<'_>> = vm_rows.iter().map(vm_context).collect();
+    let vm_ids: Vec<_> = vm_rows.iter().map(|row| row.vm_id).collect();
+    let mut updates: BTreeMap<_, _> = state
+        .agent_updates()
+        .vm_updates(membership.organisation_id, &vm_ids)
+        .await?
+        .into_iter()
+        .map(|update| (update.vm_id, update))
+        .collect();
+    let mut vms = Vec::with_capacity(vm_rows.len());
+    for row in &vm_rows {
+        let update = updates
+            .remove(&row.vm_id)
+            .ok_or(VmUpdateError::NotFound)
+            .map_err(anyhow::Error::from)?;
+        vms.push(vm_context(row, update));
+    }
     let mut run = form.run;
     let run_open = !form.run_error.is_empty() || hosts.iter().any(|(id, _)| *id == run.host);
     if run.is_fresh() || (run_open && form.run_error.is_empty()) {
@@ -1152,6 +1177,130 @@ pub async fn stop_vm(
         _ => "error=gone",
     };
     Ok(redirect(&format!("/{slug}/machines?{query}")))
+}
+
+#[derive(Deserialize)]
+pub struct UpdateVmForm {
+    #[serde(default)]
+    csrf: String,
+    idempotency_key: String,
+    expected_version: i64,
+    rootfs_sha256: String,
+}
+
+pub async fn update_vm(
+    AxumState(state): AxumState<State>,
+    browser: Browser,
+    uri: Uri,
+    Path((slug, vm_id)): Path<(String, Uuid)>,
+    Form(form): Form<UpdateVmForm>,
+) -> PageResult {
+    if !browser.form_is_genuine(&form.csrf) {
+        return forged(&state, &browser);
+    }
+    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
+    if !manages(&membership) {
+        return Ok(redirect(&format!("/{slug}/machines?error=not-allowed")));
+    }
+    let result = state
+        .agent_updates()
+        .request_vm_update(
+            membership.organisation_id,
+            vm_id,
+            &format!("account:{}", session.account_id),
+            VmUpdateRequest {
+                expected_version: form.expected_version,
+                rootfs_sha256: form.rootfs_sha256,
+                idempotency_key: form.idempotency_key,
+            },
+        )
+        .await;
+    vm_update_result(&state, &browser, &session, &membership, result, "vm-update").await
+}
+
+#[derive(Deserialize)]
+pub struct CancelVmUpdateForm {
+    #[serde(default)]
+    csrf: String,
+    attempt_id: Uuid,
+    idempotency_key: String,
+}
+
+pub async fn cancel_vm_update(
+    AxumState(state): AxumState<State>,
+    browser: Browser,
+    uri: Uri,
+    Path((slug, vm_id)): Path<(String, Uuid)>,
+    Form(form): Form<CancelVmUpdateForm>,
+) -> PageResult {
+    if !browser.form_is_genuine(&form.csrf) {
+        return forged(&state, &browser);
+    }
+    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
+    if !manages(&membership) {
+        return Ok(redirect(&format!("/{slug}/machines?error=not-allowed")));
+    }
+    let result = state
+        .agent_updates()
+        .cancel_vm_update(
+            membership.organisation_id,
+            vm_id,
+            &format!("account:{}", session.account_id),
+            form.attempt_id,
+            &form.idempotency_key,
+        )
+        .await;
+    vm_update_result(
+        &state,
+        &browser,
+        &session,
+        &membership,
+        result,
+        "vm-update-cancel",
+    )
+    .await
+}
+
+async fn vm_update_result(
+    state: &State,
+    browser: &Browser,
+    session: &Session,
+    membership: &Membership,
+    result: anyhow::Result<VmUpdateView>,
+    done: &str,
+) -> PageResult {
+    let error = match result {
+        Ok(_) => {
+            return Ok(redirect(&format!(
+                "/{}/machines?done={done}#vms",
+                membership.slug
+            )));
+        }
+        Err(error) => error,
+    };
+    let message = match error.downcast_ref::<VmUpdateError>() {
+        Some(VmUpdateError::NotFound) => return not_found_page(state, browser),
+        Some(VmUpdateError::Invalid(reason) | VmUpdateError::Blocked(reason)) => *reason,
+        Some(VmUpdateError::Stale) => {
+            "VM update changed. Review its current state before trying again."
+        }
+        Some(VmUpdateError::AlreadyExists) => {
+            "This request key was used for a different VM update."
+        }
+        None => return Err(error.into()),
+    };
+    machines_view(
+        state,
+        browser,
+        session,
+        membership,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        MachinesForm {
+            error: message,
+            ..Default::default()
+        },
+    )
+    .await
 }
 
 #[cfg(test)]

@@ -199,10 +199,74 @@ pub trait RemovalObserver: Send + Sync + std::fmt::Debug {
     fn loss(&self);
 }
 
+/// A fresh, local proof of finite limits and disposable-process attachment.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceLimitProof {
+    /// Exact finite CPU quota and period read back before and after attachment.
+    pub cpu_verified: bool,
+    /// Exact finite memory limit read back before and after attachment.
+    pub memory_verified: bool,
+    /// A disposable owned process was observed in the limited leaf.
+    pub attachment_verified: bool,
+    /// Any failure, including uncertain cleanup, prevents a positive proof.
+    pub failure: Option<ResourceLimitFailure>,
+}
+
+impl ResourceLimitProof {
+    /// Only complete verification with successful cleanup is a positive proof.
+    pub fn is_positive(&self) -> bool {
+        self.cpu_verified
+            && self.memory_verified
+            && self.attachment_verified
+            && self.failure.is_none()
+    }
+}
+
+/// Bounded, non-sensitive reasons a resource-limit proof could not be made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ResourceLimitFailure {
+    /// The boot-owned cgroup hierarchy does not already delegate both controllers.
+    BootDelegationUnavailable,
+    /// An owned temporary leaf could not be established.
+    LeafUnavailable,
+    /// The finite CPU quota and period could not be written and verified.
+    CpuLimitUnverified,
+    /// The finite memory limit could not be written and verified.
+    MemoryLimitUnverified,
+    /// A bounded child with an unambiguous process identity could not be established.
+    ChildUnavailable,
+    /// The child's membership in the limited leaf could not be verified.
+    AttachmentUnverified,
+    /// Child reaping or owned-leaf removal could not be established.
+    CleanupUnverified,
+}
+
+impl ResourceLimitFailure {
+    /// Stable codes suitable for readiness observations; never contain host paths.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::BootDelegationUnavailable => "RESOURCE_BOOT_DELEGATION_UNAVAILABLE",
+            Self::LeafUnavailable => "RESOURCE_PROBE_LEAF_UNAVAILABLE",
+            Self::CpuLimitUnverified => "RESOURCE_CPU_LIMIT_UNVERIFIED",
+            Self::MemoryLimitUnverified => "RESOURCE_MEMORY_LIMIT_UNVERIFIED",
+            Self::ChildUnavailable => "RESOURCE_PROBE_CHILD_UNAVAILABLE",
+            Self::AttachmentUnverified => "RESOURCE_ATTACHMENT_UNVERIFIED",
+            Self::CleanupUnverified => "RESOURCE_PROBE_CLEANUP_UNVERIFIED",
+        }
+    }
+}
+
 /// Runs containers on this machine.
 pub trait ContainerRuntime: Send + Sync {
     /// What this machine can do. Cheap: no download, no daemon start.
     fn capabilities(&self) -> impl Future<Output = AppsCapabilities> + Send;
+
+    /// Actively proves local resource limits without preparing the runtime.
+    /// Unsupported runtimes provide no proof. A positive result requires cleanup;
+    /// implementations must not leave owned processes or leaves on cancellation.
+    fn resource_limit_probe(&self) -> impl Future<Output = Option<ResourceLimitProof>> + Send {
+        async { None }
+    }
 
     /// Makes the runtime ready to run containers: on first use, fetches its
     /// pinned binaries (checked by SHA-256) and starts its daemon, then waits

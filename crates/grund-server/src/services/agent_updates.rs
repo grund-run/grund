@@ -1,8 +1,12 @@
 //! Instance-wide serial machine updates and independently observed boot health.
 
+pub mod vm;
+
 use chrono::{DateTime, Duration, Utc};
 use grund_domain::{
-    agent_updates::{AgentUpdates, Attempt, Command, Failure, Fence, Phase, PublicBuild},
+    agent_updates::{
+        ActiveUpdate, AgentUpdates, Attempt, Command, Failure, Fence, Phase, PublicBuild,
+    },
     machine::KeyPurpose,
 };
 use grund_store::{
@@ -128,7 +132,7 @@ impl AgentUpdateService {
                 rollout = work.load_agent_updates().await?;
             }
         }
-        let offer = match rollout.active.as_ref() {
+        let offer = match rollout.active.as_ref().and_then(ActiveUpdate::executable) {
             Some(attempt)
                 if attempt.machine_id == caller.machine_id
                     && attempt.registration_key == caller.registration_key
@@ -158,7 +162,12 @@ impl AgentUpdateService {
         let Some(row) = current_machine(&mut work, caller).await? else {
             return Err(grund_domain::agent_updates::Error::StaleFence.into());
         };
-        let Some(attempt) = rollout.active.as_ref().filter(|a| a.id == attempt_id) else {
+        let Some(attempt) = rollout
+            .active
+            .as_ref()
+            .and_then(ActiveUpdate::executable)
+            .filter(|a| a.id == attempt_id)
+        else {
             let completed = work.completed_update_attempt(attempt_id).await?;
             return match completed {
                 Some(attempt)
@@ -232,7 +241,10 @@ impl AgentUpdateService {
             .load_agent_updates()
             .await?
             .active
-            .and_then(|attempt| attempt.provider_fence)
+            .and_then(|update| match update {
+                ActiveUpdate::Executable(attempt) => attempt.provider_fence,
+                ActiveUpdate::Vm(_) => None,
+            })
             .expect("reservation command retains its intent");
         work.commit().await?;
 
@@ -257,6 +269,7 @@ impl AgentUpdateService {
         let Some(attempt) = rollout
             .active
             .as_ref()
+            .and_then(ActiveUpdate::executable)
             .filter(|a| matches_attempt(a, caller, attempt_id, generation))
         else {
             work.commit().await?;
@@ -345,6 +358,7 @@ impl AgentUpdateService {
         let Some(attempt) = rollout
             .active
             .as_ref()
+            .and_then(ActiveUpdate::executable)
             .filter(|a| matches_attempt(a, caller, attempt_id, generation))
         else {
             return Ok((false, None));
@@ -411,6 +425,7 @@ impl AgentUpdateService {
                     rollout
                         .active
                         .as_ref()
+                        .and_then(ActiveUpdate::executable)
                         .expect("health retains active attempt"),
                     Some(boot_id),
                 )
@@ -536,15 +551,19 @@ async fn monitor(state: &State) -> anyhow::Result<()> {
         "instance:agent-update-monitor",
     )
     .await?;
-    let rollout = sweep(&mut work, Utc::now()).await?;
+    let now = Utc::now();
+    let rollout = sweep(&mut work, now).await?;
     let pending = rollout.pending_provider_release;
+    vm::reconcile(state, &mut work, now).await?;
     work.commit().await?;
+    state.wakes.documents_changed();
+    state.wakes.apps_changed();
     if let Some(reservation) = pending {
         let closed = state
             .capacity()
             .release_machine_update_fence(&reservation)
             .await?;
-        if closed >= reservation.sequence {
+        if closed {
             let mut work = Work::begin(
                 &state.events,
                 Uuid::now_v7(),
@@ -568,7 +587,7 @@ async fn sweep(work: &mut Work<'_>, now: DateTime<Utc>) -> anyhow::Result<AgentU
         work.agent_updates(Command::Initialize { at: now }).await?;
         rollout = work.load_agent_updates().await?;
     }
-    let Some(attempt) = rollout.active.as_ref() else {
+    let Some(attempt) = rollout.active.as_ref().and_then(ActiveUpdate::executable) else {
         return Ok(rollout);
     };
     if attempt.authorized_at.is_some() && attempt.phase != Phase::Failed {
@@ -820,6 +839,7 @@ mod tests {
             organisation_id: None,
             endpoint_key_prefix: [b'a'; 12],
             registration_key: "a".repeat(64),
+            signed_at: Utc::now(),
         };
         let attempt: Attempt = serde_json::from_value(serde_json::json!({
             "id": attempt_id, "machine_id": machine_id, "registration_key": "a".repeat(64),

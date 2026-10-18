@@ -21,7 +21,9 @@ use uuid::Uuid;
 use crate::{
     services::{
         AgentUpdatesState,
-        agents::{AgentsState, HEARTBEAT_INTERVAL_SECONDS, MachineCaller, ReplicaReport},
+        agents::{
+            AgentsState, HEARTBEAT_INTERVAL_SECONDS, MachineCaller, ReplicaReport, VmReports,
+        },
         apps::AppsState,
         backups::BackupsState,
         machines::MachinesState,
@@ -96,6 +98,7 @@ impl AgentService for AgentApi {
                     "max_replica_memory_mib": c.max_replica_memory_mib,
                     "max_replica_cpu_millis": c.max_replica_cpu_millis,
                     "disk_gib": c.disk_gib,
+                    "vm_replacement_version": c.vm_replacement_version,
                 });
                 if let Some(usage) = c.usage.as_option() {
                     let mut snapshot = serde_json::Map::new();
@@ -135,10 +138,41 @@ impl AgentService for AgentApi {
                 }
                 capabilities
             });
+        let guest_boot = request.guest_boot_evidence.as_option().and_then(|boot| {
+            if boot.version != 1 {
+                return None;
+            }
+            let (attempt_id, launch_nonce) =
+                boot_launch(boot.attempt_id, boot.sequence, boot.launch_nonce)?;
+            let resources = boot.resources.as_option();
+            Some(grund_store::agents::GuestBootObservation {
+                vm_id: nonnil_uuid(boot.vm_id)?,
+                attempt_id,
+                sequence: boot.sequence,
+                launch_nonce,
+                os_boot_id: nonnil_uuid(boot.os_boot_id)?,
+                cpu_probe: resources.as_ref().is_some_and(|proof| proof.cpu_verified),
+                memory_probe: resources
+                    .as_ref()
+                    .is_some_and(|proof| proof.memory_verified),
+                attachment_probe: resources
+                    .as_ref()
+                    .is_some_and(|proof| proof.attachment_verified),
+                probe_failed: resources
+                    .as_ref()
+                    .is_none_or(|proof| !proof.failure_code.is_empty()),
+            })
+        });
         let generation = self
             .state
             .agents()
-            .heartbeat(&caller, request.agent_version, &capabilities)
+            .heartbeat(
+                &caller,
+                request.agent_version,
+                &capabilities,
+                request.update_ready,
+                guest_boot,
+            )
             .await
             .map_err(internal)?;
         if !request.boot_id.is_empty() {
@@ -367,6 +401,57 @@ impl AgentService for AgentApi {
                 ))
             })
             .collect();
+        let vm_updates = request
+            .machines
+            .iter()
+            .take(200)
+            .filter_map(|vm| {
+                use grund_proto::grund::agent::v1::VmUpdatePhase;
+                let update = vm.update.as_option()?;
+                if update.version != 1
+                    || update.sequence == 0
+                    || update.kernel_sha256.len() > 64
+                    || update.rootfs_sha256.len() > 64
+                {
+                    return None;
+                }
+                let phase = match update.phase.as_known()? {
+                    VmUpdatePhase::VM_UPDATE_PHASE_PREPARING => "preparing",
+                    VmUpdatePhase::VM_UPDATE_PHASE_PREPARED => "prepared",
+                    VmUpdatePhase::VM_UPDATE_PHASE_QUIESCING => "quiescing",
+                    VmUpdatePhase::VM_UPDATE_PHASE_QUIESCED => "quiesced",
+                    VmUpdatePhase::VM_UPDATE_PHASE_INSTALLING => "installing",
+                    VmUpdatePhase::VM_UPDATE_PHASE_STARTING => "starting",
+                    VmUpdatePhase::VM_UPDATE_PHASE_CANDIDATE_RUNNING => "candidate_running",
+                    VmUpdatePhase::VM_UPDATE_PHASE_COMMITTED => "committed",
+                    VmUpdatePhase::VM_UPDATE_PHASE_ROLLING_BACK => "rolling_back",
+                    VmUpdatePhase::VM_UPDATE_PHASE_ROLLED_BACK => "rolled_back",
+                    VmUpdatePhase::VM_UPDATE_PHASE_RELEASING => "releasing",
+                    VmUpdatePhase::VM_UPDATE_PHASE_RELEASED => "released",
+                    VmUpdatePhase::VM_UPDATE_PHASE_UNCERTAIN => "uncertain",
+                    VmUpdatePhase::VM_UPDATE_PHASE_UNSPECIFIED => return None,
+                };
+                let previous_process = update.previous_process.as_option().and_then(|process| {
+                    process_identity(process.pid, process.start_ticks, process.host_os_boot_id)
+                });
+                let candidate_process = update.candidate_process.as_option().and_then(|process| {
+                    process_identity(process.pid, process.start_ticks, process.host_os_boot_id)
+                });
+                Some(grund_store::agents::HostVmObservation {
+                    vm_id: nonnil_uuid(vm.vm_id)?,
+                    attempt_id: nonnil_uuid(update.attempt_id)?,
+                    sequence: update.sequence,
+                    phase: phase.into(),
+                    kernel_sha256: update.kernel_sha256.to_string(),
+                    rootfs_sha256: update.rootfs_sha256.to_string(),
+                    launch_nonce: nonnil_uuid(update.launch_nonce)?,
+                    reason: update.reason.chars().take(200).collect(),
+                    previous_process,
+                    candidate_process,
+                    old_root_fenced: update.old_root_fenced,
+                })
+            })
+            .collect::<Vec<_>>();
         let refusals: Vec<String> = request.refusals.iter().map(|r| r.to_string()).collect();
         let replicas: Vec<ReplicaReport> = request
             .replicas
@@ -410,7 +495,10 @@ impl AgentService for AgentApi {
             .report(
                 &caller,
                 request.applied_generation,
-                &observed,
+                VmReports {
+                    states: &observed,
+                    updates: &vm_updates,
+                },
                 &refusals,
                 request.reports_replicas.then_some(replicas.as_slice()),
                 &volume_deletions,
@@ -497,5 +585,60 @@ impl AgentService for AgentApi {
             }
             MembershipOutcome::NotFound => Err(not_found()),
         }
+    }
+}
+
+fn nonnil_uuid(value: &str) -> Option<Uuid> {
+    Uuid::parse_str(value).ok().filter(|id| !id.is_nil())
+}
+
+fn boot_launch(attempt_id: &str, sequence: u64, launch_nonce: &str) -> Option<(Uuid, Uuid)> {
+    if sequence == 0 {
+        return (attempt_id.is_empty() && launch_nonce.is_empty())
+            .then_some((Uuid::nil(), Uuid::nil()));
+    }
+    Some((nonnil_uuid(attempt_id)?, nonnil_uuid(launch_nonce)?))
+}
+
+fn process_identity(
+    pid: u32,
+    start_ticks: u64,
+    host_os_boot_id: &str,
+) -> Option<grund_domain::agent_updates::vm::ProcessIdentity> {
+    if pid == 0 || start_ticks == 0 {
+        return None;
+    }
+    Some(grund_domain::agent_updates::vm::ProcessIdentity {
+        process_id: pid,
+        start_time_ticks: start_ticks,
+        host_boot_id: nonnil_uuid(host_os_boot_id)?,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ordinary_boots_cannot_claim_partial_replacement_launch_identity() {
+        let attempt = Uuid::now_v7().to_string();
+        let nonce = Uuid::now_v7().to_string();
+        assert_eq!(boot_launch("", 0, ""), Some((Uuid::nil(), Uuid::nil())));
+        assert!(boot_launch(&attempt, 0, "").is_none());
+        assert!(boot_launch("", 0, &nonce).is_none());
+        assert!(boot_launch("", 1, "").is_none());
+        assert!(boot_launch(&attempt, 1, "").is_none());
+        assert!(boot_launch(&Uuid::nil().to_string(), 1, &nonce).is_none());
+        assert!(boot_launch(&attempt, 1, &nonce).is_some());
+    }
+
+    #[test]
+    fn a_pid_without_kernel_boot_and_start_identity_is_not_physical_proof() {
+        let boot = Uuid::now_v7().to_string();
+        assert!(process_identity(42, 0, &boot).is_none());
+        assert!(process_identity(42, 100, "").is_none());
+        assert!(process_identity(42, 100, &Uuid::nil().to_string()).is_none());
+        assert!(process_identity(0, 100, &boot).is_none());
+        assert!(process_identity(42, 100, &boot).is_some());
     }
 }

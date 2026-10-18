@@ -643,6 +643,27 @@ async fn a_device_stays_connected_and_runs_a_vm_that_joins_the_same_organisation
         .unwrap_or_default()
         .to_string();
 
+    let (outsider, outsider_when, outsider_then) = given.testcase.another_browser();
+    let other = outsider.a_signed_in_account().await?;
+    for organisation in [&owner.username, &other.username] {
+        for method in ["GetVmUpdate", "UpdateVm", "CancelVmUpdate"] {
+            let mut body = json!({"organisation": organisation, "vmId": vm_id});
+            if method != "GetVmUpdate" {
+                body["idempotencyKey"] = json!("01992d8e-f0b7-7000-8000-000000000002");
+            }
+            if method == "UpdateVm" {
+                body["expectedVersion"] = json!("0");
+                body["rootfsSha256"] = json!("b".repeat(64));
+            } else if method == "CancelVmUpdate" {
+                body["attemptId"] = json!("01992d8e-f0b7-7000-8000-000000000001");
+            }
+            outsider_when
+                .calling(&format!("{MACHINES}/{method}"), &body.to_string())
+                .await?;
+            outsider_then.status(404)?.connect_code("not_found")?;
+        }
+    }
+
     let applied = grund_agent_once(&device).await;
     let logs = format!(
         "{}{}",
@@ -966,6 +987,38 @@ async fn a_member_sees_the_machines_page_but_cannot_add_or_remove() -> anyhow::R
         .submitting(&page, &format!("{page}/add"), &[("name", "sneak")])
         .await?;
     guest_then.redirects_to(&format!("{page}?error=not-allowed"))?;
+    for method in ["UpdateVm", "CancelVmUpdate"] {
+        let mut body = json!({
+            "organisation": owner.username,
+            "vmId": "01992d8e-f0b7-7000-8000-000000000001",
+            "idempotencyKey": "01992d8e-f0b7-7000-8000-000000000003"
+        });
+        if method == "UpdateVm" {
+            body["expectedVersion"] = json!("0");
+            body["rootfsSha256"] = json!("b".repeat(64));
+        } else {
+            body["attemptId"] = json!("01992d8e-f0b7-7000-8000-000000000002");
+        }
+        guest_when
+            .calling(&format!("{MACHINES}/{method}"), &body.to_string())
+            .await?;
+        guest_then.status(403)?.connect_code("permission_denied")?;
+    }
+    for action in ["update", "update/cancel"] {
+        guest_when
+            .submitting(
+                &page,
+                &format!("{page}/vms/01992d8e-f0b7-7000-8000-000000000001/{action}"),
+                &[
+                    ("idempotency_key", "01992d8e-f0b7-7000-8000-000000000003"),
+                    ("expected_version", "0"),
+                    ("rootfs_sha256", &"b".repeat(64)),
+                    ("attempt_id", "01992d8e-f0b7-7000-8000-000000000002"),
+                ],
+            )
+            .await?;
+        guest_then.redirects_to(&format!("{page}?error=not-allowed"))?;
+    }
     let _ = then;
     Ok(())
 }

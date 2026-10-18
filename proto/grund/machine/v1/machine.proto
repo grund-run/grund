@@ -75,6 +75,23 @@ service MachineService {
   rpc ListVms(ListVmsRequest) returns (ListVmsResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
   }
+
+  // Owners and admins. Replaces this VM with the approved image after a safe
+  // drain. A scoped idempotency key replays the same request; changed input
+  // with that key is already_exists. A stale update version is failed_precondition.
+  rpc UpdateVm(UpdateVmRequest) returns (UpdateVmResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+
+  rpc GetVmUpdate(GetVmUpdateRequest) returns (GetVmUpdateResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // Owners and admins. Requests safe cancellation of the named attempt.
+  // Cancellation cannot undo an irreversible commit.
+  rpc CancelVmUpdate(CancelVmUpdateRequest) returns (CancelVmUpdateResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
 }
 
 message Machine {
@@ -365,4 +382,53 @@ message ListVmsRequest {
 
 message ListVmsResponse {
   repeated Vm vms = 1;
+}
+
+message UpdateVmRequest {
+  string organisation = 1;
+  string vm_id = 2;
+  string idempotency_key = 3;
+  int64 expected_version = 4;
+  // Must match the currently approved immutable target, not an arbitrary image.
+  string rootfs_sha256 = 5;
+}
+
+message UpdateVmResponse {
+  VmUpdateStatus update = 1;
+}
+
+message GetVmUpdateRequest {
+  string organisation = 1;
+  string vm_id = 2;
+}
+
+message GetVmUpdateResponse {
+  VmUpdateStatus update = 1;
+}
+
+message CancelVmUpdateRequest {
+  string organisation = 1;
+  string vm_id = 2;
+  string attempt_id = 3;
+  string idempotency_key = 4;
+}
+
+message CancelVmUpdateResponse {
+  VmUpdateStatus update = 1;
+}
+
+message VmUpdateStatus {
+  string attempt_id = 1;
+  string vm_id = 2;
+  // Stable phase code, including preparing, draining, verifying and releasing.
+  string phase = 3;
+  bool paused = 4;
+  string reason = 5;
+  string available_rootfs_sha256 = 6;
+  string current_rootfs_sha256 = 7;
+  int64 update_version = 8;
+  // Cleared only by current registered boot evidence, never by image pins alone.
+  bool legacy_guest = 9;
+  bool eligible = 10;
+  bool can_cancel = 11;
 }

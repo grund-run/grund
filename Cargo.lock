@@ -2120,7 +2120,12 @@ dependencies = [
 name = "grund-guest"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek 2.2.0",
+ "hex",
  "libc",
+ "serde",
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]
@@ -2296,6 +2301,7 @@ name = "grund-vm"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "ed25519-dalek 2.2.0",
  "grund-agent",
  "grund-crypto",
  "grund-domain",

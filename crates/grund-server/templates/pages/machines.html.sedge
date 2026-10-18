@@ -1,4 +1,4 @@
-use crate::templates::compiled::components::{PageHead, Banner, Panel, Button, Icon, MachineRow, EmptyState, Field};
+use crate::templates::compiled::components::{PageHead, Banner, Panel, Button, Icon, MachineRow, EmptyState, Field, Row, PostButton};
 props crate::web::machines::MachinesPage<'_> { csrf, slug, manages, machines, hosts, vms, editing, disconnected, shown, tabs, run_open, tab, q, notice, error, run_error, run, label_keys, label_values };
 
 <PageHead title="Machines" />
@@ -61,6 +61,32 @@ props crate::web::machines::MachinesPage<'_> { csrf, slug, manages, machines, ho
 }}
 {if !vms.is_empty() {
   <section class="section" aria-labelledby="vms"><div class="section-head"><h2 class="section-title" id="vms">Virtual machines<span class="count">{vms.len()}</span></h2></div><ul class="rows">
-    {for vm in vms { <li class="row"><span class="row-icon"><Icon name="grid" class="icon-lg tone-violet" /></span><div><p class="row-name">{vm.name}</p><p class="row-sub">on {vm.host} · {vm.vcpus} vCPU, {vm.memory_mib} MiB, {vm.disk_gib} GiB{if let Some(reason) = vm.reason.as_deref().filter(|s| !s.is_empty()) { · {reason} }}</p></div><span class="row-status"><Icon name={match vm.tone { "orange" | "danger" => "alert", "blue" => "clock", "muted" => "minus", _ => "ok" }} class="tone-{vm.tone}" />{vm.observed}</span>{if *manages && vm.running { <div class="row-end"><form method="post" action="/{slug}/machines/vms/{vm.id}/stop" novalidate><input type="hidden" name="csrf" value={csrf}><Button label="Stop" kind="secondary" size="sm" /></form></div> } else { <span></span> }}</li> }}
+    {for vm in vms {
+      <Row name={vm.name} icon_name="grid" tone="violet" status_text={Some(vm.observed.as_str())} status_tone={vm.tone}>
+        <:sub_content>
+          on {vm.host} · {vm.vcpus} vCPU, {vm.memory_mib} MiB, {vm.disk_gib} GiB{if let Some(reason) = vm.reason.filter(|s| !s.is_empty()) { · {reason} }}
+          <br>VM update: {vm.update.phase}{if vm.update.paused { · Paused }}
+          {if let Some(reason) = vm.update.reason.as_deref().filter(|s| !s.is_empty()) { <br>{reason} }}
+          {if vm.update.legacy_guest { <br>Legacy guest: update or restart required }}
+        </:sub_content>
+        <:end>
+          {if *manages {
+            {if vm.update.eligible {
+              {if let Some(sha) = vm.update.available_rootfs_sha256.as_deref() {
+                <PostButton action="/{slug}/machines/vms/{vm.id}/update" csrf={csrf} label="Update VM" kind="secondary" size="sm" hidden={&[("idempotency_key", vm.update_key.as_str()), ("expected_version", &vm.update.update_version.to_string()), ("rootfs_sha256", sha)]} />
+              }}
+            }}
+            {if vm.update.can_cancel {
+              {if let Some(attempt_id) = vm.update.attempt_id {
+                <PostButton action="/{slug}/machines/vms/{vm.id}/update/cancel" csrf={csrf} label="Cancel" kind="secondary" size="sm" hidden={&[("idempotency_key", vm.cancel_key.as_str()), ("attempt_id", &attempt_id.to_string())]} />
+              }}
+            }}
+            {if vm.running {
+              <PostButton action="/{slug}/machines/vms/{vm.id}/stop" csrf={csrf} label="Stop" kind="secondary" size="sm" />
+            }}
+          }}
+        </:end>
+      </Row>
+    }}
   </ul></section>
 }}

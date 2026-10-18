@@ -205,6 +205,9 @@ message HeartbeatRequest {
   string public_revision = 4;
   // True only after this boot has initialized its machine runtime.
   bool update_ready = 5;
+  // A signed assertion from this guest's current OS boot. Absence is unproven,
+  // not evidence that an older guest can enforce workload limits.
+  GuestBootEvidence guest_boot_evidence = 6;
 }
 
 message Capabilities {
@@ -246,6 +249,33 @@ message Capabilities {
   bool resources_allocatable = 16;
   // Supports stack-exclusive replacement and operation-fenced stop receipts.
   bool stack_services = 17;
+  // 0 means unsupported. Version 1 stages and physically fences guest roots;
+  // an older host must never receive replacement work.
+  uint32 vm_replacement_version = 18;
+}
+
+// Active kernel configuration and owned-process attachment, not a benchmark.
+// All flags must be true and failure_code empty for a positive proof.
+message ResourceLimitProof {
+  bool cpu_verified = 1;
+  bool memory_verified = 2;
+  bool attachment_verified = 3;
+  // Bounded machine code; never a host path, command output or secret.
+  string failure_code = 4;
+}
+
+// PID 1 binds the launch context to the actual OS boot before starting the
+// agent. An agent process restart cannot manufacture a new guest launch.
+message GuestBootEvidence {
+  uint32 version = 1;
+  string vm_id = 2;
+  string attempt_id = 3;
+  // The operation that launched this boot, not a later finalize operation.
+  uint64 sequence = 4;
+  string launch_nonce = 5;
+  // Linux's kernel boot UUID, distinct from HeartbeatRequest.boot_id.
+  string os_boot_id = 6;
+  ResourceLimitProof resources = 7;
 }
 
 // One bounded host sample. Missing numeric fields mean unknown, not zero.
@@ -513,11 +543,40 @@ message Vm {
   uint32 disk_gib = 5;
   VmImage image = 6;
   VmDesiredState state = 7;
+  // The ordinary state remains RUNNING during replacement. Older hosts ignore
+  // this field, so they cannot mistake a quiesce for destructive ordinary stop.
+  VmUpdate update = 8;
 }
 
 message VmImage {
   Artifact kernel = 1;
   Artifact rootfs = 2;
+}
+
+// A fenced operation in the instance's serial machine-update rollout.
+message VmUpdate {
+  uint32 version = 1;
+  string attempt_id = 2;
+  // Increases for each distinct operation within the attempt.
+  uint64 sequence = 3;
+  VmUpdateAction action = 4;
+  VmImage image = 5;
+  string guest_machine_id = 6;
+  // The current registered public key; never the guest's private seed.
+  bytes registration_key = 7;
+  // Fresh for each physical launch, including rollback.
+  string launch_nonce = 8;
+  google.protobuf.Timestamp deadline = 9;
+}
+
+enum VmUpdateAction {
+  VM_UPDATE_ACTION_UNSPECIFIED = 0;
+  VM_UPDATE_ACTION_PREPARE = 1;
+  VM_UPDATE_ACTION_QUIESCE = 2;
+  VM_UPDATE_ACTION_START_CANDIDATE = 3;
+  VM_UPDATE_ACTION_COMMIT = 4;
+  VM_UPDATE_ACTION_ROLLBACK = 5;
+  VM_UPDATE_ACTION_RELEASE_OLD = 6;
 }
 
 // A file pinned by digest.
@@ -605,6 +664,49 @@ message VmObserved {
   string reason = 3;
   // For exited, when known.
   int32 exit_code = 4;
+  // Valid only in the same current-generation ReportStatus transaction as
+  // this VM observation; an earlier stopped report is not a quiesce ack.
+  VmUpdateObserved update = 5;
+}
+
+// A host-kernel identity, not a PID file by itself.
+message VmProcessIdentity {
+  uint32 pid = 1;
+  uint64 start_ticks = 2;
+  string host_os_boot_id = 3;
+}
+
+// Image and process witnesses from the trusted host, bound to one operation.
+// This does not replace the guest's separately signed boot/resource evidence.
+message VmUpdateObserved {
+  uint32 version = 1;
+  string attempt_id = 2;
+  uint64 sequence = 3;
+  VmUpdatePhase phase = 4;
+  string kernel_sha256 = 5;
+  string rootfs_sha256 = 6;
+  string launch_nonce = 7;
+  string reason = 8;
+  VmProcessIdentity previous_process = 9;
+  VmProcessIdentity candidate_process = 10;
+  bool old_root_fenced = 11;
+}
+
+enum VmUpdatePhase {
+  VM_UPDATE_PHASE_UNSPECIFIED = 0;
+  VM_UPDATE_PHASE_PREPARING = 1;
+  VM_UPDATE_PHASE_PREPARED = 2;
+  VM_UPDATE_PHASE_QUIESCING = 3;
+  VM_UPDATE_PHASE_QUIESCED = 4;
+  VM_UPDATE_PHASE_INSTALLING = 5;
+  VM_UPDATE_PHASE_STARTING = 6;
+  VM_UPDATE_PHASE_CANDIDATE_RUNNING = 7;
+  VM_UPDATE_PHASE_COMMITTED = 8;
+  VM_UPDATE_PHASE_ROLLING_BACK = 9;
+  VM_UPDATE_PHASE_ROLLED_BACK = 10;
+  VM_UPDATE_PHASE_RELEASING = 11;
+  VM_UPDATE_PHASE_RELEASED = 12;
+  VM_UPDATE_PHASE_UNCERTAIN = 13;
 }
 
 enum VmObservedState {

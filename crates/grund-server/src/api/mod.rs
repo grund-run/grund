@@ -404,6 +404,18 @@ pub const AUTHORIZATION: &[(&str, Requirement)] = &[
         Requirement::SessionOrFullToken,
     ),
     (
+        "/grund.machine.v1.MachineService/UpdateVm",
+        Requirement::SessionOrFullToken,
+    ),
+    (
+        "/grund.machine.v1.MachineService/GetVmUpdate",
+        Requirement::SessionOrFullToken,
+    ),
+    (
+        "/grund.machine.v1.MachineService/CancelVmUpdate",
+        Requirement::SessionOrFullToken,
+    ),
+    (
         "/grund.app.v1.AppService/CreateApp",
         Requirement::SessionOrToken,
     ),
@@ -1712,6 +1724,27 @@ mod tests {
         ) -> ServiceResult<machine::StopVmResponse> {
             unreachable!()
         }
+        async fn update_vm(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, machine::UpdateVmRequest>,
+        ) -> ServiceResult<machine::UpdateVmResponse> {
+            unreachable!()
+        }
+        async fn get_vm_update(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, machine::GetVmUpdateRequest>,
+        ) -> ServiceResult<machine::GetVmUpdateResponse> {
+            unreachable!()
+        }
+        async fn cancel_vm_update(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, machine::CancelVmUpdateRequest>,
+        ) -> ServiceResult<machine::CancelVmUpdateResponse> {
+            unreachable!()
+        }
         async fn list_vms(
             &self,
             _: RequestContext,
@@ -2389,6 +2422,7 @@ mod tests {
                         organisation_id: None,
                         endpoint_key_prefix: [b'0'; 12],
                         registration_key: "0".repeat(64),
+                        signed_at: chrono::Utc::now(),
                     });
                 }
                 "token" | "full_token" => {
@@ -2580,6 +2614,9 @@ mod tests {
             "/grund.organisation.v1.OrganisationService/ListMembers",
             "/grund.machine.v1.MachineService/CreateJoinToken",
             "/grund.machine.v1.MachineService/SetMachineInService",
+            "/grund.machine.v1.MachineService/UpdateVm",
+            "/grund.machine.v1.MachineService/GetVmUpdate",
+            "/grund.machine.v1.MachineService/CancelVmUpdate",
             "/grund.domain.v1.DomainService/BindDomain",
             "/grund.domain.v1.DomainService/CheckDomain",
             "/grund.domain.v1.DomainService/ConfigureAppDomain",

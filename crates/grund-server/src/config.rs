@@ -107,6 +107,10 @@ pub struct ServeConfig {
     #[arg(long, env = "GRUND_AGENT_UPDATES_PAUSED", default_value_t = false, action = clap::ArgAction::Set)]
     pub agent_updates_paused: bool,
 
+    /// Enables explicit own-VM replacement only after every server understands its events.
+    #[arg(long, env = "GRUND_VM_UPDATES_ENABLED", default_value_t = false, action = clap::ArgAction::Set)]
+    pub vm_updates_enabled: bool,
+
     /// The origin people reach grund at, e.g. https://app.grund.sh. Links in
     /// mail point here, cookies are scoped to it, and a form posted from any
     /// other origin is refused. Plain http only for loopback, unless
@@ -1533,6 +1537,22 @@ mod tests {
         let mut config = Harness::try_parse_from(base.iter().chain(args).copied())?.serve;
         config.validate()?;
         Ok(config)
+    }
+
+    #[test]
+    fn vm_replacement_requires_explicit_process_opt_in() {
+        assert!(!parse(&[]).unwrap().vm_updates_enabled);
+        assert!(
+            parse(&["--vm-updates-enabled", "true"])
+                .unwrap()
+                .vm_updates_enabled
+        );
+        assert!(
+            !parse(&["--vm-updates-enabled", "false"])
+                .unwrap()
+                .vm_updates_enabled
+        );
+        assert!(parse(&["--vm-updates-enabled", "yes"]).is_err());
     }
 
     #[test]

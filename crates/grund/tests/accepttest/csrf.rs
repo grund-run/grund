@@ -89,6 +89,34 @@ async fn image_update_forms_refuse_csrf_before_membership_or_input_validation() 
 }
 
 #[tokio::test]
+async fn vm_update_and_cancel_forms_refuse_missing_and_forged_csrf() -> anyhow::Result<()> {
+    let (_given, when, then) = testcase().await?;
+    when.visiting("/login").await?;
+    let origin = when.form_origin();
+    for action in ["update", "update/cancel"] {
+        for csrf in [None, Some("forged")] {
+            let mut fields = vec![
+                ("idempotency_key", "01992d8e-f0b7-7000-8000-000000000001"),
+                ("expected_version", "0"),
+                ("rootfs_sha256", "not-an-approved-digest"),
+                ("attempt_id", "01992d8e-f0b7-7000-8000-000000000002"),
+            ];
+            if let Some(csrf) = csrf {
+                fields.push(("csrf", csrf));
+            }
+            when.posting_raw(
+                &format!("/missing/machines/vms/01992d8e-f0b7-7000-8000-000000000003/{action}"),
+                &fields,
+                Some(&origin),
+            )
+            .await?;
+            then.status(403)?;
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn credential_reveal_refuses_forged_forms_and_never_reads_a_user_entered_secret()
 -> anyhow::Result<()> {
     use base64::Engine;

@@ -32,7 +32,7 @@ pub trait CapacityProvider: Any + Send + Sync {
     fn release_machine_update_fence<'a>(
         &'a self,
         reservation: &'a ProviderUpdateFence,
-    ) -> CapacityFuture<'a, Result<u64, CapacityError>>;
+    ) -> CapacityFuture<'a, Result<bool, CapacityError>>;
     fn offers(&self) -> CapacityFuture<'_, Result<Vec<Offer>, CapacityError>>;
     fn inventory_sizes(&self) -> CapacityFuture<'_, Result<Vec<InventorySize>, CapacityError>>;
     fn get_provision<'a>(
@@ -104,7 +104,7 @@ impl Capacity {
     pub async fn release_machine_update_fence(
         &self,
         reservation: &ProviderUpdateFence,
-    ) -> Result<u64, CapacityError> {
+    ) -> Result<bool, CapacityError> {
         match self {
             Self::None => Err(CapacityError::NotConfigured),
             Self::Provider(provider) => provider.release_machine_update_fence(reservation).await,

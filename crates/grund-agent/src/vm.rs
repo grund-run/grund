@@ -88,6 +88,87 @@ pub struct VmCapabilities {
     pub free_memory_mib: u32,
 }
 
+/// A host operation authorized by the existing guest update document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VmReplacementAction {
+    Prepare,
+    Quiesce,
+    /// A fresh candidate boot, or one fresh-nonce restart of the committed root.
+    StartCandidate,
+    /// Irreversible host commitment, retained independently of later boot phases.
+    Commit,
+    Rollback,
+    /// Retires the baseline after Core confirmation; the receipt is not guest health.
+    ReleaseOld,
+}
+
+/// An authorization fence and the immutable image to replace a guest with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VmReplacementRequest {
+    pub attempt_id: String,
+    /// Version1 starts with Prepare1; Rollback2 may cancel before Prepare was seen.
+    /// Later operations require the retained execution journal.
+    pub sequence: u64,
+    pub document_generation: u64,
+    pub action: VmReplacementAction,
+    pub image: VmImage,
+    pub guest_machine_id: String,
+    pub registration_key: [u8; 32],
+    pub launch_nonce: String,
+    pub deadline_unix_ms: i64,
+}
+
+/// Physical execution state, not a rollout or health acceptance decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VmReplacementPhase {
+    Preparing,
+    Prepared,
+    Quiescing,
+    Quiesced,
+    Installing,
+    Starting,
+    CandidateRunning,
+    Committed,
+    RollingBack,
+    RolledBack,
+    Releasing,
+    Released,
+    Uncertain,
+}
+
+/// A PID bound to a kernel boot and process start, never a bare reusable PID.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VmProcessIdentity {
+    pub pid: u32,
+    pub start_time_ticks: u64,
+    pub boot_id: String,
+    pub uid: u32,
+}
+
+/// Durable local evidence for the parent to bind to signed guest health.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VmReplacementStatus {
+    pub id: String,
+    pub attempt_id: String,
+    pub sequence: u64,
+    pub document_generation: u64,
+    pub phase: VmReplacementPhase,
+    pub requested_image: VmImage,
+    pub observed_image: Option<VmImage>,
+    pub launch_nonce: String,
+    /// The original baseline witness, retained even after its root is restarted.
+    pub previous_process: Option<VmProcessIdentity>,
+    /// The currently observed VMM; rollback binds this to the restored baseline.
+    pub running_process: Option<VmProcessIdentity>,
+    /// True only when the baseline root cannot still be running.
+    pub old_root_fenced: bool,
+    /// A retained baseline may be restored before Commit, never after it.
+    pub rollback_available: bool,
+    pub reason: Option<String>,
+}
+
 /// Runs VMs on this machine. Every call is idempotent: `ensure` of a running
 /// VM with the same spec changes nothing, and `stop` of a stopped or unknown
 /// VM succeeds.
@@ -103,6 +184,20 @@ pub trait VmRuntime: Send + Sync {
 
     /// What this machine can do.
     fn capabilities(&self) -> impl Future<Output = VmCapabilities> + Send;
+
+    /// Offline replacement protocol version; zero means unsupported.
+    fn replacement_version(&self) -> u32 {
+        0
+    }
+
+    /// Executes only the locally fenced operation authorized by the parent.
+    fn replace(
+        &self,
+        _spec: &VmSpec,
+        _request: &VmReplacementRequest,
+    ) -> impl Future<Output = anyhow::Result<VmReplacementStatus>> + Send {
+        async { anyhow::bail!("this runtime does not support guest replacement") }
+    }
 }
 
 /// The runtime of a machine that runs no VMs: no capability, nothing

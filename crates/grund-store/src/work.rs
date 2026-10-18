@@ -12,8 +12,8 @@
 use grund_domain::{
     account::{Account, AccountCommand, AccountError, AccountEvent},
     agent_updates::{
-        AgentUpdates, Command as AgentUpdatesCommand, Error as AgentUpdatesError,
-        Event as AgentUpdatesEvent, rollout_id,
+        ActiveUpdate, AgentUpdates, Command as AgentUpdatesCommand, Error as AgentUpdatesError,
+        Event as AgentUpdatesEvent, rollout_id, vm,
     },
     app::{App, AppCommand, AppError, AppEvent},
     custom_domain::{Domain, DomainCommand, DomainError, DomainEvent},
@@ -68,7 +68,7 @@ impl WorkError {
 
 enum Touched {
     Account(Uuid, Account, i64, i64),
-    AgentUpdates(Uuid, AgentUpdates, i64, i64),
+    AgentUpdates(Uuid, Box<AgentUpdates>, i64, i64),
     Organisation(Uuid, Organisation, i64, i64),
     Machine(Uuid, Machine, i64, i64),
     App(Uuid, App, i64, i64),
@@ -191,6 +191,14 @@ impl<'a> Work<'a> {
         if let Some(at) = lifecycle_at {
             self.guard_machine_update(machine_id, at).await?;
         }
+        self.persist_machine(machine_id, command).await
+    }
+
+    async fn persist_machine(
+        &mut self,
+        machine_id: Uuid,
+        command: MachineCommand,
+    ) -> Result<Vec<MachineEvent>, WorkError> {
         let mut root = self.load::<Machine>(machine_id).await?;
         let base = root.version;
         let events = mire::Command::handle(command, &root.state)?;
@@ -383,17 +391,49 @@ impl<'a> Work<'a> {
         let rollout = self.load_agent_updates().await?;
         if let Some(attempt) = rollout
             .active
-            .filter(|attempt| attempt.machine_id == machine_id)
+            .filter(|attempt| attempt.owns_machine(machine_id))
         {
-            if attempt.authorized_at.is_some() {
+            if attempt.authorized() {
                 return Err(AgentUpdatesError::LifecycleBlocked.into());
             }
+            let Some(attempt) = attempt.executable() else {
+                return Err(AgentUpdatesError::VmUpdateConflict.into());
+            };
             self.agent_updates(AgentUpdatesCommand::Cancel {
                 fence: attempt.fence(),
                 at,
             })
             .await?;
         }
+        Ok(())
+    }
+
+    /// Only the captured guest of this prepared VM attempt may be cordoned.
+    /// This does not authorize quiesce or bypass another lifecycle guard.
+    pub async fn cordon_for_vm_update(&mut self, attempt_id: Uuid) -> Result<(), WorkError> {
+        let rollout = self.load_agent_updates().await?;
+        let attempt = rollout
+            .active
+            .as_ref()
+            .and_then(ActiveUpdate::vm)
+            .filter(|a| {
+                a.id == attempt_id && matches!(a.phase, vm::Phase::Prepared | vm::Phase::Draining)
+            })
+            .ok_or(AgentUpdatesError::StaleFence)?;
+        if rollout.paused {
+            return Err(AgentUpdatesError::Paused.into());
+        }
+        let id = attempt.guest_machine_id;
+        self.persist_machine(
+            id,
+            MachineCommand::SetInService {
+                actor: attempt_id,
+                organisation_id: attempt.organisation_id,
+                in_service: false,
+                at: chrono::Utc::now(),
+            },
+        )
+        .await?;
         Ok(())
     }
 
@@ -415,10 +455,65 @@ impl<'a> Work<'a> {
         command: AgentUpdatesCommand,
     ) -> Result<Vec<AgentUpdatesEvent>, WorkError> {
         let mut root = self.load_agent_updates_root().await?;
+        if let AgentUpdatesCommand::Vm(vm::Command::Request { request, .. }) = &command {
+            if let Some(receipt) = self
+                .completed_vm_update_request(request.organisation_id, &request.request_hash)
+                .await?
+            {
+                return if receipt.fingerprint == request.fingerprint
+                    && receipt.vm_id == request.vm_id
+                {
+                    Ok(vec![])
+                } else {
+                    Err(AgentUpdatesError::RequestConflict.into())
+                };
+            }
+            let replay = root
+                .state
+                .active
+                .as_ref()
+                .and_then(ActiveUpdate::vm)
+                .is_some_and(|a| a.request_hash == request.request_hash);
+            if !replay {
+                let host = sqlx::query_scalar::<_, Uuid>(
+                    "SELECT host_machine_id FROM grund_vms WHERE vm_id = $1 AND organisation_id = $2",
+                ).bind(request.vm_id).bind(request.organisation_id)
+                    .fetch_optional(&mut **self.scope.tx()).await?;
+                if host != Some(request.host_machine_id) {
+                    return Err(AgentUpdatesError::StaleFence.into());
+                }
+                crate::agents::lock_generation(self.scope.tx(), request.host_machine_id).await?;
+                let version = sqlx::query_scalar::<_, i64>(
+                    "SELECT update_stream_version FROM grund_vms \
+                     WHERE vm_id = $1 AND organisation_id = $2 FOR UPDATE",
+                )
+                .bind(request.vm_id)
+                .bind(request.organisation_id)
+                .fetch_optional(&mut **self.scope.tx())
+                .await?;
+                if version != Some(request.expected_update_version) {
+                    return Err(AgentUpdatesError::StaleFence.into());
+                }
+            }
+        }
+        if matches!(&command, AgentUpdatesCommand::Vm(_))
+            && let Some(attempt) = root.state.active.as_ref().and_then(ActiveUpdate::vm)
+        {
+            crate::agents::lock_generation(self.scope.tx(), attempt.host_machine_id).await?;
+        }
         let base = root.version;
+        let drain_attempt = match &command {
+            AgentUpdatesCommand::Vm(vm::Command::BeginDrain { attempt_id, .. }) => {
+                Some(*attempt_id)
+            }
+            _ => None,
+        };
         let events = mire::Command::handle(command, &root.state)?;
         if events.is_empty() {
             return Ok(events);
+        }
+        if let Some(attempt_id) = drain_attempt {
+            self.cordon_for_vm_update(attempt_id).await?;
         }
         root.set_metadata(self.metadata.clone());
         root.record_many(events.clone());
@@ -431,9 +526,23 @@ impl<'a> Work<'a> {
             )
             .await?;
         }
+        for event in &events {
+            if let AgentUpdatesEvent::VmCompleted { attempt, at } = event {
+                self.persist_machine(
+                    attempt.guest_machine_id,
+                    MachineCommand::SetInService {
+                        actor: attempt.id,
+                        organisation_id: attempt.organisation_id,
+                        in_service: attempt.original_in_service,
+                        at: *at,
+                    },
+                )
+                .await?;
+            }
+        }
         self.touched.push(Touched::AgentUpdates(
             rollout_id(),
-            root.state,
+            Box::new(root.state),
             base,
             root.version,
         ));
@@ -482,6 +591,32 @@ impl<'a> Work<'a> {
         )
     }
 
+    pub async fn completed_vm_update_attempt(
+        &mut self,
+        organisation_id: Uuid,
+        attempt_id: Uuid,
+    ) -> Result<Option<vm::VmAttempt>, WorkError> {
+        Ok(crate::agent_updates::completed_vm_update_attempt(
+            &mut **self.scope.tx(),
+            organisation_id,
+            attempt_id,
+        )
+        .await?)
+    }
+
+    pub async fn completed_vm_update_request(
+        &mut self,
+        organisation_id: Uuid,
+        request_hash: &str,
+    ) -> Result<Option<vm::VmAttempt>, WorkError> {
+        Ok(crate::agent_updates::completed_vm_update_request(
+            &mut **self.scope.tx(),
+            organisation_id,
+            request_hash,
+        )
+        .await?)
+    }
+
     async fn load<A: Snapshot>(&mut self, id: Uuid) -> Result<AggregateRoot<A>, WorkError> {
         let id = id.to_string();
         let stream_id = format!("{}-{id}", A::stream_category());
@@ -527,7 +662,7 @@ impl<'a> Work<'a> {
                     snapshot::<Account>(store, id, state, before, after)
                 }
                 Touched::AgentUpdates(id, state, before, after) => {
-                    snapshot::<AgentUpdates>(store, id, state, before, after)
+                    snapshot::<AgentUpdates>(store, id, *state, before, after)
                 }
                 Touched::Organisation(id, state, before, after) => {
                     snapshot::<Organisation>(store, id, state, before, after)

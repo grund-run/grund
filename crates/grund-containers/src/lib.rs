@@ -46,6 +46,7 @@ pub mod daemon;
 pub mod image;
 pub use grund_agent::probe;
 pub use grund_net::netns;
+mod resource_probe;
 pub mod rootfs;
 pub mod spec;
 
@@ -63,8 +64,8 @@ use buffa_types::google::protobuf::{Any, Empty};
 use grund_agent::{
     runtime::{
         APP_ID_LABEL, AppsCapabilities, ContainerRuntime, ContainerSpec, ContainerStatus, ImageRef,
-        Probe, REPLICA_LABEL, SPEC_HASH_LABEL, STOP_GRACE_LABEL, STOP_SIGNAL_LABEL, TaskState,
-        VOLUMES_LABEL, VolumeBind,
+        Probe, REPLICA_LABEL, ResourceLimitProof, SPEC_HASH_LABEL, STOP_GRACE_LABEL,
+        STOP_SIGNAL_LABEL, TaskState, VOLUMES_LABEL, VolumeBind,
     },
     volume,
 };
@@ -841,6 +842,10 @@ fn any(type_url: &str, message: &impl Message) -> Any {
 impl ContainerRuntime for Containerd {
     async fn capabilities(&self) -> AppsCapabilities {
         capabilities::assess(&capabilities::HostFacts::read())
+    }
+
+    async fn resource_limit_probe(&self) -> Option<ResourceLimitProof> {
+        Some(resource_probe::probe())
     }
     fn volume_data_dir(&self) -> PathBuf {
         self.config.data_dir.clone()

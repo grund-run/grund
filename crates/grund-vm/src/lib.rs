@@ -46,6 +46,7 @@ pub mod doctor;
 pub mod image;
 pub mod jail;
 pub mod net;
+pub mod replacement;
 
 use std::{
     collections::HashMap,
@@ -64,7 +65,7 @@ use crate::{api::Api, image::Images, jail::Jail, net::Bridge};
 /// The kernel command line every VM starts from, before its network.
 pub const BOOT_ARGS: &str = "console=ttyS0 reboot=k panic=1 pci=off";
 
-/// How long a stop waits for the guest to shut down before killing it.
+/// How long an ordinary stop gives the guest before physically fencing it.
 pub const STOP_GRACE: Duration = Duration::from_secs(10);
 
 /// How VMs are networked.
@@ -264,9 +265,9 @@ impl Firecracker {
         let dir = self.dir(&spec.id);
         let shape = Shape::of(spec);
         if read_shape(&dir).is_some_and(|recorded| recorded != shape) {
-            self.kill(&spec.id).await;
-            let _ = std::fs::remove_file(dir.join("rootfs.ext4"));
+            return Err("VM shape changes require the fenced replacement protocol".into());
         }
+        replacement::check_launch_intent(&dir).map_err(|e| format!("launch fence: {e:#}"))?;
         self.reserve(&spec.id, &shape)?;
         let kernel = self
             .inner
@@ -329,63 +330,65 @@ impl Firecracker {
     }
 
     async fn launch(&self, id: &str, dir: &Path) -> Result<u32, String> {
-        let _ = std::fs::remove_file(self.socket(dir));
-        let _ = std::fs::remove_file(dir.join("firecracker.pid"));
-        let log = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(dir.join("firecracker.log"))
-            .map_err(|e| format!("log: {e}"))?;
-        let err = log.try_clone().map_err(|e| format!("log: {e}"))?;
-        let mut command = match &self.inner.bridge {
-            None => {
-                let mut command = tokio::process::Command::new("unshare");
-                command
-                    .args([
-                        "--user",
-                        "--map-root-user",
-                        "--net",
-                        "--",
-                        "sh",
-                        "-c",
-                        "ip link set lo up && ip tuntap add dev fc0 mode tap && ip link set fc0 up && exec \"$0\" --api-sock \"$1\"",
-                    ])
-                    .arg(&self.inner.config.firecracker)
-                    .arg(self.socket(dir));
-                command
-            }
-            Some(bridge) => {
-                let octet = read_address(dir).ok_or("the VM has no address")?;
-                let jail = self
-                    .inner
-                    .jail
-                    .as_ref()
-                    .ok_or("bridged VMs need the jailer")?;
-                let uid = jail::uid(octet);
-                bridge
-                    .add_tap(octet, uid)
-                    .map_err(|e| format!("tap: {e:#}"))?;
-                let limits = match (&self.inner.cgroups, read_shape(dir)) {
-                    (Some(cgroups), Some(shape)) => {
-                        cgroups.remove(&jail::id(dir));
-                        cgroups.args(shape.vcpus, shape.memory_mib)
-                    }
-                    _ => Vec::new(),
-                };
-                let mut command = tokio::process::Command::new(&jail.jailer);
-                command.args(jail.args(dir, uid, &limits));
-                command
-            }
-        };
-        let child = command
-            .current_dir(dir)
-            .stdin(Stdio::null())
-            .stdout(Stdio::from(log))
-            .stderr(Stdio::from(err))
-            .process_group(0)
-            .kill_on_drop(false)
-            .spawn()
-            .map_err(|e| format!("cannot start firecracker: {e}"))?;
+        let child = replacement::spawn_prepared(dir, || {
+            let _ = std::fs::remove_file(self.socket(dir));
+            let _ = std::fs::remove_file(dir.join("firecracker.pid"));
+            let log = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(dir.join("firecracker.log"))
+                .map_err(|e| format!("log: {e}"))?;
+            let err = log.try_clone().map_err(|e| format!("log: {e}"))?;
+            let mut command = match &self.inner.bridge {
+                None => {
+                    let mut command = tokio::process::Command::new("unshare");
+                    command
+                        .args([
+                            "--user",
+                            "--map-root-user",
+                            "--net",
+                            "--",
+                            "sh",
+                            "-c",
+                            "ip link set lo up && ip tuntap add dev fc0 mode tap && ip link set fc0 up && exec \"$0\" --api-sock \"$1\"",
+                        ])
+                        .arg(&self.inner.config.firecracker)
+                        .arg(self.socket(dir));
+                    command
+                }
+                Some(bridge) => {
+                    let octet = read_address(dir).ok_or("the VM has no address")?;
+                    let jail = self
+                        .inner
+                        .jail
+                        .as_ref()
+                        .ok_or("bridged VMs need the jailer")?;
+                    let uid = jail::uid(octet);
+                    bridge
+                        .add_tap(octet, uid)
+                        .map_err(|e| format!("tap: {e:#}"))?;
+                    let limits = match (&self.inner.cgroups, read_shape(dir)) {
+                        (Some(cgroups), Some(shape)) => {
+                            cgroups.remove(&jail::id(dir));
+                            cgroups.args(shape.vcpus, shape.memory_mib)
+                        }
+                        _ => Vec::new(),
+                    };
+                    let mut command = tokio::process::Command::new(&jail.jailer);
+                    command.args(jail.args(dir, uid, &limits));
+                    command
+                }
+            };
+            command
+                .current_dir(dir)
+                .stdin(Stdio::null())
+                .stdout(Stdio::from(log))
+                .stderr(Stdio::from(err))
+                .process_group(0)
+                .kill_on_drop(false)
+                .spawn()
+                .map_err(|e| format!("cannot start firecracker: {e}"))
+        })?;
         let pid = child.id().ok_or("firecracker exited at once")?;
         std::fs::write(dir.join("firecracker.pid"), pid.to_string())
             .map_err(|e| format!("pid file: {e}"))?;
@@ -406,6 +409,8 @@ impl Firecracker {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+        replacement::record_process(self, dir, pid)
+            .map_err(|e| format!("process identity: {e:#}"))?;
         Ok(pid)
     }
 
@@ -477,15 +482,8 @@ impl Firecracker {
             .collect()
     }
 
-    async fn kill(&self, id: &str) {
-        let dir = self.dir(id);
-        if let Some(pid) = read_pid(&dir) {
-            signal(pid, libc::SIGKILL);
-            wait_gone(pid, Duration::from_secs(5)).await;
-        }
-        if let Some(mut child) = self.inner.children.lock().expect("children").remove(id) {
-            let _ = child.try_wait();
-        }
+    async fn kill(&self, id: &str) -> anyhow::Result<()> {
+        replacement::fence_process(self, &self.dir(id)).await
     }
 }
 
@@ -496,6 +494,11 @@ impl VmRuntime for Firecracker {
         }
         let lock = self.lock(&spec.id);
         let _held = lock.lock().await;
+        let _disk_lock = replacement::execution_lock(self, &spec.id)?;
+        anyhow::ensure!(
+            !replacement::owns(self, &spec.id)?,
+            "replacement owns this VM"
+        );
         let running = self.state_of(&spec.id) == VmState::Running;
         if running && read_shape(&self.dir(&spec.id)).as_ref() == Some(&Shape::of(spec)) {
             return Ok(VmStatus {
@@ -522,16 +525,10 @@ impl VmRuntime for Firecracker {
         }
         let lock = self.lock(id);
         let _held = lock.lock().await;
+        let _disk_lock = replacement::execution_lock(self, id)?;
+        anyhow::ensure!(!replacement::owns(self, id)?, "replacement owns this VM");
         let dir = self.dir(id);
-        if let Some(pid) = read_pid(&dir).filter(|pid| process_alive(*pid)) {
-            let asked = Api::new(self.socket(&dir))
-                .put("/actions", &json!({ "action_type": "SendCtrlAltDel" }))
-                .await;
-            if asked.is_err() || !wait_gone(pid, STOP_GRACE).await {
-                signal(pid, libc::SIGKILL);
-                wait_gone(pid, Duration::from_secs(5)).await;
-            }
-        }
+        self.kill(id).await?;
         self.inner.children.lock().expect("children").remove(id);
         if let (Some(bridge), Some(octet)) = (&self.inner.bridge, read_address(&dir)) {
             bridge.remove_tap(octet);
@@ -596,6 +593,18 @@ impl VmRuntime for Firecracker {
                 .saturating_sub(memory)
                 .saturating_sub(cgroup::MEMORY_OVERHEAD_MIB as u32),
         }
+    }
+
+    fn replacement_version(&self) -> u32 {
+        replacement::version(self)
+    }
+
+    async fn replace(
+        &self,
+        spec: &VmSpec,
+        request: &grund_agent::vm::VmReplacementRequest,
+    ) -> anyhow::Result<grund_agent::vm::VmReplacementStatus> {
+        replacement::execute(self, spec, request).await
     }
 }
 
@@ -734,17 +743,6 @@ fn signal(pid: u32, signal: libc::c_int) {
     if let Ok(pid) = libc::pid_t::try_from(pid) {
         unsafe { libc::kill(pid, signal) };
     }
-}
-
-async fn wait_gone(pid: u32, within: Duration) -> bool {
-    let deadline = Instant::now() + within;
-    while process_alive(pid) {
-        if Instant::now() > deadline {
-            return false;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    true
 }
 
 fn log_tail(path: &Path) -> String {

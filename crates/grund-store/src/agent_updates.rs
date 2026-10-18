@@ -2,7 +2,8 @@
 
 use chrono::{DateTime, Utc};
 use grund_domain::agent_updates::{
-    AgentUpdates, Attempt, CompletedAttempt, Event, ProviderUpdateFence, PublicBuild, rollout_id,
+    ActiveUpdate, AgentUpdates, Attempt, CompletedUpdate, Event, ProviderUpdateFence, PublicBuild,
+    rollout_id, vm::VmAttempt,
 };
 use mire::{HandledEvent, TransactionalEventHandler};
 use sqlx::{Executor, PgConnection, Postgres};
@@ -41,13 +42,57 @@ pub async fn completed_update_attempt<'e>(
     executor: impl Executor<'e, Database = Postgres>,
     attempt_id: Uuid,
 ) -> Result<Option<Attempt>, sqlx::Error> {
-    Ok(sqlx::query_scalar::<_, sqlx::types::Json<Attempt>>(
+    Ok(sqlx::query_scalar::<_, sqlx::types::Json<ActiveUpdate>>(
         "SELECT attempt FROM grund_agent_update_completed_attempts WHERE attempt_id = $1",
     )
     .bind(attempt_id)
     .fetch_optional(executor)
     .await?
-    .map(|attempt| attempt.0))
+    .and_then(|attempt| match attempt.0 {
+        ActiveUpdate::Executable(a) => Some(a),
+        ActiveUpdate::Vm(_) => None,
+    }))
+}
+
+/// Full terminal VM receipt, isolated from historical executable receipts.
+pub async fn completed_vm_update_attempt<'e>(
+    executor: impl Executor<'e, Database = Postgres>,
+    organisation_id: Uuid,
+    attempt_id: Uuid,
+) -> Result<Option<VmAttempt>, sqlx::Error> {
+    Ok(sqlx::query_scalar::<_, sqlx::types::Json<ActiveUpdate>>(
+        "SELECT attempt FROM grund_agent_update_completed_attempts \
+         WHERE attempt_id = $1 AND attempt->>'organisation_id' = $2",
+    )
+    .bind(attempt_id)
+    .bind(organisation_id.to_string())
+    .fetch_optional(executor)
+    .await?
+    .and_then(|a| match a.0 {
+        ActiveUpdate::Vm(a) => Some(a),
+        _ => None,
+    }))
+}
+
+/// The caller compares the immutable fingerprint before replaying this receipt.
+pub async fn completed_vm_update_request<'e>(
+    executor: impl Executor<'e, Database = Postgres>,
+    organisation_id: Uuid,
+    request_hash: &str,
+) -> Result<Option<VmAttempt>, sqlx::Error> {
+    Ok(sqlx::query_scalar::<_, sqlx::types::Json<ActiveUpdate>>(
+        "SELECT attempt FROM grund_agent_update_completed_attempts \
+         WHERE attempt->>'organisation_id' = $1 AND attempt->>'request_hash' = $2 \
+         ORDER BY stream_version DESC LIMIT 1",
+    )
+    .bind(organisation_id.to_string())
+    .bind(request_hash)
+    .fetch_optional(executor)
+    .await?
+    .and_then(|a| match a.0 {
+        ActiveUpdate::Vm(a) => Some(a),
+        _ => None,
+    }))
 }
 /// Records a heartbeat without turning transport observations into event truth.
 pub async fn record_update_observation(
@@ -85,8 +130,8 @@ struct RolloutRow {
     generation: i64,
     target: Option<sqlx::types::Json<PublicBuild>>,
     paused: bool,
-    active: Option<sqlx::types::Json<Attempt>>,
-    last_completed: Option<sqlx::types::Json<CompletedAttempt>>,
+    active: Option<sqlx::types::Json<ActiveUpdate>>,
+    last_completed: Option<sqlx::types::Json<CompletedUpdate>>,
     attempt_sequence: i64,
     migration_holds: sqlx::types::Json<std::collections::BTreeMap<Uuid, Uuid>>,
     closed_migrations: sqlx::types::Json<std::collections::BTreeMap<Uuid, Uuid>>,
@@ -239,6 +284,61 @@ pub async fn apply_agent_updates(
             ).bind(id).bind(sqlx::types::Json(reservation)).bind(version)
                 .execute(&mut *connection).await?;
         }
+        Event::VmTransitioned { attempt, .. }
+        | Event::VmDocumentPublished { attempt, .. }
+        | Event::VmCommitConfirmed { attempt, .. }
+        | Event::VmRecoveryRequested { attempt, .. }
+        | Event::VmUncertain { attempt, .. }
+        | Event::VmCompleted { attempt, .. } => {
+            let terminal = matches!(event, Event::VmCompleted { .. });
+            let paused = matches!(
+                event,
+                Event::VmRecoveryRequested { .. } | Event::VmUncertain { .. }
+            ) || (attempt.committed_at.is_some() && attempt.failure.is_some())
+                || (terminal && attempt.phase != grund_domain::agent_updates::vm::Phase::Succeeded);
+            sqlx::query(
+                "UPDATE grund_agent_updates SET active = CASE WHEN $3 THEN NULL ELSE $2 END, \
+                 last_completed = CASE WHEN $3 THEN $2 ELSE last_completed END, \
+                 paused = CASE WHEN $4 THEN TRUE ELSE paused END, \
+                 attempt_sequence = GREATEST(attempt_sequence, $5), stream_version = $6 \
+                 WHERE rollout_id = $1 AND stream_version < $6",
+            )
+            .bind(id)
+            .bind(sqlx::types::Json(attempt))
+            .bind(terminal)
+            .bind(paused)
+            .bind(attempt.sequence as i64)
+            .bind(version)
+            .execute(&mut *connection)
+            .await?;
+            sqlx::query(
+                "UPDATE grund_vms SET update_stream_version = $3, \
+                 kernel_url = CASE WHEN $4 THEN $5 ELSE kernel_url END, \
+                 kernel_sha256 = CASE WHEN $4 THEN $6 ELSE kernel_sha256 END, \
+                 rootfs_url = CASE WHEN $4 THEN $7 ELSE rootfs_url END, \
+                 rootfs_sha256 = CASE WHEN $4 THEN $8 ELSE rootfs_sha256 END \
+                 WHERE vm_id = $1 AND organisation_id = $2 AND update_stream_version < $3",
+            )
+            .bind(attempt.vm_id)
+            .bind(attempt.organisation_id)
+            .bind(version)
+            .bind(matches!(event, Event::VmCommitConfirmed { .. }))
+            .bind(&attempt.target.kernel_url)
+            .bind(&attempt.target.kernel_sha256)
+            .bind(&attempt.target.rootfs_url)
+            .bind(&attempt.target.rootfs_sha256)
+            .execute(&mut *connection)
+            .await?;
+            if terminal {
+                sqlx::query(
+                    "INSERT INTO grund_agent_update_completed_attempts (attempt_id, attempt, stream_version) \
+                     VALUES ($1, $2, $3) ON CONFLICT (attempt_id) DO UPDATE \
+                     SET attempt = EXCLUDED.attempt, stream_version = EXCLUDED.stream_version \
+                     WHERE grund_agent_update_completed_attempts.stream_version < EXCLUDED.stream_version",
+                ).bind(attempt.id).bind(sqlx::types::Json(attempt)).bind(version)
+                    .execute(&mut *connection).await?;
+            }
+        }
     }
     Ok(())
 }
@@ -302,7 +402,12 @@ mod tests {
                 history.push((version, event));
             }
         }
-        let fence = state.active.as_ref().unwrap().fence();
+        let fence = state
+            .active
+            .as_ref()
+            .and_then(ActiveUpdate::executable)
+            .unwrap()
+            .fence();
         for command in [
             Command::Begin {
                 fence: fence.clone(),
@@ -560,6 +665,8 @@ mod tests {
             .await
             .unwrap()
             .active
+            .as_ref()
+            .and_then(ActiveUpdate::executable)
             .unwrap()
             .fence();
         work.guard_machine_update(machine_id, at).await.unwrap();
@@ -587,6 +694,8 @@ mod tests {
             .await
             .unwrap()
             .active
+            .as_ref()
+            .and_then(ActiveUpdate::executable)
             .unwrap()
             .fence();
         work.agent_updates(Command::Begin {
@@ -609,7 +718,16 @@ mod tests {
         ));
         drop(work);
         assert_eq!(
-            get(&pool).await.unwrap().unwrap().0.active.unwrap().phase,
+            get(&pool)
+                .await
+                .unwrap()
+                .unwrap()
+                .0
+                .active
+                .as_ref()
+                .and_then(ActiveUpdate::executable)
+                .unwrap()
+                .phase,
             grund_domain::agent_updates::Phase::Authorized
         );
     }
@@ -644,7 +762,16 @@ mod tests {
         )
         .await
         .unwrap();
-        let fence = get(&pool).await.unwrap().unwrap().0.active.unwrap().fence();
+        let fence = get(&pool)
+            .await
+            .unwrap()
+            .unwrap()
+            .0
+            .active
+            .as_ref()
+            .and_then(ActiveUpdate::executable)
+            .unwrap()
+            .fence();
         let (held, begun) = tokio::join!(
             transact(
                 &events,
@@ -668,7 +795,7 @@ mod tests {
         let state = get(&pool).await.unwrap().unwrap().0;
         assert_ne!(
             state.migration_holds.contains_key(&machine_id),
-            state.active.unwrap().authorized_at.is_some()
+            state.active.as_ref().unwrap().authorized()
         );
     }
 
@@ -704,7 +831,16 @@ mod tests {
         )
         .await
         .unwrap();
-        let fence = get(&pool).await.unwrap().unwrap().0.active.unwrap().fence();
+        let fence = get(&pool)
+            .await
+            .unwrap()
+            .unwrap()
+            .0
+            .active
+            .as_ref()
+            .and_then(ActiveUpdate::executable)
+            .unwrap()
+            .fence();
         let requested = transact(
             &events,
             Command::ReserveProvider {
@@ -764,5 +900,291 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(get(&mut *connection).await.unwrap().unwrap(), acknowledged);
+    }
+
+    fn vm_fixture(at: DateTime<Utc>) -> VmAttempt {
+        use grund_domain::agent_updates::vm;
+        let request = vm::Request {
+            id: Uuid::from_u128(0x00000000_0000_7000_8000_000000000001),
+            vm_id: Uuid::from_u128(2),
+            organisation_id: Uuid::from_u128(3),
+            host_machine_id: Uuid::from_u128(4),
+            guest_machine_id: Uuid::from_u128(5),
+            host_registration_key: "a".repeat(64),
+            guest_registration_key: "b".repeat(64),
+            request_hash: "c".repeat(64),
+            fingerprint: "d".repeat(64),
+            source: vm::ImageIdentity {
+                kernel_sha256: "e".repeat(64),
+                rootfs_sha256: "f".repeat(64),
+            },
+            target: vm::Target {
+                kernel_url: "https://artifacts.example/kernel".into(),
+                kernel_sha256: "1".repeat(64),
+                rootfs_url: "https://artifacts.example/root".into(),
+                rootfs_sha256: "2".repeat(64),
+            },
+            expected_update_version: 0,
+            original_in_service: true,
+            old_os_boot_id: None,
+            launch_nonce: Uuid::from_u128(7),
+            deadline: at + chrono::Duration::minutes(5),
+        };
+        let mut state = AgentUpdates {
+            initialized: true,
+            ..Default::default()
+        };
+        for event in (vm::Command::Request { request, at })
+            .handle(&state)
+            .unwrap()
+        {
+            mire::Aggregate::apply(&mut state, &event);
+        }
+        match state.active.unwrap() {
+            ActiveUpdate::Vm(a) => a,
+            _ => panic!(),
+        }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn only_commit_promotes_pins_and_older_attempt_replay_cannot_lower_the_vm_fence(
+        pool: PgPool,
+    ) {
+        use grund_domain::agent_updates::vm;
+        let at = DateTime::from_timestamp(1_800_000_000, 0).unwrap();
+        let mut a = vm_fixture(at);
+        let mut connection = pool.acquire().await.unwrap();
+        sqlx::query(
+            "INSERT INTO grund_vms (vm_id,organisation_id,host_machine_id,name,vcpus,memory_mib,disk_gib,\
+             kernel_url,kernel_sha256,rootfs_url,rootfs_sha256,state,created_by) \
+             VALUES ($1,$2,$3,'vm',2,512,8,'old-kernel',$4,'old-root',$5,'running',$2)",
+        ).bind(a.vm_id).bind(a.organisation_id).bind(a.host_machine_id)
+            .bind(&a.source.kernel_sha256).bind(&a.source.rootfs_sha256)
+            .execute(&mut *connection).await.unwrap();
+        apply_agent_updates(1, &Event::Initialized { at }, &mut connection)
+            .await
+            .unwrap();
+        apply_agent_updates(
+            2,
+            &Event::VmTransitioned {
+                attempt: a.clone(),
+                at,
+            },
+            &mut connection,
+        )
+        .await
+        .unwrap();
+        let before:(String,String,i64)=sqlx::query_as(
+            "SELECT kernel_sha256,rootfs_sha256,update_stream_version FROM grund_vms WHERE vm_id=$1",
+        ).bind(a.vm_id).fetch_one(&mut *connection).await.unwrap();
+        assert_eq!(
+            before,
+            (
+                a.source.kernel_sha256.clone(),
+                a.source.rootfs_sha256.clone(),
+                2
+            )
+        );
+        a.phase = vm::Phase::Committed;
+        a.committed_at = Some(at);
+        let committed = Event::VmCommitConfirmed {
+            attempt: a.clone(),
+            at,
+        };
+        apply_agent_updates(5, &committed, &mut connection)
+            .await
+            .unwrap();
+        let mut first = a.clone();
+        first.phase = vm::Phase::Succeeded;
+        first.completed_at = Some(at);
+        apply_agent_updates(
+            6,
+            &Event::VmCompleted {
+                attempt: first.clone(),
+                at,
+            },
+            &mut connection,
+        )
+        .await
+        .unwrap();
+        let mut later = a.clone();
+        later.id = Uuid::from_u128(0x00000000_0000_7000_8000_000000000002);
+        later.sequence = 2;
+        later.phase = vm::Phase::RolledBack;
+        later.committed_at = None;
+        later.completed_at = Some(at);
+        later.request_hash = "9".repeat(64);
+        later.target.rootfs_sha256 = "8".repeat(64);
+        let terminal = Event::VmCompleted {
+            attempt: later.clone(),
+            at,
+        };
+        apply_agent_updates(10, &terminal, &mut connection)
+            .await
+            .unwrap();
+        apply_agent_updates(5, &committed, &mut connection)
+            .await
+            .unwrap();
+        apply_agent_updates(
+            2,
+            &Event::VmTransitioned {
+                attempt: a.clone(),
+                at,
+            },
+            &mut connection,
+        )
+        .await
+        .unwrap();
+        apply_agent_updates(10, &terminal, &mut connection)
+            .await
+            .unwrap();
+        let after:(String,String,i64,String)=sqlx::query_as(
+            "SELECT kernel_sha256,rootfs_sha256,update_stream_version,state FROM grund_vms WHERE vm_id=$1",
+        ).bind(a.vm_id).fetch_one(&mut *connection).await.unwrap();
+        assert_eq!(
+            after,
+            (
+                a.target.kernel_sha256,
+                a.target.rootfs_sha256,
+                10,
+                "running".into()
+            )
+        );
+        assert!(
+            completed_update_attempt(&mut *connection, later.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            completed_vm_update_attempt(&mut *connection, later.organisation_id, later.id)
+                .await
+                .unwrap(),
+            Some(later.clone())
+        );
+        assert_eq!(
+            completed_vm_update_request(
+                &mut *connection,
+                later.organisation_id,
+                &later.request_hash
+            )
+            .await
+            .unwrap(),
+            Some(later.clone())
+        );
+        assert!(
+            completed_vm_update_request(
+                &mut *connection,
+                Uuid::from_u128(999),
+                &later.request_hash
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+        assert_eq!(
+            completed_vm_update_request(
+                &mut *connection,
+                first.organisation_id,
+                &first.request_hash
+            )
+            .await
+            .unwrap(),
+            Some(first)
+        );
+        assert_eq!(
+            get(&mut *connection)
+                .await
+                .unwrap()
+                .unwrap()
+                .0
+                .last_completed
+                .as_ref()
+                .and_then(CompletedUpdate::vm),
+            Some(&later)
+        );
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn vm_lifecycle_guards_own_both_machines_without_turning_preparation_into_a_real_veto(
+        pool: PgPool,
+    ) {
+        use grund_domain::agent_updates::{Error, vm};
+        crate::migrate(&pool).await.unwrap();
+        let events = mire::EventStore::new(pool.clone());
+        let at = DateTime::from_timestamp(1_800_000_000, 0).unwrap();
+        let mut a = vm_fixture(at);
+        let mut id_buffer = [0; 36];
+        let mut root = mire::AggregateRoot::<AgentUpdates>::new(
+            rollout_id().hyphenated().encode_lower(&mut id_buffer),
+        );
+        root.record_many(vec![
+            Event::Initialized { at },
+            Event::VmTransitioned {
+                attempt: a.clone(),
+                at,
+            },
+        ]);
+        let mut work = crate::work::Work::begin(&events, Uuid::now_v7(), "test")
+            .await
+            .unwrap();
+        work.scope().save(&mut root).await.unwrap();
+        work.commit().await.unwrap();
+        let mut work = crate::work::Work::begin(&events, Uuid::now_v7(), "test")
+            .await
+            .unwrap();
+        for machine in [a.host_machine_id, a.guest_machine_id] {
+            assert!(matches!(
+                work.guard_machine_update(machine, at).await,
+                Err(crate::work::WorkError::AgentUpdates(
+                    Error::VmUpdateConflict
+                ))
+            ));
+        }
+        assert!(matches!(
+            work.cordon_for_vm_update(a.id).await,
+            Err(crate::work::WorkError::AgentUpdates(Error::StaleFence))
+        ));
+        assert_eq!(
+            work.load_agent_updates()
+                .await
+                .unwrap()
+                .active
+                .as_ref()
+                .and_then(ActiveUpdate::vm),
+            Some(&a)
+        );
+        drop(work);
+        a.authorized_at = Some(at);
+        a.phase = vm::Phase::Quiescing;
+        root.record_many(vec![Event::VmTransitioned {
+            attempt: a.clone(),
+            at,
+        }]);
+        let mut work = crate::work::Work::begin(&events, Uuid::now_v7(), "test")
+            .await
+            .unwrap();
+        work.scope().save(&mut root).await.unwrap();
+        work.commit().await.unwrap();
+        let mut work = crate::work::Work::begin(&events, Uuid::now_v7(), "test")
+            .await
+            .unwrap();
+        for machine in [a.host_machine_id, a.guest_machine_id] {
+            assert!(matches!(
+                work.guard_machine_update(machine, at).await,
+                Err(crate::work::WorkError::AgentUpdates(
+                    Error::LifecycleBlocked
+                ))
+            ));
+        }
+        assert_eq!(
+            work.load_agent_updates()
+                .await
+                .unwrap()
+                .active
+                .as_ref()
+                .and_then(ActiveUpdate::vm),
+            Some(&a)
+        );
     }
 }

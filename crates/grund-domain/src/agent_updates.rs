@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
+pub mod vm;
+
 /// The event category of the instance-wide rollout.
 pub const CATEGORY: &str = "grund-agent-updates";
 
@@ -260,6 +262,85 @@ impl CompletedAttempt {
     }
 }
 
+/// Untagged to preserve the historical executable JSON representation.
+/// VM records require `vm_id` and an image target, never a PublicBuild.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+#[allow(clippy::large_enum_variant)]
+pub enum ActiveUpdate {
+    Vm(vm::VmAttempt),
+    Executable(Attempt),
+}
+impl ActiveUpdate {
+    pub fn executable(&self) -> Option<&Attempt> {
+        if let Self::Executable(a) = self {
+            Some(a)
+        } else {
+            None
+        }
+    }
+    pub fn vm(&self) -> Option<&vm::VmAttempt> {
+        if let Self::Vm(a) = self {
+            Some(a)
+        } else {
+            None
+        }
+    }
+    pub fn id(&self) -> Uuid {
+        match self {
+            Self::Executable(a) => a.id,
+            Self::Vm(a) => a.id,
+        }
+    }
+    pub fn owns_machine(&self, id: Uuid) -> bool {
+        match self {
+            Self::Executable(a) => a.machine_id == id,
+            Self::Vm(a) => a.guest_machine_id == id || a.host_machine_id == id,
+        }
+    }
+    pub fn authorized(&self) -> bool {
+        match self {
+            Self::Executable(a) => a.authorized_at.is_some(),
+            Self::Vm(a) => a.authorized_at.is_some(),
+        }
+    }
+    pub fn failed(&self) -> bool {
+        match self {
+            Self::Executable(a) => a.phase == Phase::Failed,
+            Self::Vm(a) => a.phase == vm::Phase::Failed || a.failure.is_some(),
+        }
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+#[allow(clippy::large_enum_variant)]
+pub enum CompletedUpdate {
+    Vm(vm::VmAttempt),
+    Executable(CompletedAttempt),
+}
+impl CompletedUpdate {
+    pub fn executable(&self) -> Option<&CompletedAttempt> {
+        if let Self::Executable(a) = self {
+            Some(a)
+        } else {
+            None
+        }
+    }
+    pub fn vm(&self) -> Option<&vm::VmAttempt> {
+        if let Self::Vm(a) = self {
+            Some(a)
+        } else {
+            None
+        }
+    }
+    pub fn id(&self) -> Uuid {
+        match self {
+            Self::Executable(a) => a.id,
+            Self::Vm(a) => a.id,
+        }
+    }
+}
+
 /// The long-lived singleton; snapshots bound replay without becoming truth.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentUpdates {
@@ -267,8 +348,8 @@ pub struct AgentUpdates {
     pub generation: u64,
     pub target: Option<PublicBuild>,
     pub paused: bool,
-    pub active: Option<Attempt>,
-    pub last_completed: Option<CompletedAttempt>,
+    pub active: Option<ActiveUpdate>,
+    pub last_completed: Option<CompletedUpdate>,
     #[serde(default)]
     pub attempt_sequence: u64,
     #[serde(default)]
@@ -283,6 +364,7 @@ pub struct AgentUpdates {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, mire::EventData)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[mire(entity = "grund-agent-updates")]
+#[allow(clippy::large_enum_variant)]
 pub enum Event {
     Initialized {
         at: DateTime<Utc>,
@@ -344,6 +426,30 @@ pub enum Event {
         reservation: ProviderUpdateFence,
         at: DateTime<Utc>,
     },
+    VmTransitioned {
+        attempt: vm::VmAttempt,
+        at: DateTime<Utc>,
+    },
+    VmDocumentPublished {
+        attempt: vm::VmAttempt,
+        at: DateTime<Utc>,
+    },
+    VmCommitConfirmed {
+        attempt: vm::VmAttempt,
+        at: DateTime<Utc>,
+    },
+    VmRecoveryRequested {
+        attempt: vm::VmAttempt,
+        at: DateTime<Utc>,
+    },
+    VmUncertain {
+        attempt: vm::VmAttempt,
+        at: DateTime<Utc>,
+    },
+    VmCompleted {
+        attempt: vm::VmAttempt,
+        at: DateTime<Utc>,
+    },
 }
 
 impl mire::Aggregate for AgentUpdates {
@@ -391,23 +497,27 @@ impl mire::Aggregate for AgentUpdates {
             }
             Event::AttemptOffered { attempt, .. } => {
                 self.attempt_sequence = self.attempt_sequence.max(attempt.sequence);
-                self.active = Some(attempt.clone());
+                self.active = Some(ActiveUpdate::Executable(attempt.clone()));
             }
             Event::ProviderReservationRequested { attempt, .. }
             | Event::AttemptAuthorized { attempt, .. }
-            | Event::CandidateHealthVerified { attempt, .. } => self.active = Some(attempt.clone()),
+            | Event::CandidateHealthVerified { attempt, .. } => {
+                self.active = Some(ActiveUpdate::Executable(attempt.clone()))
+            }
             Event::AttemptFailed { attempt, .. } => {
-                self.active = Some(attempt.clone());
+                self.active = Some(ActiveUpdate::Executable(attempt.clone()));
                 self.paused = true;
             }
             Event::AttemptSucceeded { attempt, .. } => {
                 self.active = None;
-                self.last_completed = Some(CompletedAttempt::from(attempt));
+                self.last_completed =
+                    Some(CompletedUpdate::Executable(CompletedAttempt::from(attempt)));
                 self.pending_provider_release = attempt.provider_fence.clone();
             }
             Event::AttemptRolledBack { attempt, .. } => {
                 self.active = None;
-                self.last_completed = Some(CompletedAttempt::from(attempt));
+                self.last_completed =
+                    Some(CompletedUpdate::Executable(CompletedAttempt::from(attempt)));
                 self.paused = true;
                 self.pending_provider_release = attempt.provider_fence.clone();
             }
@@ -415,18 +525,42 @@ impl mire::Aggregate for AgentUpdates {
                 self.active = None;
                 self.pending_provider_release = attempt.provider_fence.clone();
             }
+            Event::VmTransitioned { attempt, .. }
+            | Event::VmDocumentPublished { attempt, .. }
+            | Event::VmCommitConfirmed { attempt, .. }
+            | Event::VmRecoveryRequested { attempt, .. }
+            | Event::VmUncertain { attempt, .. } => {
+                self.attempt_sequence = self.attempt_sequence.max(attempt.sequence);
+                self.active = Some(ActiveUpdate::Vm(attempt.clone()));
+                if matches!(
+                    event,
+                    Event::VmRecoveryRequested { .. } | Event::VmUncertain { .. }
+                ) || (attempt.committed_at.is_some() && attempt.failure.is_some())
+                {
+                    self.paused = true;
+                }
+            }
+            Event::VmCompleted { attempt, .. } => {
+                self.active = None;
+                self.last_completed = Some(CompletedUpdate::Vm(attempt.clone()));
+                if attempt.phase != vm::Phase::Succeeded {
+                    self.paused = true;
+                }
+            }
         }
     }
 }
 
 impl mire::Snapshot for AgentUpdates {
-    const SNAPSHOT_VERSION: i32 = 4;
+    const SNAPSHOT_VERSION: i32 = 5;
     const SNAPSHOT_FREQUENCY: i64 = 100;
 }
 
 /// Pure decisions; clocks and observed boot identities come from the caller.
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum Command {
+    Vm(vm::Command),
     Initialize {
         at: DateTime<Utc>,
     },
@@ -536,12 +670,21 @@ pub enum Error {
     LifecycleBlocked,
     #[error("provider authorization is required")]
     ProviderPermitRequired,
+    #[error("the scoped request key was used for different input")]
+    RequestConflict,
+    #[error("the VM replacement proof is unsafe or incomplete")]
+    UnsafeVm,
+    #[error("VM commit is irreversible")]
+    Irreversible,
+    #[error("VM replacement owns this machine before authorization")]
+    VmUpdateConflict,
 }
 
 impl AgentUpdates {
     fn attempt(&self, fence: &Fence) -> Result<&Attempt, Error> {
         self.active
             .as_ref()
+            .and_then(ActiveUpdate::executable)
             .filter(|a| a.matches(fence))
             .ok_or(Error::StaleFence)
     }
@@ -549,6 +692,7 @@ impl AgentUpdates {
     fn completed(&self, fence: &Fence, phase: Phase, boot_id: Uuid) -> bool {
         self.last_completed
             .as_ref()
+            .and_then(CompletedUpdate::executable)
             .is_some_and(|a| a.matches(fence) && a.phase == phase && a.boot_id == Some(boot_id))
     }
 }
@@ -559,6 +703,9 @@ impl mire::Command for Command {
     type Events = Vec<Event>;
 
     fn handle(self, state: &AgentUpdates) -> Result<Vec<Event>, Error> {
+        if let Self::Vm(command) = self {
+            return mire::Command::handle(command, state);
+        }
         if let Self::Initialize { at } = self {
             return Ok(if state.initialized {
                 vec![]
@@ -571,6 +718,7 @@ impl mire::Command for Command {
         }
         let event = match self {
             Self::Initialize { .. } => return Ok(vec![]),
+            Self::Vm(_) => return Err(Error::InvalidAttempt),
             Self::HoldMigration {
                 machine_id,
                 migration_id,
@@ -596,9 +744,16 @@ impl mire::Command for Command {
                 if state
                     .active
                     .as_ref()
-                    .is_some_and(|a| a.machine_id == machine_id && a.authorized_at.is_some())
+                    .is_some_and(|a| a.owns_machine(machine_id) && a.authorized())
                 {
                     return Err(Error::LifecycleBlocked);
+                }
+                if state
+                    .active
+                    .as_ref()
+                    .is_some_and(|a| a.vm().is_some() && a.owns_machine(machine_id))
+                {
+                    return Err(Error::VmUpdateConflict);
                 }
                 Event::MigrationHeld {
                     machine_id,
@@ -700,11 +855,7 @@ impl mire::Command for Command {
                 if !state.paused {
                     return Ok(vec![]);
                 }
-                if state
-                    .active
-                    .as_ref()
-                    .is_some_and(|a| a.phase == Phase::Failed)
-                {
+                if state.active.as_ref().is_some_and(ActiveUpdate::failed) {
                     return Err(Error::InvalidPhase);
                 }
                 Event::RolloutResumed { at }
@@ -721,7 +872,10 @@ impl mire::Command for Command {
                 if generation != state.generation {
                     return Err(Error::StaleFence);
                 }
-                if let Some(active) = &state.active {
+                if let Some(slot) = &state.active {
+                    let Some(active) = slot.executable() else {
+                        return Err(Error::SlotOccupied);
+                    };
                     if active.id == attempt_id
                         && active.machine_id == machine_id
                         && active.registration_key == registration_key
@@ -759,7 +913,7 @@ impl mire::Command for Command {
                     || state
                         .last_completed
                         .as_ref()
-                        .is_some_and(|a| a.id == attempt_id)
+                        .is_some_and(|a| a.id() == attempt_id)
                 {
                     return Err(Error::InvalidAttempt);
                 }
@@ -969,7 +1123,12 @@ mod tests {
         let mut state = selected();
         let command = offer(&state, 1);
         decide(&mut state, command).unwrap();
-        let fence = state.active.as_ref().unwrap().fence();
+        let fence = state
+            .active
+            .as_ref()
+            .and_then(ActiveUpdate::executable)
+            .unwrap()
+            .fence();
         (state, fence)
     }
 
@@ -1001,7 +1160,15 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(state.active.as_ref().unwrap().phase, Phase::HealthVerified);
+        assert_eq!(
+            state
+                .active
+                .as_ref()
+                .and_then(ActiveUpdate::executable)
+                .unwrap()
+                .phase,
+            Phase::HealthVerified
+        );
         assert_eq!(offer(&state, 2).handle(&state), Err(Error::SlotOccupied));
         let commit = Command::Commit {
             fence,
@@ -1011,13 +1178,18 @@ mod tests {
         decide(&mut state, commit.clone()).unwrap();
         assert!(state.active.is_none());
         assert_eq!(
-            state.last_completed.as_ref().unwrap().phase,
+            state
+                .last_completed
+                .as_ref()
+                .and_then(CompletedUpdate::executable)
+                .unwrap()
+                .phase,
             Phase::Succeeded
         );
         assert!(decide(&mut state, commit).unwrap().is_empty());
         let next = offer(&state, 2);
         decide(&mut state, next).unwrap();
-        assert_eq!(state.active.as_ref().unwrap().id, Uuid::from_u128(2));
+        assert_eq!(state.active.as_ref().unwrap().id(), Uuid::from_u128(2));
     }
 
     #[test]
@@ -1151,7 +1323,15 @@ mod tests {
         )
         .unwrap();
         assert!(state.paused);
-        assert_eq!(state.active.as_ref().unwrap().phase, Phase::Failed);
+        assert_eq!(
+            state
+                .active
+                .as_ref()
+                .and_then(ActiveUpdate::executable)
+                .unwrap()
+                .phase,
+            Phase::Failed
+        );
         assert_eq!(
             Command::Cancel {
                 fence: fence.clone(),
@@ -1230,7 +1410,12 @@ mod tests {
         assert!(state.active.is_none());
         assert!(state.paused);
         assert_eq!(
-            state.last_completed.as_ref().unwrap().phase,
+            state
+                .last_completed
+                .as_ref()
+                .and_then(CompletedUpdate::executable)
+                .unwrap()
+                .phase,
             Phase::RolledBack
         );
         assert!(decide(&mut state, rollback).unwrap().is_empty());
@@ -1479,6 +1664,7 @@ mod tests {
         state
             .active
             .as_ref()
+            .and_then(ActiveUpdate::executable)
             .unwrap()
             .provider_fence
             .clone()
@@ -1541,7 +1727,12 @@ mod tests {
         .unwrap();
         let next = offer(&state, 2);
         decide(&mut state, next).unwrap();
-        let fence = state.active.as_ref().unwrap().fence();
+        let fence = state
+            .active
+            .as_ref()
+            .and_then(ActiveUpdate::executable)
+            .unwrap()
+            .fence();
         let newer = reserve(&mut state, &fence);
         assert!(newer.sequence > reservation.sequence);
         decide(&mut state, Command::Cancel { fence, at: at() }).unwrap();
@@ -1585,7 +1776,13 @@ mod tests {
             .unwrap();
             assert!(state.pending_provider_release.is_none());
             assert_eq!(
-                state.active.as_ref().unwrap().provider_fence.as_ref(),
+                state
+                    .active
+                    .as_ref()
+                    .and_then(ActiveUpdate::executable)
+                    .unwrap()
+                    .provider_fence
+                    .as_ref(),
                 Some(&reservation)
             );
             assert_eq!(
