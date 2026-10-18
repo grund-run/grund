@@ -1,6 +1,6 @@
 use crate::templates::FormState;
 use crate::templates::compiled::components::{PageHead, Panel, Tabs, Select, ChoiceField, ChoiceCard, Form, HiddenField, Banner, Grid, Field, FieldError, StepperField, PairsField, ChipsField, Expanders, Expander, CodeField, ToggleField, Actions, Button, Para, EmptyState};
-props crate::web::apps::DeployPage<'_> { slug, manages, mode, source_tabs, new, new_error, errors, restore_href, advanced, secrets_dropped, exposures, public_hint, templates, signals, memory_steps, cpu_steps, checks, action, csrf };
+props crate::web::apps::DeployPage<'_> { slug, manages, mode, source_tabs, new, new_error, errors, restore_href, advanced, secrets_dropped, exposures, public_hint, storage_hint, templates, signals, memory_steps, cpu_steps, checks, action, csrf };
 {let form_state = FormState { csrf, errors, banners: &std::collections::BTreeMap::new() };}
 
 <PageHead title="Deploy app" />
@@ -11,10 +11,10 @@ props crate::web::apps::DeployPage<'_> { slug, manages, mode, source_tabs, new, 
       <Banner text={new_error} />
       <Tabs label="App source" tabs={source_tabs} active={mode} />
       {if *mode == "premade" {
-        <Select name="template" label="Template" selected={&new.template} required fill="name" error={form_state.error("template").unwrap_or("")}>
+        <Select name="template" label="Template" selected={&new.template} required fill="name" hint={storage_hint} error={form_state.error("template").unwrap_or("")}>
           <option value="" selected={new.template.is_empty()}>Choose a template</option>
           {for template in templates {
-            <option value={template.value} selected={new.template == template.value} disabled={template.disabled}>{template.title}{if let Some(tag) = template.tag { {" — "}{tag} }}</option>
+            <option value={template.value} data-template-hint={&template.hint} selected={new.template == template.value} disabled={template.disabled}>{template.title}{if let Some(tag) = template.tag { {" — "}{tag} }}</option>
           }}
         </Select>
       } else {

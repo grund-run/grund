@@ -72,7 +72,10 @@ pub fn discovery_references(
         tag.digest = None;
         references.push((tag, CandidateKind::Tag, "Same tag".into()));
     }
-    for template in CATALOGUE.iter().filter(|template| !template.needs_storage) {
+    for template in CATALOGUE
+        .iter()
+        .filter(|template| template.unavailable.is_none())
+    {
         let reference = ImageReference::parse(template.image)?;
         if reference.registry == current.registry && reference.repository == current.repository {
             references.push((
@@ -117,33 +120,43 @@ mod tests {
 
     #[test]
     fn catalogue_matches_repository_not_provenance_and_preserves_custom_settings() {
-        let mut base = CATALOGUE[2].spec(false).unwrap();
-        base.image = format!("nginx:old@sha256:{}", "a".repeat(64));
-        base.memory_mib = 512;
-        base.command = vec!["custom".into()];
-        base.env.push(grund_config::app::spec::EnvVar {
-            name: "MODE".into(),
-            value: "mine".into(),
-        });
-        if let Some(check) = &mut base.check {
-            check.interval_ms = 3700;
-            check.timeout_ms = 700;
+        for key in ["nginx", "postgres", "redis"] {
+            let template = super::super::templates::find(key).unwrap();
+            let mut base = template.spec(false).unwrap();
+            let mut old_reference = ImageReference::parse(&base.image).unwrap();
+            old_reference.tag = Some("old".into());
+            old_reference.digest = Some(format!("sha256:{}", "a".repeat(64)));
+            base.image = old_reference.to_string();
+            base.memory_mib = 512;
+            base.command = vec!["custom".into()];
+            base.env.push(grund_config::app::spec::EnvVar {
+                name: "MODE".into(),
+                value: "mine".into(),
+            });
+            if let Some(check) = &mut base.check {
+                check.interval_ms = 3700;
+                check.timeout_ms = 700;
+            }
+            if let Some(volume) = base.volumes.first_mut() {
+                volume.size_gib = Some(20);
+                volume.backup = true;
+            }
+            let base = base.validate().unwrap();
+            let refs = discovery_references(&base.image).unwrap();
+            let (reference, kind, label) = refs
+                .into_iter()
+                .find(|(_, kind, _)| *kind == CandidateKind::Catalogue)
+                .unwrap();
+            let candidate = UpdateCandidate {
+                digest: reference.digest.clone().unwrap(),
+                reference: reference.to_string(),
+                kind,
+                label,
+            };
+            let updated = updated_spec(&base, &candidate).unwrap();
+            let mut expected = base;
+            expected.image = updated.image.clone();
+            assert_eq!(updated, expected);
         }
-        let base = base.validate().unwrap();
-        let refs = discovery_references(&base.image).unwrap();
-        let (reference, kind, label) = refs
-            .into_iter()
-            .find(|(_, kind, _)| *kind == CandidateKind::Catalogue)
-            .unwrap();
-        let candidate = UpdateCandidate {
-            digest: reference.digest.clone().unwrap(),
-            reference: reference.to_string(),
-            kind,
-            label,
-        };
-        let updated = updated_spec(&base, &candidate).unwrap();
-        let mut expected = base;
-        expected.image = updated.image.clone();
-        assert_eq!(updated, expected);
     }
 }

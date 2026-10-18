@@ -486,6 +486,34 @@ dashboard, an app's Settings has its newest release as this file, to copy,
 download, or edit and apply. An unknown key is refused with its line,
 column and path.
 
+### Database templates
+
+Deploy app → Template offers PostgreSQL and Redis when a connected machine
+has working storage and enough resources. Each creates an app-owned data
+volume and a generated password stored as an app secret. They run one copy;
+their TCP readiness checks confirm a listening port, not database transactions.
+
+| Template | Default hosted capacity | Data mount |
+|---|---|---|
+| PostgreSQL | 10 GiB | `/var/lib/postgresql/data` |
+| Redis | 1 GiB | `/data` |
+
+Own machines, including self-hosted instances, use local directories without
+a capacity quota or automatic backup. Hosted templates request daily snapshots;
+a request is not a verified recovery point. Hosted snapshots are crash-consistent
+and same-site only, not protection against whole-site loss. Hosted capacity
+is fixed; resizing is not supported. Redis syncs disk writes about once a second,
+so abrupt power loss can lose recent writes.
+
+The app overview shows host, port, database/user and the environment variables
+to set in another app. Secrets are separate per app. Owners and admins can
+explicitly reveal and copy a grund-generated template password: each successful
+reveal is audited without its value, limited to five per actor and organisation
+per minute. User-entered values, including replacements, remain write-only.
+Changing `POSTGRES_PASSWORD` does not rotate an existing database's password;
+change the password inside PostgreSQL and update its consumers explicitly.
+MinIO is unavailable because it no longer publishes public images.
+
 ### App volumes on your own machines
 
 An app with a volume runs as one copy, pinned to the machine holding its

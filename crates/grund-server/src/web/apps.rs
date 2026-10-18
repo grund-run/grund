@@ -604,7 +604,7 @@ pub async fn deploy_page(
     }: Member,
     Query(query): Query<DeployQuery>,
 ) -> PageResult {
-    let template = templates::find(&query.template).filter(|t| !t.needs_storage);
+    let template = templates::find(&query.template);
     let premade = query.mode == "premade" || template.is_some();
     let form = NewForm {
         mode: if premade { "premade" } else { "custom" }.into(),
@@ -793,12 +793,12 @@ fn template_icons() -> Vec<&'static str> {
     icons
 }
 
-const NEEDS_STORAGE: &str = "Needs storage";
+const STORAGE_UNAVAILABLE: &str = "No connected machine can store this app. Connect an own machine with volumes enabled and enough memory and CPU, or a hosted machine with working storage and a free disk slot.";
 
 pub struct TemplateView {
     pub key: &'static str,
     pub title: &'static str,
-    pub summary: &'static str,
+    pub summary: String,
     pub icon: &'static str,
     pub soon: Option<&'static str>,
 }
@@ -808,6 +808,7 @@ pub struct TemplateChoice {
     pub title: &'static str,
     pub disabled: bool,
     pub tag: Option<&'static str>,
+    pub hint: String,
 }
 
 pub struct DeployAdvanced {
@@ -906,6 +907,7 @@ pub struct DeployPage<'a> {
     pub secrets_dropped: bool,
     pub exposures: Vec<ExposureChoice>,
     pub public_hint: String,
+    pub storage_hint: String,
     pub templates: Vec<TemplateChoice>,
     pub signals: Vec<(&'static str, &'static str)>,
     pub memory_steps: &'static [u64],
@@ -922,14 +924,48 @@ pub struct TemplatesPage {
     pub image_keys: Vec<&'static str>,
 }
 
-pub fn template_view(template: &templates::Template) -> TemplateView {
-    TemplateView {
-        key: template.key,
-        title: template.title,
-        summary: template.summary,
-        icon: template_icon(template),
-        soon: template.needs_storage.then_some(NEEDS_STORAGE),
+async fn template_views(state: &State, org: Uuid) -> Result<Vec<TemplateView>, PageError> {
+    let mut views = Vec::with_capacity(templates::CATALOGUE.len());
+    for template in templates::CATALOGUE {
+        let target = if template.unavailable.is_none() {
+            state
+                .volumes()
+                .template_target(org, template)
+                .await
+                .map_err(|error| PageError::from(anyhow::anyhow!(error)))?
+        } else {
+            None
+        };
+        let mut summary = template.summary.to_string();
+        if let (Some(storage), Some(machine)) = (&template.storage, &target) {
+            if machine.pool == "management" {
+                summary.push_str(&format!(
+                    " {} GiB on {} at {}. Daily snapshots requested; no backup until a recovery point is verified. Same-site only, not protection against whole-site loss. Capacity is fixed; resizing is not supported.",
+                    storage.size_gib, machine.pool_name.as_deref().unwrap_or(&machine.name), storage.path,
+                ));
+            } else {
+                summary.push_str(&format!(
+                    " Data stays on {} at {} across restarts and redeploys. Uses that machine's disk without a size limit. No automatic backup; losing the disk loses the data.",
+                    machine.pool_name.as_deref().unwrap_or(&machine.name), storage.path,
+                ));
+            }
+        }
+        let reason = template.unavailable.or_else(|| {
+            (template.storage.is_some() && target.is_none()).then_some(STORAGE_UNAVAILABLE)
+        });
+        if let Some(reason) = reason {
+            summary.push(' ');
+            summary.push_str(reason);
+        }
+        views.push(TemplateView {
+            key: template.key,
+            title: template.title,
+            summary,
+            icon: template_icon(template),
+            soon: reason.map(|_| "Unavailable"),
+        });
     }
+    Ok(views)
 }
 
 async fn new_view(
@@ -942,13 +978,20 @@ async fn new_view(
     restore_name: Option<String>,
 ) -> PageResult {
     let slug = &membership.slug;
-    let choices: Vec<TemplateChoice> = templates::CATALOGUE
+    let available = template_views(state, membership.organisation_id).await?;
+    let storage_hint = available
+        .iter()
+        .find(|t| t.key == new.template)
+        .map(|t| t.summary.clone())
+        .unwrap_or_else(|| "Choose a template to see where its data lives.".into());
+    let choices: Vec<TemplateChoice> = available
         .iter()
         .map(|t| TemplateChoice {
             value: t.key,
             title: t.title,
-            disabled: t.needs_storage,
-            tag: t.needs_storage.then_some(NEEDS_STORAGE),
+            disabled: t.soon.is_some(),
+            tag: t.soon,
+            hint: t.summary.clone(),
         })
         .collect();
     let premade = new.mode == "premade";
@@ -992,6 +1035,7 @@ async fn new_view(
             .app_domain()
             .map(|domain| format!("Public: https://<name>-{slug}.{domain}"))
             .unwrap_or_default(),
+        storage_hint,
         templates: choices,
         signals: STOP_SIGNALS.iter().map(|s| (*s, *s)).collect(),
         memory_steps: super::resources::MEMORY_STEPS,
@@ -1042,7 +1086,7 @@ pub async fn templates_page(
     let page = TemplatesPage {
         slug: membership.slug.clone(),
         manages: manages(&membership),
-        templates: templates::CATALOGUE.iter().map(template_view).collect(),
+        templates: template_views(&state, membership.organisation_id).await?,
         image_keys: template_icons(),
     };
     signed_in_typed(
@@ -1386,12 +1430,17 @@ fn custom_launch(form: &NewForm, public: bool) -> Result<Launch, Refusal> {
         spec,
         detect_port,
         secrets: named(&form.secrets).map_err(|message| Refusal::field("secrets", message))?,
+        generated_template: None,
     })
 }
 
-fn premade_launch(form: &NewForm, public: bool) -> Result<Launch, Refusal> {
+async fn premade_launch(
+    state: &State,
+    org: Uuid,
+    form: &NewForm,
+    public: bool,
+) -> Result<Launch, Refusal> {
     let template = templates::find(&form.template)
-        .filter(|t| !t.needs_storage)
         .ok_or_else(|| Refusal::field("template", "Choose one of the apps."))?;
     if public && template.publishable.is_none() {
         return Err(Refusal::field(
@@ -1402,12 +1451,39 @@ fn premade_launch(form: &NewForm, public: bool) -> Result<Launch, Refusal> {
             ),
         ));
     }
-    let spec = template.spec(public).ok_or_else(|| {
+    let mut spec = template.spec(public).ok_or_else(|| {
         Refusal::field(
             "template",
-            "That app needs storage, which is not built yet.",
+            template
+                .unavailable
+                .unwrap_or("That template is unavailable."),
         )
     })?;
+    let mut machines = Vec::new();
+    let mut kind = String::new();
+    if let Some(storage) = &template.storage {
+        if copies_of(form)?.unwrap_or(1) != 1 {
+            return Err(Refusal::field(
+                "copies",
+                "An app with storage runs exactly one copy.",
+            ));
+        }
+        let target = state
+            .volumes()
+            .template_target(org, template)
+            .await
+            .map_err(|error| Refusal::banner(sentence(&AppsError::Volume(error))))?
+            .ok_or_else(|| Refusal::field("template", STORAGE_UNAVAILABLE))?;
+        machines.push(target.pool_name.clone().unwrap_or(target.name));
+        let hosted = target.pool == "management";
+        kind = if hosted { "hosted" } else { "own" }.into();
+        if hosted {
+            for volume in &mut spec.volumes {
+                volume.size_gib = Some(storage.size_gib);
+                volume.backup = true;
+            }
+        }
+    }
     Ok(Launch {
         name: match form.name.trim() {
             "" => template.key.to_string(),
@@ -1415,11 +1491,14 @@ fn premade_launch(form: &NewForm, public: bool) -> Result<Launch, Refusal> {
         },
         settings: SettingsInput {
             copies: copies_of(form)?,
+            machines,
+            kind,
             ..Default::default()
         },
         spec,
         detect_port: None,
         secrets: Vec::new(),
+        generated_template: template.storage.as_ref().map(|_| template.key),
     })
 }
 
@@ -1465,7 +1544,7 @@ pub async fn create(
                 "This instance gives apps no public address. Choose Private.",
             ))
         } else if form.mode == "premade" {
-            premade_launch(&form, public)
+            premade_launch(&state, membership.organisation_id, &form, public).await
         } else {
             custom_launch(&form, public)
         };
@@ -2085,11 +2164,20 @@ pub struct AppShellPage {
     pub manages: bool,
 }
 
+pub struct TemplateConnection {
+    pub environment: Vec<(String, String)>,
+    pub credential: Option<(String, String)>,
+    pub storage: String,
+}
+
 pub struct AppOverviewPage<'a> {
     pub app: &'a AppIdentity,
     pub running: &'a Option<RunningRelease>,
     pub releases: &'a [ReleaseView],
     pub update: &'a ImageUpdateView,
+    pub connection: &'a Option<TemplateConnection>,
+    pub manages: bool,
+    pub csrf: &'a str,
 }
 
 fn update_words(state: UpdateState) -> (&'static str, &'static str) {
@@ -2498,6 +2586,100 @@ pub(super) async fn app_view(
         .collect();
     let newest = releases.first();
     let spec = newest.map(|r| &r.spec.0);
+    let connection = if tab == "overview" {
+        if let Some(spec) = spec {
+            let origin: Option<String> = sqlx::query_scalar(
+                "SELECT template FROM grund_template_credentials \
+                 WHERE organisation_id=$1 AND app_id=$2 LIMIT 1",
+            )
+            .bind(membership.organisation_id)
+            .bind(view.row.app_id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(anyhow::Error::from)?;
+            match origin.as_deref() {
+                Some(key @ ("postgres" | "redis")) => {
+                    let postgres = key == "postgres";
+                    let env = |name: &str, fallback: &str| {
+                        spec.env
+                            .iter()
+                            .find(|env| env.name == name)
+                            .map_or_else(|| fallback.to_string(), |env| env.value.clone())
+                    };
+                    let mut environment = vec![
+                        (
+                            (if postgres { "PGHOST" } else { "REDIS_HOST" }).into(),
+                            format!("{name}.grund.internal"),
+                        ),
+                        (
+                            (if postgres { "PGPORT" } else { "REDIS_PORT" }).into(),
+                            spec.ports
+                                .first()
+                                .map_or_else(String::new, |p| p.port.to_string()),
+                        ),
+                    ];
+                    if postgres {
+                        environment.push(("PGDATABASE".into(), env("POSTGRES_DB", "grund")));
+                        environment.push(("PGUSER".into(), env("POSTGRES_USER", "grund")));
+                    }
+                    let generated = apps
+                        .generated_credentials(membership.organisation_id, view.row.app_id)
+                        .await
+                        .map_err(|error| PageError::from(anyhow::anyhow!(error)))?;
+                    let variable = if postgres {
+                        "POSTGRES_PASSWORD"
+                    } else {
+                        "REDIS_PASSWORD"
+                    };
+                    let credential = spec
+                        .secrets
+                        .iter()
+                        .find(|read| {
+                            read.env == variable
+                                && generated.iter().any(|(name, _)| *name == read.secret)
+                        })
+                        .map(|read| {
+                            (
+                                (if postgres {
+                                    "PGPASSWORD"
+                                } else {
+                                    "REDIS_PASSWORD"
+                                })
+                                .into(),
+                                read.secret.clone(),
+                            )
+                        });
+                    let storage = match spec.volumes.first() {
+                        Some(volume) => match volume.size_gib {
+                            Some(size) => format!(
+                                "{size} GiB hosted disk at {}. {} Same-site only: whole-site loss is not covered. Snapshots are crash-consistent, not database-consistent. Capacity is fixed; resizing is not supported.",
+                                volume.path,
+                                if volume.backup { "Daily snapshots requested; check Storage for a verified recovery point before relying on a backup." }
+                                else { "No automatic backup requested." },
+                            ),
+                            None => format!(
+                                "Local disk at {} on {}. No size quota. {} Losing an unbacked-up disk loses its data.",
+                                volume.path, view.row.settings.0.machines.join(", "),
+                                if volume.backup { "Backups requested; check Storage for a verified recovery point." }
+                                else { "No automatic backup." },
+                            ),
+                        },
+                        None => "No data volume mounted. Data does not survive replacement of this container.".into(),
+                    };
+                    Some(TemplateConnection {
+                        environment,
+                        credential,
+                        storage,
+                    })
+                }
+                _ => None,
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     let edit = if refused.part.is_empty() {
         refused.edit.as_str()
     } else {
@@ -2854,6 +3036,9 @@ pub(super) async fn app_view(
                         running: &page.running,
                         releases: &page.releases,
                         update: &page.update,
+                        connection: &connection,
+                        manages: page.shell.manages,
+                        csrf,
                     })
                 }
                 "deployments" => crate::templates::compiled::pages::app_deployments::render(
@@ -3569,6 +3754,91 @@ pub struct VariableForm {
     csrf: String,
     #[serde(default)]
     variable: String,
+}
+
+pub struct CredentialPage {
+    pub title: String,
+    pub value: Option<String>,
+    pub message: &'static str,
+    pub back: String,
+}
+
+/// Explicit owner/admin disclosure of a generated template credential only.
+/// User-entered secret versions remain write-only; plaintext is never redirected.
+pub async fn reveal_credential(
+    AxumState(state): AxumState<State>,
+    browser: Browser,
+    uri: Uri,
+    Path((slug, name)): Path<(String, String)>,
+    Form(form): Form<VariableForm>,
+) -> PageResult {
+    if !browser.form_is_genuine(&form.csrf) {
+        return forged(&state, &browser);
+    }
+    let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
+    use crate::services::apps::CredentialReveal;
+    let result = state
+        .apps()
+        .reveal_template_credential(
+            session.account_id,
+            membership.organisation_id,
+            &name,
+            form.variable.trim(),
+        )
+        .await
+        .map_err(|error| PageError::from(anyhow::anyhow!(error)))?;
+    let (status, value, message) = match result {
+        CredentialReveal::Value(value) => (
+            StatusCode::OK,
+            Some(value),
+            "Only share this with apps you trust. This reveal was recorded. Other secret values remain write-only.",
+        ),
+        CredentialReveal::RateLimited => (
+            StatusCode::TOO_MANY_REQUESTS,
+            None,
+            "At most five credential reveals per minute. Wait one minute and try again.",
+        ),
+        CredentialReveal::Unavailable => (
+            StatusCode::NOT_FOUND,
+            None,
+            "No generated credential is available to your account. User-entered values stay write-only.",
+        ),
+    };
+    let page = CredentialPage {
+        title: format!("{name} · {}", form.variable),
+        value,
+        message,
+        back: format!("/{slug}/apps/{name}"),
+    };
+    let mut response = signed_in_typed(
+        &state,
+        &browser,
+        &session,
+        Some(&membership),
+        status,
+        "Template credential",
+        "apps",
+        None,
+        None,
+        None,
+        |_, _| crate::templates::compiled::pages::credential::render(&page),
+    )
+    .await?;
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store, no-transform"),
+    );
+    response.headers_mut().insert(
+        header::REFERRER_POLICY,
+        axum::http::HeaderValue::from_static("same-origin"),
+    );
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        response.headers_mut().insert(
+            header::RETRY_AFTER,
+            axum::http::HeaderValue::from_static("60"),
+        );
+    }
+    Ok(response)
 }
 
 /// `POST /{org}/apps/{app}/secrets/remove`: a new release of the same

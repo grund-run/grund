@@ -289,6 +289,17 @@
     var advanced = document.getElementById("deploy-options");
     if (advanced) {
       var deploy = advanced.closest("form");
+      var template = deploy && deploy.elements.namedItem("template");
+      var templateHint = document.getElementById("template-hint");
+      if (template && templateHint) {
+        function showTemplateHint() {
+          var option = template.selectedOptions[0];
+          templateHint.textContent = option && option.dataset.templateHint ||
+            "Choose a template to see where its data lives.";
+        }
+        template.addEventListener("change", showTemplateHint, on);
+        showTemplateHint();
+      }
       var summary = advanced.querySelector(":scope > summary .expander-summary");
       if (deploy && summary) {
         function value(name) {

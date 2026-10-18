@@ -556,10 +556,14 @@ pub fn parse_app(text: &str, name: &str) -> Result<Declared, SpecError> {
             "volumes require exactly one copy",
         );
     }
-    if !spec.volumes.is_empty() && settings.kind == "hosted" {
+    let block_storage = spec.volumes.iter().any(|volume| volume.size_gib.is_some());
+    if !spec.volumes.is_empty()
+        && ((settings.kind == "hosted" && !block_storage)
+            || (settings.kind == "own" && block_storage))
+    {
         return refuse(
             format!("apps.{name}.placement.kind"),
-            "volumes require an own machine; hosted storage is not available yet",
+            "hosted machines use sized block volumes; own machines use directories",
         );
     }
     Ok(Declared {
@@ -974,6 +978,27 @@ apps:
             );
             assert!(!schema_validator().is_valid(&as_json(&file)), "{file}");
         }
+    }
+
+    #[test]
+    fn hosted_block_volumes_keep_placement_and_data_settings_through_file_edits() {
+        let text = "apps:\n  database:\n    image: example/postgres:17\n    placement:\n      kind: hosted\n    volumes:\n      data:\n        path: /var/lib/postgresql/data\n        size_gib: 10\n        backup: daily\n";
+        let declared = parse_app(text, "database").unwrap();
+        let settings = AppSettings::validate(declared.settings).unwrap();
+        let edited = render(
+            "database",
+            &declared.spec,
+            &settings,
+            "https://example.test",
+        );
+        let reparsed = parse_app(&edited, "database").unwrap();
+        assert_eq!(reparsed.spec, declared.spec);
+        assert_eq!(AppSettings::validate(reparsed.settings).unwrap(), settings);
+        let wrong_target = text.replace("kind: hosted", "kind: own");
+        assert_eq!(
+            parse_app(&wrong_target, "database").unwrap_err().field,
+            "apps.database.placement.kind"
+        );
     }
 
     #[test]

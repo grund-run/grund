@@ -6,6 +6,9 @@
 //! transaction with the events' read models and the signed documents of
 //! every machine it touched (§6.1, §10.3).
 
+#[cfg(test)]
+#[path = "apps_credentials_tests.rs"]
+mod credential_tests;
 mod updates;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -194,6 +197,7 @@ pub struct Launch {
     /// named after its variable (`API_KEY` is the secret `api-key`) and
     /// handed to the app as that variable.
     pub secrets: Vec<(String, String)>,
+    pub(crate) generated_template: Option<&'static str>,
 }
 
 /// The next release of an app as the dashboard's Settings ask for it, made
@@ -316,6 +320,12 @@ pub struct SecretValue {
     pub name: String,
     pub version: u32,
     pub value: Vec<u8>,
+}
+/// The result of an explicit, audited template-credential disclosure.
+pub enum CredentialReveal {
+    Unavailable,
+    RateLimited,
+    Value(String),
 }
 
 /// The checked desired release and the live state observed for an approval.
@@ -798,9 +808,24 @@ impl Apps {
         &self,
         actor: Uuid,
         organisation_id: Uuid,
-        launch: Launch,
+        mut launch: Launch,
     ) -> Result<(AppName, ReleaseRow), AppsError> {
         let name = AppName::parse(&launch.name)?;
+        if let Some(key) = launch.generated_template {
+            let template = grund_domain::app::templates::find(key)
+                .filter(|template| template.storage.is_some() && template.unavailable.is_none())
+                .context("a generated-credential template exists")?;
+            if !launch.secrets.is_empty() {
+                return Err(anyhow::anyhow!("template credentials cannot be supplied").into());
+            }
+            for variable in template.secret_variables {
+                let mut bytes = [0u8; 32];
+                getrandom::fill(&mut bytes).map_err(anyhow::Error::from)?;
+                launch
+                    .secrets
+                    .push(((*variable).into(), hex::encode(bytes)));
+            }
+        }
         let settings = AppSettings::validate(launch.settings)?;
         let mut spec = launch.spec;
         let secret_names = attach_secrets(&mut spec, &launch.secrets)?;
@@ -859,44 +884,70 @@ impl Apps {
         if !allows_public_release(self.state.config.entry.app_domains, &spec, bound) {
             return Err(AppsError::DomainRequired);
         }
+        let key = sealing_key(&self.state);
+        let mut secret_versions = Vec::with_capacity(secret_names.len());
+        for (secret, (_, value)) in secret_names.iter().zip(&launch.secrets) {
+            let (version, _) = apps::insert_secret(
+                work.sql(),
+                app_id,
+                organisation_id,
+                secret,
+                |version| seal(&key, app_id, secret, version, value.as_bytes()),
+                actor,
+            )
+            .await?;
+            if let Some(template) = launch.generated_template {
+                sqlx::query("INSERT INTO grund_template_credentials (organisation_id,app_id,name,version,template) VALUES ($1,$2,$3,$4,$5)")
+                    .bind(organisation_id).bind(app_id).bind(secret).bind(version).bind(template)
+                    .execute(&mut **work.sql()).await?;
+            }
+            secret_versions.push(SecretVersion {
+                name: secret.clone(),
+                version: version as u32,
+            });
+        }
+        if spec
+            .secrets
+            .iter()
+            .any(|read| !secret_names.contains(&read.secret))
+        {
+            return Err(AppsError::Spec(SpecError {
+                field: "secrets".into(),
+                problem: "each secret of a new app needs an initial value".into(),
+            }));
+        }
+        self.state
+            .volumes()
+            .resolve_release_in(&mut work, organisation_id, app_id, &spec.volumes)
+            .await?;
+        work.app(
+            app_id,
+            AppCommand::Release {
+                actor,
+                spec,
+                image_digest: inspection.resolved.digest,
+                platforms: inspection.resolved.platforms,
+                exposed_ports: Some(inspection.exposed_ports),
+                secret_versions,
+                source: ReleaseSource::Dashboard,
+                external_release: None,
+                request: None,
+                rollback_of: None,
+                note: String::new(),
+                rollout_id: Uuid::now_v7(),
+                at: Utc::now(),
+            },
+        )
+        .await?;
         if let Err(error) = work.commit().await {
             return Err(self
                 .created_name_conflict(organisation_id, name.as_str(), error.into())
                 .await);
         }
-        for (secret, (_, value)) in secret_names.iter().zip(&launch.secrets) {
-            self.set_secret(
-                actor,
-                organisation_id,
-                name.as_str(),
-                secret,
-                value.as_bytes(),
-            )
-            .await?;
-        }
-        let secret_versions = self.secret_versions(app_id, &spec).await?;
-        let release = self
-            .record_release(
-                actor,
-                app_id,
-                AppCommand::Release {
-                    actor,
-                    spec,
-                    image_digest: inspection.resolved.digest,
-                    platforms: inspection.resolved.platforms,
-                    exposed_ports: Some(inspection.exposed_ports),
-                    secret_versions,
-                    source: ReleaseSource::Dashboard,
-                    external_release: None,
-                    request: None,
-                    rollback_of: None,
-                    note: String::new(),
-                    rollout_id: Uuid::now_v7(),
-                    at: Utc::now(),
-                },
-                None,
-            )
-            .await?;
+        self.state.wakes.apps_changed();
+        let release = apps::release(&self.state.pool, app_id, 1)
+            .await?
+            .ok_or(AppsError::ReleaseNotFound)?;
         Ok((name, release))
     }
 
@@ -1772,6 +1823,86 @@ impl Apps {
         .await?;
         tx.commit().await?;
         Ok((secret.to_string(), version, at))
+    }
+    /// Current generated credential keys and their template, without values.
+    /// A user-entered replacement has no generated provenance and is excluded.
+    pub async fn generated_credentials(
+        &self,
+        org: Uuid,
+        app: Uuid,
+    ) -> Result<Vec<(String, String)>, AppsError> {
+        Ok(sqlx::query_as(
+            "SELECT c.name,c.template FROM grund_template_credentials c \
+             JOIN grund_apps a ON a.organisation_id=c.organisation_id AND a.app_id=c.app_id \
+             WHERE c.organisation_id=$1 AND c.app_id=$2 AND a.deleted_at IS NULL \
+             AND c.version=(SELECT max(s.version) FROM grund_app_secrets s \
+                WHERE s.organisation_id=c.organisation_id AND s.app_id=c.app_id AND s.name=c.name) \
+             ORDER BY c.name",
+        )
+        .bind(org)
+        .bind(app)
+        .fetch_all(&self.state.pool)
+        .await?)
+    }
+
+    /// Reveals only a current, generated credential to an owner or admin.
+    /// Five successful reveals per actor and organisation per minute are allowed;
+    /// every disclosure commits its value-free audit before returning plaintext.
+    pub async fn reveal_template_credential(
+        &self,
+        actor: Uuid,
+        org: Uuid,
+        name: &str,
+        secret: &str,
+    ) -> Result<CredentialReveal, AppsError> {
+        let mut tx = self.state.pool.begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+            .bind(format!("grund-credential-reveal:{org}:{actor}"))
+            .execute(&mut *tx)
+            .await?;
+        let credential: Option<(Uuid, i32, Vec<u8>)> = sqlx::query_as(
+            "SELECT c.app_id,c.version,s.sealed FROM grund_template_credentials c \
+             JOIN grund_apps a ON a.organisation_id=c.organisation_id AND a.app_id=c.app_id \
+             JOIN grund_memberships m ON m.organisation_id=a.organisation_id \
+             JOIN grund_app_secrets s ON s.organisation_id=c.organisation_id \
+                AND s.app_id=c.app_id AND s.name=c.name AND s.version=c.version \
+             WHERE c.organisation_id=$1 AND a.name=$2 AND c.name=$3 AND a.deleted_at IS NULL \
+                AND m.account_id=$4 AND m.role IN ('owner','admin') \
+                AND c.version=(SELECT max(v.version) FROM grund_app_secrets v \
+                    WHERE v.organisation_id=c.organisation_id AND v.app_id=c.app_id AND v.name=c.name) \
+             FOR SHARE OF m,a,s",
+        ).bind(org).bind(name).bind(secret).bind(actor).fetch_optional(&mut *tx).await?;
+        let Some((app, version, sealed)) = credential else {
+            return Ok(CredentialReveal::Unavailable);
+        };
+        let count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM grund_template_credential_reveals WHERE organisation_id=$1 \
+             AND actor=$2 AND revealed_at>clock_timestamp()-interval '1 minute'",
+        )
+        .bind(org)
+        .bind(actor)
+        .fetch_one(&mut *tx)
+        .await?;
+        if count >= 5 {
+            return Ok(CredentialReveal::RateLimited);
+        }
+        let value = open(&sealing_key(&self.state), app, secret, version, &sealed)
+            .context("a generated credential opens with this instance's key")?;
+        let value = String::from_utf8(value).map_err(anyhow::Error::from)?;
+        sqlx::query(
+            "INSERT INTO grund_template_credential_reveals \
+            (organisation_id,reveal_id,app_id,actor,name,version) VALUES ($1,$2,$3,$4,$5,$6)",
+        )
+        .bind(org)
+        .bind(Uuid::now_v7())
+        .bind(app)
+        .bind(actor)
+        .bind(secret)
+        .bind(version)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(CredentialReveal::Value(value))
     }
 
     /// All live and pending volumes, including detached volumes absent from

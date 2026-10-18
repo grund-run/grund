@@ -222,6 +222,10 @@ pub fn router(state: State) -> Router {
         )
         .route("/{org}/apps/{app}/secrets", post(apps::set_secret))
         .route(
+            "/{org}/apps/{app}/credentials/reveal",
+            post(apps::reveal_credential),
+        )
+        .route(
             "/{org}/apps/{app}/secrets/remove",
             post(apps::remove_secret),
         )

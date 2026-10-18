@@ -48,6 +48,15 @@ pub type BackendFuture<'a, T> = Pin<Box<dyn Future<Output = anyhow::Result<T>> +
 /// Physical placement and current writer receipts are supplied only by the
 /// hosted extension. Public own-machine volumes never call this backend.
 pub trait VolumeBackend: Send + Sync {
+    /// Whether this leased machine currently has room for a new template's
+    /// block volume, backed by fresh physical-host and lease evidence.
+    fn template_available<'a>(
+        &'a self,
+        conn: &'a mut sqlx::PgConnection,
+        machine: &'a MachineRow,
+        size_gib: u64,
+    ) -> BackendFuture<'a, bool>;
+
     fn eligible<'a>(
         &'a self,
         conn: &'a mut sqlx::PgConnection,
@@ -155,6 +164,74 @@ async fn backend_holder_allowed(
 }
 
 impl Volumes {
+    /// Selects a connected storage-capable machine in this organisation only.
+    /// Own-machine directories and hosted blocks never substitute for each other.
+    pub async fn template_target(
+        &self,
+        org: Uuid,
+        template: &grund_domain::app::templates::Template,
+    ) -> Result<Option<MachineRow>, VolumesError> {
+        let Some(storage) = &template.storage else {
+            return Ok(None);
+        };
+        let mut conn = self
+            .state
+            .pool
+            .acquire()
+            .await
+            .map_err(anyhow::Error::from)?;
+        let candidates = grund_store::machines::organisation_machines(&mut *conn, org)
+            .await
+            .map_err(anyhow::Error::from)?;
+        let reservations = grund_store::apps::reservations(&mut *conn, org, Uuid::nil())
+            .await
+            .map_err(anyhow::Error::from)?;
+        for candidate in candidates {
+            let reserved = reservations
+                .iter()
+                .find(|r| r.machine_id == candidate.machine_id);
+            let view = crate::services::apps::machine_view(&candidate, reserved);
+            let volumes = candidate
+                .capabilities
+                .as_ref()
+                .is_some_and(|c| c.0["volumes"].as_bool() == Some(true));
+            if !view.apps
+                || !volumes
+                || !view.connected(Utc::now())
+                || view.cordoned
+                || template.memory_mib
+                    > view
+                        .allocatable_memory_mib()
+                        .saturating_sub(view.reserved_memory_mib)
+                || template.cpu_millis
+                    > view
+                        .allocatable_cpu_millis()
+                        .saturating_sub(view.reserved_cpu_millis)
+                || (view.max_replica_memory_mib > 0
+                    && template.memory_mib > view.max_replica_memory_mib)
+                || (view.max_replica_cpu_millis > 0
+                    && template.cpu_millis > view.max_replica_cpu_millis)
+            {
+                continue;
+            }
+            let available = if candidate.pool == "management" {
+                match self.state.volume_backend() {
+                    Some(backend) => backend
+                        .template_available(&mut conn, &candidate, storage.size_gib)
+                        .await
+                        .map_err(VolumesError::Internal)?,
+                    None => false,
+                }
+            } else {
+                candidate.state == "active" && candidate.minted_by.starts_with("account:")
+            };
+            if available {
+                return Ok(Some(candidate));
+            }
+        }
+        Ok(None)
+    }
+
     pub async fn list(&self, org: Uuid, app: Uuid) -> Result<Vec<VolumeRow>, VolumesError> {
         Ok(volumes::app_volumes(&self.state.pool, org, app)
             .await

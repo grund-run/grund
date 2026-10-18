@@ -1,5 +1,5 @@
-use crate::templates::compiled::components::{Panel, Facts, Fact, Endpoint, Para, Timeline, Event, EmptyState};
-props crate::web::apps::AppOverviewPage<'_> { app, running, releases, update };
+use crate::templates::compiled::components::{Panel, Facts, Fact, Endpoint, Para, Timeline, Event, EmptyState, PostButton};
+props crate::web::apps::AppOverviewPage<'_> { app, running, releases, update, connection, manages, csrf };
 {let releases_href = format!("{}/deployments", app.base);}
 
 <Panel id="status" title="Application status">
@@ -34,6 +34,27 @@ props crate::web::apps::AppOverviewPage<'_> { app, running, releases, update };
   </Facts>
   <Para><a href="{app.base}/settings?edit=image">View image updates</a></Para>
 </Panel>
+{if let Some(connection) = connection {
+  <Panel id="connection" title="Connect from your apps">
+    <Facts>
+      {for (variable, value) in &connection.environment {
+        <Fact label={variable}><Endpoint text={value} href="" /></Fact>
+      }}
+      {if let Some((variable, secret)) = &connection.credential {
+        <Fact label={variable} wide>
+          <Para>Set this in the other app's Secrets using this generated credential. Secrets are separate for each app.</Para>
+          {if *manages {
+            <PostButton action="{app.base}/credentials/reveal" csrf={csrf} label="Reveal generated password" kind="secondary" hidden={&[("variable", secret.as_str())]} />
+          } else { <Para kind="hint">Only owners and admins can reveal generated credentials.</Para> }}
+        </Fact>
+      } else {
+        <Fact label="Password" wide><Para>The current secret value is write-only. Use the value you supplied.</Para></Fact>
+      }}
+    </Facts>
+    <Para>{&connection.storage}</Para>
+    <Para><a href="{app.base}/settings?edit=volumes">Storage and recovery points</a></Para>
+  </Panel>
+}}
 <Panel id="activity" title="Latest activity" action={Some((&releases_href, "All releases"))}>
   {if releases.is_empty() {
     <EmptyState text="No deployments yet." />

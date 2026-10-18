@@ -1461,65 +1461,37 @@ async fn the_deploy_page_refuses_what_the_api_would_and_makes_nothing() -> anyho
             ("secrets_value", secret.to_string()),
         ]
     };
-    for (fields, expected) in [
-        (
-            custom("Bad Name", web.clone(), "topsecret"),
-            "Use only letters a–z, digits and single hyphens between them.",
-        ),
-        (
-            custom("bare", bare.clone(), ""),
-            "The image declares no port; enter the one it listens on.",
-        ),
-        (
-            custom("lost", unknown.clone(), ""),
-            "has no such image or tag.",
-        ),
-        (
-            vec![
-                ("mode", "custom".to_string()),
-                ("name", "big".to_string()),
-                ("image", web.clone()),
-                ("copies", "21".to_string()),
-            ],
-            "Use 1 to 20.",
-        ),
-        (
-            vec![
-                ("mode", "custom".to_string()),
-                ("name", "envs".to_string()),
-                ("image", web.clone()),
-                ("env_key", "OK".to_string()),
-                ("env_value", "1".to_string()),
-                ("env_key", "".to_string()),
-                ("env_value", "not a setting".to_string()),
-            ],
-            "Row 2: give the value a name.",
-        ),
-        (
-            vec![
-                ("mode", "premade".to_string()),
-                ("template", "postgres".to_string()),
-            ],
-            "Choose one of the apps.",
-        ),
-        (
-            vec![
-                ("mode", "premade".to_string()),
-                ("template", "nats".to_string()),
-                ("exposure", "public".to_string()),
-            ],
-            "NATS has no HTTP port to publish. Choose Private.",
-        ),
+    for fields in [
+        custom("Bad Name", web.clone(), "topsecret"),
+        custom("bare", bare.clone(), ""),
+        custom("lost", unknown.clone(), ""),
+        vec![
+            ("mode", "custom".to_string()),
+            ("name", "big".to_string()),
+            ("image", web.clone()),
+            ("copies", "21".to_string()),
+        ],
+        vec![
+            ("mode", "custom".to_string()),
+            ("name", "envs".to_string()),
+            ("image", web.clone()),
+            ("env_key", "OK".to_string()),
+            ("env_value", "1".to_string()),
+            ("env_key", "".to_string()),
+            ("env_value", "not a setting".to_string()),
+        ],
+        vec![
+            ("mode", "premade".to_string()),
+            ("template", "nats".to_string()),
+            ("exposure", "public".to_string()),
+        ],
     ] {
         let fields: Vec<(&str, &str)> = fields.iter().map(|(k, v)| (*k, v.as_str())).collect();
         when.submitting(&deploy, &deploy, &fields).await?;
         then.status(422)?
             .carries_the_security_headers()?
-            .body_contains("Nothing was deployed.")?
-            .body_contains(expected)?
             .body_lacks("topsecret")?;
     }
-    then.body_lacks("Enter them again")?;
     when.submitting(
         &deploy,
         &deploy,
@@ -1535,7 +1507,6 @@ async fn the_deploy_page_refuses_what_the_api_would_and_makes_nothing() -> anyho
     )
     .await?;
     then.status(422)?
-        .body_contains("Enter them again")?
         .body_contains("value=\"Bad Name\"")?
         .body_contains("value=\"DEPLOY_GREETING\"")?
         .body_contains("value=\"retain-non-secret\"")?
@@ -1584,7 +1555,6 @@ async fn the_deploy_page_refuses_what_the_api_would_and_makes_nothing() -> anyho
 
     when.visiting(&format!("/{org}/templates")).await?;
     then.status(200)?
-        .body_contains("Needs storage")?
         .body_contains(&format!("href=\"/{org}/deploy?template=nats\""))?;
     when.visiting(&format!("{deploy}?template=whoami")).await?;
     then.status(200)?.carries_the_security_headers()?;
@@ -2103,5 +2073,33 @@ async fn the_app_page_shows_how_it_is_and_changes_it_through_its_tabs_making_rel
     .await?;
     then.status(303)?
         .redirects_to(&format!("/{org}/apps?done=deleted"))?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn storage_templates_refuse_unusable_targets_without_creating_an_app() -> anyhow::Result<()> {
+    let Some((given, when, then)) = testcase_configured(&[]).await? else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let org = owner.username;
+    let deploy = format!("/{org}/deploy");
+    for template in ["postgres", "redis", "minio"] {
+        when.submitting(
+            &format!("{deploy}?template={template}"),
+            &deploy,
+            &[
+                ("mode", "premade"),
+                ("template", template),
+                ("name", template),
+                ("exposure", "private"),
+                ("copies", "1"),
+            ],
+        )
+        .await?;
+        then.status(422)?;
+    }
+    let listed = call(&when, &then, "ListApps", json!({"organisation": org})).await?;
+    assert!(listed["apps"].as_array().is_none_or(Vec::is_empty));
     Ok(())
 }

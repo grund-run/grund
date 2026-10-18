@@ -87,3 +87,67 @@ async fn image_update_forms_refuse_csrf_before_membership_or_input_validation() 
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn credential_reveal_refuses_forged_forms_and_never_reads_a_user_entered_secret()
+-> anyhow::Result<()> {
+    use base64::Engine;
+    use serde_json::json;
+
+    let Some((given, when, then)) = testcase_with_mail().await? else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let org = &owner.username;
+    crate::accepttest::apps::call(
+        &when,
+        &then,
+        "CreateApp",
+        json!({"organisation": org, "name": "database"}),
+    )
+    .await?;
+    then.status(200)?;
+    let secret = "user-entered-credential-reveal-test";
+    crate::accepttest::apps::call(
+        &when,
+        &then,
+        "SetSecret",
+        json!({
+            "organisation": org,
+            "name": "database",
+            "secret": "postgres-password",
+            "value": base64::engine::general_purpose::STANDARD.encode(secret)
+        }),
+    )
+    .await?;
+    then.status(200)?;
+    let action = format!("/{org}/apps/database/credentials/reveal");
+    let page = format!("/{org}/apps/database");
+    when.visiting(&page).await?;
+    then.status(200)?.body_lacks(secret)?;
+    let csrf = crate::accepttest::fixtures::csrf_of(&then.body()?).expect("csrf");
+    let origin = when.form_origin();
+    for token in [None, Some("forged")] {
+        let mut fields = vec![("variable", "postgres-password")];
+        if let Some(token) = token {
+            fields.push(("csrf", token));
+        }
+        when.posting_raw(&action, &fields, Some(&origin)).await?;
+        then.status(403)?.body_lacks(secret)?;
+    }
+    let (_other_given, other_when, _other_then) = given.testcase.another_browser();
+    let other_page = other_when.send("GET", "/login", &[], None).await?;
+    let other_csrf = crate::accepttest::fixtures::csrf_of(&other_page.text()).expect("csrf");
+    when.submitting_with_token(&action, &other_csrf, &[("variable", "postgres-password")])
+        .await?;
+    then.status(403)?.body_lacks(secret)?;
+    when.submitting_with_token(&action, &csrf, &[("variable", "postgres-password")])
+        .await?;
+    then.status(404)?
+        .header("cache-control", "no-store, no-transform")?
+        .header("referrer-policy", "same-origin")?
+        .body_lacks(secret)?;
+    when.visiting(&action).await?;
+    then.status(405)?.body_lacks(secret)?;
+    Ok(())
+}

@@ -102,8 +102,7 @@ async fn every_signed_in_page_renders_in_the_shell_with_nothing_the_csp_forbids(
         });
     }
     when.visiting(&format!("/{org}/templates")).await?;
-    then.body_contains("Needs storage")?
-        .body_contains("aria-current=\"page\">")?;
+    then.body_contains("aria-current=\"page\">")?;
 
     let script = script.expect("signed-in pages load the script");
     when.visiting(&script).await?;
