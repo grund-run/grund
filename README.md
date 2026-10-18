@@ -76,9 +76,9 @@ installs missing Docker tools from those repositories. Otherwise, install
 Docker Engine and Docker Compose v2 first. grund does not run a third-party
 installation script.
 
-**Fresh Debian 13 with alpha.10:** install `docker.io`, `docker-cli` and
-`docker-compose` first. Its automatic setup omitted the separate client
-package; this checkout corrects that omission.
+**Fresh Debian 13:** use alpha.11 or newer for automatic Docker setup.
+Alpha.10 omitted the separate client package; if keeping that release,
+install `docker.io`, `docker-cli` and `docker-compose` first.
 
 ### Start without a domain
 
