@@ -23,7 +23,8 @@
 #
 # What it does, as root, each step checked:
 #   1. grund: the build this instance selects for a device, checked against a
-#      SHA-256 and installed to /usr/local/bin/grund. By default the full
+#      SHA-256 and installed to /usr/local/lib/grund/agent/grund. The CLI
+#      in /usr/local/bin/grund is never replaced. By default the full
 #      40-character public commit from /health/ready names a build in grund's
 #      package registry. For <server>+<public>, the second commit selects that
 #      public build. A build from source names none and is refused. With
@@ -50,6 +51,7 @@
 # (grund-docs design/vm-runtime.md). Docker's FORWARD policy drops VM
 # traffic; the device then shows no egress and gets no VMs.
 set -eu
+umask 077
 
 FIRECRACKER_VERSION=v1.17.0
 FIRECRACKER_TGZ_SHA256=06094a1108ae9e82aa4c23a775aa92758f53f1175d422270d9d6162cb9ade558
@@ -101,13 +103,176 @@ esac
 command -v systemctl >/dev/null || fail "this installer needs systemd to run the agent"
 command -v curl >/dev/null || fail "curl is required"
 command -v sha256sum >/dev/null || fail "sha256sum is required (coreutils)"
+command -v flock >/dev/null || fail "flock is required (util-linux)"
+command -v sync >/dev/null || fail "sync is required (coreutils)"
+[ ! -L /etc/systemd/system/grund-agent.service ] || fail "the agent unit must not be a symbolic link"
+previous_arguments="" legacy_unit=""
+if [ -f /etc/systemd/system/grund-agent.service ]; then
+  previous_exec="$(sed -n 's/^ExecStart=//p' /etc/systemd/system/grund-agent.service)"
+  case "$previous_exec" in
+    "/usr/local/bin/grund agent "*)
+      previous_arguments="${previous_exec#'/usr/local/bin/grund agent '}"; legacy_unit=1 ;;
+    "/usr/local/lib/grund/agent/grund agent "*)
+      previous_arguments="${previous_exec#'/usr/local/lib/grund/agent/grund agent '}" ;;
+    *) fail "existing grund-agent.service has an unmanaged ExecStart; preserve it manually before installing" ;;
+  esac
+  environment_files="$(systemctl show -p EnvironmentFiles --value grund-agent.service)" ||
+    fail "cannot inspect the existing agent environment; nothing was changed"
+  if [ -n "$environment_files" ] ||
+    grep -Eq '^[[:space:]]*EnvironmentFile[[:space:]]*=' /etc/systemd/system/grund-agent.service; then
+    fail "the existing agent uses EnvironmentFile; this installer cannot safely resolve that identity, so nothing was changed"
+  fi
+  case "$previous_arguments" in
+    *--data-dir*) fail "this installer cannot migrate a custom agent data directory; nothing was changed" ;;
+  esac
+  environment_data="$(systemctl show -p Environment --value grund-agent.service | tr ' ' '\n' | sed -n 's/^GRUND_AGENT_DATA_DIR=//p')"
+  if [ -n "$environment_data" ] && [ "$environment_data" != /var/lib/grund/agent ]; then
+    fail "this installer cannot migrate a custom agent data directory; nothing was changed"
+  fi
+fi
+for directory in /var/lib/grund /usr/local/lib/grund /usr/local/lib/grund/agent; do
+  [ ! -L "$directory" ] || fail "$directory must not be a symbolic link"
+  if [ -e "$directory" ]; then
+    [ -d "$directory" ] && [ "$(stat -c %u "$directory")" = 0 ] ||
+      fail "$directory must be a root-owned directory"
+    [ -z "$(find "$directory" -maxdepth 0 -perm /022 -print)" ] ||
+      fail "$directory must not be group- or world-writable"
+  else
+    install -d -m 0700 "$directory"
+  fi
+done
+[ ! -L /var/lib/grund/.update.lock ] || fail "the update lock must not be a symbolic link"
+exec 9>/var/lib/grund/.update.lock
+flock -n 9 || fail "another agent installation or update is running"
+runtime_binary=/usr/local/lib/grund/agent/grund
+[ ! -L "$runtime_binary" ] || fail "the runtime must not be a symbolic link"
+[ ! -e /var/lib/grund/agent/update-journal.json ] ||
+  fail "an agent update is unresolved; let its supervisor finish before installing"
 url="${url%/}"
 
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+staged="" switched="" unit_written="" old_active="" old_enabled="" unit_staged="" legacy_repair="" snapshot=""
+if systemctl is-active --quiet grund-agent.service; then old_active=1; fi
+if systemctl is-enabled --quiet grund-agent.service; then old_enabled=1; fi
+if [ -f /etc/systemd/system/grund-agent.service ]; then
+  cp -p /etc/systemd/system/grund-agent.service "$work/previous.service"
+fi
+cleanup() {
+  result=$?
+  trap - EXIT
+  if [ "$result" != 0 ] && { [ -n "$switched" ] || [ -n "$legacy_repair" ]; }; then
+    echo "install.sh: installation failed; restoring the retained runtime and dedicated unit" >&2
+    if [ -n "$unit_written" ] || [ -n "$legacy_repair" ]; then systemctl stop grund-agent.service || true; fi
+    if [ -f /usr/local/lib/grund/agent/grund.install-previous ]; then
+      mv -f /usr/local/lib/grund/agent/grund.install-previous "$runtime_binary"
+      sync /usr/local/lib/grund/agent
+    else
+      rm -f "$runtime_binary"
+    fi
+    if [ -n "$unit_written" ] || [ -n "$legacy_repair" ]; then
+      if [ -f "$work/previous.service" ]; then
+        install -m 0644 "$work/previous.service" /etc/systemd/system/grund-agent.service
+      else
+        systemctl disable grund-agent.service >/dev/null 2>&1 || true
+        rm -f /etc/systemd/system/grund-agent.service
+      fi
+      systemctl daemon-reload || true
+      if [ -z "$old_enabled" ]; then systemctl disable grund-agent.service >/dev/null 2>&1 || true; fi
+    fi
+    if [ -n "$old_active" ]; then
+      systemctl restart grund-agent.service &&
+        systemctl is-active --quiet grund-agent.service ||
+        echo "install.sh: previous service could not restart; inspect journalctl -u grund-agent" >&2
+    fi
+  fi
+  [ -z "$staged" ] || rm -f "$staged"
+  [ -z "$unit_staged" ] || rm -f "$unit_staged"
+  [ -z "$snapshot" ] || rm -f "$snapshot"
+  rm -rf "$work"
+  exit "$result"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+retain_running_runtime() {
+  pid="$(systemctl show -p MainPID --value grund-agent.service)"
+  case "$pid" in
+    ""|0|*[!0-9]*) fail "the active agent has no trustworthy systemd MainPID; nothing was replaced" ;;
+  esac
+  [ "$(stat -c %u "/proc/$pid")" = 0 ] || fail "the agent MainPID is not root-owned"
+  expected=/usr/local/lib/grund/agent/grund
+  [ -z "$legacy_unit" ] || expected=/usr/local/bin/grund
+  executable="$(readlink "/proc/$pid/exe")" || fail "cannot inspect the running agent executable"
+  case "$executable" in
+    "$expected"|"$expected (deleted)") ;;
+    *) fail "the systemd MainPID is not running the validated agent executable" ;;
+  esac
+  identity="$(stat -Lc '%d:%i:%s' "/proc/$pid/exe")"
+  exec 8<"/proc/$pid/exe"
+  source="/proc/$$/fd/8"
+  snapshot="$(mktemp /usr/local/lib/grund/agent/.known-good.XXXXXX)"
+  install -m 0755 "$source" "$snapshot"
+  [ -s "$snapshot" ] && cmp -s "$source" "$snapshot" ||
+    fail "the complete running executable could not be retained"
+  "$snapshot" --version >/dev/null || fail "the retained executable cannot report its version"
+  [ "$(systemctl show -p MainPID --value grund-agent.service)" = "$pid" ] &&
+    [ "$(stat -Lc '%d:%i:%s' "/proc/$pid/exe")" = "$identity" ] ||
+    fail "the running agent changed while retaining it; rerun the installer"
+  sync "$snapshot"
+  mv -f "$snapshot" /usr/local/lib/grund/agent/grund.install-previous
+  snapshot=""
+  sync /usr/local/lib/grund/agent
+  exec 8<&-
+  if [ -n "$legacy_unit" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        ExecStart=*) printf 'ExecStart=%s agent %s\n' "$runtime_binary" "$previous_arguments" ;;
+        *) printf '%s\n' "$line" ;;
+      esac
+    done < "$work/previous.service" > "$work/rollback.service"
+    mv -f "$work/rollback.service" "$work/previous.service"
+    legacy_repair=1
+  fi
+}
+if [ -n "$legacy_unit" ] && [ -z "$old_active" ]; then
+  fail "the legacy agent is not running; a trusted running executable is required before separating it from the CLI"
+fi
+if [ -n "$old_active" ]; then retain_running_runtime; fi
 
 verify() { # file sha256
   echo "$2  $1" | sha256sum -c --quiet >/dev/null 2>&1 || fail "$(basename "$1") does not match its SHA-256; nothing was installed from it"
+}
+install_runtime() {
+  source="$1"
+  staged="$(mktemp /usr/local/lib/grund/agent/.grund.XXXXXX)"
+  install -m 0755 "$source" "$staged"
+  [ "$(sha256sum "$source" | cut -d ' ' -f 1)" = "$(sha256sum "$staged" | cut -d ' ' -f 1)" ] ||
+    fail "the runtime source changed while copying"
+  "$staged" --version >/dev/null || fail "the runtime does not report its version"
+  sync "$staged"
+}
+
+switch_runtime() {
+  previous=/usr/local/lib/grund/agent/grund.install-previous
+  [ ! -L "$previous" ] || fail "the previous runtime must not be a symbolic link"
+  if [ -n "$old_active" ]; then
+    [ -f "$previous" ] || fail "the retained running executable is missing"
+  elif [ -f "$runtime_binary" ]; then
+    snapshot="$(mktemp /usr/local/lib/grund/agent/.known-good.XXXXXX)"
+    install -m 0755 "$runtime_binary" "$snapshot"
+    cmp -s "$runtime_binary" "$snapshot" || fail "the previous runtime changed while retaining it"
+    sync "$snapshot"
+    mv -f "$snapshot" "$previous"
+    snapshot=""
+    sync /usr/local/lib/grund/agent
+  else
+    rm -f "$previous"
+  fi
+  switched=1
+  mv -f "$staged" "$runtime_binary"
+  staged=""
+  sync /usr/local/lib/grund/agent
 }
 
 if [ -n "$binary" ]; then
@@ -115,9 +280,7 @@ if [ -n "$binary" ]; then
   [ -z "$from_instance" ] || fail "--binary and --from-instance cannot be combined"
   step "grund, the verified local release"
   "$binary" --version
-  if [ "$binary" != /usr/local/bin/grund ]; then
-    install -m 0755 "$binary" /usr/local/bin/grund
-  fi
+  install_runtime "$binary"
 else
   step "grund, the build $url selects"
   ready="$(curl -fsS "$url/health/ready")" ||
@@ -149,7 +312,7 @@ else
   fi
   echo "$sum" | grep -qx '[0-9a-f]\{64\}' || fail "the SHA-256 from $base is not 64 hex characters"
   verify "$work/grund" "$sum"
-  install -m 0755 "$work/grund" /usr/local/bin/grund
+  install_runtime "$work/grund"
   echo "    grund $artifact_revision from $base, sha256 $(echo "$sum" | cut -c1-12)"
 fi
 step "restic $RESTIC_VERSION, encrypted backups"
@@ -183,6 +346,8 @@ elif [ -n "$vms" ]; then
   echo "    no /dev/kvm: the agent runs without VMs"
 fi
 
+switch_runtime
+
 if [ -f /var/lib/grund/agent/machine.json ]; then
   step "already registered; keeping this device's identity"
 elif [ -n "$prepare_only" ]; then
@@ -190,7 +355,7 @@ elif [ -n "$prepare_only" ]; then
 else
   [ -n "$code" ] || fail "give the setup code from $url's Machines page: --code grund_join_..."
   step "registering with $url"
-  /usr/local/bin/grund join --url "$url" --name "${name:-$(uname -n)}" "$code"
+  "$runtime_binary" join --url "$url" --name "${name:-$(uname -n)}" "$code"
 fi
 
 step "grund-agent.service"
@@ -202,7 +367,8 @@ DelegateSubgroup=agent"
 else
   echo "    systemd ${systemd_version:-?} has no DelegateSubgroup (254+): VMs run without cgroup limits"
 fi
-cat > /etc/systemd/system/grund-agent.service <<UNIT
+runtime_arguments="${previous_arguments:---vm-runtime $runtime --vm-firecracker /usr/local/bin/firecracker --vm-jailer /usr/local/bin/jailer}"
+cat > "$work/grund-agent.service" <<UNIT
 [Unit]
 Description=grund agent: keeps this machine connected to its grund instance
 Documentation=https://git.kjuulh.io/grund/grund
@@ -212,7 +378,7 @@ ConditionPathExists=/var/lib/grund/agent/machine.json
 
 [Service]
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=/usr/local/bin/grund agent --vm-runtime $runtime --vm-firecracker /usr/local/bin/firecracker --vm-jailer /usr/local/bin/jailer
+ExecStart=$runtime_binary agent $runtime_arguments
 Restart=always
 RestartSec=5
 KillMode=process
@@ -221,14 +387,31 @@ $delegate
 [Install]
 WantedBy=multi-user.target
 UNIT
+if [ -f "$work/previous.service" ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      ExecStart=*) printf 'ExecStart=%s agent %s\n' "$runtime_binary" "$runtime_arguments" ;;
+      *) printf '%s\n' "$line" ;;
+    esac
+  done < "$work/previous.service" > "$work/grund-agent.service"
+fi
+unit_staged="$(mktemp /etc/systemd/system/.grund-agent.service.XXXXXX)"
+install -m 0644 "$work/grund-agent.service" "$unit_staged"
+sync "$unit_staged"
+unit_written=1
+mv -f "$unit_staged" /etc/systemd/system/grund-agent.service
+unit_staged=""
+sync /etc/systemd/system
+printf 'grund-agent-v1\n' > "$work/managed-agent"
 systemctl daemon-reload
 systemctl enable grund-agent.service >/dev/null 2>&1
 if [ -f /var/lib/grund/agent/machine.json ]; then
   systemctl restart grund-agent.service
   sleep 3
   systemctl is-active --quiet grund-agent.service || { journalctl -u grund-agent --no-pager -n 20; fail "grund-agent.service did not stay up"; }
-  echo "    running; logs: journalctl -u grund-agent -f"
-  echo "done: this device shows as connected on $url's Machines page"
+  echo "    service running; logs: journalctl -u grund-agent -f"
+  echo "done: enrollment/control-link health is not established by this service check"
 else
   echo "    enabled; not started until this machine is registered"
 fi
+install -m 0600 "$work/managed-agent" /var/lib/grund/.installer-agent

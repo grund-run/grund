@@ -1199,6 +1199,91 @@
       "title": "grund.cli.v1.ErrorOutput",
       "type": "object"
     },
+    "grund.cli.v1.HostInstallation": {
+      "additionalProperties": false,
+      "description": "Local host installation; no dashboard credential is required.",
+      "properties": {
+        "agentBinary": {
+          "type": "string"
+        },
+        "agentPrepared": {
+          "type": "boolean"
+        },
+        "channel": {
+          "type": "string"
+        },
+        "configPath": {
+          "type": "string"
+        },
+        "dryRun": {
+          "type": "boolean"
+        },
+        "enrollmentRequested": {
+          "type": "boolean"
+        },
+        "next": {
+          "type": "string"
+        },
+        "operation": {
+          "type": "string"
+        },
+        "preserveExisting": {
+          "type": "boolean"
+        },
+        "preservedExisting": {
+          "type": "boolean"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "serverInstalled": {
+          "type": "boolean"
+        },
+        "url": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "title": "grund.cli.v1.HostInstallation",
+      "type": "object"
+    },
+    "grund.cli.v1.HostUninstallation": {
+      "additionalProperties": false,
+      "description": "Managed services removed locally; retained paths are never deleted.",
+      "properties": {
+        "dryRun": {
+          "type": "boolean"
+        },
+        "next": {
+          "type": "string"
+        },
+        "operation": {
+          "type": "string"
+        },
+        "removedServices": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "retained": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "services": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "title": "grund.cli.v1.HostUninstallation",
+      "type": "object"
+    },
     "grund.cli.v1.LoginResult": {
       "additionalProperties": false,
       "description": "`grund login`.",
@@ -6071,6 +6156,265 @@
       "command": "grund edges list",
       "path": "edges list",
       "summary": "List every edge, active and revoked"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "description": "DNS name for the self-hosted dashboard; requires root, systemd and Docker Compose v2",
+          "flag": "--domain",
+          "name": "domain",
+          "type": "string",
+          "value_name": "DOMAIN"
+        },
+        {
+          "description": "Instance HTTPS address for a machine-only installation; a new machine also needs --code",
+          "flag": "--url",
+          "name": "url",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "One-time machine enrollment code; existing identity is preserved",
+          "flag": "--code",
+          "name": "code",
+          "type": "string",
+          "value_name": "CODE"
+        },
+        {
+          "description": "Release channel; development builds require an explicit selection",
+          "enum": [
+            "stable",
+            "alpha"
+          ],
+          "flag": "--channel",
+          "name": "channel",
+          "type": "string",
+          "value_name": "CHANNEL"
+        },
+        {
+          "description": "Do not install VM prerequisites",
+          "flag": "--no-vms",
+          "name": "no_vms",
+          "type": "boolean",
+          "value_name": "NO_VMS"
+        },
+        {
+          "description": "Show the operation without downloading or changing this machine",
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund install",
+      "destructive": false,
+      "dry_run": true,
+      "examples": [
+        "grund install --domain grund.example.com",
+        "grund install --url https://grund.example.com --code CODE"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.cli.v1.HostInstallation"
+      },
+      "path": "install",
+      "summary": "Install the self-hosted dashboard or connect this machine; requires Linux and root"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "default": "all",
+          "enum": [
+            "server",
+            "agent",
+            "all"
+          ],
+          "name": "scope",
+          "positional": true,
+          "type": "string",
+          "value_name": "SCOPE"
+        },
+        {
+          "description": "Confirm service removal",
+          "flag": "--yes",
+          "name": "yes",
+          "type": "boolean",
+          "value_name": "YES"
+        },
+        {
+          "description": "Show exactly which managed services would be removed",
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund uninstall",
+      "destructive": true,
+      "dry_run": true,
+      "examples": [
+        "grund uninstall --dry-run",
+        "grund uninstall --yes",
+        "grund uninstall agent --yes"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.cli.v1.HostUninstallation"
+      },
+      "path": "uninstall",
+      "summary": "Stop and remove managed services, keeping configuration, identity and data"
     },
     {
       "args": [

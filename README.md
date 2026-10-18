@@ -65,26 +65,43 @@ welcome under Apache-2.0 with a sign-off ([CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ## Self-hosting
 
-On a Linux machine with systemd, Docker Engine and Docker Compose v2,
-the reviewed installer also starts a versioned server with HTTPS:
+Managed installation is implemented in this checkout; **alpha.4 and earlier
+do not contain `grund install`**. Use a release that includes this command.
+It requires Linux, root, systemd, Docker Engine and Docker Compose v2:
 
 ```sh
-sudo sh install-grund.sh --domain grund.example.com
+sudo grund install --domain grund.example.com
 sudo docker compose --project-directory /opt/grund exec grund /grund setup-link
 # Open the printed link, create the owner, and get a setup code on Machines.
-sudo sh install-grund.sh --domain grund.example.com --code CODE
+sudo grund install --domain grund.example.com --code CODE
 grund login https://grund.example.com
 ```
 
 The name is the dashboard's address, not an app's; point it at this machine
 and make TCP 443 reachable first. Configuration is in `/opt/grund/.env`;
-the image is pinned by its verified release digest. The first pass installs
-the local machine service but leaves it disconnected until the owner
-enrolls it on the second installer pass. Rerunning keeps secrets, data and machine
-identity. `--no-vms` skips Firecracker; arm64 installs container apps without
-Firecracker. No app is deployed, and DNS, Docker installation, mail and
-backups are not configured for you. Use a fresh machine: the installer
-refuses to replace an existing unmanaged `/opt/grund/.env`.
+the image is pinned by its verified release digest. The server runs under
+`grund-server.service`; `grund-agent.service` is enabled but waits for
+enrollment. The second pass connects it without changing its identity.
+Reinstalling preserves configuration, secrets, data and the server image;
+a different `--version` is refused. The CLI and agent executables are
+separate, so replacing the CLI does not change the next agent restart.
+`--no-vms` skips Firecracker; arm64 supports container apps without it.
+No app is deployed. DNS, Docker installation, mail and scheduled backups
+are not configured for you. Unmanaged configuration, another domain and
+unsupported custom agent data-directory or `EnvironmentFile` settings are
+refused instead of overwritten.
+
+| Operation | Command |
+|---|---|
+| Inspect the managed services | `sudo systemctl status grund-server grund-agent` |
+| Preview service removal | `sudo grund uninstall --dry-run --json` |
+| Stop and remove managed services | `sudo grund uninstall --yes` |
+
+Uninstall retains `/opt/grund`, both server data volumes, machine identity
+and workload disks. It does not revoke the retained machine automatically
+or undo host networking. A managed server update command is not included in
+this release. Migrations remain forward-only; rollback needs a complete
+backup, not an older image.
 
 To build from a checkout instead:
 

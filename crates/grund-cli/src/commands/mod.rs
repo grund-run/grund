@@ -10,6 +10,7 @@ pub mod notifications;
 pub mod orgs;
 pub mod registries;
 pub mod selfdesc;
+pub mod system;
 pub mod tokens;
 pub mod volumes;
 
@@ -24,6 +25,8 @@ use crate::{
 /// The first word of every client command, so a refused command line can
 /// be told apart from an operator's.
 pub const CLIENT_NOUNS: &[&str] = &[
+    "install",
+    "uninstall",
     "login",
     "logout",
     "whoami",
@@ -46,6 +49,12 @@ pub const CLIENT_NOUNS: &[&str] = &[
 /// A client command.
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    #[command(
+        about = "Install the self-hosted dashboard or connect this machine; requires Linux and root"
+    )]
+    Install(system::InstallArgs),
+    #[command(about = "Stop and remove managed services, keeping configuration, identity and data")]
+    Uninstall(system::UninstallArgs),
     #[command(about = "Sign in to an instance: in the browser, or with a token from stdin")]
     Login(auth::LoginArgs),
     #[command(about = "Sign out of the instance and forget its credential")]
@@ -99,6 +108,8 @@ impl Command {
     /// The global flags given with it.
     pub fn global(&self) -> &Global {
         match self {
+            Command::Install(a) => &a.global,
+            Command::Uninstall(a) => &a.global,
             Command::Login(a) => &a.global,
             Command::Logout(a) => &a.global,
             Command::Whoami(a) => &a.global,
@@ -129,6 +140,8 @@ pub async fn execute(
     revision: &'static str,
 ) -> CliResult<Option<Output>> {
     let output = match command {
+        Command::Install(args) => system::install(ctx, args).await?,
+        Command::Uninstall(args) => system::uninstall(ctx, args).await?,
         Command::Login(args) => auth::login(ctx, args, revision).await?,
         Command::Logout(args) => auth::logout(ctx, args).await?,
         Command::Whoami(args) => auth::whoami(ctx, args).await?,

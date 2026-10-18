@@ -76,6 +76,27 @@ const fn with_stdin(leaf: Leaf, stdin: &'static str) -> Leaf {
 
 /// Every client command.
 pub const LEAVES: &[Leaf] = &[
+    write(
+        "install",
+        "grund.cli.v1.HostInstallation",
+        &[],
+        &[
+            "grund install --domain grund.example.com",
+            "grund install --url https://grund.example.com --code CODE",
+        ],
+    ),
+    Leaf {
+        output: "grund.cli.v1.HostUninstallation",
+        ..destroy(
+            "uninstall",
+            &[],
+            &[
+                "grund uninstall --dry-run",
+                "grund uninstall --yes",
+                "grund uninstall agent --yes",
+            ],
+        )
+    },
     with_stdin(
         write(
             "login",

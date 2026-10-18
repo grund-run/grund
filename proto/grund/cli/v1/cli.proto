@@ -171,3 +171,31 @@ message Done {
   // What was done, in words.
   string message = 1;
 }
+
+// Local host installation; no dashboard credential is required.
+message HostInstallation {
+  string operation = 1;
+  string version = 2;
+  string url = 3;
+  bool server_installed = 4;
+  bool agent_prepared = 5;
+  bool enrollment_requested = 6;
+  bool preserved_existing = 7;
+  string config_path = 8;
+  string agent_binary = 9;
+  string next = 10;
+  bool dry_run = 11;
+  string scope = 12;
+  bool preserve_existing = 13;
+  string channel = 14;
+}
+
+// Managed services removed locally; retained paths are never deleted.
+message HostUninstallation {
+  string operation = 1;
+  repeated string removed_services = 2;
+  repeated string retained = 3;
+  string next = 4;
+  bool dry_run = 5;
+  repeated string services = 6;
+}
