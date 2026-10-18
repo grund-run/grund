@@ -1989,6 +1989,7 @@ dependencies = [
  "indicatif",
  "libc",
  "reqwest",
+ "rustix",
  "rustls",
  "serde",
  "serde_json",

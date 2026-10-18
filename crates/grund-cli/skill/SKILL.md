@@ -1,14 +1,15 @@
 ---
 name: grund
-description: Deploy and operate apps on a grund instance with the grund CLI instead of the dashboard - deploy from grund.yaml or an image, read status as JSON, change one setting (image, env, ports, copies, placement), roll back, delete; add machines, custom domains, members, tokens and registry logins. Use when the user mentions grund, grund.yaml, a grund instance or grund.sh, or asks to deploy, scale, roll back or inspect an app there.
+description: Deploy and operate apps on a grund instance with the grund CLI instead of the dashboard - deploy from grund.yaml or an image, read status, logs and measured CPU/memory as JSON, change one setting (image, env, ports, copies, placement), roll back, delete; add machines, custom domains, members, tokens and registry logins. Use when the user mentions grund, grund.yaml, a grund instance or grund.sh, or asks to deploy, scale, roll back or inspect an app there.
 ---
 
 # grund CLI
 
 `grund` drives a grund instance over the same API the dashboard uses. Every
-command takes `--json` and prints one JSON document on stdout; a failure
-prints `{"error": {"code", "message", "hint", "field", "reason"}}` on
-stderr and exits with the code's status. Always pass `--json` and read
+command takes `--json` and prints one JSON document on stdout, except
+`apps logs --follow`, which emits one response per line until interrupted.
+A failure prints `{"error": {"code", "message", "hint", "field", "reason"}}`
+on stderr and exits with the code's status. Always pass `--json` and read
 fields, not text.
 
 ## Before anything
@@ -39,6 +40,40 @@ is off). The file's schema: `grund schema grund.yaml`.
   `copiesWanted`; `waiting[]` says why a copy has no machine.
 - `grund apps get APP --json`: every copy, its machine and what it reports.
 - `grund apps history APP --json`: releases, newest first, with outcome.
+
+## Logs and measurements
+
+```sh
+grund apps logs web --since 1h --limit 200 --json
+grund apps logs web --follow --stream stderr --json
+grund apps metrics web --range day --json
+```
+
+Logs are ordered by when received, not by their observed timestamps, so a
+late upload can have an older observed time. Observed times are collection
+times, not application emission times. Filter with `--instance-id ID`,
+`--release N`, `--since TIME`, `--until TIME`, `--search TEXT` (literal,
+case-insensitive, at most 200 bytes), and `--stream stdout|stderr|combined`.
+`combined` is older output without separate streams. Times are RFC3339 or
+durations ago, such as `30s`, `15m`, `1h30m`, `1d` or `1w`.
+`--instance URL` still chooses the server; it is not an app instance filter.
+
+One read returns at most `--limit` records (default 200, maximum 1000),
+oldest received first. `--follow` drains every retained matching page before
+waiting for more; its limit is per page, not a total. Ctrl-C stops it.
+JSON follow emits one `ListAppLogsResponse` per line; YAML follow emits
+separate documents. The MCP tool reads one bounded page, without follow.
+Check `truncated` and `droppedRecords`: the latter counts this app's
+retained-history evictions, not collection or delivery losses. A zero
+count does not promise complete output. App output may contain sensitive
+data; do not paste it into chat without reviewing it.
+
+Metrics accept `--range hour|day|week` (default hour), `--instance-id ID`
+and `--release N`. `points` contain measured averages, maximum memory,
+sample counts and CPU/memory reservations. CPU is millicores (1000 = one
+vCPU); memory is bytes from `memory.current`, including cache, not process
+RSS. Missing values and absent buckets are unknown, never zero; do not
+interpolate gaps. Responses include their time buckets and retention bounds.
 
 ## Change one thing
 

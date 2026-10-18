@@ -1,6 +1,7 @@
 //! The client command tree: nouns, then verbs. Each verb is one function
 //! returning an [`Output`], which [`crate::run`] prints.
 
+pub mod app_telemetry;
 pub mod apps;
 pub mod auth;
 pub mod domains;
@@ -68,7 +69,7 @@ pub enum Command {
     #[command(about = "Organisations: list, show, choose the default, create, rename, delete")]
     Orgs(orgs::OrgsCommand),
     #[command(
-        about = "Apps: list, status, deploy from grund.yaml or flags, change a setting, roll back, delete"
+        about = "Apps: list, status, logs, CPU and memory, deploy, change a setting, roll back, delete"
     )]
     Apps(Box<apps::AppsCommand>),
     #[command(about = "App-owned volumes: list, show, create, attach, detach, delete, purge")]
@@ -152,7 +153,13 @@ pub async fn execute(
         Command::Logout(args) => auth::logout(ctx, args).await?,
         Command::Whoami(args) => auth::whoami(ctx, args).await?,
         Command::Orgs(command) => orgs::run(ctx, command.action).await?,
-        Command::Apps(command) => apps::run(ctx, command.action).await?,
+        Command::Apps(command) => match command.action {
+            apps::AppsAction::Logs(args) if args.follow => {
+                app_telemetry::follow(ctx, args).await?;
+                return Ok(None);
+            }
+            action => apps::run(ctx, action).await?,
+        },
         Command::Volumes(command) => volumes::run(ctx, command.action).await?,
         Command::Machines(command) => machines::run(ctx, command.action).await?,
         Command::Domains(command) => domains::run(ctx, command).await?,

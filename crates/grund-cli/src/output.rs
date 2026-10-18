@@ -13,9 +13,9 @@ use crate::error::CliError;
 pub enum Format {
     /// For people: tables and fields.
     Text,
-    /// One JSON document on stdout; errors as JSON on stderr.
+    /// JSON on stdout; logs --follow emits one response per line. Errors are JSON on stderr.
     Json,
-    /// The JSON document as YAML.
+    /// The JSON document as YAML; logs --follow emits separate YAML documents.
     Yaml,
 }
 

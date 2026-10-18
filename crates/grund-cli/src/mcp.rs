@@ -53,6 +53,9 @@ pub fn tools(root: &clap::Command) -> Vec<Tool> {
             if !leaf.output.is_empty() {
                 description.push_str(&format!(" Answers {} as JSON.", leaf.output));
             }
+            if path == "apps logs" {
+                description.push_str(" This tool reads one bounded page; live follow is available only in the terminal command.");
+            }
             if leaf.destructive {
                 description.push_str(" Destructive: set yes to true once the user agreed.");
             }
@@ -62,6 +65,7 @@ pub fn tools(root: &clap::Command) -> Vec<Tool> {
                 description,
                 args: args
                     .into_iter()
+                    .filter(|a| leaf.path != "apps logs" || a.get_id() != "follow")
                     .filter(|a| {
                         !matches!(
                             a.get_id().as_str(),

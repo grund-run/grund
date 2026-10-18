@@ -430,6 +430,8 @@ curl -s -X POST -H 'Content-Type: application/json' -d '{}' \
 grund login grund.example.com          # approve in the browser; a session, revocable on Sessions
 grund apps deploy -f grund.yaml --wait # every app the file declares; makes missing apps
 grund apps status shop --json          # health, copies ready of wanted, the rollout
+grund apps logs shop --follow --stream stderr
+grund apps metrics shop --range hour
 grund apps set shop image ghcr.io/acme/shop:2.1 --dry-run
 grund apps set shop copies 3
 grund apps rollback shop 4 --wait
@@ -442,6 +444,11 @@ grund domains app-domain example.com   # existing and future apps get <app>.exam
 grund domains subdomain shop storefront
 grund tokens create --name ci --scope deploy --apps shop --json
 ```
+
+Logs support literal `--search` and `--since` / `--until` collection times.
+Both commands accept `--instance-id` and `--release` filters; global `--instance`
+selects the server URL instead. `logs --follow --json` emits one response per
+line and stops with Ctrl-C. `--help` lists the time formats and query limits.
 
 On grund's hosted service, `grund machines offers` shows the available sizes
 and your whole-VM allowance; `grund machines add NAME --hosted --size SIZE

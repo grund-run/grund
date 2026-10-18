@@ -286,6 +286,80 @@
       "title": "grund.app.v1.App",
       "type": "object"
     },
+    "grund.app.v1.AppLog": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "description": "UTF-8 text; control sequences are rendered inert by consumers.",
+          "type": "string"
+        },
+        "cursor": {
+          "type": "string"
+        },
+        "instance": {
+          "type": "string"
+        },
+        "machine": {
+          "type": "string"
+        },
+        "observedAt": {
+          "description": "Collector observation time, not application emission time.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "release": {
+          "type": "integer"
+        },
+        "stream": {
+          "type": "string"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "title": "grund.app.v1.AppLog",
+      "type": "object"
+    },
+    "grund.app.v1.AppMetricPoint": {
+      "additionalProperties": false,
+      "properties": {
+        "at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "cpuMillis": {
+          "description": "Average across measured samples in this instance bucket.",
+          "type": "number"
+        },
+        "instance": {
+          "type": "string"
+        },
+        "memoryBytes": {
+          "type": "number"
+        },
+        "memoryMaxBytes": {
+          "type": "number"
+        },
+        "release": {
+          "type": "integer"
+        },
+        "reservedCpuMillis": {
+          "type": "integer"
+        },
+        "reservedMemoryBytes": {
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "samples": {
+          "type": "integer"
+        }
+      },
+      "title": "grund.app.v1.AppMetricPoint",
+      "type": "object"
+    },
     "grund.app.v1.AppSettings": {
       "additionalProperties": false,
       "description": "What is not per release (apps.md §3.4, §8.2, §9.2).",
@@ -383,6 +457,32 @@
         }
       },
       "title": "grund.app.v1.AppSpec",
+      "type": "object"
+    },
+    "grund.app.v1.AppTelemetryGap": {
+      "additionalProperties": false,
+      "description": "Uncovered measurement time: authoritative disconnection or unknown evicted history. Offline means disconnected from the instance, not that the application stopped. Log annotations do not prove that records were emitted or lost; quiet logs and replayed log records cannot establish continuous log coverage. At most 1024 intervals are returned; filter by instance/release if the query is too broad.",
+      "properties": {
+        "instance": {
+          "type": "string"
+        },
+        "machine": {
+          "type": "string"
+        },
+        "reason": {
+          "description": "machine_offline or coverage_unknown (received history was evicted).",
+          "type": "string"
+        },
+        "since": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "until": {
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "title": "grund.app.v1.AppTelemetryGap",
       "type": "object"
     },
     "grund.app.v1.AppUpdate": {
@@ -515,6 +615,54 @@
       "title": "grund.app.v1.EnvVar",
       "type": "object"
     },
+    "grund.app.v1.GetAppMetricsResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "bucketSeconds": {
+          "type": "integer"
+        },
+        "deliveryWindowHours": {
+          "description": "Maximum accepted batch age; spool capacity can impose a tighter limit.",
+          "type": "integer"
+        },
+        "gaps": {
+          "items": {
+            "$ref": "#/$defs/grund.app.v1.AppTelemetryGap"
+          },
+          "type": "array"
+        },
+        "memoryAccounting": {
+          "description": "Memory is cgroup memory.current, including cache, not process RSS.",
+          "type": "string"
+        },
+        "payloadLimitBytes": {
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "points": {
+          "items": {
+            "$ref": "#/$defs/grund.app.v1.AppMetricPoint"
+          },
+          "type": "array"
+        },
+        "retentionDays": {
+          "type": "integer"
+        },
+        "since": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "until": {
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "title": "grund.app.v1.GetAppMetricsResponse",
+      "type": "object"
+    },
     "grund.app.v1.GetAppResponse": {
       "additionalProperties": false,
       "properties": {
@@ -533,6 +681,51 @@
         }
       },
       "title": "grund.app.v1.GetAppUpdateResponse",
+      "type": "object"
+    },
+    "grund.app.v1.ListAppLogsResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "deliveryWindowHours": {
+          "description": "Maximum accepted batch age; spool capacity can impose a tighter limit.",
+          "type": "integer"
+        },
+        "droppedRecords": {
+          "description": "Stored log rows expired or quota-evicted for this app; excludes producer losses.",
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "gaps": {
+          "items": {
+            "$ref": "#/$defs/grund.app.v1.AppTelemetryGap"
+          },
+          "type": "array"
+        },
+        "logs": {
+          "items": {
+            "$ref": "#/$defs/grund.app.v1.AppLog"
+          },
+          "type": "array"
+        },
+        "nextPageToken": {
+          "type": "string"
+        },
+        "payloadLimitBytes": {
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "retentionHours": {
+          "description": "Payload/retention bounds are not guarantees about physical database bytes.",
+          "type": "integer"
+        }
+      },
+      "title": "grund.app.v1.ListAppLogsResponse",
       "type": "object"
     },
     "grund.app.v1.ListAppsResponse": {
@@ -9553,6 +9746,302 @@
         "grund.app.v1.AppService/GetApp"
       ],
       "summary": "Whether an app is live: health (no_release, rolling_out, live, degraded, failed, halted), copies ready of wanted, its rollout"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "app",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "APP"
+        },
+        {
+          "description": "Drain all retained matching output, then follow until Ctrl-C; JSON lines or YAML documents",
+          "flag": "--follow",
+          "name": "follow",
+          "type": "boolean",
+          "value_name": "FOLLOW"
+        },
+        {
+          "description": "Only this app instance; --instance URL still selects the server",
+          "flag": "--instance-id",
+          "name": "instance_id",
+          "type": "string",
+          "value_name": "ID"
+        },
+        {
+          "description": "Only this release number",
+          "flag": "--release",
+          "name": "release",
+          "type": "integer",
+          "value_name": "N"
+        },
+        {
+          "description": "Observed at or after RFC3339 time or duration ago (30s, 15m, 1h30m, 1d, 1w)",
+          "flag": "--since",
+          "name": "since",
+          "type": "string",
+          "value_name": "TIME"
+        },
+        {
+          "description": "Observed before RFC3339 time or duration ago; relative times are fixed when starting",
+          "flag": "--until",
+          "name": "until",
+          "type": "string",
+          "value_name": "TIME"
+        },
+        {
+          "description": "Case-insensitive literal substring, at most 200 bytes",
+          "flag": "--search",
+          "name": "search",
+          "type": "string",
+          "value_name": "TEXT"
+        },
+        {
+          "description": "Only this output stream; combined is older output without separate streams",
+          "enum": [
+            "stdout",
+            "stderr",
+            "combined"
+          ],
+          "flag": "--stream",
+          "name": "stream",
+          "type": "string",
+          "value_name": "STREAM"
+        },
+        {
+          "default": "200",
+          "description": "Maximum records for one read; with --follow, records per page, not a total limit",
+          "flag": "--limit",
+          "name": "limit",
+          "type": "integer",
+          "value_name": "N"
+        }
+      ],
+      "audience": "client",
+      "command": "grund apps logs",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund apps logs web --since 1h --limit 200",
+        "grund apps logs web --follow --stream stderr",
+        "grund apps logs web --instance-id INSTANCE --release 3 --search timeout --json"
+      ],
+      "mutates": false,
+      "output": {
+        "$ref": "#/$defs/grund.app.v1.ListAppLogsResponse"
+      },
+      "path": "apps logs",
+      "rpcs": [
+        "grund.app.v1.AppTelemetryService/ListAppLogs"
+      ],
+      "summary": "App output, oldest received first; --follow drains history then waits for more"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "app",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "APP"
+        },
+        {
+          "default": "hour",
+          "description": "Hour: 10-second buckets; day: 1-minute buckets; week: 10-minute buckets",
+          "enum": [
+            "hour",
+            "day",
+            "week"
+          ],
+          "flag": "--range",
+          "name": "range",
+          "type": "string",
+          "value_name": "RANGE"
+        },
+        {
+          "description": "Only this app instance; --instance URL still selects the server",
+          "flag": "--instance-id",
+          "name": "instance_id",
+          "type": "string",
+          "value_name": "ID"
+        },
+        {
+          "description": "Only this release number",
+          "flag": "--release",
+          "name": "release",
+          "type": "integer",
+          "value_name": "N"
+        }
+      ],
+      "audience": "client",
+      "command": "grund apps metrics",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund apps metrics web --range hour",
+        "grund apps metrics web --range week --release 3 --json"
+      ],
+      "mutates": false,
+      "output": {
+        "$ref": "#/$defs/grund.app.v1.GetAppMetricsResponse"
+      },
+      "path": "apps metrics",
+      "rpcs": [
+        "grund.app.v1.AppTelemetryService/GetAppMetrics"
+      ],
+      "summary": "Measured CPU and memory over an hour, day or week, with reservations and gaps"
     },
     {
       "args": [

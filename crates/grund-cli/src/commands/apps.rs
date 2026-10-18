@@ -20,6 +20,8 @@ use crate::{
     output::{self, Output},
 };
 
+use super::app_telemetry::{LogsArgs, MetricsArgs};
+
 const SERVICE: &str = "grund.app.v1.AppService";
 
 /// `grund apps`.
@@ -51,6 +53,15 @@ pub enum AppsAction {
         #[arg(value_name = "APP")]
         app: String,
     },
+    #[command(
+        about = "App output, oldest received first; --follow drains history then waits for more",
+        long_about = "Read retained app output, oldest received first. Observed times are collection times, not application emission times. Output can contain sensitive data. With --follow, JSON is one ListAppLogsResponse per line and YAML is a stream of documents; Ctrl-C stops following."
+    )]
+    Logs(LogsArgs),
+    #[command(
+        about = "Measured CPU and memory over an hour, day or week, with reservations and gaps"
+    )]
+    Metrics(MetricsArgs),
     #[command(about = "Cached image updates for an app; --check checks for changes now")]
     Updates {
         #[arg(value_name = "APP")]
@@ -562,6 +573,8 @@ pub async fn run(ctx: &Ctx, action: AppsAction) -> CliResult<Output> {
             let answer = get_app(&api, &org, &app).await?;
             Ok(Output::fields(status(&answer["app"])))
         }
+        AppsAction::Logs(args) => super::app_telemetry::logs(&api, &org, args).await,
+        AppsAction::Metrics(args) => super::app_telemetry::metrics(&api, &org, args).await,
         AppsAction::Updates {
             app,
             check,

@@ -223,6 +223,25 @@ pub const LEAVES: &[Leaf] = &[
         &["grund.app.v1.AppService/GetApp"],
         &["grund apps status web --json | jq -r .health"],
     ),
+    read(
+        "apps logs",
+        "grund.app.v1.ListAppLogsResponse",
+        &["grund.app.v1.AppTelemetryService/ListAppLogs"],
+        &[
+            "grund apps logs web --since 1h --limit 200",
+            "grund apps logs web --follow --stream stderr",
+            "grund apps logs web --instance-id INSTANCE --release 3 --search timeout --json",
+        ],
+    ),
+    read(
+        "apps metrics",
+        "grund.app.v1.GetAppMetricsResponse",
+        &["grund.app.v1.AppTelemetryService/GetAppMetrics"],
+        &[
+            "grund apps metrics web --range hour",
+            "grund apps metrics web --range week --release 3 --json",
+        ],
+    ),
     write(
         "apps updates",
         "grund.app.v1.GetAppUpdateResponse",
@@ -827,14 +846,6 @@ pub const LEAVES: &[Leaf] = &[
 /// deliberately does not call, each with why. The parity test fails on a
 /// procedure that is in neither list.
 pub const NOT_IN_CLI: &[(&str, &str)] = &[
-    (
-        "grund.app.v1.AppTelemetryService/ListAppLogs",
-        "the read API lands before its dedicated CLI command",
-    ),
-    (
-        "grund.app.v1.AppTelemetryService/GetAppMetrics",
-        "the read API lands before its dedicated CLI command",
-    ),
     (
         "grund.volume.v1.VolumeService/GetVolume",
         "volumes show calls GetVolumeStatus, which includes the same volume fields and restore state",

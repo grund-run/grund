@@ -29,6 +29,7 @@ grund-crypto.workspace = true
 indicatif = { version = "0.18", default-features = false }
 libc = "0.2"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
+rustix = { version = "1.1", features = ["fs", "pipe"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde.workspace = true
 serde_json.workspace = true
