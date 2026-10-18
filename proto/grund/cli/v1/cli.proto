@@ -199,3 +199,38 @@ message HostUninstallation {
   bool dry_run = 5;
   repeated string services = 6;
 }
+
+// CLI replacement or a backed-up managed server update. Other components are not updated implicitly.
+message HostUpdate {
+  string operation = 1;
+  string target = 2;
+  string version = 3;
+  bool changed = 4;
+  string path = 5;
+  bool server_changed = 6;
+  bool agent_changed = 7;
+  string installed_version = 8;
+  bool dry_run = 9;
+  string config_path = 10;
+  bool backup_required = 11;
+  bool downtime = 12;
+  string revision = 13;
+  string image = 14;
+  string backup_path = 15;
+  bool backup_complete = 16;
+  string migration = 17;
+  string health = 18;
+  UpdateDoctor preflight = 19;
+  UpdateDoctor postflight = 20;
+}
+
+// Doctor results omit diagnostic details that can contain operator configuration.
+message UpdateDoctor {
+  string status = 1;
+  repeated UpdateDoctorCheck checks = 2;
+}
+
+message UpdateDoctorCheck {
+  string name = 1;
+  string status = 2;
+}

@@ -65,16 +65,17 @@ welcome under Apache-2.0 with a sign-off ([CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ## Self-hosting
 
-Managed installation is implemented in this checkout. **Published alpha.4 and
-earlier do not contain `grund install`**; select a release with `grund install --help`
-before using these commands. It requires Linux, root, systemd, Docker Engine
-and Docker Compose v2:
+Managed installation is available from `v0.0.0-alpha.5`; alpha.4 and earlier
+do not contain `grund install`. The update commands below are implemented
+in this checkout but absent from published alpha.5 and earlier: select a
+release with `grund update --help` before using them. Installation requires
+Linux, root, systemd, Docker Engine and Docker Compose v2:
 
 ```sh
-sudo grund install --domain grund.example.com
+sudo "$(command -v grund)" install --domain grund.example.com
 sudo docker compose --project-directory /opt/grund exec grund /grund setup-link
 # Open the printed link, create the owner, and get a setup code on Machines.
-sudo grund install --domain grund.example.com --code CODE
+sudo "$(command -v grund)" install --domain grund.example.com --code CODE
 grund login https://grund.example.com
 ```
 
@@ -97,12 +98,28 @@ refused instead of overwritten.
 | Inspect the managed services | `sudo systemctl status grund-server grund-agent` |
 | Preview service removal | `sudo grund uninstall --dry-run --json` |
 | Stop and remove managed services | `sudo grund uninstall --yes` |
+| Preview an update to this CLI only | `grund update --channel alpha --dry-run` |
+| Replace this CLI after checksum/version verification | `grund update --channel alpha --yes` |
+| Preview a managed server update | `sudo "$(command -v grund)" update server --channel alpha --dry-run` |
+| Back up, preflight, migrate and update the server | `sudo "$(command -v grund)" update server --channel alpha --yes` |
 
 Uninstall retains `/opt/grund`, both server data volumes, machine identity
 and workload disks. It does not revoke the retained machine automatically
-or undo host networking. A managed server update command is not included in
-this release. Migrations remain forward-only; rollback needs a complete
-backup, not an older image.
+or undo host networking. CLI/server updates do not replace agent executables;
+other machines keep their installed build until explicitly reinstalled.
+
+Updates preserve the installed release's channel by default. `stable`
+excludes alphas; `alpha` includes final releases, ordered by numeric version.
+`--version` selects an exact tag instead. Downgrades are refused.
+Server updates require the canonical local database, named volumes and
+managed key/password paths; only separate read-only TLS mounts are supported
+as extra primary-service mounts. Unsupported topology is refused before downtime.
+The updater stops writes and validates a root-only recovery set under
+`/opt/grund/backups` before changing the image or running forward migrations.
+It leaves a recovery journal after a cutover failure and never automatically
+starts an older image against a migrated database. **Recovery replaces both
+instance volumes and managed configuration together**; keep independent backups
+and external TLS files. `grund update server --help` lists the supported scope.
 
 To build from a checkout instead:
 
@@ -184,9 +201,10 @@ does not mean the machine is reachable.
 
 What compose deliberately does not do:
 
-- **Backups.** Nothing backs up the `grund-postgres` and `grund-data`
-  volumes. `docker compose down -v` deletes them and every account with
-  them. Back up both, and try a restore once.
+- **Scheduled backups.** No scheduled job protects the instance volumes.
+  A managed server update takes a recovery set; checkout-managed deployments
+  need their own backups. `docker compose down -v` deletes both volumes and
+  every account with them. Back up both, and try a restore once.
 - **Mail.** None is sent until `GRUND_SMTP_URL` is set: password reset
   and invitations wait in the outbox, and readiness says so. Set it and
   `GRUND_MAIL_FROM` for real users. To try grund without a mail server,
@@ -213,8 +231,9 @@ without changing anything, one line per check (`ok`, `warn`, `fail` or
 with `--json`. The exit code is 1 when any check fails. `grund serve --help` lists every setting with
 its environment variable.
 
-grund contacts no service you have not configured: no telemetry, no update
-check. With `GRUND_ACCOUNT_EVENT_URL` and `GRUND_ACCOUNT_EVENT_TOKEN`,
+grund sends no telemetry and runs no background release checks. Explicit
+install/update commands contact the public release registry.
+With `GRUND_ACCOUNT_EVENT_URL` and `GRUND_ACCOUNT_EVENT_TOKEN`,
 an instance queues one account event after the owner's email is confirmed and
 POSTs it to the operator's configured endpoint. The event includes the account
 ID, username, address, sign-in method and registration/verification times;

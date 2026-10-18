@@ -11,6 +11,7 @@ pub mod orgs;
 pub mod registries;
 pub mod selfdesc;
 pub mod system;
+pub mod system_update;
 pub mod tokens;
 pub mod volumes;
 
@@ -27,6 +28,7 @@ use crate::{
 pub const CLIENT_NOUNS: &[&str] = &[
     "install",
     "uninstall",
+    "update",
     "login",
     "logout",
     "whoami",
@@ -55,6 +57,8 @@ pub enum Command {
     Install(system::InstallArgs),
     #[command(about = "Stop and remove managed services, keeping configuration, identity and data")]
     Uninstall(system::UninstallArgs),
+    #[command(about = "Update this CLI, or back up and update the self-hosted server")]
+    Update(system_update::UpdateArgs),
     #[command(about = "Sign in to an instance: in the browser, or with a token from stdin")]
     Login(auth::LoginArgs),
     #[command(about = "Sign out of the instance and forget its credential")]
@@ -110,6 +114,7 @@ impl Command {
         match self {
             Command::Install(a) => &a.global,
             Command::Uninstall(a) => &a.global,
+            Command::Update(a) => &a.global,
             Command::Login(a) => &a.global,
             Command::Logout(a) => &a.global,
             Command::Whoami(a) => &a.global,
@@ -142,6 +147,7 @@ pub async fn execute(
     let output = match command {
         Command::Install(args) => system::install(ctx, args).await?,
         Command::Uninstall(args) => system::uninstall(ctx, args).await?,
+        Command::Update(args) => system_update::update(ctx, args).await?,
         Command::Login(args) => auth::login(ctx, args, revision).await?,
         Command::Logout(args) => auth::logout(ctx, args).await?,
         Command::Whoami(args) => auth::whoami(ctx, args).await?,

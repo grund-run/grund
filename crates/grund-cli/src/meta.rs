@@ -97,6 +97,30 @@ pub const LEAVES: &[Leaf] = &[
             ],
         )
     },
+    Leaf {
+        destructive: true,
+        ..write(
+            "update",
+            "grund.cli.v1.HostUpdate",
+            &[],
+            &[
+                "grund update --dry-run",
+                "grund update --channel alpha --yes",
+            ],
+        )
+    },
+    Leaf {
+        destructive: true,
+        ..write(
+            "update server",
+            "grund.cli.v1.HostUpdate",
+            &[],
+            &[
+                "grund update server --dry-run",
+                "grund update server --channel alpha --yes",
+            ],
+        )
+    },
     with_stdin(
         write(
             "login",

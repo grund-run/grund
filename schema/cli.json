@@ -1284,6 +1284,74 @@
       "title": "grund.cli.v1.HostUninstallation",
       "type": "object"
     },
+    "grund.cli.v1.HostUpdate": {
+      "additionalProperties": false,
+      "description": "CLI replacement or a backed-up managed server update. Other components are not updated implicitly.",
+      "properties": {
+        "agentChanged": {
+          "type": "boolean"
+        },
+        "backupComplete": {
+          "type": "boolean"
+        },
+        "backupPath": {
+          "type": "string"
+        },
+        "backupRequired": {
+          "type": "boolean"
+        },
+        "changed": {
+          "type": "boolean"
+        },
+        "configPath": {
+          "type": "string"
+        },
+        "downtime": {
+          "type": "boolean"
+        },
+        "dryRun": {
+          "type": "boolean"
+        },
+        "health": {
+          "type": "string"
+        },
+        "image": {
+          "type": "string"
+        },
+        "installedVersion": {
+          "type": "string"
+        },
+        "migration": {
+          "type": "string"
+        },
+        "operation": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "postflight": {
+          "$ref": "#/$defs/grund.cli.v1.UpdateDoctor"
+        },
+        "preflight": {
+          "$ref": "#/$defs/grund.cli.v1.UpdateDoctor"
+        },
+        "revision": {
+          "type": "string"
+        },
+        "serverChanged": {
+          "type": "boolean"
+        },
+        "target": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "title": "grund.cli.v1.HostUpdate",
+      "type": "object"
+    },
     "grund.cli.v1.LoginResult": {
       "additionalProperties": false,
       "description": "`grund login`.",
@@ -1375,6 +1443,36 @@
         }
       },
       "title": "grund.cli.v1.SkillInstalled",
+      "type": "object"
+    },
+    "grund.cli.v1.UpdateDoctor": {
+      "additionalProperties": false,
+      "description": "Doctor results omit diagnostic details that can contain operator configuration.",
+      "properties": {
+        "checks": {
+          "items": {
+            "$ref": "#/$defs/grund.cli.v1.UpdateDoctorCheck"
+          },
+          "type": "array"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "title": "grund.cli.v1.UpdateDoctor",
+      "type": "object"
+    },
+    "grund.cli.v1.UpdateDoctorCheck": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "title": "grund.cli.v1.UpdateDoctorCheck",
       "type": "object"
     },
     "grund.cli.v1.Whoami": {
@@ -6415,6 +6513,242 @@
       },
       "path": "uninstall",
       "summary": "Stop and remove managed services, keeping configuration, identity and data"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "description": "Release channel; defaults to the installed release's channel",
+          "enum": [
+            "stable",
+            "alpha"
+          ],
+          "flag": "--channel",
+          "name": "channel",
+          "type": "string",
+          "value_name": "CHANNEL"
+        },
+        {
+          "description": "Confirm executable replacement or server downtime",
+          "flag": "--yes",
+          "name": "yes",
+          "type": "boolean",
+          "value_name": "YES"
+        },
+        {
+          "description": "Resolve and show the update without downloading or mutating local state",
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund update",
+      "destructive": true,
+      "dry_run": true,
+      "examples": [
+        "grund update --dry-run",
+        "grund update --channel alpha --yes"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.cli.v1.HostUpdate"
+      },
+      "path": "update",
+      "summary": "Update this CLI, or back up and update the self-hosted server"
+    },
+    {
+      "args": [
+        {
+          "default": "compact",
+          "description": "Log line format. The image sets json",
+          "enum": [
+            "compact",
+            "json"
+          ],
+          "env": "GRUND_LOG_FORMAT",
+          "flag": "--log-format",
+          "name": "log_format",
+          "type": "string",
+          "value_name": "LOG_FORMAT"
+        },
+        {
+          "default": "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
+          "description": "Log filter, in tracing's EnvFilter syntax",
+          "env": "RUST_LOG",
+          "flag": "--log",
+          "name": "log",
+          "type": "string",
+          "value_name": "LOG"
+        },
+        {
+          "description": "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off",
+          "env": "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "flag": "--otel-exporter-otlp-endpoint",
+          "name": "otel_exporter_otlp_endpoint",
+          "type": "string",
+          "value_name": "OTEL_EXPORTER_OTLP_ENDPOINT"
+        },
+        {
+          "description": "Service name in exported traces (default: grund, grund-relay or grund-edge)",
+          "env": "OTEL_SERVICE_NAME",
+          "flag": "--otel-service-name",
+          "name": "otel_service_name",
+          "type": "string",
+          "value_name": "OTEL_SERVICE_NAME"
+        },
+        {
+          "description": "The instance, such as https://grund.example.com. Default: the one grund login signed in to last",
+          "env": "GRUND_INSTANCE",
+          "flag": "--instance",
+          "name": "instance",
+          "type": "string",
+          "value_name": "URL"
+        },
+        {
+          "description": "The organisation. Default: grund orgs use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "description": "Release channel; defaults to the installed release's channel",
+          "enum": [
+            "stable",
+            "alpha"
+          ],
+          "flag": "--channel",
+          "name": "channel",
+          "type": "string",
+          "value_name": "CHANNEL"
+        },
+        {
+          "description": "Confirm executable replacement or server downtime",
+          "flag": "--yes",
+          "name": "yes",
+          "type": "boolean",
+          "value_name": "YES"
+        },
+        {
+          "description": "Resolve and show the update without downloading or mutating local state",
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund update server",
+      "destructive": true,
+      "dry_run": true,
+      "examples": [
+        "grund update server --dry-run",
+        "grund update server --channel alpha --yes"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.cli.v1.HostUpdate"
+      },
+      "path": "update server",
+      "summary": "Back up, check and update the installer-managed server; requires root and downtime"
     },
     {
       "args": [
