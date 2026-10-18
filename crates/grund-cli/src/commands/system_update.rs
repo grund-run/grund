@@ -22,6 +22,7 @@ use crate::{
     context::{Ctx, Global},
     error::{CliError, CliResult, Code},
     output::Output,
+    progress::Progress,
 };
 
 /// Update only the client executable, or explicitly update the managed server.
@@ -45,6 +46,8 @@ pub struct UpdateArgs {
         help = "Confirm executable replacement or server downtime"
     )]
     pub yes: bool,
+    #[arg(long, global = true, help = "Show technical failure details")]
+    pub verbose: bool,
     #[arg(
         long,
         global = true,
@@ -157,9 +160,23 @@ fn executable_destination(path: &Path) -> CliResult<fs::Metadata> {
 }
 
 async fn binary_update(ctx: &Ctx, args: UpdateArgs) -> CliResult<Output> {
-    let destination = std::env::current_exe().map_err(io)?;
-    let original = executable_destination(&destination)?;
-    let release = Release::resolve(args.version.as_deref(), args.channel, crate::VERSION).await?;
+    let progress = Progress::new(ctx, args.yes, args.verbose);
+    let (destination, original) = progress.step(
+        "Checking this client",
+        "Use the installed grund executable in a private, writable directory; use sudo when it is root-owned.",
+        async {
+            let destination = std::env::current_exe().map_err(io)?;
+            let original = executable_destination(&destination)?;
+            Ok((destination, original))
+        },
+    ).await?;
+    let release = progress
+        .step(
+            "Finding the release",
+            "Check the internet connection and access to git.kjuulh.io, then retry.",
+            Release::resolve(args.version.as_deref(), args.channel, crate::VERSION),
+        )
+        .await?;
     refuse_downgrade(crate::VERSION, &release.tag)?;
     if args.dry_run {
         return Ok(Output::fields(
@@ -167,13 +184,20 @@ async fn binary_update(ctx: &Ctx, args: UpdateArgs) -> CliResult<Output> {
         ));
     }
     if release.tag == crate::VERSION {
-        return Ok(Output::fields(
+        return Ok(Output::with_text(
             json!({"operation":"update","target":"binary","version":release.tag,"changed":false,"path":destination}),
+            progress.summary(
+                "grund client is up to date",
+                &[
+                    ("Version", &release.tag),
+                    ("Executable", &destination.to_string_lossy()),
+                ],
+            ),
         ));
     }
     ctx.confirm(
         args.yes,
-        "Replace only this grund client executable with the selected public release?",
+        "Update this grund command, leaving the server and agent unchanged",
     )?;
     let parent = destination
         .parent()
@@ -202,26 +226,51 @@ async fn binary_update(ctx: &Ctx, args: UpdateArgs) -> CliResult<Output> {
         .tempdir_in(parent)
         .map_err(io)?;
     let candidate = staging.path().join("grund");
-    release
-        .download(&release::binary_name()?, &candidate)
+    progress
+        .step(
+            "Downloading the verified client",
+            "Check internet access and free space in the executable directory, then retry.",
+            async {
+                release
+                    .download(&release::binary_name()?, &candidate)
+                    .await?;
+                binary_identity(&candidate, &release.tag).await
+            },
+        )
         .await?;
-    binary_identity(&candidate, &release.tag).await?;
-    File::open(&candidate)
-        .and_then(|file| file.sync_all())
-        .map_err(io)?;
-    let current = executable_destination(&destination)?;
-    if (current.dev(), current.ino()) != (original.dev(), original.ino()) {
-        return Err(CliError::new(
-            Code::Conflict,
-            "client executable changed during update; staged release was not installed",
-        ));
-    }
-    fs::rename(&candidate, &destination).map_err(io)?;
-    File::open(parent)
-        .and_then(|file| file.sync_all())
-        .map_err(io)?;
-    Ok(Output::fields(
+    progress
+        .step(
+            "Replacing this client",
+            "Check ownership and free space in the executable directory, then retry the update.",
+            async {
+                File::open(&candidate)
+                    .and_then(|file| file.sync_all())
+                    .map_err(io)?;
+                let current = executable_destination(&destination)?;
+                if (current.dev(), current.ino()) != (original.dev(), original.ino()) {
+                    return Err(CliError::new(
+                        Code::Conflict,
+                        "client executable changed during update; staged release was not installed",
+                    ));
+                }
+                fs::rename(&candidate, &destination).map_err(io)?;
+                File::open(parent)
+                    .and_then(|file| file.sync_all())
+                    .map_err(io)?;
+                Ok(())
+            },
+        )
+        .await?;
+    Ok(Output::with_text(
         json!({"operation":"update","target":"binary","version":release.tag,"changed":true,"path":destination,"serverChanged":false,"agentChanged":false}),
+        progress.summary(
+            "grund client updated",
+            &[
+                ("Version", &release.tag),
+                ("Executable", &destination.to_string_lossy()),
+                ("Server and agent", "Unchanged"),
+            ],
+        ),
     ))
 }
 
@@ -832,14 +881,27 @@ fn refuse_incomplete_update(root: &Path) -> CliResult<()> {
 }
 
 async fn server_update(ctx: &Ctx, args: UpdateArgs) -> CliResult<Output> {
-    platform(true).await?;
+    let progress = Progress::new(ctx, args.yes, args.verbose);
+    progress
+        .step(
+            "Checking server prerequisites",
+            "Run sudo grund update server on the installer-managed Linux host with Docker running.",
+            platform(true),
+        )
+        .await?;
     let root = Path::new(ROOT);
     validate_compose_context(root, |key| std::env::var_os(key).is_some())?;
     refuse_incomplete_update(root)?;
     let installed = system::installed_version(root, None)
         .await?
         .ok_or_else(|| CliError::new(Code::Conflict, "server is not installer-managed"))?;
-    let release = Release::resolve(args.version.as_deref(), args.channel, &installed).await?;
+    let release = progress
+        .step(
+            "Finding the server release",
+            "Check the internet connection and access to git.kjuulh.io, then retry.",
+            Release::resolve(args.version.as_deref(), args.channel, &installed),
+        )
+        .await?;
     refuse_downgrade(&installed, &release.tag)?;
     if args.dry_run {
         return Ok(Output::fields(
@@ -847,13 +909,14 @@ async fn server_update(ctx: &Ctx, args: UpdateArgs) -> CliResult<Output> {
         ));
     }
     if release.tag == installed {
-        return Ok(Output::fields(
+        return Ok(Output::with_text(
             json!({"operation":"update","target":"server","version":release.tag,"changed":false}),
+            progress.summary("grund server is up to date", &[("Version", &release.tag)]),
         ));
     }
     ctx.confirm(
         args.yes,
-        "Stop server writes, take a complete backup and migrate to the selected release?",
+        "Pause grund, make a full backup and update this server",
     )?;
     secure_directory(root)?;
     let _lock = lock(&root.join(".operation.lock"))?;
@@ -876,12 +939,21 @@ async fn server_update(ctx: &Ctx, args: UpdateArgs) -> CliResult<Output> {
         .prefix(".server-update-")
         .tempdir_in(root)
         .map_err(io)?;
-    for name in ["compose.yaml", "image-digest.txt", "release.txt"] {
-        release.download(name, &staged.path().join(name)).await?;
-    }
-    let binary = staged.path().join("grund");
-    release.download(&release::binary_name()?, &binary).await?;
-    binary_identity(&binary, &release.tag).await?;
+    progress
+        .step(
+            "Downloading the verified server release",
+            "Check internet access and free space under /opt/grund, then retry.",
+            async {
+                for name in ["compose.yaml", "image-digest.txt", "release.txt"] {
+                    release.download(name, &staged.path().join(name)).await?;
+                }
+                let binary = staged.path().join("grund");
+                release.download(&release::binary_name()?, &binary).await?;
+                binary_identity(&binary, &release.tag).await?;
+                Ok(())
+            },
+        )
+        .await?;
     let revision = fs::read_to_string(staged.path().join("release.txt")).map_err(io)?;
     let revision = revision.trim();
     if revision.len() != 40
@@ -892,44 +964,53 @@ async fn server_update(ctx: &Ctx, args: UpdateArgs) -> CliResult<Output> {
         return Err(failed("release.txt does not name a full public revision"));
     }
     let image = system::image_identity(&staged.path().join("image-digest.txt"))?;
-    run(
-        Command::new("/usr/bin/docker").args(["pull", &image]),
-        "pull immutable server image before downtime",
-    )
-    .await?;
-    let current_topology = effective_compose(&mut compose(root)).await?;
-    let candidate_topology =
-        effective_compose(&mut candidate_compose(root, staged.path(), &image)?).await?;
-    validate_managed_topologies(&current_topology, &candidate_topology)?;
-    let candidate_version = run(
-        candidate_compose(root, staged.path(), &image)?.args([
-            "run",
-            "--rm",
-            "--no-deps",
-            "grund",
-            "--version",
-        ]),
-        "new server image release identity check",
-    )
-    .await?;
-    if candidate_version != format!("grund {}\n", release.tag).as_bytes() {
-        return Err(failed(
-            "candidate compose configuration does not run the selected release; existing stack is unchanged",
-        ));
-    }
-    let preflight = checked_doctor(
-        candidate_compose(root, staged.path(), &image)?.args([
-            "run",
-            "--rm",
-            "--no-deps",
-            "grund",
-            "doctor",
-            "--json",
-            "instance",
-        ]),
-        "new server doctor preflight",
-    )
-    .await?;
+    progress.step(
+        "Preparing the server image",
+        "Check Docker and access to the container registry, then retry; the running server has not been stopped.",
+        async {
+            run(
+                Command::new("/usr/bin/docker").args(["pull", &image]),
+                "pull immutable server image before downtime",
+            ).await?;
+            let current_topology = effective_compose(&mut compose(root)).await?;
+            let candidate_topology =
+                effective_compose(&mut candidate_compose(root, staged.path(), &image)?).await?;
+            validate_managed_topologies(&current_topology, &candidate_topology)?;
+            let candidate_version = run(
+                candidate_compose(root, staged.path(), &image)?.args([
+                    "run", "--rm", "--no-deps", "grund", "--version",
+                ]),
+                "new server image release identity check",
+            ).await?;
+            if candidate_version != format!("grund {}\n", release.tag).as_bytes() {
+                return Err(failed(
+                    "candidate compose configuration does not run the selected release; existing stack is unchanged",
+                ));
+            }
+            Ok(())
+        },
+    ).await?;
+    let preflight = progress
+        .step(
+            "Checking the server before downtime",
+            "Run sudo grund doctor instance and resolve failing checks before retrying.",
+            async {
+                checked_doctor(
+                    candidate_compose(root, staged.path(), &image)?.args([
+                        "run",
+                        "--rm",
+                        "--no-deps",
+                        "grund",
+                        "doctor",
+                        "--json",
+                        "instance",
+                    ]),
+                    "new server doctor preflight",
+                )
+                .await
+            },
+        )
+        .await?;
     let backups = root.join("backups");
     secure_directory(&backups)?;
     let backup_path = backups.join(format!(
@@ -940,12 +1021,23 @@ async fn server_update(ctx: &Ctx, args: UpdateArgs) -> CliResult<Output> {
     secure_directory(&backup_path)?;
     let mut cutover_started = false;
     let operation: CliResult<(serde_json::Value, String)> = async {
-        run(
-            compose(root).args(["stop", "grund"]),
-            "stop server writes before backup",
-        )
-        .await?;
-        backup(root, &backup_path, &installed, &old_image).await?;
+        progress.step(
+            "Pausing server writes",
+            "Inspect the existing stack with sudo docker compose --project-directory /opt/grund logs grund.",
+            async {
+                run(compose(root).args(["stop", "grund"]), "stop server writes before backup").await?;
+                Ok(())
+            },
+        ).await?;
+        progress.step(
+            "Saving and validating the complete backup",
+            "Check free space under /opt/grund/backups; keep the backup directory and inspect the old stack before retrying.",
+            backup(root, &backup_path, &installed, &old_image),
+        ).await?;
+        progress.step(
+            "Recording the guarded server cutover",
+            "Keep the update journal and complete backup; do not start an old image against a migrated database.",
+            async {
         atomic_write(
             &root.join(".server-update.json"),
             &serde_json::to_vec(
@@ -970,24 +1062,45 @@ async fn server_update(ctx: &Ctx, args: UpdateArgs) -> CliResult<Output> {
             format!("{}\n", release.tag).as_bytes(),
             0o600,
         )?;
-        run(
-            compose(root).args(["run", "--rm", "--no-deps", "grund", "migrate"]),
-            "forward server migration",
-        )
-        .await?;
-        run(
-            compose(root).args(["up", "--no-build", "-d", "--wait", "--wait-timeout", "180"]),
-            "start updated server and wait for health",
-        )
-        .await?;
-        let report = checked_doctor(
-            compose(root).args([
-                "exec", "-T", "grund", "/grund", "doctor", "--json", "instance",
-            ]),
-            "updated server doctor",
-        )
-        .await?;
-        let observed_revision = observe_revision(root, revision).await?;
+                Ok(())
+            },
+        ).await?;
+        progress.step(
+            "Migrating the server",
+            "Keep the complete backup and update journal; follow the recovery instructions before restarting or restoring.",
+            async {
+                run(
+                    compose(root).args(["run", "--rm", "--no-deps", "grund", "migrate"]),
+                    "forward server migration",
+                ).await?;
+                Ok(())
+            },
+        ).await?;
+        progress.step(
+            "Starting the updated server",
+            "Inspect the updated stack logs; retain the complete backup and update journal until recovery is verified.",
+            async {
+                run(
+                    compose(root).args(["up", "--no-build", "-d", "--wait", "--wait-timeout", "180"]),
+                    "start updated server and wait for health",
+                ).await?;
+                Ok(())
+            },
+        ).await?;
+        let (report, observed_revision) = progress.step(
+            "Checking the running server",
+            "Inspect the updated stack logs; do not remove the update journal until health and the running release are verified.",
+            async {
+                let report = checked_doctor(
+                    compose(root).args([
+                        "exec", "-T", "grund", "/grund", "doctor", "--json", "instance",
+                    ]),
+                    "updated server doctor",
+                ).await?;
+                let observed_revision = observe_revision(root, revision).await?;
+                Ok((report, observed_revision))
+            },
+        ).await?;
         fs::remove_file(root.join(".server-update.json")).map_err(io)?;
         File::open(root)
             .and_then(|file| file.sync_all())
@@ -1000,26 +1113,100 @@ async fn server_update(ctx: &Ctx, args: UpdateArgs) -> CliResult<Output> {
         Err(error) if cutover_started => return Err(failed(format!("server update failed after guarded cutover; migration may have started: {}; completed backup retained at {}", error.message, backup_path.display())).hint(recovery(&backup_path))),
         Err(error) => {
             let restarted = run(compose(root).args(["up", "--no-build", "-d", "--wait", "--wait-timeout", "180"]), "restart unchanged old server").await.is_ok();
-            return Err(failed(format!("server update refused before migration: {}; old server restart {}; backup directory retained at {}", error.message, if restarted {"succeeded"}else{"failed"}, backup_path.display())).hint("No migration was attempted. Inspect old stack logs; complete.json exists only for a validated, synced backup."));
+            return Err(failed(format!("server update refused before migration: {}; old server restart {}; backup directory retained at {}", error.message, if restarted {"succeeded"}else{"failed"}, backup_path.display())).hint(format!("No migration was attempted. Old server restart {}. Inspect old stack logs; backup directory retained at {}. complete.json exists only for a validated, synced backup.", if restarted {"succeeded"}else{"failed"}, backup_path.display())));
         }
     };
-    Ok(Output::fields(
+    Ok(Output::with_text(
         json!({"operation":"update","target":"server","changed":true,"version":release.tag,"revision":observed_revision,"image":image,"backupPath":backup_path,"backupComplete":true,"migration":"succeeded","health":"succeeded","preflight":preflight,"postflight":postflight}),
+        progress.summary(
+            "grund server updated",
+            &[
+                ("Version", &release.tag),
+                ("Health", "Ready; running revision verified"),
+                ("Backup", &backup_path.to_string_lossy()),
+                ("Client and agent", "Unchanged"),
+            ],
+        ),
     ))
 }
 
 /// Resolve a trusted public release and update the selected local component.
 pub async fn update(ctx: &Ctx, args: UpdateArgs) -> CliResult<Output> {
-    if args.target.is_some() {
+    let progress = Progress::new(ctx, args.yes, args.verbose);
+    let server = args.target.is_some();
+    let result = if server {
         server_update(ctx, args).await
     } else {
         binary_update(ctx, args).await
-    }
+    };
+    result.map_err(|error| {
+        if matches!(error.code, Code::ConfirmationRequired | Code::Usage) {
+            error
+        } else {
+            progress.failure(
+                error,
+                if server { "Server update" } else { "Client update" },
+                if server {
+                    "Run sudo grund doctor instance; keep any update journal and complete backup before retrying."
+                } else {
+                    "Check executable ownership and internet access, then retry with --verbose for details."
+                },
+            )
+        }
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unattended_update_flags_work_on_either_side_of_the_server_target() {
+        use clap::Parser;
+
+        for args in [
+            vec![
+                "grund",
+                "update",
+                "--yes",
+                "--verbose",
+                "--dry-run",
+                "--json",
+            ],
+            vec![
+                "grund",
+                "update",
+                "--yes",
+                "--verbose",
+                "--dry-run",
+                "--json",
+                "server",
+            ],
+            vec![
+                "grund",
+                "update",
+                "server",
+                "--yes",
+                "--verbose",
+                "--dry-run",
+                "--json",
+            ],
+        ] {
+            let parsed = crate::Standalone::try_parse_from(args).unwrap();
+            let crate::Command::Update(args) = parsed.command else {
+                panic!("expected an update");
+            };
+            assert!(args.yes && args.verbose && args.dry_run && args.global.json);
+            let ctx = Ctx::new(args.global.clone());
+            assert_eq!(ctx.format, crate::output::Format::Json);
+            assert!(!ctx.interactive);
+            assert!(ctx.confirm(args.yes, "must not prompt").is_ok());
+            assert_eq!(
+                ctx.confirm(false, "must refuse").unwrap_err().code,
+                Code::ConfirmationRequired
+            );
+        }
+    }
 
     fn managed_topology() -> serde_json::Value {
         json!({

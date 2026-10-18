@@ -489,7 +489,7 @@ pub fn read_record(data_dir: &Path) -> anyhow::Result<Option<Record>> {
     }
 }
 
-fn write_record(data_dir: &Path, record: &Record) -> anyhow::Result<()> {
+pub(crate) fn write_record(data_dir: &Path, record: &Record) -> anyhow::Result<()> {
     replace_file(
         data_dir,
         RECORD_FILE,
@@ -504,7 +504,9 @@ pub fn replace_file(data_dir: &Path, name: &str, contents: &str) -> anyhow::Resu
     let temporary = data_dir.join(format!(".{name}.{}", std::process::id()));
     let _ = std::fs::remove_file(&temporary);
     write_new(&temporary, contents)?;
-    std::fs::rename(&temporary, &path).with_context(|| format!("write {}", path.display()))
+    std::fs::rename(&temporary, &path).with_context(|| format!("write {}", path.display()))?;
+    std::fs::File::open(data_dir)?.sync_all()?;
+    Ok(())
 }
 
 fn write_new(path: &Path, contents: &str) -> anyhow::Result<()> {

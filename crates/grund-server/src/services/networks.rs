@@ -42,7 +42,7 @@ use grund_store::networks::{self, NetworkRow, SlotRow};
 use uuid::Uuid;
 
 use crate::{
-    keys::{KeysState, PublicKey},
+    keys::{Keys, KeysState, PublicKey},
     services::agents::MachineCaller,
     state::State,
 };
@@ -110,21 +110,30 @@ pub fn network_message(
 /// Private network flows.
 #[derive(Clone)]
 pub struct Networks {
-    state: State,
+    pool: sqlx::PgPool,
+    keys: Keys,
+    config: std::sync::Arc<crate::config::ServeConfig>,
 }
 
 impl Networks {
+    pub(crate) fn new(
+        pool: sqlx::PgPool,
+        keys: Keys,
+        config: std::sync::Arc<crate::config::ServeConfig>,
+    ) -> Self {
+        Self { pool, keys, config }
+    }
+
     /// Brings the organisation's network in line with its pool, making the
     /// network on first use, and returns it as it now stands.
     pub async fn reconcile(&self, organisation_id: Uuid) -> anyhow::Result<NetworkView> {
-        let mut tx = self.state.pool.begin().await?;
+        let mut tx = self.pool.begin().await?;
         let network = match networks::lock_organisation_network(&mut tx, organisation_id).await? {
             Some(network) => network,
             None => self.create(&mut tx, organisation_id).await?,
         };
         let key = self
-            .state
-            .keys()
+            .keys
             .ensure(&mut tx, KeyPurpose::Network, Some(organisation_id))
             .await?;
         anyhow::ensure!(
@@ -190,10 +199,7 @@ impl Networks {
         };
         list.validate()?;
         let body = list.encode();
-        let signature = self
-            .state
-            .keys()
-            .sign(key.key_id, prefix::NET_MEMBERSHIP, &body);
+        let signature = self.keys.sign(key.key_id, prefix::NET_MEMBERSHIP, &body);
         networks::store_list(&mut *tx, network.network_id, epoch, &body, &signature, now).await?;
         tx.commit().await?;
         view(
@@ -211,8 +217,7 @@ impl Networks {
     }
 
     fn relays(&self) -> Vec<Relay> {
-        self.state
-            .config
+        self.config
             .relay
             .list()
             .into_iter()
@@ -229,8 +234,7 @@ impl Networks {
         organisation_id: Uuid,
     ) -> anyhow::Result<NetworkRow> {
         let key = self
-            .state
-            .keys()
+            .keys
             .ensure(&mut *tx, KeyPurpose::Network, Some(organisation_id))
             .await?;
         for _ in 0..4 {
@@ -269,12 +273,12 @@ impl Networks {
         };
         let hint = home_relay_url.trim_end_matches('/');
         if hint.is_empty() {
-            networks::set_home_relay(&self.state.pool, caller.machine_id, None).await?;
+            networks::set_home_relay(&self.pool, caller.machine_id, None).await?;
         } else if self.relays().iter().any(|r| r.url == hint) {
-            networks::set_home_relay(&self.state.pool, caller.machine_id, Some(hint)).await?;
+            networks::set_home_relay(&self.pool, caller.machine_id, Some(hint)).await?;
         }
         networks::set_direct_addrs(
-            &self.state.pool,
+            &self.pool,
             caller.machine_id,
             &usable_direct_addrs(direct_addrs),
             Utc::now(),
@@ -519,9 +523,7 @@ pub trait NetworksState {
 
 impl NetworksState for State {
     fn networks(&self) -> Networks {
-        Networks {
-            state: self.clone(),
-        }
+        Networks::new(self.pool.clone(), self.keys(), self.config.clone())
     }
 }
 

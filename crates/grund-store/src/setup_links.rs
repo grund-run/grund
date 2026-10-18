@@ -72,6 +72,9 @@ pub async fn redeem(
     token_digest: &[u8; 32],
     account_id: Uuid,
 ) -> Result<bool, sqlx::Error> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext('grund:setup-link'))")
+        .execute(&mut *connection)
+        .await?;
     let used = sqlx::query(
         "UPDATE grund_setup_links SET used_at = clock_timestamp(), account_id = $2 \
          WHERE token_digest = $1 AND used_at IS NULL AND expires_at > clock_timestamp()",
@@ -83,6 +86,20 @@ pub async fn redeem(
     .rows_affected()
         == 1;
     Ok(used && !any_account(&mut *connection).await?)
+}
+
+/// The account and home organisation created by the successfully redeemed setup link.
+pub async fn claimed_owner(
+    executor: impl PgExecutor<'_>,
+) -> Result<Option<(Uuid, Uuid)>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT a.account_id, a.organisation_id FROM grund_setup_links s \
+         JOIN grund_accounts a ON a.account_id = s.account_id \
+         JOIN grund_organisations o ON o.organisation_id = a.organisation_id \
+         WHERE s.used_at IS NOT NULL AND o.deleted_at IS NULL",
+    )
+    .fetch_optional(executor)
+    .await
 }
 
 /// Whether any account already exists, including an unverified sign-up.

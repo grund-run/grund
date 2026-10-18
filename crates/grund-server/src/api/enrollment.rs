@@ -62,6 +62,30 @@ fn facts(facts: &agent::MachineFactsView<'_>) -> MachineFacts {
     }
 }
 
+pub(crate) fn enrollment_response(
+    enrollment: crate::services::machines::Enrollment,
+    network: Option<agent::Network>,
+) -> EnrollMachineResponse {
+    let (pool, organisation_id) = match enrollment.pool {
+        Pool::Management => (agent::Pool::POOL_MANAGEMENT, String::new()),
+        Pool::Organisation { organisation_id } => {
+            (agent::Pool::POOL_ORGANISATION, organisation_id.to_string())
+        }
+    };
+    EnrollMachineResponse {
+        machine_id: enrollment.machine_id.to_string(),
+        machine_name: enrollment.name,
+        pool: pool.into(),
+        organisation_id,
+        instance_key: MessageField::from(public_key_message(&enrollment.instance_key)),
+        trust_key: MessageField::from(public_key_message(&enrollment.trust_key)),
+        heartbeat_interval_seconds: HEARTBEAT_INTERVAL_SECONDS,
+        data_channel_urls: Vec::new(),
+        network: network.map(MessageField::from).unwrap_or_default(),
+        ..Default::default()
+    }
+}
+
 #[allow(refining_impl_trait)]
 impl MachineEnrollmentService for EnrollmentApi {
     async fn enroll_machine(
@@ -153,8 +177,8 @@ impl MachineEnrollmentService for EnrollmentApi {
                 ));
             }
         };
-        let (pool, organisation_id, network) = match enrollment.pool {
-            Pool::Management => (agent::Pool::POOL_MANAGEMENT, String::new(), None),
+        let network = match enrollment.pool {
+            Pool::Management => None,
             Pool::Organisation { organisation_id } => {
                 let network = self
                     .state
@@ -165,28 +189,13 @@ impl MachineEnrollmentService for EnrollmentApi {
                         tracing::error!(error = %error, "a registered machine's network failed");
                         ConnectError::unavailable("grund could not register the machine; try again")
                     })?;
-                (
-                    agent::Pool::POOL_ORGANISATION,
-                    organisation_id.to_string(),
-                    network_message(
-                        &network,
-                        enrollment.machine_id,
-                        self.state.config.relay.urls(),
-                    ),
+                network_message(
+                    &network,
+                    enrollment.machine_id,
+                    self.state.config.relay.urls(),
                 )
             }
         };
-        Response::ok(EnrollMachineResponse {
-            machine_id: enrollment.machine_id.to_string(),
-            machine_name: enrollment.name,
-            pool: pool.into(),
-            organisation_id,
-            instance_key: MessageField::from(public_key_message(&enrollment.instance_key)),
-            trust_key: MessageField::from(public_key_message(&enrollment.trust_key)),
-            heartbeat_interval_seconds: HEARTBEAT_INTERVAL_SECONDS,
-            data_channel_urls: Vec::new(),
-            network: network.map(MessageField::from).unwrap_or_default(),
-            ..Default::default()
-        })
+        Response::ok(enrollment_response(enrollment, network))
     }
 }

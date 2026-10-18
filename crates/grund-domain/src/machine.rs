@@ -230,6 +230,16 @@ pub struct MachineFacts {
     pub fleet_machine_id: String,
 }
 
+/// Privileged installation intent, consumed only while the first owner is created.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalMachineBootstrap {
+    pub machine_id: Uuid,
+    pub name: MachineName,
+    pub key: MachineKey,
+    pub facts: MachineFacts,
+}
+
 /// The most ports one machine may declare open on its private network.
 pub const MAX_DECLARED_PORTS: usize = 64;
 

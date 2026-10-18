@@ -26,6 +26,7 @@ chrono.workspace = true
 grund-config.workspace = true
 grund-descriptors.workspace = true
 grund-crypto.workspace = true
+indicatif = { version = "0.18", default-features = false }
 libc = "0.2"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

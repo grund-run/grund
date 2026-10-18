@@ -495,7 +495,8 @@ Description=grund agent: keeps this machine connected to its grund instance
 Documentation=https://git.kjuulh.io/grund/grund
 After=network-online.target
 Wants=network-online.target
-ConditionPathExists=$agent_data/machine.json
+ConditionPathExists=|$agent_data/machine.json
+ConditionPathExists=|$agent_data/local-bootstrap.json
 
 [Service]
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -512,6 +513,8 @@ if [ -f "$work/previous.service" ]; then
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
       ExecStart=*) printf 'ExecStart=%s agent %s\n' "$runtime_binary" "$runtime_arguments" ;;
+      "ConditionPathExists=$agent_data/machine.json")
+        printf 'ConditionPathExists=|%s/machine.json\nConditionPathExists=|%s/local-bootstrap.json\n' "$agent_data" "$agent_data" ;;
       *) printf '%s\n' "$line" ;;
     esac
   done < "$work/previous.service" > "$work/grund-agent.service"
@@ -526,7 +529,7 @@ sync /etc/systemd/system
 printf 'grund-agent-v1\n' > "$work/managed-agent"
 systemctl daemon-reload
 systemctl enable grund-agent.service >/dev/null 2>&1
-if [ -f "$agent_data/machine.json" ]; then
+if [ -f "$agent_data/machine.json" ] || [ -f "$agent_data/local-bootstrap.json" ]; then
   systemctl restart grund-agent.service
   sleep 3
   systemctl is-active --quiet grund-agent.service || { journalctl -u grund-agent --no-pager -n 20; fail "grund-agent.service did not stay up"; }

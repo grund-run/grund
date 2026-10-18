@@ -15,10 +15,14 @@ use crate::{
     context::{Ctx, Global},
     error::{CliError, CliResult, Code},
     output::Output,
+    progress::Progress,
 };
 
 #[path = "system/release.rs"]
 pub(crate) mod release;
+
+#[path = "system/local.rs"]
+mod local;
 
 pub(crate) const ROOT: &str = "/opt/grund";
 const SERVER_UNIT: &str = "/etc/systemd/system/grund-server.service";
@@ -66,6 +70,13 @@ pub struct InstallArgs {
         help = "Show the operation without downloading or changing this machine"
     )]
     pub dry_run: bool,
+    #[arg(
+        long,
+        help = "Use the local default without prompts or animated output"
+    )]
+    pub yes: bool,
+    #[arg(long, global = true, help = "Show technical failure details")]
+    pub verbose: bool,
 }
 
 /// Which installer-managed services to remove; persistent state is retained.
@@ -87,6 +98,8 @@ pub struct UninstallArgs {
     pub yes: bool,
     #[arg(long, help = "Show exactly which managed services would be removed")]
     pub dry_run: bool,
+    #[arg(long, global = true, help = "Show technical failure details")]
+    pub verbose: bool,
 }
 
 pub(crate) fn failed(message: impl Into<String>) -> CliError {
@@ -241,9 +254,13 @@ pub(crate) fn compose(root: &Path) -> Command {
     let mut command = Command::new("/usr/bin/docker");
     command.args(["compose", "--project-directory"]).arg(root);
     command.arg("--env-file").arg(root.join(".env"));
-    command
-        .env_remove("GRUND_IMAGE")
-        .env_remove("GRUND_PULL_POLICY");
+    for (key, _) in std::env::vars_os() {
+        if key.as_encoded_bytes().starts_with(b"GRUND_")
+            || key.as_encoded_bytes().starts_with(b"COMPOSE_")
+        {
+            command.env_remove(key);
+        }
+    }
     command
 }
 
@@ -405,43 +422,39 @@ async fn agent_install(
     Ok(())
 }
 
-/// Install managed services without changing an existing server image or configuration.
-pub async fn install(_ctx: &Ctx, args: InstallArgs) -> CliResult<Output> {
-    let url = match (&args.domain, &args.url) {
-        (Some(domain), None) if domain_name(domain) => format!("https://{domain}"),
-        (None, Some(url)) => {
-            let parsed = reqwest::Url::parse(url)
-                .map_err(|_| CliError::usage("--url requires an HTTPS instance origin"))?;
-            if parsed.scheme() != "https"
-                || parsed.host_str().is_none()
-                || parsed.username() != ""
-                || parsed.password().is_some()
-                || parsed.query().is_some()
-                || parsed.fragment().is_some()
-                || parsed.path() != "/"
-            {
-                return Err(CliError::usage(
-                    "--url requires an HTTPS instance origin without credentials or path",
-                ));
-            }
-            url.trim_end_matches('/').to_owned()
+/// Install services or add HTTPS to a local instance without changing its server image.
+pub async fn install(ctx: &Ctx, args: InstallArgs) -> CliResult<Output> {
+    let progress = Progress::new(ctx, args.yes, args.verbose);
+    install_inner(ctx, args, &progress).await.map_err(|error| {
+        if matches!(
+            error.code,
+            Code::Usage | Code::PermissionDenied | Code::Conflict
+        ) {
+            error
+        } else {
+            progress.failure(
+                error,
+                "Installation",
+                "Run grund install --verbose for details.",
+            )
         }
-        _ => {
-            return Err(CliError::usage(
-                "choose --domain DNS-NAME or --url HTTPS-ORIGIN --code CODE",
-            ));
-        }
-    };
-    let updater_data = installed_updater_data_dir().await?;
-    let agent_data = updater_data
-        .as_deref()
-        .unwrap_or(Path::new("/var/lib/grund/agent"));
-    if args.url.is_some() && args.code.is_none() && !agent_data.join("machine.json").is_file() {
+    })
+}
+
+async fn install_inner(ctx: &Ctx, mut args: InstallArgs, progress: &Progress) -> CliResult<Output> {
+    progress
+        .step(
+            "Checking this machine",
+            "Run grund install as root on a machine running Linux and systemd.",
+            platform(false),
+        )
+        .await?;
+    if args.code.is_some() && args.url.is_none() && args.domain.is_none() {
         return Err(CliError::usage(
-            "a new machine installation requires --code; registered machines keep their identity",
+            "Use --url HTTPS-ADDRESS with the machine setup code, or --domain NAME for this server.",
         ));
     }
-    refuse_agent_recovery(agent_data)?;
+    let default_setup = args.url.is_none() && args.domain.is_none();
     if let Some(version) = &args.version {
         release::Version::parse(version)?;
     }
@@ -453,16 +466,56 @@ pub async fn install(_ctx: &Ctx, args: InstallArgs) -> CliResult<Output> {
             "development builds require an explicit --version or --channel",
         ));
     }
-    platform(args.domain.is_some()).await?;
     let root = Path::new(ROOT);
-    if args.domain.is_some() {
+    let server = args.url.is_none();
+    let previous = if server {
         refuse_server_recovery(root)?;
-    }
-    let previous = if args.domain.is_some() {
-        installed_version(root, args.domain.as_deref()).await?
+        installed_version(root, None).await?
     } else {
         None
     };
+    let existing_domain = local::domain(root, previous.is_some())?;
+    if server
+        && previous.is_none()
+        && args.domain.is_none()
+        && ctx.interactive
+        && !args.yes
+        && !args.dry_run
+    {
+        eprint!("Do you have a domain for this server? (leave empty to run locally) ");
+        std::io::stderr().flush().map_err(io)?;
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer).map_err(io)?;
+        if !answer.trim().is_empty() {
+            args.domain = Some(answer.trim().to_owned());
+        }
+    }
+    let target = local::target(
+        args.domain.as_deref(),
+        args.url.as_deref(),
+        existing_domain.as_deref(),
+    )?;
+    let server = target.server;
+    let updater_data = installed_updater_data_dir().await?;
+    let agent_data = updater_data
+        .as_deref()
+        .unwrap_or(Path::new("/var/lib/grund/agent"));
+    let registered = agent_data.join("machine.json").is_file();
+    if !server && args.code.is_none() && !registered {
+        return Err(CliError::usage(
+            "a new machine needs --code; an already connected machine keeps its identity",
+        ));
+    }
+    if server && previous.is_none() && target.domain.is_none() && registered {
+        return Err(CliError::new(
+            Code::Conflict,
+            "This machine is already connected to an instance.",
+        )
+        .hint(
+            "Keep that connection or explicitly remove it before creating a new local instance.",
+        ));
+    }
+    refuse_agent_recovery(agent_data)?;
     if let (Some(previous), Some(requested)) = (&previous, &args.version)
         && previous != requested
     {
@@ -471,21 +524,37 @@ pub async fn install(_ctx: &Ctx, args: InstallArgs) -> CliResult<Output> {
                 .hint("use grund update server --version TAG"),
         );
     }
-    if present(Path::new(SERVER_UNIT))?
-        && args.domain.is_some()
+    if server
+        && present(Path::new(SERVER_UNIT))?
         && read_managed(Path::new(SERVER_UNIT))? != SERVER_SERVICE
     {
         return Err(CliError::new(
             Code::Conflict,
-            "grund-server.service is not managed by this installer",
+            "the existing server service is not managed by this installer",
         ));
     }
     if args.dry_run {
-        return Ok(Output::fields(
-            json!({"dryRun":true,"operation":"install","scope":if args.domain.is_some(){"server-and-agent"}else{"agent"},"url":url,"preserveExisting":previous.is_some(),"version":previous.as_deref().or(args.version.as_deref()).unwrap_or(""),"channel":args.channel.map(|c|format!("{c:?}").to_lowercase()).unwrap_or_default()}),
+        return Ok(Output::with_text(
+            json!({"dryRun":true,"operation":"install","scope":if server{"server-and-agent"}else{"agent"},"url":target.url,"preserveExisting":previous.is_some(),"version":previous.as_deref().or(args.version.as_deref()).unwrap_or(""),"convertToTls":target.convert}),
+            progress.summary(
+                "Installation plan",
+                &[
+                    ("Address", &target.url),
+                    (
+                        "Changes",
+                        if target.convert {
+                            "Add HTTPS; keep data, identity and server version"
+                        } else if server {
+                            "Set up grund and this machine"
+                        } else {
+                            "Connect this machine"
+                        },
+                    ),
+                ],
+            ),
         ));
     }
-    let _server_lock = if args.domain.is_some() {
+    let _server_lock = if server {
         secure_directory(root)?;
         Some(lock(&root.join(".operation.lock"))?)
     } else {
@@ -493,64 +562,100 @@ pub async fn install(_ctx: &Ctx, args: InstallArgs) -> CliResult<Output> {
     };
     secure_directory(Path::new("/var/lib/grund"))?;
     let agent_lock = lock(Path::new(UPDATE_LOCK))?;
-    let locked_updater_data = installed_updater_data_dir().await?;
-    if locked_updater_data != updater_data {
+    if installed_updater_data_dir().await? != updater_data {
         return Err(CliError::new(
             Code::Conflict,
-            "machine updater configuration changed before the installation lock; retry",
+            "machine update settings changed before installation; retry",
         ));
     }
     refuse_agent_recovery(agent_data)?;
-    if args.domain.is_some() {
+    if server {
         refuse_server_recovery(root)?;
-    }
-    let previous = if args.domain.is_some() {
-        installed_version(root, args.domain.as_deref()).await?
-    } else {
-        previous
-    };
-    if let (Some(previous), Some(requested)) = (&previous, &args.version)
-        && previous != requested
-    {
-        return Err(
-            CliError::new(Code::Conflict, "reinstall never changes the server release")
-                .hint("use grund update server --version TAG"),
-        );
+        local::docker(progress).await?;
+        local::recover_domain(root).await?;
+        if installed_version(root, None).await? != previous
+            || local::domain(root, previous.is_some())? != existing_domain
+        {
+            return Err(CliError::new(
+                Code::Conflict,
+                "server settings changed before installation; retry",
+            ));
+        }
     }
     let selected = previous
         .as_deref()
         .filter(|s| !s.is_empty())
         .or(args.version.as_deref());
-    let release = release::Release::resolve(selected, args.channel, crate::VERSION).await?;
+    let release = progress
+        .step(
+            "Finding grund",
+            "Check the internet connection and requested version.",
+            release::Release::resolve(selected, args.channel, crate::VERSION),
+        )
+        .await?;
     let staging = tempfile::Builder::new()
         .prefix("grund-install-")
-        .tempdir_in(if args.domain.is_some() {
-            root
-        } else {
-            Path::new("/var/tmp")
-        })
+        .tempdir_in(if server { root } else { Path::new("/var/tmp") })
         .map_err(io)?;
     let binary = staging.path().join("grund");
-    release.download(&release::binary_name()?, &binary).await?;
-    binary_identity(&binary, &release.tag).await?;
-    if args.domain.is_some() {
-        for name in [
-            "compose.yaml",
-            "image-digest.txt",
-            "release.txt",
-            "agent-install.sh",
-        ] {
-            release.download(name, &staging.path().join(name)).await?;
-        }
+    progress
+        .step(
+            &format!("Downloading and checking grund {}", release.tag),
+            "Check the internet connection, then retry.",
+            async {
+                release.download(&release::binary_name()?, &binary).await?;
+                binary_identity(&binary, &release.tag).await?;
+                if server {
+                    for name in [
+                        "compose.yaml",
+                        "image-digest.txt",
+                        "release.txt",
+                        "agent-install.sh",
+                    ] {
+                        release.download(name, &staging.path().join(name)).await?;
+                    }
+                }
+                Ok(())
+            },
+        )
+        .await?;
+    let local_bootstrap = server
+        && (target.domain.is_none()
+            || (default_setup && previous.is_none())
+            || agent_data.join("local-bootstrap.json").is_file());
+    let bootstrap = if local_bootstrap {
+        Some(
+            progress
+                .step(
+                    "Preparing this machine",
+                    "Update grund to a release that supports local setup, then retry.",
+                    async {
+                        run(
+                            Command::new(&binary)
+                                .arg("prepare-local-machine")
+                                .arg("--data-dir")
+                                .arg(agent_data),
+                            "prepare local machine identity",
+                        )
+                        .await
+                    },
+                )
+                .await?,
+        )
+    } else {
+        None
+    };
+    if server {
         let image = image_identity(&staging.path().join("image-digest.txt"))?;
         if previous.is_none() {
-            let domain = args.domain.as_deref().unwrap_or_default();
-            atomic_write(
-                &root.join(".env"),
-                format!("GRUND_DOMAIN={domain}\nGRUND_IMAGE={image}\nGRUND_PULL_POLICY=missing\n")
-                    .as_bytes(),
-                0o600,
-            )?;
+            let domain = target.domain.unwrap_or_default();
+            let local_settings = if local_bootstrap {
+                "GRUND_BIND=127.0.0.1\nGRUND_PORT=8080\nGRUND_LOCAL_MACHINE_FILE=/var/lib/grund/local-machine.json\n"
+            } else {
+                ""
+            };
+            atomic_write(&root.join(".env"),
+                format!("GRUND_DOMAIN={domain}\nGRUND_PUBLIC_URL={}\nGRUND_IMAGE={image}\nGRUND_PULL_POLICY=missing\n{local_settings}", target.url).as_bytes(), 0o600)?;
             atomic_write(
                 &root.join("compose.yaml"),
                 &fs::read(staging.path().join("compose.yaml")).map_err(io)?,
@@ -567,42 +672,196 @@ pub async fn install(_ctx: &Ctx, args: InstallArgs) -> CliResult<Output> {
                 0o600,
             )?;
         }
-        atomic_write(Path::new(SERVER_UNIT), SERVER_SERVICE.as_bytes(), 0o644)?;
-        run(
-            Command::new("/usr/bin/systemctl").arg("daemon-reload"),
-            "reload server unit",
-        )
-        .await?;
-        run(
-            Command::new("/usr/bin/systemctl").args(["enable", "--now", "grund-server.service"]),
-            "enable and start server",
-        )
-        .await?;
-        run(
-            compose(root).args([
-                "exec",
-                "-T",
-                "grund",
-                "/grund",
-                "probe",
-                "--address",
-                "127.0.0.1:8080",
-            ]),
-            "verify installed server readiness",
-        )
-        .await?;
+        if let Some(bootstrap) = bootstrap {
+            progress
+                .step(
+                    "Preparing your account setup",
+                    "Run grund install --verbose to see which setup step failed.",
+                    async {
+                        local::input(
+                            compose(root).args([
+                                "run",
+                                "--rm",
+                                "-T",
+                                "--no-deps",
+                                "init",
+                                "init",
+                                "--data-dir",
+                                "/var/lib/grund",
+                                "--local-machine-stdin",
+                            ]),
+                            &bootstrap,
+                            "save local machine identity",
+                        )
+                        .await
+                        .map(|_| ())
+                    },
+                )
+                .await?;
+        }
+        if target.convert {
+            progress
+                .step(
+                    "Setting up HTTPS",
+                    "Point the domain at this machine and allow incoming port 443, then retry.",
+                    local::convert_domain(root, target.domain.unwrap_or_default()),
+                )
+                .await?;
+        }
+        progress
+            .step(
+                "Starting grund",
+                "Run grund install --verbose to see why grund could not start.",
+                async {
+                    atomic_write(Path::new(SERVER_UNIT), SERVER_SERVICE.as_bytes(), 0o644)?;
+                    run(
+                        Command::new("/usr/bin/systemctl").arg("daemon-reload"),
+                        "reload server service",
+                    )
+                    .await?;
+                    run(
+                        Command::new("/usr/bin/systemctl").args([
+                            "enable",
+                            "--now",
+                            "grund-server.service",
+                        ]),
+                        "start server service",
+                    )
+                    .await?;
+                    run(
+                        compose(root).args([
+                            "exec",
+                            "-T",
+                            "grund",
+                            "/grund",
+                            "probe",
+                            "--address",
+                            "127.0.0.1:8080",
+                        ]),
+                        "check server readiness",
+                    )
+                    .await
+                    .map(|_| ())
+                },
+            )
+            .await?;
     }
     drop(agent_lock);
-    agent_install(
-        staging.path(),
-        &binary,
-        &url,
-        args.code.as_deref(),
-        args.no_vms,
-    )
-    .await?;
-    Ok(Output::fields(
-        json!({"operation":"install","version":release.tag,"url":url,"serverInstalled":args.domain.is_some(),"agentPrepared":true,"enrollmentRequested":args.code.is_some(),"preservedExisting":previous.is_some(),"configPath":if args.domain.is_some(){ROOT}else{""},"agentBinary":"/usr/local/lib/grund/agent/grund","next":if args.domain.is_some() && args.code.is_none(){"Create the owner: docker compose --project-directory /opt/grund exec grund /grund setup-link; then obtain a code from Machines and rerun grund install --domain NAME --code CODE"}else{"Machine identity and persistent data are retained"}}),
+    if !target.convert || !registered {
+        let label = if local_bootstrap {
+            "Getting this machine ready to connect"
+        } else if args.code.is_some() || registered {
+            "Connecting this machine"
+        } else {
+            "Preparing this machine"
+        };
+        progress
+            .step(
+                label,
+                "Run grund install --verbose to see why this machine could not connect.",
+                agent_install(
+                    staging.path(),
+                    &binary,
+                    &target.url,
+                    args.code.as_deref(),
+                    args.no_vms,
+                ),
+            )
+            .await?;
+    }
+    let setup_link = if local_bootstrap {
+        let state = run(
+            compose(root).args(["exec", "-T", "grund", "/grund", "local-machine"]),
+            "check local owner setup",
+        )
+        .await?;
+        let state: serde_json::Value = serde_json::from_slice(&state)
+            .map_err(|_| failed("local setup returned an invalid response"))?;
+        if state.is_null() {
+            match run(
+                compose(root).args(["exec", "-T", "grund", "/grund", "setup-link"]),
+                "create owner setup link",
+            )
+            .await
+            {
+                Ok(output) => {
+                    let text = std::str::from_utf8(&output)
+                        .map_err(|_| failed("owner setup returned an invalid response"))?;
+                    Some(
+                        text.lines()
+                            .map(str::trim)
+                            .find(|line| {
+                                line.starts_with("http") && line.contains("/signup/owner?token=")
+                            })
+                            .ok_or_else(|| failed("owner setup returned no link"))?
+                            .to_owned(),
+                    )
+                }
+                Err(error) => {
+                    let state = run(
+                        compose(root).args(["exec", "-T", "grund", "/grund", "local-machine"]),
+                        "recheck claimed owner setup",
+                    )
+                    .await?;
+                    let state: serde_json::Value = serde_json::from_slice(&state)
+                        .map_err(|_| failed("local setup returned an invalid response"))?;
+                    if state.is_null() {
+                        return Err(error);
+                    }
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let remote = std::env::var("SSH_CONNECTION").ok();
+    let tunnel = if target.domain.is_none() && server {
+        let hostname = fs::read_to_string("/proc/sys/kernel/hostname").map_err(io)?;
+        let user = std::env::var("SUDO_USER")
+            .ok()
+            .filter(|user| !user.is_empty() && user != "root")
+            .or_else(|| std::env::var("USER").ok());
+        Some(local::tunnel(
+            remote.as_deref(),
+            user.as_deref(),
+            hostname.trim(),
+        )?)
+    } else {
+        None
+    };
+    let next = if setup_link.is_some() {
+        "Open the setup link; this machine connects when you finish. Then run grund doctor machine."
+    } else if !local_bootstrap && server && !registered && args.code.is_none() {
+        "Create your owner account with grund setup-link in the server, then get a machine setup code from Machines."
+    } else {
+        "Run grund doctor machine to check this machine."
+    };
+    let mut summary = Vec::with_capacity(5);
+    if remote.is_some()
+        && let Some(tunnel) = tunnel.as_deref()
+    {
+        summary.push(("From your computer", tunnel));
+    }
+    if let Some(link) = setup_link.as_deref() {
+        summary.push(("Setup link", link));
+    } else {
+        summary.push(("Address", target.url.as_ref()));
+    }
+    if remote.is_none()
+        && let Some(tunnel) = tunnel.as_deref()
+    {
+        summary.push(("From another computer", tunnel));
+    }
+    if target.domain.is_none() && server {
+        summary.push(("Security", "Local HTTP only; not encrypted. Use localhost or an SSH tunnel until you add a domain."));
+    }
+    summary.push(("Next", next));
+    Ok(Output::with_text(
+        json!({"operation":"install","version":release.tag,"url":target.url,"serverInstalled":server,"agentPrepared":true,"enrollmentRequested":args.code.is_some() || local_bootstrap,"preservedExisting":previous.is_some(),"configPath":if server {ROOT}else{""},"agentBinary":"/usr/local/lib/grund/agent/grund","setupLink":setup_link,"sshTunnel":tunnel,"next":next}),
+        progress.summary("grund is ready", &summary),
     ))
 }
 
@@ -765,7 +1024,33 @@ fn managed_agent() -> CliResult<bool> {
 
 /// Remove only marked units; never delete instance volumes, credentials or machine disks.
 pub async fn uninstall(ctx: &Ctx, args: UninstallArgs) -> CliResult<Output> {
-    platform(false).await?;
+    let progress = Progress::new(ctx, args.yes, args.verbose);
+    uninstall_inner(ctx, args, &progress)
+        .await
+        .map_err(|error| {
+            if matches!(
+                error.code,
+                Code::Usage | Code::ConfirmationRequired | Code::PermissionDenied | Code::Conflict
+            ) {
+                error
+            } else {
+                progress.failure(
+                    error,
+                    "Removal",
+                    "Run grund uninstall --verbose for details.",
+                )
+            }
+        })
+}
+
+async fn uninstall_inner(ctx: &Ctx, args: UninstallArgs, progress: &Progress) -> CliResult<Output> {
+    progress
+        .step(
+            "Checking this machine",
+            "Run grund uninstall as root on this machine.",
+            platform(false),
+        )
+        .await?;
     let server = !matches!(args.scope, Scope::Agent) && present(Path::new(SERVER_UNIT))?;
     if server {
         installed(Path::new(ROOT), None)?
@@ -810,10 +1095,7 @@ pub async fn uninstall(ctx: &Ctx, args: UninstallArgs) -> CliResult<Output> {
             json!({"dryRun":true,"operation":"uninstall","services":removed,"retained":retained}),
         ));
     }
-    ctx.confirm(
-        args.yes,
-        "Stop and remove the managed grund services, keeping all data?",
-    )?;
+    ctx.confirm(args.yes, "Stop grund and its agent, keeping all data")?;
     let _server_lock = if server {
         Some(lock(&Path::new(ROOT).join(".operation.lock"))?)
     } else {
@@ -834,12 +1116,25 @@ pub async fn uninstall(ctx: &Ctx, args: UninstallArgs) -> CliResult<Output> {
         refuse_agent_recovery(agent_data)?;
     }
     for unit in &removed {
-        run(
-            Command::new("/usr/bin/systemctl").args(["disable", "--now", unit]),
-            "stop managed service",
-        )
-        .await?;
-        fs::remove_file(PathBuf::from("/etc/systemd/system").join(unit)).map_err(io)?;
+        let label = match *unit {
+            "grund-server.service" => "Stopping grund",
+            "grund-agent-updater.service" => "Stopping automatic updates",
+            _ => "Disconnecting this machine",
+        };
+        progress
+            .step(
+                label,
+                "Run grund uninstall --verbose to see which service could not stop.",
+                async {
+                    run(
+                        Command::new("/usr/bin/systemctl").args(["disable", "--now", unit]),
+                        "stop managed service",
+                    )
+                    .await?;
+                    fs::remove_file(PathBuf::from("/etc/systemd/system").join(unit)).map_err(io)
+                },
+            )
+            .await?;
     }
     if !removed.is_empty() {
         run(
@@ -848,8 +1143,22 @@ pub async fn uninstall(ctx: &Ctx, args: UninstallArgs) -> CliResult<Output> {
         )
         .await?;
     }
-    Ok(Output::fields(
+    Ok(Output::with_text(
         json!({"operation":"uninstall","removedServices":removed,"retained":retained,"next":"Revoke the retained machine identity from the instance dashboard if this host is retired. App/VM disks and host networking are not removed."}),
+        progress.summary(
+            if removed.is_empty() {
+                "grund is already removed"
+            } else {
+                "grund is stopped"
+            },
+            &[
+                ("Saved", "Your settings, identity and app data are kept"),
+                (
+                    "Next",
+                    "If this machine is retired, revoke it from Machines in your dashboard",
+                ),
+            ],
+        ),
     ))
 }
 

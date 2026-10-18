@@ -3187,6 +3187,14 @@
           "value_name": "SECRET_KEY_FILE"
         },
         {
+          "description": "Privileged first-owner machine descriptor written by `grund init`",
+          "env": "GRUND_LOCAL_MACHINE_FILE",
+          "flag": "--local-machine-file",
+          "name": "local_machine_file",
+          "type": "string",
+          "value_name": "LOCAL_MACHINE_FILE"
+        },
+        {
           "description": "NATS server for wake-ups (e.g. nats://nats:4222). Optional: without it, background work is found by polling every GRUND_WORK_POLL_INTERVAL. When set, grund refuses to start if it cannot connect",
           "env": "GRUND_NATS_URL",
           "flag": "--nats-url",
@@ -4069,6 +4077,13 @@
           "name": "data_dir",
           "type": "string",
           "value_name": "DATA_DIR"
+        },
+        {
+          "description": "Read this host's privileged first-machine descriptor from standard input",
+          "flag": "--local-machine-stdin",
+          "name": "local_machine_stdin",
+          "type": "boolean",
+          "value_name": "LOCAL_MACHINE_STDIN"
         }
       ],
       "audience": "operator",
@@ -4234,6 +4249,14 @@
           "name": "secret_key_file",
           "type": "string",
           "value_name": "SECRET_KEY_FILE"
+        },
+        {
+          "description": "Privileged first-owner machine descriptor written by `grund init`",
+          "env": "GRUND_LOCAL_MACHINE_FILE",
+          "flag": "--local-machine-file",
+          "name": "local_machine_file",
+          "type": "string",
+          "value_name": "LOCAL_MACHINE_FILE"
         },
         {
           "description": "NATS server for wake-ups (e.g. nats://nats:4222). Optional: without it, background work is found by polling every GRUND_WORK_POLL_INTERVAL. When set, grund refuses to start if it cannot connect",
@@ -5113,6 +5136,14 @@
           "name": "secret_key_file",
           "type": "string",
           "value_name": "SECRET_KEY_FILE"
+        },
+        {
+          "description": "Privileged first-owner machine descriptor written by `grund init`",
+          "env": "GRUND_LOCAL_MACHINE_FILE",
+          "flag": "--local-machine-file",
+          "name": "local_machine_file",
+          "type": "string",
+          "value_name": "LOCAL_MACHINE_FILE"
         },
         {
           "description": "NATS server for wake-ups (e.g. nats://nats:4222). Optional: without it, background work is found by polling every GRUND_WORK_POLL_INTERVAL. When set, grund refuses to start if it cannot connect",
@@ -7467,6 +7498,20 @@
           "name": "dry_run",
           "type": "boolean",
           "value_name": "DRY_RUN"
+        },
+        {
+          "description": "Use the local default without prompts or animated output",
+          "flag": "--yes",
+          "name": "yes",
+          "type": "boolean",
+          "value_name": "YES"
+        },
+        {
+          "description": "Show technical failure details",
+          "flag": "--verbose",
+          "name": "verbose",
+          "type": "boolean",
+          "value_name": "VERBOSE"
         }
       ],
       "audience": "client",
@@ -7586,6 +7631,13 @@
           "name": "dry_run",
           "type": "boolean",
           "value_name": "DRY_RUN"
+        },
+        {
+          "description": "Show technical failure details",
+          "flag": "--verbose",
+          "name": "verbose",
+          "type": "boolean",
+          "value_name": "VERBOSE"
         }
       ],
       "audience": "client",
@@ -7698,6 +7750,13 @@
           "name": "yes",
           "type": "boolean",
           "value_name": "YES"
+        },
+        {
+          "description": "Show technical failure details",
+          "flag": "--verbose",
+          "name": "verbose",
+          "type": "boolean",
+          "value_name": "VERBOSE"
         },
         {
           "description": "Resolve and show the update without downloading or mutating local state",
@@ -7816,6 +7875,13 @@
           "name": "yes",
           "type": "boolean",
           "value_name": "YES"
+        },
+        {
+          "description": "Show technical failure details",
+          "flag": "--verbose",
+          "name": "verbose",
+          "type": "boolean",
+          "value_name": "VERBOSE"
         },
         {
           "description": "Resolve and show the update without downloading or mutating local state",

@@ -66,30 +66,73 @@ welcome under Apache-2.0 with a sign-off ([CONTRIBUTING.md](CONTRIBUTING.md)).
 ## Self-hosting
 
 Managed installation is available from `v0.0.0-alpha.5`; CLI and managed
-server updates are available from `v0.0.0-alpha.6`. Installation requires
-Linux, root, systemd, Docker Engine and Docker Compose v2:
+server updates are available from `v0.0.0-alpha.6`. The no-argument local
+flow below is new after alpha.9: alphas .5 through .9 still require a
+domain or an existing-instance setup code.
+
+Installation requires Linux, root and systemd. If Docker is missing on
+Debian or Ubuntu, the installer announces and installs the distribution's
+own packages. On other distributions, install Docker Engine and Docker
+Compose v2 first; grund does not run a third-party installation script.
+
+### Start without a domain
+
+```sh
+sudo "$(command -v grund)" install
+```
+
+On a terminal, leave the domain question empty to run locally. Scripts
+use that same local default without prompting; `--yes` also suppresses
+prompts and animated output. `--verbose` shows technical details, and
+`NO_COLOR` disables colour.
+
+grund listens only at `http://localhost:8080`. HTTP itself has no TLS:
+use the printed SSH forwarding command from another computer, then open
+the one owner setup link. Finishing owner setup connects this machine
+automatically. No DNS name or separate machine setup code is needed.
+The summary prints the next check, `grund doctor machine`.
+
+To add HTTPS later, point a DNS name at this machine, make TCP 443
+reachable, then run:
+
+```sh
+sudo "$(command -v grund)" install --domain grund.example.com
+```
+
+That upgrades the local server to TLS without replacing its data,
+instance keys, enrolled-machine identity or server image. The existing
+agent keeps its loopback connection. The name is the dashboard's address,
+not an app's.
+
+### Start with a domain, or join an existing instance
+
+The explicit domain path, also supported by alphas .5 through .9, is:
 
 ```sh
 sudo "$(command -v grund)" install --domain grund.example.com
 sudo docker compose --project-directory /opt/grund exec grund /grund setup-link
-# Open the printed link, create the owner, and get a setup code on Machines.
+# Open the link, create the owner, and get a setup code on Machines.
 sudo "$(command -v grund)" install --domain grund.example.com --code CODE
 grund login https://grund.example.com
 ```
 
-The name is the dashboard's address, not an app's; point it at this machine
-and make TCP 443 reachable first. Configuration is in `/opt/grund/.env`;
-the image is pinned by its verified release digest. The server runs under
-`grund-server.service`; `grund-agent.service` is enabled but waits for
-enrollment. The second pass connects it without changing its identity.
-Reinstalling preserves configuration, secrets, data and the server image;
-a different `--version` is refused. The CLI and agent executables are
-separate, so replacing the CLI does not change the next agent restart.
-`--no-vms` skips Firecracker; arm64 supports container apps without it.
-No app is deployed. DNS, Docker installation, mail and scheduled backups
-are not configured for you. Unmanaged configuration, another domain and
-unsupported custom agent data-directory or `EnvironmentFile` settings are
-refused instead of overwritten.
+`grund install --url https://grund.example.com --code CODE` installs only
+the agent for an existing instance, not another server. `grund agent`
+remains the foreground runner: it uses an existing registration, waits
+for owner setup after a managed local install, or asks you to install or
+join first on an unregistered machine.
+
+Configuration is in `/opt/grund/.env`; the server image is pinned by its
+verified release digest. The server and agent run under
+`grund-server.service` and `grund-agent.service`. Reinstalling preserves
+configuration, secrets, data and the server image; a different
+`--version` is refused. The CLI and agent executables are separate, so
+replacing the CLI does not change the next agent restart. `--no-vms`
+skips Firecracker; arm64 supports container apps without it.
+No app is deployed automatically. DNS, mail and scheduled backups are
+not configured for you. Unmanaged configuration, changing an already-set
+domain, and unsupported custom agent data-directory or `EnvironmentFile`
+settings are refused instead of overwritten.
 
 | Operation | Command |
 |---|---|

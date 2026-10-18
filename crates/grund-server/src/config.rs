@@ -103,6 +103,13 @@ pub struct ServeConfig {
     #[arg(long, env = "GRUND_SECRET_KEY_FILE")]
     pub secret_key_file: Option<PathBuf>,
 
+    /// Privileged first-owner machine descriptor written by `grund init`.
+    #[arg(long, env = "GRUND_LOCAL_MACHINE_FILE")]
+    pub local_machine_file: Option<PathBuf>,
+
+    #[arg(skip)]
+    pub local_machine: Option<grund_domain::machine::LocalMachineBootstrap>,
+
     /// NATS server for wake-ups (e.g. nats://nats:4222). Optional: without it,
     /// background work is found by polling every GRUND_WORK_POLL_INTERVAL. When
     /// set, grund refuses to start if it cannot connect.
@@ -1173,6 +1180,15 @@ impl ServeConfig {
             self.secret_key.is_some() || self.secret_key_file.is_some() || self.dev_mode,
             "no secret key: set GRUND_SECRET_KEY_FILE (written by `grund init`) or \
              GRUND_SECRET_KEY (64 hex characters, e.g. `openssl rand -hex 32`)"
+        );
+        self.local_machine = self
+            .local_machine_file
+            .as_deref()
+            .map(crate::local_machine::load)
+            .transpose()?;
+        anyhow::ensure!(
+            self.local_machine.is_none() || !self.dev_mode,
+            "GRUND_LOCAL_MACHINE_FILE requires production secrets, not GRUND_DEV_MODE"
         );
         anyhow::ensure!(
             !(self.license_key.is_some() && self.license_key_file.is_some()),

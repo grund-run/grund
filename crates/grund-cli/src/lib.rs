@@ -26,6 +26,7 @@ pub mod error;
 pub mod mcp;
 pub mod meta;
 pub mod output;
+pub mod progress;
 pub mod schema;
 pub mod skill;
 

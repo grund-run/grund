@@ -93,6 +93,10 @@ enum Command {
         about = "Print a one-time link that creates this instance's owner account. Run it where grund serve runs, with the same settings, before any account exists"
     )]
     SetupLink(Box<grund_server::config::ServeConfig>),
+    #[command(hide = true)]
+    LocalMachine(Box<grund_server::config::ServeConfig>),
+    #[command(hide = true)]
+    PrepareLocalMachine(PrepareLocalMachineArgs),
     #[command(
         about = "Check this instance or machine without changing it: each problem and what to do. Exits 1 when a check fails"
     )]
@@ -210,6 +214,16 @@ async fn doctor(command: DoctorCommand) -> anyhow::Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+#[derive(clap::Args)]
+struct PrepareLocalMachineArgs {
+    #[arg(
+        long,
+        env = "GRUND_AGENT_DATA_DIR",
+        default_value = "/var/lib/grund/agent"
+    )]
+    data_dir: std::path::PathBuf,
 }
 
 #[derive(clap::Args)]
@@ -348,6 +362,8 @@ pub async fn run_with_extensions(
         cli.command,
         Command::Doctor(_)
             | Command::SetupLink(_)
+            | Command::LocalMachine(_)
+            | Command::PrepareLocalMachine(_)
             | Command::MachineFollow(_)
             | Command::AgentUpdates(_)
     );
@@ -374,6 +390,22 @@ pub async fn run_with_extensions(
         Command::Migrate(args) => grund_server::migrate(args).await,
         Command::Init(args) => grund_server::secrets::init(&args),
         Command::SetupLink(config) => grund_server::setup_link::run(*config).await,
+        Command::LocalMachine(config) => match grund_server::local_machine::run(*config).await {
+            Err(error)
+                if error
+                    .downcast_ref::<grund_server::local_machine::Refused>()
+                    .is_some() =>
+            {
+                eprintln!("Local machine setup refused; inspect the saved installation identity.");
+                std::process::exit(78);
+            }
+            result => result,
+        },
+        Command::PrepareLocalMachine(args) => {
+            let identity = grund_agent::local_bootstrap::prepare(&args.data_dir)?;
+            println!("{}", serde_json::to_string(&identity)?);
+            Ok(())
+        }
         Command::Probe(args) => probe::run(&args),
         Command::Doctor(command) => doctor(command).await,
         Command::Join(args) => grund_agent::join::run(&args).await,
@@ -385,14 +417,17 @@ pub async fn run_with_extensions(
         Command::Edge(command) => grund_server::edge::run(command).await,
         Command::Edges(command) => grund_server::relays_command::run_edges(command).await,
         Command::Client(_) => unreachable!("client commands returned above"),
-        Command::Agent(command) => match command.vm_runtime.as_str() {
-            "simulated" => {
-                let dir = command.agent.data_dir.join("simulated-vms");
-                agent(&command, grund_agent::vm::SimulatedVms::new(dir)).await
+        Command::Agent(command) => {
+            grund_agent::local_bootstrap::complete_pending(&command.agent.data_dir).await?;
+            match command.vm_runtime.as_str() {
+                "simulated" => {
+                    let dir = command.agent.data_dir.join("simulated-vms");
+                    agent(&command, grund_agent::vm::SimulatedVms::new(dir)).await
+                }
+                "firecracker" => agent(&command, firecracker(&command)?).await,
+                _ => agent(&command, grund_agent::vm::NoVms).await,
             }
-            "firecracker" => agent(&command, firecracker(&command)?).await,
-            _ => agent(&command, grund_agent::vm::NoVms).await,
-        },
+        }
     };
     if let Some(provider) = provider {
         match tokio::task::spawn_blocking(move || provider.shutdown()).await {

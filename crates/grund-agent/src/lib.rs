@@ -15,6 +15,7 @@ pub mod forward;
 pub mod gate;
 pub mod join;
 pub mod lease;
+pub mod local_bootstrap;
 pub mod net;
 pub mod policy;
 pub mod probe;

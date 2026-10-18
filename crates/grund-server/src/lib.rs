@@ -33,6 +33,7 @@ pub mod health;
 pub mod hearing;
 pub mod keys;
 pub mod license;
+pub mod local_machine;
 pub mod projections;
 pub mod registry;
 pub mod relay;

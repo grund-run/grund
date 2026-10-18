@@ -860,7 +860,7 @@ fn safe_directory(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn lock() -> anyhow::Result<File> {
+pub(crate) fn lock() -> anyhow::Result<File> {
     let parent = Path::new("/var/lib/grund");
     safe_directory(parent)?;
     let file = OpenOptions::new()

@@ -317,6 +317,16 @@ impl Accounts {
                 organisations::create_operator_admin(&self.state, &mut work, account_id, now)
                     .await?;
             }
+            if let Some(descriptor) = &self.state.config.local_machine {
+                crate::local_machine::register(
+                    &mut work,
+                    descriptor,
+                    account_id,
+                    home.organisation_id().unwrap_or_default(),
+                    now,
+                )
+                .await?;
+            }
             accounts::insert_email(work.sql(), account_id, email.as_str(), email.normalized())
                 .await?;
             accounts::set_password(work.sql(), account_id, &phc).await?;
