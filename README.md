@@ -65,9 +65,10 @@ welcome under Apache-2.0 with a sign-off ([CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ## Self-hosting
 
-Managed installation is implemented in this checkout; **alpha.4 and earlier
-do not contain `grund install`**. Use a release that includes this command.
-It requires Linux, root, systemd, Docker Engine and Docker Compose v2:
+Managed installation is implemented in this checkout. **The published alpha.3
+does not contain `grund install`**; select a release with `grund install --help`
+before using these commands. It requires Linux, root, systemd, Docker Engine
+and Docker Compose v2:
 
 ```sh
 sudo grund install --domain grund.example.com
@@ -192,11 +193,9 @@ What compose deliberately does not do:
   `COMPOSE_PROFILES=mail` and `GRUND_SMTP_URL=smtp://mailpit:1025` add
   Mailpit, which catches every mail at http://localhost:8025 and delivers
   none.
-- **Updates.** For a checkout, `git pull` and `docker compose up -d`.
-  For an installer-managed instance, rerun the installer with the desired
-  `--version` and the same `--domain`; this updates the local machine too.
-  Migrations are forward-only: selecting an older binary is not a database
-  rollback. Other machines keep their installed build until reinstalled.
+- **Checkout updates.** Back up both instance volumes before `git pull` and
+  `docker compose up -d`. These commands apply to checkouts, not to the
+  installer-managed `/opt/grund` deployment.
 
 ## The binary
 
