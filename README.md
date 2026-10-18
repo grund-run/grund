@@ -213,9 +213,9 @@ What compose deliberately does not do:
   `docker compose up -d`. These commands apply to checkouts, not to the
   installer-managed `/opt/grund` deployment.
 
-### Machines following their instance (checkout)
+### Machines following their instance
 
-This checkout adds machine build following; alpha.6 and earlier do not have it.
+Machine build following is available from v0.0.0-alpha.8.
 The feature-capable installer explicitly enables following and installs a
 retained `grund-agent-updater.service`. Existing agents need one installer
 rerun from a feature-capable instance; response fields alone cannot give a
@@ -360,10 +360,12 @@ grund tokens create --name ci --scope deploy --apps shop --json
   stale single-app release. The API exposes the same through
   `AppService.PreviewDeploy`, `GetApp.version` and
   `DeployRequest.expected_version`.
-- `GRUND_INSTANCE` and `GRUND_TOKEN` (a personal access token) for CI and
-  agents; otherwise `grund login` writes `~/.config/grund/credentials.yaml`
-  (mode 0600; a file others can read is refused). `--org`/`GRUND_ORG`, else
-  `grund orgs use`, else the token's organisation, else your only one.
+- `--instance URL` and `--org SLUG` work before or after the noun; explicit
+  values override `GRUND_INSTANCE` and `GRUND_ORG`. For CI use `GRUND_TOKEN`
+  (a personal access token); otherwise `grund login` writes
+  `~/.config/grund/credentials.yaml` (mode 0600; a file others can read is
+  refused). Organisation fallback remains `grund orgs use`, then the token's
+  organisation, then your only one.
 - For agents: `grund describe --json` is the whole command tree with types,
   defaults, examples, output schemas and error codes, generated from the
   code; [schema/cli.json](schema/cli.json) is this commit's. `grund schema
@@ -375,9 +377,9 @@ grund tokens create --name ci --scope deploy --apps shop --json
   `SHA256SUMS`. An instance that serves its installer also exposes its own
   architecture's binary at `/install/grund-linux-<arch>`.
 
-**App image updates are implemented in this checkout, not in published
-alpha.6 or earlier.** The dashboard shows cached status; an app's Settings
-has explicit Check and Update actions. The same operations are in the CLI:
+**App image updates are available from v0.0.0-alpha.7.** The dashboard shows
+cached status; an app's Settings has explicit Check and Update actions.
+The same operations are in the CLI:
 
 ```sh
 grund apps updates shop --check

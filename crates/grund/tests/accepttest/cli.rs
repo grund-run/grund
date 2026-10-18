@@ -436,6 +436,116 @@ async fn a_token_reaches_only_its_own_organisation_from_the_cli() -> anyhow::Res
     anyhow::ensure!(ran.status == 5, "{} {}", ran.status, ran.stderr);
     Ok(())
 }
+#[tokio::test]
+async fn client_targets_work_before_or_after_the_noun_and_keep_default_precedence()
+-> anyhow::Result<()> {
+    let Some((given, when, then)) = testcase_configured(&[]).await? else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let org = owner.username.as_str();
+    let instance = origin(&when);
+    let token = a_token(&when, &then, org, "context", "full").await?;
+    let mut shell = Shell::fresh(&[])?;
+    shell
+        .json_with("login", &[&instance, "--with-token"], &token)
+        .await?;
+    let app = given.a_fresh_name("context");
+    shell.json("apps create", &[&app]).await?;
+    let saved = shell.json("apps list", &[]).await?;
+    anyhow::ensure!(
+        saved["apps"]
+            .as_array()
+            .is_some_and(|apps| apps.iter().any(|a| a["name"] == app)),
+        "saved target defaults did not reach the owned app"
+    );
+
+    shell.env.extend([
+        ("GRUND_INSTANCE".into(), "http://127.0.0.1:1".into()),
+        ("GRUND_ORG".into(), "missing-target-org".into()),
+    ]);
+    let environment = shell.run(&["apps", "list", "--json"]).await?;
+    anyhow::ensure!(
+        environment.status == 3 && environment.error()?["code"] == "not_signed_in",
+        "environment instance did not override saved instance"
+    );
+    shell.env.retain(|(key, _)| key != "GRUND_INSTANCE");
+    shell.env.push(("GRUND_INSTANCE".into(), instance.clone()));
+    let environment = shell.run(&["apps", "list", "--json"]).await?;
+    anyhow::ensure!(
+        environment.status == 5 && environment.error()?["code"] == "not_found",
+        "environment organisation did not override saved organisation"
+    );
+
+    for args in [
+        vec![
+            "--instance",
+            &instance,
+            "--org",
+            org,
+            "apps",
+            "list",
+            "--json",
+        ],
+        vec![
+            "apps",
+            "--instance",
+            &instance,
+            "--org",
+            org,
+            "list",
+            "--json",
+        ],
+        vec![
+            "apps",
+            "list",
+            "--instance",
+            &instance,
+            "--org",
+            org,
+            "--json",
+        ],
+        vec![
+            "--instance",
+            "http://127.0.0.1:1",
+            "--org",
+            "missing-target-org",
+            "apps",
+            "list",
+            "--instance",
+            &instance,
+            "--org",
+            org,
+            "--json",
+        ],
+    ] {
+        let ran = shell.run(&args).await?;
+        anyhow::ensure!(ran.status == 0, "target flags were refused: {}", ran.stderr);
+        let listed = ran.json()?;
+        anyhow::ensure!(
+            listed["apps"]
+                .as_array()
+                .is_some_and(|apps| apps.iter().any(|a| a["name"] == app)),
+            "explicit target flags did not override defaults"
+        );
+    }
+    let bad = shell
+        .run(&[
+            "--instance",
+            &instance,
+            "--org",
+            org,
+            "apps",
+            "--frobnicate",
+            "--json",
+        ])
+        .await?;
+    anyhow::ensure!(
+        bad.status == 2 && bad.error()?["code"] == "usage",
+        "prefixed client targets lost the JSON usage error"
+    );
+    Ok(())
+}
 
 fn first_json_line(reader: &mut impl BufRead) -> anyhow::Result<Value> {
     let mut line = String::new();

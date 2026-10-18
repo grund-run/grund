@@ -75,7 +75,17 @@ pub fn usage_error(error: &clap::Error, args: &[String]) -> Option<i32> {
     ) {
         return None;
     }
-    let first = args.iter().skip(1).find(|a| !a.starts_with('-'))?;
+    let mut arguments = args.iter().skip(1);
+    let first = loop {
+        let argument = arguments.next()?;
+        if matches!(argument.as_str(), "--instance" | "--org") {
+            arguments.next()?;
+            continue;
+        }
+        if !argument.starts_with('-') {
+            break argument;
+        }
+    };
     if !commands::CLIENT_NOUNS.contains(&first.as_str()) {
         return None;
     }
@@ -117,9 +127,54 @@ pub fn usage_error(error: &clap::Error, args: &[String]) -> Option<i32> {
     name = "grund",
     version = VERSION,
     about = "grund: from zero to production, on your own premises",
-    disable_help_subcommand = true
+    disable_help_subcommand = true,
+    args = context::Global::target_arguments()
 )]
 pub struct Standalone {
     #[command(subcommand)]
     pub command: Command,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn standalone_targets_are_global_across_the_client_command_tree() {
+        for args in [
+            [
+                "grund",
+                "--instance",
+                "https://flag.invalid",
+                "--org",
+                "flag-org",
+                "apps",
+                "list",
+            ],
+            [
+                "grund",
+                "apps",
+                "--instance",
+                "https://flag.invalid",
+                "--org",
+                "flag-org",
+                "list",
+            ],
+            [
+                "grund",
+                "apps",
+                "list",
+                "--instance",
+                "https://flag.invalid",
+                "--org",
+                "flag-org",
+            ],
+        ] {
+            let parsed = Standalone::try_parse_from(args).unwrap();
+            let target = parsed.command.global();
+            assert_eq!(target.instance.as_deref(), Some("https://flag.invalid"));
+            assert_eq!(target.org.as_deref(), Some("flag-org"));
+        }
+    }
 }

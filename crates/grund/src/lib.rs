@@ -43,7 +43,8 @@ use clap::{CommandFactory, Parser, Subcommand};
 #[command(
     name = "grund",
     version = grund_cli::VERSION,
-    about = "grund: from zero to production, on your own premises"
+    about = "grund: from zero to production, on your own premises",
+    args = grund_cli::context::Global::target_arguments()
 )]
 struct Cli {
     #[arg(long, env = "GRUND_LOG_FORMAT", help = "Log line format. The image sets json", value_parser = ["compact", "json"], default_value = "compact", global = true)]

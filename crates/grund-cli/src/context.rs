@@ -49,6 +49,20 @@ pub struct Global {
     pub json: bool,
 }
 
+impl Global {
+    /// The same client target options for standalone and embedding parser roots.
+    pub fn target_arguments() -> [clap::Arg; 2] {
+        let command = <Self as clap::Args>::augment_args(clap::Command::new("grund"));
+        ["instance", "org"].map(|name| {
+            command
+                .get_arguments()
+                .find(|argument| argument.get_id().as_str() == name)
+                .expect("Global defines both target options")
+                .clone()
+        })
+    }
+}
+
 /// Where the credential came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
