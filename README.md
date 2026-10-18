@@ -211,11 +211,42 @@ apps unavailable; it needs an explicit guest-image update, not a silent restart.
 New agents also report whole-machine CPU, memory and data-filesystem usage
 and uptime with their five-second heartbeat. These are measurements, separate
 from reservations. Older agents show `Not reported`; samples older than
-30 seconds show `stale`. There is no usage history or network-traffic collection.
+30 seconds show `stale`. There is no whole-machine usage history or network-traffic collection.
 The detail page shows each app's disconnect policy: stateless instances become
 eligible for replacement after its configured wait; apps with volumes stay
 pinned. A replacement needs another eligible machine with capacity. A server
 or database outage can restart the wait. Placement times do not imply readiness.
+
+**App output and resource history.** New agents collect app stdout/stderr and
+per-instance CPU and memory every ten seconds through their authenticated
+connection. Data stays in this instance's database; no extra service is required.
+Memory includes filesystem cache. Missing measurements are unknown, not zero.
+Owners, admins and members can read their organisation's live apps.
+
+By default, each organisation retains up to 24 hours / 32 MiB of logs and seven
+days / 24 MiB of measurements, whichever bound is reached first. Accounting charges
+UTF-8 body bytes plus 384 bytes per log and 384 bytes per raw or rollup metric row.
+Metrics keep ten-second detail for an hour, minute buckets through a day and
+ten-minute buckets through a week, preserving weighted averages and maximum memory.
+These are **not physical database-size limits**: replay receipts, MVCC, WAL,
+replication and backup storage are additional. The settings and hard ceilings are in
+[`grund serve --help`](#the-binary) and [.env.example](.env.example).
+
+Collection is bounded and lossy, not an audit trail. Each machine buffers at most
+16 MiB for offline delivery; pressure discards oldest batches. By default, batches
+older than six hours are refused even if the spool has space. A machine disconnected
+from its instance longer than that loses older buffered telemetry. Known delivery
+gaps are labelled `not received (machine offline)`; unknown or evicted evidence is
+not attributed to an outage. This does not mean the app stopped or emitted logs.
+Rejected batches are counted in agent statistics. Lines are limited to 8 KiB and
+marked when truncated. New or restarted containers have separate,
+bounded capture; existing running containers keep combined output with periodic
+truncation, not a strict size bound. Their next ordinary restart, deploy, image
+update or rollback enables separate bounded capture; grund does not restart them
+silently. Exact known app secret values are redacted before offline-delivery spooling
+and sending. Local capture files remain raw, private machine data. Interleaved output,
+especially legacy combined output, can retain secret fragments. Transformed secrets,
+unknown credentials and personal data are not detected.
 
 **HTTPS.** With `GRUND_DOMAIN` set, grund terminates TLS itself on 443, with
 no proxy in front. It orders the certificate by ACME from Let's Encrypt
@@ -325,7 +356,8 @@ without changing anything, one line per check (`ok`, `warn`, `fail` or
 with `--json`. The exit code is 1 when any check fails. `grund serve --help` lists every setting with
 its environment variable.
 
-grund sends no telemetry. CLI and server updates are explicit; install/update
+grund sends no anonymous usage reports. App logs and resource measurements go
+to the instance each machine joined. CLI and server updates are explicit; install/update
 commands contact the public release registry. Following machines also contact
 that registry when their instance offers a different public build.
 With `GRUND_ACCOUNT_EVENT_URL` and `GRUND_ACCOUNT_EVENT_TOKEN`,

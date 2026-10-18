@@ -312,8 +312,13 @@ async fn limits(runtime: &Containerd) -> anyhow::Result<()> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    grund_crypto::install_default();
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if let [flag, directory] = args.as_slice()
+        && flag == "--container-logs"
+    {
+        return grund_agent::capture::run(std::path::Path::new(directory));
+    }
+    grund_crypto::install_default();
     let mut config = Config::default();
     if let Ok(dir) = std::env::var("GRUND_CONTAINERS_DATA_DIR") {
         config.data_dir = dir.into();

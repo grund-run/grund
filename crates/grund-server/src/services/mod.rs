@@ -7,6 +7,7 @@ pub mod account_events;
 pub mod accounts;
 pub mod agent_updates;
 pub mod agents;
+pub mod app_telemetry;
 pub mod apps;
 pub mod backups;
 pub mod billing;

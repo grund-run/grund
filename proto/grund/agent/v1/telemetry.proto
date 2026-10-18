@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: Apache-2.0
+syntax = "proto3";
+package grund.agent.v1;
+
+// Customer app measurements over the existing Ed25519-signed machine channel.
+// Resources are verified against placement, never trusted as authorization.
+service AppTelemetryService {
+  // At most 256 KiB encoded. Retries of batch_id do not duplicate accepted data.
+  rpc ExportTelemetry(ExportTelemetryRequest) returns (ExportTelemetryResponse);
+}
+
+message ExportTelemetryRequest {
+  // UUID generated once before durable spooling; scoped to authenticated machine.
+  string batch_id = 1;
+  // Standard opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequest.
+  bytes logs_otlp = 2;
+  // Standard opentelemetry.proto.collector.metrics.v1.ExportMetricsServiceRequest.
+  bytes metrics_otlp = 3;
+  // Cumulative record losses in this durable spool scope; not a delivery guarantee.
+  uint64 dropped_records = 4;
+}
+message ExportTelemetryResponse {
+  uint32 accepted_logs = 1;
+  uint32 accepted_samples = 2;
+}

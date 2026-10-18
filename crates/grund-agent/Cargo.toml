@@ -29,6 +29,9 @@ hyper = { version = "1", features = ["client", "http1", "http2", "server"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "http2", "server-auto", "tokio"] }
 iroh = "=1.2.0"
 libc = "0.2"
+opentelemetry-proto.workspace = true
+parking_lot = "0.12"
+prost.workspace = true
 ring = "0.17"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

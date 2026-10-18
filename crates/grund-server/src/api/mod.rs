@@ -39,6 +39,7 @@ pub mod account;
 pub mod agent;
 mod agent_updates;
 pub mod app;
+pub mod app_telemetry;
 pub mod certificates;
 pub mod domain;
 pub mod edge;
@@ -155,6 +156,18 @@ pub enum Requirement {
 /// Every procedure and what it requires. A procedure missing here is denied,
 /// whatever the router serves (`every_procedure_has_an_authorization_entry`).
 pub const AUTHORIZATION: &[(&str, Requirement)] = &[
+    (
+        "/grund.agent.v1.AppTelemetryService/ExportTelemetry",
+        Requirement::Machine,
+    ),
+    (
+        "/grund.app.v1.AppTelemetryService/ListAppLogs",
+        Requirement::SessionOrToken,
+    ),
+    (
+        "/grund.app.v1.AppTelemetryService/GetAppMetrics",
+        Requirement::SessionOrToken,
+    ),
     (
         "/grund.account.v1.AccountService/GetViewer",
         Requirement::Session,
@@ -609,6 +622,10 @@ pub fn router(state: State) -> axum::Router {
             app_service(state.clone()),
         )
         .route_service(
+            "/grund.app.v1.AppTelemetryService/{method}",
+            service.clone(),
+        )
+        .route_service(
             &format!("/{VOLUME_SERVICE_SERVICE_NAME}/{{method}}"),
             volume_service(state.clone()),
         )
@@ -688,12 +705,37 @@ pub fn router(state: State) -> axum::Router {
                     &format!("/{MACHINE_UPDATE_SERVICE_SERVICE_NAME}/{{method}}"),
                     service,
                 )
+                .route_service(
+                    "/grund.agent.v1.AppTelemetryService/{method}",
+                    telemetry_service(state.clone()),
+                )
                 .layer(middleware::from_fn_with_state(
                     state.clone(),
                     authenticate_machine,
                 )),
         )
         .merge(relay_access::router(state))
+}
+
+fn telemetry_service(state: State) -> ConnectRpcService {
+    let authorize = Authorize::new(&state);
+    ConnectRpcService::new(
+        connectrpc::Router::new()
+            .add_service(Arc::new(app_telemetry::AgentTelemetryApi::new(state))),
+    )
+    .with_limits(
+        Limits::default()
+            .with_max_request_body_size(384 * 1024)
+            .with_max_message_size(384 * 1024)
+            .with_element_memory_limit(1_048_576),
+    )
+    .with_deadline_policy(
+        DeadlinePolicy::new()
+            .with_min(Duration::from_millis(5))
+            .with_max(Duration::from_secs(30))
+            .with_default_timeout(Duration::from_secs(10)),
+    )
+    .with_interceptor(authorize)
 }
 
 /// The largest registry request: a password is up to 8 KiB.
@@ -979,7 +1021,12 @@ pub async fn authenticate_machine(
         header("x-grund-signed-at"),
         header("x-grund-signature"),
     );
-    let Ok(bytes) = axum::body::to_bytes(body, MAX_AGENT_REQUEST_BYTES).await else {
+    let maximum = if parts.uri.path() == "/grund.agent.v1.AppTelemetryService/ExportTelemetry" {
+        384 * 1024
+    } else {
+        MAX_AGENT_REQUEST_BYTES
+    };
+    let Ok(bytes) = axum::body::to_bytes(body, maximum).await else {
         return refuse(ConnectError::resource_exhausted("the request is too large"));
     };
     let caller = match state
@@ -1038,6 +1085,10 @@ pub async fn stamp_address(
 /// The Connect router with every service registered.
 pub fn connect_router(state: State) -> connectrpc::Router {
     let router = connectrpc::Router::new()
+        .add_service(Arc::new(app_telemetry::AppTelemetryApi::new(state.clone())))
+        .add_service(Arc::new(app_telemetry::AgentTelemetryApi::new(
+            state.clone(),
+        )))
         .add_service(Arc::new(account::AccountApi::new(state.clone())))
         .add_service(Arc::new(organisation::OrganisationApi::new(state.clone())))
         .add_service(Arc::new(notifications::NotificationsApi::new(
@@ -2283,6 +2334,8 @@ mod tests {
         .into_iter()
         .map(|m| format!("/grund.app.v1.AppService/{m}").leak() as &str)
         .chain([
+            "/grund.app.v1.AppTelemetryService/ListAppLogs",
+            "/grund.app.v1.AppTelemetryService/GetAppMetrics",
             "/grund.token.v1.TokenService/GetCurrentToken",
             "/grund.domain.v1.DomainService/GetDomain",
             "/grund.domain.v1.DomainService/ListDomains",
@@ -2460,9 +2513,41 @@ mod tests {
         }
     }
 
+    struct UnusedAgentTelemetry;
+    struct UnusedAppTelemetry;
+    #[allow(refining_impl_trait)]
+    impl grund_proto::grund::agent::v1::AppTelemetryService for UnusedAgentTelemetry {
+        async fn export_telemetry(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, grund_proto::grund::agent::v1::ExportTelemetryRequest>,
+        ) -> ServiceResult<grund_proto::grund::agent::v1::ExportTelemetryResponse> {
+            unreachable!()
+        }
+    }
+    #[allow(refining_impl_trait)]
+    impl grund_proto::grund::app::v1::AppTelemetryService for UnusedAppTelemetry {
+        async fn list_app_logs(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, grund_proto::grund::app::v1::ListAppLogsRequest>,
+        ) -> ServiceResult<grund_proto::grund::app::v1::ListAppLogsResponse> {
+            unreachable!()
+        }
+        async fn get_app_metrics(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, grund_proto::grund::app::v1::GetAppMetricsRequest>,
+        ) -> ServiceResult<grund_proto::grund::app::v1::GetAppMetricsResponse> {
+            unreachable!()
+        }
+    }
+
     #[test]
     fn every_procedure_has_an_authorization_entry() {
         let router = connectrpc::Router::new()
+            .add_service(Arc::new(UnusedAgentTelemetry))
+            .add_service(Arc::new(UnusedAppTelemetry))
             .add_service(Arc::new(Unused))
             .add_service(Arc::new(UnusedOrganisations))
             .add_service(Arc::new(UnusedMachines))

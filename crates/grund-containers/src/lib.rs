@@ -7,7 +7,7 @@
 //! ```text
 //!   <data dir>/bin/containerd-2.4.1/   containerd, its runc shim and runc, pinned by SHA-256
 //!   <data dir>/runtime/                containerd's root: content, snapshots, metadata
-//!   <data dir>/agent/logs/<id>.log     each container's stdout and stderr
+//!   <data dir>/agent/logs/<id>/       separately captured, bounded stdout and stderr
 //!   <run dir>/containerd.sock          containerd's gRPC socket (ttrpc beside it)
 //!   <run dir>/containerd/              containerd's state
 //!   <run dir>/containerd.toml          its config, written before every start
@@ -239,7 +239,7 @@ impl Config {
     pub fn scratch_dir(&self) -> PathBuf {
         self.run_dir.join("mnt")
     }
-    /// Container `id`'s log file.
+    /// Legacy combined output, retained when adopting an already running task.
     pub fn container_log(&self, id: &str) -> PathBuf {
         self.log_dir().join(format!("{id}.log"))
     }
@@ -251,6 +251,7 @@ pub struct Containerd {
     config: Config,
     client: OnceLock<Client>,
     preparing: tokio::sync::Mutex<()>,
+    observer: OnceLock<std::sync::Arc<dyn grund_agent::runtime::RemovalObserver>>,
 }
 
 /// The signal number of a stop signal's name.
@@ -342,6 +343,35 @@ fn valid_id(id: &str) -> anyhow::Result<()> {
     );
     Ok(())
 }
+fn remove_capture_file(path: &std::path::Path) -> anyhow::Result<()> {
+    match std::fs::remove_file(path) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+            Err(error).context("remove app capture file")
+        }
+        _ => Ok(()),
+    }
+}
+async fn capture_before_cleanup(
+    observer: &dyn grund_agent::runtime::RemovalObserver,
+    id: &str,
+    observation: impl Future<Output = anyhow::Result<Option<grund_agent::runtime::Observation>>> + Send,
+) {
+    let attempt = async {
+        if let Some(observation) = observation.await? {
+            observer.collect(id, observation).await?;
+        }
+        Ok::<_, anyhow::Error>(())
+    };
+    if !matches!(
+        tokio::time::timeout(Duration::from_secs(2), attempt).await,
+        Ok(Ok(()))
+    ) {
+        observer.loss();
+        tracing::warn!(
+            "final app output could not be durably buffered; application cleanup continues"
+        );
+    }
+}
 
 impl Containerd {
     /// A runtime with `config`. Nothing is fetched or started until
@@ -351,6 +381,7 @@ impl Containerd {
             config,
             client: OnceLock::new(),
             preparing: tokio::sync::Mutex::new(()),
+            observer: OnceLock::new(),
         }
     }
 
@@ -632,7 +663,18 @@ impl Containerd {
             self.ensure_snapshot(id, &chain).await?;
         }
         let rootfs = self.mounts(id).await?;
-        let log = format!("file://{}", self.config.container_log(id).display());
+        let directory = self.config.log_dir().join(id);
+        let mut logger = reqwest::Url::parse("binary:///")?;
+        let executable = std::env::current_exe()?;
+        logger.set_path(
+            executable
+                .to_str()
+                .context("the container logger path is not UTF-8")?,
+        );
+        logger
+            .query_pairs_mut()
+            .append_pair("--container-logs", &directory.to_string_lossy());
+        let log = logger.to_string();
         let tasks = self.client().tasks();
         let create = CreateTaskRequest {
             container_id: id.into(),
@@ -724,6 +766,9 @@ impl Containerd {
     }
 
     async fn delete_container(&self, id: &str) -> anyhow::Result<()> {
+        if let Some(observer) = self.observer.get() {
+            capture_before_cleanup(observer.as_ref(), id, self.observation(id)).await;
+        }
         let request = DeleteContainerRequest {
             id: id.into(),
             ..Default::default()
@@ -749,8 +794,39 @@ impl Containerd {
             }
             _ => {}
         }
+        let capture_cleanup = || -> anyhow::Result<()> {
+            let output = self.config.log_dir().join(id);
+            for stream in ["stdout", "stderr"] {
+                for segment in 0..grund_agent::capture::SEGMENTS {
+                    remove_capture_file(&output.join(format!("{stream}.{segment}")))?;
+                }
+            }
+            remove_capture_file(&output.join("dropped-bytes"))?;
+            remove_capture_file(&output.join(".dropped-bytes"))?;
+            match std::fs::remove_dir(output) {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(error).context("remove app capture directory");
+                }
+                _ => {}
+            }
+            remove_capture_file(&self.config.container_log(id))?;
+            Ok(())
+        };
+        if capture_cleanup().is_err() {
+            tracing::warn!(
+                "retired app capture files could not be removed; application cleanup continues"
+            );
+        }
         netns::remove(&self.config.netns_dir(), id)
-            .with_context(|| format!("remove container {id}'s network namespace"))
+            .with_context(|| format!("remove container {id}'s network namespace"))?;
+        if let Some(observer) = self.observer.get()
+            && observer.removed(id).await.is_err()
+        {
+            tracing::warn!(
+                "retired app output metadata cleanup failed; application cleanup continues"
+            );
+        }
+        Ok(())
     }
 }
 
@@ -768,6 +844,66 @@ impl ContainerRuntime for Containerd {
     }
     fn volume_data_dir(&self) -> PathBuf {
         self.config.data_dir.clone()
+    }
+    fn set_removal_observer(
+        &self,
+        observer: std::sync::Arc<dyn grund_agent::runtime::RemovalObserver>,
+    ) {
+        let _ = self.observer.set(observer);
+    }
+
+    async fn observation(
+        &self,
+        id: &str,
+    ) -> anyhow::Result<Option<grund_agent::runtime::Observation>> {
+        valid_id(id)?;
+        if self.client.get().is_none() {
+            return Ok(None);
+        }
+        let process = self.get_task(id).await?;
+        let generation = match task_state(process.as_ref()) {
+            TaskState::Running { pid } => {
+                let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+                let started = stat
+                    .rsplit_once(')')
+                    .and_then(|(_, fields)| fields.split_whitespace().nth(19))
+                    .unwrap_or("");
+                format!("{pid}:{started}")
+            }
+            _ => String::new(),
+        };
+        let directory = self.config.log_dir().join(id);
+        let logs = if directory.is_dir() {
+            let mut logs: Vec<_> = ["stdout", "stderr"]
+                .into_iter()
+                .map(|stream| grund_agent::runtime::LogSource {
+                    stream,
+                    paths: (0..grund_agent::capture::SEGMENTS)
+                        .rev()
+                        .map(|n| directory.join(format!("{stream}.{n}")))
+                        .collect(),
+                })
+                .collect();
+            if self.config.container_log(id).is_file() {
+                logs.push(grund_agent::runtime::LogSource {
+                    stream: "combined",
+                    paths: vec![self.config.container_log(id)],
+                });
+            }
+            logs
+        } else {
+            vec![grund_agent::runtime::LogSource {
+                stream: "combined",
+                paths: vec![self.config.container_log(id)],
+            }]
+        };
+        Ok(Some(grund_agent::runtime::Observation {
+            cgroup: PathBuf::from("/sys/fs/cgroup")
+                .join(spec::cgroup_path(id).trim_start_matches('/')),
+            generation,
+            logs,
+            capture_loss: Some(directory.join("dropped-bytes")),
+        }))
     }
 
     async fn prepare(&self) -> anyhow::Result<()> {
@@ -1274,5 +1410,74 @@ mod tests {
             config.container_log("web-1"),
             Path::new("/var/lib/grund/agent/logs/web-1.log")
         );
+    }
+}
+
+#[cfg(test)]
+mod final_capture_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Debug)]
+    struct UnwritableSpool {
+        path: PathBuf,
+        losses: AtomicUsize,
+    }
+
+    impl grund_agent::runtime::RemovalObserver for UnwritableSpool {
+        fn collect<'a>(
+            &'a self,
+            _: &'a str,
+            _: grund_agent::runtime::Observation,
+        ) -> std::pin::Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+            Box::pin(async move {
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(self.path.join("batch"))?;
+                Ok(())
+            })
+        }
+        fn removed<'a>(
+            &'a self,
+            _: &'a str,
+        ) -> std::pin::Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn loss(&self) {
+            self.losses.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unwritable_final_spool_does_not_gate_stopped_container_capture_cleanup() {
+        let root =
+            std::env::temp_dir().join(format!("grund-final-cleanup-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&root).unwrap();
+        let blocked = root.join("not-a-directory");
+        std::fs::write(&blocked, b"fault fixture").unwrap();
+        let capture = root.join("stdout.0");
+        std::fs::write(&capture, b"shutdown\n").unwrap();
+        let observer = UnwritableSpool {
+            path: blocked,
+            losses: AtomicUsize::new(0),
+        };
+        capture_before_cleanup(&observer, "instance", async {
+            Ok(Some(grund_agent::runtime::Observation {
+                cgroup: root.join("absent"),
+                generation: String::new(),
+                logs: vec![grund_agent::runtime::LogSource {
+                    stream: "stdout",
+                    paths: vec![capture.clone()],
+                }],
+                capture_loss: None,
+            }))
+        })
+        .await;
+        remove_capture_file(&capture).unwrap();
+        assert!(!capture.exists());
+        assert_eq!(observer.losses.load(Ordering::Relaxed), 1);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

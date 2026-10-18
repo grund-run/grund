@@ -1,0 +1,109 @@
+// SPDX-License-Identifier: Apache-2.0
+syntax = "proto3";
+package grund.app.v1;
+import "google/protobuf/timestamp.proto";
+
+// App output and measured cgroup usage. Owner, admin and member may read live
+// apps in their organisation; other tenants and missing apps are not_found alike.
+service AppTelemetryService {
+  // Literal substring search; observed time filters do not affect cursor order.
+  rpc ListAppLogs(ListAppLogsRequest) returns (ListAppLogsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // Missing buckets/values are unknown, never measured zero. No interpolation.
+  rpc GetAppMetrics(GetAppMetricsRequest) returns (GetAppMetricsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+}
+message ListAppLogsRequest {
+  string organisation = 1;
+  string name = 2;
+  // App replica_id, as returned by AppService/GetApp. Empty: every instance.
+  string instance = 3;
+  // 0 means every release.
+  uint32 release = 4;
+  // Inclusive collector-observation lower bound.
+  google.protobuf.Timestamp since = 5;
+  // Exclusive collector-observation upper bound.
+  google.protobuf.Timestamp until = 6;
+  // Literal case-insensitive substring, at most 200 bytes.
+  string search = 7;
+  // Empty, stdout, stderr or combined (adopted legacy container output).
+  string stream = 8;
+  // 0 means 200, maximum 1000; oldest cursor first within the page.
+  int32 page_size = 9;
+  // Opaque server ingestion cursor scoped to app and filters. Empty starts at
+  // retained history; retain the returned token for follow, even on empty pages.
+  string page_token = 10;
+}
+message AppLog {
+  string cursor = 1;
+  // Collector observation time, not application emission time.
+  google.protobuf.Timestamp observed_at = 2;
+  string instance = 3;
+  uint32 release = 4;
+  string machine = 5;
+  string stream = 6;
+  // UTF-8 text; control sequences are rendered inert by consumers.
+  string body = 7;
+  bool truncated = 8;
+}
+// Uncovered measurement time: authoritative disconnection or unknown evicted history.
+// Offline means disconnected from the instance, not that the application stopped.
+// Log annotations do not prove that records were emitted or lost; quiet logs and
+// replayed log records cannot establish continuous log coverage. At most 1024
+// intervals are returned; filter by instance/release if the query is too broad.
+message AppTelemetryGap {
+  google.protobuf.Timestamp since = 1;
+  google.protobuf.Timestamp until = 2;
+  string instance = 3;
+  string machine = 4;
+  // machine_offline or coverage_unknown (received history was evicted).
+  string reason = 5;
+}
+message ListAppLogsResponse {
+  repeated AppLog logs = 1;
+  string next_page_token = 2;
+  // Payload/retention bounds are not guarantees about physical database bytes.
+  uint32 retention_hours = 3;
+  uint64 payload_limit_bytes = 4;
+  // Stored log rows expired or quota-evicted for this app; excludes producer losses.
+  uint64 dropped_records = 5;
+  repeated AppTelemetryGap gaps = 6;
+  // Maximum accepted batch age; spool capacity can impose a tighter limit.
+  uint32 delivery_window_hours = 7;
+}
+message GetAppMetricsRequest {
+  string organisation = 1;
+  string name = 2;
+  // hour (10 second buckets), day (60 seconds), week (600 seconds). Empty: hour.
+  string range = 3;
+  // App replica_id, as returned by AppService/GetApp. Empty: every instance.
+  string instance = 4;
+  uint32 release = 5;
+}
+message AppMetricPoint {
+  google.protobuf.Timestamp at = 1;
+  string instance = 2;
+  uint32 release = 3;
+  // Average across measured samples in this instance bucket.
+  optional double cpu_millis = 4;
+  optional double memory_bytes = 5;
+  optional double memory_max_bytes = 6;
+  uint32 reserved_cpu_millis = 7;
+  uint64 reserved_memory_bytes = 8;
+  uint32 samples = 9;
+}
+message GetAppMetricsResponse {
+  repeated AppMetricPoint points = 1;
+  uint32 bucket_seconds = 2;
+  google.protobuf.Timestamp since = 3;
+  google.protobuf.Timestamp until = 4;
+  uint32 retention_days = 5;
+  uint64 payload_limit_bytes = 6;
+  // Memory is cgroup memory.current, including cache, not process RSS.
+  string memory_accounting = 7;
+  repeated AppTelemetryGap gaps = 8;
+  // Maximum accepted batch age; spool capacity can impose a tighter limit.
+  uint32 delivery_window_hours = 9;
+}

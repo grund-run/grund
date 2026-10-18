@@ -188,6 +188,9 @@ pub struct Shared {
     pub volume_deletions: Mutex<Vec<VolumeDeleted>>,
     /// Gate-confirmed idle draining replicas, refreshed by the status loop.
     pub drain_idle: Mutex<Vec<String>>,
+    /// Known secret values used only for local telemetry redaction.
+    pub telemetry_secrets: parking_lot::Mutex<BTreeMap<String, Arc<Vec<secrets::Cached>>>>,
+    pub(crate) telemetry: Arc<crate::telemetry_final::State>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -405,6 +408,10 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
     ) -> Self {
         let cache_key = secrets::key(machine_seed);
         let secrets = secrets::load(&data_dir, &cache_key);
+        *shared.telemetry_secrets.lock() = secrets
+            .iter()
+            .map(|(id, values)| (id.clone(), Arc::new(values.clone())))
+            .collect();
         let volume_data_dir = runtime.volume_data_dir();
         Self {
             runtime,
@@ -585,6 +592,20 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
             .collect();
         self.secrets
             .insert(replica.replica_id.clone(), values.clone());
+        {
+            let mut known = self.shared.telemetry_secrets.lock();
+            let redactions = known.entry(replica.replica_id.clone()).or_default();
+            let redactions = Arc::make_mut(redactions);
+            for value in &values {
+                if !redactions.iter().any(|known| {
+                    known.name == value.name
+                        && known.version == value.version
+                        && known.value == value.value
+                }) {
+                    redactions.push(value.clone());
+                }
+            }
+        }
         if let Err(error) = secrets::store(&self.data_dir, &self.cache_key, &self.secrets) {
             tracing::warn!(error = %format!("{error:#}"), "could not keep the secrets cache");
         }
@@ -716,6 +737,62 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
         }
     }
 
+    fn keep_redaction_secrets(&mut self, wanted: &[Replica]) {
+        let mut changed = false;
+        {
+            let known = self.shared.telemetry_secrets.lock();
+            for replica in wanted {
+                if replica.secrets.is_empty()
+                    || self.secrets.get(&replica.replica_id).is_some_and(|values| {
+                        replica.secrets.iter().all(|wanted| {
+                            values
+                                .iter()
+                                .any(|v| v.name == wanted.name && v.version == wanted.version)
+                        })
+                    })
+                {
+                    continue;
+                }
+                let Some(values) = known.get(&replica.replica_id) else {
+                    continue;
+                };
+                let values: Option<Vec<_>> = replica
+                    .secrets
+                    .iter()
+                    .map(|wanted| {
+                        values
+                            .iter()
+                            .find(|v| v.name == wanted.name && v.version == wanted.version)
+                            .cloned()
+                    })
+                    .collect();
+                if let Some(values) = values {
+                    self.secrets.insert(replica.replica_id.clone(), values);
+                    changed = true;
+                }
+            }
+        }
+        if changed && secrets::store(&self.data_dir, &self.cache_key, &self.secrets).is_err() {
+            tracing::warn!("could not keep app redaction secrets in the encrypted cache");
+        }
+    }
+
+    fn prune_telemetry(&mut self, wanted: &[Replica], containers: &[ContainerStatus]) {
+        let keep: std::collections::BTreeSet<_> = wanted
+            .iter()
+            .map(|r| r.replica_id.clone())
+            .chain(containers.iter().map(|c| c.id.clone()))
+            .collect();
+        crate::telemetry_final::prune(&self.shared, &keep);
+        let before = self.secrets.len();
+        self.secrets.retain(|id, _| keep.contains(id));
+        if before != self.secrets.len()
+            && secrets::store(&self.data_dir, &self.cache_key, &self.secrets).is_err()
+        {
+            tracing::warn!("could not persist retired app secret cleanup");
+        }
+    }
+
     /// One pass: observe, plan, act, check, report.
     pub async fn pass(&mut self) -> anyhow::Result<()> {
         self.pass_with_network(self.net(), Instant::now()).await
@@ -724,10 +801,12 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
     async fn pass_with_network(&mut self, net: Option<Net>, now: Instant) -> anyhow::Result<()> {
         self.stops.retain(|_, h| !h.is_finished());
         let desired = self.shared.desired.lock().expect("shared lock").clone();
+        crate::telemetry_final::remember(&self.shared, desired.as_ref());
         let wanted: Vec<Replica> = desired
             .as_ref()
             .map(|d| d.replicas.clone())
             .unwrap_or_default();
+        self.keep_redaction_secrets(&wanted);
         let mut reports: BTreeMap<String, ReplicaObserved> = BTreeMap::new();
         let mut refusals = Vec::new();
         if wanted.is_empty()
@@ -743,6 +822,7 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                     return Ok(());
                 }
             };
+            self.prune_telemetry(&wanted, &containers);
             for container in &containers {
                 self.stop(container);
             }
@@ -777,6 +857,7 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
             return Ok(());
         }
         let containers = self.runtime.list().await?;
+        self.prune_telemetry(&wanted, &containers);
         let mounted = if wanted.iter().any(|r| !r.volumes.is_empty())
             || desired
                 .as_ref()

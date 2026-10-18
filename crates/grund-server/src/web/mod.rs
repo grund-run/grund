@@ -283,6 +283,7 @@ pub fn router(state: State) -> Router {
         .layer(compression())
         .layer(middleware::from_fn(prefer_compression))
         .with_state(state.clone())
+        .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
         .merge(static_files)
         .merge(
             crate::api::router(state.clone())
@@ -291,7 +292,6 @@ pub fn router(state: State) -> Router {
                 .layer(middleware::from_fn(prefer_compression))
                 .layer(axum::Extension(state.extensions.clone())),
         )
-        .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::SERVICE_UNAVAILABLE,
             timeout,

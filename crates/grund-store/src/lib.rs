@@ -9,6 +9,8 @@ pub mod accounts;
 pub mod agent_updates;
 pub mod agents;
 pub mod api_tokens;
+pub mod app_telemetry;
+pub mod app_telemetry_gaps;
 pub mod apps;
 pub mod backup;
 pub mod certificates;

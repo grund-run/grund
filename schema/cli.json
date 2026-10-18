@@ -3128,6 +3128,69 @@
           "value_name": "DATABASE_STATEMENT_TIMEOUT"
         },
         {
+          "default": "33554432",
+          "description": "Per-organisation retained log budget, including a per-row storage allowance",
+          "env": "GRUND_APP_LOG_PAYLOAD_BYTES",
+          "flag": "--app-log-payload-bytes",
+          "name": "app_log_payload_bytes",
+          "type": "integer",
+          "value_name": "APP_LOG_PAYLOAD_BYTES"
+        },
+        {
+          "default": "25165824",
+          "description": "Per-organisation metric budget, including a per-row storage allowance",
+          "env": "GRUND_APP_METRIC_PAYLOAD_BYTES",
+          "flag": "--app-metric-payload-bytes",
+          "name": "app_metric_payload_bytes",
+          "type": "integer",
+          "value_name": "APP_METRIC_PAYLOAD_BYTES"
+        },
+        {
+          "default": "24",
+          "description": "Log history expiry, enforced on every read even when sweeping is delayed",
+          "env": "GRUND_APP_LOG_RETENTION_HOURS",
+          "flag": "--app-log-retention-hours",
+          "name": "app_log_retention_hours",
+          "type": "integer",
+          "value_name": "APP_LOG_RETENTION_HOURS"
+        },
+        {
+          "default": "7",
+          "description": "Metric history expiry, at most seven days",
+          "env": "GRUND_APP_METRIC_RETENTION_DAYS",
+          "flag": "--app-metric-retention-days",
+          "name": "app_metric_retention_days",
+          "type": "integer",
+          "value_name": "APP_METRIC_RETENTION_DAYS"
+        },
+        {
+          "default": "65536",
+          "description": "Retained batch receipts per organisation; admission pauses at this bound",
+          "env": "GRUND_APP_TELEMETRY_RECEIPTS",
+          "flag": "--app-telemetry-receipts",
+          "name": "app_telemetry_receipts",
+          "type": "integer",
+          "value_name": "APP_TELEMETRY_RECEIPTS"
+        },
+        {
+          "default": "6",
+          "description": "Oldest eligible UUIDv7 batch; the instance decides when offline delivery expires",
+          "env": "GRUND_APP_TELEMETRY_BATCH_MAX_AGE_HOURS",
+          "flag": "--app-telemetry-batch-max-age-hours",
+          "name": "app_telemetry_batch_max_age_hours",
+          "type": "integer",
+          "value_name": "APP_TELEMETRY_BATCH_MAX_AGE_HOURS"
+        },
+        {
+          "default": "7",
+          "description": "Dedupe receipts must outlive eligible batches by at least one hour",
+          "env": "GRUND_APP_TELEMETRY_RECEIPT_RETENTION_HOURS",
+          "flag": "--app-telemetry-receipt-retention-hours",
+          "name": "app_telemetry_receipt_retention_hours",
+          "type": "integer",
+          "value_name": "APP_TELEMETRY_RECEIPT_RETENTION_HOURS"
+        },
+        {
           "default": "127.0.0.1:8080",
           "description": "Where the HTTP server binds. The image sets 0.0.0.0:8080",
           "env": "GRUND_LISTEN",
@@ -4192,6 +4255,69 @@
           "value_name": "DATABASE_STATEMENT_TIMEOUT"
         },
         {
+          "default": "33554432",
+          "description": "Per-organisation retained log budget, including a per-row storage allowance",
+          "env": "GRUND_APP_LOG_PAYLOAD_BYTES",
+          "flag": "--app-log-payload-bytes",
+          "name": "app_log_payload_bytes",
+          "type": "integer",
+          "value_name": "APP_LOG_PAYLOAD_BYTES"
+        },
+        {
+          "default": "25165824",
+          "description": "Per-organisation metric budget, including a per-row storage allowance",
+          "env": "GRUND_APP_METRIC_PAYLOAD_BYTES",
+          "flag": "--app-metric-payload-bytes",
+          "name": "app_metric_payload_bytes",
+          "type": "integer",
+          "value_name": "APP_METRIC_PAYLOAD_BYTES"
+        },
+        {
+          "default": "24",
+          "description": "Log history expiry, enforced on every read even when sweeping is delayed",
+          "env": "GRUND_APP_LOG_RETENTION_HOURS",
+          "flag": "--app-log-retention-hours",
+          "name": "app_log_retention_hours",
+          "type": "integer",
+          "value_name": "APP_LOG_RETENTION_HOURS"
+        },
+        {
+          "default": "7",
+          "description": "Metric history expiry, at most seven days",
+          "env": "GRUND_APP_METRIC_RETENTION_DAYS",
+          "flag": "--app-metric-retention-days",
+          "name": "app_metric_retention_days",
+          "type": "integer",
+          "value_name": "APP_METRIC_RETENTION_DAYS"
+        },
+        {
+          "default": "65536",
+          "description": "Retained batch receipts per organisation; admission pauses at this bound",
+          "env": "GRUND_APP_TELEMETRY_RECEIPTS",
+          "flag": "--app-telemetry-receipts",
+          "name": "app_telemetry_receipts",
+          "type": "integer",
+          "value_name": "APP_TELEMETRY_RECEIPTS"
+        },
+        {
+          "default": "6",
+          "description": "Oldest eligible UUIDv7 batch; the instance decides when offline delivery expires",
+          "env": "GRUND_APP_TELEMETRY_BATCH_MAX_AGE_HOURS",
+          "flag": "--app-telemetry-batch-max-age-hours",
+          "name": "app_telemetry_batch_max_age_hours",
+          "type": "integer",
+          "value_name": "APP_TELEMETRY_BATCH_MAX_AGE_HOURS"
+        },
+        {
+          "default": "7",
+          "description": "Dedupe receipts must outlive eligible batches by at least one hour",
+          "env": "GRUND_APP_TELEMETRY_RECEIPT_RETENTION_HOURS",
+          "flag": "--app-telemetry-receipt-retention-hours",
+          "name": "app_telemetry_receipt_retention_hours",
+          "type": "integer",
+          "value_name": "APP_TELEMETRY_RECEIPT_RETENTION_HOURS"
+        },
+        {
           "default": "127.0.0.1:8080",
           "description": "Where the HTTP server binds. The image sets 0.0.0.0:8080",
           "env": "GRUND_LISTEN",
@@ -5077,6 +5203,69 @@
           "name": "database_statement_timeout",
           "type": "string",
           "value_name": "DATABASE_STATEMENT_TIMEOUT"
+        },
+        {
+          "default": "33554432",
+          "description": "Per-organisation retained log budget, including a per-row storage allowance",
+          "env": "GRUND_APP_LOG_PAYLOAD_BYTES",
+          "flag": "--app-log-payload-bytes",
+          "name": "app_log_payload_bytes",
+          "type": "integer",
+          "value_name": "APP_LOG_PAYLOAD_BYTES"
+        },
+        {
+          "default": "25165824",
+          "description": "Per-organisation metric budget, including a per-row storage allowance",
+          "env": "GRUND_APP_METRIC_PAYLOAD_BYTES",
+          "flag": "--app-metric-payload-bytes",
+          "name": "app_metric_payload_bytes",
+          "type": "integer",
+          "value_name": "APP_METRIC_PAYLOAD_BYTES"
+        },
+        {
+          "default": "24",
+          "description": "Log history expiry, enforced on every read even when sweeping is delayed",
+          "env": "GRUND_APP_LOG_RETENTION_HOURS",
+          "flag": "--app-log-retention-hours",
+          "name": "app_log_retention_hours",
+          "type": "integer",
+          "value_name": "APP_LOG_RETENTION_HOURS"
+        },
+        {
+          "default": "7",
+          "description": "Metric history expiry, at most seven days",
+          "env": "GRUND_APP_METRIC_RETENTION_DAYS",
+          "flag": "--app-metric-retention-days",
+          "name": "app_metric_retention_days",
+          "type": "integer",
+          "value_name": "APP_METRIC_RETENTION_DAYS"
+        },
+        {
+          "default": "65536",
+          "description": "Retained batch receipts per organisation; admission pauses at this bound",
+          "env": "GRUND_APP_TELEMETRY_RECEIPTS",
+          "flag": "--app-telemetry-receipts",
+          "name": "app_telemetry_receipts",
+          "type": "integer",
+          "value_name": "APP_TELEMETRY_RECEIPTS"
+        },
+        {
+          "default": "6",
+          "description": "Oldest eligible UUIDv7 batch; the instance decides when offline delivery expires",
+          "env": "GRUND_APP_TELEMETRY_BATCH_MAX_AGE_HOURS",
+          "flag": "--app-telemetry-batch-max-age-hours",
+          "name": "app_telemetry_batch_max_age_hours",
+          "type": "integer",
+          "value_name": "APP_TELEMETRY_BATCH_MAX_AGE_HOURS"
+        },
+        {
+          "default": "7",
+          "description": "Dedupe receipts must outlive eligible batches by at least one hour",
+          "env": "GRUND_APP_TELEMETRY_RECEIPT_RETENTION_HOURS",
+          "flag": "--app-telemetry-receipt-retention-hours",
+          "name": "app_telemetry_receipt_retention_hours",
+          "type": "integer",
+          "value_name": "APP_TELEMETRY_RECEIPT_RETENTION_HOURS"
         },
         {
           "default": "127.0.0.1:8080",

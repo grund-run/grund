@@ -66,6 +66,36 @@ const MAX_UPDATE_RESPONSE_BYTES: usize = 64 * 1024;
 #[error("machine update response exceeds 64 KiB")]
 struct UpdateResponseTooLarge;
 
+#[derive(Debug, thiserror::Error)]
+#[error("app telemetry export was refused")]
+pub(crate) struct TelemetryRefused {
+    pub(crate) status: u16,
+    pub(crate) retry_after: Option<Duration>,
+    pub(crate) expired_window: bool,
+}
+
+impl TelemetryRefused {
+    fn from_response(status: u16, retry_after: Option<Duration>, bytes: &[u8]) -> Self {
+        #[derive(serde::Deserialize)]
+        struct ErrorCode<'a> {
+            code: &'a str,
+        }
+        let expired_window = status == 400
+            && bytes.len() <= MAX_UPDATE_RESPONSE_BYTES
+            && serde_json::from_slice::<ErrorCode<'_>>(bytes)
+                .is_ok_and(|error| error.code == "out_of_range");
+        Self {
+            status,
+            retry_after,
+            expired_window,
+        }
+    }
+
+    pub(crate) fn permanent(&self) -> bool {
+        (400..500).contains(&self.status) && self.status != 429
+    }
+}
+
 /// The file keeping what the agent applied last.
 pub const APPLIED_FILE: &str = "applied.json";
 
@@ -291,17 +321,41 @@ impl Link {
         let exchange = async {
             let mut response = request.await?;
             let status = response.status();
-            let bytes = if service == "MachineUpdateService" {
+            let retry_after = response
+                .headers()
+                .get("Retry-After")
+                .and_then(|h| h.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok())
+                .map(|s| Duration::from_secs(s.min(300)));
+            let maximum = if procedure == "GetReplicaSecrets" {
+                grund_config::app::spec::MAX_SECRETS * grund_config::app::spec::MAX_SECRET_BYTES
+                    + MAX_DOCUMENT_BYTES
+            } else {
+                MAX_UPDATE_RESPONSE_BYTES
+            };
+            let too_large = || {
+                if service == "MachineUpdateService" {
+                    anyhow::Error::new(UpdateResponseTooLarge)
+                } else if service == "AppTelemetryService" && !status.is_success() {
+                    TelemetryRefused::from_response(status.as_u16(), retry_after, &[]).into()
+                } else {
+                    anyhow::anyhow!("app machine response exceeds its size bound")
+                }
+            };
+            let bytes = if service == "MachineUpdateService"
+                || service == "AppTelemetryService"
+                || procedure == "GetReplicaSecrets"
+            {
                 if response
                     .content_length()
-                    .is_some_and(|length| length > MAX_UPDATE_RESPONSE_BYTES as u64)
+                    .is_some_and(|length| length > maximum as u64)
                 {
-                    return Err(anyhow::Error::new(UpdateResponseTooLarge));
+                    return Err(too_large());
                 }
                 let mut bytes = Vec::new();
                 while let Some(chunk) = response.chunk().await? {
-                    if bytes.len() + chunk.len() > MAX_UPDATE_RESPONSE_BYTES {
-                        return Err(anyhow::Error::new(UpdateResponseTooLarge));
+                    if bytes.len() + chunk.len() > maximum {
+                        return Err(too_large());
                     }
                     bytes.extend_from_slice(&chunk);
                 }
@@ -309,7 +363,7 @@ impl Link {
             } else {
                 response.bytes().await?
             };
-            Ok::<_, anyhow::Error>((status, bytes))
+            Ok::<_, anyhow::Error>((status, bytes, retry_after))
         };
         let outcome = if let Some(changed) = changed.as_mut() {
             tokio::select! {
@@ -329,8 +383,14 @@ impl Link {
         {
             tracing::warn!(error = %format!("{error:#}"), "could not replace a timed-out machine control connection");
         }
-        let (status, bytes) = outcome.with_context(|| format!("reach {}", self.origin))?;
+        let (status, bytes, retry_after) =
+            outcome.with_context(|| format!("reach {}", self.origin))?;
         if !status.is_success() {
+            if service == "AppTelemetryService" {
+                return Err(
+                    TelemetryRefused::from_response(status.as_u16(), retry_after, &bytes).into(),
+                );
+            }
             let error: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
             bail!(
                 "{procedure}: {} ({})",
@@ -375,7 +435,14 @@ pub async fn run<R: VmRuntime, C: ContainerRuntime + 'static>(
     let applied = std::sync::Arc::new(tokio::sync::Mutex::new(read_applied(&args.data_dir)?));
     let shared = std::sync::Arc::new(Shared::default());
     *shared.desired.lock().expect("shared lock") = current(&*applied.lock().await);
+    crate::telemetry_final::remember(
+        &shared,
+        shared.desired.lock().expect("shared lock").as_ref(),
+    );
     let containers = std::sync::Arc::new(containers);
+    if !args.once {
+        containers.set_removal_observer(crate::telemetry_final::observer(shared.clone()));
+    }
     let gate = crate::gate::Gate::new(
         std::sync::Arc::new(crate::gate::Direct),
         crate::gate::Limits::default(),
@@ -463,6 +530,14 @@ pub async fn run<R: VmRuntime, C: ContainerRuntime + 'static>(
             data_dir: args.data_dir.clone(),
         };
         tokio::spawn(watcher.run());
+        tokio::spawn(crate::telemetry::run(
+            containers.clone(),
+            link.clone(),
+            shared.clone(),
+            args.data_dir.clone(),
+            record.clone(),
+            lease.as_ref().map(|lease| lease.lease_id.clone()),
+        ));
         tokio::spawn(crate::backups::run(
             link.clone(),
             shared.clone(),
@@ -525,6 +600,39 @@ pub async fn run<R: VmRuntime, C: ContainerRuntime + 'static>(
                 bail!("this machine's lease changed; starting again under the new one");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod telemetry_refusal_tests {
+    use super::*;
+
+    #[test]
+    fn only_a_bounded_out_of_range_code_marks_a_permanent_refusal_as_expired() {
+        let retry = Some(Duration::from_secs(29));
+        let stale = TelemetryRefused::from_response(400, retry, br#"{"code":"out_of_range"}"#);
+        assert!(stale.permanent());
+        assert!(stale.expired_window);
+        assert_eq!(stale.retry_after, retry);
+        for (status, body, permanent) in [
+            (400, br#"{"code":"invalid_argument"}"#.as_slice(), true),
+            (400, br#"{"message":"out_of_range"}"#.as_slice(), true),
+            (400, b"invalid JSON".as_slice(), true),
+            (429, br#"{"code":"resource_exhausted"}"#.as_slice(), false),
+            (503, br#"{"code":"out_of_range"}"#.as_slice(), false),
+        ] {
+            let refusal = TelemetryRefused::from_response(status, retry, body);
+            assert_eq!(refusal.permanent(), permanent);
+            assert!(!refusal.expired_window);
+            assert_eq!(refusal.status, status);
+            assert_eq!(refusal.retry_after, retry);
+        }
+        let mut oversized = br#"{"code":"out_of_range"}"#.to_vec();
+        oversized.resize(MAX_UPDATE_RESPONSE_BYTES + 1, b' ');
+        let refusal = TelemetryRefused::from_response(400, retry, &oversized);
+        assert!(refusal.permanent());
+        assert!(!refusal.expired_window);
+        assert_eq!(refusal.retry_after, retry);
     }
 }
 

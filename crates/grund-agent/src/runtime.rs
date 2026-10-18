@@ -159,6 +159,42 @@ pub struct AppsCapabilities {
     pub resources_allocatable: bool,
 }
 
+/// A bounded output stream supplied by the runtime, never by the app document.
+#[derive(Debug, Clone)]
+pub struct LogSource {
+    pub stream: &'static str,
+    /// Oldest to newest paths; rotation keeps their inode identity.
+    pub paths: Vec<PathBuf>,
+}
+
+/// Runtime-local app accounting, excluding VM monitor output and host overhead.
+#[derive(Debug, Clone)]
+pub struct Observation {
+    pub cgroup: PathBuf,
+    /// Changes when the running process changes.
+    pub generation: String,
+    pub logs: Vec<LogSource>,
+    /// A bounded logger loss counter, separate from app output.
+    pub capture_loss: Option<PathBuf>,
+}
+
+/// Receives stopped app output before runtime cleanup, without network delivery.
+pub trait RemovalObserver: Send + Sync + std::fmt::Debug {
+    /// Buffers a bounded final tail locally; the runtime bounds the attempt's deadline.
+    fn collect<'a>(
+        &'a self,
+        id: &'a str,
+        observation: Observation,
+    ) -> std::pin::Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
+    /// Releases retired identity and redaction references without gating runtime cleanup.
+    fn removed<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> std::pin::Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
+    /// Records a failed final attempt, not an exact count of missing log records.
+    fn loss(&self);
+}
+
 /// Runs containers on this machine.
 pub trait ContainerRuntime: Send + Sync {
     /// What this machine can do. Cheap: no download, no daemon start.
@@ -175,6 +211,19 @@ pub trait ContainerRuntime: Send + Sync {
     /// Persistent machine storage root, separate from agent identity/secrets.
     fn volume_data_dir(&self) -> PathBuf {
         "/var/lib/grund".into()
+    }
+
+    /// Accounting paths for this app instance, absent for unsupported runtimes.
+    fn observation(
+        &self,
+        id: &str,
+    ) -> impl Future<Output = anyhow::Result<Option<Observation>>> + Send {
+        let _ = id;
+        async { Ok(None) }
+    }
+    /// Installs local-only final-output collection for runtimes with durable capture.
+    fn set_removal_observer(&self, observer: std::sync::Arc<dyn RemovalObserver>) {
+        let _ = observer;
     }
 
     /// Fetches the image by digest from its registry and unpacks it, for

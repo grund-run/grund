@@ -71,6 +71,34 @@ pub struct ServeConfig {
     #[command(flatten)]
     pub database: DatabaseArgs,
 
+    /// Per-organisation retained log budget, including a per-row storage allowance.
+    #[arg(long, env = "GRUND_APP_LOG_PAYLOAD_BYTES", default_value_t = 33_554_432, value_parser = clap::value_parser!(i64).range(524_288..=1_073_741_824))]
+    pub app_log_payload_bytes: i64,
+
+    /// Per-organisation metric budget, including a per-row storage allowance.
+    #[arg(long, env = "GRUND_APP_METRIC_PAYLOAD_BYTES", default_value_t = 25_165_824, value_parser = clap::value_parser!(i64).range(262_144..=536_870_912))]
+    pub app_metric_payload_bytes: i64,
+
+    /// Log history expiry, enforced on every read even when sweeping is delayed.
+    #[arg(long, env = "GRUND_APP_LOG_RETENTION_HOURS", default_value_t = 24, value_parser = clap::value_parser!(u32).range(1..=24))]
+    pub app_log_retention_hours: u32,
+
+    /// Metric history expiry, at most seven days.
+    #[arg(long, env = "GRUND_APP_METRIC_RETENTION_DAYS", default_value_t = 7, value_parser = clap::value_parser!(u32).range(1..=7))]
+    pub app_metric_retention_days: u32,
+
+    /// Retained batch receipts per organisation; admission pauses at this bound.
+    #[arg(long, env = "GRUND_APP_TELEMETRY_RECEIPTS", default_value_t = 65_536, value_parser = clap::value_parser!(i32).range(1024..=8_388_608))]
+    pub app_telemetry_receipts: i32,
+
+    /// Oldest eligible UUIDv7 batch; the instance decides when offline delivery expires.
+    #[arg(long, env = "GRUND_APP_TELEMETRY_BATCH_MAX_AGE_HOURS", default_value_t = 6, value_parser = clap::value_parser!(u32).range(1..=144))]
+    pub app_telemetry_batch_max_age_hours: u32,
+
+    /// Dedupe receipts must outlive eligible batches by at least one hour.
+    #[arg(long, env = "GRUND_APP_TELEMETRY_RECEIPT_RETENTION_HOURS", default_value_t = 7, value_parser = clap::value_parser!(u32).range(2..=168))]
+    pub app_telemetry_receipt_retention_hours: u32,
+
     /// Where the HTTP server binds. The image sets 0.0.0.0:8080.
     #[arg(long, env = "GRUND_LISTEN", default_value = "127.0.0.1:8080")]
     pub listen: SocketAddr,
@@ -1120,6 +1148,12 @@ impl ServeConfig {
         }
         self.database.validate()?;
         anyhow::ensure!(
+            self.app_telemetry_receipt_retention_hours
+                >= self.app_telemetry_batch_max_age_hours.saturating_add(1),
+            "GRUND_APP_TELEMETRY_RECEIPT_RETENTION_HOURS must exceed \
+             GRUND_APP_TELEMETRY_BATCH_MAX_AGE_HOURS by at least one hour"
+        );
+        anyhow::ensure!(
             self.database_wait <= MAX_DATABASE_WAIT,
             "GRUND_DATABASE_WAIT must be at most {} seconds",
             MAX_DATABASE_WAIT.as_secs()
@@ -1519,6 +1553,45 @@ mod tests {
         }
         assert!(parse(&["--hosted-provisional-global-cap", "1001"]).is_err());
         assert!(parse(&["--hosted-provisional-global-cap", "-1"]).is_err());
+    }
+
+    #[test]
+    fn telemetry_windows_are_configurable_only_with_a_safe_dedupe_margin() {
+        let flags = [
+            "--app-telemetry-batch-max-age-hours",
+            "144",
+            "--app-telemetry-receipt-retention-hours",
+            "145",
+        ];
+        assert!(parse(&flags).is_ok());
+        for (age, receipt) in [
+            ("6", "6"),
+            ("7", "6"),
+            ("0", "7"),
+            ("145", "168"),
+            ("1", "1"),
+            ("144", "169"),
+        ] {
+            assert!(
+                parse(&[
+                    "--app-telemetry-batch-max-age-hours",
+                    age,
+                    "--app-telemetry-receipt-retention-hours",
+                    receipt,
+                ])
+                .is_err(),
+                "{age}/{receipt} must not start"
+            );
+        }
+        assert!(
+            parse(&[
+                "--app-telemetry-batch-max-age-hours",
+                "1",
+                "--app-telemetry-receipt-retention-hours",
+                "2",
+            ])
+            .is_ok()
+        );
     }
 
     #[test]

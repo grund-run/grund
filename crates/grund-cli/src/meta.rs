@@ -828,6 +828,14 @@ pub const LEAVES: &[Leaf] = &[
 /// procedure that is in neither list.
 pub const NOT_IN_CLI: &[(&str, &str)] = &[
     (
+        "grund.app.v1.AppTelemetryService/ListAppLogs",
+        "the read API lands before its dedicated CLI command",
+    ),
+    (
+        "grund.app.v1.AppTelemetryService/GetAppMetrics",
+        "the read API lands before its dedicated CLI command",
+    ),
+    (
         "grund.volume.v1.VolumeService/GetVolume",
         "volumes show calls GetVolumeStatus, which includes the same volume fields and restore state",
     ),

@@ -78,6 +78,12 @@ struct Cli {
     command: Command,
 }
 
+#[derive(Parser)]
+struct ContainerLogsArgs {
+    #[arg(long)]
+    container_logs: std::path::PathBuf,
+}
+
 #[derive(Subcommand)]
 enum Command {
     #[command(about = "Run the control plane: dashboard, API and background work")]
@@ -347,6 +353,10 @@ pub async fn run_with_extensions(
     grund_server::health::set_package(grund_cli::VERSION);
     grund_crypto::install_default();
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).is_some_and(|arg| arg == "--container-logs") {
+        let capture = ContainerLogsArgs::try_parse_from(&args)?;
+        return grund_agent::capture::run(&capture.container_logs);
+    }
     let cli = match Cli::try_parse_from(&args) {
         Ok(cli) => cli,
         Err(error) => match grund_cli::usage_error(&error, &args) {

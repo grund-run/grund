@@ -183,6 +183,9 @@ pub async fn serve(
         ))
         .add(services::entry::EntryKeys::new(state.clone()))
         .add(services::maintenance::Sweeper::new(state.clone()))
+        .add(services::app_telemetry::TelemetrySweeper::new(
+            state.clone(),
+        ))
         .add(extension::ExtensionWork(state.clone()))
         .add(certificates::CertificateWork::new(&state))
         .add(domain_setup::DomainSetup::new(state.clone()))

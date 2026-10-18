@@ -10,6 +10,7 @@
 pub mod agent;
 pub mod apps;
 pub mod backups;
+pub mod capture;
 pub mod doctor;
 pub mod forward;
 pub mod gate;
@@ -25,6 +26,10 @@ pub mod runtime;
 pub mod secrets;
 pub mod simulated;
 pub mod supervisor;
+mod telemetry;
+mod telemetry_final;
+mod telemetry_spool;
+mod telemetry_tail;
 mod usage;
 pub mod vm;
 pub mod volume;
