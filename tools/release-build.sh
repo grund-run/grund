@@ -1,11 +1,12 @@
 #!/bin/sh
 set -eu
 
-# Each architecture has its own target directory and a read-only cache restore.
-# The library cache producer never stages a binary or release payload.
-[ "$#" -eq 1 ] || { echo "usage: release-build.sh {amd64|arm64|cache-arm64}" >&2; exit 2; }
+# The native CI build stages the amd64 artifact once for all tag gates.
+# ARM has its own target directory and read-only cache; the library producer
+# never stages a binary or release payload.
+[ "$#" -eq 1 ] || { echo "usage: release-build.sh {arm64|cache-arm64}" >&2; exit 2; }
 mode="$1"
-case "$mode" in amd64|arm64|cache-arm64) ;; *) echo "unknown release build: $mode" >&2; exit 2;; esac
+case "$mode" in arm64|cache-arm64) ;; *) echo "unknown release build: $mode" >&2; exit 2;; esac
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 export GRUND_REVISION="$(git rev-parse "${CI_COMMIT_SHA}^{commit}")"
@@ -27,15 +28,6 @@ export RUSTUP_TOOLCHAIN=1.98.1-x86_64-unknown-linux-musl
 export GRUND_VERSION="${CI_COMMIT_TAG:-}"
 # A rerun reproduces the same immutable package, including attribution.
 export GRUND_BUILD_TIME="$(git show -s --format=%cI "$GRUND_REVISION")"
-
-if [ "$mode" = amd64 ]; then
-    # Match main's native musl build instead of changing its Cargo unit hashes
-    # with an explicit native --target.
-    cargo build --locked --release -p grund --bin grund
-    cp "$CARGO_TARGET_DIR/release/grund" scratch/tag-release/dist/grund-linux-amd64
-    python3 tools/release.py verify-amd64
-    exit
-fi
 
 tooling="$root/scratch/tag-release/tooling"
 mkdir -p "$tooling"
@@ -60,8 +52,7 @@ rustup target add aarch64-unknown-linux-musl
 linker="$(rustc --print sysroot)/lib/rustlib/$host/bin/rust-lld"
 test -x "$linker"
 if [ "$mode" = cache-arm64 ]; then
-    # Real libraries contain the reusable linker-plugin-LTO bitcode. Building
-    # --bin here would pay the tag's final ThinLTO link on every main push.
+    # Seed reusable dependencies without building the final application binary.
     RUSTFLAGS="-C linker=$linker" cargo zigbuild --locked --release -p grund --lib --target aarch64-unknown-linux-musl
 else
     RUSTFLAGS="-C linker=$linker" cargo zigbuild --locked --release -p grund --bin grund --target aarch64-unknown-linux-musl
