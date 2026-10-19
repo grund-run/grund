@@ -29,6 +29,15 @@ pub struct Global {
     #[arg(
         long,
         global = true,
+        env = "GRUND_CONTEXT",
+        value_name = "NAME",
+        help = "The context: an instance, its credential and organisation. Default: grund context use"
+    )]
+    pub context: Option<String>,
+
+    #[arg(
+        long,
+        global = true,
         env = "GRUND_ORG",
         value_name = "SLUG",
         help = "The organisation. Default: grund org use, else the token's, else the only one"
@@ -52,13 +61,13 @@ pub struct Global {
 
 impl Global {
     /// The same client target options for standalone and embedding parser roots.
-    pub fn target_arguments() -> [clap::Arg; 2] {
+    pub fn target_arguments() -> [clap::Arg; 3] {
         let command = <Self as clap::Args>::augment_args(clap::Command::new("grund"));
-        ["instance", "org"].map(|name| {
+        ["instance", "context", "org"].map(|name| {
             command
                 .get_arguments()
                 .find(|argument| argument.get_id().as_str() == name)
-                .expect("Global defines both target options")
+                .expect("Global defines every target option")
                 .clone()
         })
     }
@@ -119,31 +128,50 @@ impl Ctx {
         }
     }
 
-    /// The credentials file's path.
+    /// The CLI's file's path.
     pub fn credentials_path(&self) -> CliResult<std::path::PathBuf> {
         credentials::path()
     }
 
-    /// The credentials file.
+    /// The CLI's file, migrated from the older credentials file if need be.
     pub fn credentials(&self) -> CliResult<Credentials> {
-        Credentials::load(&credentials::path()?)
+        credentials::load()
     }
 
-    /// The instance: --instance or GRUND_INSTANCE, else the file's current
-    /// one.
+    /// The context commands act in: --context or GRUND_CONTEXT, else the
+    /// file's current one. `None` when the file has none.
+    pub fn context(&self) -> CliResult<Option<credentials::Context>> {
+        let file = self.credentials()?;
+        if let Some(name) = self.global.context.as_deref().filter(|n| !n.is_empty()) {
+            return file.context(name).cloned().map(Some).ok_or_else(|| {
+                CliError::new(Code::NotFound, format!("no context {name}"))
+                    .hint("grund context list")
+                    .field("context")
+            });
+        }
+        Ok(file.context(&file.current).cloned())
+    }
+
+    /// The instance: --instance or GRUND_INSTANCE, else the context's.
     pub fn instance(&self) -> CliResult<String> {
         if let Some(instance) = self.global.instance.as_deref().filter(|i| !i.is_empty()) {
             return credentials::origin(instance);
         }
-        let file = self.credentials()?;
-        if file.current.is_empty() {
-            return Err(CliError::new(Code::NotSignedIn, "no instance is chosen")
-                .hint("run grund auth login <instance>, or set GRUND_INSTANCE and GRUND_TOKEN"));
+        match self.context()? {
+            Some(context) => Ok(context.url),
+            None => Err(CliError::new(Code::NotSignedIn, "no instance is chosen")
+                .hint("run grund auth login <instance>, or set GRUND_INSTANCE and GRUND_TOKEN")),
         }
-        Ok(file.current)
     }
 
-    /// The credential for `instance`: GRUND_TOKEN, else the file's.
+    fn context_for(&self, instance: &str) -> CliResult<Option<credentials::Context>> {
+        if let Some(context) = self.context()?.filter(|c| c.url == instance) {
+            return Ok(Some(context));
+        }
+        Ok(self.credentials()?.for_instance(instance).cloned())
+    }
+
+    /// The credential for `instance`: GRUND_TOKEN, else the context's.
     pub fn credential(&self, instance: &str) -> CliResult<Credential> {
         if let Ok(secret) = std::env::var("GRUND_TOKEN") {
             let secret = secret.trim().to_string();
@@ -154,10 +182,9 @@ impl Ctx {
                 });
             }
         }
-        self.credentials()?
-            .instance(instance)
-            .map(|i| Credential {
-                secret: i.credential.clone(),
+        self.context_for(instance)?
+            .map(|c| Credential {
+                secret: c.credential,
                 source: Source::File,
             })
             .ok_or_else(|| {
@@ -174,9 +201,8 @@ impl Ctx {
         Api::new(&instance, Some(credential.secret))
     }
 
-    /// The organisation to act on: --org or GRUND_ORG, else the file's
-    /// default for the instance, else the token's own, else the account's
-    /// only one.
+    /// The organisation to act on: --org or GRUND_ORG, else the context's,
+    /// else the token's own, else the account's only one.
     pub async fn org(&self, api: &Api) -> CliResult<String> {
         if let Some(org) = self.global.org.as_deref().filter(|o| !o.is_empty()) {
             return Ok(org.trim().to_ascii_lowercase());
@@ -184,10 +210,10 @@ impl Ctx {
         let instance = api.origin().to_string();
         let credential = self.credential(&instance)?;
         if credential.source == Source::File
-            && let Some(entry) = self.credentials()?.instance(&instance)
-            && !entry.organisation.is_empty()
+            && let Some(context) = self.context_for(&instance)?
+            && !context.organisation.is_empty()
         {
-            return Ok(entry.organisation.clone());
+            return Ok(context.organisation);
         }
         if credential.kind() == "token" {
             let current = api

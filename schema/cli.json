@@ -1386,6 +1386,52 @@
       "title": "grund.cli.v1.Change",
       "type": "object"
     },
+    "grund.cli.v1.Context": {
+      "additionalProperties": false,
+      "description": "`grund context show`: an instance, the credential for it and the organisation commands act on there. The credential itself is never printed.",
+      "properties": {
+        "credential": {
+          "description": "session (from `grund auth login`) or token (a personal access token).",
+          "type": "string"
+        },
+        "current": {
+          "type": "boolean"
+        },
+        "instance": {
+          "description": "The instance's origin.",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "organisation": {
+          "type": "string"
+        },
+        "username": {
+          "type": "string"
+        }
+      },
+      "title": "grund.cli.v1.Context",
+      "type": "object"
+    },
+    "grund.cli.v1.ContextList": {
+      "additionalProperties": false,
+      "description": "`grund context list`.",
+      "properties": {
+        "contexts": {
+          "items": {
+            "$ref": "#/$defs/grund.cli.v1.Context"
+          },
+          "type": "array"
+        },
+        "current": {
+          "description": "The context commands use without --context or GRUND_CONTEXT.",
+          "type": "string"
+        }
+      },
+      "title": "grund.cli.v1.ContextList",
+      "type": "object"
+    },
     "grund.cli.v1.DeployResult": {
       "additionalProperties": false,
       "description": "`grund app deploy`: one entry per app.",
@@ -1643,12 +1689,16 @@
       "additionalProperties": false,
       "description": "`grund auth login`.",
       "properties": {
+        "context": {
+          "description": "The context made or refreshed, now the current one.",
+          "type": "string"
+        },
         "credential": {
           "description": "session or token.",
           "type": "string"
         },
         "credentialsFile": {
-          "description": "Where the credential was written.",
+          "description": "Where the credential was written: the config file.",
           "type": "string"
         },
         "instance": {
@@ -1774,12 +1824,16 @@
       "additionalProperties": false,
       "description": "`grund auth status`.",
       "properties": {
+        "context": {
+          "description": "The context the command ran in; empty with GRUND_INSTANCE and GRUND_TOKEN.",
+          "type": "string"
+        },
         "credential": {
           "description": "session (from `grund auth login`) or token (a personal access token).",
           "type": "string"
         },
         "credentialSource": {
-          "description": "From GRUND_TOKEN, the credentials file, or nothing.",
+          "description": "GRUND_TOKEN, or context (the context's credential, kept in the config file; \"credentials file\" before 2026-10-19).",
           "type": "string"
         },
         "email": {
@@ -3489,6 +3543,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -3596,6 +3658,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -3677,6 +3747,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -3755,6 +3833,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -3835,6 +3921,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -3911,6 +4005,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -3960,6 +4062,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -4012,6 +4122,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -4060,6 +4178,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -4159,6 +4285,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -4231,6 +4365,332 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
+          "description": "The organisation. Default: grund org use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        }
+      ],
+      "audience": "client",
+      "command": "grund context list",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund context list",
+        "grund context list --json"
+      ],
+      "mutates": false,
+      "output": {
+        "$ref": "#/$defs/grund.cli.v1.ContextList"
+      },
+      "path": "context list",
+      "summary": "Every context, and which is current"
+    },
+    {
+      "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
+          "description": "The organisation. Default: grund org use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "name",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "NAME"
+        }
+      ],
+      "audience": "client",
+      "command": "grund context use",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund context use hosted"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.cli.v1.Done"
+      },
+      "path": "context use",
+      "summary": "Make a context current"
+    },
+    {
+      "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
+          "description": "The organisation. Default: grund org use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "description": "Default: the current context",
+          "name": "name",
+          "positional": true,
+          "type": "string",
+          "value_name": "NAME"
+        }
+      ],
+      "audience": "client",
+      "command": "grund context show",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund context show",
+        "grund context show hosted --json"
+      ],
+      "mutates": false,
+      "output": {
+        "$ref": "#/$defs/grund.cli.v1.Context"
+      },
+      "path": "context show",
+      "summary": "One context: its instance, account, organisation and credential kind"
+    },
+    {
+      "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
+          "description": "The organisation. Default: grund org use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "name",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
+          "name": "new",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "NEW"
+        }
+      ],
+      "audience": "client",
+      "command": "grund context rename",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund context rename grund.example.com home-lab"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.cli.v1.Done"
+      },
+      "path": "context rename",
+      "summary": "Rename a context"
+    },
+    {
+      "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
+          "description": "The organisation. Default: grund org use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "name",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
+          "description": "Do not ask; needed when nobody can be asked",
+          "flag": "--yes",
+          "name": "yes",
+          "type": "boolean",
+          "value_name": "YES"
+        }
+      ],
+      "audience": "client",
+      "command": "grund context remove",
+      "destructive": true,
+      "dry_run": false,
+      "examples": [
+        "grund context remove hosted --yes"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.cli.v1.Done"
+      },
+      "path": "context remove",
+      "rpcs": [
+        "grund.account.v1.AccountService/ListSessions",
+        "grund.account.v1.AccountService/RevokeSession"
+      ],
+      "summary": "Forget a context and its credential, ending its session at the instance"
+    },
+    {
+      "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -4279,6 +4739,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -4336,6 +4804,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -4387,10 +4863,18 @@
       "rpcs": [
         "grund.organisation.v1.OrganisationService/GetOrganisation"
       ],
-      "summary": "Make SLUG the default organisation on this instance (kept in the credentials file)"
+      "summary": "Make SLUG the organisation of the current context"
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -4455,6 +4939,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -4526,6 +5018,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -4596,6 +5096,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -4645,6 +5153,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -4693,6 +5209,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -4757,6 +5281,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -4813,6 +5345,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -4868,6 +5408,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -4989,6 +5537,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -5073,6 +5629,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -5145,6 +5709,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -5241,6 +5813,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -5296,6 +5876,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -5367,6 +5955,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -5566,6 +6162,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -5658,6 +6262,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -5760,6 +6372,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -5860,6 +6480,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -5962,6 +6590,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -6091,6 +6727,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -6190,6 +6834,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -6292,6 +6944,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -6384,6 +7044,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -6529,6 +7197,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -6626,6 +7302,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -6714,6 +7398,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -6784,6 +7476,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -6839,6 +7539,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -6918,6 +7626,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -7054,6 +7770,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -7116,6 +7840,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -7171,6 +7903,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -7299,6 +8039,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -7389,6 +8137,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -7488,6 +8244,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -7589,6 +8353,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -7689,6 +8461,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -7782,6 +8562,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -7837,6 +8625,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -7901,6 +8697,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -8007,6 +8811,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -8084,6 +8896,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -8154,6 +8974,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -8217,6 +9045,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -8319,6 +9155,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -8382,6 +9226,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -8467,6 +9319,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -8575,6 +9435,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -8652,6 +9520,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -8721,6 +9597,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -8797,6 +9681,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -8883,6 +9775,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -8932,6 +9832,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -8980,6 +9888,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -9038,6 +9954,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -9146,6 +10070,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -9225,6 +10157,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -9289,6 +10229,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -9352,6 +10300,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -9425,6 +10381,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -9482,6 +10446,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -9538,6 +10510,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -9602,6 +10582,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -9673,6 +10661,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -9736,6 +10732,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -9798,6 +10802,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -9877,6 +10889,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -9947,6 +10967,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -10016,6 +11044,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -10095,6 +11131,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -10172,6 +11216,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -10220,6 +11272,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -10294,6 +11354,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -10372,6 +11440,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -10444,6 +11520,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -10492,6 +11576,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -10565,6 +11657,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -10637,6 +11737,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -10685,6 +11793,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -10757,6 +11873,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -10805,6 +11929,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -10878,6 +12010,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -10948,6 +12088,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -10999,6 +12147,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -11068,6 +12224,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -11110,6 +12274,14 @@
     },
     {
       "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
         {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
@@ -11165,6 +12337,14 @@
     {
       "args": [
         {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
           "description": "The organisation. Default: grund org use, else the token's, else the only one",
           "env": "GRUND_ORG",
           "flag": "--org",
@@ -11208,10 +12388,11 @@
   ],
   "conventions": {
     "confirmation": "Commands marked destructive ask on a terminal, and need --yes when stdin or stderr is not one, or with --output json.",
-    "credentials": "GRUND_TOKEN (a personal access token, grund_pat_…) and GRUND_INSTANCE, else the credentials file grund auth login writes (mode 0600; GRUND_CREDENTIALS_FILE, else $XDG_CONFIG_HOME/grund/credentials.yaml).",
-    "dry_run": "--dry-run prints grund.cli.v1.DryRun (apps deploy: grund.cli.v1.DeployResult with dryRun set) and changes nothing. A release's dry run is checked by the instance as a deploy is.",
+    "context": "--context, else GRUND_CONTEXT, else the current context (grund context use). A context is an instance, its credential and an organisation; grund auth login makes one.",
+    "credentials": "GRUND_TOKEN (a personal access token, grund_pat_…) and GRUND_INSTANCE, else the context's credential, kept in the config file (mode 0600; GRUND_CONFIG, else $XDG_CONFIG_HOME/grund/config.yaml).",
+    "dry_run": "--dry-run prints grund.cli.v1.DryRun (app deploy: grund.cli.v1.DeployResult with dryRun set) and changes nothing. A release's dry run is checked by the instance as a deploy is.",
     "errors": "A failed command prints grund.cli.v1.ErrorOutput on stderr with --output json, and exits with its code's status.",
-    "organisation": "--org, else GRUND_ORG, else grund org use, else the token's organisation, else the account's only one.",
+    "organisation": "--org, else GRUND_ORG, else the context's (grund org use), else the token's organisation, else the account's only one.",
     "output": "--output json (or --json, or GRUND_OUTPUT=json) prints one JSON document on stdout: the protobuf JSON of the message the command's output names. Fields at their default may be absent. 64-bit integers are strings."
   },
   "environment": [
@@ -11220,8 +12401,12 @@
       "name": "GRUND_INSTANCE"
     },
     {
-      "description": "A personal access token; overrides the credentials file. Never put a token on the command line.",
+      "description": "A personal access token; overrides the context's credential. Never put a token on the command line.",
       "name": "GRUND_TOKEN"
+    },
+    {
+      "description": "The context, as --context.",
+      "name": "GRUND_CONTEXT"
     },
     {
       "description": "The organisation, as --org.",
@@ -11232,8 +12417,8 @@
       "name": "GRUND_OUTPUT"
     },
     {
-      "description": "Where grund auth login keeps credentials.",
-      "name": "GRUND_CREDENTIALS_FILE"
+      "description": "The config file, which holds the contexts and their credentials. GRUND_CREDENTIALS_FILE, its earlier name, works too.",
+      "name": "GRUND_CONFIG"
     }
   ],
   "exit_codes": [

@@ -20,6 +20,9 @@ fields, not text.
    token in chat and never put one on a command line.
 2. Exit 2 with `organisation_required`: pass `--org <slug>` (the error lists
    them), or `grund org use <slug>` once.
+3. Several instances or organisations: `grund context list --json` shows the
+   user's contexts; pass `--context <name>` per command rather than switching
+   theirs with `grund context use`.
 
 ## Deploy
 

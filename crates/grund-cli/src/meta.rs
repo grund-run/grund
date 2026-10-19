@@ -247,6 +247,38 @@ pub const LEAVES: &[Leaf] = &[
         &["grund auth status --json"],
     ),
     read(
+        "context list",
+        "grund.cli.v1.ContextList",
+        &[],
+        &["grund context list", "grund context list --json"],
+    ),
+    write(
+        "context use",
+        "grund.cli.v1.Done",
+        &[],
+        &["grund context use hosted"],
+    ),
+    read(
+        "context show",
+        "grund.cli.v1.Context",
+        &[],
+        &["grund context show", "grund context show hosted --json"],
+    ),
+    write(
+        "context rename",
+        "grund.cli.v1.Done",
+        &[],
+        &["grund context rename grund.example.com home-lab"],
+    ),
+    destroy(
+        "context remove",
+        &[
+            "grund.account.v1.AccountService/ListSessions",
+            "grund.account.v1.AccountService/RevokeSession",
+        ],
+        &["grund context remove hosted --yes"],
+    ),
+    read(
         "org list",
         "grund.cli.v1.OrganisationList",
         &["grund.organisation.v1.OrganisationService/ListOrganisations"],
@@ -1015,7 +1047,12 @@ mod tests {
                 && !leaf.rpcs.is_empty()
                 && !matches!(
                     path.as_str(),
-                    "auth login" | "auth logout" | "org use" | "domain verify" | "domain check"
+                    "auth login"
+                        | "auth logout"
+                        | "context remove"
+                        | "org use"
+                        | "domain verify"
+                        | "domain check"
                 )
             {
                 assert!(

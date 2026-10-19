@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use crate::{
     api::Api,
     context::{Ctx, Source, set_if},
-    credentials::{self, Instance},
+    credentials::{self, Context},
     error::{CliError, CliResult, Code},
     output::{self, Format, Output},
 };
@@ -180,21 +180,34 @@ async fn device_login(
     }
 }
 
-/// Signs in and writes the credential to the credentials file.
+/// Signs in and keeps the credential in a context, which becomes current.
 pub async fn login(ctx: &Ctx, args: LoginArgs, revision: &str) -> CliResult<Output> {
-    let instance = match args.instance.as_deref().or(ctx.global.instance.as_deref()) {
-        Some(text) => credentials::origin(text)?,
-        None => {
-            let current = ctx.credentials()?.current;
-            if current.is_empty() {
-                "https://app.grund.sh".to_string()
-            } else {
-                current
-            }
-        }
-    };
     let path = ctx.credentials_path()?;
     let mut file = ctx.credentials()?;
+    let named = ctx.global.context.clone().filter(|n| !n.is_empty());
+    let existing = match &named {
+        Some(name) => file.context(name).cloned(),
+        None => file.context(&file.current).cloned(),
+    };
+    let instance = match args.instance.as_deref().or(ctx.global.instance.as_deref()) {
+        Some(text) => credentials::origin(text)?,
+        None => existing
+            .as_ref()
+            .map(|c| c.url.clone())
+            .unwrap_or_else(|| "https://app.grund.sh".to_string()),
+    };
+    let name = match named {
+        Some(name) => name,
+        None => file
+            .for_instance(&instance)
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| file.free_name(&credentials::name_for(&instance))),
+    };
+    let keep = file
+        .context(&name)
+        .filter(|c| c.url == instance)
+        .map(|c| c.organisation.clone())
+        .unwrap_or_default();
     let (credential, username, kind) = if args.with_token {
         let token = ctx.read_stdin("Token")?.trim().to_string();
         if !token.starts_with("grund_pat_") {
@@ -204,35 +217,26 @@ pub async fn login(ctx: &Ctx, args: LoginArgs, revision: &str) -> CliResult<Outp
         let current = api
             .call("grund.token.v1.TokenService/GetCurrentToken", json!({}))
             .await?;
-        let organisation = current["organisation"]
+        let username = current["token"]["createdBy"]
             .as_str()
             .unwrap_or_default()
             .to_string();
-        file.put(Instance {
+        file.put(Context {
+            name: name.clone(),
             url: instance.clone(),
             credential: token.clone(),
-            username: current["token"]["createdBy"]
+            username: username.clone(),
+            organisation: current["organisation"]
                 .as_str()
                 .unwrap_or_default()
                 .to_string(),
-            organisation,
         });
-        (
-            token,
-            current["token"]["createdBy"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string(),
-            "token",
-        )
+        (token, username, "token")
     } else {
         let anonymous = Api::new(&instance, None)?;
         let (token, username) = device_login(ctx, &anonymous, &args, revision).await?;
-        let keep = file
-            .instance(&instance)
-            .map(|i| i.organisation.clone())
-            .unwrap_or_default();
-        file.put(Instance {
+        file.put(Context {
+            name: name.clone(),
             url: instance.clone(),
             credential: token.clone(),
             username: username.clone(),
@@ -241,8 +245,8 @@ pub async fn login(ctx: &Ctx, args: LoginArgs, revision: &str) -> CliResult<Outp
         (token, username, "session")
     };
     let mut organisation = file
-        .instance(&instance)
-        .map(|i| i.organisation.clone())
+        .context(&name)
+        .map(|c| c.organisation.clone())
         .unwrap_or_default();
     if organisation.is_empty() && kind == "session" {
         let api = Api::new(&instance, Some(credential))?;
@@ -257,13 +261,14 @@ pub async fn login(ctx: &Ctx, args: LoginArgs, revision: &str) -> CliResult<Outp
                 .as_str()
                 .unwrap_or_default()
                 .to_string();
-            if let Some(entry) = file.instances.iter_mut().find(|i| i.url == instance) {
-                entry.organisation = organisation.clone();
+            if let Some(context) = file.context_mut(&name) {
+                context.organisation = organisation.clone();
             }
         }
     }
     file.save(&path)?;
     let mut result = json!({
+        "context": name,
         "instance": instance,
         "credential": kind,
         "credentialsFile": path.display().to_string(),
@@ -313,7 +318,14 @@ pub async fn logout(ctx: &Ctx) -> CliResult<Output> {
     }
     let path = ctx.credentials_path()?;
     let mut file = ctx.credentials()?;
-    file.remove(&instance);
+    let name = ctx
+        .context()?
+        .filter(|c| c.url == instance)
+        .or_else(|| file.for_instance(&instance).cloned())
+        .map(|c| c.name);
+    if let Some(name) = name {
+        file.remove(&name);
+    }
     file.save(&path)?;
     let message = if revoked {
         format!("Signed out of {instance}: the session is revoked and forgotten.")
@@ -335,9 +347,14 @@ pub async fn status(ctx: &Ctx) -> CliResult<Output> {
         "credential": credential.kind(),
         "credentialSource": match credential.source {
             Source::Environment => "GRUND_TOKEN",
-            Source::File => "credentials file",
+            Source::File => "context",
         },
     });
+    if credential.source == Source::File
+        && let Some(context) = ctx.context()?.filter(|c| c.url == instance)
+    {
+        result["context"] = json!(context.name);
+    }
     if credential.kind() == "token" {
         let current = api
             .call("grund.token.v1.TokenService/GetCurrentToken", json!({}))

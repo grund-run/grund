@@ -23,9 +23,7 @@ pub enum OrgsAction {
         #[arg(value_name = "SLUG", help = "Default: the default organisation")]
         slug: Option<String>,
     },
-    #[command(
-        about = "Make SLUG the default organisation on this instance (kept in the credentials file)"
-    )]
+    #[command(about = "Make SLUG the organisation of the current context")]
     Use {
         #[arg(value_name = "SLUG")]
         slug: String,
@@ -94,17 +92,23 @@ pub async fn run(ctx: &Ctx, action: OrgsAction) -> CliResult<Output> {
             let instance = api.origin().to_string();
             let path = ctx.credentials_path()?;
             let mut file = ctx.credentials()?;
-            let Some(entry) = file.instances.iter_mut().find(|i| i.url == instance) else {
+            let name = ctx
+                .context()?
+                .filter(|c| c.url == instance)
+                .or_else(|| file.for_instance(&instance).cloned())
+                .map(|c| c.name);
+            let Some(context) = name.and_then(|n| file.context_mut(&n)) else {
                 return Err(CliError::new(
                     Code::NotSignedIn,
-                    format!("{instance} is not in the credentials file"),
+                    format!("no context is for {instance}"),
                 )
                 .hint("with GRUND_TOKEN, pass --org or set GRUND_ORG instead"));
             };
-            entry.organisation = slug.clone();
+            context.organisation = slug.clone();
+            let name = context.name.clone();
             file.save(&path)?;
             Ok(Output::line(
-                json!({"message": format!("{slug} is the default organisation on {instance}.")}),
+                json!({"message": format!("{slug} is the organisation of context {name}.")}),
                 "/message",
             ))
         }

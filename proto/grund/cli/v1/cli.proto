@@ -45,7 +45,8 @@ message Whoami {
   string instance = 1;
   // session (from `grund auth login`) or token (a personal access token).
   string credential = 2;
-  // From GRUND_TOKEN, the credentials file, or nothing.
+  // GRUND_TOKEN, or context (the context's credential, kept in the config
+  // file; "credentials file" before 2026-10-19).
   string credential_source = 3;
   // For a session.
   string username = 4;
@@ -57,6 +58,9 @@ message Whoami {
   repeated grund.organisation.v1.Organisation organisations = 7;
   // For a token.
   grund.token.v1.Token token = 8;
+  // The context the command ran in; empty with GRUND_INSTANCE and
+  // GRUND_TOKEN.
+  string context = 9;
 }
 
 // `grund auth login`.
@@ -65,10 +69,33 @@ message LoginResult {
   string username = 2;
   // session or token.
   string credential = 3;
-  // Where the credential was written.
+  // Where the credential was written: the config file.
   string credentials_file = 4;
   // The organisation chosen as the default, if one was.
   string organisation = 5;
+  // The context made or refreshed, now the current one.
+  string context = 6;
+}
+
+// `grund context list`.
+message ContextList {
+  // The context commands use without --context or GRUND_CONTEXT.
+  string current = 1;
+  repeated Context contexts = 2;
+}
+
+// `grund context show`: an instance, the credential for it and the
+// organisation commands act on there. The credential itself is never
+// printed.
+message Context {
+  string name = 1;
+  // The instance's origin.
+  string instance = 2;
+  string username = 3;
+  string organisation = 4;
+  // session (from `grund auth login`) or token (a personal access token).
+  string credential = 5;
+  bool current = 6;
 }
 
 // `grund org list`.

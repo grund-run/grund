@@ -4,6 +4,7 @@
 pub mod app_telemetry;
 pub mod apps;
 pub mod auth;
+pub mod contexts;
 pub mod domains;
 pub mod machines;
 pub mod members;
@@ -32,6 +33,7 @@ pub const CLIENT_NOUNS: &[&str] = &[
     "uninstall",
     "update",
     "auth",
+    "context",
     "org",
     "app",
     "stack",
@@ -62,6 +64,8 @@ pub enum Command {
     Update(system_update::UpdateArgs),
     #[command(about = "Sign in and access tokens")]
     Auth(auth::AuthCommand),
+    #[command(about = "Switch between instances and organisations")]
+    Context(contexts::ContextsCommand),
     #[command(about = "Organisations and the default one")]
     Org(orgs::OrgsCommand),
     #[command(about = "Deploy, inspect and change apps")]
@@ -107,6 +111,7 @@ impl Command {
             Command::Uninstall(a) => &a.global,
             Command::Update(a) => &a.global,
             Command::Auth(c) => &c.global,
+            Command::Context(c) => &c.global,
             Command::Org(c) => &c.global,
             Command::App(c) => &c.global,
             Command::Stack(c) => &c.global,
@@ -142,6 +147,7 @@ pub async fn execute(
             auth::AuthAction::Status => auth::status(ctx).await?,
             auth::AuthAction::Token { action } => tokens::run(ctx, action).await?,
         },
+        Command::Context(command) => contexts::run(ctx, command.action).await?,
         Command::Org(command) => orgs::run(ctx, command.action).await?,
         Command::App(command) => match command.action {
             apps::AppsAction::Logs(args) if args.options.follow => {

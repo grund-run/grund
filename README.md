@@ -504,12 +504,16 @@ add` still enrolls your own machine and never rents one.
   stale single-app release. The API exposes the same through
   `AppService.PreviewDeploy`, `GetApp.version` and
   `DeployRequest.expected_version`.
-- `--instance URL` and `--org SLUG` work before or after the noun; explicit
-  values override `GRUND_INSTANCE` and `GRUND_ORG`. For CI use `GRUND_TOKEN`
-  (a personal access token); otherwise `grund auth login` writes
-  `~/.config/grund/credentials.yaml` (mode 0600; a file others can read is
-  refused). Organisation fallback remains `grund org use`, then the token's
-  organisation, then your only one.
+- A context is an instance, its credential and an organisation, by name.
+  `grund auth login URL [--context NAME]` makes one and makes it current;
+  `grund context list|use|show|rename|remove` manages them, and `--context
+  NAME` (or `GRUND_CONTEXT`) picks one for a single command. They live in
+  `~/.config/grund/config.yaml` (mode 0600; a file others can read is
+  refused); an older `credentials.yaml` becomes one context per instance on
+  first use and is kept as `credentials.yaml.old`. For CI use `GRUND_TOKEN`
+  (a personal access token) with `GRUND_INSTANCE`. `--org SLUG` (or
+  `GRUND_ORG`) overrides the context's organisation (`grund org use`), then
+  the token's, then your only one. Flags work before or after the noun.
 - For agents: `grund describe --json` is the whole command tree with types,
   defaults, examples, output schemas and error codes, generated from the
   code; [schema/cli.json](schema/cli.json) is this commit's. `grund schema

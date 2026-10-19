@@ -1091,3 +1091,104 @@ async fn a_full_token_configures_app_addresses_and_the_cli_defaults_or_replaces_
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn contexts_name_an_instance_its_credential_and_organisation_and_the_older_file_migrates()
+-> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Some((given, when, then)) = testcase_configured(&[]).await? else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let org = owner.username.as_str();
+    let instance = origin(&when);
+    let host = instance
+        .split_once("://")
+        .map_or(instance.as_str(), |(_, h)| h);
+    let token = a_token(&when, &then, org, "contexts", "full").await?;
+    let shell = Shell::fresh(&[])?;
+    let config = shell.home.join(".config").join("grund");
+    std::fs::create_dir_all(&config)?;
+    let older = config.join("credentials.yaml");
+    std::fs::write(
+        &older,
+        format!("current: {instance}\ninstances:\n- url: {instance}\n  credential: {token}\n"),
+    )?;
+    std::fs::set_permissions(&older, std::fs::Permissions::from_mode(0o600))?;
+
+    let listed = shell.json("context list", &[]).await?;
+    anyhow::ensure!(
+        listed["current"] == host
+            && listed["contexts"][0]["instance"] == instance
+            && listed["contexts"][0]["credential"] == "token"
+            && !listed.to_string().contains(&token),
+        "the older file did not become one current context: {listed}"
+    );
+    anyhow::ensure!(
+        !older.exists() && config.join("credentials.yaml.old").exists(),
+        "the older file was not kept as credentials.yaml.old"
+    );
+    let mode = std::fs::metadata(config.join("config.yaml"))?
+        .permissions()
+        .mode();
+    anyhow::ensure!(mode & 0o777 == 0o600, "config.yaml is mode {mode:o}");
+
+    let login = shell
+        .json_with(
+            "auth login",
+            &[&instance, "--with-token", "--context", "ci"],
+            &token,
+        )
+        .await?;
+    anyhow::ensure!(login["context"] == "ci", "{login}");
+    let listed = shell.json("context list", &[]).await?;
+    anyhow::ensure!(
+        listed["current"] == "ci" && listed["contexts"].as_array().map(Vec::len) == Some(2),
+        "login --context did not add and choose ci: {listed}"
+    );
+
+    let app = given.a_fresh_name("ctx");
+    shell.json("app create", &[&app]).await?;
+    shell.json("context use", &[host]).await?;
+    let elsewhere = shell
+        .json("app list", &["--context", "ci", "--org", org])
+        .await?;
+    anyhow::ensure!(
+        elsewhere["apps"]
+            .as_array()
+            .is_some_and(|apps| apps.iter().any(|a| a["name"] == app)),
+        "--context did not reach ci's instance"
+    );
+    let shown = shell.json("context show", &["ci"]).await?;
+    anyhow::ensure!(
+        shown["name"] == "ci" && shown["current"].is_null(),
+        "context show: {shown}"
+    );
+
+    shell.json("context rename", &["ci", "pipeline"]).await?;
+    shell.json("context use", &["pipeline"]).await?;
+    shell.json("org use", &[org]).await?;
+    let shown = shell.json("context show", &[]).await?;
+    anyhow::ensure!(
+        shown["name"] == "pipeline" && shown["organisation"] == org && shown["current"] == true,
+        "org use did not set the current context's organisation: {shown}"
+    );
+
+    let missing = shell
+        .run(&["app", "list", "--context", "nowhere", "--json"])
+        .await?;
+    anyhow::ensure!(
+        missing.status == 5 && missing.error()?["code"] == "not_found",
+        "an unknown context was not refused: {}",
+        missing.stderr
+    );
+
+    shell.json("context remove", &["pipeline", "--yes"]).await?;
+    let listed = shell.json("context list", &[]).await?;
+    anyhow::ensure!(
+        listed["current"] == host && listed["contexts"].as_array().map(Vec::len) == Some(1),
+        "removing the current context did not leave the other current: {listed}"
+    );
+    Ok(())
+}
