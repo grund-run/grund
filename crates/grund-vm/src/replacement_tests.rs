@@ -124,7 +124,6 @@ fn journal() -> Journal {
     }
 }
 fn committed_execution(runtime: &Firecracker) -> Journal {
-    // VM UIDs are process-global even when fixture data directories are separate.
     static NEXT_ADDRESS: AtomicU8 = AtomicU8::new(128);
     let address = NEXT_ADDRESS
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |address| {
