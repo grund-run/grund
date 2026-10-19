@@ -407,6 +407,70 @@ fn process_record(pid: u32) -> anyhow::Result<Option<(VmProcessIdentity, bool)>>
     )))
 }
 
+fn same_kernel_object(observed: &Path, expected: &Path) -> anyhow::Result<bool> {
+    let observed_file = File::open(observed)?;
+    let observed = observed_file.metadata()?;
+    let expected = std::fs::symlink_metadata(expected)?;
+    ensure!(
+        expected.is_file() || expected.is_dir(),
+        "jail association is not a regular file or directory"
+    );
+    Ok(observed.dev() == expected.dev() && observed.ino() == expected.ino())
+}
+
+pub(crate) struct LaunchGuard {
+    pub(crate) pid: u32,
+    fd: OwnedFd,
+    armed: bool,
+}
+
+impl LaunchGuard {
+    pub(crate) fn new(child: &mut tokio::process::Child) -> anyhow::Result<Self> {
+        let pid = child
+            .id()
+            .ok_or_else(|| anyhow::anyhow!("the spawned VMM has already exited"))?;
+        let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+        ensure!(raw >= 0, "cannot pin the spawned VMM");
+        let fd = unsafe { OwnedFd::from_raw_fd(raw as i32) };
+        ensure!(
+            child.try_wait()?.is_none(),
+            "the spawned VMM already exited"
+        );
+        Ok(Self {
+            pid,
+            fd,
+            armed: true,
+        })
+    }
+
+    pub(crate) async fn fence(&mut self) -> anyhow::Result<()> {
+        fence_pidfd(&self.fd).await?;
+        self.armed = false;
+        Ok(())
+    }
+
+    pub(crate) fn finish(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for LaunchGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = signal_pidfd(&self.fd);
+        }
+    }
+}
+
+pub(crate) fn finish_failed_launch(dir: &Path) -> anyhow::Result<()> {
+    match std::fs::remove_file(dir.join("launch.intent")) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    sync_dir(dir)
+}
+
 fn validate_process_owner(
     runtime: &Firecracker,
     dir: &Path,
@@ -417,7 +481,7 @@ fn validate_process_owner(
         identity.uid == crate::jail::uid(octet),
         "VMM process uid does not own this VM"
     );
-    let exe = std::fs::read_link(format!("/proc/{}/exe", identity.pid))?;
+    let exe = PathBuf::from(format!("/proc/{}/exe", identity.pid));
     let expected = runtime
         .inner
         .jail
@@ -426,7 +490,7 @@ fn validate_process_owner(
         .root(dir)
         .join("firecracker");
     ensure!(
-        exe == expected,
+        same_kernel_object(&exe, &expected)?,
         "VMM executable does not belong to this VM's jail"
     );
     Ok(())
@@ -641,8 +705,8 @@ async fn adopt_or_recorded(
         .context("legacy VM is not jailed")?;
     let root = jail.root(dir);
     ensure!(
-        std::fs::read_link(format!("/proc/{pid}/root"))? == root
-            && std::fs::read_link(format!("/proc/{pid}/cwd"))? == root,
+        same_kernel_object(&PathBuf::from(format!("/proc/{pid}/root")), &root)?
+            && same_kernel_object(&PathBuf::from(format!("/proc/{pid}/cwd")), &root)?,
         "legacy VMM jail association does not match"
     );
     let executable = &runtime.inner.config.firecracker;
@@ -778,6 +842,10 @@ async fn fence_identity(identity: &VmProcessIdentity) -> anyhow::Result<()> {
     if !same_process_start(identity)? || pidfd_exited(&fd)? {
         return Ok(());
     }
+    fence_pidfd(&fd).await
+}
+
+fn signal_pidfd(fd: &OwnedFd) -> anyhow::Result<()> {
     let result = unsafe {
         libc::syscall(
             libc::SYS_pidfd_send_signal,
@@ -791,8 +859,13 @@ async fn fence_identity(identity: &VmProcessIdentity) -> anyhow::Result<()> {
         result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH),
         "cannot physically fence VMM"
     );
+    Ok(())
+}
+
+async fn fence_pidfd(fd: &OwnedFd) -> anyhow::Result<()> {
+    signal_pidfd(fd)?;
     let end = tokio::time::Instant::now() + Duration::from_secs(5);
-    while !pidfd_exited(&fd)? {
+    while !pidfd_exited(fd)? {
         ensure!(
             tokio::time::Instant::now() < end,
             "VMM did not exit; replacement refused"
@@ -1784,8 +1857,8 @@ async fn launch(
         transition(journal, Phase::Starting);
     }
     save(runtime, journal)?;
-    let pid = match runtime.launch(&spec.id, &dir).await {
-        Ok(pid) => pid,
+    let mut launched = match runtime.launch(&spec.id, &dir).await {
+        Ok(launched) => launched,
         Err(_) => {
             return uncertain(
                 runtime,
@@ -1794,6 +1867,7 @@ async fn launch(
             );
         }
     };
+    let pid = launched.pid;
     let identity = process_identity(pid)?.context("VMM exited before configuration")?;
     validate_process_owner(runtime, &dir, &identity)?;
     if rollback {
@@ -1840,6 +1914,7 @@ async fn launch(
         })
         .await;
     if !matches!(configured, Ok(Ok(()))) {
+        launched.fence().await?;
         return uncertain(
             runtime,
             journal,
@@ -1857,6 +1932,7 @@ async fn launch(
             Phase::CandidateRunning
         },
     );
+    launched.finish();
     Ok(())
 }
 

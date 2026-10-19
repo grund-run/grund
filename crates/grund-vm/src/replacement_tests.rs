@@ -1333,3 +1333,87 @@ async fn losing_the_agent_process_kills_its_tool_and_releases_only_the_tools_inh
     drop(next);
     std::fs::remove_dir_all(path).unwrap();
 }
+
+#[test]
+fn jail_association_uses_pinned_kernel_objects_and_refuses_replaced_paths() {
+    let path = scratch();
+    let executable = path.join("firecracker");
+    let alias = path.join("same-executable");
+    let other = path.join("different-executable");
+    std::fs::write(&executable, b"same contents").unwrap();
+    std::fs::hard_link(&executable, &alias).unwrap();
+    std::fs::write(&other, b"same contents").unwrap();
+    let held = File::open(&executable).unwrap();
+    let observed = PathBuf::from(format!("/proc/self/fd/{}", held.as_raw_fd()));
+    assert!(same_kernel_object(&observed, &alias).unwrap());
+    assert!(!same_kernel_object(&observed, &other).unwrap());
+    let symlink = path.join("symlink");
+    std::os::unix::fs::symlink(&executable, &symlink).unwrap();
+    assert!(same_kernel_object(&observed, &symlink).is_err());
+    std::fs::remove_file(&executable).unwrap();
+    std::fs::write(&executable, b"same contents").unwrap();
+    assert!(!same_kernel_object(&observed, &executable).unwrap());
+
+    let root = path.join("root");
+    std::fs::create_dir(&root).unwrap();
+    let held_root = File::open(&root).unwrap();
+    let observed_root = PathBuf::from(format!("/proc/self/fd/{}", held_root.as_raw_fd()));
+    assert!(same_kernel_object(&observed_root, &root).unwrap());
+    std::fs::rename(&root, path.join("previous-root")).unwrap();
+    std::fs::create_dir(&root).unwrap();
+    assert!(!same_kernel_object(&observed_root, &root).unwrap());
+    drop((held, held_root));
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[tokio::test]
+async fn a_cancelled_launch_fences_only_its_pinned_process() {
+    use std::os::unix::process::ExitStatusExt;
+
+    let mut candidate = tokio::process::Command::new("sleep")
+        .arg("30")
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut other = tokio::process::Command::new("sleep")
+        .arg("30")
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let launch = LaunchGuard::new(&mut candidate).unwrap();
+    drop(launch);
+    let stopped = tokio::time::timeout(Duration::from_secs(2), candidate.wait())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stopped.signal(), Some(libc::SIGKILL));
+    assert!(other.try_wait().unwrap().is_none());
+    other.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_configured_launch_survives_the_temporary_fence_handoff() {
+    let mut candidate = tokio::process::Command::new("sleep")
+        .arg("30")
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    LaunchGuard::new(&mut candidate).unwrap().finish();
+    assert!(candidate.try_wait().unwrap().is_none());
+    candidate.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn an_exited_child_cannot_arm_a_launch_fence() {
+    let mut candidate = tokio::process::Command::new("sleep")
+        .arg("30")
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, candidate.id().unwrap(), 0) };
+    assert!(raw >= 0);
+    let fd = unsafe { OwnedFd::from_raw_fd(raw as i32) };
+    fence_pidfd(&fd).await.unwrap();
+    assert!(LaunchGuard::new(&mut candidate).is_err());
+    candidate.wait().await.unwrap();
+}

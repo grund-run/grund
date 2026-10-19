@@ -294,7 +294,7 @@ impl Firecracker {
             }
             None => kernel,
         };
-        let pid = self.launch(&spec.id, &dir).await?;
+        let mut launched = self.launch(&spec.id, &dir).await?;
         let api = Api::new(self.socket(&dir));
         let configured = async {
             for (path, body) in boot_sequence(spec, &kernel, self.guest_network(&dir)) {
@@ -305,9 +305,20 @@ impl Firecracker {
         }
         .await;
         if let Err(error) = configured {
-            signal(pid, libc::SIGKILL);
+            launched.fence().await.map_err(|cleanup| {
+                format!("firecracker refused the VM: {error}; launch fence: {cleanup:#}")
+            })?;
+            self.inner
+                .children
+                .lock()
+                .expect("children")
+                .remove(&spec.id);
+            replacement::finish_failed_launch(&dir).map_err(|cleanup| {
+                format!("firecracker refused the VM: {error}; launch receipt: {cleanup:#}")
+            })?;
             return Err(format!("firecracker refused the VM: {error}"));
         }
+        launched.finish();
         Ok(())
     }
 
@@ -329,8 +340,8 @@ impl Firecracker {
         }
     }
 
-    async fn launch(&self, id: &str, dir: &Path) -> Result<u32, String> {
-        let child = replacement::spawn_prepared(dir, || {
+    async fn launch(&self, id: &str, dir: &Path) -> Result<replacement::LaunchGuard, String> {
+        let mut child = replacement::spawn_prepared(dir, || {
             let _ = std::fs::remove_file(self.socket(dir));
             let _ = std::fs::remove_file(dir.join("firecracker.pid"));
             let log = std::fs::OpenOptions::new()
@@ -390,28 +401,56 @@ impl Firecracker {
                 .map_err(|e| format!("cannot start firecracker: {e}"))
         })?;
         let pid = child.id().ok_or("firecracker exited at once")?;
-        std::fs::write(dir.join("firecracker.pid"), pid.to_string())
-            .map_err(|e| format!("pid file: {e}"))?;
-        self.inner
-            .children
-            .lock()
-            .expect("children")
-            .insert(id.to_string(), child);
-        let socket = self.socket(dir);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !socket.exists() {
-            if !process_alive(pid) || Instant::now() > deadline {
-                signal(pid, libc::SIGKILL);
-                return Err(format!(
-                    "firecracker did not open its API socket: {}",
-                    log_tail(&dir.join("firecracker.log"))
-                ));
+        let mut launched = match replacement::LaunchGuard::new(&mut child) {
+            Ok(launched) => launched,
+            Err(error) => {
+                let stopped = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
+                if !matches!(stopped, Ok(Ok(_))) {
+                    return Err(format!(
+                        "cannot pin VMM: {error:#}; child exit remains uncertain"
+                    ));
+                }
+                replacement::finish_failed_launch(dir).map_err(|cleanup| {
+                    format!("cannot pin VMM: {error:#}; launch receipt: {cleanup:#}")
+                })?;
+                return Err(format!("cannot pin VMM: {error:#}"));
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        let prepared: Result<(), String> = async {
+            std::fs::write(dir.join("firecracker.pid"), pid.to_string())
+                .map_err(|e| format!("pid file: {e}"))?;
+            self.inner
+                .children
+                .lock()
+                .expect("children")
+                .insert(id.to_string(), child);
+            let socket = self.socket(dir);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !socket.exists() {
+                if !process_alive(pid) || Instant::now() > deadline {
+                    return Err(format!(
+                        "firecracker did not open its API socket: {}",
+                        log_tail(&dir.join("firecracker.log"))
+                    ));
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            replacement::record_process(self, dir, pid)
+                .map_err(|e| format!("process identity: {e:#}"))?;
+            Ok(())
         }
-        replacement::record_process(self, dir, pid)
-            .map_err(|e| format!("process identity: {e:#}"))?;
-        Ok(pid)
+        .await;
+        if let Err(error) = prepared {
+            launched
+                .fence()
+                .await
+                .map_err(|cleanup| format!("{error}; launch fence: {cleanup:#}"))?;
+            self.inner.children.lock().expect("children").remove(id);
+            replacement::finish_failed_launch(dir)
+                .map_err(|cleanup| format!("{error}; launch receipt: {cleanup:#}"))?;
+            return Err(error);
+        }
+        Ok(launched)
     }
 
     fn reserve(&self, id: &str, shape: &Shape) -> Result<(), String> {
@@ -737,12 +776,6 @@ fn process_alive(pid: u32) -> bool {
                 .is_some_and(|state| state != "Z" && state != "X")
         })
         .unwrap_or(false)
-}
-
-fn signal(pid: u32, signal: libc::c_int) {
-    if let Ok(pid) = libc::pid_t::try_from(pid) {
-        unsafe { libc::kill(pid, signal) };
-    }
 }
 
 fn log_tail(path: &Path) -> String {
