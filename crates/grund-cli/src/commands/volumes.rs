@@ -115,7 +115,7 @@ pub enum VolumesAction {
         action: BackupsAction,
     },
     #[command(
-        about = "Restore one verified backup recovery point into a NEW app-owned managed directory"
+        about = "Request an asynchronous restore into a NEW app-owned directory or hosted block volume"
     )]
     Restore {
         app: String,
@@ -129,7 +129,11 @@ pub enum VolumesAction {
         name: String,
         #[arg(long, required = true, help = "Container path of the new volume")]
         path: String,
-        #[arg(long, required = true, help = "Target own-machine id")]
+        #[arg(
+            long,
+            required = true,
+            help = "Eligible target machine ID; hosted restores stay on the snapshot's physical host"
+        )]
         machine: String,
         #[arg(long)]
         yes: bool,
@@ -219,6 +223,24 @@ async fn find(api: &Api, org: &str, app: &str, volume: &str) -> CliResult<Value>
         })
 }
 
+fn volume_status_output(volume: Value) -> Output {
+    let output = Output::fields(volume);
+    let row = &output.value;
+    let name = row["name"].as_str().unwrap_or_default();
+    if row["restoreStatus"] != "completed"
+        || !matches!(row["status"].as_str(), Some("available" | "attached"))
+        || !row["lostHostName"].as_str().unwrap_or_default().is_empty()
+        || name.is_empty()
+    {
+        return output;
+    }
+    let mut text = output.render(crate::output::Format::Text);
+    text.push_str(&format!(
+        "\nRestore completed; the app is not switched automatically.\nFor a template service, set this line under that service in its stack YAML:\n  data_volume: {name}\nSave the stack file, then deploy it with grund stacks deploy -f <stack-file>.\n"
+    ));
+    Output::with_text(output.value, text)
+}
+
 pub async fn run(ctx: &Ctx, action: VolumesAction) -> CliResult<Output> {
     let api = ctx.api()?;
     let org = ctx.org(&api).await?;
@@ -240,7 +262,7 @@ pub async fn run(ctx: &Ctx, action: VolumesAction) -> CliResult<Output> {
                     json!({"organisation": org, "app": app, "volumeId": row["volumeId"]}),
                 )
                 .await?;
-            Ok(Output::fields(answer["volume"].clone()))
+            Ok(volume_status_output(answer["volume"].clone()))
         }
         VolumesAction::Create {
             app,
@@ -475,7 +497,12 @@ pub async fn run(ctx: &Ctx, action: VolumesAction) -> CliResult<Output> {
             let answer = api
                 .call(&format!("{SERVICE}/RestoreRecoveryPoint"), request)
                 .await?;
-            Ok(Output::fields(answer))
+            let output = Output::fields(answer);
+            let mut text = output.render(crate::output::Format::Text);
+            text.push_str(&format!(
+                "\nRestore requested; completion is asynchronous. Check the new volume with grund volumes show {app} {name} before changing the app. The source is unchanged; the app is not switched automatically.\n"
+            ));
+            Ok(Output::with_text(output.value, text))
         }
         VolumesAction::AcceptEmpty {
             app,
@@ -606,6 +633,42 @@ pub async fn run(ctx: &Ctx, action: VolumesAction) -> CliResult<Output> {
                 .call(&format!("{SERVICE}/DeleteVolume"), request)
                 .await?;
             Ok(Output::fields(answer["volume"].clone()))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::output::Format;
+
+    #[test]
+    fn only_completed_live_restores_offer_cutover_without_changing_machine_output() {
+        for restore in ["", "pending", "leased", "failed", "completed"] {
+            for status in [
+                "requested",
+                "available",
+                "attached",
+                "lost",
+                "pending_deletion",
+                "deleted",
+            ] {
+                let volume = json!({
+                    "name": "actual-recovered-volume",
+                    "restoreStatus": restore,
+                    "status": status,
+                });
+                let baseline = Output::fields(volume.clone());
+                let output = volume_status_output(volume);
+                let text = output.render(Format::Text);
+                assert_eq!(
+                    text.contains("data_volume: actual-recovered-volume"),
+                    restore == "completed" && matches!(status, "available" | "attached"),
+                );
+                for format in [Format::Json, Format::Yaml] {
+                    assert_eq!(output.render(format), baseline.render(format));
+                }
+            }
         }
     }
 }

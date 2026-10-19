@@ -673,6 +673,7 @@
             ]
           },
           "properties": {
+            "data_volume": false,
             "volumes": {
               "additionalProperties": {
                 "required": [
@@ -754,6 +755,12 @@
             "integer",
             "null"
           ]
+        },
+        "data_volume": {
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+          "type": "string"
         },
         "depends_on": {
           "items": {

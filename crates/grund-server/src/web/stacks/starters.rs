@@ -14,6 +14,7 @@ pub(super) const OPTIONS: &[(&str, &str)] = &[
 pub(super) fn yaml(key: &str, schema_url: &str) -> Option<String> {
     let template_service = |key: &str| Service {
         template: Some(key.into()),
+        data_volume: None,
         depends_on: Vec::new(),
         restart: None,
         app: FileApp::default(),
@@ -84,6 +85,7 @@ pub(super) fn yaml(key: &str, schema_url: &str) -> Option<String> {
                         "web".into(),
                         Service {
                             template: None,
+                            data_volume: None,
                             depends_on: vec!["postgres".into(), "redis".into()],
                             restart: None,
                             app,
@@ -107,6 +109,7 @@ pub(super) fn yaml(key: &str, schema_url: &str) -> Option<String> {
                     "proxy".into(),
                     Service {
                         template: None,
+                        data_volume: None,
                         depends_on: vec!["web".into()],
                         restart: None,
                         app: FileApp {

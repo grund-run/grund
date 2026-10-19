@@ -215,6 +215,47 @@ impl Stacks {
             if existing.exists && existing.stack_owner != Some(id) {
                 return Err(Error::Owned);
             }
+            if let Some(selected) = &definition.services[name].data_volume {
+                let volume =
+                    grund_store::volumes::by_name(&mut **work.sql(), org, service.app_id, selected)
+                        .await?
+                        .ok_or_else(|| {
+                            invalid(
+                                format!("stack.services.{name}.data_volume"),
+                                "the selected data volume is unavailable",
+                            )
+                        })?;
+                work.load_volume(volume.volume_id).await?;
+                let volume = self
+                    .selected_data_volume(
+                        work.sql(),
+                        org,
+                        name,
+                        &definition.services[name],
+                        retained_service(&previous.revisions, name),
+                        previous.machine_id,
+                    )
+                    .await?
+                    .expect("an explicit data volume");
+                let desired = service
+                    .release
+                    .spec
+                    .volumes
+                    .first()
+                    .expect("a stateful template");
+                if desired.name != volume.name
+                    || desired.path != volume.path
+                    || desired.size_gib != volume.size_gib.map(|size| size as u64)
+                    || definition.services[name]
+                        .app
+                        .volumes
+                        .get("data")
+                        .is_none_or(|overlay| overlay.backup.is_none())
+                        && desired.backup != volume.backup
+                {
+                    return Err(Error::Conflict);
+                }
+            }
             if !existing.exists || existing.deleted {
                 live_apps += 1;
             }
@@ -636,6 +677,18 @@ impl Stacks {
         service_name: &str,
         output: &str,
     ) -> Result<String, Error> {
+        if producer.template.as_deref() == Some("seaweedfs") {
+            match output {
+                "access_key_id" => {
+                    return Self::credential(work, sealing, producer, "S3_ACCESS_KEY_ID").await;
+                }
+                "secret_access_key" => {
+                    return Self::credential(work, sealing, producer, "S3_SECRET_ACCESS_KEY").await;
+                }
+                "region" => return Ok("us-east-1".into()),
+                _ => {}
+            }
+        }
         let host = format!("{service_name}.{stack_name}.grund.internal");
         if output == "host" {
             return Ok(host);
@@ -665,6 +718,22 @@ impl Stacks {
             Some("redis") => ("redis", "REDIS_PASSWORD", 6379, "", "0"),
             _ => return Err(invalid("env", "template URL unavailable")),
         };
+        let password = Self::credential(work, sealing, producer, variable).await?;
+        let mut url = reqwest::Url::parse(&format!("{scheme}://{host}:{port}/{database}"))
+            .context("validated template URL")?;
+        url.set_username(user)
+            .map_err(|_| invalid("env", "template username cannot be encoded"))?;
+        url.set_password(Some(&password))
+            .map_err(|_| invalid("env", "template password cannot be encoded"))?;
+        Ok(url.into())
+    }
+
+    async fn credential(
+        work: &mut Work<'_>,
+        sealing: &LessSafeKey,
+        producer: &Service,
+        variable: &str,
+    ) -> Result<String, Error> {
         let secret = producer
             .release
             .spec
@@ -694,14 +763,9 @@ impl Stacks {
             &sealed,
         )
         .context("template credential cannot be opened")?;
-        let password = std::str::from_utf8(&bytes).context("template credential must be UTF-8")?;
-        let mut url = reqwest::Url::parse(&format!("{scheme}://{host}:{port}/{database}"))
-            .context("validated template URL")?;
-        url.set_username(user)
-            .map_err(|_| invalid("env", "template username cannot be encoded"))?;
-        url.set_password(Some(password))
-            .map_err(|_| invalid("env", "template password cannot be encoded"))?;
-        Ok(url.into())
+        String::from_utf8(bytes)
+            .context("template credential must be UTF-8")
+            .map_err(Into::into)
     }
 
     pub async fn restart(
@@ -1328,6 +1392,680 @@ mod tests {
             },
         )
         .await?;
+        work.commit().await?;
+        Ok(())
+    }
+
+    async fn retained_template(
+        state: &State,
+        bundle: &Bundle,
+        template: &str,
+        size_gib: Option<u64>,
+    ) -> anyhow::Result<Service> {
+        let catalogue = grund_domain::app::templates::find(template).unwrap();
+        let mut spec = catalogue.spec(false).unwrap();
+        spec.volumes[0].size_gib = size_gib;
+        spec.volumes[0].backup = true;
+        let mut work = Work::begin(&state.events, Uuid::now_v7(), "test").await?;
+        work.allow_stack(bundle.id);
+        work.app(
+            bundle.producer,
+            AppCommand::Release {
+                actor: Uuid::nil(),
+                spec,
+                image_digest: format!("sha256:{}", "a".repeat(64)),
+                platforms: Vec::new(),
+                exposed_ports: None,
+                secret_versions: Vec::new(),
+                source: ReleaseSource::File,
+                external_release: None,
+                request: None,
+                rollback_of: None,
+                note: String::new(),
+                rollout_id: Uuid::now_v7(),
+                at: Utc::now(),
+            },
+        )
+        .await?;
+        let mut prior =
+            work.load_stack(bundle.id).await?.revisions[&1].services["producer"].clone();
+        prior.template = Some(template.into());
+        prior.release = work
+            .load_app(bundle.producer)
+            .await?
+            .releases
+            .last()
+            .unwrap()
+            .clone();
+        work.commit().await?;
+        Ok(prior)
+    }
+
+    fn data_selection(template: &str, name: &str, overlay: &str) -> Definition {
+        stack::parse(&format!(
+            "stack:\n  name: ordered\n  services:\n    producer:\n      template: {template}\n      data_volume: {name}\n{overlay}"
+        ))
+        .unwrap()
+    }
+
+    async fn volume_commands(
+        state: &State,
+        id: Uuid,
+        commands: Vec<VolumeCommand>,
+    ) -> anyhow::Result<()> {
+        let mut work = Work::begin(&state.events, Uuid::now_v7(), "test").await?;
+        for command in commands {
+            work.volume(id, command).await?;
+        }
+        work.commit().await?;
+        Ok(())
+    }
+
+    async fn selectable_volume(
+        state: &State,
+        bundle: &Bundle,
+        prior: &Service,
+        name: &str,
+    ) -> anyhow::Result<Uuid> {
+        let id = Uuid::now_v7();
+        let current = &prior.release.spec.volumes[0];
+        let at = Utc::now();
+        volume_commands(
+            state,
+            id,
+            vec![
+                VolumeCommand::Request {
+                    organisation_id: bundle.org,
+                    app_id: prior.app_id,
+                    name: name.into(),
+                    path: current.path.clone(),
+                    source: None,
+                    backup: false,
+                    size_gib: current.size_gib,
+                    at,
+                },
+                VolumeCommand::Place {
+                    machine_id: bundle.machine,
+                    at,
+                },
+            ],
+        )
+        .await?;
+        Ok(id)
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn every_stateful_template_selects_ready_same_app_data_without_resizing_or_replacing_it(
+        pool: sqlx::PgPool,
+    ) -> anyhow::Result<()> {
+        let state = state(pool).await?;
+        let bundle = bundle(&state, true).await?;
+        let stacks = state.stacks();
+        for template in ["postgres", "redis", "seaweedfs"] {
+            let prior = retained_template(&state, &bundle, template, None).await?;
+            let name = format!("{template}-restored");
+            let id = selectable_volume(&state, &bundle, &prior, &name).await?;
+            sqlx::query("INSERT INTO grund_volume_backup_attempts (organisation_id,app_id,volume_id,attempt_id,machine_id,placement_generation,operation,source_volume_id,destination_volume_id,snapshot_id,status) VALUES ($1,$2,$3,$4,$5,1,'restore',$3,$6,'fixture-point','completed')")
+                .bind(bundle.org).bind(bundle.producer).bind(bundle.volume)
+                .bind(Uuid::now_v7()).bind(bundle.machine).bind(id)
+                .execute(&state.pool).await?;
+            let definition = data_selection(template, &name, "");
+            let before = snapshot(&state).await?;
+            let mut connection = state.pool.acquire().await?;
+            let selected = stacks
+                .selected_data_volume(
+                    &mut connection,
+                    bundle.org,
+                    "producer",
+                    &definition.services["producer"],
+                    Some(&prior),
+                    Some(bundle.machine),
+                )
+                .await?
+                .context("a completed same-app restore is selectable")?;
+            assert_eq!(selected.volume_id, id);
+            assert_eq!(selected.app_id, prior.app_id);
+            assert_eq!(selected.organisation_id, bundle.org);
+            assert_eq!(selected.path, prior.release.spec.volumes[0].path);
+            assert_eq!(
+                selected.size_gib, None,
+                "own-machine data must not become a catalogue-sized block"
+            );
+            assert!(
+                !selected.backup,
+                "restore policy is not inherited from the source release"
+            );
+            let catalogue = grund_domain::app::templates::find(template);
+            let (spec, _, _) = expand_service(&definition, "producer", catalogue, Some(&prior))?;
+            assert_eq!(spec.volumes.len(), 1);
+            assert_eq!(spec.volumes[0].name, name);
+            assert_eq!(spec.volumes[0].path, selected.path);
+            assert_eq!(spec.volumes[0].size_gib, None);
+            let explicit = data_selection(
+                template,
+                &name,
+                "      volumes:\n        data: {backup: daily}\n",
+            );
+            let (spec, _, _) = expand_service(&explicit, "producer", catalogue, Some(&prior))?;
+            assert!(
+                spec.volumes[0].backup,
+                "canonical data policy applies to the renamed mount"
+            );
+            drop(connection);
+            assert_eq!(
+                snapshot(&state).await?,
+                before,
+                "selection must not mutate either disk or app"
+            );
+
+            let hosted = retained_template(&state, &bundle, template, Some(37)).await?;
+            let hosted_id =
+                selectable_volume(&state, &bundle, &hosted, &format!("{template}-block")).await?;
+            let persisted = grund_store::volumes::any_volume(
+                &state.pool,
+                bundle.org,
+                bundle.producer,
+                hosted_id,
+            )
+            .await?
+            .unwrap();
+            assert_eq!(persisted.size_gib, Some(37));
+            let (spec, _, _) = expand_service(&definition, "producer", catalogue, Some(&hosted))?;
+            assert_eq!(
+                spec.volumes[0].size_gib,
+                Some(37),
+                "a retained nondefault capacity must not reset to the catalogue default"
+            );
+            let mut wrong_kind = definition.clone();
+            wrong_kind
+                .services
+                .get_mut("producer")
+                .unwrap()
+                .app
+                .placement = Some(grund_config::app::file::FilePlacement {
+                kind: Some(grund_config::app::file::FileMachineKind::Own),
+                ..Default::default()
+            });
+            assert!(matches!(
+                expand_service(&wrong_kind, "producer", catalogue, Some(&hosted)),
+                Err(Error::Invalid(_))
+            ));
+        }
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn data_selection_never_falls_back_to_an_empty_disk_or_crosses_app_and_tenant_boundaries(
+        pool: sqlx::PgPool,
+    ) -> anyhow::Result<()> {
+        let state = state(pool).await?;
+        let bundle = bundle(&state, true).await?;
+        let stacks = state.stacks();
+        let foreign_org = Uuid::now_v7();
+        sqlx::query("INSERT INTO grund_organisations(organisation_id,slug,kind,created_at,stream_version) VALUES($1,'foreign','personal',clock_timestamp(),1)")
+            .bind(foreign_org).execute(&state.pool).await?;
+        for template in ["postgres", "redis", "seaweedfs"] {
+            let prior = retained_template(&state, &bundle, template, None).await?;
+            let name = format!("{template}-restored");
+            selectable_volume(&state, &bundle, &prior, &name).await?;
+            let mut foreign = prior.clone();
+            foreign.app_id = bundle.consumer;
+            selectable_volume(&state, &bundle, &foreign, &format!("{template}-other-app")).await?;
+            let mut wrong_capacity = prior.clone();
+            wrong_capacity.release.spec.volumes[0].size_gib = Some(37);
+            let at = Utc::now();
+            volume_commands(
+                &state,
+                Uuid::now_v7(),
+                vec![
+                    VolumeCommand::Request {
+                        organisation_id: bundle.org,
+                        app_id: prior.app_id,
+                        name: format!("{template}-import"),
+                        path: prior.release.spec.volumes[0].path.clone(),
+                        source: Some("/srv/import".into()),
+                        backup: false,
+                        size_gib: None,
+                        at,
+                    },
+                    VolumeCommand::Place {
+                        machine_id: bundle.machine,
+                        at,
+                    },
+                ],
+            )
+            .await?;
+            let before = snapshot(&state).await?;
+            let mut connection = state.pool.acquire().await?;
+            for (selected, org, retained, machine) in [
+                (
+                    format!("{template}-restroed"),
+                    bundle.org,
+                    Some(&prior),
+                    Some(bundle.machine),
+                ),
+                (
+                    format!("{template}-other-app"),
+                    bundle.org,
+                    Some(&prior),
+                    Some(bundle.machine),
+                ),
+                (
+                    name.clone(),
+                    foreign_org,
+                    Some(&prior),
+                    Some(bundle.machine),
+                ),
+                (name.clone(), bundle.org, None, Some(bundle.machine)),
+                (name.clone(), bundle.org, Some(&prior), None),
+                (name.clone(), bundle.org, Some(&prior), Some(Uuid::now_v7())),
+                (
+                    name.clone(),
+                    bundle.org,
+                    Some(&wrong_capacity),
+                    Some(bundle.machine),
+                ),
+                (
+                    format!("{template}-import"),
+                    bundle.org,
+                    Some(&prior),
+                    Some(bundle.machine),
+                ),
+            ] {
+                let definition = data_selection(template, &selected, "");
+                assert!(
+                    matches!(
+                        stacks
+                            .selected_data_volume(
+                                &mut connection,
+                                org,
+                                "producer",
+                                &definition.services["producer"],
+                                retained,
+                                machine,
+                            )
+                            .await,
+                        Err(Error::Invalid(_))
+                    ),
+                    "{template}: missing, first-deploy, foreign or misplaced data must be refused"
+                );
+            }
+            drop(connection);
+            assert_eq!(
+                snapshot(&state).await?,
+                before,
+                "refusals must allocate nothing and emit no events"
+            );
+        }
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn only_completed_restores_with_a_live_canonical_mount_can_be_selected(
+        pool: sqlx::PgPool,
+    ) -> anyhow::Result<()> {
+        let state = state(pool).await?;
+        let bundle = bundle(&state, true).await?;
+        let stacks = state.stacks();
+        for template in ["postgres", "redis", "seaweedfs"] {
+            let prior = retained_template(&state, &bundle, template, None).await?;
+            let name = format!("{template}-restored");
+            let id = selectable_volume(&state, &bundle, &prior, &name).await?;
+            let attempt = Uuid::now_v7();
+            sqlx::query("INSERT INTO grund_volume_backup_attempts (organisation_id,app_id,volume_id,attempt_id,machine_id,placement_generation,operation,source_volume_id,destination_volume_id,snapshot_id,status) VALUES ($1,$2,$3,$4,$5,1,'restore',$3,$6,'fixture-point','pending')")
+                .bind(bundle.org).bind(bundle.producer).bind(bundle.volume)
+                .bind(attempt).bind(bundle.machine).bind(id)
+                .execute(&state.pool).await?;
+            let definition = data_selection(template, &name, "");
+            for status in ["pending", "leased", "failed", "completed"] {
+                sqlx::query("UPDATE grund_volume_backup_attempts SET status=$3 WHERE organisation_id=$1 AND attempt_id=$2")
+                    .bind(bundle.org).bind(attempt).bind(status).execute(&state.pool).await?;
+                let before = snapshot(&state).await?;
+                let mut connection = state.pool.acquire().await?;
+                let result = stacks
+                    .selected_data_volume(
+                        &mut connection,
+                        bundle.org,
+                        "producer",
+                        &definition.services["producer"],
+                        Some(&prior),
+                        Some(bundle.machine),
+                    )
+                    .await;
+                if status == "completed" {
+                    assert_eq!(result?.unwrap().volume_id, id);
+                } else {
+                    assert!(
+                        matches!(result, Err(Error::Invalid(_))),
+                        "{template}: {status} restore must remain unmountable"
+                    );
+                }
+                drop(connection);
+                assert_eq!(snapshot(&state).await?, before);
+            }
+            volume_commands(
+                &state,
+                id,
+                vec![VolumeCommand::Attach {
+                    machine_id: bundle.machine,
+                    path: "/wrong-path".into(),
+                    at: Utc::now(),
+                }],
+            )
+            .await?;
+            let before = snapshot(&state).await?;
+            let mut connection = state.pool.acquire().await?;
+            assert!(matches!(
+                stacks
+                    .selected_data_volume(
+                        &mut connection,
+                        bundle.org,
+                        "producer",
+                        &definition.services["producer"],
+                        Some(&prior),
+                        Some(bundle.machine),
+                    )
+                    .await,
+                Err(Error::Invalid(_))
+            ));
+            drop(connection);
+            assert_eq!(snapshot(&state).await?, before);
+            volume_commands(
+                &state,
+                id,
+                vec![
+                    VolumeCommand::Attach {
+                        machine_id: bundle.machine,
+                        path: prior.release.spec.volumes[0].path.clone(),
+                        at: Utc::now(),
+                    },
+                    VolumeCommand::Delete {
+                        at: Utc::now(),
+                        purge_after: Utc::now() + chrono::Duration::days(1),
+                    },
+                ],
+            )
+            .await?;
+            let before = snapshot(&state).await?;
+            let mut connection = state.pool.acquire().await?;
+            assert!(matches!(
+                stacks
+                    .selected_data_volume(
+                        &mut connection,
+                        bundle.org,
+                        "producer",
+                        &definition.services["producer"],
+                        Some(&prior),
+                        Some(bundle.machine),
+                    )
+                    .await,
+                Err(Error::Invalid(_))
+            ));
+            drop(connection);
+            assert_eq!(snapshot(&state).await?, before);
+
+            let hosted = retained_template(&state, &bundle, template, Some(37)).await?;
+            let name = format!("{template}-detaching");
+            let id = selectable_volume(&state, &bundle, &hosted, &name).await?;
+            volume_commands(
+                &state,
+                id,
+                vec![
+                    VolumeCommand::PrepareBackend {
+                        machine_id: bundle.machine,
+                        slot: 1,
+                        at: Utc::now(),
+                    },
+                    VolumeCommand::ConfirmBackendAttachment {
+                        machine_id: bundle.machine,
+                        at: Utc::now(),
+                    },
+                    VolumeCommand::BeginBackendDetachment {
+                        machine_id: bundle.machine,
+                        at: Utc::now(),
+                    },
+                ],
+            )
+            .await?;
+            let definition = data_selection(template, &name, "");
+            for lost in [false, true] {
+                if lost {
+                    volume_commands(
+                        &state,
+                        id,
+                        vec![VolumeCommand::DeclareLost {
+                            host_id: Uuid::now_v7(),
+                            host_name: "lost-host".into(),
+                            snapshot_id: None,
+                            at: Utc::now(),
+                        }],
+                    )
+                    .await?;
+                }
+                let before = snapshot(&state).await?;
+                let mut connection = state.pool.acquire().await?;
+                assert!(matches!(
+                    stacks
+                        .selected_data_volume(
+                            &mut connection,
+                            bundle.org,
+                            "producer",
+                            &definition.services["producer"],
+                            Some(&hosted),
+                            Some(bundle.machine),
+                        )
+                        .await,
+                    Err(Error::Invalid(_))
+                ));
+                drop(connection);
+                assert_eq!(snapshot(&state).await?, before);
+            }
+        }
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn seaweedfs_consumers_receive_both_release_pinned_keys_and_missing_pins_fail_closed(
+        pool: sqlx::PgPool,
+    ) -> anyhow::Result<()> {
+        let state = state(pool).await?;
+        let bundle = bundle(&state, false).await?;
+        let stacks = state.stacks();
+        let sealing = key(&state);
+        let mut work = Work::begin(&state.events, Uuid::now_v7(), "test").await?;
+        work.allow_stack(bundle.id);
+        let template = grund_domain::app::templates::find("seaweedfs")
+            .context("SeaweedFS catalogue entry is available")?;
+        let mut spec = template.spec(false).context("SeaweedFS is available")?;
+        for variable in template.secret_variables {
+            spec.secrets.push(SecretEnv {
+                env: (*variable).into(),
+                secret: crate::services::apps::secret_name_for(variable),
+            });
+        }
+        let pinned = crate::services::apps::generate_template_credentials_in(
+            &mut work,
+            &sealing,
+            Uuid::nil(),
+            bundle.org,
+            bundle.producer,
+            template,
+        )
+        .await?;
+        work.app(
+            bundle.producer,
+            AppCommand::Release {
+                actor: Uuid::nil(),
+                spec,
+                image_digest: format!("sha256:{}", "a".repeat(64)),
+                platforms: Vec::new(),
+                exposed_ports: None,
+                secret_versions: pinned,
+                source: ReleaseSource::File,
+                external_release: None,
+                request: None,
+                rollback_of: None,
+                note: String::new(),
+                rollout_id: Uuid::now_v7(),
+                at: Utc::now(),
+            },
+        )
+        .await?;
+        let mut producer =
+            work.load_stack(bundle.id).await?.revisions[&1].services["producer"].clone();
+        producer.template = Some(template.key.into());
+        producer.release = work
+            .load_app(bundle.producer)
+            .await?
+            .releases
+            .last()
+            .context("producer has a released credential pair")?
+            .clone();
+        let newer = crate::services::apps::generate_template_credentials_in(
+            &mut work,
+            &sealing,
+            Uuid::nil(),
+            bundle.org,
+            bundle.producer,
+            template,
+        )
+        .await?;
+        work.commit().await?;
+
+        let mut work = Work::begin(&state.events, Uuid::now_v7(), "test").await?;
+        assert_eq!(
+            stacks
+                .output(&mut work, &sealing, "ordered", &producer, "producer", "url")
+                .await?,
+            "http://producer.ordered.grund.internal:8333"
+        );
+        for (index, (output, variable)) in [
+            ("access_key_id", "S3_ACCESS_KEY_ID"),
+            ("secret_access_key", "S3_SECRET_ACCESS_KEY"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let name = crate::services::apps::secret_name_for(variable);
+            let pinned = producer
+                .release
+                .secret_versions
+                .iter()
+                .find(|version| version.name == name)
+                .context("producer release pins each credential")?;
+            let latest = newer
+                .iter()
+                .find(|version| version.name == name)
+                .context("a newer credential exists")?;
+            assert!(latest.version > pinned.version);
+            let sealed = apps::secret_value(
+                &mut **work.sql(),
+                producer.app_id,
+                &name,
+                pinned.version as i32,
+            )
+            .await?
+            .context("pinned credential is stored")?;
+            let expected = open(
+                &sealing,
+                producer.app_id,
+                &name,
+                pinned.version as i32,
+                &sealed,
+            )
+            .context("pinned credential opens independently")?;
+            let latest_sealed = apps::secret_value(
+                &mut **work.sql(),
+                producer.app_id,
+                &name,
+                latest.version as i32,
+            )
+            .await?
+            .context("newer credential is stored")?;
+            let latest_value = open(
+                &sealing,
+                producer.app_id,
+                &name,
+                latest.version as i32,
+                &latest_sealed,
+            )
+            .context("newer credential opens independently")?;
+            assert!(expected != latest_value, "credential versions must differ");
+            let resolved = stacks
+                .output(
+                    &mut work, &sealing, "ordered", &producer, "producer", output,
+                )
+                .await?;
+            assert!(
+                resolved.as_bytes() == expected.as_slice(),
+                "consumer must receive the released credential, not a newer or regenerated key"
+            );
+
+            let mut missing_binding = producer.clone();
+            missing_binding
+                .release
+                .spec
+                .secrets
+                .retain(|binding| binding.env != variable);
+            assert!(matches!(
+                stacks
+                    .output(
+                        &mut work,
+                        &sealing,
+                        "ordered",
+                        &missing_binding,
+                        "producer",
+                        output,
+                    )
+                    .await,
+                Err(Error::Invalid(_))
+            ));
+            let mut missing_pin = producer.clone();
+            missing_pin
+                .release
+                .secret_versions
+                .retain(|version| version.name != name);
+            assert!(matches!(
+                stacks
+                    .output(
+                        &mut work,
+                        &sealing,
+                        "ordered",
+                        &missing_pin,
+                        "producer",
+                        output,
+                    )
+                    .await,
+                Err(Error::Invalid(_))
+            ));
+            let removed = sqlx::query(
+                "DELETE FROM grund_app_secrets \
+                 WHERE organisation_id=$1 AND app_id=$2 AND name=$3 AND version=$4",
+            )
+            .bind(bundle.org)
+            .bind(producer.app_id)
+            .bind(&name)
+            .bind(pinned.version as i32)
+            .execute(&mut **work.sql())
+            .await?;
+            assert_eq!(removed.rows_affected(), 1);
+            assert!(matches!(
+                stacks
+                    .output(
+                        &mut work, &sealing, "ordered", &producer, "producer", output
+                    )
+                    .await,
+                Err(Error::Invalid(_))
+            ));
+            let remaining: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM grund_app_secrets WHERE organisation_id=$1 AND app_id=$2",
+            )
+            .bind(bundle.org)
+            .bind(producer.app_id)
+            .fetch_one(&mut **work.sql())
+            .await?;
+            assert_eq!(remaining, 3 - index as i64);
+        }
         work.commit().await?;
         Ok(())
     }

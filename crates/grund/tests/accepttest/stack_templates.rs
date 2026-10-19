@@ -28,7 +28,7 @@ async fn resources(pool: &PgPool) -> anyhow::Result<Value> {
 }
 
 #[tokio::test]
-async fn a_disabled_catalogue_service_rejects_the_entire_plan_without_creating_children()
+async fn a_removed_catalogue_service_rejects_the_entire_plan_without_creating_children()
 -> anyhow::Result<()> {
     let registry = FakeRegistry::start().await?;
     let Some((given, when, then)) =
@@ -76,6 +76,53 @@ async fn a_disabled_catalogue_service_rejects_the_entire_plan_without_creating_c
     )
     .await?;
     then.status(404)?.connect_code("not_found")?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn non_s3_producers_cannot_export_s3_credentials_or_region() -> anyhow::Result<()> {
+    let registry = FakeRegistry::start().await?;
+    let Some((given, when, then)) =
+        testcase_configured(&[("GRUND_INSECURE_REGISTRIES", &registry.host)]).await?
+    else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let database = given
+        .testcase
+        .fixture
+        .database_url()
+        .context("spawned database")?;
+    let pool = PgPool::connect(&database).await?;
+    registry.publish("acme/web", "1");
+    let image = registry.image("acme/web", "1");
+    let before = resources(&pool).await?;
+    let events: i64 = sqlx::query_scalar("SELECT count(*) FROM es_events")
+        .fetch_one(&pool)
+        .await?;
+    for producer in [format!("image: {image}"), "template: redis".into()] {
+        for output in ["access_key_id", "secret_access_key", "region"] {
+            let yaml = format!(
+                "stack:\n  name: refused-s3\n  services:\n    app:\n      image: {image}\n      depends_on: [source]\n      env:\n        S3_VALUE: ${{{{ source.{output} }}}}\n    source:\n      {producer}\n"
+            );
+            for method in ["PreviewStack", "DeployStack"] {
+                let mut request = json!({"organisation":owner.username,"yaml":yaml});
+                if method == "DeployStack" {
+                    request["idempotencyKey"] = json!(format!("refused-{output}"));
+                }
+                call(&when, &then, method, request).await?;
+                then.status(400)?.connect_code("invalid_argument")?;
+                ensure!(
+                    resources(&pool).await? == before,
+                    "rejected S3 output allocated resources"
+                );
+                let after: i64 = sqlx::query_scalar("SELECT count(*) FROM es_events")
+                    .fetch_one(&pool)
+                    .await?;
+                ensure!(after == events, "rejected S3 output appended events");
+            }
+        }
+    }
     Ok(())
 }
 

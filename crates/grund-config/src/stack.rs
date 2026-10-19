@@ -89,6 +89,9 @@ pub enum Restart {
 pub struct Service {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template: Option<String>,
+    /// An existing volume in this retained template service's app, mounted at its canonical path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_volume: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -101,6 +104,7 @@ pub struct Service {
 #[serde(deny_unknown_fields)]
 struct ServiceInput {
     template: Option<String>,
+    data_volume: Option<String>,
     image: Option<String>,
     command: Option<Vec<String>>,
     #[serde(default, deserialize_with = "optional_env")]
@@ -179,6 +183,7 @@ impl<'de> Deserialize<'de> for Service {
             .collect();
         Ok(Self {
             template: input.template,
+            data_volume: input.data_volume,
             depends_on: input.depends_on,
             restart: input.restart,
             app,
@@ -204,6 +209,10 @@ impl JsonSchema for Service {
                 "template".into(),
                 serde_json::json!({"type": "string", "minLength": 1}),
             );
+            properties.insert(
+                "data_volume".into(),
+                serde_json::json!({"type": "string", "minLength": 1, "maxLength": 32, "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"}),
+            );
             properties.insert("depends_on".into(), serde_json::json!({"type": "array", "maxItems": 9, "uniqueItems": true, "items": {"type": "string"}}));
             properties.insert(
                 "restart".into(),
@@ -214,7 +223,7 @@ impl JsonSchema for Service {
         let object = value.as_object_mut().expect("an app schema is an object");
         object.remove("required");
         object.insert("oneOf".into(), serde_json::json!([
-            {"required": ["image"], "not": {"required": ["template"]}, "properties": {"volumes": {"additionalProperties": {"required": ["path"]}}}},
+            {"required": ["image"], "not": {"required": ["template"]}, "properties": {"data_volume": false, "volumes": {"additionalProperties": {"required": ["path"]}}}},
             {"required": ["template"], "not": {"required": ["image"]}, "properties": {
                 "copies": {"const": 1}, "command": false, "ports": false, "env": false, "secrets": false, "check": false,
                 "volumes": {
@@ -293,8 +302,14 @@ fn reference(env: &str, value: &str, field: &str) -> Result<Option<ConnectionRef
         );
     };
     name(service, field)?;
-    if !matches!(output, "url" | "host" | "port") {
-        return refuse(field, "the connection output must be url, host or port");
+    if !matches!(
+        output,
+        "url" | "host" | "port" | "access_key_id" | "secret_access_key" | "region"
+    ) {
+        return refuse(
+            field,
+            "the connection output must be url, host, port, access_key_id, secret_access_key or region",
+        );
     }
     Ok(Some(ConnectionRef {
         env: env.into(),
@@ -323,6 +338,16 @@ impl Service {
             .is_some_and(|key| key.trim().is_empty())
         {
             return refuse(format!("{field}.template"), "name a catalogue template");
+        }
+        if let Some(volume) = &self.data_volume
+            && (self.template.is_none()
+                || crate::app::spec::AppName::parse(volume)
+                    .map_or(true, |name| name.as_str() != volume))
+        {
+            return refuse(
+                format!("{field}.data_volume"),
+                "select an app-owned volume name only for a stateful template",
+            );
         }
         if !self.app.machines.is_empty()
             || self.app.placement.is_some()
@@ -564,6 +589,15 @@ impl Definition {
                     if let Some(backup) = overlay.backup {
                         volume.backup = Some(backup);
                     }
+                }
+                if let Some(selected) = &service.data_volume {
+                    let Some(volume) = app.volumes.shift_remove("data") else {
+                        return refuse(
+                            format!("{field}.data_volume"),
+                            "the catalogue template has no data volume",
+                        );
+                    };
+                    app.volumes.insert(selected.clone(), volume);
                 }
                 for port in &mut app.ports {
                     port.public = false;
@@ -924,5 +958,56 @@ mod tests {
             .spec;
         let (spec, _, _) = definition.service("web", Some(catalogue)).unwrap();
         assert_eq!(definition.services["web"].restart(&spec), Restart::Rolling);
+    }
+
+    #[test]
+    fn a_template_data_volume_selection_preserves_the_canonical_mount_and_single_writer() {
+        let definition = parse(
+            "stack:\n  name: recovery\n  services:\n    storage:\n      template: seaweedfs\n      data_volume: data-restored\n      volumes:\n        data: {backup: daily}\n",
+        ).unwrap();
+        let catalogue = file::parse_app(
+            "apps:\n  storage:\n    image: storage\n    volumes:\n      data: {path: /data}\n",
+            "storage",
+        )
+        .unwrap()
+        .spec;
+        let (spec, settings, _) = definition.service("storage", Some(catalogue)).unwrap();
+        assert_eq!(spec.volumes[0].name, "data-restored");
+        assert_eq!(spec.volumes[0].path, "/data");
+        assert!(spec.volumes[0].source.is_none());
+        assert!(spec.volumes[0].backup);
+        assert_eq!(settings.copies, 1);
+        assert_eq!(
+            definition.services["storage"].restart(&spec),
+            Restart::Exclusive
+        );
+        for replacement in [
+            "/other",
+            "other/data",
+            "00000000-0000-0000-0000-000000000000",
+        ] {
+            assert!(
+                parse(
+                    &crate::yaml::to_string(&file::GrundFile {
+                        apps: IndexMap::new(),
+                        stack: Some(definition.clone()),
+                    })
+                    .replace("data-restored", replacement)
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            parse(&SIMPLE.replace(
+                "image: nginx",
+                "image: nginx\n      data_volume: data-restored"
+            ))
+            .is_err()
+        );
+        let no_storage = parse("stack:\n  name: recovery\n  services:\n    storage:\n      template: nats\n      data_volume: data-restored\n").unwrap();
+        let catalogue = file::parse_app("apps:\n  storage:\n    image: nats\n", "storage")
+            .unwrap()
+            .spec;
+        assert!(no_storage.service("storage", Some(catalogue)).is_err());
     }
 }

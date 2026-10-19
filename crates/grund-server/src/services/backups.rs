@@ -512,8 +512,78 @@ impl Backups {
         let mut work = Work::begin(&self.state.events, attempt_id, "grund/restore")
             .await
             .map_err(|e| BackupError::Internal(e.into()))?;
+        let live: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM grund_apps WHERE organisation_id=$1 AND app_id=$2 AND deleted_at IS NULL)",
+        )
+        .bind(org)
+        .bind(app)
+        .fetch_one(&mut **work.sql())
+        .await
+        .map_err(anyhow::Error::from)?;
+        if !live {
+            return Err(BackupError::NotFound);
+        }
+        let member = grund_store::stacks::member(&mut **work.sql(), org, app)
+            .await
+            .map_err(anyhow::Error::from)?;
+        let authorized_stack = if let Some(member) = member {
+            grund_store::stacks::get(&mut **work.sql(), org, member.stack_id)
+                .await
+                .map_err(anyhow::Error::from)?
+                .ok_or(BackupError::NotFound)?;
+            let stack = work
+                .load_stack(member.stack_id)
+                .await
+                .map_err(|e| BackupError::Internal(e.into()))?;
+            if !stack.exists
+                || stack.organisation_id != org
+                || matches!(
+                    stack.status,
+                    grund_domain::stack::Status::Deleting | grund_domain::stack::Status::Deleted
+                )
+                || !stack
+                    .revisions
+                    .get(&stack.desired_revision)
+                    .and_then(|revision| revision.services.get(&member.service))
+                    .is_some_and(|service| service.app_id == app)
+            {
+                return Err(BackupError::NotFound);
+            }
+            let current: Option<(Uuid, String)> = sqlx::query_as(
+                "SELECT stack_id,service FROM grund_stack_members WHERE organisation_id=$1 AND app_id=$2 FOR UPDATE",
+            )
+            .bind(org)
+            .bind(app)
+            .fetch_optional(&mut **work.sql())
+            .await
+            .map_err(anyhow::Error::from)?;
+            if current != Some((member.stack_id, member.service)) {
+                return Err(BackupError::NotFound);
+            }
+            Some(member.stack_id)
+        } else {
+            None
+        };
+        let owner = work
+            .load_app(app)
+            .await
+            .map_err(|_| BackupError::NotFound)?;
+        if !owner.exists
+            || owner.deleted
+            || owner.organisation_id != org
+            || owner.stack_owner != authorized_stack
+        {
+            return Err(BackupError::NotFound);
+        }
+        if let Some(stack) = authorized_stack {
+            work.allow_stack(stack);
+        }
         work.app_decide(app, |current| {
-            if current.exists && !current.deleted && current.organisation_id == org {
+            if current.exists
+                && !current.deleted
+                && current.organisation_id == org
+                && current.stack_owner == authorized_stack
+            {
                 Ok((vec![], ()))
             } else {
                 Err(grund_domain::app::AppError::NotFound)
@@ -874,5 +944,396 @@ impl notmad::Component for BackupScheduler {
                 },
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+    use grund_config::app::spec::{AppName, AppSettings};
+    use grund_domain::{
+        app::{AppCommand, ReleaseSource},
+        stack::{Command, Kind, Operation, Revision, Service, Status, Step},
+    };
+    use sqlx::types::Json;
+    use std::{collections::BTreeMap, sync::Arc};
+
+    #[derive(Parser)]
+    struct TestConfig {
+        #[command(flatten)]
+        config: crate::config::ServeConfig,
+    }
+
+    async fn state(pool: sqlx::PgPool) -> anyhow::Result<State> {
+        grund_store::migrate(&pool).await?;
+        let mut config =
+            TestConfig::try_parse_from(["test", "--database-url", "postgres://unused/test"])?
+                .config;
+        config.license_key = None;
+        config.license_key_file = None;
+        let secret = Arc::new(crate::secrets::SecretKey::generate());
+        let events = mire::EventStore::new(pool.clone());
+        let certificates =
+            crate::certificates::Certificates::new(&config, pool.clone(), secret.clone());
+        let hearing = Arc::new(crate::hearing::Hearing::new(Utc::now()));
+        let health = crate::health::registry(
+            pool.clone(),
+            hearing.clone(),
+            None,
+            false,
+            &certificates,
+            &config,
+        );
+        let entitlements = Arc::new(crate::entitlements(&config)?);
+        Ok(State {
+            config: Arc::new(config),
+            pool,
+            events: events.clone(),
+            nats: None,
+            secret,
+            certificates,
+            health,
+            passwords: crate::services::passwords::Passwords::new()?,
+            entitlements,
+            billing: crate::services::billing::Billing::Free,
+            capacity: crate::services::capacity::Capacity::None,
+            deletions: crate::sagas::Deletions::new(events),
+            extensions: Arc::new(Vec::new()),
+            started: std::time::Instant::now(),
+            wakes: crate::wakes::Wakes::default(),
+            hearing,
+        })
+    }
+
+    struct Recovery {
+        org: Uuid,
+        stack: Uuid,
+        app: Uuid,
+        source: Uuid,
+    }
+
+    fn operation(kind: Kind) -> Operation {
+        let at = Utc::now();
+        Operation {
+            id: Uuid::now_v7(),
+            kind,
+            target_revision: 1,
+            previous_revision: 0,
+            order: vec!["storage".into()],
+            cursor: 0,
+            step: Step::Pending,
+            started_at: at,
+            deadline: at + chrono::Duration::minutes(5),
+            compensating: false,
+            failure: None,
+            releases: BTreeMap::new(),
+            halting: false,
+        }
+    }
+
+    async fn recovery(state: &State) -> anyhow::Result<Recovery> {
+        let org = Uuid::now_v7();
+        let stack = Uuid::now_v7();
+        let app = Uuid::now_v7();
+        let source = Uuid::new_v5(&app, b"data");
+        let at = Utc::now();
+        sqlx::query("INSERT INTO grund_organisations(organisation_id,slug,kind,created_at,stream_version) VALUES($1,$2,'personal',$3,1)")
+            .bind(org).bind(format!("recovery-{:016x}", org.as_u128() as u64)).bind(at).execute(&state.pool).await?;
+        let mut work = Work::begin(&state.events, Uuid::now_v7(), "test").await?;
+        work.stack(
+            stack,
+            Command::Create {
+                organisation_id: org,
+                name: "storage".into(),
+            },
+        )
+        .await?;
+        work.allow_stack(stack);
+        let settings = AppSettings::default();
+        work.app(
+            app,
+            AppCommand::Create {
+                actor: Uuid::nil(),
+                organisation_id: org,
+                name: AppName::parse("storage")?,
+                settings: settings.clone(),
+                at,
+            },
+        )
+        .await?;
+        work.app(
+            app,
+            AppCommand::AssignStack {
+                stack_id: stack,
+                at,
+            },
+        )
+        .await?;
+        let mut spec = grund_domain::app::templates::find("redis")
+            .context("Redis template exists")?
+            .spec(false)
+            .context("Redis template is available")?;
+        spec.secrets.clear();
+        work.app(
+            app,
+            AppCommand::Release {
+                actor: Uuid::nil(),
+                spec,
+                image_digest: format!("sha256:{}", "a".repeat(64)),
+                platforms: Vec::new(),
+                exposed_ports: None,
+                secret_versions: Vec::new(),
+                source: ReleaseSource::File,
+                external_release: None,
+                request: None,
+                rollback_of: None,
+                note: String::new(),
+                rollout_id: Uuid::now_v7(),
+                at,
+            },
+        )
+        .await?;
+        let release = work.load_app(app).await?.releases[0].clone();
+        let deploy = operation(Kind::Deploy);
+        work.stack(
+            stack,
+            Command::Revise {
+                revision: Revision {
+                    number: 1,
+                    yaml: "stack:\n  name: storage\n  services:\n    storage:\n      template: redis\n".into(),
+                    services: BTreeMap::from([(
+                        "storage".into(),
+                        Service {
+                            app_id: app,
+                            app_name: "storage".into(),
+                            release,
+                            settings,
+                            depends_on: Vec::new(),
+                            exclusive: true,
+                            template: Some("redis".into()),
+                        },
+                    )]),
+                    public_service: None,
+                    public_port: None,
+                    created_at: at,
+                    created_by: Uuid::nil(),
+                    rollback_of: None,
+                },
+                operation: deploy.clone(),
+            },
+        )
+        .await?;
+        work.stack(
+            stack,
+            Command::Complete {
+                operation_id: deploy.id,
+                applied_revision: 1,
+                status: Status::Ready,
+                purge_after: None,
+                failure: None,
+            },
+        )
+        .await?;
+        work.volume(
+            source,
+            VolumeCommand::Request {
+                organisation_id: org,
+                app_id: app,
+                name: "data".into(),
+                path: "/data".into(),
+                source: None,
+                backup: true,
+                size_gib: None,
+                at,
+            },
+        )
+        .await?;
+        work.commit().await?;
+        Ok(Recovery {
+            org,
+            stack,
+            app,
+            source,
+        })
+    }
+
+    async fn resources(state: &State) -> anyhow::Result<serde_json::Value> {
+        Ok(sqlx::query_scalar::<_, Json<serde_json::Value>>(
+            "SELECT jsonb_build_object( \
+             'apps',(SELECT jsonb_agg(to_jsonb(a) ORDER BY app_id) FROM grund_apps a), \
+             'volumes',(SELECT jsonb_agg(to_jsonb(v) ORDER BY volume_id) FROM grund_volumes v), \
+             'attempts',(SELECT jsonb_agg(to_jsonb(a) ORDER BY attempt_id) FROM grund_volume_backup_attempts a), \
+             'requests',(SELECT jsonb_agg(to_jsonb(r) ORDER BY organisation_id,app_id,idempotency_key) FROM grund_volume_idempotency r), \
+             'documents',(SELECT jsonb_agg(to_jsonb(d) ORDER BY machine_id) FROM grund_machine_documents d), \
+             'events',(SELECT count(*) FROM es_events))",
+        ).fetch_one(&state.pool).await?.0)
+    }
+
+    async fn stale_restore(
+        state: &State,
+        recovery: &Recovery,
+        org: Uuid,
+    ) -> Result<Uuid, BackupError> {
+        state
+            .backups()
+            .request_restore(
+                org,
+                recovery.app,
+                recovery.source,
+                &"a".repeat(64),
+                Uuid::new_v5(&recovery.app, b"recovered"),
+                "recovered",
+                "/data",
+                Uuid::now_v7(),
+                0,
+                "stack-member-restore",
+                &[1; 32],
+            )
+            .await
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn a_live_stack_member_restore_reaches_source_version_validation(
+        pool: sqlx::PgPool,
+    ) -> anyhow::Result<()> {
+        let state = state(pool).await?;
+        let recovery = recovery(&state).await?;
+        let before = resources(&state).await?;
+        let result = stale_restore(&state, &recovery, recovery.org).await;
+        assert!(
+            matches!(result, Err(BackupError::Conflict)),
+            "an authorized stack member reaches the ordinary stale-source guard: {result:?}"
+        );
+        assert_eq!(resources(&state).await?, before);
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn stack_member_restore_refuses_foreign_wrong_missing_and_deleted_owners_without_resources(
+        pool: sqlx::PgPool,
+    ) -> anyhow::Result<()> {
+        let state = state(pool).await?;
+        let foreign = recovery(&state).await?;
+        let recovery = recovery(&state).await?;
+        let before = resources(&state).await?;
+        assert!(matches!(
+            stale_restore(&state, &recovery, foreign.org).await,
+            Err(BackupError::NotFound)
+        ));
+        assert_eq!(resources(&state).await?, before);
+
+        sqlx::query("UPDATE grund_stack_members SET organisation_id=$1,stack_id=$2,service='foreign-storage' WHERE organisation_id=$3 AND app_id=$4")
+            .bind(foreign.org).bind(foreign.stack).bind(recovery.org).bind(recovery.app).execute(&state.pool).await?;
+        let before = resources(&state).await?;
+        assert!(matches!(
+            stale_restore(&state, &recovery, recovery.org).await,
+            Err(BackupError::NotFound)
+        ));
+        assert!(matches!(
+            stale_restore(&state, &recovery, foreign.org).await,
+            Err(BackupError::NotFound)
+        ));
+        assert_eq!(resources(&state).await?, before);
+        sqlx::query("UPDATE grund_stack_members SET organisation_id=$1,stack_id=$2,service='storage' WHERE organisation_id=$3 AND app_id=$4")
+            .bind(recovery.org).bind(recovery.stack).bind(foreign.org).bind(recovery.app).execute(&state.pool).await?;
+
+        let other = Uuid::now_v7();
+        let mut work = Work::begin(&state.events, Uuid::now_v7(), "test").await?;
+        work.stack(
+            other,
+            Command::Create {
+                organisation_id: recovery.org,
+                name: "other".into(),
+            },
+        )
+        .await?;
+        work.commit().await?;
+        sqlx::query(
+            "UPDATE grund_stack_members SET stack_id=$1 WHERE organisation_id=$2 AND app_id=$3",
+        )
+        .bind(other)
+        .bind(recovery.org)
+        .bind(recovery.app)
+        .execute(&state.pool)
+        .await?;
+        let before = resources(&state).await?;
+        assert!(matches!(
+            stale_restore(&state, &recovery, recovery.org).await,
+            Err(BackupError::NotFound)
+        ));
+        assert_eq!(resources(&state).await?, before);
+
+        sqlx::query("DELETE FROM grund_stack_members WHERE organisation_id=$1 AND app_id=$2")
+            .bind(recovery.org)
+            .bind(recovery.app)
+            .execute(&state.pool)
+            .await?;
+        let before = resources(&state).await?;
+        assert!(matches!(
+            stale_restore(&state, &recovery, recovery.org).await,
+            Err(BackupError::NotFound)
+        ));
+        assert_eq!(resources(&state).await?, before);
+
+        sqlx::query("INSERT INTO grund_stack_members(organisation_id,stack_id,service,app_id,app_name,exclusive) VALUES($1,$2,'storage',$3,'storage',true)")
+            .bind(recovery.org).bind(recovery.stack).bind(recovery.app).execute(&state.pool).await?;
+        let mut work = Work::begin(&state.events, Uuid::now_v7(), "test").await?;
+        let delete = operation(Kind::Delete);
+        work.stack(
+            recovery.stack,
+            Command::Operate {
+                operation: delete.clone(),
+                at: Utc::now(),
+            },
+        )
+        .await?;
+        work.stack(
+            recovery.stack,
+            Command::Complete {
+                operation_id: delete.id,
+                applied_revision: 1,
+                status: Status::Deleted,
+                purge_after: Some(Utc::now() + chrono::Duration::days(7)),
+                failure: None,
+            },
+        )
+        .await?;
+        work.commit().await?;
+        let before = resources(&state).await?;
+        assert!(matches!(
+            stale_restore(&state, &recovery, recovery.org).await,
+            Err(BackupError::NotFound)
+        ));
+        assert_eq!(resources(&state).await?, before);
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn a_deleted_stack_member_restore_is_absent_without_resources(
+        pool: sqlx::PgPool,
+    ) -> anyhow::Result<()> {
+        let state = state(pool).await?;
+        let recovery = recovery(&state).await?;
+        let mut work = Work::begin(&state.events, Uuid::now_v7(), "test").await?;
+        work.allow_stack(recovery.stack);
+        let at = Utc::now();
+        work.app(
+            recovery.app,
+            AppCommand::Delete {
+                actor: Uuid::nil(),
+                at,
+                purge_after: at + chrono::Duration::days(7),
+            },
+        )
+        .await?;
+        work.commit().await?;
+        let before = resources(&state).await?;
+        assert!(matches!(
+            stale_restore(&state, &recovery, recovery.org).await,
+            Err(BackupError::NotFound)
+        ));
+        assert_eq!(resources(&state).await?, before);
+        Ok(())
     }
 }

@@ -421,11 +421,43 @@ impl Stacks {
             }
             let (mut spec, mut settings, refs) =
                 expand_service(&definition, name, catalogue, prior)?;
+            if let Some(volume) = self
+                .selected_data_volume(
+                    &mut *self.state.pool.acquire().await?,
+                    org,
+                    name,
+                    service,
+                    prior,
+                    old.as_ref().and_then(|row| row.state.0.machine_id),
+                )
+                .await?
+            {
+                let selected = spec.volumes.first_mut().expect("a stateful template");
+                selected.size_gib = volume.size_gib.map(|size| size as u64);
+                selected.backup = service
+                    .app
+                    .volumes
+                    .get("data")
+                    .and_then(|overlay| overlay.backup)
+                    .map_or(volume.backup, |policy| {
+                        matches!(policy, grund_config::app::file::FileBackup::Daily)
+                    });
+            }
             for reference in &refs {
                 let producer = definition
                     .services
                     .get(&reference.service)
                     .ok_or_else(|| invalid("env", "unknown reference producer"))?;
+                if matches!(
+                    reference.output.as_str(),
+                    "access_key_id" | "secret_access_key" | "region"
+                ) && producer.template.as_deref() != Some("seaweedfs")
+                {
+                    return Err(invalid(
+                        format!("stack.services.{name}.env.{}", reference.env),
+                        "S3 outputs require a SeaweedFS template producer",
+                    ));
+                }
                 if reference.output == "port" && producer.template.is_none() {
                     return Err(invalid(
                         format!("stack.services.{name}.env.{}", reference.env),
@@ -849,6 +881,69 @@ impl Stacks {
             .address(&mut connection, selected.app_id, &selected.app_name, &slug)
             .await
             .map_err(Error::Internal)
+    }
+
+    async fn selected_data_volume(
+        &self,
+        connection: &mut PgConnection,
+        org: Uuid,
+        service_name: &str,
+        definition: &stack::Service,
+        prior: Option<&Service>,
+        machine: Option<Uuid>,
+    ) -> Result<Option<grund_store::volumes::VolumeRow>, Error> {
+        let Some(selected) = &definition.data_volume else {
+            return Ok(None);
+        };
+        let field = format!("stack.services.{service_name}.data_volume");
+        let storage = definition
+            .template
+            .as_deref()
+            .and_then(grund_domain::app::templates::find)
+            .and_then(|template| template.storage)
+            .ok_or_else(|| invalid(&field, "only a stateful template can select a data volume"))?;
+        let prior =
+            prior.ok_or_else(|| invalid(&field, "select a volume only in an existing service"))?;
+        let current = prior
+            .release
+            .spec
+            .volumes
+            .first()
+            .ok_or_else(|| invalid(&field, "the retained service has no data volume"))?;
+        let row = grund_store::volumes::by_name(&mut *connection, org, prior.app_id, selected)
+            .await?
+            .ok_or_else(|| invalid(&field, "the selected data volume is unavailable"))?;
+        if !matches!(row.status.as_str(), "available" | "attached")
+            || row.detachment_pending
+            || row.lost_host_id.is_some()
+            || row.source.is_some()
+            || row.path != storage.path
+            || row.size_gib.map(|size| size as u64) != current.size_gib
+            || machine.is_none()
+            || row.machine_id != machine
+        {
+            return Err(invalid(
+                &field,
+                "the selected data volume is not ready on the stack's machine with its canonical path and capacity",
+            ));
+        }
+        let restore = if row.size_gib.is_some() {
+            self.state
+                .volume_backend()
+                .ok_or_else(|| invalid(&field, "hosted storage is unavailable"))?
+                .restore_status(&self.state.pool, org, prior.app_id, row.volume_id)
+                .await?
+        } else {
+            grund_store::volumes::restore_status(&mut *connection, org, prior.app_id, row.volume_id)
+                .await?
+        };
+        if restore.is_some_and(|(status, _)| status != "completed") {
+            return Err(invalid(
+                &field,
+                "the selected data volume's restore has not completed",
+            ));
+        }
+        Ok(Some(row))
     }
 
     async fn lock(&self, work: &mut Work<'_>, org: Uuid) -> Result<(), Error> {
