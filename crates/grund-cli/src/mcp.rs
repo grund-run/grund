@@ -47,6 +47,8 @@ pub fn tools(root: &clap::Command) -> Vec<Tool> {
                         | "context use"
                         | "context rename"
                         | "context remove"
+                        | "api"
+                        | "completion"
                         | "mcp"
                 )
                 && !path.starts_with("skill")

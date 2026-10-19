@@ -1,6 +1,7 @@
 //! The client command tree: nouns, then verbs. Each verb is one function
 //! returning an [`Output`], which [`crate::run`] prints.
 
+pub mod api;
 pub mod app_telemetry;
 pub mod apps;
 pub mod auth;
@@ -48,6 +49,8 @@ pub const CLIENT_NOUNS: &[&str] = &[
     "member",
     "notification",
     "registry",
+    "api",
+    "completion",
     "describe",
     "schema",
     "skill",
@@ -91,6 +94,10 @@ pub enum Command {
     Notification(notifications::NotificationsCommand),
     #[command(about = "Private image registry logins")]
     Registry(registries::RegistriesCommand),
+    #[command(about = "Call any API procedure")]
+    Api(api::ApiArgs),
+    #[command(about = "Shell completion for bash, zsh, fish, elvish or PowerShell")]
+    Completion(selfdesc::CompletionArgs),
     #[command(about = "Every command as JSON")]
     Describe(selfdesc::DescribeArgs),
     #[command(about = "JSON Schemas for grund.yaml and output")]
@@ -131,6 +138,8 @@ impl Command {
             Command::Member(c) => &c.global,
             Command::Notification(c) => &c.global,
             Command::Registry(c) => &c.global,
+            Command::Api(a) => &a.global,
+            Command::Completion(a) => &a.global,
             Command::Describe(a) => &a.global,
             Command::Schema(a) => &a.global,
             Command::Skill(c) => &c.global,
@@ -202,6 +211,11 @@ pub async fn execute(
         Command::Member(command) => members::run_members(ctx, command.action).await?,
         Command::Notification(command) => notifications::run(ctx, command).await?,
         Command::Registry(command) => registries::run(ctx, command.action).await?,
+        Command::Api(args) => api::run(ctx, args).await?,
+        Command::Completion(args) => {
+            selfdesc::completion(root, args);
+            return Ok(None);
+        }
         Command::Describe(args) => selfdesc::describe(root, args)?,
         Command::Schema(args) => selfdesc::schema(root, args)?,
         Command::Skill(command) => return selfdesc::skill(ctx, root, command),

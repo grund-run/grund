@@ -534,6 +534,13 @@ add` still enrolls your own machine and never rents one.
   (a personal access token) with `GRUND_INSTANCE`. `--org SLUG` (or
   `GRUND_ORG`) overrides the context's organisation (`grund org use`), then
   the token's, then your only one. Flags work before or after the noun.
+- `grund api PROCEDURE` calls any procedure of the instance's API with the
+  context's credential, for what no command covers yet: `grund api list`
+  names them; `-f key=value` builds the request (`{org}` is the
+  organisation) or `--input FILE|-` gives it whole. It grants nothing the
+  API does not already allow.
+- `grund completion bash|zsh|fish|elvish|powershell` prints a shell
+  completion script.
 - For agents: `grund describe --json` is the whole command tree with types,
   defaults, examples, output schemas and error codes, generated from the
   code; [schema/cli.json](schema/cli.json) is this commit's. `grund schema

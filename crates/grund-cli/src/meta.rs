@@ -1017,6 +1017,28 @@ pub const LEAVES: &[Leaf] = &[
         ],
     ),
     read("skill print", "", &[], &["grund skill print"]),
+    Leaf {
+        mutates: true,
+        ..read(
+            "api",
+            "google.protobuf.Value",
+            &[],
+            &[
+                "grund api list",
+                "grund api AppService/GetApp -f organisation={org} -f name=web",
+                "grund api grund.app.v1.AppService/ListApps --input request.json",
+            ],
+        )
+    },
+    read(
+        "completion",
+        "",
+        &[],
+        &[
+            "grund completion zsh > ~/.zfunc/_grund",
+            "grund completion bash > /etc/bash_completion.d/grund",
+        ],
+    ),
     write(
         "skill install",
         "grund.cli.v1.SkillInstalled",
@@ -1116,6 +1138,7 @@ mod tests {
                     path.as_str(),
                     "auth login"
                         | "auth logout"
+                        | "api"
                         | "context remove"
                         | "org use"
                         | "domain verify"

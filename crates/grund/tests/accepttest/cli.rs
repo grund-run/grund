@@ -1192,3 +1192,55 @@ async fn contexts_name_an_instance_its_credential_and_organisation_and_the_older
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn grund_api_calls_a_procedure_by_its_short_name_with_the_organisation_filled_in()
+-> anyhow::Result<()> {
+    let Some((given, when, then)) = testcase_configured(&[]).await? else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let org = owner.username.as_str();
+    let instance = origin(&when);
+    let token = a_token(&when, &then, org, "api", "full").await?;
+    let shell = Shell::fresh(&[])?;
+    shell
+        .json_with("auth login", &[&instance, "--with-token"], &token)
+        .await?;
+    let app = given.a_fresh_name("api");
+    shell.json("app create", &[&app]).await?;
+
+    let listed = shell.run(&["api", "list", "--json"]).await?;
+    anyhow::ensure!(
+        listed.status == 0
+            && listed.json()?["procedures"].as_array().is_some_and(|p| p
+                .iter()
+                .any(|p| p["rpc"] == "grund.app.v1.AppService/ListApps")),
+        "grund api list: {}",
+        listed.stderr
+    );
+    let called = shell
+        .run(&[
+            "api",
+            "AppService/ListApps",
+            "-f",
+            "organisation={org}",
+            "--json",
+        ])
+        .await?;
+    anyhow::ensure!(called.status == 0, "grund api failed: {}", called.stderr);
+    anyhow::ensure!(
+        called.json()?["apps"]
+            .as_array()
+            .is_some_and(|apps| apps.iter().any(|a| a["name"] == app)),
+        "grund api did not reach the context's organisation: {}",
+        called.stdout
+    );
+    let unknown = shell.run(&["api", "NoService/Nothing", "--json"]).await?;
+    anyhow::ensure!(
+        unknown.status == 2 && unknown.error()?["code"] == "usage",
+        "an unknown procedure was not a usage error: {}",
+        unknown.stderr
+    );
+    Ok(())
+}

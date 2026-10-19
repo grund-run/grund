@@ -74,6 +74,26 @@ pub struct McpArgs {
     pub global: Global,
 }
 
+/// `grund completion`.
+#[derive(Debug, clap::Args)]
+pub struct CompletionArgs {
+    #[command(flatten)]
+    pub global: Global,
+    #[arg(value_enum, value_name = "SHELL")]
+    pub shell: clap_complete::Shell,
+}
+
+/// Prints the completion script for `args.shell`, for the commands `root`
+/// shows.
+pub fn completion(root: &clap::Command, args: CompletionArgs) {
+    use std::io::Write;
+
+    let mut root = root.clone();
+    let mut script = Vec::new();
+    clap_complete::generate(args.shell, &mut root, "grund", &mut script);
+    let _ = std::io::stdout().lock().write_all(&script);
+}
+
 /// Runs `grund describe`.
 pub fn describe(root: &clap::Command, args: DescribeArgs) -> CliResult<Output> {
     let document = describe::document(root, &args.command);

@@ -12970,6 +12970,152 @@
           "value_name": "JSON"
         },
         {
+          "description": "package.Service/Method, or Service/Method when that names one; list prints them all",
+          "name": "procedure",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "PROCEDURE"
+        },
+        {
+          "description": "A request field; VALUE is JSON when it parses as JSON, else a string. {org} is the organisation",
+          "flag": "--field",
+          "name": "fields",
+          "repeated": true,
+          "short": "-f",
+          "type": "string",
+          "value_name": "KEY=VALUE"
+        },
+        {
+          "description": "The request as protobuf JSON, from FILE or - for stdin",
+          "flag": "--input",
+          "name": "input",
+          "type": "string",
+          "value_name": "FILE"
+        }
+      ],
+      "audience": "client",
+      "command": "grund api",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund api list",
+        "grund api AppService/GetApp -f organisation={org} -f name=web",
+        "grund api grund.app.v1.AppService/ListApps --input request.json"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/google.protobuf.Value"
+      },
+      "path": "api",
+      "summary": "Call any API procedure"
+    },
+    {
+      "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
+          "description": "The organisation. Default: grund org use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "enum": [
+            "bash",
+            "elvish",
+            "fish",
+            "powershell",
+            "zsh"
+          ],
+          "name": "shell",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "SHELL"
+        }
+      ],
+      "audience": "client",
+      "command": "grund completion",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund completion zsh > ~/.zfunc/_grund",
+        "grund completion bash > /etc/bash_completion.d/grund"
+      ],
+      "mutates": false,
+      "path": "completion",
+      "summary": "Shell completion for bash, zsh, fish, elvish or PowerShell"
+    },
+    {
+      "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
+          "description": "The organisation. Default: grund org use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
           "description": "Only this command and those under it, such as apps deploy",
           "name": "command",
           "positional": true,
