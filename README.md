@@ -224,6 +224,8 @@ protected enrollment identity is carried to the new root. A fresh boot must prov
 the requested image and usable CPU and memory limits before the pin changes.
 Rollback restores the previous root and pauses further machines. Until proof,
 the guest is labelled **Legacy guest: update or restart required**.
+Local stateful apps are not currently admitted on own-VM guests. VM updates do
+not change that policy; their safety guard also protects existing retained data.
 
 New agents also report whole-machine CPU, memory and data-filesystem usage
 and uptime with their five-second heartbeat. These are measurements, separate
