@@ -100,7 +100,7 @@ grund listens only at `http://localhost:8080`. HTTP itself has no TLS:
 use the printed SSH forwarding command from another computer, then open
 the one owner setup link. Finishing owner setup connects this machine
 automatically. No DNS name or separate machine setup code is needed.
-The summary prints the next check, `grund doctor machine`.
+The summary prints the next check, `sudo grund doctor`.
 
 To add HTTPS later, point a DNS name at this machine, make TCP 443
 reachable, then run:
@@ -384,9 +384,11 @@ owner's one-time link, run with `serve`'s settings), `doctor` and `probe`
 `relay(s)` and `edge(s)`. The same binary is the client for people, scripts
 and coding agents: see "The CLI" below.
 
-`grund doctor instance` (in compose: `docker compose exec grund /grund
-doctor instance`) and `grund doctor machine` (on a machine, as root) check
-without changing anything, one line per check (`ok`, `warn`, `fail` or
+`grund doctor` checks this computer: the CLI, its config, the instance
+it is signed in to and, as root on a machine, the agent's own checks.
+`grund-server doctor` (in compose: `docker compose exec grund /grund
+doctor instance`) checks the instance. Both check without changing
+anything, one line per check (`ok`, `warn`, `fail` or
 `skip`, its name, what was seen, and a `fix:` line), or one JSON document
 with `--json`. The exit code is 1 when any check fails. `grund serve --help` lists every setting with
 its environment variable.

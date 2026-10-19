@@ -1,4 +1,4 @@
-//! `grund doctor machine`: a read-only check of a machine for grund's agent:
+//! `grund-agent doctor` (and `grund doctor` on a machine): a read-only check of a machine for grund's agent:
 //! what it runs on, whether the agent can run and is running, whether it
 //! reaches its instance, and whether its clock agrees with it (grund-docs
 //! design/self-hosted.md §5, §6.4). The VM checks come from the runtime
@@ -23,7 +23,7 @@ pub const CLOCK_WARN: Duration = Duration::from_secs(30);
 /// Free space under the agent's data directory below which VMs will not fit.
 pub const DISK_WARN_BYTES: u64 = 10 << 30;
 
-/// `grund doctor machine`.
+/// `grund-agent doctor`.
 #[derive(Clone, Debug, clap::Args)]
 pub struct MachineArgs {
     /// Where `grund join` kept the machine's identity.
@@ -126,7 +126,7 @@ fn privilege() -> Check {
         Check::warn(
             "privilege",
             "not root: this run can only report, and some checks skip; the agent needs root",
-            "run it as root (sudo grund doctor machine); a rootless agent is not built",
+            "run it as root (sudo grund doctor); a rootless agent is not built",
         )
     }
 }

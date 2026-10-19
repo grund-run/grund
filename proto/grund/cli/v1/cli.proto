@@ -265,3 +265,62 @@ message UpdateDoctorCheck {
   string name = 1;
   string status = 2;
 }
+
+// `grund status`: what this computer is signed in to and runs.
+message LocalStatus {
+  // This CLI's release.
+  string version = 1;
+  // The context commands use; the credential's kind, never the secret.
+  // Absent when there is none, or GRUND_INSTANCE and GRUND_TOKEN choose.
+  Context context = 2;
+  // GRUND_TOKEN when the environment sets the credential.
+  string credential_source = 3;
+  // This machine, when grund's agent is installed here.
+  MachineStatus machine = 4;
+}
+
+// This machine as its agent's files say (`grund-agent status`).
+message MachineStatus {
+  // False when not run as root: the agent's files are root's alone.
+  bool readable = 1;
+  // Whether this machine is registered with an instance.
+  bool registered = 2;
+  // The installed agent executable's build revision.
+  string revision = 3;
+  string id = 4;
+  string name = 5;
+  // The instance's origin.
+  string instance = 6;
+  // When the agent last finished a round with its instance (Unix seconds),
+  // and whether it was ready then. Recorded only on a following machine.
+  int64 last_contact_unix = 7;
+  bool ready = 8;
+  // Whether the machine follows its instance's updates, and whether that
+  // is paused (by its owner, or after a rolled-back update).
+  bool following = 9;
+  bool paused = 10;
+  // The updater's last state: waiting, unavailable, paused, candidate,
+  // rolling_back, committed, rolled_back or offer_cancelled.
+  string update_state = 11;
+  string target_revision = 12;
+  string failure_code = 13;
+  // An update in progress: authorizing, authorized, candidate, committed,
+  // rolling_back or rolled_back.
+  string update_phase = 14;
+}
+
+// `grund doctor`: each check of this computer, and what to do.
+message DoctorReport {
+  // ok, warn or fail: the worst of the checks.
+  string status = 1;
+  repeated DoctorCheck checks = 2;
+}
+
+message DoctorCheck {
+  string name = 1;
+  // ok, warn or fail.
+  string status = 2;
+  string detail = 3;
+  // What to do, when it is not ok.
+  string fix = 4;
+}

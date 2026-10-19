@@ -53,7 +53,7 @@ pub async fn run(command: Command, root: clap::Command, revision: &'static str) 
     match commands::execute(command, &ctx, &root, revision).await {
         Ok(Some(output)) => {
             output::print(&output, format);
-            0
+            output.status
         }
         Ok(None) => 0,
         Err(error) => {

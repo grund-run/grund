@@ -916,11 +916,11 @@ async fn install_inner(ctx: &Ctx, mut args: InstallArgs, progress: &Progress) ->
         None
     };
     let next = if setup_link.is_some() {
-        "Open the setup link; this machine connects when you finish. Then run grund doctor machine."
+        "Open the setup link; this machine connects when you finish. Then run sudo grund doctor."
     } else if !local_bootstrap && server && !registered && args.code.is_none() {
         "Create your owner account with grund setup-link in the server, then get a machine setup code from Machines."
     } else {
-        "Run grund doctor machine to check this machine."
+        "Run sudo grund doctor to check this machine."
     };
     let mut summary = Vec::with_capacity(5);
     if remote.is_some()

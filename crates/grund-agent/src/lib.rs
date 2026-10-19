@@ -26,6 +26,7 @@ pub mod resolved;
 pub mod runtime;
 pub mod secrets;
 pub mod simulated;
+pub mod status;
 pub mod supervisor;
 mod telemetry;
 mod telemetry_final;

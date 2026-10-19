@@ -42,6 +42,9 @@ pub struct Output {
     pub text: Text,
     /// For [`Text::Own`].
     pub own: String,
+    /// The exit status after printing it: 0, or 1 for a report that found a
+    /// failure (`grund doctor`).
+    pub status: i32,
 }
 
 impl Output {
@@ -51,6 +54,7 @@ impl Output {
             value,
             text: Text::Fields,
             own: String::new(),
+            status: 0,
         }
     }
 
@@ -60,6 +64,7 @@ impl Output {
             value,
             text: Text::Own,
             own: text,
+            status: 0,
         }
     }
 
@@ -69,6 +74,7 @@ impl Output {
             value,
             text: Text::Json,
             own: String::new(),
+            status: 0,
         }
     }
 
@@ -82,6 +88,7 @@ impl Output {
             value,
             text: Text::Table(rows, columns),
             own: String::new(),
+            status: 0,
         }
     }
 
@@ -91,7 +98,13 @@ impl Output {
             value,
             text: Text::Line(pointer),
             own: String::new(),
+            status: 0,
         }
+    }
+
+    /// The same result, exiting with `status` once printed.
+    pub fn exit(self, status: i32) -> Self {
+        Output { status, ..self }
     }
 
     /// The result in `format`, ending in a newline.

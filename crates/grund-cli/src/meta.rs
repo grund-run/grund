@@ -193,6 +193,18 @@ pub const LEAVES: &[Leaf] = &[
             ],
         )
     },
+    read(
+        "status",
+        "grund.cli.v1.LocalStatus",
+        &[],
+        &["grund status", "sudo grund status --json"],
+    ),
+    read(
+        "doctor",
+        "grund.cli.v1.DoctorReport",
+        &["grund.account.v1.AccountService/GetViewer"],
+        &["grund doctor", "sudo grund doctor --json"],
+    ),
     write(
         "server install",
         "grund.cli.v1.HostInstallation",

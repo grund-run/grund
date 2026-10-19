@@ -1446,6 +1446,45 @@
       "title": "grund.cli.v1.DeployResult",
       "type": "object"
     },
+    "grund.cli.v1.DoctorCheck": {
+      "additionalProperties": false,
+      "properties": {
+        "detail": {
+          "type": "string"
+        },
+        "fix": {
+          "description": "What to do, when it is not ok.",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "status": {
+          "description": "ok, warn or fail.",
+          "type": "string"
+        }
+      },
+      "title": "grund.cli.v1.DoctorCheck",
+      "type": "object"
+    },
+    "grund.cli.v1.DoctorReport": {
+      "additionalProperties": false,
+      "description": "`grund doctor`: each check of this computer, and what to do.",
+      "properties": {
+        "checks": {
+          "items": {
+            "$ref": "#/$defs/grund.cli.v1.DoctorCheck"
+          },
+          "type": "array"
+        },
+        "status": {
+          "description": "ok, warn or fail: the worst of the checks.",
+          "type": "string"
+        }
+      },
+      "title": "grund.cli.v1.DoctorReport",
+      "type": "object"
+    },
     "grund.cli.v1.Done": {
       "additionalProperties": false,
       "description": "A command whose API answer is empty.",
@@ -1685,6 +1724,38 @@
       "title": "grund.cli.v1.HostUpdate",
       "type": "object"
     },
+    "grund.cli.v1.LocalStatus": {
+      "additionalProperties": false,
+      "description": "`grund status`: what this computer is signed in to and runs.",
+      "properties": {
+        "context": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/grund.cli.v1.Context"
+            }
+          ],
+          "description": "The context commands use; the credential's kind, never the secret. Absent when there is none, or GRUND_INSTANCE and GRUND_TOKEN choose."
+        },
+        "credentialSource": {
+          "description": "GRUND_TOKEN when the environment sets the credential.",
+          "type": "string"
+        },
+        "machine": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/grund.cli.v1.MachineStatus"
+            }
+          ],
+          "description": "This machine, when grund's agent is installed here."
+        },
+        "version": {
+          "description": "This CLI's release.",
+          "type": "string"
+        }
+      },
+      "title": "grund.cli.v1.LocalStatus",
+      "type": "object"
+    },
     "grund.cli.v1.LoginResult": {
       "additionalProperties": false,
       "description": "`grund auth login`.",
@@ -1745,6 +1816,68 @@
         }
       },
       "title": "grund.cli.v1.MachineAdded",
+      "type": "object"
+    },
+    "grund.cli.v1.MachineStatus": {
+      "additionalProperties": false,
+      "description": "This machine as its agent's files say (`grund-agent status`).",
+      "properties": {
+        "failureCode": {
+          "type": "string"
+        },
+        "following": {
+          "description": "Whether the machine follows its instance's updates, and whether that is paused (by its owner, or after a rolled-back update).",
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        },
+        "instance": {
+          "description": "The instance's origin.",
+          "type": "string"
+        },
+        "lastContactUnix": {
+          "description": "When the agent last finished a round with its instance (Unix seconds), and whether it was ready then. Recorded only on a following machine.",
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "paused": {
+          "type": "boolean"
+        },
+        "readable": {
+          "description": "False when not run as root: the agent's files are root's alone.",
+          "type": "boolean"
+        },
+        "ready": {
+          "type": "boolean"
+        },
+        "registered": {
+          "description": "Whether this machine is registered with an instance.",
+          "type": "boolean"
+        },
+        "revision": {
+          "description": "The installed agent executable's build revision.",
+          "type": "string"
+        },
+        "targetRevision": {
+          "type": "string"
+        },
+        "updatePhase": {
+          "description": "An update in progress: authorizing, authorized, candidate, committed, rolling_back or rolled_back.",
+          "type": "string"
+        },
+        "updateState": {
+          "description": "The updater's last state: waiting, unavailable, paused, candidate, rolling_back, committed, rolled_back or offer_cancelled.",
+          "type": "string"
+        }
+      },
+      "title": "grund.cli.v1.MachineStatus",
       "type": "object"
     },
     "grund.cli.v1.OrganisationList": {
@@ -3763,6 +3896,61 @@
           "name": "json",
           "type": "boolean",
           "value_name": "JSON"
+        }
+      ],
+      "audience": "client",
+      "command": "grund status",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund status",
+        "sudo grund status --json"
+      ],
+      "mutates": false,
+      "output": {
+        "$ref": "#/$defs/grund.cli.v1.LocalStatus"
+      },
+      "path": "status",
+      "summary": "What this computer is signed in to and runs"
+    },
+    {
+      "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
+          "description": "The organisation. Default: grund org use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
         },
         {
           "description": "Release channel; defaults to the installed release's channel",
@@ -3811,6 +3999,64 @@
       },
       "path": "update",
       "summary": "Update grund on this computer"
+    },
+    {
+      "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
+          "description": "The organisation. Default: grund org use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        }
+      ],
+      "audience": "client",
+      "command": "grund doctor",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund doctor",
+        "sudo grund doctor --json"
+      ],
+      "mutates": false,
+      "output": {
+        "$ref": "#/$defs/grund.cli.v1.DoctorReport"
+      },
+      "path": "doctor",
+      "rpcs": [
+        "grund.account.v1.AccountService/GetViewer"
+      ],
+      "summary": "Check this computer and what it connects to"
     },
     {
       "args": [

@@ -6,6 +6,7 @@ pub mod apps;
 pub mod auth;
 pub mod contexts;
 pub mod domains;
+pub mod here;
 pub mod machines;
 pub mod members;
 pub mod notifications;
@@ -32,7 +33,9 @@ use crate::{
 pub const CLIENT_NOUNS: &[&str] = &[
     "join",
     "leave",
+    "status",
     "update",
+    "doctor",
     "server",
     "auth",
     "context",
@@ -58,8 +61,12 @@ pub enum Command {
     Join(system::JoinArgs),
     #[command(about = "Disconnect this machine, keeping its identity and data")]
     Leave(system::LeaveArgs),
+    #[command(about = "What this computer is signed in to and runs")]
+    Status(here::StatusArgs),
     #[command(about = "Update grund on this computer")]
     Update(system_update::UpdateArgs),
+    #[command(about = "Check this computer and what it connects to")]
+    Doctor(here::DoctorArgs),
     #[command(about = "Run your own dashboard here")]
     Server(server::ServerCommand),
     #[command(about = "Sign in and access tokens")]
@@ -109,7 +116,9 @@ impl Command {
         match self {
             Command::Join(a) => &a.global,
             Command::Leave(a) => &a.global,
+            Command::Status(a) => &a.global,
             Command::Update(a) => &a.global,
+            Command::Doctor(a) => &a.global,
             Command::Server(c) => &c.global,
             Command::Auth(c) => &c.global,
             Command::Context(c) => &c.global,
@@ -141,7 +150,9 @@ pub async fn execute(
     let output = match command {
         Command::Join(args) => system::install(ctx, args.into_install()).await?,
         Command::Leave(args) => system::uninstall(ctx, args.into_uninstall()).await?,
+        Command::Status(_) => here::status(ctx).await?,
         Command::Update(args) => system_update::update(ctx, args).await?,
+        Command::Doctor(_) => here::doctor(ctx).await?,
         Command::Server(command) => match command.action {
             server::ServerAction::Install(args) => {
                 system::install(ctx, args.into_install()).await?

@@ -121,11 +121,6 @@ enum Command {
     PrepareLocalMachine(PrepareLocalMachineArgs),
     #[command(
         hide = true,
-        about = "Check this instance or machine without changing it: each problem and what to do. Exits 1 when a check fails"
-    )]
-    Doctor(DoctorCommand),
-    #[command(
-        hide = true,
         about = "Exit 0 when the instance at --address answers 200 on --path, 1 otherwise"
     )]
     Probe(probe::ProbeArgs),
@@ -201,28 +196,8 @@ async fn agent_updates(command: AgentUpdatesCommand) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[derive(clap::Args)]
-struct DoctorCommand {
-    #[arg(
-        long,
-        global = true,
-        help = "Print one JSON document instead of one line per check"
-    )]
-    json: bool,
-
-    #[command(subcommand)]
-    target: DoctorTarget,
-}
-
-#[derive(Subcommand)]
 enum DoctorTarget {
-    #[command(
-        about = "The instance: run where grund serve runs, with its settings (docker compose exec grund /grund doctor instance)"
-    )]
     Instance(Box<grund_server::config::ServeConfig>),
-    #[command(
-        about = "This machine, for grund's agent: prerequisites, the agent, its instance and the clock. As root, to answer every check"
-    )]
     Machine(grund_agent::doctor::MachineArgs),
 }
 
@@ -456,6 +431,8 @@ enum AgentRole {
         about = "Inspect, pause or resume this machine's explicitly enabled update following"
     )]
     Follow(grund_agent::supervisor::FollowArgs),
+    #[command(about = "This machine as its files say: identity, last contact, following, update")]
+    Status(grund_agent::status::StatusArgs),
     #[command(hide = true, alias = "agent-supervisor")]
     Supervisor(grund_agent::supervisor::SupervisorArgs),
     #[command(hide = true)]
@@ -486,14 +463,6 @@ impl Command {
             Command::SetupLink(config) => Server(ServerCommand::SetupLink(config)),
             Command::LocalMachine(config) => Server(ServerCommand::LocalMachine(config)),
             Command::PrepareLocalMachine(args) => Agent(AgentRole::PrepareLocalMachine(args)),
-            Command::Doctor(DoctorCommand {
-                json,
-                target: DoctorTarget::Instance(config),
-            }) => Server(ServerCommand::Doctor(ServerDoctorArgs { json, config })),
-            Command::Doctor(DoctorCommand {
-                json,
-                target: DoctorTarget::Machine(machine),
-            }) => Agent(AgentRole::Doctor(AgentDoctorArgs { json, machine })),
             Command::Probe(args) => Server(ServerCommand::Probe(args)),
             Command::Agent(command) => Agent(AgentRole::Run(command)),
             Command::AgentSupervisor(args) => Agent(AgentRole::Supervisor(args)),
@@ -557,6 +526,29 @@ fn invoked_as(args: &[String]) -> Option<Invoked> {
     }
 }
 
+fn runtime_doctor(args: &[String]) -> Option<(Invoked, Vec<String>)> {
+    if args.get(1).is_none_or(|a| a != "doctor") {
+        return None;
+    }
+    let (index, invoked) = args
+        .iter()
+        .enumerate()
+        .skip(2)
+        .find_map(|(i, a)| match a.as_str() {
+            "instance" => Some((i, Invoked::Server)),
+            "machine" => Some((i, Invoked::Agent)),
+            _ => None,
+        })?;
+    let mut rewritten = args.to_vec();
+    rewritten.remove(index);
+    rewritten[0] = match invoked {
+        Invoked::Server => "grund-server",
+        Invoked::Agent => "grund-agent",
+    }
+    .to_string();
+    Some((invoked, rewritten))
+}
+
 fn runtime_join(args: &[String]) -> bool {
     args.get(1).is_some_and(|a| a == "join")
         && args.iter().skip(2).any(|a| {
@@ -582,6 +574,18 @@ pub async fn run_with_extensions(
     let args: Vec<String> = std::env::args().collect();
     if let Some(result) = container_logs(&args) {
         return result;
+    }
+    if let Some((invoked, args)) = runtime_doctor(&args) {
+        return match invoked {
+            Invoked::Server => {
+                let cli = ServerCli::parse_from(&args);
+                run_role(Role::Server(cli.command), &cli.telemetry, extensions_for).await
+            }
+            Invoked::Agent => {
+                let cli = AgentCli::parse_from(&args);
+                run_role(Role::Agent(cli.command), &cli.telemetry, extensions_for).await
+            }
+        };
     }
     if runtime_join(&args) {
         let mut args = args;
@@ -662,7 +666,10 @@ async fn run_role(
                 | ServerCommand::LocalMachine(_)
                 | ServerCommand::Rollout(_)
         ) | Role::Agent(
-            AgentRole::Doctor(_) | AgentRole::PrepareLocalMachine(_) | AgentRole::Follow(_)
+            AgentRole::Doctor(_)
+                | AgentRole::PrepareLocalMachine(_)
+                | AgentRole::Follow(_)
+                | AgentRole::Status(_)
         )
     );
     let service = match &role {
@@ -746,6 +753,9 @@ async fn agent_role(command: AgentRole) -> anyhow::Result<()> {
         AgentRole::Join(args) => grund_agent::join::run(&args).await,
         AgentRole::Supervisor(args) => grund_agent::supervisor::run(&args).await,
         AgentRole::Follow(args) => grund_agent::supervisor::policy(&args),
+        AgentRole::Status(args) => {
+            grund_agent::status::run(&args, grund_server::health::revision())
+        }
         AgentRole::Run(command) => {
             grund_agent::local_bootstrap::complete_pending(&command.agent.data_dir).await?;
             match command.vm_runtime.as_str() {
@@ -778,6 +788,26 @@ mod tests {
         assert_eq!(run("/usr/local/bin/grund-agent"), Some(Invoked::Agent));
         assert_eq!(run("/grund"), None);
         assert_eq!(run("grund-server-old"), None);
+    }
+
+    #[test]
+    fn the_older_doctor_targets_still_reach_the_role_doctors() {
+        let words = |line: &str| line.split(' ').map(str::to_string).collect::<Vec<_>>();
+        let (invoked, args) = runtime_doctor(&words("/grund doctor --json instance")).unwrap();
+        assert_eq!(invoked, Invoked::Server);
+        assert_eq!(args, words("grund-server doctor --json"));
+        assert!(matches!(
+            ServerCli::try_parse_from(&args).unwrap().command,
+            ServerCommand::Doctor(_)
+        ));
+        let (invoked, args) = runtime_doctor(&words("grund doctor machine --json")).unwrap();
+        assert_eq!(invoked, Invoked::Agent);
+        assert!(matches!(
+            AgentCli::try_parse_from(&args).unwrap().command,
+            AgentRole::Doctor(_)
+        ));
+        assert!(runtime_doctor(&words("grund doctor --json")).is_none());
+        assert!(runtime_doctor(&words("grund app show machine")).is_none());
     }
 
     #[test]
@@ -815,11 +845,6 @@ mod tests {
         assert!(matches!(
             cli.command.role(),
             Ok(Role::Server(ServerCommand::RelayToken(_)))
-        ));
-        let cli = Cli::try_parse_from(["grund", "doctor", "machine"]).unwrap();
-        assert!(matches!(
-            cli.command.role(),
-            Ok(Role::Agent(AgentRole::Doctor(_)))
         ));
         let cli = Cli::try_parse_from(["grund", "app", "list"]).unwrap();
         assert!(cli.command.role().is_err());
