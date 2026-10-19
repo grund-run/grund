@@ -160,7 +160,7 @@ fn blocked(state: &State, rollout: &AgentUpdates, row: &VmFacts) -> Option<&'sta
     } else if row.has_local_volumes {
         Some("Retained local app data prevents replacing this VM")
     } else if target(state, row).is_none() {
-        Some("No approved root filesystem is available for this VM's retained kernel")
+        Some("No different approved root filesystem is available for this VM's retained kernel")
     } else {
         None
     }
