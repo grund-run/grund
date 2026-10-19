@@ -1157,6 +1157,222 @@ mod tests {
         })
     }
 
+    struct PlacementStorage(std::sync::atomic::AtomicBool);
+
+    impl crate::services::volumes::VolumeBackend for PlacementStorage {
+        fn template_available<'a>(
+            &'a self,
+            _conn: &'a mut PgConnection,
+            _machine: &'a machines::MachineRow,
+            _size_gib: u64,
+        ) -> crate::services::volumes::BackendFuture<'a, bool> {
+            Box::pin(async { Ok(self.0.load(std::sync::atomic::Ordering::SeqCst)) })
+        }
+
+        fn eligible<'a>(
+            &'a self,
+            _conn: &'a mut PgConnection,
+            _machine: &'a machines::MachineRow,
+            _owned: &'a [grund_store::volumes::VolumeRow],
+        ) -> crate::services::volumes::BackendFuture<'a, bool> {
+            Box::pin(async { Ok(false) })
+        }
+
+        fn mount_ready<'a>(
+            &'a self,
+            _conn: &'a mut PgConnection,
+            _volume: &'a grund_store::volumes::VolumeRow,
+        ) -> crate::services::volumes::BackendFuture<'a, bool> {
+            unreachable!("placement does not issue mounts")
+        }
+
+        fn recovery_points<'a>(
+            &'a self,
+            _pool: &'a sqlx::PgPool,
+            _org: Uuid,
+            _app: Uuid,
+            _volume: Uuid,
+        ) -> crate::services::volumes::BackendFuture<'a, Vec<grund_store::backup::RecoveryPoint>>
+        {
+            unreachable!("placement does not list recovery points")
+        }
+
+        fn backup_view<'a>(
+            &'a self,
+            _pool: &'a sqlx::PgPool,
+            _org: Uuid,
+            _app: Uuid,
+            _volume: Uuid,
+        ) -> crate::services::volumes::BackendFuture<'a, crate::services::backups::BackupView>
+        {
+            unreachable!("placement does not read backup status")
+        }
+
+        fn reserve_restore<'a>(
+            &'a self,
+            _conn: &'a mut PgConnection,
+            _org: Uuid,
+            _app: Uuid,
+            _source: Uuid,
+            _snapshot: Uuid,
+            _new_volume: Uuid,
+            _machine: Uuid,
+            _attempt: Uuid,
+        ) -> crate::services::volumes::BackendFuture<'a, ()> {
+            unreachable!("placement does not request restores")
+        }
+
+        fn restore_status<'a>(
+            &'a self,
+            _pool: &'a sqlx::PgPool,
+            _org: Uuid,
+            _app: Uuid,
+            _volume: Uuid,
+        ) -> crate::services::volumes::BackendFuture<'a, Option<(String, Option<String>)>> {
+            unreachable!("placement does not read restore status")
+        }
+
+        fn restore_attempt_status<'a>(
+            &'a self,
+            _pool: &'a sqlx::PgPool,
+            _org: Uuid,
+            _app: Uuid,
+            _attempt: Uuid,
+        ) -> crate::services::volumes::BackendFuture<'a, Option<String>> {
+            unreachable!("placement does not read restore attempts")
+        }
+    }
+
+    struct PlacementExtension(Arc<PlacementStorage>);
+
+    impl crate::extension::Extension for PlacementExtension {
+        fn name(&self) -> &'static str {
+            "placement-storage"
+        }
+
+        fn routes(&self) -> axum::Router<State> {
+            axum::Router::new()
+        }
+
+        fn volume_backend(
+            &self,
+            _state: &State,
+        ) -> Option<Arc<dyn crate::services::volumes::VolumeBackend>> {
+            Some(self.0.clone())
+        }
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn first_hosted_templates_need_new_disk_capacity_not_retained_volume_eligibility(
+        pool: sqlx::PgPool,
+    ) -> anyhow::Result<()> {
+        let mut state = state(pool).await?;
+        let backend = Arc::new(PlacementStorage(std::sync::atomic::AtomicBool::new(true)));
+        state.extensions = Arc::new(vec![Arc::new(PlacementExtension(backend.clone()))]);
+        let org = Uuid::now_v7();
+        let machine = Uuid::now_v7();
+        let at = Utc::now();
+        sqlx::query("INSERT INTO grund_organisations(organisation_id,slug,kind,created_at,stream_version) VALUES($1,'first-hosted','personal',$2,1)")
+            .bind(org).bind(at).execute(&state.pool).await?;
+        sqlx::query("INSERT INTO grund_machines(machine_id,pool,name,state,public_key,pool_organisation_id,pool_name,lease_id,minted_by,registered_at,key_registered_at,stream_version) VALUES($1,'management','physical','leased',repeat('a',64),$2,'hosted',$3,'test',$4,$4,1)")
+            .bind(machine).bind(org).bind(Uuid::now_v7()).bind(at).execute(&state.pool).await?;
+        sqlx::query("INSERT INTO grund_machine_presence(machine_id,last_seen_at,capabilities) VALUES($1,$2,$3)")
+            .bind(machine).bind(at).bind(Json(serde_json::json!({
+                "apps": true, "stack_services": true, "resources_allocatable": true,
+                "arch": "x86_64", "memory_mib": 4096, "cpu_millis": 2000
+            }))).execute(&state.pool).await?;
+        let stacks = state.stacks();
+        let mut conn = state.pool.acquire().await?;
+        for template in ["postgres", "redis", "seaweedfs"] {
+            let mut spec = grund_domain::app::templates::find(template)
+                .unwrap()
+                .spec(false)
+                .unwrap();
+            let size = grund_domain::app::templates::find(template)
+                .unwrap()
+                .storage
+                .unwrap()
+                .size_gib;
+            for volume in &mut spec.volumes {
+                volume.size_gib = Some(size);
+            }
+            let mut settings = grund_config::app::spec::AppSettings::default();
+            settings.placement.kind = Some(grund_config::app::spec::MachineKind::Hosted);
+            let app_id = Uuid::now_v7();
+            let revision = Revision {
+                number: 1,
+                yaml: format!(
+                    "stack:\n  name: first\n  services:\n    storage:\n      template: {template}\n"
+                ),
+                services: BTreeMap::from([(
+                    "storage".into(),
+                    Service {
+                        app_id,
+                        app_name: "storage".into(),
+                        release: Release {
+                            number: 1,
+                            spec,
+                            image_digest: String::new(),
+                            platforms: Vec::new(),
+                            exposed_ports: None,
+                            secret_versions: Vec::new(),
+                            source: ReleaseSource::File,
+                            rollback_of: None,
+                            note: String::new(),
+                            created_by: Uuid::nil(),
+                            created_at: at,
+                            external_release: None,
+                            request: None,
+                        },
+                        settings,
+                        depends_on: Vec::new(),
+                        exclusive: true,
+                        template: Some(template.into()),
+                    },
+                )]),
+                public_service: None,
+                public_port: None,
+                created_at: at,
+                created_by: Uuid::nil(),
+                rollback_of: None,
+            };
+            assert_eq!(
+                stacks
+                    .choose_machine(&mut conn, org, &revision, None, None)
+                    .await?
+                    .machine,
+                Some(machine),
+                "{template} must be placeable before its first disk is allocated"
+            );
+            backend.0.store(false, std::sync::atomic::Ordering::SeqCst);
+            assert_eq!(
+                stacks
+                    .choose_machine(&mut conn, org, &revision, None, None)
+                    .await?
+                    .machine,
+                None,
+                "{template} must still pass fresh-host, lease, disk and slot preflight"
+            );
+            backend.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            let volume = Uuid::now_v7();
+            sqlx::query("INSERT INTO grund_volumes(organisation_id,app_id,volume_id,name,path,status,size_gib,backup,created_at,stream_version) VALUES($1,$2,$3,'data','/data','requested',$4,true,$5,1)")
+                .bind(org).bind(app_id).bind(volume).bind(size as i64).bind(at).execute(&mut *conn).await?;
+            assert_eq!(
+                stacks
+                    .choose_machine(&mut conn, org, &revision, None, None)
+                    .await?
+                    .machine,
+                None,
+                "{template} retained volumes must still pass backend eligibility"
+            );
+            sqlx::query("DELETE FROM grund_volumes WHERE volume_id=$1")
+                .bind(volume)
+                .execute(&mut *conn)
+                .await?;
+        }
+        Ok(())
+    }
+
     struct Bundle {
         org: Uuid,
         id: Uuid,

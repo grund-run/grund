@@ -1108,7 +1108,7 @@ impl Stacks {
                     let Some(backend) = self.state.volume_backend() else {
                         continue;
                     };
-                    if !backend.eligible(connection, &row, &volumes).await? {
+                    if !volumes.is_empty() && !backend.eligible(connection, &row, &volumes).await? {
                         continue;
                     }
                     let occupied: i64 = sqlx::query_scalar(

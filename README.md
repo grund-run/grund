@@ -662,6 +662,8 @@ A stack owns several services on one existing capable machine or VM; it
 creates neither a VM nor a shared localhost namespace. Private services remain
 organisation-private, not isolated from other stacks. Agents must support stacks.
 `placement.kind: hosted` is refused; stacks cannot request hosted machine rental.
+Stateful templates can use an existing hosted machine after its host, lease,
+free-disk and volume-slot preflight passes; no prior data volume is required.
 Use top-level `stack` with `name` and `services` instead of `app`: at most ten
 services and 1 MiB of raw YAML per file. The same [file schema](schema/grund.json) describes both.
 Services use app fields or a catalogue `template`. A whole env value such as
