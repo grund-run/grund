@@ -41,6 +41,10 @@ service BillingService {
   rpc BeginCheckout(BeginCheckoutRequest) returns (BeginCheckoutResponse);
   rpc ChangePlan(ChangePlanRequest) returns (ChangePlanResponse);
   rpc CancelSubscription(CancelSubscriptionRequest) returns (CancelSubscriptionResponse);
+  // A distinct paid rental, never an own-machine licence or redirect-based grant.
+  rpc BeginRentalCheckout(BeginRentalCheckoutRequest) returns (BeginRentalCheckoutResponse);
+  // Requests period-end cancellation; does not delete workloads or end paid time.
+  rpc CancelRental(CancelRentalRequest) returns (CancelRentalResponse);
   rpc OpenPortal(OpenPortalRequest) returns (OpenPortalResponse);
   rpc RecordMachineCount(RecordMachineCountRequest) returns (RecordMachineCountResponse) {
     option idempotency_level = IDEMPOTENT;
@@ -105,6 +109,7 @@ message Account {
   // Display-only explanation. Never grants allocation or replaces fresh
   // hosted_entitlement authority, including when this reason is GRANTED.
   HostedEntitlementReason hosted_entitlement_reason = 21;
+  repeated Rental rentals = 22;
 }
 
 // Absolute organisation-wide ceilings, including reserved/provisioning hosted
@@ -222,6 +227,41 @@ message BeginCheckoutResponse {
   string url = 1;
 }
 
+message BeginRentalCheckoutRequest {
+  string organisation_id = 1;
+  string rental_id = 2;
+  // small, medium, large or dedicated.
+  string size = 3;
+  string success_url = 4;
+  string idempotency_key = 5;
+}
+
+message BeginRentalCheckoutResponse { string url = 1; }
+
+message CancelRentalRequest {
+  string organisation_id = 1;
+  string rental_id = 2;
+  string idempotency_key = 3;
+}
+
+message CancelRentalResponse { Account account = 1; }
+
+message Rental {
+  string rental_id = 1;
+  string size = 2;
+  // pending, active, past_due, incomplete, paused, canceled or incomplete_expired.
+  string status = 3;
+  google.protobuf.Timestamp period_start = 4;
+  google.protobuf.Timestamp period_end = 5;
+  bool cancel_at_period_end = 6;
+  int64 monthly_cap_cents = 7;
+  // Completed machine-hours observed in the authoritative current period.
+  int64 completed_hours = 8;
+  // Cumulative delivered rental cents; absent before a provider observation.
+  optional int64 observed_amount_cents = 9;
+  string currency = 10;
+}
+
 message ChangePlanRequest {
   string organisation_id = 1;
   string plan = 2;
@@ -245,6 +285,8 @@ message OpenPortalRequest {
   string organisation_id = 1;
   string return_url = 2;
   string idempotency_key = 3;
+  // Empty selects the separate own-machine customer, otherwise this rental.
+  string rental_id = 4;
 }
 
 message OpenPortalResponse {
@@ -282,6 +324,7 @@ message RecordMachineChangeRequest {
   google.protobuf.Timestamp changed_at = 5;
   string idempotency_key = 6;
   MachineKind machine_kind = 7;
+  // HOSTED: the UUID supplied to BeginRentalCheckout, not a provider order ID.
   string order_id = 8;
   string size = 9;
   string region = 10;

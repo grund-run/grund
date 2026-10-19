@@ -46,7 +46,7 @@ message HostedAllowance {
   uint32 max_machines = 2;
   uint32 max_vcpus = 3;
   uint64 max_memory_mib = 4;
-  // plan or billing_pending for enabled allowances; waiting_for_billing,
+  // rental or billing_pending for enabled allowances; waiting_for_billing,
   // allowance_disabled, needs_plan, or not_available for denied allowances.
   // billing_pending is the temporary allowance, not a billing sync wait.
   // Display only: no undecided price or allocation permission is implied.
@@ -63,6 +63,9 @@ message CreateHostedMachineRequest {
   string size = 3;
   string region = 4;
   string idempotency_key = 5;
+  // Purchased rental UUID; binds this request exactly once to that size.
+  // Empty is allowed only by the operator provisional admission policy.
+  string rental_id = 6;
 }
 message CreateHostedMachineResponse {
   Machine machine = 1;

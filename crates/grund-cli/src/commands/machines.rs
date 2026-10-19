@@ -78,6 +78,12 @@ pub enum MachinesAction {
             help = "Reuse this key to resume the same hosted request"
         )]
         idempotency_key: Option<String>,
+        #[arg(
+            long,
+            requires = "hosted",
+            help = "Purchased rental UUID; its size must match"
+        )]
+        rental_id: Option<String>,
     },
     #[command(about = "Show a machine's labels, or replace them with KEY=VALUE pairs")]
     Labels {
@@ -322,7 +328,7 @@ pub async fn run(ctx: &Ctx, action: MachinesAction) -> CliResult<Output> {
                     "Hosted machines are turned off for this organisation"
                 }
                 Some("needs_plan") => "Needs a plan",
-                Some("plan") => "Plan allowance",
+                Some("rental") => "Purchased rental allowance",
                 _ => "Not available",
             };
             let waiting = match answer["waitingReason"].as_str() {
@@ -347,6 +353,7 @@ pub async fn run(ctx: &Ctx, action: MachinesAction) -> CliResult<Output> {
             size,
             region,
             idempotency_key,
+            rental_id,
             dry_run: preview,
         } => {
             if hosted {
@@ -357,6 +364,7 @@ pub async fn run(ctx: &Ctx, action: MachinesAction) -> CliResult<Output> {
                     "organisation": org, "name": name, "size": size.unwrap_or_default(),
                     "region": region.unwrap_or_default(),
                     "idempotencyKey": idempotency_key.unwrap_or_else(|| uuid::Uuid::now_v7().to_string()),
+                    "rentalId": rental_id.unwrap_or_default(),
                 });
                 let procedure = format!("{HOSTED}/CreateHostedMachine");
                 if preview {

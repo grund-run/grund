@@ -68,8 +68,13 @@ pub struct AccountDetails {
     pub cancel_at_period_end: bool,
     pub usage: Option<UsageDetails>,
     pub invoices: Vec<InvoiceDetails>,
+    /// Rental observations; allocation requires an uncached `account_now`
+    /// snapshot with matching same-response entitlement and rental eligibility.
+    pub rentals: Vec<RentalDetails>,
+    /// Cached accounts are display-only. Allocation uses `hosted_entitlement_now`
+    /// or an uncached `account_now` snapshot with same-response rental authority.
     pub hosted_entitlement: Option<HostedEntitlement>,
-    /// Display-only; allocation always uses `hosted_entitlement_now`.
+    /// Display-only explanation; never grants allocation authority.
     pub hosted_entitlement_reason: HostedEntitlementReason,
 }
 
@@ -119,6 +124,21 @@ pub struct InvoiceDetails {
     pub refunded_amount_cents: Option<i64>,
     pub refunded_tax_amount_cents: Option<i64>,
     pub financial_status: String,
+}
+
+/// Provider rental observations. Missing metering facts remain unavailable.
+#[derive(Debug, PartialEq, Eq)]
+pub struct RentalDetails {
+    pub rental_id: String,
+    pub size: String,
+    pub status: String,
+    pub period_start: Option<String>,
+    pub period_end: Option<String>,
+    pub cancel_at_period_end: bool,
+    pub monthly_cap_cents: Option<i64>,
+    pub completed_hours: Option<i64>,
+    pub observed_amount_cents: Option<i64>,
+    pub currency: String,
 }
 
 /// Whether an organisation may be deleted, as far as billing is concerned.
@@ -668,6 +688,25 @@ fn view_from_response(answer: &serde_json::Value) -> BillingView {
         cancel_at_period_end: account["cancelAtPeriodEnd"].as_bool().unwrap_or(false),
         usage,
         invoices,
+        rentals: account["rentals"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|rental| {
+                Some(RentalDetails {
+                    rental_id: rental["rentalId"].as_str()?.to_owned(),
+                    size: rental["size"].as_str()?.to_owned(),
+                    status: rental["status"].as_str()?.to_owned(),
+                    period_start: rental["periodStart"].as_str().map(str::to_owned),
+                    period_end: rental["periodEnd"].as_str().map(str::to_owned),
+                    cancel_at_period_end: rental["cancelAtPeriodEnd"].as_bool().unwrap_or(false),
+                    monthly_cap_cents: json_i64(&rental["monthlyCapCents"]),
+                    completed_hours: json_i64(&rental["completedHours"]),
+                    observed_amount_cents: json_i64(&rental["observedAmountCents"]),
+                    currency: rental["currency"].as_str().unwrap_or("").to_owned(),
+                })
+            })
+            .collect(),
         hosted_entitlement: decode_hosted_entitlement(account),
         hosted_entitlement_reason: decode_hosted_entitlement_reason(
             &account["hostedEntitlementReason"],

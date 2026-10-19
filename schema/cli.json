@@ -2119,7 +2119,7 @@
           "type": "integer"
         },
         "source": {
-          "description": "plan or billing_pending for enabled allowances; waiting_for_billing, allowance_disabled, needs_plan, or not_available for denied allowances. billing_pending is the temporary allowance, not a billing sync wait. Display only: no undecided price or allocation permission is implied.",
+          "description": "rental or billing_pending for enabled allowances; waiting_for_billing, allowance_disabled, needs_plan, or not_available for denied allowances. billing_pending is the temporary allowance, not a billing sync wait. Display only: no undecided price or allocation permission is implied.",
           "type": "string"
         }
       },
@@ -16509,6 +16509,13 @@
           "name": "idempotency_key",
           "type": "string",
           "value_name": "IDEMPOTENCY_KEY"
+        },
+        {
+          "description": "Purchased rental UUID; its size must match",
+          "flag": "--rental-id",
+          "name": "rental_id",
+          "type": "string",
+          "value_name": "RENTAL_ID"
         }
       ],
       "audience": "client",
