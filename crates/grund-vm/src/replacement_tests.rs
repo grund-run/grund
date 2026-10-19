@@ -23,8 +23,27 @@ fn runtime(path: &Path) -> Firecracker {
     .unwrap()
 }
 
+async fn idle_execution_lease(runtime: &Firecracker, id: &str) -> anyhow::Result<ExecutionLock> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match execution_lock(runtime, id) {
+                Err(error)
+                    if error
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|error| error.kind() == std::io::ErrorKind::WouldBlock) =>
+                {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+                result => return result,
+            }
+        }
+    })
+    .await
+    .context("test VM execution lease did not become idle")?
+}
+
 async fn run(runtime: &Firecracker, spec: &VmSpec, execution: &mut Journal) -> anyhow::Result<()> {
-    let lease = execution_lock(runtime, &spec.id)?;
+    let lease = idle_execution_lease(runtime, &spec.id).await?;
     super::run(runtime, spec, execution, &lease).await
 }
 
@@ -478,7 +497,7 @@ async fn offline_preservation_copies_only_identity_and_refuses_symlinked_seeds()
     assert!(reader.try_wait().unwrap().is_none());
     assert!(execution_lock(&runtime, &spec().id).is_err());
     reader.kill().await.unwrap();
-    drop(execution_lock(&runtime, &spec().id).unwrap());
+    drop(idle_execution_lease(&runtime, &spec().id).await.unwrap());
     std::fs::remove_dir_all(path).unwrap();
 }
 
@@ -1245,7 +1264,7 @@ async fn a_tool_keeps_the_cancelled_owners_lease_without_leaking_it_into_normal_
     drop(lease);
     assert!(execution_lock(&runtime, &spec().id).is_err());
     tool.kill().await.unwrap();
-    let next = execution_lock(&runtime, &spec().id).unwrap();
+    let next = idle_execution_lease(&runtime, &spec().id).await.unwrap();
     assert!(ordinary.try_wait().unwrap().is_none());
     ordinary.kill().await.unwrap();
     drop(next);
@@ -1329,7 +1348,7 @@ async fn losing_the_agent_process_kills_its_tool_and_releases_only_the_tools_inh
         parent_death_stopped_tool,
         "tool survived its actual parent process"
     );
-    let next = execution_lock(&runtime, &spec().id).unwrap();
+    let next = idle_execution_lease(&runtime, &spec().id).await.unwrap();
     drop(next);
     std::fs::remove_dir_all(path).unwrap();
 }

@@ -251,10 +251,9 @@ pub(crate) fn execution_lock(runtime: &Firecracker, id: &str) -> anyhow::Result<
             && meta.mode() & 0o022 == 0,
         "unsafe VM execution lock"
     );
-    ensure!(
-        unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0,
-        "VM execution is already locked"
-    );
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("VM execution is already locked");
+    }
     Ok(ExecutionLock(file))
 }
 
