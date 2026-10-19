@@ -1613,6 +1613,45 @@ async fn cancellation_replays_one_cleanup_operation_while_disabled_and_rejects_k
         Some(vm::VmUpdateError::Blocked(_))
     ));
     assert!(rollout(&fixture.state).await.active.is_none());
+    Arc::make_mut(&mut fixture.state.config).vm_updates_enabled = true;
+    let service = fixture.state.agent_updates();
+    let before_resume = service
+        .vm_update(fixture.organisation_id, fixture.vm_id)
+        .await
+        .unwrap();
+    assert!(before_resume.paused);
+    assert!(!before_resume.eligible);
+    let mut work = Work::begin(
+        &fixture.state.events,
+        Uuid::now_v7(),
+        "instance:local-admin",
+    )
+    .await
+    .unwrap();
+    work.agent_updates(grund_domain::agent_updates::Command::Resume { at: Utc::now() })
+        .await
+        .unwrap();
+    work.commit().await.unwrap();
+    let resumed = service
+        .vm_update(fixture.organisation_id, fixture.vm_id)
+        .await
+        .unwrap();
+    assert!(!resumed.paused);
+    assert!(resumed.eligible);
+    let mut retry = fixture.request();
+    retry.expected_version = resumed.update_version;
+    let retried = service
+        .request_vm_update(
+            fixture.organisation_id,
+            fixture.vm_id,
+            "account:owner",
+            retry,
+        )
+        .await
+        .unwrap();
+    assert_ne!(retried.attempt_id, terminal.attempt_id);
+    assert_eq!(retried.phase, "preparing");
+    assert!(!retried.paused);
 }
 
 #[sqlx::test(migrations = false)]

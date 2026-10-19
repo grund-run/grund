@@ -151,8 +151,9 @@ settings are refused instead of overwritten.
 
 Uninstall retains `/opt/grund`, both server data volumes, machine identity
 and workload disks. It does not revoke the retained machine automatically
-or undo host networking. CLI/server updates do not replace agent executables;
-other machines keep their installed build until explicitly reinstalled.
+or undo host networking. CLI/server updates do not directly replace agent
+executables; explicitly enabled [machine following](#machines-following-their-instance)
+updates compatible agents separately.
 
 Updates preserve the installed release's channel by default. `stable`
 excludes alphas; `alpha` includes final releases, ordered by numeric version.
@@ -212,6 +213,17 @@ host directories are marked unbounded, not zero.
 Apps require cgroup v2, including inside a VM: CPU limits throttle, and memory
 limits can OOM-kill an app. An older own-machine guest without cgroup v2 reports
 apps unavailable; it needs an explicit guest-image update, not a silent restart.
+
+Own-machine VM image replacement is an opt-in source-build capability, not part
+of alpha.11. The instance operator must first deploy compatible Core readers and
+pin a probe-capable image before enabling `GRUND_VM_UPDATES_ENABLED`; the default
+is off. The owner then chooses **Update VM** on Machines and can cancel before
+commit. It uses the same instance-wide rolling slot as agent updates, waits for
+apps to become ready elsewhere, and refuses retained local app data. Only
+protected enrollment identity is carried to the new root. A fresh boot must prove
+the requested image and usable CPU and memory limits before the pin changes.
+Rollback restores the previous root and pauses further machines. Until proof,
+the guest is labelled **Legacy guest: update or restart required**.
 
 New agents also report whole-machine CPU, memory and data-filesystem usage
 and uptime with their five-second heartbeat. These are measurements, separate

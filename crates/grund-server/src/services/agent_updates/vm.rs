@@ -225,9 +225,11 @@ fn view(
     let paused = rollout.paused
         || state.config.agent_updates_paused
         || !state.config.vm_updates_enabled
-        || attempt.as_ref().is_some_and(|a| a.failure.is_some())
+        || active && attempt.as_ref().is_some_and(|a| a.failure.is_some())
         || before_authorization && (migration_hold || row.has_local_volumes);
-    let reason = if attempt
+    let reason = if let Some(refusal) = refusal {
+        Some(refusal.to_owned())
+    } else if attempt
         .as_ref()
         .is_some_and(|a| a.phase == domain::Phase::Cancelled)
     {
@@ -236,12 +238,26 @@ fn view(
         .as_ref()
         .is_some_and(|a| a.phase == domain::Phase::RolledBack)
     {
-        Some("The previous VM root was restored; machine updates remain paused".to_owned())
+        Some(
+            if paused {
+                "The previous VM root was restored; machine updates remain paused"
+            } else {
+                "The previous VM root was restored"
+            }
+            .to_owned(),
+        )
     } else if attempt
         .as_ref()
         .is_some_and(|a| a.phase == domain::Phase::Succeeded && a.failure.is_some())
     {
-        Some("The VM update succeeded after recovery; machine updates remain paused".to_owned())
+        Some(
+            if paused {
+                "The VM update succeeded after recovery; machine updates remain paused"
+            } else {
+                "The VM update succeeded after recovery"
+            }
+            .to_owned(),
+        )
     } else if let Some(failure) = attempt.as_ref().and_then(|a| a.failure) {
         Some(
             match failure {
