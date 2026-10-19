@@ -20,6 +20,9 @@
 #   --binary FILE    use an already SHA-256-verified local grund release
 #   --prepare-only   install prerequisites and the unit without joining;
 #                    an existing registered machine is still restarted
+#   --assets DIR     take restic and Firecracker from DIR (a grund bundle)
+#                    instead of downloading them; each is still checked
+#                    against its pinned SHA-256
 #   Following is explicitly enabled on first bootstrap. Later installs keep
 #   /var/lib/grund/agent/follow.json, including an owner's local pause.
 #   grund-agent-updater.service retains its own known-good executable; only
@@ -64,7 +67,7 @@ RESTIC_VERSION=0.18.1
 RESTIC_BZ2_SHA256=680838f19d67151adba227e1570cdd8af12c19cf1735783ed1ba928bc41f363d
 PACKAGES=https://git.kjuulh.io/api/packages/grund/generic/grund
 
-url="" code="" name="" vms=1 from_instance= binary= prepare_only=
+url="" code="" name="" vms=1 from_instance= binary= prepare_only= assets=
 while [ $# -gt 0 ]; do
   case "$1" in
     --url) url="$2"; shift 2 ;;
@@ -74,6 +77,7 @@ while [ $# -gt 0 ]; do
     --from-instance) from_instance=1; shift ;;
     --binary) [ $# -ge 2 ] || { echo "--binary needs a file" >&2; exit 2; }; binary="$2"; shift 2 ;;
     --prepare-only) prepare_only=1; shift ;;
+    --assets) [ $# -ge 2 ] || { echo "--assets needs a directory" >&2; exit 2; }; assets="$2"; shift 2 ;;
     *) echo "install.sh: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -356,6 +360,14 @@ if [ -n "$legacy_unit" ] && [ -z "$old_active" ]; then
 fi
 if [ -n "$old_active" ]; then retain_running_runtime; fi
 
+fetch_pinned() { # name, url, destination: from --assets when given, else downloaded
+  if [ -n "$assets" ]; then
+    [ -f "$assets/$1" ] || fail "--assets $assets has no $1"
+    cp "$assets/$1" "$3"
+  else
+    curl -fsSL -o "$3" "$2"
+  fi
+}
 verify() { # file sha256
   echo "$2  $1" | sha256sum -c --quiet >/dev/null 2>&1 || fail "$(basename "$1") does not match its SHA-256; nothing was installed from it"
 }
@@ -439,8 +451,9 @@ if ! command -v bzip2 >/dev/null; then
   pkg bzip2 "install bzip2: it unpacks the pinned backup engine"
 fi
 archive="$work/restic.bz2"
-curl -fsSL -o "$archive" "https://github.com/restic/restic/releases/download/v$RESTIC_VERSION/restic_${RESTIC_VERSION}_linux_${arch}.bz2" ||
-  fail "could not download pinned restic $RESTIC_VERSION"
+fetch_pinned "restic_${RESTIC_VERSION}_linux_${arch}.bz2" \
+  "https://github.com/restic/restic/releases/download/v$RESTIC_VERSION/restic_${RESTIC_VERSION}_linux_${arch}.bz2" \
+  "$archive" || fail "could not download pinned restic $RESTIC_VERSION"
 verify "$archive" "$RESTIC_BZ2_SHA256"
 bzip2 -dc "$archive" > "$work/restic" || fail "could not unpack verified restic"
 install -m 0755 "$work/restic" /usr/local/bin/restic
@@ -449,7 +462,9 @@ runtime=none
 if [ -n "$vms" ] && [ -c /dev/kvm ]; then
   step "Firecracker $FIRECRACKER_VERSION and its jailer (this device has /dev/kvm)"
   tgz="$work/firecracker.tgz"
-  curl -fsSL -o "$tgz" "https://github.com/firecracker-microvm/firecracker/releases/download/$FIRECRACKER_VERSION/firecracker-$FIRECRACKER_VERSION-x86_64.tgz"
+  fetch_pinned "firecracker-$FIRECRACKER_VERSION-x86_64.tgz" \
+    "https://github.com/firecracker-microvm/firecracker/releases/download/$FIRECRACKER_VERSION/firecracker-$FIRECRACKER_VERSION-x86_64.tgz" \
+    "$tgz" || fail "could not download pinned Firecracker $FIRECRACKER_VERSION"
   verify "$tgz" "$FIRECRACKER_TGZ_SHA256"
   tar -xzf "$tgz" -C "$work"
   release="$work/release-$FIRECRACKER_VERSION-x86_64"

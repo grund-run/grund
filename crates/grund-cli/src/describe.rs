@@ -240,6 +240,7 @@ pub fn document(root: &clap::Command, only: &[String]) -> Value {
             {"name": "GRUND_INSTANCE", "description": "The instance's address, as --instance."},
             {"name": "GRUND_TOKEN", "description": "A personal access token; overrides the context's credential. Never put a token on the command line."},
             {"name": "GRUND_CONTEXT", "description": "The context, as --context."},
+            {"name": "GRUND_OFFLINE", "description": "1 or true: fetch no release (as offline: true in the config file); grund update, join and server install|update then need --from-bundle."},
             {"name": "GRUND_ORG", "description": "The organisation, as --org."},
             {"name": "GRUND_OUTPUT", "description": "text, json or yaml, as --output."},
             {"name": "GRUND_CONFIG", "description": "The config file, which holds the contexts and their credentials. GRUND_CREDENTIALS_FILE, its earlier name, works too."},

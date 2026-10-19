@@ -52,6 +52,12 @@ pub struct UpdateArgs {
     pub dry_run: bool,
     #[arg(
         long,
+        value_name = "FILE",
+        help = "Update from a bundle (grund bundle create) instead of downloading; needed offline"
+    )]
+    pub from_bundle: Option<std::path::PathBuf>,
+    #[arg(
+        long,
         conflicts_with_all = ["resume", "version", "channel", "dry_run"],
         help = "On a machine: stop taking updates from its instance"
     )]
@@ -173,7 +179,12 @@ async fn binary_update(ctx: &Ctx, args: UpdateArgs) -> CliResult<Output> {
         .step(
             "Finding the release",
             "Check the internet connection and access to git.kjuulh.io, then retry.",
-            Release::resolve(args.version.as_deref(), args.channel, crate::VERSION),
+            Release::obtain(
+                args.from_bundle.as_deref(),
+                args.version.as_deref(),
+                args.channel,
+                crate::VERSION,
+            ),
         )
         .await?;
     refuse_downgrade(crate::VERSION, &release.tag)?;
@@ -898,7 +909,12 @@ async fn server_update(ctx: &Ctx, args: UpdateArgs) -> CliResult<Output> {
         .step(
             "Finding the server release",
             "Check the internet connection and access to git.kjuulh.io, then retry.",
-            Release::resolve(args.version.as_deref(), args.channel, &installed),
+            Release::obtain(
+                args.from_bundle.as_deref(),
+                args.version.as_deref(),
+                args.channel,
+                &installed,
+            ),
         )
         .await?;
     refuse_downgrade(&installed, &release.tag)?;

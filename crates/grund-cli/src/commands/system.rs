@@ -29,7 +29,7 @@ const SERVER_UNIT: &str = "/etc/systemd/system/grund-server.service";
 const AGENT_MARKER: &str = "/var/lib/grund/.installer-agent";
 const UPDATER_UNIT: &str = "/etc/systemd/system/grund-agent-updater.service";
 const UPDATE_LOCK: &str = "/var/lib/grund/.update.lock";
-const AGENT_INSTALLER: &str = include_str!("../../../grund-agent/install.sh");
+pub(crate) const AGENT_INSTALLER: &str = include_str!("../../../grund-agent/install.sh");
 const SERVER_SERVICE: &str = "# grund-managed-server-v1\n[Unit]\nDescription=grund self-hosted server\nWants=network-online.target\nAfter=network-online.target docker.service\nRequires=docker.service\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nWorkingDirectory=/opt/grund\nExecStart=/usr/bin/docker compose --project-directory /opt/grund up --no-build -d --wait --wait-timeout 180\nExecStop=/usr/bin/docker compose --project-directory /opt/grund stop\nTimeoutStartSec=300\nTimeoutStopSec=180\nUMask=0077\n\n[Install]\nWantedBy=multi-user.target\n";
 
 /// Install the self-hosted server or connect a machine, without signing in.
@@ -65,6 +65,12 @@ pub struct InstallArgs {
     pub channel: Option<release::Channel>,
     #[arg(long, help = "Do not install VM prerequisites")]
     pub no_vms: bool,
+    #[arg(
+        long,
+        value_name = "FILE",
+        help = "Install from a bundle (grund bundle create) instead of downloading; needed offline"
+    )]
+    pub from_bundle: Option<std::path::PathBuf>,
     #[arg(
         long,
         help = "Show the operation without downloading or changing this machine"
@@ -109,6 +115,12 @@ pub struct JoinArgs {
     pub no_vms: bool,
     #[arg(
         long,
+        value_name = "FILE",
+        help = "Install from a bundle (grund bundle create) instead of downloading; needed offline"
+    )]
+    pub from_bundle: Option<std::path::PathBuf>,
+    #[arg(
+        long,
         help = "Show what would happen without downloading or changing this machine"
     )]
     pub dry_run: bool,
@@ -129,6 +141,7 @@ impl JoinArgs {
             version: self.version,
             channel: self.channel,
             no_vms: self.no_vms,
+            from_bundle: self.from_bundle,
             dry_run: self.dry_run,
             yes: self.yes,
             verbose: self.verbose,
@@ -483,6 +496,7 @@ async fn agent_install(
     url: &str,
     code: Option<&str>,
     no_vms: bool,
+    assets: Option<&Path>,
 ) -> CliResult<()> {
     let script = directory.join("current-agent-install.sh");
     atomic_write(&script, AGENT_INSTALLER.as_bytes(), 0o700)?;
@@ -500,6 +514,9 @@ async fn agent_install(
     }
     if no_vms {
         command.arg("--no-vms");
+    }
+    if let Some(assets) = assets {
+        command.arg("--assets").arg(assets);
     }
     run(&mut command, "machine installation").await?;
     Ok(())
@@ -673,7 +690,12 @@ async fn install_inner(ctx: &Ctx, mut args: InstallArgs, progress: &Progress) ->
         .step(
             "Finding grund",
             "Check the internet connection and requested version.",
-            release::Release::resolve(selected, args.channel, crate::VERSION),
+            release::Release::obtain(
+                args.from_bundle.as_deref(),
+                selected,
+                args.channel,
+                crate::VERSION,
+            ),
         )
         .await?;
     let staging = tempfile::Builder::new()
@@ -848,6 +870,7 @@ async fn install_inner(ctx: &Ctx, mut args: InstallArgs, progress: &Progress) ->
                     &target.url,
                     args.code.as_deref(),
                     args.no_vms,
+                    release.bundle_dir(),
                 ),
             )
             .await?;

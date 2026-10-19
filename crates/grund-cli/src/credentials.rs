@@ -23,6 +23,10 @@ pub struct Credentials {
     pub current: String,
     #[serde(default)]
     pub contexts: Vec<Context>,
+    /// No release is fetched (`grund update`, `join`, `server install`):
+    /// they need `--from-bundle`. Calls to an instance still go out.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub offline: bool,
 }
 
 /// One context.

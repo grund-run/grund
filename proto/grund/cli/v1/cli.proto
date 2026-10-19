@@ -371,3 +371,16 @@ message ServerRollout {
   // The one machine with an update under way, if any.
   string updating_machine_id = 3;
 }
+
+// `grund bundle create`: one release's files in one file, for
+// `--from-bundle` on a computer that fetches nothing.
+message BundleCreated {
+  string path = 1;
+  // The release it holds.
+  string version = 2;
+  // amd64 or arm64.
+  string arch = 3;
+  // Every file in it: grund's release files, then the pinned archives a
+  // machine install needs (restic; Firecracker on amd64).
+  repeated string files = 4;
+}

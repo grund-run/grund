@@ -539,6 +539,18 @@ add` still enrolls your own machine and never rents one.
   names them; `-f key=value` builds the request (`{org}` is the
   organisation) or `--input FILE|-` gives it whole. It grants nothing the
   API does not already allow.
+- Bundles, for computers that should fetch nothing: on a connected
+  computer, `grund bundle create [--version TAG] [--arch amd64|arm64]`
+  writes one release's grund files (the executable, SHA256SUMS,
+  release.txt, compose.yaml, image-digest.txt, the agent installer) and the
+  archives a machine install pins (restic; Firecracker on amd64) into one
+  tar file. `--from-bundle FILE` on `grund update`, `join` and `server
+  install|update` installs from it, each file checked against its
+  SHA-256. With `offline: true` in the config file (or `GRUND_OFFLINE=1`)
+  grund fetches no release and asks for a bundle; calls to your instance
+  still go out. Still fetched from the network today: the dashboard's
+  server image (from its registry, by digest), the container runtime a
+  machine fetches when it first runs an app, and the apps' own images.
 - `grund completion bash|zsh|fish|elvish|powershell` prints a shell
   completion script.
 - For agents: `grund describe --json` is the whole command tree with types,

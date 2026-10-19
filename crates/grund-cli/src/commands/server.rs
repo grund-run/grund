@@ -270,6 +270,12 @@ pub struct ServerInstallArgs {
     pub no_vms: bool,
     #[arg(
         long,
+        value_name = "FILE",
+        help = "Install from a bundle (grund bundle create) instead of downloading; needed offline"
+    )]
+    pub from_bundle: Option<std::path::PathBuf>,
+    #[arg(
+        long,
         help = "Show what would happen without downloading or changing this computer"
     )]
     pub dry_run: bool,
@@ -290,6 +296,7 @@ impl ServerInstallArgs {
             version: self.version,
             channel: self.channel,
             no_vms: self.no_vms,
+            from_bundle: self.from_bundle,
             dry_run: self.dry_run,
             yes: self.yes,
             verbose: self.verbose,
@@ -309,6 +316,12 @@ pub struct ServerUpdateArgs {
         help = "Release channel; defaults to the installed release's channel"
     )]
     pub channel: Option<release::Channel>,
+    #[arg(
+        long,
+        value_name = "FILE",
+        help = "Update from a bundle (grund bundle create) instead of downloading; needed offline"
+    )]
+    pub from_bundle: Option<std::path::PathBuf>,
     #[arg(long, help = "Confirm the downtime")]
     pub yes: bool,
     #[arg(long, help = "Show technical failure details")]
@@ -330,6 +343,7 @@ impl ServerUpdateArgs {
             yes: self.yes,
             verbose: self.verbose,
             dry_run: self.dry_run,
+            from_bundle: self.from_bundle,
             pause: false,
             resume: false,
             server: true,

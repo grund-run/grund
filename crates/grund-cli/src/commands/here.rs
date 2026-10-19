@@ -33,7 +33,7 @@ pub struct DoctorArgs {
 
 pub(crate) fn agent() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("GRUND_AGENT_BIN").filter(|p| !p.is_empty()) {
-        return Some(PathBuf::from(path));
+        return Some(PathBuf::from(path)).filter(|p| p.is_file());
     }
     if std::path::Path::new(INSTALLED_AGENT).is_file() {
         return Some(PathBuf::from(INSTALLED_AGENT));

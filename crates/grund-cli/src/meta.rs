@@ -206,6 +206,15 @@ pub const LEAVES: &[Leaf] = &[
         &["grund doctor", "sudo grund doctor --json"],
     ),
     write(
+        "bundle create",
+        "grund.cli.v1.BundleCreated",
+        &[],
+        &[
+            "grund bundle create --channel alpha --arch amd64",
+            "sudo grund join https://grund.lan --code CODE --from-bundle grund-v0.0.0-alpha.12-amd64.tar",
+        ],
+    ),
+    write(
         "server install",
         "grund.cli.v1.HostInstallation",
         &[],

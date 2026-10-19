@@ -1,4 +1,9 @@
-use std::{collections::BTreeMap, io::Write, path::Path, time::Duration};
+use std::{
+    collections::BTreeMap,
+    io::{Read, Write},
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use clap::ValueEnum;
 use serde::Deserialize;
@@ -94,8 +99,25 @@ struct Advertisement {
 
 pub struct Release {
     pub tag: String,
-    client: reqwest::Client,
+    source: Source,
     checksums: BTreeMap<String, String>,
+}
+
+enum Source {
+    Registry(reqwest::Client),
+    Bundle {
+        dir: PathBuf,
+        _unpacked: Option<tempfile::TempDir>,
+    },
+}
+
+pub const BUNDLE_TAG: &str = "tag.txt";
+
+pub fn offline() -> bool {
+    if std::env::var("GRUND_OFFLINE").is_ok_and(|v| matches!(v.trim(), "1" | "true")) {
+        return true;
+    }
+    crate::credentials::load().is_ok_and(|file| file.offline)
 }
 
 fn failure(message: impl Into<String>) -> CliError {
@@ -184,11 +206,96 @@ fn select(advertisements: Vec<Advertisement>, channel: Channel) -> Option<String
 }
 
 impl Release {
+    pub async fn obtain(
+        bundle: Option<&Path>,
+        version: Option<&str>,
+        channel: Option<Channel>,
+        installed: &str,
+    ) -> CliResult<Self> {
+        match bundle {
+            Some(bundle) => Self::from_bundle(bundle, version),
+            None => Self::resolve(version, channel, installed).await,
+        }
+    }
+
+    pub fn from_bundle(bundle: &Path, version: Option<&str>) -> CliResult<Self> {
+        let (dir, unpacked) = if bundle.is_dir() {
+            (bundle.to_path_buf(), None)
+        } else {
+            let unpacked = tempfile::Builder::new()
+                .prefix("grund-bundle-")
+                .tempdir()
+                .map_err(|e| failure(format!("could not unpack the bundle: {e}")))?;
+            let status = std::process::Command::new("tar")
+                .arg("-xf")
+                .arg(bundle)
+                .arg("-C")
+                .arg(unpacked.path())
+                .arg("--no-same-owner")
+                .stdin(std::process::Stdio::null())
+                .status()
+                .map_err(|e| failure(format!("could not run tar: {e}")))?;
+            if !status.success() {
+                return Err(CliError::usage(format!(
+                    "{} is not a grund bundle (tar refused it)",
+                    bundle.display()
+                ))
+                .field("from-bundle"));
+            }
+            (unpacked.path().to_path_buf(), Some(unpacked))
+        };
+        let read = |name: &str| {
+            std::fs::read_to_string(dir.join(name)).map_err(|_| {
+                CliError::usage(format!(
+                    "{} has no {name}; it is not a grund bundle",
+                    bundle.display()
+                ))
+                .field("from-bundle")
+            })
+        };
+        let tag = read(BUNDLE_TAG)?.trim().to_string();
+        Version::parse(&tag)?;
+        if let Some(version) = version.filter(|v| *v != tag) {
+            return Err(CliError::new(
+                Code::Conflict,
+                format!("the bundle holds {tag}, not {version}"),
+            )
+            .field("version"));
+        }
+        let checksums = checksums(&read("SHA256SUMS")?)?;
+        Ok(Self {
+            tag,
+            source: Source::Bundle {
+                dir,
+                _unpacked: unpacked,
+            },
+            checksums,
+        })
+    }
+
+    pub fn bundle_dir(&self) -> Option<&Path> {
+        match &self.source {
+            Source::Bundle { dir, .. } => Some(dir),
+            Source::Registry(_) => None,
+        }
+    }
+
+    pub fn checksums(&self) -> &BTreeMap<String, String> {
+        &self.checksums
+    }
+
     pub async fn resolve(
         version: Option<&str>,
         channel: Option<Channel>,
         installed: &str,
     ) -> CliResult<Self> {
+        if offline() {
+            return Err(CliError::new(
+                Code::Unavailable,
+                "this computer is offline: grund fetches no release",
+            )
+            .hint("pass --from-bundle FILE (made with grund bundle create), or set offline: false in the config"));
+        }
         let client = client()?;
         let tag = if let Some(tag) = version {
             Version::parse(tag)?;
@@ -250,7 +357,7 @@ impl Release {
             std::str::from_utf8(&body).map_err(|_| failure("SHA256SUMS is not UTF-8"))?;
         Ok(Self {
             tag,
-            client,
+            source: Source::Registry(client),
             checksums: checksums(manifest)?,
         })
     }
@@ -265,8 +372,14 @@ impl Release {
         } else {
             MAX_METADATA
         };
+        let client = match &self.source {
+            Source::Registry(client) => client,
+            Source::Bundle { dir, .. } => {
+                return copy_verified(&dir.join(name), destination, expected, limit);
+            }
+        };
         let path = format!("/api/packages/grund/generic/grund/{}/{name}", self.tag);
-        let mut response = response(&self.client, &path).await?;
+        let mut response = response(client, &path).await?;
         let mut temporary = tempfile::NamedTempFile::new_in(
             destination
                 .parent()
@@ -291,6 +404,86 @@ impl Release {
         }
         publish_verified(temporary, destination, expected, size, digest)
     }
+}
+
+pub async fn fetch_pinned(url: &str, sha256: &str, destination: &Path) -> CliResult<()> {
+    let client = reqwest::Client::builder()
+        .https_only(true)
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(600))
+        .user_agent("grund-release-client")
+        .build()
+        .map_err(|_| failure("could not initialize the download client"))?;
+    let mut response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|_| failure(format!("could not download {url}")))?;
+    if !response.status().is_success() {
+        return Err(failure(format!(
+            "{url} answered HTTP {}",
+            response.status()
+        )));
+    }
+    let mut temporary = tempfile::NamedTempFile::new_in(
+        destination
+            .parent()
+            .ok_or_else(|| failure("artifact destination has no parent"))?,
+    )
+    .map_err(|e| failure(format!("could not stage artifact: {e}")))?;
+    let mut size = 0u64;
+    let mut digest = Sha256::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| failure(format!("the download of {url} failed")))?
+    {
+        size += chunk.len() as u64;
+        if size > MAX_BINARY {
+            return Err(failure("the download exceeds its size limit"));
+        }
+        digest.update(&chunk);
+        temporary
+            .write_all(&chunk)
+            .map_err(|e| failure(format!("could not stage artifact: {e}")))?;
+    }
+    publish_verified(temporary, destination, sha256, size, digest)
+}
+
+fn copy_verified(source: &Path, destination: &Path, expected: &str, limit: u64) -> CliResult<()> {
+    let mut file = std::fs::File::open(source).map_err(|_| {
+        failure(format!(
+            "the bundle has no {}",
+            source.file_name().unwrap_or_default().to_string_lossy()
+        ))
+    })?;
+    let mut temporary = tempfile::NamedTempFile::new_in(
+        destination
+            .parent()
+            .ok_or_else(|| failure("artifact destination has no parent"))?,
+    )
+    .map_err(|e| failure(format!("could not stage artifact: {e}")))?;
+    let mut size = 0u64;
+    let mut digest = Sha256::new();
+    let mut buffer = vec![0; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|e| failure(format!("could not read the bundle: {e}")))?;
+        if read == 0 {
+            break;
+        }
+        size += read as u64;
+        if size > limit {
+            return Err(failure("bundled artifact exceeds its size limit"));
+        }
+        digest.update(&buffer[..read]);
+        temporary
+            .write_all(&buffer[..read])
+            .map_err(|e| failure(format!("could not stage artifact: {e}")))?;
+    }
+    publish_verified(temporary, destination, expected, size, digest)
 }
 
 fn publish_verified(

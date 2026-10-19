@@ -5,6 +5,7 @@ pub mod api;
 pub mod app_telemetry;
 pub mod apps;
 pub mod auth;
+pub mod bundle;
 pub mod contexts;
 pub mod domains;
 pub mod here;
@@ -38,6 +39,7 @@ pub const CLIENT_NOUNS: &[&str] = &[
     "update",
     "doctor",
     "server",
+    "bundle",
     "auth",
     "context",
     "org",
@@ -72,6 +74,8 @@ pub enum Command {
     Doctor(here::DoctorArgs),
     #[command(about = "Run your own dashboard here")]
     Server(server::ServerCommand),
+    #[command(about = "One release in one file, for computers that fetch nothing")]
+    Bundle(bundle::BundleCommand),
     #[command(about = "Sign in and access tokens")]
     Auth(auth::AuthCommand),
     #[command(about = "Switch between instances and organisations")]
@@ -127,6 +131,7 @@ impl Command {
             Command::Update(a) => &a.global,
             Command::Doctor(a) => &a.global,
             Command::Server(c) => &c.global,
+            Command::Bundle(c) => &c.global,
             Command::Auth(c) => &c.global,
             Command::Context(c) => &c.global,
             Command::Org(c) => &c.global,
@@ -162,6 +167,7 @@ pub async fn execute(
         Command::Status(_) => here::status(ctx).await?,
         Command::Update(args) => system_update::update(ctx, args).await?,
         Command::Doctor(_) => here::doctor(ctx).await?,
+        Command::Bundle(command) => bundle::run(ctx, command.action).await?,
         Command::Server(command) => match command.action {
             server::ServerAction::Install(args) => {
                 system::install(ctx, args.into_install()).await?

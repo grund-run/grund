@@ -1353,6 +1353,32 @@
       "title": "grund.cli.v1.AppStatus",
       "type": "object"
     },
+    "grund.cli.v1.BundleCreated": {
+      "additionalProperties": false,
+      "description": "`grund bundle create`: one release's files in one file, for `--from-bundle` on a computer that fetches nothing.",
+      "properties": {
+        "arch": {
+          "description": "amd64 or arm64.",
+          "type": "string"
+        },
+        "files": {
+          "description": "Every file in it: grund's release files, then the pinned archives a machine install needs (restic; Firecracker on amd64).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "path": {
+          "type": "string"
+        },
+        "version": {
+          "description": "The release it holds.",
+          "type": "string"
+        }
+      },
+      "title": "grund.cli.v1.BundleCreated",
+      "type": "object"
+    },
     "grund.cli.v1.Call": {
       "additionalProperties": false,
       "properties": {
@@ -3841,6 +3867,13 @@
           "value_name": "NO_VMS"
         },
         {
+          "description": "Install from a bundle (grund bundle create) instead of downloading; needed offline",
+          "flag": "--from-bundle",
+          "name": "from_bundle",
+          "type": "string",
+          "value_name": "FILE"
+        },
+        {
           "description": "Show what would happen without downloading or changing this machine",
           "flag": "--dry-run",
           "name": "dry_run",
@@ -4080,6 +4113,13 @@
           "value_name": "DRY_RUN"
         },
         {
+          "description": "Update from a bundle (grund bundle create) instead of downloading; needed offline",
+          "flag": "--from-bundle",
+          "name": "from_bundle",
+          "type": "string",
+          "value_name": "FILE"
+        },
+        {
           "description": "On a machine: stop taking updates from its instance",
           "flag": "--pause",
           "name": "pause",
@@ -4239,6 +4279,13 @@
           "value_name": "NO_VMS"
         },
         {
+          "description": "Install from a bundle (grund bundle create) instead of downloading; needed offline",
+          "flag": "--from-bundle",
+          "name": "from_bundle",
+          "type": "string",
+          "value_name": "FILE"
+        },
+        {
           "description": "Show what would happen without downloading or changing this computer",
           "flag": "--dry-run",
           "name": "dry_run",
@@ -4324,6 +4371,13 @@
           "name": "channel",
           "type": "string",
           "value_name": "CHANNEL"
+        },
+        {
+          "description": "Update from a bundle (grund bundle create) instead of downloading; needed offline",
+          "flag": "--from-bundle",
+          "name": "from_bundle",
+          "type": "string",
+          "value_name": "FILE"
         },
         {
           "description": "Confirm the downtime",
@@ -4762,6 +4816,83 @@
       },
       "path": "server rollout resume",
       "summary": "Offer machines new builds again"
+    },
+    {
+      "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
+          "description": "The organisation. Default: grund org use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "description": "Release channel; defaults to this CLI's",
+          "enum": [
+            "stable",
+            "alpha"
+          ],
+          "flag": "--channel",
+          "name": "channel",
+          "type": "string",
+          "value_name": "CHANNEL"
+        },
+        {
+          "description": "The machines' architecture; default: this computer's",
+          "enum": [
+            "amd64",
+            "arm64"
+          ],
+          "flag": "--arch",
+          "name": "arch",
+          "type": "string",
+          "value_name": "ARCH"
+        }
+      ],
+      "audience": "client",
+      "command": "grund bundle create",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund bundle create --channel alpha --arch amd64",
+        "sudo grund join https://grund.lan --code CODE --from-bundle grund-v0.0.0-alpha.12-amd64.tar"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.cli.v1.BundleCreated"
+      },
+      "path": "bundle create",
+      "summary": "Write one release's grund files, and the archives a machine install fetches, into one file"
     },
     {
       "args": [
@@ -13398,6 +13529,10 @@
     {
       "description": "The context, as --context.",
       "name": "GRUND_CONTEXT"
+    },
+    {
+      "description": "1 or true: fetch no release (as offline: true in the config file); grund update, join and server install|update then need --from-bundle.",
+      "name": "GRUND_OFFLINE"
     },
     {
       "description": "The organisation, as --org.",
