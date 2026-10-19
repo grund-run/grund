@@ -12,9 +12,22 @@ license = "AGPL-3.0-only"
 name = "grund"
 path = "src/main.rs"
 
+[[bin]]
+name = "grund-server"
+path = "src/bin/grund-server.rs"
+required-features = ["split"]
+
+[[bin]]
+name = "grund-agent"
+path = "src/bin/grund-agent.rs"
+required-features = ["split"]
+
 [features]
 default = []
 ee = ["dep:grund-ee"]
+# Also build grund-server and grund-agent. Off by default until the image
+# and release steps package them, so a release links one binary as before.
+split = []
 
 [dependencies]
 anyhow.workspace = true

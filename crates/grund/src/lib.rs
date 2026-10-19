@@ -27,8 +27,11 @@
 //! CLI's self-description, `describe`, `schema`, `skill` and `mcp`. They are
 //! what the dashboard does, over the same API.
 //!
-//! The agent is part of this binary, so there is one artifact to build, sign
-//! and ship.
+//! The same role commands are also two binaries of their own:
+//! `grund-server` (serve, migrate, init, setup-link, doctor, probe, relay,
+//! relay-token, edge, edge-token, rollout) and `grund-agent` (run, join,
+//! doctor, follow). Both are built from this crate and parse with the same
+//! definitions, so a role behaves the same whichever binary runs it.
 //!
 //! Official builds are the AGPL core alone. The `ee` feature adds grund's
 //! commercial features from `ee/`, which are not licensed for production
@@ -47,8 +50,19 @@ use clap::{CommandFactory, Parser, Subcommand};
     args = grund_cli::context::Global::target_arguments()
 )]
 struct Cli {
+    #[command(flatten)]
+    telemetry: Telemetry,
+
+    #[command(subcommand)]
+    command: Command,
+}
+
+/// Logging and trace export, for the roles that run: the server, the
+/// agent, a relay and an edge.
+#[derive(clap::Args)]
+pub struct Telemetry {
     #[arg(long, env = "GRUND_LOG_FORMAT", help = "Log line format. The image sets json", value_parser = ["compact", "json"], default_value = "compact", global = true)]
-    log_format: String,
+    pub log_format: String,
 
     #[arg(
         long,
@@ -57,14 +71,14 @@ struct Cli {
         default_value = "grund=info,grund_server=info,grund_store=info,notmad=info,warn",
         global = true
     )]
-    log: String,
+    pub log: String,
     #[arg(
         long,
         env = "OTEL_EXPORTER_OTLP_ENDPOINT",
         global = true,
         help = "OTLP HTTP/protobuf collector base URL. Unset: tracing export is off"
     )]
-    otel_exporter_otlp_endpoint: Option<String>,
+    pub otel_exporter_otlp_endpoint: Option<String>,
 
     #[arg(
         long,
@@ -72,10 +86,7 @@ struct Cli {
         global = true,
         help = "Service name in exported traces (default: grund, grund-relay or grund-edge)"
     )]
-    otel_service_name: Option<String>,
-
-    #[command(subcommand)]
-    command: Command,
+    pub otel_service_name: Option<String>,
 }
 
 #[derive(Parser)]
@@ -199,8 +210,8 @@ enum DoctorTarget {
     Machine(grund_agent::doctor::MachineArgs),
 }
 
-async fn doctor(command: DoctorCommand) -> anyhow::Result<()> {
-    let report = match command.target {
+async fn doctor(json: bool, target: DoctorTarget) -> anyhow::Result<()> {
+    let report = match target {
         DoctorTarget::Instance(config) => grund_server::doctor::run(*config).await,
         DoctorTarget::Machine(args) => {
             grund_agent::doctor::run(
@@ -211,7 +222,7 @@ async fn doctor(command: DoctorCommand) -> anyhow::Result<()> {
             .await
         }
     };
-    if command.json {
+    if json {
         println!("{}", report.json());
     } else {
         print!("{}", report.text());
@@ -333,9 +344,176 @@ async fn agent<R: grund_agent::vm::VmRuntime>(
     }
 }
 
+#[derive(Parser)]
+#[command(
+    name = "grund-server",
+    version = grund_cli::VERSION,
+    about = "Run a grund instance, relay or edge"
+)]
+struct ServerCli {
+    #[command(flatten)]
+    telemetry: Telemetry,
+
+    #[command(subcommand)]
+    command: ServerCommand,
+}
+
+#[derive(Subcommand)]
+enum ServerCommand {
+    #[command(about = "Run the instance: dashboard, API and background work")]
+    Serve(Box<grund_server::config::ServeConfig>),
+    #[command(about = "Apply database migrations and exit")]
+    Migrate(grund_server::config::DatabaseArgs),
+    #[command(
+        about = "Generate the instance secret key and database password, keeping any that exist"
+    )]
+    Init(grund_server::secrets::InitArgs),
+    #[command(
+        name = "setup-link",
+        about = "Print a one-time link that creates this instance's owner account. Run it where the instance runs, with the same settings, before any account exists"
+    )]
+    SetupLink(Box<grund_server::config::ServeConfig>),
+    #[command(hide = true)]
+    LocalMachine(Box<grund_server::config::ServeConfig>),
+    #[command(
+        about = "Check the instance, with serve's settings, without changing it. Exits 1 when a check fails"
+    )]
+    Doctor(ServerDoctorArgs),
+    #[command(about = "Exit 0 when the instance at --address answers 200 on --path, 1 otherwise")]
+    Probe(probe::ProbeArgs),
+    #[command(
+        about = "Run a relay for an instance's machines: iroh's relay and QUIC address discovery, admitting only the keys the instance does"
+    )]
+    Relay(grund_server::relay_command::RelayCommand),
+    #[command(
+        name = "relay-token",
+        about = "Mint a one-time enrollment token for a relay, revoke a relay, or list them"
+    )]
+    RelayToken(grund_server::relays_command::RelaysCommand),
+    #[command(
+        about = "Run an entry edge: terminate TLS for app addresses and hand each connection to a machine that runs the app"
+    )]
+    Edge(grund_server::edge::EdgeCommand),
+    #[command(
+        name = "edge-token",
+        about = "Mint a one-time enrollment token for an edge, revoke an edge, or list them"
+    )]
+    EdgeToken(grund_server::relays_command::EdgesCommand),
+    #[command(about = "Inspect, pause or resume the instance's machine update rollout")]
+    Rollout(AgentUpdatesCommand),
+}
+
+#[derive(clap::Args)]
+struct ServerDoctorArgs {
+    #[arg(long, help = "Print one JSON document instead of one line per check")]
+    json: bool,
+
+    #[command(flatten)]
+    config: Box<grund_server::config::ServeConfig>,
+}
+
+#[derive(Parser)]
+#[command(
+    name = "grund-agent",
+    version = grund_cli::VERSION,
+    about = "Run apps on this machine for its grund instance"
+)]
+struct AgentCli {
+    #[command(flatten)]
+    telemetry: Telemetry,
+
+    #[command(subcommand)]
+    command: AgentRole,
+}
+
+#[derive(Subcommand)]
+enum AgentRole {
+    #[command(about = "Keep this machine connected to its instance and run what it asks for")]
+    Run(AgentCommand),
+    #[command(about = "Register this machine with a grund instance, using a one-time setup code")]
+    Join(grund_agent::join::JoinArgs),
+    #[command(
+        about = "Check this machine without changing it: prerequisites, the agent, its instance and the clock. As root, to answer every check. Exits 1 when a check fails"
+    )]
+    Doctor(AgentDoctorArgs),
+    #[command(
+        about = "Inspect, pause or resume this machine's explicitly enabled update following"
+    )]
+    Follow(grund_agent::supervisor::FollowArgs),
+    #[command(hide = true, alias = "agent-supervisor")]
+    Supervisor(grund_agent::supervisor::SupervisorArgs),
+    #[command(hide = true)]
+    PrepareLocalMachine(PrepareLocalMachineArgs),
+}
+
+#[derive(clap::Args)]
+struct AgentDoctorArgs {
+    #[arg(long, help = "Print one JSON document instead of one line per check")]
+    json: bool,
+
+    #[command(flatten)]
+    machine: grund_agent::doctor::MachineArgs,
+}
+
+enum Role {
+    Server(ServerCommand),
+    Agent(AgentRole),
+}
+
+impl Command {
+    fn role(self) -> Result<Role, Box<grund_cli::Command>> {
+        use Role::{Agent, Server};
+        Ok(match self {
+            Command::Serve(config) => Server(ServerCommand::Serve(config)),
+            Command::Migrate(args) => Server(ServerCommand::Migrate(args)),
+            Command::Init(args) => Server(ServerCommand::Init(args)),
+            Command::SetupLink(config) => Server(ServerCommand::SetupLink(config)),
+            Command::LocalMachine(config) => Server(ServerCommand::LocalMachine(config)),
+            Command::PrepareLocalMachine(args) => Agent(AgentRole::PrepareLocalMachine(args)),
+            Command::Doctor(DoctorCommand {
+                json,
+                target: DoctorTarget::Instance(config),
+            }) => Server(ServerCommand::Doctor(ServerDoctorArgs { json, config })),
+            Command::Doctor(DoctorCommand {
+                json,
+                target: DoctorTarget::Machine(machine),
+            }) => Agent(AgentRole::Doctor(AgentDoctorArgs { json, machine })),
+            Command::Probe(args) => Server(ServerCommand::Probe(args)),
+            Command::Join(args) => Agent(AgentRole::Join(args)),
+            Command::Agent(command) => Agent(AgentRole::Run(command)),
+            Command::AgentSupervisor(args) => Agent(AgentRole::Supervisor(args)),
+            Command::MachineFollow(args) => Agent(AgentRole::Follow(args)),
+            Command::AgentUpdates(command) => Server(ServerCommand::Rollout(command)),
+            Command::Relay(command) => Server(ServerCommand::Relay(command)),
+            Command::Relays(command) => Server(ServerCommand::RelayToken(command)),
+            Command::Edge(command) => Server(ServerCommand::Edge(command)),
+            Command::Edges(command) => Server(ServerCommand::EdgeToken(command)),
+            Command::Client(command) => return Err(Box::new(command)),
+        })
+    }
+}
+
 /// The public command tree for a binary that adds optional commands.
 pub fn command() -> clap::Command {
     Cli::command()
+}
+
+fn identify(revision: &'static str, built: &'static str) {
+    grund_server::health::set_revision(revision);
+    grund_server::health::set_build_time(built);
+    grund_server::health::set_package(grund_cli::VERSION);
+    grund_crypto::install_default();
+}
+
+fn container_logs(args: &[String]) -> Option<anyhow::Result<()>> {
+    if !args.get(1).is_some_and(|arg| arg == "--container-logs") {
+        return None;
+    }
+    Some(
+        ContainerLogsArgs::try_parse_from(args)
+            .map_err(anyhow::Error::from)
+            .and_then(|capture| grund_agent::capture::run(&capture.container_logs)),
+    )
 }
 
 /// Runs the common grund binary with extensions supplied by this build.
@@ -348,14 +526,10 @@ pub async fn run_with_extensions(
     revision: &'static str,
     built: &'static str,
 ) -> anyhow::Result<()> {
-    grund_server::health::set_revision(revision);
-    grund_server::health::set_build_time(built);
-    grund_server::health::set_package(grund_cli::VERSION);
-    grund_crypto::install_default();
+    identify(revision, built);
     let args: Vec<String> = std::env::args().collect();
-    if args.get(1).is_some_and(|arg| arg == "--container-logs") {
-        let capture = ContainerLogsArgs::try_parse_from(&args)?;
-        return grund_agent::capture::run(&capture.container_logs);
+    if let Some(result) = container_logs(&args) {
+        return result;
     }
     let cli = match Cli::try_parse_from(&args) {
         Ok(cli) => cli,
@@ -364,80 +538,78 @@ pub async fn run_with_extensions(
             None => error.exit(),
         },
     };
-    if let Command::Client(command) = cli.command {
-        let status = grund_cli::run(command, Cli::command(), revision).await;
-        std::process::exit(status);
+    match cli.command.role() {
+        Ok(role) => run_role(role, &cli.telemetry, extensions_for).await,
+        Err(command) => {
+            let status = grund_cli::run(*command, Cli::command(), revision).await;
+            std::process::exit(status);
+        }
     }
+}
+
+/// Runs `grund-server` with extensions supplied by this build.
+pub async fn run_server_with_extensions(
+    extensions_for: impl FnOnce(
+        &grund_server::config::ServeConfig,
+    ) -> anyhow::Result<
+        Vec<std::sync::Arc<dyn grund_server::extension::Extension>>,
+    >,
+    revision: &'static str,
+    built: &'static str,
+) -> anyhow::Result<()> {
+    identify(revision, built);
+    let cli = ServerCli::parse();
+    run_role(Role::Server(cli.command), &cli.telemetry, extensions_for).await
+}
+
+/// Runs `grund-agent`.
+pub async fn run_agent(revision: &'static str, built: &'static str) -> anyhow::Result<()> {
+    identify(revision, built);
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(result) = container_logs(&args) {
+        return result;
+    }
+    let cli = AgentCli::parse_from(&args);
+    run_role(Role::Agent(cli.command), &cli.telemetry, |_| Ok(Vec::new())).await
+}
+
+async fn run_role(
+    role: Role,
+    telemetry: &Telemetry,
+    extensions_for: impl FnOnce(
+        &grund_server::config::ServeConfig,
+    ) -> anyhow::Result<
+        Vec<std::sync::Arc<dyn grund_server::extension::Extension>>,
+    >,
+) -> anyhow::Result<()> {
     let to_stderr = matches!(
-        cli.command,
-        Command::Doctor(_)
-            | Command::SetupLink(_)
-            | Command::LocalMachine(_)
-            | Command::PrepareLocalMachine(_)
-            | Command::MachineFollow(_)
-            | Command::AgentUpdates(_)
+        role,
+        Role::Server(
+            ServerCommand::Doctor(_)
+                | ServerCommand::SetupLink(_)
+                | ServerCommand::LocalMachine(_)
+                | ServerCommand::Rollout(_)
+        ) | Role::Agent(
+            AgentRole::Doctor(_) | AgentRole::PrepareLocalMachine(_) | AgentRole::Follow(_)
+        )
     );
-    let service = match &cli.command {
-        Command::Serve(_) => Some("grund"),
-        Command::Relay(_) => Some("grund-relay"),
-        Command::Edge(_) => Some("grund-edge"),
+    let service = match &role {
+        Role::Server(ServerCommand::Serve(_)) => Some("grund"),
+        Role::Server(ServerCommand::Relay(_)) => Some("grund-relay"),
+        Role::Server(ServerCommand::Edge(_)) => Some("grund-edge"),
         _ => None,
     };
     let provider = grund_server::telemetry::init(
-        &cli.log,
-        cli.log_format == "json",
+        &telemetry.log,
+        telemetry.log_format == "json",
         to_stderr,
-        service.and(cli.otel_exporter_otlp_endpoint.as_deref()),
-        cli.otel_service_name.as_deref(),
+        service.and(telemetry.otel_exporter_otlp_endpoint.as_deref()),
+        telemetry.otel_service_name.as_deref(),
         service.unwrap_or("grund"),
     )?;
-    let result = match cli.command {
-        Command::Serve(mut config) => {
-            config.validate()?;
-            let extensions = extensions_for(&config)?;
-            grund_server::serve(*config, extensions).await
-        }
-        Command::Migrate(args) => grund_server::migrate(args).await,
-        Command::Init(args) => grund_server::secrets::init(&args),
-        Command::SetupLink(config) => grund_server::setup_link::run(*config).await,
-        Command::LocalMachine(config) => match grund_server::local_machine::run(*config).await {
-            Err(error)
-                if error
-                    .downcast_ref::<grund_server::local_machine::Refused>()
-                    .is_some() =>
-            {
-                eprintln!("Local machine setup refused; inspect the saved installation identity.");
-                std::process::exit(78);
-            }
-            result => result,
-        },
-        Command::PrepareLocalMachine(args) => {
-            let identity = grund_agent::local_bootstrap::prepare(&args.data_dir)?;
-            println!("{}", serde_json::to_string(&identity)?);
-            Ok(())
-        }
-        Command::Probe(args) => probe::run(&args),
-        Command::Doctor(command) => doctor(command).await,
-        Command::Join(args) => grund_agent::join::run(&args).await,
-        Command::AgentSupervisor(args) => grund_agent::supervisor::run(&args).await,
-        Command::MachineFollow(args) => grund_agent::supervisor::policy(&args),
-        Command::AgentUpdates(command) => agent_updates(command).await,
-        Command::Relay(command) => grund_server::relay_command::run(command).await,
-        Command::Relays(command) => grund_server::relays_command::run(command).await,
-        Command::Edge(command) => grund_server::edge::run(command).await,
-        Command::Edges(command) => grund_server::relays_command::run_edges(command).await,
-        Command::Client(_) => unreachable!("client commands returned above"),
-        Command::Agent(command) => {
-            grund_agent::local_bootstrap::complete_pending(&command.agent.data_dir).await?;
-            match command.vm_runtime.as_str() {
-                "simulated" => {
-                    let dir = command.agent.data_dir.join("simulated-vms");
-                    agent(&command, grund_agent::vm::SimulatedVms::new(dir)).await
-                }
-                "firecracker" => agent(&command, firecracker(&command)?).await,
-                _ => agent(&command, grund_agent::vm::NoVms).await,
-            }
-        }
+    let result = match role {
+        Role::Server(command) => serve_role(command, extensions_for).await,
+        Role::Agent(command) => agent_role(command).await,
     };
     if let Some(provider) = provider {
         match tokio::task::spawn_blocking(move || provider.shutdown()).await {
@@ -449,13 +621,105 @@ pub async fn run_with_extensions(
     result
 }
 
+async fn serve_role(
+    command: ServerCommand,
+    extensions_for: impl FnOnce(
+        &grund_server::config::ServeConfig,
+    ) -> anyhow::Result<
+        Vec<std::sync::Arc<dyn grund_server::extension::Extension>>,
+    >,
+) -> anyhow::Result<()> {
+    match command {
+        ServerCommand::Serve(mut config) => {
+            config.validate()?;
+            let extensions = extensions_for(&config)?;
+            grund_server::serve(*config, extensions).await
+        }
+        ServerCommand::Migrate(args) => grund_server::migrate(args).await,
+        ServerCommand::Init(args) => grund_server::secrets::init(&args),
+        ServerCommand::SetupLink(config) => grund_server::setup_link::run(*config).await,
+        ServerCommand::LocalMachine(config) => {
+            match grund_server::local_machine::run(*config).await {
+                Err(error)
+                    if error
+                        .downcast_ref::<grund_server::local_machine::Refused>()
+                        .is_some() =>
+                {
+                    eprintln!(
+                        "Local machine setup refused; inspect the saved installation identity."
+                    );
+                    std::process::exit(78);
+                }
+                result => result,
+            }
+        }
+        ServerCommand::Doctor(args) => doctor(args.json, DoctorTarget::Instance(args.config)).await,
+        ServerCommand::Probe(args) => probe::run(&args),
+        ServerCommand::Relay(command) => grund_server::relay_command::run(command).await,
+        ServerCommand::RelayToken(command) => grund_server::relays_command::run(command).await,
+        ServerCommand::Edge(command) => grund_server::edge::run(command).await,
+        ServerCommand::EdgeToken(command) => grund_server::relays_command::run_edges(command).await,
+        ServerCommand::Rollout(command) => agent_updates(command).await,
+    }
+}
+
+async fn agent_role(command: AgentRole) -> anyhow::Result<()> {
+    match command {
+        AgentRole::PrepareLocalMachine(args) => {
+            let identity = grund_agent::local_bootstrap::prepare(&args.data_dir)?;
+            println!("{}", serde_json::to_string(&identity)?);
+            Ok(())
+        }
+        AgentRole::Doctor(args) => doctor(args.json, DoctorTarget::Machine(args.machine)).await,
+        AgentRole::Join(args) => grund_agent::join::run(&args).await,
+        AgentRole::Supervisor(args) => grund_agent::supervisor::run(&args).await,
+        AgentRole::Follow(args) => grund_agent::supervisor::policy(&args),
+        AgentRole::Run(command) => {
+            grund_agent::local_bootstrap::complete_pending(&command.agent.data_dir).await?;
+            match command.vm_runtime.as_str() {
+                "simulated" => {
+                    let dir = command.agent.data_dir.join("simulated-vms");
+                    agent(&command, grund_agent::vm::SimulatedVms::new(dir)).await
+                }
+                "firecracker" => agent(&command, firecracker(&command)?).await,
+                _ => agent(&command, grund_agent::vm::NoVms).await,
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn the_command_definition_is_internally_consistent() {
+    fn the_command_definitions_are_internally_consistent() {
         Cli::command().debug_assert();
+        ServerCli::command().debug_assert();
+        AgentCli::command().debug_assert();
+    }
+
+    #[test]
+    fn the_supervisor_answers_to_the_name_older_updaters_call_it_by() {
+        let cli =
+            AgentCli::try_parse_from(["grund-agent", "agent-supervisor", "--identity"]).unwrap();
+        assert!(matches!(cli.command, AgentRole::Supervisor(args) if args.identity));
+    }
+
+    #[test]
+    fn the_combined_binary_runs_each_role_command_as_its_own_binary_would() {
+        let cli = Cli::try_parse_from(["grund", "relays", "list"]).unwrap();
+        assert!(matches!(
+            cli.command.role(),
+            Ok(Role::Server(ServerCommand::RelayToken(_)))
+        ));
+        let cli = Cli::try_parse_from(["grund", "doctor", "machine"]).unwrap();
+        assert!(matches!(
+            cli.command.role(),
+            Ok(Role::Agent(AgentRole::Doctor(_)))
+        ));
+        let cli = Cli::try_parse_from(["grund", "apps", "list"]).unwrap();
+        assert!(cli.command.role().is_err());
     }
 
     #[test]
