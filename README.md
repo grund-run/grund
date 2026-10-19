@@ -738,6 +738,11 @@ change the password inside PostgreSQL and update its consumers explicitly.
 SeaweedFS provides one private S3 endpoint and one access/secret key pair that
 can create buckets and manage all objects in that instance. Clients use
 path-style addressing and region `us-east-1`; create the bucket explicitly.
+
+Native SeaweedFS APIs listen only on container loopback. Grund forwards the
+declared S3 port 8333 to its private service address; auxiliary HTTP/gRPC APIs
+are not forwarded.
+
 The former `minio` template key is removed, with no alias or automatic data
 conversion. Existing apps using their own MinIO image are unchanged.
 
