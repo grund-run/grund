@@ -992,7 +992,7 @@ async fn server_update(ctx: &Ctx, args: UpdateArgs) -> CliResult<Output> {
     let preflight = progress
         .step(
             "Checking the server before downtime",
-            "Run sudo grund doctor instance and resolve failing checks before retrying.",
+            "Run sudo grund server doctor and resolve failing checks before retrying.",
             async {
                 checked_doctor(
                     candidate_compose(root, staged.path(), &image)?.args([

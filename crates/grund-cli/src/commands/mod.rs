@@ -163,6 +163,10 @@ pub async fn execute(
             server::ServerAction::Uninstall(args) => {
                 system::uninstall(ctx, args.into_uninstall()).await?
             }
+            server::ServerAction::Status => server::status().await?,
+            server::ServerAction::Doctor => server::doctor().await?,
+            server::ServerAction::SetupLink => server::setup_link().await?,
+            server::ServerAction::Rollout { action } => server::rollout(action).await?,
         },
         Command::Auth(command) => match command.action {
             auth::AuthAction::Login(args) => auth::login(ctx, args, revision).await?,

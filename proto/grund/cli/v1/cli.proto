@@ -341,3 +341,33 @@ message DoctorCheck {
   // What to do, when it is not ok.
   string fix = 4;
 }
+
+// `grund server status`: the dashboard installed on this computer.
+message ServerStatus {
+  // The installed release.
+  string version = 1;
+  // Its public address, or its local one.
+  string address = 2;
+  string config_path = 3;
+  // Whether it answers /health/ready on this computer, and its build.
+  bool ready = 4;
+  string revision = 5;
+  // Why it is not ready, when it is not.
+  string detail = 6;
+}
+
+// `grund server setup-link`: the one-time owner link. Treat it as a
+// credential.
+message SetupLink {
+  string link = 1;
+}
+
+// `grund server rollout`: how the dashboard updates its machines.
+message ServerRollout {
+  // No machine is offered a new build while paused.
+  bool paused = 1;
+  // The build machines are being brought to.
+  string target_revision = 2;
+  // The one machine with an update under way, if any.
+  string updating_machine_id = 3;
+}

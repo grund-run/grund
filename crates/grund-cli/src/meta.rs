@@ -226,6 +226,45 @@ pub const LEAVES: &[Leaf] = &[
             ],
         )
     },
+    read(
+        "server status",
+        "grund.cli.v1.ServerStatus",
+        &[],
+        &["sudo grund server status"],
+    ),
+    read(
+        "server doctor",
+        "grund.cli.v1.DoctorReport",
+        &[],
+        &[
+            "sudo grund server doctor",
+            "sudo grund server doctor --json",
+        ],
+    ),
+    write(
+        "server setup-link",
+        "grund.cli.v1.SetupLink",
+        &[],
+        &["sudo grund server setup-link"],
+    ),
+    read(
+        "server rollout status",
+        "grund.cli.v1.ServerRollout",
+        &[],
+        &["sudo grund server rollout status"],
+    ),
+    write(
+        "server rollout pause",
+        "grund.cli.v1.ServerRollout",
+        &[],
+        &["sudo grund server rollout pause"],
+    ),
+    write(
+        "server rollout resume",
+        "grund.cli.v1.ServerRollout",
+        &[],
+        &["sudo grund server rollout resume"],
+    ),
     Leaf {
         output: "grund.cli.v1.HostUninstallation",
         ..destroy(

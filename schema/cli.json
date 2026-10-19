@@ -1946,6 +1946,67 @@
       "title": "grund.cli.v1.SecretList",
       "type": "object"
     },
+    "grund.cli.v1.ServerRollout": {
+      "additionalProperties": false,
+      "description": "`grund server rollout`: how the dashboard updates its machines.",
+      "properties": {
+        "paused": {
+          "description": "No machine is offered a new build while paused.",
+          "type": "boolean"
+        },
+        "targetRevision": {
+          "description": "The build machines are being brought to.",
+          "type": "string"
+        },
+        "updatingMachineId": {
+          "description": "The one machine with an update under way, if any.",
+          "type": "string"
+        }
+      },
+      "title": "grund.cli.v1.ServerRollout",
+      "type": "object"
+    },
+    "grund.cli.v1.ServerStatus": {
+      "additionalProperties": false,
+      "description": "`grund server status`: the dashboard installed on this computer.",
+      "properties": {
+        "address": {
+          "description": "Its public address, or its local one.",
+          "type": "string"
+        },
+        "configPath": {
+          "type": "string"
+        },
+        "detail": {
+          "description": "Why it is not ready, when it is not.",
+          "type": "string"
+        },
+        "ready": {
+          "description": "Whether it answers /health/ready on this computer, and its build.",
+          "type": "boolean"
+        },
+        "revision": {
+          "type": "string"
+        },
+        "version": {
+          "description": "The installed release.",
+          "type": "string"
+        }
+      },
+      "title": "grund.cli.v1.ServerStatus",
+      "type": "object"
+    },
+    "grund.cli.v1.SetupLink": {
+      "additionalProperties": false,
+      "description": "`grund server setup-link`: the one-time owner link. Treat it as a credential.",
+      "properties": {
+        "link": {
+          "type": "string"
+        }
+      },
+      "title": "grund.cli.v1.SetupLink",
+      "type": "object"
+    },
     "grund.cli.v1.SkillInstalled": {
       "additionalProperties": false,
       "description": "`grund skill install`.",
@@ -4376,6 +4437,331 @@
       },
       "path": "server uninstall",
       "summary": "Stop and remove the dashboard's services, keeping its configuration and data"
+    },
+    {
+      "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
+          "description": "The organisation. Default: grund org use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        }
+      ],
+      "audience": "client",
+      "command": "grund server status",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "sudo grund server status"
+      ],
+      "mutates": false,
+      "output": {
+        "$ref": "#/$defs/grund.cli.v1.ServerStatus"
+      },
+      "path": "server status",
+      "summary": "The dashboard's release, address and whether it is ready"
+    },
+    {
+      "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
+          "description": "The organisation. Default: grund org use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        }
+      ],
+      "audience": "client",
+      "command": "grund server doctor",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "sudo grund server doctor",
+        "sudo grund server doctor --json"
+      ],
+      "mutates": false,
+      "output": {
+        "$ref": "#/$defs/grund.cli.v1.DoctorReport"
+      },
+      "path": "server doctor",
+      "summary": "Check the dashboard with its own settings, without changing it. Exits 1 when a check fails"
+    },
+    {
+      "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
+          "description": "The organisation. Default: grund org use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        }
+      ],
+      "audience": "client",
+      "command": "grund server setup-link",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "sudo grund server setup-link"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.cli.v1.SetupLink"
+      },
+      "path": "server setup-link",
+      "summary": "Print the one-time link that creates the dashboard's owner, before any account exists"
+    },
+    {
+      "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
+          "description": "The organisation. Default: grund org use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        }
+      ],
+      "audience": "client",
+      "command": "grund server rollout status",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "sudo grund server rollout status"
+      ],
+      "mutates": false,
+      "output": {
+        "$ref": "#/$defs/grund.cli.v1.ServerRollout"
+      },
+      "path": "server rollout status",
+      "summary": "Whether machines are being updated, to which build, and which one is"
+    },
+    {
+      "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
+          "description": "The organisation. Default: grund org use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        }
+      ],
+      "audience": "client",
+      "command": "grund server rollout pause",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "sudo grund server rollout pause"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.cli.v1.ServerRollout"
+      },
+      "path": "server rollout pause",
+      "summary": "Offer no machine a new build; an update under way still finishes safely"
+    },
+    {
+      "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
+          "description": "The organisation. Default: grund org use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        }
+      ],
+      "audience": "client",
+      "command": "grund server rollout resume",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "sudo grund server rollout resume"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.cli.v1.ServerRollout"
+      },
+      "path": "server rollout resume",
+      "summary": "Offer machines new builds again"
     },
     {
       "args": [

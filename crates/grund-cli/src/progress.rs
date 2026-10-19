@@ -212,7 +212,7 @@ mod tests {
             let result = progress
                 .step_to(
                     "Checking server",
-                    "Run sudo grund doctor instance.",
+                    "Run sudo grund server doctor.",
                     async { Err::<(), _>(CliError::new(Code::Failed, "technical-check-detail")) },
                     &mut diagnostics,
                 )

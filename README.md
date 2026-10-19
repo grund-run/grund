@@ -120,7 +120,7 @@ The explicit domain path, also supported by alphas .5 through .9, is:
 
 ```sh
 sudo "$(command -v grund)" server install --domain grund.example.com
-sudo docker compose --project-directory /opt/grund exec grund /grund setup-link
+sudo "$(command -v grund)" server setup-link
 # Open the link, create the owner, and get a setup code on Machines.
 sudo "$(command -v grund)" server install --domain grund.example.com --code CODE
 grund auth login https://grund.example.com
@@ -380,9 +380,9 @@ agent already runs the instance's build, or when following is paused; a
 rollback pauses it, and `--resume` lifts that. `--pause` stops new
 authorization, not recovery of an attempt already under way.
 
-An instance operator runs `/grund agent-updates status`,
-`/grund agent-updates pause` or `/grund agent-updates resume` inside the configured
-server container. Do not restore an older coordinator database while following
+On an installer-managed dashboard, its owner runs `sudo grund server
+rollout status|pause|resume`; elsewhere an operator runs `/grund
+agent-updates status|pause|resume` inside the server container. Do not restore an older coordinator database while following
 is enabled: pause first, then reconcile machine journals and provider grants
 before resuming. Automatic following is not a cross-system recovery protocol.
 
