@@ -604,16 +604,31 @@ pub async fn run_with_extensions(
         }
         None => {}
     }
-    let parsed = command()
-        .try_get_matches_from(&args)
-        .and_then(|matches| <Cli as clap::FromArgMatches>::from_arg_matches(&matches));
-    let cli = match parsed {
-        Ok(cli) => cli,
-        Err(error) => match grund_cli::usage_error(&error, &args) {
-            Some(status) => std::process::exit(status),
-            None => error.exit(),
-        },
+    let mut args = args;
+    let original = args.len();
+    let cli = loop {
+        let parsed = command()
+            .try_get_matches_from(&args)
+            .and_then(|matches| <Cli as clap::FromArgMatches>::from_arg_matches(&matches));
+        match parsed {
+            Ok(cli) => break cli,
+            Err(error) => {
+                if args.len() < original + 3
+                    && let Some(completed) = grund_cli::attended::complete(&args, &error).await
+                {
+                    args = completed;
+                    continue;
+                }
+                match grund_cli::usage_error(&error, &args) {
+                    Some(status) => std::process::exit(status),
+                    None => error.exit(),
+                }
+            }
+        }
     };
+    if args.len() > original {
+        grund_cli::attended::ran(&args);
+    }
     match cli.command.role() {
         Ok(role) => run_role(role, &cli.telemetry, extensions_for).await,
         Err(client) => {

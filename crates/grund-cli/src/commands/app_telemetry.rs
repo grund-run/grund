@@ -121,11 +121,74 @@ pub async fn metrics(api: &Api, org: &str, args: MetricsArgs) -> CliResult<Outpu
 
 /// Follows ingestion cursors, cancelling both requests and idle waits on Ctrl-C.
 pub async fn follow(ctx: &Ctx, api: &Api, org: &str, args: LogsArgs) -> CliResult<()> {
+    if ctx.interactive {
+        return follow_pager(api, org, args).await;
+    }
     tokio::select! {
         signal = tokio::signal::ctrl_c() => signal.map_err(|error| {
             CliError::new(Code::Failed, format!("could not listen for Ctrl-C: {error}"))
         }),
         result = follow_pages(ctx, api, org, args) => result,
+    }
+}
+
+async fn follow_pager(api: &Api, org: &str, args: LogsArgs) -> CliResult<()> {
+    let title = format!("{} logs", args.app);
+    let mut request = logs_request(org, &args, Utc::now())?;
+    let (pages, mut received) = tokio::sync::mpsc::unbounded_channel::<CliResult<String>>();
+    let api = api.clone();
+    let feed = tokio::spawn(async move {
+        loop {
+            let answer = match api.call(LOGS_RPC, request.clone()).await {
+                Ok(answer) => answer,
+                Err(error) => {
+                    let _ = pages.send(Err(error));
+                    return;
+                }
+            };
+            let caught_up = match advance_cursor(&mut request, &answer) {
+                Ok(caught_up) => caught_up,
+                Err(error) => {
+                    let _ = pages.send(Err(error));
+                    return;
+                }
+            };
+            let text = logs_output(answer, false).render(Format::Text);
+            if pages.send(Ok(text)).is_err() {
+                return;
+            }
+            if caught_up {
+                tokio::time::sleep(POLL_INTERVAL).await;
+            }
+        }
+    });
+    let terminal_error = |e: std::io::Error| {
+        CliError::new(Code::Failed, format!("could not draw on the terminal: {e}"))
+    };
+    let mut pager = crate::attended::Pager::start(&title).map_err(terminal_error)?;
+    let mut stopped: Option<CliError> = None;
+    let result = loop {
+        while let Ok(page) = received.try_recv() {
+            match page {
+                Ok(text) => pager.push(&text),
+                Err(error) => stopped = Some(error),
+            }
+        }
+        if let Err(error) = pager.draw(stopped.as_ref().map(|e| e.message.as_str())) {
+            break Err(terminal_error(error));
+        }
+        match tokio::task::block_in_place(|| pager.key(Duration::from_millis(100))) {
+            Ok(crate::attended::Step::Quit) => break Ok(()),
+            Ok(crate::attended::Step::Continue) => {}
+            Err(error) => break Err(terminal_error(error)),
+        }
+    };
+    feed.abort();
+    drop(pager);
+    match (result, stopped) {
+        (Err(error), _) => Err(error),
+        (Ok(()), Some(error)) => Err(error),
+        (Ok(()), None) => Ok(()),
     }
 }
 

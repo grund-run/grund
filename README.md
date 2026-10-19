@@ -534,6 +534,13 @@ add` still enrolls your own machine and never rents one.
   (a personal access token) with `GRUND_INSTANCE`. `--org SLUG` (or
   `GRUND_ORG`) overrides the context's organisation (`grund org use`), then
   the token's, then your only one. Flags work before or after the noun.
+- At a terminal (stdin and stderr are terminals, text output, no `CI` or
+  `GRUND_NO_INPUT`) grund helps: a command missing an app, machine, domain,
+  stack, member, organisation or context name offers a filterable list and
+  then prints the full command it ran; `app deploy --wait` shows its copies
+  coming up live; `app logs --follow` opens a pager (space pauses, `/`
+  filters, `q` quits). Scripts, pipes and `--json` get none of that: a
+  missing argument is a usage error, as before.
 - `grund api PROCEDURE` calls any procedure of the instance's API with the
   context's credential, for what no command covers yet: `grund api list`
   names them; `-f key=value` builds the request (`{org}` is the

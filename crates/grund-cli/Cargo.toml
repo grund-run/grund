@@ -28,6 +28,7 @@ grund-config.workspace = true
 grund-descriptors.workspace = true
 grund-crypto.workspace = true
 indicatif = { version = "0.18", default-features = false }
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 libc = "0.2"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
 rustix = { version = "1.1", features = ["fs", "pipe"] }

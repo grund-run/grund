@@ -18,6 +18,7 @@
 #![forbid(unsafe_code)]
 
 pub mod api;
+pub mod attended;
 pub mod commands;
 pub mod context;
 pub mod credentials;

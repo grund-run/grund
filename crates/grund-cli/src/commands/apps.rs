@@ -956,6 +956,11 @@ async fn wait(
     let number = release["number"].as_u64().unwrap_or(0);
     let deadline = std::time::Instant::now() + Duration::from_secs(timeout);
     let mut last = String::new();
+    let mut live = if ctx.interactive {
+        crate::attended::Live::start(6)
+    } else {
+        None
+    };
     loop {
         let answer = get_app(api, org, app).await?;
         let app_now = &answer["app"];
@@ -975,10 +980,41 @@ async fn wait(
             now["copiesReady"],
             now["copiesWanted"]
         );
-        if line != last {
+        if let Some(view) = live.as_mut() {
+            let copies: Vec<String> = app_now["replicas"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .take(6)
+                .map(|copy| {
+                    let observed = &copy["observed"];
+                    format!(
+                        "  {:<16} release {:<3} {}{}",
+                        copy["machineName"].as_str().unwrap_or("unplaced"),
+                        copy["release"].as_u64().unwrap_or(0),
+                        observed["state"]
+                            .as_str()
+                            .unwrap_or("waiting for its machine")
+                            .trim_start_matches("OBSERVED_STATE_")
+                            .to_lowercase(),
+                        if observed["ready"] == true {
+                            ", ready"
+                        } else {
+                            ""
+                        }
+                    )
+                })
+                .collect();
+            view.show(
+                &line,
+                now["copiesReady"].as_u64().unwrap_or(0),
+                now["copiesWanted"].as_u64().unwrap_or(0),
+                &copies,
+            );
+        } else if line != last {
             output::progress(ctx.format, &line);
-            last = line;
         }
+        last = line;
         if to == number {
             match state {
                 "ROLLOUT_STATE_SUCCEEDED" => return Ok(rollout.clone()),

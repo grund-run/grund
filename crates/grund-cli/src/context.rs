@@ -119,7 +119,9 @@ impl Ctx {
         };
         let interactive = format == Format::Text
             && std::io::stdin().is_terminal()
-            && std::io::stderr().is_terminal();
+            && std::io::stderr().is_terminal()
+            && std::env::var_os("CI").is_none()
+            && std::env::var_os("GRUND_NO_INPUT").is_none();
         Ctx {
             global,
             format,
