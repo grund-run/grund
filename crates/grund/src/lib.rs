@@ -516,7 +516,24 @@ fn container_logs(args: &[String]) -> Option<anyhow::Result<()>> {
     )
 }
 
-/// Runs the common grund binary with extensions supplied by this build.
+#[derive(Debug, PartialEq, Eq)]
+enum Invoked {
+    Server,
+    Agent,
+}
+
+fn invoked_as(args: &[String]) -> Option<Invoked> {
+    let name = std::path::Path::new(args.first()?).file_name()?.to_str()?;
+    match name {
+        "grund-server" => Some(Invoked::Server),
+        "grund-agent" => Some(Invoked::Agent),
+        _ => None,
+    }
+}
+
+/// Runs the common grund binary with extensions supplied by this build. Run
+/// by the name `grund-server` or `grund-agent` (a link to it), it is that
+/// binary: it parses and runs that role's commands only.
 pub async fn run_with_extensions(
     extensions_for: impl FnOnce(
         &grund_server::config::ServeConfig,
@@ -530,6 +547,17 @@ pub async fn run_with_extensions(
     let args: Vec<String> = std::env::args().collect();
     if let Some(result) = container_logs(&args) {
         return result;
+    }
+    match invoked_as(&args) {
+        Some(Invoked::Server) => {
+            let cli = ServerCli::parse_from(&args);
+            return run_role(Role::Server(cli.command), &cli.telemetry, extensions_for).await;
+        }
+        Some(Invoked::Agent) => {
+            let cli = AgentCli::parse_from(&args);
+            return run_role(Role::Agent(cli.command), &cli.telemetry, extensions_for).await;
+        }
+        None => {}
     }
     let cli = match Cli::try_parse_from(&args) {
         Ok(cli) => cli,
@@ -697,6 +725,15 @@ mod tests {
         Cli::command().debug_assert();
         ServerCli::command().debug_assert();
         AgentCli::command().debug_assert();
+    }
+
+    #[test]
+    fn the_combined_binary_takes_the_role_of_the_name_it_was_run_by() {
+        let run = |name: &str| invoked_as(&[name.to_string(), "serve".to_string()]);
+        assert_eq!(run("/grund-server"), Some(Invoked::Server));
+        assert_eq!(run("/usr/local/bin/grund-agent"), Some(Invoked::Agent));
+        assert_eq!(run("/grund"), None);
+        assert_eq!(run("grund-server-old"), None);
     }
 
     #[test]

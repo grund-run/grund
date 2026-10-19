@@ -18,12 +18,14 @@ ENV GRUND_REVISION=${GRUND_REVISION}
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --locked --release -p grund && mkdir -p /out/var/lib/grund \
-    && cp target/release/grund /out/grund && cp /etc/ssl/certs/ca-certificates.crt /out/ca-certificates.crt
+    && cp target/release/grund /out/grund && cp /etc/ssl/certs/ca-certificates.crt /out/ca-certificates.crt \
+    && mkdir -p /out/links && ln -s grund /out/links/grund-server
 
 FROM scratch
 COPY --from=build /out/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build --chown=65532:65532 /out/var/lib/grund /var/lib/grund
 COPY --from=build /out/grund /grund
+COPY --from=build /out/links/ /
 USER 65532:65532
 ENV GRUND_LISTEN=0.0.0.0:8080 \
     GRUND_LOG_FORMAT=json

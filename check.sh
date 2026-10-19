@@ -47,7 +47,7 @@ docker run --rm -v "$PWD":/src -w /src \
     && cargo build --locked --release -p grund; status=$?; chown -R "$OWNER" target/musl; [ $status -eq 0 ] \
     && ! readelf -d target/musl/release/grund | grep -q NEEDED \
     && cp /etc/ssl/certs/ca-certificates.crt target/musl/ca-certificates.crt && chown "$OWNER" target/musl/ca-certificates.crt'
-mkdir -p .image/var/lib/grund
+mkdir -p .image/var/lib/grund .image/links && ln -sfn grund .image/links/grund-server
 cp target/musl/release/grund .image/grund
 cp target/musl/ca-certificates.crt .image/ca-certificates.crt
 echo "  ok   statically linked ($(du -h .image/grund | cut -f1))"
@@ -76,6 +76,8 @@ docker run -d --name "$name" --read-only --cap-drop ALL --network "$network" \
   -e GRUND_ORGANISATIONS=multi \
   "$img" >/dev/null
 GRUND_ACCEPT_URL="http://127.0.0.1:$port" ./accept-bootstrap.sh docker exec "$name" /grund
+docker exec "$name" /grund-server probe --address 127.0.0.1:8080
+echo "  ok   /grund-server runs the instance's commands"
 # The timing test alone after the rest, as CI runs it (.woodpecker/ci.yaml).
 timing_test=accepttest::login::an_unknown_account_and_a_wrong_password_get_the_same_answer_in_the_same_time
 if ! { GRUND_ACCEPT_URL="http://127.0.0.1:$port" GRUND_ACCEPT_MAILPIT_URL=http://127.0.0.1:58410 \
