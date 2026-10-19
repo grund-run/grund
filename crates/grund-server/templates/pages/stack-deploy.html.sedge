@@ -1,9 +1,10 @@
 use crate::templates::FormState;
-use crate::templates::compiled::components::{PageHead, Panel, Form, HiddenField, CodeField, Field, PairsField, Actions, Button, Para, Facts, Fact, Rows, Row, EmptyState, FieldError};
-props crate::web::stacks::DeployPage<'_> { slug, manages, csrf, form, preview, errors, secret_names };
+use crate::templates::compiled::components::{PageHead, Panel, Form, HiddenField, CodeField, Code, Field, PairsField, Actions, Button, ButtonAdvanced, Para, Facts, Fact, Rows, Row, EmptyState, FieldError, Select, Expander};
+props crate::web::stacks::DeployPage<'_> { slug, manages, csrf, form, preview, errors, starters, secret_names };
 {let state = FormState { csrf, errors, banners: &std::collections::BTreeMap::new() };}
+{let cancel = if form.stack.is_empty() { format!("/{slug}/stacks") } else { format!("/{slug}/stacks/{}", form.stack) };}
 
-<PageHead title="Deploy stack" />
+<PageHead title={form.title()} back={Some((&cancel, "Stacks"))} />
 {if *manages {
   {if let Some(plan) = preview {
     <Panel id="stack-preview" title="Preview">
@@ -37,24 +38,51 @@ props crate::web::stacks::DeployPage<'_> { slug, manages, csrf, form, preview, e
     }}
   }}
   <Panel>
+    {if preview.is_none() && form.stack.is_empty() {
+      <Form action="/{slug}/stacks/deploy" method={Some("get")} layout={Some("row")}>
+        <Select name="starter" label="Start from" options={starters} selected={&form.starter} required />
+        <Button label="Load example" kind="secondary" />
+      </Form>
+      <Para>Loading an example replaces the file. PostgreSQL and Redis use generated credentials from the templates catalogue.</Para>
+    }}
     <Form action={if preview.is_some() { format!("/{slug}/stacks/deploy") } else { format!("/{slug}/stacks/deploy/preview") }} form={Some(&state)} autocomplete={Some("off")} refused={!errors.is_empty()}>
+      <HiddenField name="stack" value={&form.stack} />
+      <HiddenField name="starter" value={&form.starter} />
       <HiddenField name="expected_version" value={&form.expected_version} />
       <HiddenField name="key" value={&form.key} />
+      <HiddenField name="service" value={&form.service} />
       {for field in ["expected_version", "key", "operation"] { {if let Some(message) = errors.get(field) { <FieldError text={message} /> }} }}
-      <CodeField name="file" label="Stack file" filename="grund.yaml" value={&form.file} rows={18} required error={state.error("file").unwrap_or("")} hint="Maximum 1 MiB. Secret values belong in Launch secrets, not in this file." />
-      {if form.service.is_empty() {
-        <HiddenField name="service" value="" />
+      {if preview.is_some() {
+        <HiddenField name="file" value={&form.file} />
+        <Code text={&form.file} filename="grund.yaml" />
       } else {
-        <HiddenField name="service" value={&form.service} />
+        <CodeField name="file" label="Stack file" filename="grund.yaml" value={&form.file} rows={18} required error={state.error("file").unwrap_or("")} hint="Maximum 1 MiB. Secret values belong in Launch secrets, not in this file." />
+      }}
+      {if !form.service.is_empty() {
         <Para>Only {form.service} is updated. Keep every other service unchanged in the complete file.</Para>
       }}
-      <Field name="refresh_template" label="Update template" value={&form.refresh_template} hint="Optional service name. Refreshes its pinned template definition." form={Some(&state)} />
-      <Field name="confirmed_removals" label="Confirm service removals" value={&form.confirmed_removals} required={preview.is_some_and(|plan| !plan.removed_services.is_empty())} hint="To remove services, type every listed service name separated by commas. Leave empty when no services are removed. Retained data is not purged." form={Some(&state)} />
-      <PairsField name="secrets" label="Launch secrets" secret pairs_owned={secret_names} blank={1} key_label="service.NAME" value_label="Secret value" error={state.error("secrets").unwrap_or("")} hint={if errors.is_empty() { "Use service.NAME for each binding. Values are stored separately from the file and never shown again." } else { "Enter secret values again. A refused form never shows them." }} />
-      {if preview.is_none() && !secret_names.is_empty() { <Para>Enter secret values after previewing the file.</Para> }}
+      {if !form.stack.is_empty() && preview.is_none() {
+        <Expander title="Template update" open={state.error("refresh_template").is_some()}>
+          <Field name="refresh_template" label="Update template" value={&form.refresh_template} hint="Optional service name. Refreshes its pinned template definition." form={Some(&state)} />
+        </Expander>
+      } else {
+        <HiddenField name="refresh_template" value={&form.refresh_template} />
+      }}
+      {if preview.is_some_and(|plan| !plan.removed_services.is_empty()) {
+        <Field name="confirmed_removals" label="Confirm service removals" value={&form.confirmed_removals} required hint="Type every listed service name separated by commas. Retained data is not purged." form={Some(&state)} />
+      } else {
+        <HiddenField name="confirmed_removals" value={&form.confirmed_removals} />
+        {if let Some(message) = state.error("confirmed_removals") { <FieldError text={message} /> }}
+      }}
+      {if preview.is_some() || !secret_names.is_empty() || state.error("secrets").is_some() {
+        <PairsField name="secrets" label="Launch secrets" secret pairs_owned={secret_names} blank={1} key_label="service.NAME" value_label="Secret value" error={state.error("secrets").unwrap_or("")} hint={if errors.is_empty() { "Use service.NAME for each binding. Values are stored separately from the file and never shown again." } else { "Enter secret values again after previewing. A refused form never shows them." }} />
+      }}
       <Actions>
-        <Button label="Cancel" href="/{slug}/stacks" kind="secondary" />
-        <Button label={if preview.is_some() { "Deploy stack" } else { "Preview" }} />
+        <Button label="Cancel" href={&cancel} kind="secondary" />
+        {if preview.is_some() {
+          <ButtonAdvanced label="Edit file" kind="secondary" name="intent" value="edit" form_action="/{slug}/stacks/deploy/preview" />
+        }}
+        <Button label={if preview.is_some() { if form.stack.is_empty() { "Create stack" } else { "Deploy change" } } else { "Preview" }} />
       </Actions>
     </Form>
   </Panel>

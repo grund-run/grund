@@ -616,6 +616,21 @@ column and path.
 
 ### Stacks
 
+In the dashboard, open **Stacks → Create stack**. Paste a stack file or load
+a basic, web + PostgreSQL + Redis, or app + Caddy example. **Preview** validates
+the complete file and shows services, resources, storage and machine selection
+without creating anything. Review it, then choose **Create stack**; **Edit file**
+returns to the editor. Owners and admins create stacks. A name already used by
+a stack is refused, not treated as an update.
+
+The web/data example passes generated connection URLs as `DATABASE_URL` and
+`REDIS_URL` to an nginx image service; replace that image with your application
+to use them. Passwords are generated through the existing templates catalogue,
+not embedded in the file. Enter custom secret values only after previewing;
+refused forms never return those values. Use the stack's actions menu to edit,
+restart, roll back, delete or restore it. Editing keeps the original name and
+refuses a version changed since the editor was opened.
+
 A stack owns several services on one existing capable machine or VM; it
 creates neither a VM nor a shared localhost namespace. Private services remain
 organisation-private, not isolated from other stacks. Agents must support stacks.

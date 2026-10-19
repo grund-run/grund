@@ -1,9 +1,15 @@
 use crate::templates::compiled::components::{PageHead, Rows, Row, EmptyState, Button, Para};
-props crate::web::stacks::ListPage<'_> { slug, stacks, next };
+props crate::web::stacks::ListPage<'_> { slug, manages, stacks, next };
 
 <PageHead title="Stacks" />
 {if stacks.is_empty() {
-  <EmptyState title="No stacks" />
+  <EmptyState title="No stacks" icon_name="layers">
+    {if *manages {
+      <Button label="Create stack" kind="secondary" href="/{slug}/stacks/deploy" icon_name="plus" />
+    } else {
+      <Para>Owners and admins create stacks.</Para>
+    }}
+  </EmptyState>
 } else {
   <Rows>{for stack in *stacks {
     {let (label, tone) = crate::web::stacks::status(&stack.status);}

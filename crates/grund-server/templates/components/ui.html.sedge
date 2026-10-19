@@ -36,13 +36,13 @@ component Button(label: &str, kind: &str = "primary", href: &str, icon_name: &st
   <button class="btn btn-{kind}{if !size.is_empty() { " btn-" } else { "" }}{size}{if *block { " btn-block" } else { "" }}" type="submit">{if !icon_name.is_empty() { <Icon name={icon_name} class="icon-sm" /> }}<span>{label}</span></button>
 }}
 }
-component ButtonAdvanced(label: &str, href: &str, icon_name: &str, kind: &str = "primary", size: &str, button_type: &str = "submit", collapse: bool, block: bool, icon_size: &str = "sm", extra: &str, icon_end: bool, hidden: bool, download: &str) {
+component ButtonAdvanced(label: &str, href: &str, icon_name: &str, kind: &str = "primary", size: &str, button_type: &str = "submit", collapse: bool, block: bool, icon_size: &str = "sm", extra: &str, icon_end: bool, hidden: bool, download: &str, name: &str, value: &str, form_action: &str) {
 {if !href.is_empty() {
   <a class="btn btn-{kind}{if !size.is_empty() { " btn-" } else { "" }}{size}{if *block { " btn-block" } else { "" }}{if !extra.is_empty() { " " } else { "" }}{extra}" href={href} download={if download.is_empty() { None } else { Some(download) }}>
     {if !icon_name.is_empty() && !*icon_end { <Icon name={icon_name} class={if icon_size.is_empty() { "" } else { "icon-sm" }} /> }}<span class={if *collapse { Some("btn-label") } else { None }}>{label}</span>{if !icon_name.is_empty() && *icon_end { <Icon name={icon_name} class={if icon_size.is_empty() { "" } else { "icon-sm" }} /> }}
   </a>
 } else {
-  <button class="btn btn-{kind}{if !size.is_empty() { " btn-" } else { "" }}{size}{if *block { " btn-block" } else { "" }}{if !extra.is_empty() { " " } else { "" }}{extra}" type={button_type} hidden={hidden}>
+  <button class="btn btn-{kind}{if !size.is_empty() { " btn-" } else { "" }}{size}{if *block { " btn-block" } else { "" }}{if !extra.is_empty() { " " } else { "" }}{extra}" type={button_type} hidden={hidden} name={(!name.is_empty()).then_some(*name)} value={(!name.is_empty()).then_some(*value)} formaction={(!form_action.is_empty()).then_some(*form_action)}>
     {if !icon_name.is_empty() && !*icon_end { <Icon name={icon_name} class={if icon_size.is_empty() { "" } else { "icon-sm" }} /> }}<span class={if *collapse { Some("btn-label") } else { None }}>{label}</span>{if !icon_name.is_empty() && *icon_end { <Icon name={icon_name} class={if icon_size.is_empty() { "" } else { "icon-sm" }} /> }}
   </button>
 }}

@@ -29,10 +29,13 @@ use crate::{
     },
 };
 
+mod starters;
+
 type Errors = BTreeMap<&'static str, String>;
 
 pub struct ListPage<'a> {
     pub slug: &'a str,
+    pub manages: bool,
     pub stacks: &'a [StackView],
     pub next: Option<Uuid>,
 }
@@ -54,6 +57,7 @@ pub struct DeployPage<'a> {
     pub form: &'a DeployForm,
     pub preview: Option<&'a Preview>,
     pub errors: &'a Errors,
+    pub starters: &'a [(&'static str, &'static str)],
     pub secret_names: Vec<(String, String)>,
 }
 
@@ -122,6 +126,9 @@ pub struct ActionForm {
 #[derive(Default)]
 pub struct DeployForm {
     csrf: String,
+    pub stack: String,
+    pub starter: String,
+    intent: String,
     pub file: String,
     pub service: String,
     pub refresh_template: String,
@@ -132,6 +139,29 @@ pub struct DeployForm {
 }
 
 impl DeployForm {
+    pub fn title(&self) -> &'static str {
+        if self.stack.is_empty() {
+            "Create stack"
+        } else {
+            "Edit stack"
+        }
+    }
+
+    fn target_version(&self) -> Result<Option<i64>, Errors> {
+        if self.stack.is_empty() {
+            return Ok(None);
+        }
+        let definition = grund_config::stack::parse(&self.file)
+            .map_err(|error| field_error("file", format!("{}: {}", error.field, error.problem)))?;
+        if definition.name != self.stack {
+            return Err(field_error(
+                "file",
+                "The stack name cannot change when editing.",
+            ));
+        }
+        expected(&self.expected_version).map_err(|message| field_error("expected_version", message))
+    }
+
     fn from_pairs(pairs: Vec<(String, String)>) -> Self {
         let mut form = Self::default();
         let mut keys = Vec::new();
@@ -139,6 +169,9 @@ impl DeployForm {
         for (name, value) in pairs {
             match name.as_str() {
                 "csrf" => form.csrf = value,
+                "stack" => form.stack = value,
+                "starter" => form.starter = value,
+                "intent" => form.intent = value,
                 "file" => form.file = value,
                 "service" => form.service = value,
                 "refresh_template" => form.refresh_template = value,
@@ -199,10 +232,7 @@ fn selected(value: &str) -> Option<&str> {
     (!value.is_empty()).then_some(value)
 }
 
-fn expected(value: &str, create: bool) -> Result<Option<i64>, &'static str> {
-    if value.is_empty() && create {
-        return Ok(None);
-    }
+fn expected(value: &str) -> Result<Option<i64>, &'static str> {
     value
         .parse::<i64>()
         .ok()
@@ -225,10 +255,10 @@ fn service_error(error: Error) -> Result<Errors, PageError> {
     match error {
         Error::Internal(error) => Err(PageError::from(error)),
         Error::Invalid(error) => Ok(field_error(
-            if error.field == "confirmed_removals" {
-                "confirmed_removals"
-            } else {
-                "file"
+            match error.field.as_str() {
+                "confirmed_removals" => "confirmed_removals",
+                "refresh_template" => "refresh_template",
+                _ => "file",
             },
             format!("{}: {}", error.field, error.problem),
         )),
@@ -354,6 +384,7 @@ pub async fn list(
         |_, _| {
             crate::templates::compiled::pages::stacks::render(&ListPage {
                 slug: &member.membership.slug,
+                manages: manages(&member.membership),
                 stacks: &stacks,
                 next,
             })
@@ -450,6 +481,12 @@ pub struct DeployQuery {
     pub stack: Option<String>,
     #[serde(default)]
     pub service: String,
+    #[serde(default = "default_starter")]
+    pub starter: String,
+}
+
+fn default_starter() -> String {
+    "basic".into()
 }
 
 pub async fn deploy_page(
@@ -459,6 +496,7 @@ pub async fn deploy_page(
 ) -> PageResult {
     let mut form = DeployForm {
         key: Uuid::new_v4().to_string(),
+        starter: query.starter,
         service: query.service,
         ..Default::default()
     };
@@ -481,7 +519,18 @@ pub async fn deploy_page(
             return not_found_page(&state, &member.browser);
         }
         form.file = stack.yaml;
+        form.stack = stack.name;
         form.expected_version = stack.version.to_string();
+    } else {
+        let schema_url = format!(
+            "{}{}",
+            state.config.public_origin().serialized,
+            grund_config::app::file::SCHEMA_PATH,
+        );
+        let Some(file) = starters::yaml(&form.starter, &schema_url) else {
+            return not_found_page(&state, &member.browser);
+        };
+        form.file = file;
     }
     render_deploy(
         &state,
@@ -515,7 +564,7 @@ async fn render_deploy(
         } else {
             StatusCode::UNPROCESSABLE_ENTITY
         },
-        "Deploy stack",
+        form.title(),
         "stack-deploy",
         None,
         None,
@@ -528,6 +577,7 @@ async fn render_deploy(
                 form,
                 preview,
                 errors,
+                starters: starters::OPTIONS,
                 secret_names: form
                     .secrets
                     .iter()
@@ -546,13 +596,25 @@ pub async fn preview(
     Path(slug): Path<String>,
     Form(pairs): Form<Vec<(String, String)>>,
 ) -> PageResult {
-    let mut form = DeployForm::from_pairs(pairs);
+    let form = DeployForm::from_pairs(pairs);
     if !browser.form_is_genuine(&form.csrf) {
         return forged(&state, &browser);
     }
     let (session, membership) = member_or_return!(&state, &browser, &uri, &slug);
     if !manages(&membership) {
         return Ok(StatusCode::FORBIDDEN.into_response());
+    }
+    if form.intent == "edit" {
+        return render_deploy(
+            &state,
+            &browser,
+            &session,
+            &membership,
+            &form,
+            None,
+            &Errors::new(),
+        )
+        .await;
     }
     match state
         .stacks()
@@ -566,10 +628,25 @@ pub async fn preview(
         .await
     {
         Ok(preview) => {
-            form.expected_version = if preview.expected_version == 0 {
-                String::new()
+            let errors = if form.stack.is_empty() {
+                if preview.expected_version > 0 {
+                    field_error(
+                        "file",
+                        "A stack already uses that name. Choose another name or edit the existing stack.",
+                    )
+                } else {
+                    Errors::new()
+                }
+            } else if preview.name != form.stack {
+                field_error("file", "The stack name cannot change when editing.")
             } else {
-                preview.expected_version.to_string()
+                match expected(&form.expected_version) {
+                    Ok(Some(version)) if version == preview.expected_version => Errors::new(),
+                    _ => field_error(
+                        "expected_version",
+                        "The stack changed. Reload it and preview the change again.",
+                    ),
+                }
             };
             render_deploy(
                 &state,
@@ -577,8 +654,8 @@ pub async fn preview(
                 &session,
                 &membership,
                 &form,
-                Some(&preview),
-                &Errors::new(),
+                errors.is_empty().then_some(&preview),
+                &errors,
             )
             .await
         }
@@ -613,8 +690,8 @@ pub async fn deploy(
     if !manages(&membership) {
         return Ok(StatusCode::FORBIDDEN.into_response());
     }
-    let result: Result<(), Errors> = match expected(&form.expected_version, true) {
-        Err(message) => Err(field_error("expected_version", message)),
+    let result: Result<(), Errors> = match form.target_version() {
+        Err(errors) => Err(errors),
         Ok(expected) => match key_error(&form.key) {
             Some(message) => Err(field_error("key", message)),
             None => match form.take_secrets() {
@@ -641,6 +718,10 @@ pub async fn deploy(
                 {
                     Ok(stack) => return Ok(redirect(&format!("/{slug}/stacks/{}", stack.name))),
                     Err(Error::NotFound) => return not_found_page(&state, &browser),
+                    Err(Error::Conflict) if form.stack.is_empty() => Err(field_error(
+                        "file",
+                        "A stack already uses that name. Choose another name or edit the existing stack.",
+                    )),
                     Err(error) => Err(service_error(error)?),
                 },
             },
@@ -698,7 +779,7 @@ pub async fn mutate(
         return not_found_page(&state, &browser);
     }
     let mut errors = Errors::new();
-    let version = match expected(&form.expected_version, false) {
+    let version = match expected(&form.expected_version) {
         Ok(version) => version,
         Err(message) => {
             errors.insert("expected_version", message.into());
@@ -802,10 +883,9 @@ mod tests {
     #[test]
     fn an_existing_stack_never_accepts_a_missing_or_nonpositive_version() {
         for value in ["", "0", "-1", "9223372036854775808"] {
-            assert!(expected(value, false).is_err());
+            assert!(expected(value).is_err());
         }
-        assert_eq!(expected("", true), Ok(None));
-        assert_eq!(expected("7", false), Ok(Some(7)));
+        assert_eq!(expected("7"), Ok(Some(7)));
     }
 
     #[test]
@@ -856,6 +936,7 @@ mod tests {
             form: &form,
             preview: None,
             errors: &errors,
+            starters: starters::OPTIONS,
             secret_names: vec![("web.PASSWORD".into(), String::new())],
         });
         assert!(html.contains("name: shop"));

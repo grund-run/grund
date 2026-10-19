@@ -31,6 +31,7 @@ mod setup;
 mod signup;
 mod social;
 mod stack_lifecycle;
+mod stack_pages;
 mod stack_templates;
 mod stacks;
 mod tokens;
