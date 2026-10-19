@@ -1,6 +1,7 @@
 use super::*;
 use crate::{Budget, Config, Network};
 use grund_agent::vm::{Artifact, VmRuntime, VmState};
+use std::sync::atomic::{AtomicU8, Ordering};
 
 fn scratch() -> PathBuf {
     let path = std::env::temp_dir().join(format!("grund-vm-replacement-{}", uuid::Uuid::now_v7()));
@@ -123,10 +124,17 @@ fn journal() -> Journal {
     }
 }
 fn committed_execution(runtime: &Firecracker) -> Journal {
+    // VM UIDs are process-global even when fixture data directories are separate.
+    static NEXT_ADDRESS: AtomicU8 = AtomicU8::new(128);
+    let address = NEXT_ADDRESS
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |address| {
+            address.checked_add(1)
+        })
+        .expect("test VM address space exhausted");
     runtime.reserve(&spec().id, &Shape::of(&spec())).unwrap();
     std::fs::create_dir_all(journal_dir(runtime, &spec().id)).unwrap();
     let dir = runtime.dir(&spec().id);
-    std::fs::write(dir.join("address"), "254").unwrap();
+    std::fs::write(dir.join("address"), address.to_string()).unwrap();
     std::fs::write(dir.join("rootfs.ext4"), b"confirmed candidate").unwrap();
     std::fs::write(dir.join("previous.ext4"), b"retained baseline").unwrap();
     let mut execution = journal();
@@ -141,7 +149,7 @@ fn committed_execution(runtime: &Firecracker) -> Journal {
     atomic_json(&dir.join("spec.json"), &Shape::of(&pinned)).unwrap();
     let mut previous = process_identity(std::process::id()).unwrap().unwrap();
     previous.boot_id = "a-prior-host-boot".into();
-    previous.uid = crate::jail::uid(254);
+    previous.uid = crate::jail::uid(address);
     let mut candidate = previous.clone();
     candidate.start_time_ticks += 1;
     execution.status.previous_process = Some(previous.clone());
@@ -983,7 +991,7 @@ async fn committed_finalization_does_not_require_the_exited_candidate_pid_to_be_
     let mut execution = committed_execution(&runtime);
     let mut child = tokio::process::Command::new("sleep")
         .arg("30")
-        .uid(crate::jail::uid(254))
+        .uid(execution.candidate_process.as_ref().unwrap().uid)
         .kill_on_drop(true)
         .spawn()
         .unwrap();
@@ -1023,7 +1031,7 @@ async fn committed_finalization_refuses_a_changed_vm_address_without_retiring_ei
     let runtime = runtime(&path);
     let mut execution = committed_execution(&runtime);
     let dir = runtime.dir(&spec().id);
-    std::fs::write(dir.join("address"), "253").unwrap();
+    std::fs::write(dir.join("address"), "1").unwrap();
     assert!(run(&runtime, &spec(), &mut execution).await.is_err());
     assert!(execution.committed);
     assert_eq!(execution.status.phase, Phase::Committed);
