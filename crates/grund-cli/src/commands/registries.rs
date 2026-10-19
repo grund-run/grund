@@ -1,4 +1,4 @@
-//! `grund registries`: logins to private container registries, over
+//! `grund registry`: logins to private container registries, over
 //! `grund.registry.v1.RegistryService`.
 
 use clap::Subcommand;
@@ -13,10 +13,10 @@ use crate::{
 
 const SERVICE: &str = "grund.registry.v1.RegistryService";
 
-/// `grund registries`.
+/// `grund registry`.
 pub type RegistriesCommand = Noun<RegistriesAction>;
 
-/// What `grund registries` does.
+/// What `grund registry` does.
 #[derive(Debug, Subcommand)]
 pub enum RegistriesAction {
     #[command(about = "The organisation's registry logins: hosts and usernames, never passwords")]
@@ -55,7 +55,7 @@ const LOGINS: &[(&str, &str)] = &[
     ("UPDATED", "/updatedAt"),
 ];
 
-/// Runs a `grund registries` verb.
+/// Runs a `grund registry` verb.
 pub async fn run(ctx: &Ctx, action: RegistriesAction) -> CliResult<Output> {
     let api = ctx.api()?;
     let org = ctx.org(&api).await?;

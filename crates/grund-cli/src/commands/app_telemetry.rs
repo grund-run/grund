@@ -534,7 +534,7 @@ mod tests {
 
         let parsed = crate::Standalone::try_parse_from([
             "grund",
-            "apps",
+            "app",
             "logs",
             "web",
             "--instance",
@@ -547,7 +547,7 @@ mod tests {
             "combined",
         ])
         .unwrap();
-        let crate::Command::Apps(command) = parsed.command else {
+        let crate::Command::App(command) = parsed.command else {
             panic!("expected apps")
         };
         assert_eq!(
@@ -561,14 +561,14 @@ mod tests {
         for value in ["0", "1001"] {
             assert!(
                 crate::Standalone::try_parse_from([
-                    "grund", "apps", "logs", "web", "--limit", value
+                    "grund", "app", "logs", "web", "--limit", value
                 ])
                 .is_err()
             );
         }
         assert!(
             crate::Standalone::try_parse_from([
-                "grund", "apps", "metrics", "web", "--range", "month"
+                "grund", "app", "metrics", "web", "--range", "month"
             ])
             .is_err()
         );

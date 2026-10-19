@@ -152,7 +152,7 @@ pub enum VolumesAction {
         dry_run: bool,
     },
     #[command(about = "Restore the SAME pending-deletion volume before its purge deadline")]
-    RestoreDeleted {
+    Undelete {
         app: String,
         volume: String,
         #[arg(long)]
@@ -172,7 +172,7 @@ pub enum VolumesAction {
     #[command(
         about = "Permanently purge an already deleted volume now, without waiting seven days"
     )]
-    PurgeNow {
+    Purge {
         app: String,
         volume: String,
         #[arg(long, required = true, help = "Audit reason (1-512 bytes)")]
@@ -219,7 +219,7 @@ async fn find(api: &Api, org: &str, app: &str, volume: &str) -> CliResult<Value>
         .cloned()
         .ok_or_else(|| {
             CliError::new(Code::NotFound, format!("no volume {volume} in {org}/{app}"))
-                .hint(format!("grund volumes list {app}"))
+                .hint(format!("grund volume list {app}"))
         })
 }
 
@@ -539,7 +539,7 @@ pub async fn run(ctx: &Ctx, action: VolumesAction) -> CliResult<Output> {
                 .await?;
             Ok(Output::fields(answer["volume"].clone()))
         }
-        VolumesAction::RestoreDeleted {
+        VolumesAction::Undelete {
             app,
             volume,
             dry_run: preview,
@@ -562,7 +562,7 @@ pub async fn run(ctx: &Ctx, action: VolumesAction) -> CliResult<Output> {
                 .await?;
             Ok(Output::fields(answer["volume"].clone()))
         }
-        VolumesAction::PurgeNow {
+        VolumesAction::Purge {
             app,
             volume,
             reason,

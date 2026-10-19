@@ -1,5 +1,5 @@
-//! `grund tokens`: personal access tokens, over
-//! `grund.token.v1.TokenService`. Needs a person's session (`grund login`):
+//! `grund auth token`: personal access tokens, over
+//! `grund.token.v1.TokenService`. Needs a person's session (`grund auth login`):
 //! a token never makes or revokes tokens.
 
 use clap::Subcommand;
@@ -14,10 +14,10 @@ use crate::{
 
 const SERVICE: &str = "grund.token.v1.TokenService";
 
-/// `grund tokens`.
+/// `grund auth token`.
 pub type TokensCommand = Noun<TokensAction>;
 
-/// What `grund tokens` does.
+/// What `grund auth token` does.
 #[derive(Debug, Subcommand)]
 pub enum TokensAction {
     #[command(
@@ -75,7 +75,7 @@ const TOKENS: &[(&str, &str)] = &[
     ("ID", "/tokenId"),
 ];
 
-/// Runs a `grund tokens` verb.
+/// Runs a `grund auth token` verb.
 pub async fn run(ctx: &Ctx, action: TokensAction) -> CliResult<Output> {
     let api = ctx.api()?;
     let org = ctx.org(&api).await?;
@@ -135,7 +135,7 @@ pub async fn run(ctx: &Ctx, action: TokensAction) -> CliResult<Output> {
                 (None, []) => {
                     return Err(
                         CliError::new(Code::NotFound, format!("no live token {token}"))
-                            .hint("grund tokens list"),
+                            .hint("grund auth token list"),
                     );
                 }
                 (None, _) => {

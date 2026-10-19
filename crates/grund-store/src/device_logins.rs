@@ -1,4 +1,4 @@
-//! Device logins (grund-docs design/cli.md §2): how `grund login` becomes
+//! Device logins (grund-docs design/cli.md §2): how `grund auth login` becomes
 //! a CLI session once a signed-in person approves it in the browser. Only
 //! the device code's SHA-256 is stored. Expiry is enforced by every read;
 //! the sweeper only reclaims space.

@@ -31,20 +31,16 @@ pub const CLIENT_NOUNS: &[&str] = &[
     "install",
     "uninstall",
     "update",
-    "login",
-    "logout",
-    "whoami",
-    "orgs",
-    "apps",
-    "stacks",
-    "volumes",
-    "machines",
-    "domains",
-    "members",
-    "invitations",
-    "notifications",
-    "tokens",
-    "registries",
+    "auth",
+    "org",
+    "app",
+    "stack",
+    "volume",
+    "machine",
+    "domain",
+    "member",
+    "notification",
+    "registry",
     "describe",
     "schema",
     "skill",
@@ -60,49 +56,37 @@ pub enum Command {
     Install(system::InstallArgs),
     #[command(about = "Stop and remove managed services, keeping configuration, identity and data")]
     Uninstall(system::UninstallArgs),
-    #[command(about = "Update this CLI, or back up and update the self-hosted server")]
+    #[command(
+        about = "Update grund on this computer, or back up and update the self-hosted server"
+    )]
     Update(system_update::UpdateArgs),
-    #[command(about = "Sign in to an instance: in the browser, or with a token from stdin")]
-    Login(auth::LoginArgs),
-    #[command(about = "Sign out of the instance and forget its credential")]
-    Logout(auth::LogoutArgs),
-    #[command(about = "Who the credential is, on which instance, and the default organisation")]
-    Whoami(auth::WhoamiArgs),
-    #[command(about = "Organisations: list, show, choose the default, create, rename, delete")]
-    Orgs(orgs::OrgsCommand),
-    #[command(
-        about = "Apps: list, status, logs, CPU and memory, deploy, change a setting, roll back, delete"
-    )]
-    Apps(Box<apps::AppsCommand>),
-    #[command(
-        about = "Stacks: deploy several services together, inspect readiness, restart, roll back, delete, restore"
-    )]
-    Stacks(Box<stacks::StacksCommand>),
-    #[command(about = "App-owned volumes: list, show, create, attach, detach, delete, purge")]
-    Volumes(volumes::VolumesCommand),
-    #[command(about = "Machines: list, add your own, labels, out of service, remove")]
-    Machines(machines::MachinesCommand),
-    #[command(about = "Custom domains: status, needed records, and setup actions")]
-    Domains(domains::DomainsCommand),
-    #[command(about = "Members of the organisation: list, invite, change a role, remove")]
-    Members(members::MembersCommand),
-    #[command(about = "Invitations not accepted yet: list, revoke")]
-    Invitations(members::InvitationsCommand),
-    #[command(about = "Account notifications: list, count unread, mark as read")]
-    Notifications(notifications::NotificationsCommand),
-    #[command(about = "Personal access tokens for CI and agents: list, create, revoke")]
-    Tokens(tokens::TokensCommand),
-    #[command(about = "Logins to private container registries: list, set, remove")]
-    Registries(registries::RegistriesCommand),
-    #[command(
-        about = "The whole command tree as JSON: arguments, types, defaults, examples, output schemas, error codes"
-    )]
+    #[command(about = "Sign in and access tokens")]
+    Auth(auth::AuthCommand),
+    #[command(about = "Organisations and the default one")]
+    Org(orgs::OrgsCommand),
+    #[command(about = "Deploy, inspect and change apps")]
+    App(Box<apps::AppsCommand>),
+    #[command(about = "Apps deployed together")]
+    Stack(Box<stacks::StacksCommand>),
+    #[command(about = "Storage that outlives a release")]
+    Volume(volumes::VolumesCommand),
+    #[command(about = "Your machines and grund machines")]
+    Machine(machines::MachinesCommand),
+    #[command(about = "Your own web addresses")]
+    Domain(domains::DomainsCommand),
+    #[command(about = "Who is in the organisation")]
+    Member(members::MembersCommand),
+    #[command(about = "What needs your attention")]
+    Notification(notifications::NotificationsCommand),
+    #[command(about = "Private image registry logins")]
+    Registry(registries::RegistriesCommand),
+    #[command(about = "Every command as JSON")]
     Describe(selfdesc::DescribeArgs),
-    #[command(about = "JSON Schemas: grund.yaml, a command's output, the error")]
+    #[command(about = "JSON Schemas for grund.yaml and output")]
     Schema(selfdesc::SchemaArgs),
-    #[command(about = "A SKILL.md for coding agents: print it, or install it")]
+    #[command(about = "SKILL.md for coding agents")]
     Skill(selfdesc::SkillCommand),
-    #[command(about = "Serve the client commands as MCP tools over stdio")]
+    #[command(about = "Serve commands as MCP tools")]
     Mcp(selfdesc::McpArgs),
 }
 
@@ -122,20 +106,16 @@ impl Command {
             Command::Install(a) => &a.global,
             Command::Uninstall(a) => &a.global,
             Command::Update(a) => &a.global,
-            Command::Login(a) => &a.global,
-            Command::Logout(a) => &a.global,
-            Command::Whoami(a) => &a.global,
-            Command::Orgs(c) => &c.global,
-            Command::Apps(c) => &c.global,
-            Command::Stacks(c) => &c.global,
-            Command::Volumes(c) => &c.global,
-            Command::Machines(c) => &c.global,
-            Command::Domains(c) => &c.global,
-            Command::Members(c) => &c.global,
-            Command::Invitations(c) => &c.global,
-            Command::Notifications(c) => &c.global,
-            Command::Tokens(c) => &c.global,
-            Command::Registries(c) => &c.global,
+            Command::Auth(c) => &c.global,
+            Command::Org(c) => &c.global,
+            Command::App(c) => &c.global,
+            Command::Stack(c) => &c.global,
+            Command::Volume(c) => &c.global,
+            Command::Machine(c) => &c.global,
+            Command::Domain(c) => &c.global,
+            Command::Member(c) => &c.global,
+            Command::Notification(c) => &c.global,
+            Command::Registry(c) => &c.global,
             Command::Describe(a) => &a.global,
             Command::Schema(a) => &a.global,
             Command::Skill(c) => &c.global,
@@ -156,11 +136,14 @@ pub async fn execute(
         Command::Install(args) => system::install(ctx, args).await?,
         Command::Uninstall(args) => system::uninstall(ctx, args).await?,
         Command::Update(args) => system_update::update(ctx, args).await?,
-        Command::Login(args) => auth::login(ctx, args, revision).await?,
-        Command::Logout(args) => auth::logout(ctx, args).await?,
-        Command::Whoami(args) => auth::whoami(ctx, args).await?,
-        Command::Orgs(command) => orgs::run(ctx, command.action).await?,
-        Command::Apps(command) => match command.action {
+        Command::Auth(command) => match command.action {
+            auth::AuthAction::Login(args) => auth::login(ctx, args, revision).await?,
+            auth::AuthAction::Logout => auth::logout(ctx).await?,
+            auth::AuthAction::Status => auth::status(ctx).await?,
+            auth::AuthAction::Token { action } => tokens::run(ctx, action).await?,
+        },
+        Command::Org(command) => orgs::run(ctx, command.action).await?,
+        Command::App(command) => match command.action {
             apps::AppsAction::Logs(args) if args.options.follow => {
                 let api = ctx.api()?;
                 let org = ctx.org(&api).await?;
@@ -169,7 +152,7 @@ pub async fn execute(
             }
             action => apps::run(ctx, action).await?,
         },
-        Command::Stacks(command) => match command.action {
+        Command::Stack(command) => match command.action {
             stacks::StacksAction::Logs {
                 stack,
                 service,
@@ -180,14 +163,12 @@ pub async fn execute(
             }
             action => stacks::run(ctx, action).await?,
         },
-        Command::Volumes(command) => volumes::run(ctx, command.action).await?,
-        Command::Machines(command) => machines::run(ctx, command.action).await?,
-        Command::Domains(command) => domains::run(ctx, command).await?,
-        Command::Members(command) => members::run_members(ctx, command.action).await?,
-        Command::Invitations(command) => members::run_invitations(ctx, command.action).await?,
-        Command::Notifications(command) => notifications::run(ctx, command).await?,
-        Command::Tokens(command) => tokens::run(ctx, command.action).await?,
-        Command::Registries(command) => registries::run(ctx, command.action).await?,
+        Command::Volume(command) => volumes::run(ctx, command.action).await?,
+        Command::Machine(command) => machines::run(ctx, command.action).await?,
+        Command::Domain(command) => domains::run(ctx, command).await?,
+        Command::Member(command) => members::run_members(ctx, command.action).await?,
+        Command::Notification(command) => notifications::run(ctx, command).await?,
+        Command::Registry(command) => registries::run(ctx, command.action).await?,
         Command::Describe(args) => selfdesc::describe(root, args)?,
         Command::Schema(args) => selfdesc::schema(root, args)?,
         Command::Skill(command) => return selfdesc::skill(ctx, root, command),

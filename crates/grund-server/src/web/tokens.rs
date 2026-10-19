@@ -159,7 +159,7 @@ async fn tokens_view(
     let shows_secret = form.minted.is_some();
     let minted = form.minted.map(|m| {
         let example = format!(
-            "GRUND_INSTANCE={origin} GRUND_TOKEN=<the token> grund apps deploy APP -f grund.yaml --json"
+            "GRUND_INSTANCE={origin} GRUND_TOKEN=<the token> grund app deploy APP -f grund.yaml --json"
         );
         MintedToken {
             token: m.token,

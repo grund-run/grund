@@ -46,7 +46,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 #[command(
     name = "grund",
     version = grund_cli::VERSION,
-    about = "grund: from zero to production, on your own premises",
+    about = "Deploy and run apps on machines you own.",
     args = grund_cli::context::Global::target_arguments()
 )]
 struct Cli {
@@ -97,15 +97,20 @@ struct ContainerLogsArgs {
 
 #[derive(Subcommand)]
 enum Command {
-    #[command(about = "Run the control plane: dashboard, API and background work")]
+    #[command(
+        hide = true,
+        about = "Run the control plane: dashboard, API and background work"
+    )]
     Serve(Box<grund_server::config::ServeConfig>),
-    #[command(about = "Apply database migrations and exit")]
+    #[command(hide = true, about = "Apply database migrations and exit")]
     Migrate(grund_server::config::DatabaseArgs),
     #[command(
+        hide = true,
         about = "Generate the instance secret key and database password, keeping any that exist"
     )]
     Init(grund_server::secrets::InitArgs),
     #[command(
+        hide = true,
         name = "setup-link",
         about = "Print a one-time link that creates this instance's owner account. Run it where grund serve runs, with the same settings, before any account exists"
     )]
@@ -115,38 +120,54 @@ enum Command {
     #[command(hide = true)]
     PrepareLocalMachine(PrepareLocalMachineArgs),
     #[command(
+        hide = true,
         about = "Check this instance or machine without changing it: each problem and what to do. Exits 1 when a check fails"
     )]
     Doctor(DoctorCommand),
-    #[command(about = "Exit 0 when the instance at --address answers 200 on --path, 1 otherwise")]
+    #[command(
+        hide = true,
+        about = "Exit 0 when the instance at --address answers 200 on --path, 1 otherwise"
+    )]
     Probe(probe::ProbeArgs),
-    #[command(about = "Register this machine with a grund instance, using a one-time setup code")]
+    #[command(
+        hide = true,
+        about = "Register this machine with a grund instance, using a one-time setup code"
+    )]
     Join(grund_agent::join::JoinArgs),
-    #[command(about = "Keep this machine connected to its instance and run what it asks for")]
+    #[command(
+        hide = true,
+        about = "Keep this machine connected to its instance and run what it asks for"
+    )]
     Agent(AgentCommand),
     #[command(hide = true)]
     AgentSupervisor(grund_agent::supervisor::SupervisorArgs),
     #[command(
+        hide = true,
         about = "Inspect, pause or resume this machine's explicitly enabled update following"
     )]
     MachineFollow(grund_agent::supervisor::FollowArgs),
     #[command(
+        hide = true,
         about = "Inspect, pause or resume machine updates using the instance's local database"
     )]
     AgentUpdates(AgentUpdatesCommand),
     #[command(
+        hide = true,
         about = "Run a relay for an instance's machines: iroh's relay and QUIC address discovery, admitting only the keys the instance does"
     )]
     Relay(grund_server::relay_command::RelayCommand),
     #[command(
+        hide = true,
         about = "Mint a one-time enrollment token for a grund relay, revoke a relay, or list them"
     )]
     Relays(grund_server::relays_command::RelaysCommand),
     #[command(
+        hide = true,
         about = "Run an entry edge: terminate TLS for app addresses and hand each connection to a machine that runs the app"
     )]
     Edge(grund_server::edge::EdgeCommand),
     #[command(
+        hide = true,
         about = "Mint a one-time enrollment token for a grund edge, revoke an edge, or list them"
     )]
     Edges(grund_server::relays_command::EdgesCommand),
@@ -493,9 +514,20 @@ impl Command {
     }
 }
 
-/// The public command tree for a binary that adds optional commands.
+/// The public command tree for a binary that adds optional commands, with
+/// grouped help.
 pub fn command() -> clap::Command {
-    Cli::command()
+    let root = [
+        "log_format",
+        "log",
+        "otel_exporter_otlp_endpoint",
+        "otel_service_name",
+    ]
+    .into_iter()
+    .fold(Cli::command(), |root, id| {
+        root.mut_arg(id, |arg| arg.hide(true))
+    });
+    grund_cli::help::with_grouped_help(root)
 }
 
 fn identify(revision: &'static str, built: &'static str) {
@@ -559,7 +591,10 @@ pub async fn run_with_extensions(
         }
         None => {}
     }
-    let cli = match Cli::try_parse_from(&args) {
+    let parsed = command()
+        .try_get_matches_from(&args)
+        .and_then(|matches| <Cli as clap::FromArgMatches>::from_arg_matches(&matches));
+    let cli = match parsed {
         Ok(cli) => cli,
         Err(error) => match grund_cli::usage_error(&error, &args) {
             Some(status) => std::process::exit(status),
@@ -568,8 +603,8 @@ pub async fn run_with_extensions(
     };
     match cli.command.role() {
         Ok(role) => run_role(role, &cli.telemetry, extensions_for).await,
-        Err(command) => {
-            let status = grund_cli::run(*command, Cli::command(), revision).await;
+        Err(client) => {
+            let status = grund_cli::run(*client, command(), revision).await;
             std::process::exit(status);
         }
     }
@@ -755,7 +790,7 @@ mod tests {
             cli.command.role(),
             Ok(Role::Agent(AgentRole::Doctor(_)))
         ));
-        let cli = Cli::try_parse_from(["grund", "apps", "list"]).unwrap();
+        let cli = Cli::try_parse_from(["grund", "app", "list"]).unwrap();
         assert!(cli.command.role().is_err());
     }
 

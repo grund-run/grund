@@ -1,4 +1,4 @@
-//! `grund orgs`: the organisations the account is in, and the default one.
+//! `grund org`: the organisations the account is in, and the default one.
 
 use clap::Subcommand;
 use serde_json::json;
@@ -10,16 +10,16 @@ use crate::{
     output::Output,
 };
 
-/// `grund orgs`.
+/// `grund org`.
 pub type OrgsCommand = Noun<OrgsAction>;
 
-/// What `grund orgs` does.
+/// What `grund org` does.
 #[derive(Debug, Subcommand)]
 pub enum OrgsAction {
     #[command(about = "The account's organisations, and which is the default")]
     List,
     #[command(about = "One organisation: its slug, when it was made, a pending deletion")]
-    Get {
+    Show {
         #[arg(value_name = "SLUG", help = "Default: the default organisation")]
         slug: Option<String>,
     },
@@ -63,7 +63,7 @@ const ORGS: &[(&str, &str)] = &[
     ("DELETION", "/deletionRequestedAt"),
 ];
 
-/// Runs a `grund orgs` verb.
+/// Runs a `grund org` verb.
 pub async fn run(ctx: &Ctx, action: OrgsAction) -> CliResult<Output> {
     let api = ctx.api()?;
     let service = "grund.organisation.v1.OrganisationService";
@@ -77,7 +77,7 @@ pub async fn run(ctx: &Ctx, action: OrgsAction) -> CliResult<Output> {
             }
             Ok(Output::table(answer, "/organisations", ORGS))
         }
-        OrgsAction::Get { slug } => {
+        OrgsAction::Show { slug } => {
             let slug = match slug {
                 Some(slug) => slug,
                 None => ctx.org(&api).await?,

@@ -40,7 +40,7 @@ pub fn tools(root: &clap::Command) -> Vec<Tool> {
         .filter(|(path, _, _)| {
             describe::is_client(path)
                 && !path.starts_with("operator ")
-                && !matches!(path.as_str(), "login" | "logout" | "mcp")
+                && !matches!(path.as_str(), "auth login" | "auth logout" | "mcp")
                 && !path.starts_with("skill")
         })
         .filter_map(|(path, command, args)| {
@@ -53,7 +53,7 @@ pub fn tools(root: &clap::Command) -> Vec<Tool> {
             if !leaf.output.is_empty() {
                 description.push_str(&format!(" Answers {} as JSON.", leaf.output));
             }
-            if path == "apps logs" {
+            if path == "app logs" {
                 description.push_str(" This tool reads one bounded page; live follow is available only in the terminal command.");
             }
             if leaf.destructive {
@@ -65,7 +65,7 @@ pub fn tools(root: &clap::Command) -> Vec<Tool> {
                 description,
                 args: args
                     .into_iter()
-                    .filter(|a| leaf.path != "apps logs" || a.get_id() != "follow")
+                    .filter(|a| leaf.path != "app logs" || a.get_id() != "follow")
                     .filter(|a| {
                         !matches!(
                             a.get_id().as_str(),
@@ -280,7 +280,7 @@ pub async fn handle(
                 "protocolVersion": version,
                 "capabilities": {"tools": {"listChanged": false}},
                 "serverInfo": {"name": "grund", "version": crate::VERSION},
-                "instructions": "Each tool is a grund CLI command run with --output json against the instance and credential of this process (grund login, or GRUND_INSTANCE and GRUND_TOKEN). An error result carries {error:{code,message,hint,field,reason}}.",
+                "instructions": "Each tool is a grund CLI command run with --output json against the instance and credential of this process (grund auth login, or GRUND_INSTANCE and GRUND_TOKEN). An error result carries {error:{code,message,hint,field,reason}}.",
             })
         }
         "ping" => json!({}),

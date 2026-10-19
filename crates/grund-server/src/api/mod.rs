@@ -9,7 +9,7 @@
 //! ```
 //!
 //! A caller is the dashboard, same-origin, with its session cookie; the CLI
-//! with a session from `grund login` (`Authorization: Bearer grund_cli_…`,
+//! with a session from `grund auth login` (`Authorization: Bearer grund_cli_…`,
 //! grund-docs design/cli.md §2), which acts as the person exactly as their
 //! dashboard session does; or CI, scripts and agents with a personal access
 //! token (`Authorization: Bearer grund_pat_…`, design/auth.md §6). A
@@ -127,7 +127,7 @@ pub struct CapacityCaller;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Requirement {
     /// Any signed-in person, acting on their own account: a dashboard
-    /// session, or a CLI session from `grund login`. A token is refused.
+    /// session, or a CLI session from `grund auth login`. A token is refused.
     Session,
     /// A signed-in person, or a personal access token of any scope acting
     /// as the account that made it, within the token's organisation only.
@@ -137,7 +137,7 @@ pub enum Requirement {
     /// only. A `deploy` token is refused with permission_denied.
     SessionOrFullToken,
     /// No credential at all: the handler rate-limits by client address
-    /// (the device login of `grund login`). Served on routes without the
+    /// (the device login of `grund auth login`). Served on routes without the
     /// session and same-origin checks.
     Public,
     /// No session: a one-time token in the request is the credential, checked
@@ -1244,7 +1244,7 @@ pub async fn authenticate(
                 Ok(Some(session)) => session,
                 Ok(None) => {
                     return refuse(ConnectError::unauthenticated(
-                        "the session is unknown, revoked or expired; run grund login",
+                        "the session is unknown, revoked or expired; run grund auth login",
                     ));
                 }
                 Err(error) => {
@@ -1362,7 +1362,7 @@ pub fn authorized_with_extensions(
         Some(Requirement::Session) if extensions.get::<Caller>().is_some() => Ok(()),
         Some(Requirement::Session) if extensions.get::<TokenCaller>().is_some() => {
             Err(ConnectError::permission_denied(
-                "an API token cannot call this; sign in with the dashboard or grund login",
+                "an API token cannot call this; sign in with the dashboard or grund auth login",
             ))
         }
         Some(Requirement::Session) => Err(ConnectError::unauthenticated("sign in first")),

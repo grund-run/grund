@@ -1,6 +1,6 @@
 //! Sessions: an opaque token, only its SHA-256 in PostgreSQL. A browser
 //! session's token is the dashboard's cookie, rotated at every sign-in. A
-//! CLI session's (`grund login`, design/cli.md §2) is `grund_cli_` plus 43
+//! CLI session's (`grund auth login`, design/cli.md §2) is `grund_cli_` plus 43
 //! base62 characters, presented as `Authorization: Bearer`. Each kind is
 //! found only the way it is presented.
 

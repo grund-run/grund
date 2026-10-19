@@ -20,7 +20,7 @@ curl -fsSLo install-grund.sh https://grund.sh/install
 cat install-grund.sh
 sh install-grund.sh
 grund --version
-grund login                           # hosted dashboard at https://app.grund.sh
+grund auth login                           # hosted dashboard at https://app.grund.sh
 ```
 
 It verifies SHA-256 before replacing `grund` in `~/.local/bin`, or
@@ -32,7 +32,7 @@ checksum mismatches leave the installed binary alone. Checksums rely on the
 public registry's HTTPS; releases are not signed. macOS downloads are not
 published yet.
 
-For your own instance, `grund login https://grund.example.com` selects it.
+For your own instance, `grund auth login https://grund.example.com` selects it.
 An explicit address, `--instance` or `GRUND_INSTANCE` wins over the last
 signed-in instance; only a fresh login falls back to the hosted dashboard.
 
@@ -118,7 +118,7 @@ sudo "$(command -v grund)" install --domain grund.example.com
 sudo docker compose --project-directory /opt/grund exec grund /grund setup-link
 # Open the link, create the owner, and get a setup code on Machines.
 sudo "$(command -v grund)" install --domain grund.example.com --code CODE
-grund login https://grund.example.com
+grund auth login https://grund.example.com
 ```
 
 `grund install --url https://grund.example.com --code CODE` installs only
@@ -197,7 +197,7 @@ A machine on another host needs HTTPS, below.
 Machines shows each machine's app and instance counts and reserved CPU, memory
 and disk against its allocatable capacity. Open one of your own machines to see
 its placed instances and volumes, linked to their apps, its software and last
-contact. `grund machines list` and `grund machines get MACHINE` expose the same
+contact. `grund machine list` and `grund machine show MACHINE` expose the same
 data. The runtime reserves 256 MiB and 250m CPU before placing apps. Older raw
 capacity reports are normalized by the server; updated agents report the net
 capacity explicitly.
@@ -417,7 +417,7 @@ is queued or sent. See [.env.example](.env.example).
   `grund.organisation.v1.OrganisationService` lists, creates, renames and
   deletes organisations and manages their members and invitations, with the
   same rules as the pages. It takes the dashboard's session cookie, from this
-  origin only, a `grund login` session (`Authorization: Bearer
+  origin only, a `grund auth login` session (`Authorization: Bearer
   grund_cli_…`), or a personal access token (see "Deploy from CI" below).
   `grund.token.v1`, `grund.registry.v1` and `grund.login.v1` (the CLI's
   device login, approved on `/device`) are in `proto/` beside the rest.
@@ -450,22 +450,22 @@ curl -s -X POST -H 'Content-Type: application/json' -d '{}' \
 `grund` does everything the dashboard does, over the same API:
 
 ```bash
-grund login grund.example.com          # approve in the browser; a session, revocable on Sessions
-grund apps deploy -f grund.yaml --wait # every app the file declares; makes missing apps
-grund apps status shop --json          # health, copies ready of wanted, the rollout
-grund apps logs shop --follow --stream stderr
-grund apps metrics shop --range hour
-grund apps set shop image ghcr.io/acme/shop:2.1 --dry-run
-grund apps set shop copies 3
-grund apps rollback shop 4 --wait
-grund machines add web-2               # prints the command to run on the new machine
-grund domains add shop.example.net
-grund domains check shop.example.net   # check setup and queue an eligible certificate retry
-grund domains add example.com
-grund domains verify example.com       # after adding the printed ownership TXT
-grund domains app-domain example.com   # existing and future apps get <app>.example.com
-grund domains subdomain shop storefront
-grund tokens create --name ci --scope deploy --apps shop --json
+grund auth login grund.example.com          # approve in the browser; a session, revocable on Sessions
+grund app deploy -f grund.yaml --wait # every app the file declares; makes missing apps
+grund app status shop --json          # health, copies ready of wanted, the rollout
+grund app logs shop --follow --stream stderr
+grund app metrics shop --range hour
+grund app set shop image ghcr.io/acme/shop:2.1 --dry-run
+grund app set shop copies 3
+grund app rollback shop 4 --wait
+grund machine add web-2               # prints the command to run on the new machine
+grund domain add shop.example.net
+grund domain check shop.example.net   # check setup and queue an eligible certificate retry
+grund domain add example.com
+grund domain verify example.com       # after adding the printed ownership TXT
+grund domain app-domain example.com   # existing and future apps get <app>.example.com
+grund domain subdomain shop storefront
+grund auth token create --name ci --scope deploy --apps shop --json
 ```
 
 Logs support literal `--search` and `--since` / `--until` collection times.
@@ -473,17 +473,19 @@ Both commands accept `--instance-id` and `--release` filters; global `--instance
 selects the server URL instead. `logs --follow --json` emits one response per
 line and stops with Ctrl-C. `--help` lists the time formats and query limits.
 
-On grund's hosted service, `grund machines offers` shows the available sizes
-and your whole-VM allowance; `grund machines add NAME --hosted --size SIZE
+On grund's hosted service, `grund machine offers` shows the available sizes
+and your whole-VM allowance; `grund machine add NAME --hosted --size SIZE
 --region REGION` saves a claim, including when capacity is waiting. Use
-`grund machines remove NAME --yes` to request its safe return. These commands
+`grund machine remove NAME --yes` to request its safe return. These commands
 use a public interface with a private provider implementation. A self-hosted
 server without that service reports that hosted machines are only available
-on grund's hosted service, rather than a raw RPC error. Ordinary `machines
+on grund's hosted service, rather than a raw RPC error. Ordinary `machine
 add` still enrolls your own machine and never rents one.
 
-- Nouns: `login`, `logout`, `whoami`, `orgs`, `apps`, `stacks`, `volumes`,
-  `machines`, `domains`, `members`, `invitations`, `tokens`, `registries`.
+- Nouns, singular, each with the same verbs (`list`, `show`, `create`,
+  `delete`, `set`; `add`/`remove` to attach what exists elsewhere): `auth`,
+  `org`, `app`, `stack`, `volume`, `machine`, `domain`, `member`,
+  `notification`, `registry`. `grund --help` groups them.
 - `--json` (or `-o json`, or `GRUND_OUTPUT=json`) on every command prints one
   JSON document: the protobuf JSON of the API's answer, or of a
   `grund.cli.v1` message (`proto/grund/cli/v1/cli.proto`). A failure prints
@@ -492,21 +494,21 @@ add` still enrolls your own machine and never rents one.
   permission denied, 5 not found, 6 conflict, 7 invalid, 8 unavailable, 9
   rollout failed.
 - Nothing asks without a terminal: destructive commands need `--yes` then.
-  Every command that changes the instance takes `--dry-run` except `domains
-  verify` (ownership lookup) and `domains check` (an immediate setup check).
-  `apps deploy --dry-run` resolves its image and checks the proposed change
-  without writing it; `apps update --dry-run` only previews the cached selection.
-  `apps deploy --dry-run` also previews a missing app without creating it
+  Every command that changes the instance takes `--dry-run` except `domain
+  verify` (ownership lookup) and `domain check` (an immediate setup check).
+  `app deploy --dry-run` resolves its image and checks the proposed change
+  without writing it; `app update --dry-run` only previews the cached selection.
+  `app deploy --dry-run` also previews a missing app without creating it
   and reports structured desired-versus-live changes and the observed
-  `expectedVersion`; `apps deploy shop --expected-version N` refuses a
+  `expectedVersion`; `app deploy shop --expected-version N` refuses a
   stale single-app release. The API exposes the same through
   `AppService.PreviewDeploy`, `GetApp.version` and
   `DeployRequest.expected_version`.
 - `--instance URL` and `--org SLUG` work before or after the noun; explicit
   values override `GRUND_INSTANCE` and `GRUND_ORG`. For CI use `GRUND_TOKEN`
-  (a personal access token); otherwise `grund login` writes
+  (a personal access token); otherwise `grund auth login` writes
   `~/.config/grund/credentials.yaml` (mode 0600; a file others can read is
-  refused). Organisation fallback remains `grund orgs use`, then the token's
+  refused). Organisation fallback remains `grund org use`, then the token's
   organisation, then your only one.
 - For agents: `grund describe --json` is the whole command tree with types,
   defaults, examples, output schemas and error codes, generated from the
@@ -524,9 +526,9 @@ cached status; an app's Settings has explicit Check and Update actions.
 The same operations are in the CLI:
 
 ```sh
-grund apps updates shop --check
-grund apps update shop --dry-run
-grund apps update shop --wait
+grund app updates shop --check
+grund app update shop --dry-run
+grund app update shop --wait
 ```
 
 A check compares the app's tag with its running image and may show a labelled
@@ -540,8 +542,8 @@ or automatic app updates. Back up app data first: image rollback is not data res
 Domains and an app's Settings show one current status and only the DNS records
 still needed, with copy buttons. **Details** holds the setup observations,
 check and retry times, and failed-attempt count; it opens on failure. Move,
-Unbind and Remove are in each domain's actions menu. `grund domains` shows the
-same concise status; use `grund domains --details` for diagnostics.
+Unbind and Remove are in each domain's actions menu. `grund domain` shows the
+same concise status; use `grund domain --details` for diagnostics.
 Setup pages refresh while waiting and stop when HTTPS is working.
 **Check now** queues a fresh check without bypassing a certificate authority's
 retry deadline.
@@ -550,7 +552,7 @@ For organisation app addresses, verify a parent such as `example.com`, then
 choose **Use for app addresses** in its actions menu on Domains. Point
 `*.example.com` at the configured edge shown for an address still awaiting DNS.
 Existing and future apps get `<app>.example.com`; an owner or admin can choose another single-label name
-in app Settings or with `grund domains subdomain`. Collisions are refused,
+in app Settings or with `grund domain subdomain`. Collisions are refused,
 and unbinding is an opt-out until explicitly restored. DNS control labels
 are reserved; `api`, `www` and `admin` remain usable on your own parent.
 Each assigned hostname uses its own HTTP-01 certificate. Wildcard DNS does
@@ -562,10 +564,10 @@ CI runs the CLI with a personal access token:
 
 ```bash
 GRUND_INSTANCE=https://grund.example.com GRUND_TOKEN=$GRUND_TOKEN \
-  grund apps deploy shop -f grund.yaml --note "$CI_COMMIT_SHA" --wait --json
+  grund app deploy shop -f grund.yaml --note "$CI_COMMIT_SHA" --wait --json
 ```
 
-1. Under Organisation, API tokens (or `grund tokens create`), make a token.
+1. Under Organisation, API tokens (or `grund auth token create`), make a token.
    It is shown once: keep it in your CI's secrets, here as `GRUND_TOKEN`. It
    starts with `grund_pat_` so secret scanners can find a leaked one. grund
    stores only its SHA-256.
@@ -649,7 +651,7 @@ A stack owns several services on one existing capable machine or VM; it
 creates neither a VM nor a shared localhost namespace. Private services remain
 organisation-private, not isolated from other stacks. Agents must support stacks.
 `placement.kind: hosted` is refused; stacks cannot request hosted machine rental.
-Use top-level `stack` with `name` and `services` instead of `apps`: at most ten
+Use top-level `stack` with `name` and `services` instead of `app`: at most ten
 services and 1 MiB of raw YAML per file. The same [file schema](schema/grund.json) describes both.
 Services use app fields or a catalogue `template`. A whole env value such as
 `${{ database.url }}`, with `depends_on: [database]`, delivers an encrypted
@@ -673,11 +675,11 @@ stack files do not contain their values. These S3 key/region outputs are
 refused for other producers.
 
 ```sh
-grund stacks deploy -f grund.yaml --dry-run
-grund stacks deploy -f grund.yaml --wait
-grund stacks restart shop --wait
-grund stacks logs shop --service web --follow
-grund stacks metrics shop --service database --range hour
+grund stack deploy -f grund.yaml --dry-run
+grund stack deploy -f grund.yaml --wait
+grund stack restart shop --wait
+grund stack logs shop --service web --follow
+grund stack metrics shop --service database --range hour
 ```
 
 `--service web` updates only that service and refuses hidden sibling changes.
@@ -686,7 +688,7 @@ never purges data. Stack deletion drains and fences writers before the existing
 [data-recovery window](#app-volumes-on-your-own-machines) begins. **A singleton
 stateful restart briefly interrupts that service.** Rollback pins images and
 secret versions, not database contents. Change backing apps through their stack;
-`grund stacks --help` lists lifecycle commands and protected secret input.
+`grund stack --help` lists lifecycle commands and protected secret input.
 
 Strict rolling services require positive `release.max_surge`; there is no stop-first fallback.
 A failed first deployment retains its owned data without starting a deletion deadline.
@@ -772,8 +774,8 @@ immediately; the owner can restore the same identity and data before the
 configured purge deadline (seven days by default; `GRUND_VOLUME_DELETE_WINDOW`
 in hours). Deleted apps remain visible to owners on Apps. After the deadline,
 grund requests physical erasure; an offline machine may not acknowledge it
-until it reconnects. Use `grund apps list-restorable` and `grund apps restore
-photos`, or `grund volumes restore-deleted photos data` for an individually
+until it reconnects. Use `grund app deleted` and `grund app restore
+photos`, or `grund volume undelete photos data` for an individually
 deleted volume. An existing `source` binds a customer-owned host directory,
 only if the machine owner's local agent policy allows it. grund never erases
 that host directory. Storage uses the host filesystem and its existing
@@ -789,7 +791,7 @@ with that name still gives `name_taken`; another organisation can use the same
 name.
 
 An organisation owner or admin can end recovery early for a volume already
-pending deletion, including one on a deleted app, with `grund volumes purge-now
+pending deletion, including one on a deleted app, with `grund volume purge
 photos data --reason 'owned synthetic app cleanup' --yes` (or ConnectRPC
 `PurgeVolumeNow` with its current `expectedVersion`). This irreversible request
 records the actor, reason and time and starts the same physical-erasure workflow
@@ -812,9 +814,9 @@ appears in Settings → Volumes. The agent encrypts backups with restic; the
 destination credentials and repository password are sealed in grund, and the
 repository password can be exported for independent recovery. Restore creates
 a *new* managed volume on a chosen own machine, never overwriting the source.
-Use `grund volumes list photos`, `grund volumes show photos data`,
-`grund volumes backups photos data status`, `grund volumes backups photos data
-points`, or `grund volumes restore --help`. On deletion grund retains its
+Use `grund volume list photos`, `grund volume show photos data`,
+`grund volume backups photos data status`, `grund volume backups photos data
+points`, or `grund volume restore --help`. On deletion grund retains its
 backup credentials and point catalog until the purge deadline so a restored
 app can resume backup; it removes them after purge, not the external S3 data.
 Remove obsolete S3 data yourself. The backup does not include grund's own

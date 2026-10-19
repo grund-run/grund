@@ -81,10 +81,10 @@ impl Code {
                 "A destructive command needs --yes when nobody can be asked."
             }
             Code::OrganisationRequired => {
-                "More than one organisation could be meant: pass --org or run grund orgs use."
+                "More than one organisation could be meant: pass --org or run grund org use."
             }
             Code::NotSignedIn => {
-                "No credential: run grund login, or set GRUND_TOKEN and GRUND_INSTANCE."
+                "No credential: run grund auth login, or set GRUND_TOKEN and GRUND_INSTANCE."
             }
             Code::Unauthenticated => {
                 "The instance refused the credential: unknown, revoked or expired."
@@ -227,10 +227,10 @@ mod tests {
 
     #[test]
     fn an_error_prints_only_the_fields_it_has() {
-        let error = CliError::new(Code::NotFound, "no such app").hint("grund apps list");
+        let error = CliError::new(Code::NotFound, "no such app").hint("grund app list");
         assert_eq!(
             error.json(),
-            json!({"error": {"code": "not_found", "message": "no such app", "hint": "grund apps list"}})
+            json!({"error": {"code": "not_found", "message": "no such app", "hint": "grund app list"}})
         );
     }
 }

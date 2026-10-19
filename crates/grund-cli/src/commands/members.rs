@@ -1,4 +1,4 @@
-//! `grund members` and `grund invitations`: who is in the organisation,
+//! `grund member`: who is in the organisation, and who is invited,
 //! over `grund.organisation.v1.OrganisationService`. A member is named by
 //! username, email or account id; an invitation by email or id.
 
@@ -15,13 +15,10 @@ use crate::{
 
 const SERVICE: &str = "grund.organisation.v1.OrganisationService";
 
-/// `grund members`.
+/// `grund member`.
 pub type MembersCommand = Noun<MembersAction>;
 
-/// `grund invitations`.
-pub type InvitationsCommand = Noun<InvitationsAction>;
-
-/// What `grund members` does.
+/// What `grund member` does.
 #[derive(Debug, Subcommand)]
 pub enum MembersAction {
     #[command(about = "The organisation's members and their roles")]
@@ -53,13 +50,8 @@ pub enum MembersAction {
         #[arg(long, help = "Show the request instead of sending it")]
         dry_run: bool,
     },
-}
-
-/// What `grund invitations` does.
-#[derive(Debug, Subcommand)]
-pub enum InvitationsAction {
     #[command(about = "Invitations not accepted yet")]
-    List,
+    Invitations,
     #[command(about = "Revoke an invitation; its link stops working")]
     Revoke {
         #[arg(value_name = "INVITATION", help = "The email it went to, or its id")]
@@ -108,15 +100,33 @@ async fn member(api: &Api, org: &str, who: &str) -> CliResult<Value> {
         .cloned()
         .ok_or_else(|| {
             CliError::new(Code::NotFound, format!("no member {who} in {org}"))
-                .hint("grund members list")
+                .hint("grund member list")
         })
 }
 
-/// Runs a `grund members` verb.
+/// Runs a `grund member` verb.
 pub async fn run_members(ctx: &Ctx, action: MembersAction) -> CliResult<Output> {
     let api = ctx.api()?;
     let org = ctx.org(&api).await?;
     match action {
+        MembersAction::Invitations => invitations(ctx, &api, &org, InvitationsAction::List).await,
+        MembersAction::Revoke {
+            invitation,
+            yes,
+            dry_run,
+        } => {
+            invitations(
+                ctx,
+                &api,
+                &org,
+                InvitationsAction::Revoke {
+                    invitation,
+                    yes,
+                    dry_run,
+                },
+            )
+            .await
+        }
         MembersAction::List => {
             let answer = api
                 .call(&format!("{SERVICE}/ListMembers"), json!({"slug": org}))
@@ -177,10 +187,21 @@ pub async fn run_members(ctx: &Ctx, action: MembersAction) -> CliResult<Output> 
     }
 }
 
-/// Runs a `grund invitations` verb.
-pub async fn run_invitations(ctx: &Ctx, action: InvitationsAction) -> CliResult<Output> {
-    let api = ctx.api()?;
-    let org = ctx.org(&api).await?;
+enum InvitationsAction {
+    List,
+    Revoke {
+        invitation: String,
+        yes: bool,
+        dry_run: bool,
+    },
+}
+
+async fn invitations(
+    ctx: &Ctx,
+    api: &Api,
+    org: &str,
+    action: InvitationsAction,
+) -> CliResult<Output> {
     let list = api
         .call(&format!("{SERVICE}/ListInvitations"), json!({"slug": org}))
         .await?;
@@ -202,7 +223,7 @@ pub async fn run_invitations(ctx: &Ctx, action: InvitationsAction) -> CliResult<
                         Code::NotFound,
                         format!("no invitation {invitation} in {org}"),
                     )
-                    .hint("grund invitations list")
+                    .hint("grund member invitations")
                 })?;
             let request = json!({"slug": org, "invitationId": found["invitationId"]});
             if preview {

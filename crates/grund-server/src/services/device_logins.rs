@@ -1,4 +1,4 @@
-//! Device logins (grund-docs design/cli.md §2): `grund login` asks for one,
+//! Device logins (grund-docs design/cli.md §2): `grund auth login` asks for one,
 //! the person approves it on `/device` with their browser session, and the
 //! CLI's next poll turns it into a CLI session, once.
 //!

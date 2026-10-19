@@ -105,7 +105,7 @@ impl DeviceLoginService for LoginApi {
         let state = match polled {
             Polled::NotFound => {
                 return Err(refusal(
-                    ConnectError::not_found("no such login; start again with grund login"),
+                    ConnectError::not_found("no such login; start again with grund auth login"),
                     "login_not_found",
                 ));
             }

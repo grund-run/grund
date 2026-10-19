@@ -39,11 +39,11 @@ message Error {
   string rpc = 6;
 }
 
-// `grund whoami`.
+// `grund auth status`.
 message Whoami {
   // The instance's origin.
   string instance = 1;
-  // session (from `grund login`) or token (a personal access token).
+  // session (from `grund auth login`) or token (a personal access token).
   string credential = 2;
   // From GRUND_TOKEN, the credentials file, or nothing.
   string credential_source = 3;
@@ -59,7 +59,7 @@ message Whoami {
   grund.token.v1.Token token = 8;
 }
 
-// `grund login`.
+// `grund auth login`.
 message LoginResult {
   string instance = 1;
   string username = 2;
@@ -71,7 +71,7 @@ message LoginResult {
   string organisation = 5;
 }
 
-// `grund orgs list`.
+// `grund org list`.
 message OrganisationList {
   repeated grund.organisation.v1.Organisation organisations = 1;
   // The default organisation's slug.
@@ -107,7 +107,7 @@ message Call {
   google.protobuf.Struct request = 2;
 }
 
-// `grund apps deploy`: one entry per app.
+// `grund app deploy`: one entry per app.
 message DeployResult {
   repeated AppDeploy apps = 1;
 }
@@ -130,12 +130,12 @@ message AppDeploy {
   int64 expected_version = 8;
 }
 
-// `grund apps secrets list`.
+// `grund app secret list`.
 message SecretList {
   repeated grund.app.v1.SecretInfo secrets = 1;
 }
 
-// `grund machines add`.
+// `grund machine add`.
 message MachineAdded {
   // grund_join_…: used once, valid until expires_at. Shown once.
   string token = 1;
@@ -149,7 +149,7 @@ message MachineAdded {
   grund.machine.v1.Machine machine = 5;
 }
 
-// `grund apps status`.
+// `grund app status`.
 message AppStatus {
   string app = 1;
   // One of: no_release, rolling_out, live, degraded (live with fewer ready

@@ -1,4 +1,4 @@
-//! `grund machines`: the organisation's machines, over
+//! `grund machine`: the organisation's machines, over
 //! `grund.machine.v1.MachineService`. A machine is named by its name or
 //! its id.
 
@@ -17,10 +17,10 @@ use crate::{
 const SERVICE: &str = "grund.machine.v1.MachineService";
 const HOSTED: &str = "grund.machine.v1.HostedMachineService";
 
-/// `grund machines`.
+/// `grund machine`.
 pub type MachinesCommand = Noun<MachinesAction>;
 
-/// What `grund machines` does.
+/// What `grund machine` does.
 #[derive(Debug, Subcommand)]
 pub enum MachinesAction {
     #[command(
@@ -34,7 +34,7 @@ pub enum MachinesAction {
         about = "Show a machine's details, workloads, reservations, and reported host usage",
         long_about = "Show every field returned for one machine, including its capabilities, labels, connection state, app and instance counts, reservations, workloads with desired and observed state, and available host telemetry with its sample time. Reservations are not actual usage; absent telemetry is not zero."
     )]
-    Get {
+    Show {
         #[arg(value_name = "MACHINE", help = "Its name or id")]
         machine: String,
     },
@@ -63,7 +63,7 @@ pub enum MachinesAction {
         #[arg(
             long,
             requires = "hosted",
-            help = "Hosted size from grund machines offers"
+            help = "Hosted size from grund machine offers"
         )]
         size: Option<String>,
         #[arg(
@@ -86,7 +86,7 @@ pub enum MachinesAction {
         rental_id: Option<String>,
     },
     #[command(about = "Show a machine's labels, or replace them with KEY=VALUE pairs")]
-    Labels {
+    Label {
         #[arg(value_name = "MACHINE")]
         machine: String,
         #[arg(value_name = "KEY=VALUE")]
@@ -97,17 +97,16 @@ pub enum MachinesAction {
         dry_run: bool,
     },
     #[command(
-        name = "out-of-service",
-        about = "Take a machine out of service: nothing new lands on it and its copies move to other machines"
+        about = "Drain a machine: nothing new lands on it and its copies move to other machines"
     )]
-    OutOfService {
+    Drain {
         #[arg(value_name = "MACHINE")]
         machine: String,
         #[arg(long, help = "Show the request instead of sending it")]
         dry_run: bool,
     },
-    #[command(name = "in-service", about = "Put a machine back in service")]
-    InService {
+    #[command(about = "Put a drained machine back in service")]
+    Undrain {
         #[arg(value_name = "MACHINE")]
         machine: String,
         #[arg(long, help = "Show the request instead of sending it")]
@@ -268,11 +267,11 @@ async fn find(api: &Api, org: &str, machine: &str) -> CliResult<Value> {
         .cloned()
         .ok_or_else(|| {
             CliError::new(Code::NotFound, format!("no machine {machine} in {org}"))
-                .hint("grund machines list")
+                .hint("grund machine list")
         })
 }
 
-/// Runs a `grund machines` verb.
+/// Runs a `grund machine` verb.
 pub async fn run(ctx: &Ctx, action: MachinesAction) -> CliResult<Output> {
     let api = ctx.api()?;
     let org = ctx.org(&api).await?;
@@ -290,7 +289,7 @@ pub async fn run(ctx: &Ctx, action: MachinesAction) -> CliResult<Output> {
                 Output::fields(answer)
             })
         }
-        MachinesAction::Get { machine } => {
+        MachinesAction::Show { machine } => {
             let found = find(&api, &org, &machine).await?;
             let answer = api
                 .call(
@@ -397,7 +396,7 @@ pub async fn run(ctx: &Ctx, action: MachinesAction) -> CliResult<Output> {
             };
             Ok(Output::line(answer, shown))
         }
-        MachinesAction::Labels {
+        MachinesAction::Label {
             machine,
             labels,
             clear,
@@ -424,20 +423,20 @@ pub async fn run(ctx: &Ctx, action: MachinesAction) -> CliResult<Output> {
             });
             if preview {
                 return Ok(dry_run(
-                    &[(format!("{SERVICE}/SetMachineLabels"), request)],
+                    &[(format!("{SERVICE}/SetMachineLabel"), request)],
                     changes("/labels", &found["labels"], &Value::Object(map)),
                 ));
             }
             let answer = api
-                .call(&format!("{SERVICE}/SetMachineLabels"), request)
+                .call(&format!("{SERVICE}/SetMachineLabel"), request)
                 .await?;
             Ok(Output::fields(answer))
         }
-        MachinesAction::OutOfService {
+        MachinesAction::Drain {
             machine,
             dry_run: preview,
         } => in_service(&api, &org, &machine, false, preview).await,
-        MachinesAction::InService {
+        MachinesAction::Undrain {
             machine,
             dry_run: preview,
         } => in_service(&api, &org, &machine, true, preview).await,
@@ -483,12 +482,12 @@ async fn in_service(
         json!({"organisation": org, "machineId": found["machineId"], "inService": in_service});
     if preview {
         return Ok(dry_run(
-            &[(format!("{SERVICE}/SetMachineInService"), request)],
+            &[(format!("{SERVICE}/SetMachineUndrain"), request)],
             vec![],
         ));
     }
     let answer = api
-        .call(&format!("{SERVICE}/SetMachineInService"), request)
+        .call(&format!("{SERVICE}/SetMachineUndrain"), request)
         .await?;
     Ok(Output::fields(answer))
 }

@@ -19,9 +19,10 @@ pub struct Global {
     #[arg(
         long,
         global = true,
+        hide = true,
         env = "GRUND_INSTANCE",
         value_name = "URL",
-        help = "The instance, such as https://grund.example.com. Default: the one grund login signed in to last"
+        help = "The instance, such as https://grund.example.com. Default: the one grund auth login signed in to last"
     )]
     pub instance: Option<String>,
 
@@ -30,7 +31,7 @@ pub struct Global {
         global = true,
         env = "GRUND_ORG",
         value_name = "SLUG",
-        help = "The organisation. Default: grund orgs use, else the token's, else the only one"
+        help = "The organisation. Default: grund org use, else the token's, else the only one"
     )]
     pub org: Option<String>,
 
@@ -78,7 +79,7 @@ pub struct Credential {
 }
 
 impl Credential {
-    /// `session` for a `grund login` session, `token` for a personal access
+    /// `session` for a `grund auth login` session, `token` for a personal access
     /// token.
     pub fn kind(&self) -> &'static str {
         if self.secret.starts_with("grund_cli_") {
@@ -137,7 +138,7 @@ impl Ctx {
         let file = self.credentials()?;
         if file.current.is_empty() {
             return Err(CliError::new(Code::NotSignedIn, "no instance is chosen")
-                .hint("run grund login <instance>, or set GRUND_INSTANCE and GRUND_TOKEN"));
+                .hint("run grund auth login <instance>, or set GRUND_INSTANCE and GRUND_TOKEN"));
         }
         Ok(file.current)
     }
@@ -160,8 +161,9 @@ impl Ctx {
                 source: Source::File,
             })
             .ok_or_else(|| {
-                CliError::new(Code::NotSignedIn, format!("not signed in to {instance}"))
-                    .hint(format!("run grund login {instance}, or set GRUND_TOKEN"))
+                CliError::new(Code::NotSignedIn, format!("not signed in to {instance}")).hint(
+                    format!("run grund auth login {instance}, or set GRUND_TOKEN"),
+                )
             })
     }
 
@@ -210,7 +212,7 @@ impl Ctx {
                 Code::OrganisationRequired,
                 "the account is in no organisation",
             )
-            .hint("make one with grund orgs create <slug>")),
+            .hint("make one with grund org create <slug>")),
             many => Err(CliError::new(
                 Code::OrganisationRequired,
                 format!(
@@ -219,7 +221,7 @@ impl Ctx {
                     many.join(", ")
                 ),
             )
-            .hint("pass --org <slug>, or run grund orgs use <slug>")),
+            .hint("pass --org <slug>, or run grund org use <slug>")),
         }
     }
 

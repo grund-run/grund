@@ -23,6 +23,7 @@ pub mod context;
 pub mod credentials;
 pub mod describe;
 pub mod error;
+pub mod help;
 pub mod mcp;
 pub mod meta;
 pub mod output;
@@ -127,13 +128,26 @@ pub fn usage_error(error: &clap::Error, args: &[String]) -> Option<i32> {
 #[command(
     name = "grund",
     version = VERSION,
-    about = "grund: from zero to production, on your own premises",
+    about = "Deploy and run apps on machines you own.",
     disable_help_subcommand = true,
     args = context::Global::target_arguments()
 )]
 pub struct Standalone {
     #[command(subcommand)]
     pub command: Command,
+}
+
+impl Standalone {
+    /// The client command tree, with grouped help.
+    pub fn root() -> clap::Command {
+        help::with_grouped_help(<Self as clap::CommandFactory>::command())
+    }
+
+    /// Parses `args` as `grund` does, with grouped help.
+    pub fn parse_args(args: &[String]) -> Result<Self, clap::Error> {
+        let matches = Self::root().try_get_matches_from(args)?;
+        <Self as clap::FromArgMatches>::from_arg_matches(&matches)
+    }
 }
 
 #[cfg(test)]
@@ -150,12 +164,12 @@ mod tests {
                 "https://flag.invalid",
                 "--org",
                 "flag-org",
-                "apps",
+                "app",
                 "list",
             ],
             [
                 "grund",
-                "apps",
+                "app",
                 "--instance",
                 "https://flag.invalid",
                 "--org",
@@ -164,7 +178,7 @@ mod tests {
             ],
             [
                 "grund",
-                "apps",
+                "app",
                 "list",
                 "--instance",
                 "https://flag.invalid",

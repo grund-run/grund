@@ -20,7 +20,7 @@ const COLUMNS: &[(&str, &str)] = &[
     ("ID", "/id"),
 ];
 
-/// `grund notifications` lists notifications, with verbs for counting and reading them.
+/// `grund notification` lists notifications, with verbs for counting and reading them.
 #[derive(Debug, Args)]
 pub struct NotificationsCommand {
     #[command(flatten)]
@@ -59,7 +59,7 @@ pub enum NotificationsAction {
     },
 }
 
-/// Runs `grund notifications` using only the account's Connect service.
+/// Runs `grund notification` using only the account's Connect service.
 pub async fn run(ctx: &Ctx, command: NotificationsCommand) -> CliResult<Output> {
     let api = ctx.api()?;
     match command.action {

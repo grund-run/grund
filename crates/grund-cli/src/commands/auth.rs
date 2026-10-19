@@ -1,5 +1,5 @@
-//! `grund login`, `grund logout`, `grund whoami` (grund-docs design/cli.md
-//! §2).
+//! `grund auth`: sign in, sign out, who the credential is, and personal
+//! access tokens (grund-docs design/cli.md §2).
 
 use std::{io::IsTerminal, time::Duration};
 
@@ -7,18 +7,34 @@ use serde_json::{Value, json};
 
 use crate::{
     api::Api,
-    context::{Ctx, Global, Source, set_if},
+    context::{Ctx, Source, set_if},
     credentials::{self, Instance},
     error::{CliError, CliResult, Code},
     output::{self, Format, Output},
 };
 
-/// `grund login`.
+/// `grund auth`.
+pub type AuthCommand = crate::commands::Noun<AuthAction>;
+
+/// What `grund auth` does.
+#[derive(Debug, clap::Subcommand)]
+pub enum AuthAction {
+    #[command(about = "Sign in to an instance: in the browser, or with a token from stdin")]
+    Login(LoginArgs),
+    #[command(about = "Sign out of the instance and forget its credential")]
+    Logout,
+    #[command(about = "Who the credential is, on which instance, and the default organisation")]
+    Status,
+    #[command(about = "Personal access tokens for CI and agents: list, create, revoke")]
+    Token {
+        #[command(subcommand)]
+        action: crate::commands::tokens::TokensAction,
+    },
+}
+
+/// `grund auth login`.
 #[derive(Debug, clap::Args)]
 pub struct LoginArgs {
-    #[command(flatten)]
-    pub global: Global,
-
     #[arg(
         id = "address",
         value_name = "INSTANCE",
@@ -34,20 +50,6 @@ pub struct LoginArgs {
 
     #[arg(long, help = "Do not try to open the browser; print the address only")]
     pub no_browser: bool,
-}
-
-/// `grund logout`.
-#[derive(Debug, clap::Args)]
-pub struct LogoutArgs {
-    #[command(flatten)]
-    pub global: Global,
-}
-
-/// `grund whoami`.
-#[derive(Debug, clap::Args)]
-pub struct WhoamiArgs {
-    #[command(flatten)]
-    pub global: Global,
 }
 
 fn hostname() -> String {
@@ -134,7 +136,7 @@ async fn device_login(
                 Code::Unauthenticated,
                 "the login expired before it was approved",
             )
-            .hint("run grund login again"));
+            .hint("run grund auth login again"));
         }
         let polled = match api
             .call(
@@ -171,7 +173,7 @@ async fn device_login(
                     Code::Unauthenticated,
                     "the login expired or was already used",
                 )
-                .hint("run grund login again"));
+                .hint("run grund auth login again"));
             }
             _ => output::progress(ctx.format, "…"),
         }
@@ -272,8 +274,8 @@ pub async fn login(ctx: &Ctx, args: LoginArgs, revision: &str) -> CliResult<Outp
 }
 
 /// Ends the CLI session at the instance (a token stays live: revoke it
-/// with `grund tokens revoke`) and forgets the credential.
-pub async fn logout(ctx: &Ctx, _args: LogoutArgs) -> CliResult<Output> {
+/// with `grund auth token revoke`) and forgets the credential.
+pub async fn logout(ctx: &Ctx) -> CliResult<Output> {
     let instance = ctx.instance()?;
     let credential = ctx.credential(&instance)?;
     if credential.source == Source::Environment {
@@ -324,7 +326,7 @@ pub async fn logout(ctx: &Ctx, _args: LogoutArgs) -> CliResult<Output> {
 }
 
 /// Who the credential is.
-pub async fn whoami(ctx: &Ctx, _args: WhoamiArgs) -> CliResult<Output> {
+pub async fn status(ctx: &Ctx) -> CliResult<Output> {
     let instance = ctx.instance()?;
     let credential = ctx.credential(&instance)?;
     let api = Api::new(&instance, Some(credential.secret.clone()))?;

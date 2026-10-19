@@ -1,4 +1,4 @@
-//! `grund apps` (grund-docs design/cli.md §1): an organisation's apps, over
+//! `grund app` (grund-docs design/cli.md §1): an organisation's apps, over
 //! `grund.app.v1.AppService`.
 //!
 //! A change to what runs (image, env, ports, …) makes a release: the CLI
@@ -24,16 +24,16 @@ use super::app_telemetry::{LogsArgs, MetricsArgs};
 
 const SERVICE: &str = "grund.app.v1.AppService";
 
-/// `grund apps`.
+/// `grund app`.
 pub type AppsCommand = Noun<AppsAction>;
 
-/// What `grund apps` does.
+/// What `grund app` does.
 #[derive(Debug, Subcommand)]
 pub enum AppsAction {
     #[command(about = "The organisation's apps, by name")]
     List,
-    #[command(about = "Deleted apps still recoverable by the organisation owner")]
-    ListRestorable,
+    #[command(about = "Deleted apps the organisation owner can still restore")]
+    Deleted,
     #[command(about = "Restore a deleted app and volumes deleted with it before expiry")]
     Restore {
         #[arg(value_name = "APP")]
@@ -42,7 +42,7 @@ pub enum AppsAction {
         dry_run: bool,
     },
     #[command(about = "One app: settings, rollout, every copy and where it runs, secrets' names")]
-    Get {
+    Show {
         #[arg(value_name = "APP")]
         app: String,
     },
@@ -111,7 +111,7 @@ pub enum AppsAction {
         app: String,
         #[arg(
             value_name = "RELEASE",
-            help = "The release number to run again (grund apps history)"
+            help = "The release number to run again (grund app history)"
         )]
         release: u32,
         #[command(flatten)]
@@ -134,13 +134,13 @@ pub enum AppsAction {
         dry_run: bool,
     },
     #[command(about = "An app's secrets: list their names and versions, set one from stdin")]
-    Secrets {
+    Secret {
         #[command(subcommand)]
         action: SecretsAction,
     },
 }
 
-/// What `grund apps secrets` does.
+/// What `grund app secret` does.
 #[derive(Debug, Subcommand)]
 pub enum SecretsAction {
     #[command(about = "The app's secrets: names and versions, never values")]
@@ -149,7 +149,7 @@ pub enum SecretsAction {
         app: String,
     },
     #[command(
-        about = "Store a new version of a secret, its value read from stdin. Releases name it with grund apps set APP secret-env"
+        about = "Store a new version of a secret, its value read from stdin. Releases name it with grund app set APP secret-env"
     )]
     Set {
         #[arg(value_name = "APP")]
@@ -186,7 +186,7 @@ pub struct Follow {
     pub timeout: u64,
 }
 
-/// `grund apps update`.
+/// `grund app update`.
 #[derive(Debug, Args)]
 pub struct UpdateArgs {
     #[arg(value_name = "APP")]
@@ -194,7 +194,7 @@ pub struct UpdateArgs {
     #[arg(
         long,
         value_name = "REF",
-        help = "Choose this exact reference from grund apps updates; required when choices differ"
+        help = "Choose this exact reference from grund app updates; required when choices differ"
     )]
     pub candidate: Option<String>,
     #[arg(
@@ -212,7 +212,7 @@ pub struct UpdateArgs {
     pub dry_run: bool,
 }
 
-/// `grund apps deploy`.
+/// `grund app deploy`.
 #[derive(Debug, Args)]
 pub struct DeployArgs {
     #[arg(
@@ -333,7 +333,7 @@ pub struct DeployArgs {
     pub command: Vec<String>,
 }
 
-/// `grund apps set`.
+/// `grund app set`.
 #[derive(Debug, Args)]
 pub struct SetArgs {
     #[arg(value_name = "APP")]
@@ -374,7 +374,7 @@ pub struct SetArgs {
     pub dry_run: bool,
 }
 
-/// One setting `grund apps set` changes.
+/// One setting `grund app set` changes.
 #[derive(Debug, Subcommand)]
 pub enum SetItem {
     #[command(about = "The image (a new release)")]
@@ -534,7 +534,7 @@ const SECRETS: &[(&str, &str)] = &[
     ("UPDATED", "/updatedAt"),
 ];
 
-/// Runs a `grund apps` verb.
+/// Runs a `grund app` verb.
 pub async fn run(ctx: &Ctx, action: AppsAction) -> CliResult<Output> {
     let api = ctx.api()?;
     let org = ctx.org(&api).await?;
@@ -545,7 +545,7 @@ pub async fn run(ctx: &Ctx, action: AppsAction) -> CliResult<Output> {
                 .await?;
             Ok(Output::table(answer, "/apps", APPS))
         }
-        AppsAction::ListRestorable => {
+        AppsAction::Deleted => {
             let answer = api
                 .call(
                     &format!("{SERVICE}/ListRestorableApps"),
@@ -568,7 +568,7 @@ pub async fn run(ctx: &Ctx, action: AppsAction) -> CliResult<Output> {
             api.call(&format!("{SERVICE}/RestoreApp"), request).await?;
             Ok(done(format!("Restored {app}.")))
         }
-        AppsAction::Get { app } => Ok(Output::fields(get_app(&api, &org, &app).await?)),
+        AppsAction::Show { app } => Ok(Output::fields(get_app(&api, &org, &app).await?)),
         AppsAction::Status { app } => {
             let answer = get_app(&api, &org, &app).await?;
             Ok(Output::fields(status(&answer["app"])))
@@ -640,7 +640,7 @@ pub async fn run(ctx: &Ctx, action: AppsAction) -> CliResult<Output> {
                     .find(|r| r["number"].as_u64() == Some(u64::from(release)))
                     .ok_or_else(|| {
                         CliError::new(Code::NotFound, format!("{app} has no release {release}"))
-                            .hint(format!("grund apps history {app}"))
+                            .hint(format!("grund app history {app}"))
                     })?;
                 let newest = releases.first().cloned().unwrap_or(Value::Null);
                 return Ok(dry_run(
@@ -712,7 +712,7 @@ pub async fn run(ctx: &Ctx, action: AppsAction) -> CliResult<Output> {
                     .unwrap_or("the configured deadline")
             )))
         }
-        AppsAction::Secrets { action } => match action {
+        AppsAction::Secret { action } => match action {
             SecretsAction::List { app } => {
                 let answer = get_app(&api, &org, &app).await?;
                 let secrets = answer["app"]["secrets"].clone();
@@ -782,8 +782,9 @@ fn update_candidate<'a>(
             }
             _ => format!("{app} has no available checked image update"),
         };
-        return Err(CliError::new(Code::Conflict, message)
-            .hint(format!("grund apps updates {app} --check")));
+        return Err(
+            CliError::new(Code::Conflict, message).hint(format!("grund app updates {app} --check"))
+        );
     }
     let mut candidates = update["candidates"]
         .as_array()
@@ -795,7 +796,7 @@ fn update_candidate<'a>(
         });
     let candidate = candidates.next().ok_or_else(|| {
         CliError::usage("no checked update matches that selection")
-            .hint(format!("grund apps updates {app} --check"))
+            .hint(format!("grund app updates {app} --check"))
             .field(if reference.is_some() {
                 "candidate"
             } else {
@@ -805,7 +806,7 @@ fn update_candidate<'a>(
     if candidates.next().is_some() {
         return Err(CliError::usage("more than one checked image update matches; choose one explicitly")
             .hint(format!(
-                "grund apps updates {app} shows the choices; use --candidate REF and, if needed, --digest SHA256"
+                "grund app updates {app} shows the choices; use --candidate REF and, if needed, --digest SHA256"
             ))
             .field("candidate"));
     }
@@ -840,7 +841,7 @@ async fn update(ctx: &Ctx, api: &Api, org: &str, args: UpdateArgs) -> CliResult<
             Code::Failed,
             "the instance returned an incomplete checked image update",
         )
-        .hint(format!("grund apps updates {} --check", args.app)));
+        .hint(format!("grund app updates {} --check", args.app)));
     };
     let request = json!({
         "organisation": org,
@@ -987,7 +988,7 @@ async fn wait(
                         Code::RolloutFailed,
                         format!("release {number} of {app} did not go live: {reason}"),
                     )
-                    .hint(format!("grund apps status {app} --json shows each copy"));
+                    .hint(format!("grund app status {app} --json shows each copy"));
                     error.reason = state
                         .trim_start_matches("ROLLOUT_STATE_")
                         .to_ascii_lowercase();
@@ -1005,7 +1006,7 @@ async fn wait(
                 Code::Unavailable,
                 format!("release {number} of {app} was not live after {timeout} s"),
             )
-            .hint("it is still rolling out; grund apps status shows where it is"));
+            .hint("it is still rolling out; grund app status shows where it is"));
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
@@ -1109,7 +1110,7 @@ async fn deploy(ctx: &Ctx, api: &Api, org: &str, args: DeployArgs) -> CliResult<
     let mut targets: Vec<(String, Value)> = Vec::new();
     if let Some(image) = &args.image {
         let app = args.app.clone().ok_or_else(|| {
-            CliError::usage("with --image, name the app: grund apps deploy APP --image REF")
+            CliError::usage("with --image, name the app: grund app deploy APP --image REF")
                 .field("app")
         })?;
         let spec = spec_from_flags(&args, image)?;
@@ -1499,7 +1500,7 @@ async fn set(ctx: &Ctx, api: &Api, org: &str, args: SetArgs) -> CliResult<Output
                         format!("{app} has no release to change yet"),
                     )
                     .hint(format!(
-                        "deploy it first: grund apps deploy {app} --image REF"
+                        "deploy it first: grund app deploy {app} --image REF"
                     ))
                 })?;
             let before = newest["spec"].clone();

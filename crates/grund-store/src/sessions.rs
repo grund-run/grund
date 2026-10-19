@@ -15,7 +15,7 @@ pub struct NewSession<'a> {
     pub max_age: Duration,
     pub user_agent: &'a str,
     pub client_address: &'a str,
-    /// `browser` (the dashboard's cookie) or `cli` (`grund login`'s bearer).
+    /// `browser` (the dashboard's cookie) or `cli` (`grund auth login`'s bearer).
     pub kind: &'a str,
 }
 

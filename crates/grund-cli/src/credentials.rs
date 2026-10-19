@@ -30,8 +30,8 @@ pub struct Credentials {
 pub struct Instance {
     /// Its origin, such as https://grund.example.com.
     pub url: String,
-    /// `grund_cli_…` from `grund login`, or `grund_pat_…` from
-    /// `grund login --with-token`.
+    /// `grund_cli_…` from `grund auth login`, or `grund_pat_…` from
+    /// `grund auth login --with-token`.
     pub credential: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub username: String,
@@ -104,7 +104,7 @@ impl Credentials {
         let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
         let temporary = dir.join(format!(".credentials.{}.tmp", std::process::id()));
         let text = format!(
-            "# Written by grund login. Holds credentials: keep it mode 0600.\n{}",
+            "# Written by grund auth login. Holds credentials: keep it mode 0600.\n{}",
             grund_config::yaml::to_string(self)
         );
         let mut file = std::fs::OpenOptions::new()

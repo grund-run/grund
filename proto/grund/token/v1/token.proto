@@ -14,7 +14,7 @@ import "google/protobuf/timestamp.proto";
 //
 // Any member makes tokens and lists and revokes their own; owners and
 // admins list and revoke every token of the organisation. Making, listing
-// and revoking need a person's session (the dashboard or `grund login`): a
+// and revoking need a person's session (the dashboard or `grund auth login`): a
 // token never makes or revokes tokens. GetCurrentToken is for a token only,
 // so a client can learn which organisation and scope it holds.
 //

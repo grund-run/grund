@@ -721,7 +721,7 @@ pub fn parse(text: &str) -> Result<Definition, SpecError> {
     }
     let file = file::read(text)?;
     let Some(definition) = file.stack else {
-        return refuse("stack", "this file declares apps; use grund apps deploy");
+        return refuse("stack", "this file declares apps; use grund app deploy");
     };
     definition.validate()?;
     Ok(definition)
@@ -737,7 +737,7 @@ mod tests {
     fn stack_and_app_files_remain_distinct_and_may_not_be_mixed() {
         assert!(parse(SIMPLE).is_ok());
         let error = file::parse_app(SIMPLE, "web").unwrap_err();
-        assert!(error.problem.contains("grund stacks deploy"));
+        assert!(error.problem.contains("grund stack deploy"));
         assert!(parse(&format!("apps: {{}}\n{SIMPLE}")).is_err());
         assert!(file::parse_app("apps:\n  web:\n    image: nginx\n", "web").is_ok());
         assert!(parse("apps:\n  web:\n    image: nginx\n").is_err());

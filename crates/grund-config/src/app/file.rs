@@ -489,7 +489,7 @@ pub fn parse_app(text: &str, name: &str) -> Result<Declared, SpecError> {
         {
             return refuse(
                 "stack",
-                "this file declares a stack; use grund stacks deploy",
+                "this file declares a stack; use grund stack deploy",
             );
         }
         return refuse(FILE_NAME, "use at most 64 KiB");
@@ -498,7 +498,7 @@ pub fn parse_app(text: &str, name: &str) -> Result<Declared, SpecError> {
     if file.stack.is_some() {
         return refuse(
             "stack",
-            "this file declares a stack; use grund stacks deploy",
+            "this file declares a stack; use grund stack deploy",
         );
     }
     let Some(app) = file.apps.get(name) else {

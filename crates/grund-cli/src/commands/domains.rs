@@ -1,4 +1,4 @@
-//! `grund domains`: the organisation's custom domains, over
+//! `grund domain`: the organisation's custom domains, over
 //! `grund.domain.v1.DomainService`.
 
 use std::fmt::Write;
@@ -15,7 +15,7 @@ use crate::{
 
 const SERVICE: &str = "grund.domain.v1.DomainService";
 
-/// `grund domains` lists domains unless a verb is given.
+/// `grund domain` lists domains unless a verb is given.
 #[derive(Debug, Args)]
 pub struct DomainsCommand {
     #[command(flatten)]
@@ -30,13 +30,13 @@ pub struct DomainsCommand {
     pub action: Option<DomainsAction>,
 }
 
-/// What `grund domains` does.
+/// What `grund domain` does.
 #[derive(Debug, Subcommand)]
 pub enum DomainsAction {
     #[command(about = "The organisation's domains and their status")]
     List,
     #[command(about = "One domain's status and the records still needed")]
-    Get {
+    Show {
         #[arg(value_name = "DOMAIN")]
         domain: String,
     },
@@ -221,7 +221,7 @@ fn presented(answer: Value, details: bool) -> Output {
     Output::with_text(answer, text)
 }
 
-/// Runs `grund domains` or one of its verbs.
+/// Runs `grund domain` or one of its verbs.
 pub async fn run(ctx: &Ctx, command: DomainsCommand) -> CliResult<Output> {
     let api = ctx.api()?;
     let org = ctx.org(&api).await?;
@@ -234,7 +234,7 @@ pub async fn run(ctx: &Ctx, command: DomainsCommand) -> CliResult<Output> {
                 .await?;
             Ok(presented(answer, details))
         }
-        DomainsAction::Get { domain } => Ok(presented(
+        DomainsAction::Show { domain } => Ok(presented(
             api.call(
                 &call("GetDomain"),
                 json!({"organisation": org, "name": domain}),

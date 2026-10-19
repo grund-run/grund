@@ -111,8 +111,8 @@ impl Shell {
 
     async fn json_with(&self, path: &str, args: &[&str], stdin: &str) -> anyhow::Result<Value> {
         let mut all: Vec<&str> = path.split(' ').collect();
-        if let ["apps", "set", item] = all[..] {
-            all = vec!["apps", "set", args[0], item];
+        if let ["app", "set", item] = all[..] {
+            all = vec!["app", "set", args[0], item];
             all.extend_from_slice(&args[1..]);
         } else {
             all.extend_from_slice(args);
@@ -127,7 +127,7 @@ impl Shell {
             ran.stderr
         );
         let value = ran.json()?;
-        let output = if args.contains(&"--dry-run") && path != "apps deploy" {
+        let output = if args.contains(&"--dry-run") && path != "app deploy" {
             "grund.cli.v1.DryRun"
         } else {
             meta::leaf(path)
@@ -174,9 +174,9 @@ async fn hosted_machine_commands_explain_when_the_instance_has_no_hosted_service
     let instance = origin(&when);
     let shell = Shell::fresh(&[("GRUND_INSTANCE", &instance), ("GRUND_TOKEN", &token)])?;
     for args in [
-        vec!["machines", "offers", "--json"],
+        vec!["machine", "offers", "--json"],
         vec![
-            "machines", "add", "hosted-1", "--hosted", "--size", "small", "--json",
+            "machine", "add", "hosted-1", "--hosted", "--size", "small", "--json",
         ],
     ] {
         let ran = shell.run(&args).await?;
@@ -218,7 +218,7 @@ async fn an_agent_with_a_token_deploys_from_grund_yaml_reads_status_scales_rolls
     let instance = origin(&when);
     let shell = Shell::fresh(&[("GRUND_INSTANCE", &instance), ("GRUND_TOKEN", &token)])?;
 
-    let me = shell.json("whoami", &[]).await?;
+    let me = shell.json("auth status", &[]).await?;
     anyhow::ensure!(
         me["credential"] == "token" && me["organisation"] == org,
         "{me:#}"
@@ -230,12 +230,12 @@ async fn an_agent_with_a_token_deploys_from_grund_yaml_reads_status_scales_rolls
         shell.home.join("grund.yaml"),
         grund_yaml(&registry.image("acme/shop", "1")),
     )?;
-    let planned = shell.json("apps deploy", &["--dry-run"]).await?;
+    let planned = shell.json("app deploy", &["--dry-run"]).await?;
     anyhow::ensure!(
         planned["apps"][0]["created"] == true && planned["apps"][0]["dryRun"] == true,
         "{planned:#}"
     );
-    let apps = shell.json("apps list", &[]).await?;
+    let apps = shell.json("app list", &[]).await?;
     anyhow::ensure!(
         apps["apps"].as_array().is_none_or(Vec::is_empty),
         "a dry run made an app: {apps:#}"
@@ -243,7 +243,7 @@ async fn an_agent_with_a_token_deploys_from_grund_yaml_reads_status_scales_rolls
 
     let deployed = shell
         .json(
-            "apps deploy",
+            "app deploy",
             &["-f", "grund.yaml", "--wait", "--timeout", "60"],
         )
         .await?;
@@ -255,7 +255,7 @@ async fn an_agent_with_a_token_deploys_from_grund_yaml_reads_status_scales_rolls
             && first["rollout"]["state"] == "ROLLOUT_STATE_SUCCEEDED",
         "{deployed:#}"
     );
-    let status = shell.json("apps status", &["shop"]).await?;
+    let status = shell.json("app status", &["shop"]).await?;
     anyhow::ensure!(
         status["health"] == "live" && status["copiesReady"] == 1,
         "{status:#}"
@@ -263,7 +263,7 @@ async fn an_agent_with_a_token_deploys_from_grund_yaml_reads_status_scales_rolls
 
     let stale = shell
         .run(&[
-            "apps",
+            "app",
             "deploy",
             "shop",
             "-f",
@@ -281,7 +281,7 @@ async fn an_agent_with_a_token_deploys_from_grund_yaml_reads_status_scales_rolls
     );
     let mixed = shell
         .run(&[
-            "apps",
+            "app",
             "deploy",
             "shop",
             "-f",
@@ -300,11 +300,11 @@ async fn an_agent_with_a_token_deploys_from_grund_yaml_reads_status_scales_rolls
         mixed.stderr
     );
 
-    let scaled = shell.json("apps set copies", &["shop", "2"]).await?;
+    let scaled = shell.json("app set copies", &["shop", "2"]).await?;
     anyhow::ensure!(scaled["app"]["settings"]["copies"] == 2, "{scaled:#}");
     let mut ready = Value::Null;
     for _ in 0..120 {
-        ready = shell.json("apps status", &["shop"]).await?;
+        ready = shell.json("app status", &["shop"]).await?;
         if ready["copiesReady"] == 2 && ready["health"] == "live" {
             break;
         }
@@ -318,7 +318,7 @@ async fn an_agent_with_a_token_deploys_from_grund_yaml_reads_status_scales_rolls
     registry.publish("acme/shop", "2");
     let image = registry.image("acme/shop", "2");
     let preview = shell
-        .json("apps set image", &["shop", &image, "--dry-run"])
+        .json("app set image", &["shop", &image, "--dry-run"])
         .await?;
     anyhow::ensure!(
         preview["changes"].as_array().is_some_and(|c| c
@@ -330,7 +330,7 @@ async fn an_agent_with_a_token_deploys_from_grund_yaml_reads_status_scales_rolls
         preview["release"]["number"] == 2,
         "the preview names the next release: {preview:#}"
     );
-    let history = shell.json("apps history", &["shop"]).await?;
+    let history = shell.json("app history", &["shop"]).await?;
     anyhow::ensure!(
         history["releases"].as_array().map(Vec::len) == Some(1),
         "a dry run made a release: {history:#}"
@@ -338,7 +338,7 @@ async fn an_agent_with_a_token_deploys_from_grund_yaml_reads_status_scales_rolls
 
     let changed = shell
         .json(
-            "apps set image",
+            "app set image",
             &["shop", &image, "--wait", "--timeout", "60"],
         )
         .await?;
@@ -348,7 +348,7 @@ async fn an_agent_with_a_token_deploys_from_grund_yaml_reads_status_scales_rolls
         "{changed:#}"
     );
     let back = shell
-        .json("apps rollback", &["shop", "1", "--wait", "--timeout", "60"])
+        .json("app rollback", &["shop", "1", "--wait", "--timeout", "60"])
         .await?;
     anyhow::ensure!(
         back["release"]["number"] == 3
@@ -357,7 +357,7 @@ async fn an_agent_with_a_token_deploys_from_grund_yaml_reads_status_scales_rolls
         "{back:#}"
     );
 
-    let refused = shell.run(&["apps", "delete", "shop", "--json"]).await?;
+    let refused = shell.run(&["app", "delete", "shop", "--json"]).await?;
     anyhow::ensure!(
         refused.status == 2,
         "exit {}: {}",
@@ -369,7 +369,7 @@ async fn an_agent_with_a_token_deploys_from_grund_yaml_reads_status_scales_rolls
         "{}",
         refused.stderr
     );
-    let deletion = shell.json("apps delete", &["shop", "--yes"]).await?;
+    let deletion = shell.json("app delete", &["shop", "--yes"]).await?;
     let deadline = deletion["message"]
         .as_str()
         .and_then(|message| message.strip_prefix("Deletion scheduled for shop; restore before "))
@@ -381,7 +381,7 @@ async fn an_agent_with_a_token_deploys_from_grund_yaml_reads_status_scales_rolls
         (deadline - chrono::Duration::days(7)).format("%-d %b %Y %H:%M:%S UTC"),
         deadline.format("%-d %b %Y %H:%M:%S UTC")
     );
-    let conflict = shell.run(&["apps", "create", "shop", "--json"]).await?;
+    let conflict = shell.run(&["app", "create", "shop", "--json"]).await?;
     anyhow::ensure!(
         conflict.status == 6
             && conflict.error()?["reason"] == "name_reserved_for_restore"
@@ -390,14 +390,14 @@ async fn an_agent_with_a_token_deploys_from_grund_yaml_reads_status_scales_rolls
         conflict.status,
         conflict.stderr
     );
-    let text = shell.run(&["apps", "create", "shop"]).await?;
+    let text = shell.run(&["app", "create", "shop"]).await?;
     anyhow::ensure!(
         text.status == 6 && text.stderr.contains(&expected),
         "CLI text name conflict: {} {}",
         text.status,
         text.stderr
     );
-    let gone = shell.run(&["apps", "get", "shop", "--json"]).await?;
+    let gone = shell.run(&["app", "show", "shop", "--json"]).await?;
     anyhow::ensure!(
         gone.status == 5 && gone.error()?["code"] == "not_found",
         "{}",
@@ -406,28 +406,26 @@ async fn an_agent_with_a_token_deploys_from_grund_yaml_reads_status_scales_rolls
 
     let deploy_only = a_token(&when, &then, org, "ci", "deploy").await?;
     let ci = Shell::fresh(&[("GRUND_INSTANCE", &instance), ("GRUND_TOKEN", &deploy_only)])?;
-    ci.json("apps create", &["web"]).await?;
-    let denied = ci
-        .run(&["apps", "delete", "web", "--yes", "--json"])
-        .await?;
+    ci.json("app create", &["web"]).await?;
+    let denied = ci.run(&["app", "delete", "web", "--yes", "--json"]).await?;
     anyhow::ensure!(
         denied.status == 4 && denied.error()?["code"] == "permission_denied",
         "a deploy token deleted an app: {} {}",
         denied.status,
         denied.stderr
     );
-    let machines = ci.run(&["machines", "list", "--json"]).await?;
+    let machines = ci.run(&["machine", "list", "--json"]).await?;
     anyhow::ensure!(
         machines.status == 4,
         "a deploy token listed machines: {}",
         machines.stdout
     );
-    let listed = shell.json("machines list", &[]).await?;
+    let listed = shell.json("machine list", &[]).await?;
     anyhow::ensure!(
         listed["machines"].as_array().map(Vec::len) == Some(2),
         "{listed:#}"
     );
-    let tokens = shell.run(&["tokens", "list", "--json"]).await?;
+    let tokens = shell.run(&["auth", "token", "list", "--json"]).await?;
     anyhow::ensure!(
         tokens.status == 4,
         "a full token reached the token service, which needs a person: {}",
@@ -454,7 +452,7 @@ async fn a_token_reaches_only_its_own_organisation_from_the_cli() -> anyhow::Res
     then.status(303)?;
     let shell = Shell::fresh(&[("GRUND_INSTANCE", &origin(&when)), ("GRUND_TOKEN", &token)])?;
     let ran = shell
-        .run(&["apps", "list", "--org", &other_org, "--json"])
+        .run(&["app", "list", "--org", &other_org, "--json"])
         .await?;
     anyhow::ensure!(
         ran.status == 5 && ran.error()?["code"] == "not_found",
@@ -463,7 +461,7 @@ async fn a_token_reaches_only_its_own_organisation_from_the_cli() -> anyhow::Res
         ran.stderr
     );
     let ran = shell
-        .run(&["members", "list", "--org", &other_org, "--json"])
+        .run(&["member", "list", "--org", &other_org, "--json"])
         .await?;
     anyhow::ensure!(ran.status == 5, "{} {}", ran.status, ran.stderr);
     Ok(())
@@ -480,11 +478,11 @@ async fn client_targets_work_before_or_after_the_noun_and_keep_default_precedenc
     let token = a_token(&when, &then, org, "context", "full").await?;
     let mut shell = Shell::fresh(&[])?;
     shell
-        .json_with("login", &[&instance, "--with-token"], &token)
+        .json_with("auth login", &[&instance, "--with-token"], &token)
         .await?;
     let app = given.a_fresh_name("context");
-    shell.json("apps create", &[&app]).await?;
-    let saved = shell.json("apps list", &[]).await?;
+    shell.json("app create", &[&app]).await?;
+    let saved = shell.json("app list", &[]).await?;
     anyhow::ensure!(
         saved["apps"]
             .as_array()
@@ -496,14 +494,14 @@ async fn client_targets_work_before_or_after_the_noun_and_keep_default_precedenc
         ("GRUND_INSTANCE".into(), "http://127.0.0.1:1".into()),
         ("GRUND_ORG".into(), "missing-target-org".into()),
     ]);
-    let environment = shell.run(&["apps", "list", "--json"]).await?;
+    let environment = shell.run(&["app", "list", "--json"]).await?;
     anyhow::ensure!(
         environment.status == 3 && environment.error()?["code"] == "not_signed_in",
         "environment instance did not override saved instance"
     );
     shell.env.retain(|(key, _)| key != "GRUND_INSTANCE");
     shell.env.push(("GRUND_INSTANCE".into(), instance.clone()));
-    let environment = shell.run(&["apps", "list", "--json"]).await?;
+    let environment = shell.run(&["app", "list", "--json"]).await?;
     anyhow::ensure!(
         environment.status == 5 && environment.error()?["code"] == "not_found",
         "environment organisation did not override saved organisation"
@@ -515,12 +513,12 @@ async fn client_targets_work_before_or_after_the_noun_and_keep_default_precedenc
             &instance,
             "--org",
             org,
-            "apps",
+            "app",
             "list",
             "--json",
         ],
         vec![
-            "apps",
+            "app",
             "--instance",
             &instance,
             "--org",
@@ -529,7 +527,7 @@ async fn client_targets_work_before_or_after_the_noun_and_keep_default_precedenc
             "--json",
         ],
         vec![
-            "apps",
+            "app",
             "list",
             "--instance",
             &instance,
@@ -542,7 +540,7 @@ async fn client_targets_work_before_or_after_the_noun_and_keep_default_precedenc
             "http://127.0.0.1:1",
             "--org",
             "missing-target-org",
-            "apps",
+            "app",
             "list",
             "--instance",
             &instance,
@@ -567,7 +565,7 @@ async fn client_targets_work_before_or_after_the_noun_and_keep_default_precedenc
             &instance,
             "--org",
             org,
-            "apps",
+            "app",
             "--frobnicate",
             "--json",
         ])
@@ -585,7 +583,7 @@ fn first_json_line(reader: &mut impl BufRead) -> anyhow::Result<Value> {
         line.clear();
         anyhow::ensure!(
             reader.read_line(&mut line)? > 0,
-            "grund login said nothing on stderr"
+            "grund auth login said nothing on stderr"
         );
         if let Ok(value) = serde_json::from_str::<Value>(line.trim()) {
             return Ok(value);
@@ -595,7 +593,7 @@ fn first_json_line(reader: &mut impl BufRead) -> anyhow::Result<Value> {
 
 async fn logging_in(shell: &Shell, instance: &str) -> anyhow::Result<(std::process::Child, Value)> {
     let mut child = shell
-        .command(&["login", instance, "--json", "--no-browser"])
+        .command(&["auth", "login", instance, "--json", "--no-browser"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -668,7 +666,7 @@ async fn grund_login_is_approved_once_in_the_browser_and_logout_revokes_the_sess
     let ran = finished(child).await?;
     anyhow::ensure!(
         ran.status == 0,
-        "grund login exited {}: {}{}",
+        "grund auth login exited {}: {}{}",
         ran.status,
         ran.stdout,
         ran.stderr
@@ -695,7 +693,7 @@ async fn grund_login_is_approved_once_in_the_browser_and_logout_revokes_the_sess
     );
     anyhow::ensure!(
         !ran.stdout.contains("grund_cli_") && !ran.stderr.contains("grund_cli_"),
-        "grund login printed the session's secret"
+        "grund auth login printed the session's secret"
     );
 
     when.submitting(
@@ -706,14 +704,14 @@ async fn grund_login_is_approved_once_in_the_browser_and_logout_revokes_the_sess
     .await?;
     then.status(409)?;
 
-    let me = shell.json("whoami", &[]).await?;
+    let me = shell.json("auth status", &[]).await?;
     anyhow::ensure!(
         me["credential"] == "session" && me["username"] == org.as_str(),
         "{me:#}"
     );
     let made = shell
         .json(
-            "tokens create",
+            "auth token create",
             &["--name", "from the cli", "--scope", "full"],
         )
         .await?;
@@ -726,7 +724,7 @@ async fn grund_login_is_approved_once_in_the_browser_and_logout_revokes_the_sess
     );
     let bounded = shell
         .json(
-            "tokens create",
+            "auth token create",
             &[
                 "--name",
                 "app deployer",
@@ -741,7 +739,7 @@ async fn grund_login_is_approved_once_in_the_browser_and_logout_revokes_the_sess
         bounded["token"]["apps"] == json!(["shop", "worker"]),
         "CLI token creation did not return its app restriction"
     );
-    let listed = shell.json("tokens list", &[]).await?;
+    let listed = shell.json("auth token list", &[]).await?;
     anyhow::ensure!(
         listed["tokens"].as_array().is_some_and(|tokens| {
             tokens.iter().any(|token| token["name"] == "from the cli")
@@ -751,7 +749,7 @@ async fn grund_login_is_approved_once_in_the_browser_and_logout_revokes_the_sess
         }),
         "the token list did not include both tokens with the restriction"
     );
-    shell.json("orgs list", &[]).await?;
+    shell.json("org list", &[]).await?;
     when.visiting("/settings/sessions").await?;
     then.status(200)?.body_contains("grund 0.1.0")?;
 
@@ -768,14 +766,14 @@ async fn grund_login_is_approved_once_in_the_browser_and_logout_revokes_the_sess
         .await?;
     bare_then.status(401)?;
 
-    let out = shell.json("logout", &[]).await?;
+    let out = shell.json("auth logout", &[]).await?;
     anyhow::ensure!(
         out["message"]
             .as_str()
             .is_some_and(|m| m.contains("revoked")),
         "{out:#}"
     );
-    let after = shell.run(&["whoami", "--json"]).await?;
+    let after = shell.run(&["auth", "status", "--json"]).await?;
     anyhow::ensure!(
         after.status == 3,
         "whoami after logout exited {}: {}",
@@ -822,12 +820,12 @@ async fn the_cli_describes_itself_and_refuses_a_bad_line_as_json_without_an_inst
     anyhow::ensure!(
         document["commands"]
             .as_array()
-            .is_some_and(|c| c.iter().any(|c| c["path"] == "apps deploy"
+            .is_some_and(|c| c.iter().any(|c| c["path"] == "app deploy"
                 && c["output"]["$ref"] == "#/$defs/grund.cli.v1.DeployResult")),
         "describe has no apps deploy"
     );
     let bad = shell
-        .run(&["apps", "deploy", "--frobnicate", "--json"])
+        .run(&["app", "deploy", "--frobnicate", "--json"])
         .await?;
     anyhow::ensure!(
         bad.status == 2 && bad.error()?["code"] == "usage",
@@ -835,7 +833,7 @@ async fn the_cli_describes_itself_and_refuses_a_bad_line_as_json_without_an_inst
         bad.status,
         bad.stderr
     );
-    let unsigned = shell.run(&["apps", "list", "--json"]).await?;
+    let unsigned = shell.run(&["app", "list", "--json"]).await?;
     anyhow::ensure!(
         unsigned.status == 3 && unsigned.error()?["code"] == "not_signed_in",
         "{} {}",
@@ -845,7 +843,7 @@ async fn the_cli_describes_itself_and_refuses_a_bad_line_as_json_without_an_inst
     let skill = shell.run(&["skill", "print"]).await?;
     anyhow::ensure!(
         skill.stdout.starts_with("---\nname: grund\n")
-            && skill.stdout.contains("`grund apps deploy"),
+            && skill.stdout.contains("`grund app deploy"),
         "{}",
         skill.stdout
     );
@@ -874,7 +872,7 @@ async fn the_cli_describes_itself_and_refuses_a_bad_line_as_json_without_an_inst
     writeln!(
         input,
         "{}",
-        json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "apps_list", "arguments": {}}})
+        json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "app_list", "arguments": {}}})
     )?;
     drop(input);
     let output = tokio::task::spawn_blocking(move || mcp.wait_with_output()).await??;
@@ -893,15 +891,15 @@ async fn the_cli_describes_itself_and_refuses_a_bad_line_as_json_without_an_inst
         .unwrap_or_default();
     let delete = tools
         .iter()
-        .find(|t| t["name"] == "apps_delete")
-        .ok_or_else(|| anyhow::anyhow!("no apps_delete tool"))?;
+        .find(|t| t["name"] == "app_delete")
+        .ok_or_else(|| anyhow::anyhow!("no app_delete tool"))?;
     anyhow::ensure!(
         delete["annotations"]["destructiveHint"] == true,
         "{delete:#}"
     );
     anyhow::ensure!(
-        !tools.iter().any(|t| t["name"] == "login"),
-        "login is a tool"
+        !tools.iter().any(|t| t["name"] == "auth_login"),
+        "auth login is a tool"
     );
     anyhow::ensure!(
         answers[2]["result"]["isError"] == true
@@ -949,7 +947,7 @@ async fn the_notifications_cli_lists_json_and_marks_only_its_own_items_read() ->
     let instance = origin(&guest_when);
     let shell = Shell::fresh(&[("GRUND_INSTANCE", &instance)])?;
     approved_cli_session(&shell, &guest_when, &guest_then).await?;
-    let listed = shell.json("notifications", &["--unread"]).await?;
+    let listed = shell.json("notification", &["--unread"]).await?;
     let items = listed["notifications"]
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("CLI JSON missing notifications: {listed}"))?;
@@ -958,15 +956,15 @@ async fn the_notifications_cli_lists_json_and_marks_only_its_own_items_read() ->
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("notification missing id: {listed}"))?;
     anyhow::ensure!(!id.is_empty());
-    shell.json("notifications read", &[id]).await?;
-    let unread = shell.json("notifications", &["--unread"]).await?;
+    shell.json("notification read", &[id]).await?;
+    let unread = shell.json("notification", &["--unread"]).await?;
     anyhow::ensure!(
         unread
             .get("notifications")
             .is_none_or(|v| v.as_array().is_some_and(Vec::is_empty)),
         "read item remains unread: {unread}"
     );
-    let all = shell.json("notifications", &[]).await?;
+    let all = shell.json("notification", &[]).await?;
     anyhow::ensure!(
         all["notifications"]
             .as_array()
@@ -988,9 +986,9 @@ async fn a_full_token_configures_app_addresses_and_the_cli_defaults_or_replaces_
     let token = a_token(when, then, &org, "domain manager", "full").await?;
     let instance = origin(when);
     let shell = Shell::fresh(&[("GRUND_INSTANCE", &instance), ("GRUND_TOKEN", &token)])?;
-    shell.json("apps create", &["hello"]).await?;
+    shell.json("app create", &["hello"]).await?;
     let parent = crate::accepttest::domains::a_custom_name();
-    let added = shell.json("domains add", &[&parent]).await?;
+    let added = shell.json("domain add", &[&parent]).await?;
     stack
         .pebble
         .set_txt(
@@ -1002,27 +1000,27 @@ async fn a_full_token_configures_app_addresses_and_the_cli_defaults_or_replaces_
                 .unwrap_or_default(),
         )
         .await?;
-    shell.json("domains verify", &[&parent]).await?;
+    shell.json("domain verify", &[&parent]).await?;
     let preview = shell
-        .json("domains app-domain", &[&parent, "--dry-run"])
+        .json("domain app-domain", &[&parent, "--dry-run"])
         .await?;
     anyhow::ensure!(
         preview["calls"][0]["rpc"] == "grund.domain.v1.DomainService/ConfigureAppDomain"
             && preview["calls"][0]["request"]["name"] == parent,
         "wrong namespace preview: {preview}"
     );
-    let before = shell.json("domains get", &[&parent]).await?;
+    let before = shell.json("domain show", &[&parent]).await?;
     anyhow::ensure!(
         before["domain"]["isAppDomain"] != true,
         "preview enabled the parent: {before}"
     );
-    let configured = shell.json("domains app-domain", &[&parent]).await?;
+    let configured = shell.json("domain app-domain", &[&parent]).await?;
     anyhow::ensure!(
         configured["domain"]["isAppDomain"] == true,
         "the CLI did not enable the parent: {configured}"
     );
     let default_name = format!("hello.{parent}");
-    let default = shell.json("domains get", &[&default_name]).await?;
+    let default = shell.json("domain show", &[&default_name]).await?;
     anyhow::ensure!(
         default["domain"]["parentDomain"] == parent
             && default["domain"]["managedAppName"] == "hello"
@@ -1030,7 +1028,7 @@ async fn a_full_token_configures_app_addresses_and_the_cli_defaults_or_replaces_
         "default app address lacks parent authority or progress: {default}"
     );
     let preview = shell
-        .json("domains subdomain", &["hello", "admin", "--dry-run"])
+        .json("domain subdomain", &["hello", "admin", "--dry-run"])
         .await?;
     anyhow::ensure!(
         preview["calls"][0]["rpc"] == "grund.domain.v1.DomainService/SetAppSubdomain"
@@ -1038,15 +1036,15 @@ async fn a_full_token_configures_app_addresses_and_the_cli_defaults_or_replaces_
             && preview["calls"][0]["request"]["subdomain"] == "admin",
         "wrong subdomain preview: {preview}"
     );
-    shell.json("domains get", &[&default_name]).await?;
+    shell.json("domain show", &[&default_name]).await?;
     let chosen_name = format!("admin.{parent}");
-    let chosen = shell.json("domains subdomain", &["hello", "admin"]).await?;
+    let chosen = shell.json("domain subdomain", &["hello", "admin"]).await?;
     anyhow::ensure!(
         chosen["domain"]["name"] == chosen_name && chosen["domain"]["app"] == "hello",
         "the CLI did not select the customer-owned label: {chosen}"
     );
     let previous = shell
-        .run(&["domains", "get", &default_name, "--json"])
+        .run(&["domain", "show", &default_name, "--json"])
         .await?;
     anyhow::ensure!(
         previous.status != 0 && previous.error()?["code"] == "not_found",
@@ -1054,7 +1052,7 @@ async fn a_full_token_configures_app_addresses_and_the_cli_defaults_or_replaces_
         previous.stdout,
         previous.stderr
     );
-    let defaulted = shell.json("domains subdomain", &["hello"]).await?;
+    let defaulted = shell.json("domain subdomain", &["hello"]).await?;
     anyhow::ensure!(
         defaulted["domain"]["name"] == default_name
             && defaulted["domain"]["setupSteps"].as_array().map(Vec::len) == Some(6),
@@ -1066,7 +1064,7 @@ async fn a_full_token_configures_app_addresses_and_the_cli_defaults_or_replaces_
     then.status(303)?;
     for args in [
         vec![
-            "domains",
+            "domain",
             "app-domain",
             parent.as_str(),
             "--org",
@@ -1074,7 +1072,7 @@ async fn a_full_token_configures_app_addresses_and_the_cli_defaults_or_replaces_
             "--json",
         ],
         vec![
-            "domains",
+            "domain",
             "subdomain",
             "hello",
             "www",

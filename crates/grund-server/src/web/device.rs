@@ -1,4 +1,4 @@
-//! `/device`: where a signed-in person approves `grund login` (grund-docs
+//! `/device`: where a signed-in person approves `grund auth login` (grund-docs
 //! design/cli.md §2). It shows the code, the client and the computer that
 //! asked, and approves or denies with the browser session; a token or a
 //! CLI session cannot reach it.
@@ -88,7 +88,7 @@ async fn device_view(
             }
             None => {
                 code_error =
-                    "No login is waiting with that code. It may have expired; run grund login again."
+                    "No login is waiting with that code. It may have expired; run grund auth login again."
                         .into();
             }
         }
