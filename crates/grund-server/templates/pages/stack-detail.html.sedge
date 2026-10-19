@@ -12,7 +12,7 @@ props crate::web::stacks::DetailPage<'_> { slug, stack, manages, csrf, action, f
       {if stack.status == "deleted" {
         <MenuItem label="Restore" href="{base}?action=restore" icon_name="undo" />
       } else {
-        <MenuItem label="Deploy file" href="/{slug}/stacks/deploy?stack={stack.name}" icon_name="file" />
+        <MenuItem label="Edit stack" href="/{slug}/stacks/deploy?stack={stack.name}" icon_name="file" />
         <MenuItem label="Restart all services" href="{base}?action=restart" icon_name="undo" />
         <MenuItem label="Roll back" href="{base}?action=rollback" icon_name="layers" />
         <MenuItem label="Delete…" href="{base}?action=delete" icon_name="trash" danger />
@@ -28,7 +28,7 @@ props crate::web::stacks::DetailPage<'_> { slug, stack, manages, csrf, action, f
     <Fact label="Selected machine">
       {if let Some(machine) = stack.machine_id {
         {let machine = machine.to_string();}
-        <a href="/{slug}/machines/{machine}">{machine}</a>
+        <a href="/{slug}/machines">{machine}</a>
       } else { Not selected }}
     </Fact>
     <Fact label="Revision" value={&stack.revision.to_string()} />
@@ -85,6 +85,7 @@ props crate::web::stacks::DetailPage<'_> { slug, stack, manages, csrf, action, f
         <Para>Rolling back does not restore stored data or reverse database migrations.</Para>
       } else if *action == Action::Delete {
         <Field name="confirmation" label="Stack name" value={&form.confirmation} hint="Enter the stack name to confirm deletion." required autocomplete="off" form={Some(&state)} />
+        <Para>Deleting stops every service. Retained data remains recoverable until retention expires.</Para>
       }}
       <Actions>
         <Button label="Cancel" href={&base} kind="secondary" />
