@@ -656,6 +656,22 @@ Services use app fields or a catalogue `template`. A whole env value such as
 connection binding without copying credentials into the file.
 Prefix a whole expression with an extra `$` (`$${{ database.url }}`) to deliver it literally.
 
+For `template: seaweedfs` in a service named `storage`, its consumer declares
+`depends_on: [storage]` and uses these environment entries:
+
+```yaml
+S3_ENDPOINT: ${{ storage.url }}
+S3_ACCESS_KEY_ID: ${{ storage.access_key_id }}
+S3_SECRET_ACCESS_KEY: ${{ storage.secret_access_key }}
+S3_REGION: ${{ storage.region }}
+S3_BUCKET: uploads
+```
+
+Create the bucket explicitly and use path-style S3 addressing. Credential
+bindings use the producer release's pinned secret versions; previews and
+stack files do not contain their values. These S3 key/region outputs are
+refused for other producers.
+
 ```sh
 grund stacks deploy -f grund.yaml --dry-run
 grund stacks deploy -f grund.yaml --wait
@@ -677,18 +693,29 @@ A failed first deployment retains its owned data without starting a deletion dea
 Accepting Restore cancels child and volume deletion deadlines before waiting for capacity.
 For explicit retries, reuse both `--idempotency-key` and the original `--expected-version`.
 
+A verified backup restores into a new volume of the same backing app, without
+switching its writer. After restore status is `completed`, set
+`data_volume: data-restored` under that template service, using the actual new
+volume name, then deploy the stack file. PostgreSQL, Redis and SeaweedFS keep
+their canonical data mount path and generated credential versions. Selection
+requires an existing ready same-app volume on the stack's machine; a typo
+cannot create an empty disk. The source remains retained. Restored capacity
+and backup policy are preserved; `volumes.data.backup` can explicitly request
+daily backup for the selected volume. Image services cannot use `data_volume`.
 
-### Database templates
 
-Deploy app → Template offers PostgreSQL and Redis when a connected machine
-has working storage and enough resources. Each creates an app-owned data
-volume and a generated password stored as an app secret. They run one copy;
-their TCP readiness checks confirm a listening port, not database transactions.
+### Data templates
+
+Deploy app → Template offers PostgreSQL, Redis and SeaweedFS when a connected
+machine has working storage and enough resources. Each creates an app-owned
+data volume and generated credentials stored as app secrets. They run one copy;
+their TCP readiness checks confirm a listening port, not a data transaction.
 
 | Template | Default hosted capacity | Data mount |
 |---|---|---|
 | PostgreSQL | 10 GiB | `/var/lib/postgresql/data` |
 | Redis | 1 GiB | `/data` |
+| SeaweedFS | 10 GiB | `/data` |
 
 Own machines, including self-hosted instances, use local directories without
 a capacity quota or automatic backup. Hosted templates request daily snapshots;
@@ -701,14 +728,18 @@ On every start PostgreSQL restores its template host-auth rule and any missing
 default configuration files. This does not repair database files or make a
 snapshot database-consistent; test a restored copy before relying on it.
 
-The app overview shows host, port, database/user and the environment variables
+The app overview shows connection settings and the environment variables
 to set in another app. Secrets are separate per app. Owners and admins can
-explicitly reveal and copy a grund-generated template password: each successful
+explicitly reveal and copy grund-generated template credentials: each successful
 reveal is audited without its value, limited to five per actor and organisation
 per minute. User-entered values, including replacements, remain write-only.
 Changing `POSTGRES_PASSWORD` does not rotate an existing database's password;
 change the password inside PostgreSQL and update its consumers explicitly.
-MinIO is unavailable because it no longer publishes public images.
+SeaweedFS provides one private S3 endpoint and one access/secret key pair that
+can create buckets and manage all objects in that instance. Clients use
+path-style addressing and region `us-east-1`; create the bucket explicitly.
+The former `minio` template key is removed, with no alias or automatic data
+conversion. Existing apps using their own MinIO image are unchanged.
 
 ### App volumes on your own machines
 

@@ -774,3 +774,115 @@ async fn migration_42_applies_after_the_existing_43_or_newer_ledger(pool: PgPool
         Some("23514")
     );
 }
+
+#[sqlx::test(migrations = false)]
+async fn migration_45_extends_the_existing_44_credential_ledger_without_rewriting_it(pool: PgPool) {
+    let baseline = sqlx::migrate::Migrator::with_migrations(
+        grund_store::MIGRATOR
+            .iter()
+            .filter(|migration| migration.version <= 44)
+            .cloned()
+            .collect(),
+    );
+    baseline.run(&pool).await.unwrap();
+    let events = EventStore::new(pool.clone());
+    events.migrate().await.unwrap();
+    let actor = register(&events, &name("pre45")).await;
+    let org: Uuid =
+        sqlx::query_scalar("SELECT organisation_id FROM grund_memberships WHERE account_id=$1")
+            .bind(actor)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let mut apps = Vec::new();
+    for template in ["postgres", "redis", "seaweedfs"] {
+        let app = Uuid::now_v7();
+        let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();
+        work.app(
+            app,
+            grund_domain::app::AppCommand::Create {
+                actor,
+                organisation_id: org,
+                name: grund_config::app::spec::AppName::parse(template).unwrap(),
+                settings: grund_config::app::spec::AppSettings::default(),
+                at: Utc::now(),
+            },
+        )
+        .await
+        .unwrap();
+        grund_store::apps::insert_secret(
+            work.sql(),
+            app,
+            org,
+            "credential",
+            |_| Uuid::now_v7().as_bytes().to_vec(),
+            actor,
+        )
+        .await
+        .unwrap();
+        work.commit().await.unwrap();
+        apps.push(app);
+        let inserted = sqlx::query("INSERT INTO grund_template_credentials(organisation_id,app_id,name,version,template) VALUES($1,$2,'credential',1,$3)")
+            .bind(org).bind(app).bind(template).execute(&pool).await;
+        if template == "seaweedfs" {
+            let error = inserted.unwrap_err();
+            assert_eq!(
+                error
+                    .as_database_error()
+                    .and_then(|error| error.code())
+                    .as_deref(),
+                Some("23514")
+            );
+        } else {
+            inserted.unwrap();
+        }
+    }
+    sqlx::query("INSERT INTO grund_template_credential_reveals(organisation_id,reveal_id,app_id,actor,name,version) VALUES($1,$2,$3,$4,'credential',1)")
+        .bind(org).bind(Uuid::now_v7()).bind(apps[0]).bind(actor).execute(&pool).await.unwrap();
+    let before_ledger: Vec<(i64, Vec<u8>)> = sqlx::query_as(
+        "SELECT version,checksum FROM _sqlx_migrations WHERE success ORDER BY version",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(before_ledger.last().map(|(version, _)| *version), Some(44));
+    let before_credentials: Vec<(Uuid, String, i32, String, Vec<u8>)> = sqlx::query_as(
+        "SELECT c.app_id,c.name,c.version,c.template,s.sealed FROM grund_template_credentials c JOIN grund_app_secrets s USING(app_id,name,version) WHERE c.organisation_id=$1 ORDER BY c.app_id,c.name,c.version",
+    ).bind(org).fetch_all(&pool).await.unwrap();
+    let before_audit: Vec<(Uuid, Uuid, Uuid, String, i32, chrono::DateTime<Utc>)> = sqlx::query_as(
+        "SELECT reveal_id,app_id,actor,name,version,revealed_at FROM grund_template_credential_reveals WHERE organisation_id=$1 ORDER BY reveal_id",
+    ).bind(org).fetch_all(&pool).await.unwrap();
+
+    grund_store::migrate(&pool).await.unwrap();
+
+    let after_ledger: Vec<(i64, Vec<u8>)> = sqlx::query_as(
+        "SELECT version,checksum FROM _sqlx_migrations WHERE success AND version<=44 ORDER BY version",
+    ).fetch_all(&pool).await.unwrap();
+    assert_eq!(after_ledger, before_ledger);
+    let applied: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM _sqlx_migrations WHERE version=45 AND success)",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(applied);
+    let after_credentials: Vec<(Uuid, String, i32, String, Vec<u8>)> = sqlx::query_as(
+        "SELECT c.app_id,c.name,c.version,c.template,s.sealed FROM grund_template_credentials c JOIN grund_app_secrets s USING(app_id,name,version) WHERE c.organisation_id=$1 ORDER BY c.app_id,c.name,c.version",
+    ).bind(org).fetch_all(&pool).await.unwrap();
+    assert!(after_credentials == before_credentials);
+    let after_audit: Vec<(Uuid, Uuid, Uuid, String, i32, chrono::DateTime<Utc>)> = sqlx::query_as(
+        "SELECT reveal_id,app_id,actor,name,version,revealed_at FROM grund_template_credential_reveals WHERE organisation_id=$1 ORDER BY reveal_id",
+    ).bind(org).fetch_all(&pool).await.unwrap();
+    assert_eq!(after_audit, before_audit);
+    sqlx::query("INSERT INTO grund_template_credentials(organisation_id,app_id,name,version,template) VALUES($1,$2,'credential',1,'seaweedfs')")
+        .bind(org).bind(apps[2]).execute(&pool).await.unwrap();
+    let invalid = sqlx::query("INSERT INTO grund_template_credentials(organisation_id,app_id,name,version,template) VALUES($1,$2,'credential',1,'minio')")
+        .bind(org).bind(apps[2]).execute(&pool).await.unwrap_err();
+    assert_eq!(
+        invalid
+            .as_database_error()
+            .and_then(|error| error.code())
+            .as_deref(),
+        Some("23514")
+    );
+}

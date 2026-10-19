@@ -40,15 +40,17 @@ props crate::web::apps::AppOverviewPage<'_> { app, running, releases, update, co
       {for (variable, value) in &connection.environment {
         <Fact label={variable}><Endpoint text={value} href="" /></Fact>
       }}
-      {if let Some((variable, secret)) = &connection.credential {
+      {for (variable, secret) in &connection.credentials {
         <Fact label={variable} wide>
-          <Para>Set this in the other app's Secrets using this generated credential. Secrets are separate for each app.</Para>
-          {if *manages {
-            <PostButton action="{app.base}/credentials/reveal" csrf={csrf} label="Reveal generated password" kind="secondary" hidden={&[("variable", secret.as_str())]} />
-          } else { <Para kind="hint">Only owners and admins can reveal generated credentials.</Para> }}
+          {if let Some(secret) = secret {
+            <Para>Set this in the other app's Secrets using this generated credential. Secrets are separate for each app.</Para>
+            {if *manages {
+              <PostButton action="{app.base}/credentials/reveal" csrf={csrf} label="Reveal generated credential" kind="secondary" hidden={&[("variable", secret.as_str())]} />
+            } else { <Para kind="hint">Only owners and admins can reveal generated credentials.</Para> }}
+          } else {
+            <Para>The current secret value is write-only. Use the value you supplied.</Para>
+          }}
         </Fact>
-      } else {
-        <Fact label="Password" wide><Para>The current secret value is write-only. Use the value you supplied.</Para></Fact>
       }}
     </Facts>
     <Para>{&connection.storage}</Para>

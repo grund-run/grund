@@ -51,6 +51,7 @@ const POSTGRES_IMAGE: &str =
     "postgres:17.11-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24";
 const REDIS_IMAGE: &str =
     "redis:7.4.11-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499";
+const SEAWEEDFS_IMAGE: &str = "chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d";
 
 /// Every premade app, including unavailable entries.
 pub const CATALOGUE: &[Template] = &[
@@ -152,23 +153,23 @@ pub const CATALOGUE: &[Template] = &[
         unavailable: None,
     },
     Template {
-        key: "minio",
-        title: "MinIO",
+        key: "seaweedfs",
+        title: "SeaweedFS",
         summary: "S3-compatible object storage.",
-        image: "",
-        command: &[],
+        image: SEAWEEDFS_IMAGE,
+        command: &["/bin/sh", "-ec", include_str!("seaweedfs-start.sh")],
         env: &[],
-        secret_variables: &[],
-        ports: &[],
+        secret_variables: &["S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY"],
+        ports: &[("s3", 8333, Protocol::Http)],
         publishable: None,
         check: None,
-        memory_mib: 0,
-        cpu_millis: 0,
+        memory_mib: 512,
+        cpu_millis: 500,
         storage: Some(TemplateStorage {
             path: "/data",
             size_gib: 10,
         }),
-        unavailable: Some("MinIO no longer publishes public images; coming later"),
+        unavailable: None,
     },
 ];
 
@@ -303,8 +304,8 @@ mod tests {
     }
 
     #[test]
-    fn databases_keep_one_app_owned_local_data_volume_and_credentials_out_of_plain_env() {
-        for key in ["postgres", "redis"] {
+    fn stateful_templates_keep_one_app_owned_data_volume_and_credentials_out_of_plain_env() {
+        for key in ["postgres", "redis", "seaweedfs"] {
             let template = find(key).unwrap();
             let storage = template.storage.unwrap();
             let spec = template.spec(false).unwrap().validate().unwrap();
@@ -334,14 +335,5 @@ mod tests {
                 .value
                 .starts_with(&format!("{}/", spec.volumes[0].path))
         );
-    }
-
-    #[test]
-    fn unavailable_templates_cannot_produce_a_deployable_spec() {
-        let minio = find("minio").unwrap();
-        assert!(minio.unavailable.is_some());
-        assert!(minio.spec(false).is_none());
-        assert!(minio.spec(true).is_none());
-        assert!(find("unknown").is_none());
     }
 }

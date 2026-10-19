@@ -44,7 +44,7 @@ component AppDomain(domain: &crate::services::domains::DomainView, public: bool,
   </Section>
 }
 
-props crate::web::apps::AppSettingsPage<'_> { app, items, edit, next, manages, owner, form, options, update };
+props crate::web::apps::AppSettingsPage<'_> { app, items, edit, next, manages, owner, form, options, update, completed_data_selections };
 {let here = format!("{}/settings", app.base);}
 {let release_note = format!("Saving makes release v{}.", next.unwrap_or(0));}
 
@@ -56,6 +56,15 @@ props crate::web::apps::AppSettingsPage<'_> { app, items, edit, next, manages, o
       }}</Rows></Panel>
     } else {
       <EmptyState title="No release yet" text="This service is managed by its stack." />
+    }}
+    {if *owner && !completed_data_selections.is_empty() {
+      {if let Some(stack) = &app.stack {
+        <Panel id="completed-restores" title="Completed restores">
+          <Para>To select a restored volume, set its line below under the template service <code>{stack.service}</code> in the <code>{stack.name}</code> stack YAML. Choose one volume.</Para>
+          {for selection in *completed_data_selections { <Code text={selection} copy /> }}
+          <Para>Save the stack file, then deploy it with <code>grund stacks deploy -f &lt;stack-file&gt;</code>. Restore completion does not switch the app automatically. The source volume is retained.</Para>
+        </Panel>
+      }}
     }}
   } else if items.is_none() {
     <EmptyState title="No release yet" text="Deploy one to set anything." />

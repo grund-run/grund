@@ -2083,7 +2083,7 @@ async fn storage_templates_refuse_unusable_targets_without_creating_an_app() -> 
     let owner = given.a_signed_in_account().await?;
     let org = owner.username;
     let deploy = format!("/{org}/deploy");
-    for template in ["postgres", "redis", "minio"] {
+    for template in ["postgres", "redis", "seaweedfs", "minio"] {
         when.submitting(
             &format!("{deploy}?template={template}"),
             &deploy,

@@ -1857,6 +1857,78 @@ fn volume_summary(rows: Vec<grund_store::volumes::VolumeRow>, now: DateTime<Utc>
     }
 }
 
+fn restored_data_candidate(
+    row: &grund_store::volumes::VolumeRow,
+    service: &grund_domain::stack::Service,
+    machine: Option<Uuid>,
+) -> bool {
+    let Some(storage) = service
+        .template
+        .as_deref()
+        .and_then(grund_domain::app::templates::find)
+        .and_then(|template| template.storage.as_ref())
+    else {
+        return false;
+    };
+    let Some(mounted) = service
+        .release
+        .spec
+        .volumes
+        .iter()
+        .find(|volume| volume.path == storage.path)
+    else {
+        return false;
+    };
+    row.app_id == service.app_id
+        && row.name != mounted.name
+        && row.path == storage.path
+        && row.source.is_none()
+        && matches!(row.status.as_str(), "available" | "attached")
+        && !row.detachment_pending
+        && row.lost_at.is_none()
+        && row.lost_host_id.is_none()
+        && row.machine_id.is_some()
+        && row.machine_id == machine
+        && row.size_gib.and_then(|size| u64::try_from(size).ok()) == mounted.size_gib
+}
+
+async fn completed_data_selections(
+    state: &State,
+    org: Uuid,
+    owner: &AppStack,
+    rows: &[grund_store::volumes::VolumeRow],
+) -> Result<Vec<String>, PageError> {
+    let stack = grund_store::stacks::by_name(&state.pool, org, &owner.name)
+        .await
+        .map_err(|error| PageError::from(anyhow::anyhow!(error)))?;
+    let Some(stack) = stack else {
+        return Ok(Vec::new());
+    };
+    let Some(service) = stack
+        .state
+        .revisions
+        .get(&stack.state.desired_revision)
+        .and_then(|revision| revision.services.get(&owner.service))
+    else {
+        return Ok(Vec::new());
+    };
+    let mut selections = Vec::new();
+    for row in rows {
+        if !restored_data_candidate(row, service, stack.state.machine_id) {
+            continue;
+        }
+        let restore = state
+            .backups()
+            .restore_status(org, row.app_id, row.volume_id)
+            .await
+            .map_err(|error| PageError::from(anyhow::anyhow!(error)))?;
+        if restore.is_some_and(|(status, _)| status == "completed") {
+            selections.push(format!("data_volume: {}", row.name));
+        }
+    }
+    Ok(selections)
+}
+
 pub struct RecoveryPointItem {
     pub id: String,
     pub completed: String,
@@ -2199,7 +2271,7 @@ pub struct AppShellPage {
 
 pub struct TemplateConnection {
     pub environment: Vec<(String, String)>,
-    pub credential: Option<(String, String)>,
+    pub credentials: Vec<(String, Option<String>)>,
     pub storage: String,
 }
 
@@ -2337,6 +2409,7 @@ pub struct AppSettingsData {
     pub next: Option<i32>,
     pub errors: std::collections::BTreeMap<&'static str, String>,
     pub banners: std::collections::BTreeMap<&'static str, String>,
+    pub completed_data_selections: Vec<String>,
 }
 
 /// Borrowed options for the form components' slice props. Built once from the
@@ -2423,6 +2496,7 @@ pub struct AppSettingsPage<'a> {
     pub form: crate::templates::FormState<'a>,
     pub options: SettingsOptions<'a>,
     pub update: &'a ImageUpdateView,
+    pub completed_data_selections: &'a [String],
 }
 
 pub struct AppDetailPage {
@@ -2532,6 +2606,16 @@ pub(super) async fn app_view(
             .list(membership.organisation_id, view.row.app_id)
             .await
             .map_err(|e| PageError::from(anyhow::anyhow!(e)))?
+    } else {
+        Vec::new()
+    };
+    let completed_data_selections = if tab == "settings" && membership.role == "owner" {
+        if let Some(owner) = &listing.stack {
+            completed_data_selections(state, membership.organisation_id, owner, &volume_rows)
+                .await?
+        } else {
+            Vec::new()
+        }
     } else {
         Vec::new()
     };
@@ -2689,7 +2773,7 @@ pub(super) async fn app_view(
             .await
             .map_err(anyhow::Error::from)?;
             match origin.as_deref() {
-                Some(key @ ("postgres" | "redis")) => {
+                Some(key @ ("postgres" | "redis" | "seaweedfs")) => {
                     let postgres = key == "postgres";
                     let env = |name: &str, fallback: &str| {
                         spec.env
@@ -2697,18 +2781,28 @@ pub(super) async fn app_view(
                             .find(|env| env.name == name)
                             .map_or_else(|| fallback.to_string(), |env| env.value.clone())
                     };
-                    let mut environment = vec![
-                        (
-                            (if postgres { "PGHOST" } else { "REDIS_HOST" }).into(),
-                            format!("{name}.grund.internal"),
-                        ),
-                        (
-                            (if postgres { "PGPORT" } else { "REDIS_PORT" }).into(),
-                            spec.ports
-                                .first()
-                                .map_or_else(String::new, |p| p.port.to_string()),
-                        ),
-                    ];
+                    let mut environment = if key == "seaweedfs" {
+                        vec![
+                            (
+                                "S3_ENDPOINT".into(),
+                                format!("http://{name}.grund.internal:8333"),
+                            ),
+                            ("S3_REGION".into(), "us-east-1".into()),
+                        ]
+                    } else {
+                        vec![
+                            (
+                                (if postgres { "PGHOST" } else { "REDIS_HOST" }).into(),
+                                format!("{name}.grund.internal"),
+                            ),
+                            (
+                                (if postgres { "PGPORT" } else { "REDIS_PORT" }).into(),
+                                spec.ports
+                                    .first()
+                                    .map_or_else(String::new, |p| p.port.to_string()),
+                            ),
+                        ]
+                    };
                     if postgres {
                         environment.push(("PGDATABASE".into(), env("POSTGRES_DB", "grund")));
                         environment.push(("PGUSER".into(), env("POSTGRES_USER", "grund")));
@@ -2717,29 +2811,28 @@ pub(super) async fn app_view(
                         .generated_credentials(membership.organisation_id, view.row.app_id)
                         .await
                         .map_err(|error| PageError::from(anyhow::anyhow!(error)))?;
-                    let variable = if postgres {
-                        "POSTGRES_PASSWORD"
-                    } else {
-                        "REDIS_PASSWORD"
+                    let variables: &[(&str, &str)] = match key {
+                        "postgres" => &[("PGPASSWORD", "POSTGRES_PASSWORD")],
+                        "redis" => &[("REDIS_PASSWORD", "REDIS_PASSWORD")],
+                        _ => &[
+                            ("S3_ACCESS_KEY_ID", "S3_ACCESS_KEY_ID"),
+                            ("S3_SECRET_ACCESS_KEY", "S3_SECRET_ACCESS_KEY"),
+                        ],
                     };
-                    let credential = spec
-                        .secrets
+                    let credentials = variables
                         .iter()
-                        .find(|read| {
-                            read.env == variable
-                                && generated.iter().any(|(name, _)| *name == read.secret)
-                        })
-                        .map(|read| {
-                            (
-                                (if postgres {
-                                    "PGPASSWORD"
-                                } else {
-                                    "REDIS_PASSWORD"
+                        .map(|(consumer, variable)| {
+                            let secret = spec
+                                .secrets
+                                .iter()
+                                .find(|read| {
+                                    read.env == *variable
+                                        && generated.iter().any(|(name, _)| *name == read.secret)
                                 })
-                                .into(),
-                                read.secret.clone(),
-                            )
-                        });
+                                .map(|read| read.secret.clone());
+                            ((*consumer).into(), secret)
+                        })
+                        .collect();
                     let storage = match spec.volumes.first() {
                         Some(volume) => match volume.size_gib {
                             Some(size) => format!(
@@ -2759,7 +2852,7 @@ pub(super) async fn app_view(
                     };
                     Some(TemplateConnection {
                         environment,
-                        credential,
+                        credentials,
                         storage,
                     })
                 }
@@ -3095,6 +3188,7 @@ pub(super) async fn app_view(
             next: newest.map(|r| r.number + 1),
             errors: refused.refusal.fields,
             banners,
+            completed_data_selections,
         },
     };
     let status = if refused.part.is_empty() {
@@ -3154,6 +3248,7 @@ pub(super) async fn app_view(
                         next: page.settings.next,
                         update: &page.update,
                         manages: page.shell.manages,
+                        completed_data_selections: &page.settings.completed_data_selections,
                         owner: page.owner,
                         form: crate::templates::FormState {
                             csrf,
@@ -4306,8 +4401,8 @@ pub struct VolumeRestoreForm {
     idempotency_key: String,
 }
 
-/// Restores a verified point to a fresh, app-owned managed directory; it
-/// cannot overwrite the original volume or a customer host path.
+/// Requests an asynchronous restore to a fresh app-owned directory or hosted
+/// block volume; it cannot overwrite the source volume or a customer host path.
 pub async fn restore_volume(
     AxumState(state): AxumState<State>,
     browser: Browser,
@@ -4876,6 +4971,7 @@ mod tests {
                 },
                 options: SettingsOptions::default(),
                 update: &update,
+                completed_data_selections: &[],
             })
         };
         let html = render(true);
@@ -4946,6 +5042,7 @@ mod tests {
             }],
             more: Vec::new(),
         });
+        let completed_data_selections = vec!["data_volume: recovered-db".to_string()];
         let edits = [
             SettingsEdit::Image {
                 image: "postgres:18".into(),
@@ -4997,15 +5094,17 @@ mod tests {
                         },
                         options: SettingsOptions::default(),
                         update: &update,
+                        completed_data_selections: &completed_data_selections,
                     });
                 assert!(html.contains("postgres:18"));
                 assert!(!html.contains("<form"));
                 assert!(!html.contains("?edit="));
+                assert_eq!(html.contains("data_volume: recovered-db"), owner);
             }
         }
         let connection = Some(TemplateConnection {
             environment: Vec::new(),
-            credential: Some(("PGPASSWORD".into(), "database-password".into())),
+            credentials: vec![("PGPASSWORD".into(), Some("database-password".into()))],
             storage: String::new(),
         });
         for manages in [false, true] {

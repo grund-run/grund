@@ -126,19 +126,36 @@ async fn generated_credentials_require_current_owner_or_admin_and_commit_value_f
 ) -> anyhow::Result<()> {
     let registry = registry::FakeRegistry::start().await?;
     let state = state(pool, &registry).await?;
+    for (template, key) in [
+        ("postgres", "postgres-password"),
+        ("seaweedfs", "s3-access-key-id"),
+        ("seaweedfs", "s3-secret-access-key"),
+    ] {
+        assert_generated_credential_authorization_and_audit(&state, &registry, template, key)
+            .await?;
+    }
+    Ok(())
+}
+
+async fn assert_generated_credential_authorization_and_audit(
+    state: &State,
+    registry: &registry::FakeRegistry,
+    template: &'static str,
+    key: &str,
+) -> anyhow::Result<()> {
+    let initial_audits = audit_count(state).await?;
     let org = Uuid::now_v7();
     let foreign_org = Uuid::now_v7();
     let owner = Uuid::now_v7();
     let admin = Uuid::now_v7();
     let member = Uuid::now_v7();
     let outsider = Uuid::now_v7();
-    membership(&state, org, owner, "owner").await?;
-    membership(&state, org, admin, "admin").await?;
-    membership(&state, org, member, "member").await?;
-    membership(&state, foreign_org, outsider, "owner").await?;
-    let release = launch(&state, &registry, owner, org, "database", "postgres").await?;
+    membership(state, org, owner, "owner").await?;
+    membership(state, org, admin, "admin").await?;
+    membership(state, org, member, "member").await?;
+    membership(state, foreign_org, outsider, "owner").await?;
+    let release = launch(state, registry, owner, org, "database", template).await?;
     let apps = state.apps();
-    let key = "postgres-password";
     for (actor, tenant, name, secret) in [
         (member, org, "database", key),
         (outsider, org, "database", key),
@@ -152,7 +169,7 @@ async fn generated_credentials_require_current_owner_or_admin_and_commit_value_f
             CredentialReveal::Unavailable
         ));
     }
-    assert_eq!(audit_count(&state).await?, 0);
+    assert_eq!(audit_count(state).await?, initial_audits);
     let before: DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
         .fetch_one(&state.pool)
         .await?;
@@ -172,8 +189,12 @@ async fn generated_credentials_require_current_owner_or_admin_and_commit_value_f
         .fetch_one(&state.pool)
         .await?;
     let audits: Vec<Value> = sqlx::query_scalar(
-        "SELECT to_jsonb(a) FROM grund_template_credential_reveals a ORDER BY actor",
+        "SELECT to_jsonb(a) FROM grund_template_credential_reveals a \
+         WHERE organisation_id=$1 AND app_id=$2 AND name=$3 ORDER BY actor",
     )
+    .bind(org)
+    .bind(release.app_id)
+    .bind(key)
     .fetch_all(&state.pool)
     .await?;
     assert_eq!(audits.len(), 2);
@@ -238,7 +259,7 @@ async fn generated_credentials_require_current_owner_or_admin_and_commit_value_f
             .await?,
         CredentialReveal::Unavailable
     ));
-    assert_eq!(audit_count(&state).await?, 2);
+    assert_eq!(audit_count(state).await?, initial_audits + 2);
     Ok(())
 }
 
@@ -248,24 +269,41 @@ async fn template_redeploy_keeps_credential_versions_and_owned_volume_identity(
 ) -> anyhow::Result<()> {
     let registry = registry::FakeRegistry::start().await?;
     let state = state(pool, &registry).await?;
-    let org = Uuid::now_v7();
-    let owner = Uuid::now_v7();
-    membership(&state, org, owner, "owner").await?;
     let apps = state.apps();
-    for (template, secret) in [
-        ("postgres", "postgres-password"),
-        ("redis", "redis-password"),
+    for (template, secrets) in [
+        ("postgres", &["postgres-password"][..]),
+        ("redis", &["redis-password"][..]),
+        (
+            "seaweedfs",
+            &["s3-access-key-id", "s3-secret-access-key"][..],
+        ),
     ] {
+        let org = Uuid::now_v7();
+        let owner = Uuid::now_v7();
+        membership(&state, org, owner, "owner").await?;
         let initial = launch(&state, &registry, owner, org, template, template).await?;
-        let credential = value(
-            apps.reveal_template_credential(owner, org, template, secret)
-                .await?,
-        )?;
+        let mut credentials = Vec::new();
+        for &secret in secrets {
+            credentials.push((
+                secret,
+                value(
+                    apps.reveal_template_credential(owner, org, template, secret)
+                        .await?,
+                )?,
+            ));
+        }
         let volumes = apps.volumes(org, template).await?;
         assert_eq!(volumes.len(), 1);
-        assert_eq!(initial.secret_versions.0.len(), 1);
-        assert_eq!(initial.secret_versions.0[0].name, secret);
-        assert_eq!(initial.secret_versions.0[0].version, 1);
+        assert_eq!(initial.secret_versions.0.len(), secrets.len());
+        for &secret in secrets {
+            let version = initial
+                .secret_versions
+                .0
+                .iter()
+                .find(|version| version.name == secret)
+                .expect("each generated credential is pinned in the release");
+            assert_eq!(version.version, 1);
+        }
         let redeployed = apps
             .change(
                 owner,
@@ -286,22 +324,24 @@ async fn template_redeploy_keeps_credential_versions_and_owned_volume_identity(
         assert_eq!(retained.len(), 1);
         assert_eq!(retained[0].volume_id, volumes[0].volume_id);
         assert_eq!(retained[0].path, volumes[0].path);
-        let revealed = value(
-            apps.reveal_template_credential(owner, org, template, secret)
-                .await?,
-        )?;
-        anyhow::ensure!(
-            credential == revealed,
-            "redeploy does not rotate the credential"
-        );
-        let versions: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM grund_app_secrets WHERE app_id=$1 AND name=$2",
-        )
-        .bind(initial.app_id)
-        .bind(secret)
-        .fetch_one(&state.pool)
-        .await?;
-        assert_eq!(versions, 1);
+        for (secret, credential) in credentials {
+            let revealed = value(
+                apps.reveal_template_credential(owner, org, template, secret)
+                    .await?,
+            )?;
+            anyhow::ensure!(
+                credential == revealed,
+                "redeploy does not rotate the credential"
+            );
+            let versions: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM grund_app_secrets WHERE app_id=$1 AND name=$2",
+            )
+            .bind(initial.app_id)
+            .bind(secret)
+            .fetch_one(&state.pool)
+            .await?;
+            assert_eq!(versions, 1);
+        }
     }
     Ok(())
 }
@@ -312,88 +352,115 @@ async fn user_entered_secrets_stay_write_only_even_when_replacing_a_generated_va
 ) -> anyhow::Result<()> {
     let registry = registry::FakeRegistry::start().await?;
     let state = state(pool, &registry).await?;
-    let org = Uuid::now_v7();
-    let owner = Uuid::now_v7();
-    let admin = Uuid::now_v7();
-    membership(&state, org, owner, "owner").await?;
-    membership(&state, org, admin, "admin").await?;
-    let initial = launch(&state, &registry, owner, org, "database", "postgres").await?;
-    let apps = state.apps();
-    let key = "postgres-password";
-    let generated = value(
-        apps.reveal_template_credential(owner, org, "database", key)
-            .await?,
-    )?;
-    let mut custom_spec = grund_domain::app::templates::find("postgres")
-        .unwrap()
-        .spec(false)
-        .unwrap();
-    custom_spec.image = registry.image("postgres", "test");
-    let (_, custom) = apps
-        .launch(
-            owner,
-            org,
-            Launch {
-                name: "custom".into(),
-                settings: SettingsInput::default(),
-                spec: custom_spec,
-                detect_port: None,
-                secrets: vec![(
-                    "POSTGRES_PASSWORD".into(),
-                    "user-entered-test-password".into(),
-                )],
-                generated_template: None,
-            },
-        )
-        .await?;
-    for actor in [owner, admin] {
-        assert!(matches!(
-            apps.reveal_template_credential(actor, org, "custom", key)
-                .await?,
-            CredentialReveal::Unavailable
-        ));
-    }
-    assert!(
-        apps.generated_credentials(org, custom.app_id)
-            .await?
-            .is_empty()
-    );
-    apps.set_secret(
-        owner,
-        org,
-        "database",
-        "user-password",
-        b"user-entered-test-password",
-    )
-    .await?;
-    let (_, version, _) = apps
-        .set_secret(owner, org, "database", key, generated.as_bytes())
-        .await?;
-    assert_eq!(version, 2);
-    for actor in [owner, admin] {
-        for secret in [key, "user-password"] {
-            assert!(matches!(
-                apps.reveal_template_credential(actor, org, "database", secret)
-                    .await?,
-                CredentialReveal::Unavailable
+    for (template, credentials) in [
+        (
+            "postgres",
+            &[("POSTGRES_PASSWORD", "postgres-password")][..],
+        ),
+        (
+            "seaweedfs",
+            &[
+                ("S3_ACCESS_KEY_ID", "s3-access-key-id"),
+                ("S3_SECRET_ACCESS_KEY", "s3-secret-access-key"),
+            ][..],
+        ),
+    ] {
+        let org = Uuid::now_v7();
+        let owner = Uuid::now_v7();
+        let admin = Uuid::now_v7();
+        membership(&state, org, owner, "owner").await?;
+        membership(&state, org, admin, "admin").await?;
+        let initial = launch(&state, &registry, owner, org, "database", template).await?;
+        let apps = state.apps();
+        let initial_audits = audit_count(&state).await?;
+        let mut generated = Vec::new();
+        for &(_, key) in credentials {
+            generated.push((
+                key,
+                value(
+                    apps.reveal_template_credential(owner, org, "database", key)
+                        .await?,
+                )?,
             ));
         }
+        let mut custom_spec = grund_domain::app::templates::find(template)
+            .unwrap()
+            .spec(false)
+            .unwrap();
+        custom_spec.image = registry.image(template, "test");
+        let (_, custom) = apps
+            .launch(
+                owner,
+                org,
+                Launch {
+                    name: "custom".into(),
+                    settings: SettingsInput::default(),
+                    spec: custom_spec,
+                    detect_port: None,
+                    secrets: credentials
+                        .iter()
+                        .map(|(env, _)| ((*env).into(), "user-entered-test-password".into()))
+                        .collect(),
+                    generated_template: None,
+                },
+            )
+            .await?;
+        for actor in [owner, admin] {
+            for &(_, key) in credentials {
+                assert!(matches!(
+                    apps.reveal_template_credential(actor, org, "custom", key)
+                        .await?,
+                    CredentialReveal::Unavailable
+                ));
+            }
+        }
+        assert!(
+            apps.generated_credentials(org, custom.app_id)
+                .await?
+                .is_empty()
+        );
+        apps.set_secret(
+            owner,
+            org,
+            "database",
+            "user-password",
+            b"user-entered-test-password",
+        )
+        .await?;
+        for (key, generated) in generated {
+            let (_, version, _) = apps
+                .set_secret(owner, org, "database", key, generated.as_bytes())
+                .await?;
+            assert_eq!(version, 2);
+            for actor in [owner, admin] {
+                for secret in [key, "user-password"] {
+                    assert!(matches!(
+                        apps.reveal_template_credential(actor, org, "database", secret)
+                            .await?,
+                        CredentialReveal::Unavailable
+                    ));
+                }
+            }
+            let pinned: Vec<i32> = sqlx::query_scalar(
+                "SELECT version FROM grund_template_credentials WHERE organisation_id=$1 AND app_id=$2 AND name=$3",
+            )
+            .bind(org)
+            .bind(initial.app_id)
+            .bind(key)
+            .fetch_all(&state.pool)
+            .await?;
+            assert_eq!(pinned, vec![1]);
+        }
+        assert!(
+            apps.generated_credentials(org, initial.app_id)
+                .await?
+                .is_empty()
+        );
+        assert_eq!(
+            audit_count(&state).await?,
+            initial_audits + credentials.len() as i64
+        );
     }
-    assert!(
-        apps.generated_credentials(org, initial.app_id)
-            .await?
-            .is_empty()
-    );
-    assert_eq!(audit_count(&state).await?, 1);
-    let pinned: Vec<i32> = sqlx::query_scalar(
-        "SELECT version FROM grund_template_credentials WHERE organisation_id=$1 AND app_id=$2 AND name=$3",
-    )
-    .bind(org)
-    .bind(initial.app_id)
-    .bind(key)
-    .fetch_all(&state.pool)
-    .await?;
-    assert_eq!(pinned, vec![1]);
     Ok(())
 }
 

@@ -130,14 +130,14 @@ props crate::web::pages::StyleGuidePage { viewer, csrf, swatches, sprite_icons, 
     <Specimen title="Fields in a row" code={r#"<Form action={url} csrf={csrf} layout={Some("row")}><Field name="email" label="Email" kind="email" /><ChipsField name="role" label="Role" options={roles} multiple={false} /><Button label="Send invitation" /></Form>"#} note="A form of one or two fields and its button: side by side, the button level with the boxes; each field takes the whole width below 900 px.">
       <Form action="#sg-forms" csrf={csrf} layout={Some("row")}><Field name="sg-invite" label="Email" kind="email" required placeholder={Some("name@example.com")} /><ChipsField name="sg-invite-role" label="Role" options={&[("member", "Member"), ("admin", "Admin")]} selected="member" /><ButtonAdvanced label="Send invitation" kind="primary" button_type="button" /></Form>
     </Specimen>
-    <Specimen title="Labelled select in a headerless panel" code={r#"<Panel id="source"><Select name="template" label="Template" required hint="Choose an available template." options={templates} selected="nats" /><Select name="template_error" label="Template" required error="Choose an available template."><option value="nats" selected>NATS</option><option value="minio" disabled>MinIO · Unavailable</option></Select></Panel>"#} note="An empty panel title omits its heading. Select shares Field's label and hint or error; omit id to use name. Tuple options cover ordinary choices; children allow disabled options.">
+    <Specimen title="Labelled select in a headerless panel" code={r#"<Panel id="source"><Select name="template" label="Template" required hint="Choose an available template." options={templates} selected="nats" /><Select name="template_error" label="Template" required error="Choose an available template."><option value="nats" selected>NATS</option><option value="seaweedfs" disabled>SeaweedFS · Needs storage</option></Select></Panel>"#} note="An empty panel title omits its heading. Select shares Field's label and hint or error; omit id to use name. Tuple options cover ordinary choices; children allow disabled options.">
       <Panel id="sg-select">
         <Select name="sg-select-template" label="Template" required hint="Choose an available template." options={&[("nats", "NATS"), ("whoami", "whoami"), ("nginx", "nginx")]} selected="nats" />
         <Select name="sg-select-template-focus" label="Template (focus)" required state="focus" options={&[("nats", "NATS"), ("whoami", "whoami")]} selected="whoami" />
         <Select name="sg-select-template-error" label="Template (error)" required error="Choose an available template.">
           <option value="" selected>Choose a template</option>
           <option value="nats">NATS</option>
-          <option value="minio" disabled>MinIO · Unavailable</option>
+          <option value="seaweedfs" disabled>SeaweedFS · Needs storage</option>
         </Select>
       </Panel>
     </Specimen>
@@ -183,7 +183,7 @@ props crate::web::pages::StyleGuidePage { viewer, csrf, swatches, sprite_icons, 
       </ChoiceField>
       <ChoiceField name="sg-template" label="App (large, with a disabled one and an error)" error="Choose one of the apps." large>
         <ChoiceCard name="sg-template" value="nats" title="NATS" text="A messaging server for applications that publish and receive messages." image="nats" />
-        <ChoiceCard name="sg-template" value="minio" title="MinIO" text="Public images are unavailable." image="minio" disabled tag="Unavailable" />
+        <ChoiceCard name="sg-template" value="seaweedfs" title="SeaweedFS" text="No connected machine has enough storage." icon="image" disabled tag="Needs storage" />
       </ChoiceField>
       <Para kind="hint">Template logos keep a 2.75rem box aligned with the title, including when the description wraps.</Para>
       <ChoiceField name="sg-states" label="States (hover, focus)"><ChoiceCard name="sg-states" value="a" title="Hover" text="state: hover" icon="lock" state="hover" /><ChoiceCard name="sg-states" value="b" title="Focus" text="state: focus" icon="globe" state="focus" /></ChoiceField>
