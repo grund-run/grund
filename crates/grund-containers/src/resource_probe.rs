@@ -458,7 +458,7 @@ fn child_cleanup_available() -> io::Result<()> {
     let waited = unsafe {
         libc::waitid(
             libc::P_PIDFD,
-            libc::id_t::MAX,
+            libc::c_int::MAX as libc::id_t,
             &raw mut info,
             libc::WEXITED | libc::WNOHANG,
         )
@@ -545,6 +545,36 @@ mod tests {
         fn drop(&mut self) {
             fs::remove_dir_all(&self.path).unwrap();
         }
+    }
+
+    #[test]
+    fn cleanup_preflight_supports_pidfds_without_reaping_other_children() {
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "exit 37"])
+            .spawn()
+            .unwrap();
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, child.id(), 0) };
+        if fd < 0 {
+            let error = io::Error::last_os_error();
+            let _ = child.wait();
+            panic!("open owned test child pidfd: {error}");
+        }
+        let pidfd = unsafe { File::from_raw_fd(fd as RawFd) };
+        let mut ready = libc::pollfd {
+            fd: pidfd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let exited = unsafe { libc::poll(&raw mut ready, 1, 5_000) };
+        let preflight = child_cleanup_available();
+        let status = child.wait().unwrap();
+        assert_eq!(exited, 1);
+        assert_ne!(ready.revents & libc::POLLIN, 0);
+        assert_eq!(status.code(), Some(37));
+        assert!(
+            preflight.is_ok(),
+            "pidfd cleanup unavailable: {preflight:?}"
+        );
     }
 
     #[test]
