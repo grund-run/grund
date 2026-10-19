@@ -83,8 +83,13 @@ install `docker.io`, `docker-cli` and `docker-compose` first.
 ### Start without a domain
 
 ```sh
-sudo "$(command -v grund)" install
+sudo "$(command -v grund)" server install
 ```
+
+Releases up to alpha.11 spell `grund server install`, `grund server
+uninstall`, `grund server update` and `grund leave` as `grund install`,
+`grund uninstall`, `grund update server` and `grund uninstall agent`, and
+connect a machine with `grund install --url URL --code CODE`.
 
 On a terminal, leave the domain question empty to run locally. Scripts
 use that same local default without prompting; `--yes` also suppresses
@@ -101,7 +106,7 @@ To add HTTPS later, point a DNS name at this machine, make TCP 443
 reachable, then run:
 
 ```sh
-sudo "$(command -v grund)" install --domain grund.example.com
+sudo "$(command -v grund)" server install --domain grund.example.com
 ```
 
 That upgrades the local server to TLS without replacing its data,
@@ -114,15 +119,16 @@ not an app's.
 The explicit domain path, also supported by alphas .5 through .9, is:
 
 ```sh
-sudo "$(command -v grund)" install --domain grund.example.com
+sudo "$(command -v grund)" server install --domain grund.example.com
 sudo docker compose --project-directory /opt/grund exec grund /grund setup-link
 # Open the link, create the owner, and get a setup code on Machines.
-sudo "$(command -v grund)" install --domain grund.example.com --code CODE
+sudo "$(command -v grund)" server install --domain grund.example.com --code CODE
 grund auth login https://grund.example.com
 ```
 
-`grund install --url https://grund.example.com --code CODE` installs only
-the agent for an existing instance, not another server. `grund agent`
+`sudo grund join https://grund.example.com --code CODE` connects another
+machine to an existing instance: it installs only what the machine runs,
+not another server. `grund agent`
 remains the foreground runner: it uses an existing registration, waits
 for owner setup after a managed local install, or asks you to install or
 join first on an unregistered machine.
@@ -142,14 +148,15 @@ settings are refused instead of overwritten.
 | Operation | Command |
 |---|---|
 | Inspect the managed services | `sudo systemctl status grund-server grund-agent` |
-| Preview service removal | `sudo grund uninstall --dry-run --json` |
-| Stop and remove managed services | `sudo grund uninstall --yes` |
+| Preview removing the dashboard's services | `sudo grund server uninstall --dry-run --json` |
+| Stop and remove the dashboard's services | `sudo grund server uninstall --yes` |
+| Disconnect this machine, keeping its identity | `sudo grund leave --yes` |
 | Preview an update to this CLI only | `grund update --channel alpha --dry-run` |
 | Replace this CLI after checksum/version verification | `grund update --channel alpha --yes` |
-| Preview a managed server update | `sudo "$(command -v grund)" update server --channel alpha --dry-run` |
-| Back up, preflight, migrate and update the server | `sudo "$(command -v grund)" update server --channel alpha --yes` |
+| Preview a managed server update | `sudo "$(command -v grund)" server update --channel alpha --dry-run` |
+| Back up, preflight, migrate and update the server | `sudo "$(command -v grund)" server update --channel alpha --yes` |
 
-Uninstall retains `/opt/grund`, both server data volumes, machine identity
+`server uninstall` and `leave` retain `/opt/grund`, both server data volumes, machine identity
 and workload disks. It does not revoke the retained machine automatically
 or undo host networking. CLI/server updates do not directly replace agent
 executables; explicitly enabled [machine following](#machines-following-their-instance)
@@ -166,7 +173,7 @@ The updater stops writes and validates a root-only recovery set under
 It leaves a recovery journal after a cutover failure and never automatically
 starts an older image against a migrated database. **Recovery replaces both
 instance volumes and managed configuration together**; keep independent backups
-and external TLS files. `grund update server --help` lists the supported scope.
+and external TLS files. `grund server update --help` lists the supported scope.
 
 To build from a checkout instead:
 

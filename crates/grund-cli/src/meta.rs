@@ -165,24 +165,20 @@ pub const LEAVES: &[Leaf] = &[
         &["grund stack restore shop --wait"],
     ),
     write(
-        "install",
+        "join",
         "grund.cli.v1.HostInstallation",
         &[],
         &[
-            "grund install --domain grund.example.com",
-            "grund install --url https://grund.example.com --code CODE",
+            "sudo grund join https://grund.example.com --code CODE",
+            "sudo grund join https://grund.example.com --dry-run",
         ],
     ),
     Leaf {
         output: "grund.cli.v1.HostUninstallation",
         ..destroy(
-            "uninstall",
+            "leave",
             &[],
-            &[
-                "grund uninstall --dry-run",
-                "grund uninstall --yes",
-                "grund uninstall agent --yes",
-            ],
+            &["sudo grund leave --dry-run", "sudo grund leave --yes"],
         )
     },
     Leaf {
@@ -197,15 +193,35 @@ pub const LEAVES: &[Leaf] = &[
             ],
         )
     },
+    write(
+        "server install",
+        "grund.cli.v1.HostInstallation",
+        &[],
+        &[
+            "sudo grund server install --domain grund.example.com",
+            "sudo grund server install --dry-run",
+        ],
+    ),
     Leaf {
         destructive: true,
         ..write(
-            "update server",
+            "server update",
             "grund.cli.v1.HostUpdate",
             &[],
             &[
-                "grund update server --dry-run",
-                "grund update server --channel alpha --yes",
+                "sudo grund server update --dry-run",
+                "sudo grund server update --channel alpha --yes",
+            ],
+        )
+    },
+    Leaf {
+        output: "grund.cli.v1.HostUninstallation",
+        ..destroy(
+            "server uninstall",
+            &[],
+            &[
+                "sudo grund server uninstall --dry-run",
+                "sudo grund server uninstall --yes",
             ],
         )
     },

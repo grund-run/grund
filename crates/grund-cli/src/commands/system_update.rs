@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use clap::{Args, Subcommand};
+use clap::Args;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::process::Command;
@@ -25,47 +25,33 @@ use crate::{
     progress::Progress,
 };
 
-/// Update only the client executable, or explicitly update the managed server.
+/// `grund update`: this computer's grund. `grund server update` sets
+/// `server` to update the installer-managed server instead.
 #[derive(Debug, Args)]
 pub struct UpdateArgs {
     #[command(flatten)]
     pub global: Global,
-    #[arg(long, global = true, help = "Exact public release tag")]
+    #[arg(long, help = "Exact public release tag")]
     pub version: Option<String>,
     #[arg(
         long,
-        global = true,
         value_enum,
         conflicts_with = "version",
         help = "Release channel; defaults to the installed release's channel"
     )]
     pub channel: Option<Channel>,
-    #[arg(
-        long,
-        global = true,
-        help = "Confirm executable replacement or server downtime"
-    )]
+    #[arg(long, help = "Confirm executable replacement or server downtime")]
     pub yes: bool,
-    #[arg(long, global = true, help = "Show technical failure details")]
+    #[arg(long, help = "Show technical failure details")]
     pub verbose: bool,
     #[arg(
         long,
-        global = true,
         help = "Resolve and show the update without downloading or mutating local state"
     )]
     pub dry_run: bool,
-    #[command(subcommand)]
-    pub target: Option<UpdateTarget>,
-}
-
-/// Server updates always take and validate a complete backup before migration.
-#[derive(Debug, Subcommand)]
-pub enum UpdateTarget {
-    #[command(
-        about = "Back up, check and update the installer-managed server; requires root and downtime",
-        long_about = "Back up, check and update the installer-managed server; requires root and downtime. Only compose.yaml plus an optional root-owned compose.override.yaml are supported; alternate override names and ambient COMPOSE_FILE, COMPOSE_ENV_FILES, COMPOSE_PROFILES and COMPOSE_PROJECT_NAME are refused. Store any profiles in /opt/grund/.env so preflight, migration and systemd use the same selection. The effective current and candidate stacks must retain the canonical local PostgreSQL database, key/password files, named volumes, service commands and default network; only separate read-only TLS bind mounts are supported as extra primary-service mounts. Unsupported primary topology is refused before downtime. The backup covers PostgreSQL, the instance data volume, and managed configuration including compose.override.yaml when present. Other services' data and external TLS files are not backed up; protect those separately before updating."
-    )]
-    Server,
+    /// Update the installer-managed server instead (`grund server update`).
+    #[arg(skip)]
+    pub server: bool,
 }
 
 fn refuse_downgrade(installed: &str, selected: &str) -> CliResult<()> {
@@ -282,7 +268,7 @@ fn validate_compose_context(root: &Path, ambient: impl Fn(&str) -> bool) -> CliR
     ] {
         if system::present(&root.join(name))? {
             return Err(CliError::new(Code::Conflict, format!("unsupported Compose override file: {}", root.join(name).display()))
-                .hint("Consolidate the override into the root-owned /opt/grund/compose.override.yaml before using grund update server, or maintain this deployment explicitly outside the managed updater."));
+                .hint("Consolidate the override into the root-owned /opt/grund/compose.override.yaml before using grund server update, or maintain this deployment explicitly outside the managed updater."));
         }
     }
     for key in [
@@ -885,7 +871,7 @@ async fn server_update(ctx: &Ctx, args: UpdateArgs) -> CliResult<Output> {
     progress
         .step(
             "Checking server prerequisites",
-            "Run sudo grund update server on the installer-managed Linux host with Docker running.",
+            "Run sudo grund server update on the installer-managed Linux host with Docker running.",
             platform(true),
         )
         .await?;
@@ -1133,7 +1119,7 @@ async fn server_update(ctx: &Ctx, args: UpdateArgs) -> CliResult<Output> {
 /// Resolve a trusted public release and update the selected local component.
 pub async fn update(ctx: &Ctx, args: UpdateArgs) -> CliResult<Output> {
     let progress = Progress::new(ctx, args.yes, args.verbose);
-    let server = args.target.is_some();
+    let server = args.server;
     let result = if server {
         server_update(ctx, args).await
     } else {
@@ -1147,7 +1133,7 @@ pub async fn update(ctx: &Ctx, args: UpdateArgs) -> CliResult<Output> {
                 error,
                 if server { "Server update" } else { "Client update" },
                 if server {
-                    "Run sudo grund doctor instance; keep any update journal and complete backup before retrying."
+                    "Run sudo grund server doctor; keep any update journal and complete backup before retrying."
                 } else {
                     "Check executable ownership and internet access, then retry with --verbose for details."
                 },
@@ -1161,7 +1147,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unattended_update_flags_work_on_either_side_of_the_server_target() {
+    fn unattended_update_flags_parse_for_this_computer_and_the_server() {
         use clap::Parser;
 
         for args in [
@@ -1175,29 +1161,39 @@ mod tests {
             ],
             vec![
                 "grund",
+                "server",
                 "update",
                 "--yes",
                 "--verbose",
                 "--dry-run",
                 "--json",
-                "server",
             ],
             vec![
                 "grund",
-                "update",
                 "server",
+                "--json",
+                "update",
                 "--yes",
                 "--verbose",
                 "--dry-run",
-                "--json",
             ],
         ] {
-            let parsed = crate::Standalone::try_parse_from(args).unwrap();
-            let crate::Command::Update(args) = parsed.command else {
-                panic!("expected an update");
+            let parsed = crate::Standalone::try_parse_from(&args).unwrap();
+            let (args, global) = match parsed.command {
+                crate::Command::Update(args) => {
+                    let global = args.global.clone();
+                    (args, global)
+                }
+                crate::Command::Server(noun) => match noun.action {
+                    crate::commands::server::ServerAction::Update(update) => {
+                        (update.into_update(), noun.global)
+                    }
+                    _ => panic!("expected a server update"),
+                },
+                _ => panic!("expected an update"),
             };
-            assert!(args.yes && args.verbose && args.dry_run && args.global.json);
-            let ctx = Ctx::new(args.global.clone());
+            assert!(args.yes && args.verbose && args.dry_run && global.json);
+            let ctx = Ctx::new(global);
             assert_eq!(ctx.format, crate::output::Format::Json);
             assert!(!ctx.interactive);
             assert!(ctx.confirm(args.yes, "must not prompt").is_ok());

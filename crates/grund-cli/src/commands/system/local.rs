@@ -118,7 +118,7 @@ pub(super) fn distribution(release: &str) -> CliResult<&'static str> {
         Some("debian") => Ok("Debian"),
         Some("ubuntu") => Ok("Ubuntu"),
         _ => Err(CliError::new(Code::Failed, "Automatic Docker setup is available only on Debian and Ubuntu.")
-            .hint("Install Docker and its 'docker compose' command from your distribution's packages, then run grund install again.")),
+            .hint("Install Docker and its 'docker compose' command from your distribution's packages, then run the same command again.")),
     }
 }
 
@@ -164,7 +164,7 @@ pub(super) async fn docker(progress: &Progress) -> CliResult<()> {
         progress
             .step(
                 &format!("Checking software from {distribution}"),
-                "Check this machine can reach its package servers, then run grund install again.",
+                "Check this machine can reach its package servers, then run the same command again.",
                 async {
                     run(
                         Command::new("/usr/bin/apt-get")
@@ -231,7 +231,7 @@ pub(super) async fn docker(progress: &Progress) -> CliResult<()> {
         label.push(')');
         progress.step(
             &label,
-            "Check the package manager's configuration and internet connection, then run grund install again.",
+            "Check the package manager's configuration and internet connection, then run the same command again.",
             async {
                 run(Command::new("/usr/bin/apt-get")
                     .args(["install", "--yes", "--no-install-recommends"])
@@ -257,7 +257,7 @@ pub(super) async fn docker(progress: &Progress) -> CliResult<()> {
     progress
         .step(
             "Checking Docker tools",
-            "Install Docker's command-line tools from this machine's package repositories, then run grund install again.",
+            "Install Docker's command-line tools from this machine's package repositories, then run the same command again.",
             super::platform(true),
         )
         .await
@@ -350,7 +350,11 @@ pub(super) async fn recover_domain(root: &Path) -> CliResult<()> {
         })?;
     atomic_write(&root.join(".env"), change.previous_env.as_bytes(), 0o600)?;
     atomic_write(&root.join(".installer-domain"), b"\n", 0o600)?;
-    start(root).await.map_err(|error| error.hint("The prior local configuration is restored. Start the managed server before retrying grund install."))?;
+    start(root).await.map_err(|error| {
+        error.hint(
+            "The prior local configuration is restored. Start the managed server before retrying.",
+        )
+    })?;
     fs::remove_file(root.join(DOMAIN_JOURNAL)).map_err(io)?;
     fs::File::open(root)
         .and_then(|file| file.sync_all())

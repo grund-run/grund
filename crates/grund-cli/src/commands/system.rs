@@ -79,6 +79,89 @@ pub struct InstallArgs {
     pub verbose: bool,
 }
 
+/// `grund join`: connect this machine to an instance, installing what it
+/// runs.
+#[derive(Debug, Args)]
+pub struct JoinArgs {
+    #[command(flatten)]
+    pub global: Global,
+    #[arg(
+        id = "url",
+        value_name = "INSTANCE",
+        help = "The instance's HTTPS address, such as https://grund.example.com"
+    )]
+    pub url: String,
+    #[arg(
+        long,
+        help = "One-time setup code from the instance's Machines page; a machine already connected keeps its identity without one"
+    )]
+    pub code: Option<String>,
+    #[arg(long, help = "Exact public release tag, such as v0.0.0-alpha.4")]
+    pub version: Option<String>,
+    #[arg(
+        long,
+        value_enum,
+        conflicts_with = "version",
+        help = "Release channel; development builds require an explicit selection"
+    )]
+    pub channel: Option<release::Channel>,
+    #[arg(long, help = "Do not install what runs VMs")]
+    pub no_vms: bool,
+    #[arg(
+        long,
+        help = "Show what would happen without downloading or changing this machine"
+    )]
+    pub dry_run: bool,
+    #[arg(long, help = "Do not ask, and show no animated output")]
+    pub yes: bool,
+    #[arg(long, help = "Show technical failure details")]
+    pub verbose: bool,
+}
+
+impl JoinArgs {
+    /// The installation it stands for.
+    pub fn into_install(self) -> InstallArgs {
+        InstallArgs {
+            global: self.global,
+            domain: None,
+            url: Some(self.url),
+            code: self.code,
+            version: self.version,
+            channel: self.channel,
+            no_vms: self.no_vms,
+            dry_run: self.dry_run,
+            yes: self.yes,
+            verbose: self.verbose,
+        }
+    }
+}
+
+/// `grund leave`: stop and remove what `grund join` installed.
+#[derive(Debug, Args)]
+pub struct LeaveArgs {
+    #[command(flatten)]
+    pub global: Global,
+    #[arg(long, help = "Confirm removing the machine's services")]
+    pub yes: bool,
+    #[arg(long, help = "Show exactly which services would be removed")]
+    pub dry_run: bool,
+    #[arg(long, help = "Show technical failure details")]
+    pub verbose: bool,
+}
+
+impl LeaveArgs {
+    /// The removal it stands for.
+    pub fn into_uninstall(self) -> UninstallArgs {
+        UninstallArgs {
+            global: self.global,
+            scope: Scope::Agent,
+            yes: self.yes,
+            dry_run: self.dry_run,
+            verbose: self.verbose,
+        }
+    }
+}
+
 /// Which installer-managed services to remove; persistent state is retained.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum Scope {
@@ -435,7 +518,7 @@ pub async fn install(ctx: &Ctx, args: InstallArgs) -> CliResult<Output> {
             progress.failure(
                 error,
                 "Installation",
-                "Run grund install --verbose for details.",
+                "Run it again with --verbose for details.",
             )
         }
     })
@@ -445,7 +528,7 @@ async fn install_inner(ctx: &Ctx, mut args: InstallArgs, progress: &Progress) ->
     progress
         .step(
             "Checking this machine",
-            "Run grund install as root on a machine running Linux and systemd.",
+            "Run it as root on a machine running Linux and systemd.",
             platform(false),
         )
         .await?;
@@ -521,7 +604,7 @@ async fn install_inner(ctx: &Ctx, mut args: InstallArgs, progress: &Progress) ->
     {
         return Err(
             CliError::new(Code::Conflict, "reinstall never changes the server release")
-                .hint("use grund update server --version TAG"),
+                .hint("use grund server update --version TAG"),
         );
     }
     if server
@@ -676,7 +759,7 @@ async fn install_inner(ctx: &Ctx, mut args: InstallArgs, progress: &Progress) ->
             progress
                 .step(
                     "Preparing your account setup",
-                    "Run grund install --verbose to see which setup step failed.",
+                    "Run it again with --verbose to see which setup step failed.",
                     async {
                         local::input(
                             compose(root).args([
@@ -711,7 +794,7 @@ async fn install_inner(ctx: &Ctx, mut args: InstallArgs, progress: &Progress) ->
         progress
             .step(
                 "Starting grund",
-                "Run grund install --verbose to see why grund could not start.",
+                "Run it again with --verbose to see why grund could not start.",
                 async {
                     atomic_write(Path::new(SERVER_UNIT), SERVER_SERVICE.as_bytes(), 0o644)?;
                     run(
@@ -758,7 +841,7 @@ async fn install_inner(ctx: &Ctx, mut args: InstallArgs, progress: &Progress) ->
         progress
             .step(
                 label,
-                "Run grund install --verbose to see why this machine could not connect.",
+                "Run it again with --verbose to see why this machine could not connect.",
                 agent_install(
                     staging.path(),
                     &binary,
@@ -1034,11 +1117,7 @@ pub async fn uninstall(ctx: &Ctx, args: UninstallArgs) -> CliResult<Output> {
             ) {
                 error
             } else {
-                progress.failure(
-                    error,
-                    "Removal",
-                    "Run grund uninstall --verbose for details.",
-                )
+                progress.failure(error, "Removal", "Run it again with --verbose for details.")
             }
         })
 }
@@ -1047,7 +1126,7 @@ async fn uninstall_inner(ctx: &Ctx, args: UninstallArgs, progress: &Progress) ->
     progress
         .step(
             "Checking this machine",
-            "Run grund uninstall as root on this machine.",
+            "Run it as root on this machine.",
             platform(false),
         )
         .await?;
@@ -1124,7 +1203,7 @@ async fn uninstall_inner(ctx: &Ctx, args: UninstallArgs, progress: &Progress) ->
         progress
             .step(
                 label,
-                "Run grund uninstall --verbose to see which service could not stop.",
+                "Run it again with --verbose to see which service could not stop.",
                 async {
                     run(
                         Command::new("/usr/bin/systemctl").args(["disable", "--now", unit]),

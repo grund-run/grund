@@ -131,11 +131,6 @@ enum Command {
     Probe(probe::ProbeArgs),
     #[command(
         hide = true,
-        about = "Register this machine with a grund instance, using a one-time setup code"
-    )]
-    Join(grund_agent::join::JoinArgs),
-    #[command(
-        hide = true,
         about = "Keep this machine connected to its instance and run what it asks for"
     )]
     Agent(AgentCommand),
@@ -500,7 +495,6 @@ impl Command {
                 target: DoctorTarget::Machine(machine),
             }) => Agent(AgentRole::Doctor(AgentDoctorArgs { json, machine })),
             Command::Probe(args) => Server(ServerCommand::Probe(args)),
-            Command::Join(args) => Agent(AgentRole::Join(args)),
             Command::Agent(command) => Agent(AgentRole::Run(command)),
             Command::AgentSupervisor(args) => Agent(AgentRole::Supervisor(args)),
             Command::MachineFollow(args) => Agent(AgentRole::Follow(args)),
@@ -563,6 +557,15 @@ fn invoked_as(args: &[String]) -> Option<Invoked> {
     }
 }
 
+fn runtime_join(args: &[String]) -> bool {
+    args.get(1).is_some_and(|a| a == "join")
+        && args.iter().skip(2).any(|a| {
+            ["--url", "--mmds", "--mmds-address", "--data-dir", "--name"]
+                .iter()
+                .any(|flag| a == flag || a.starts_with(&format!("{flag}=")))
+        })
+}
+
 /// Runs the common grund binary with extensions supplied by this build. Run
 /// by the name `grund-server` or `grund-agent` (a link to it), it is that
 /// binary: it parses and runs that role's commands only.
@@ -579,6 +582,12 @@ pub async fn run_with_extensions(
     let args: Vec<String> = std::env::args().collect();
     if let Some(result) = container_logs(&args) {
         return result;
+    }
+    if runtime_join(&args) {
+        let mut args = args;
+        args[0] = "grund-agent".to_string();
+        let cli = AgentCli::parse_from(&args);
+        return run_role(Role::Agent(cli.command), &cli.telemetry, extensions_for).await;
     }
     match invoked_as(&args) {
         Some(Invoked::Server) => {
@@ -769,6 +778,28 @@ mod tests {
         assert_eq!(run("/usr/local/bin/grund-agent"), Some(Invoked::Agent));
         assert_eq!(run("/grund"), None);
         assert_eq!(run("grund-server-old"), None);
+    }
+
+    #[test]
+    fn a_join_with_the_agents_flags_still_reaches_the_agents_join() {
+        let words = |line: &str| line.split(' ').map(str::to_string).collect::<Vec<_>>();
+        assert!(runtime_join(&words("grund join --mmds")));
+        assert!(runtime_join(&words(
+            "grund join --url https://grund.example.com --data-dir /var/lib/grund/agent --name box CODE"
+        )));
+        assert!(runtime_join(&words(
+            "grund join --url=https://grund.example.com CODE"
+        )));
+        assert!(!runtime_join(&words(
+            "grund join https://grund.example.com --code CODE"
+        )));
+        assert!(!runtime_join(&words("grund app list --name x")));
+        let mut args = words("grund-agent join --mmds");
+        args[0] = "grund-agent".into();
+        assert!(matches!(
+            AgentCli::try_parse_from(&args).unwrap().command,
+            AgentRole::Join(_)
+        ));
     }
 
     #[test]

@@ -170,7 +170,8 @@ message MachineAdded {
   // Installs grund and joins, run as root on the machine; empty when the
   // instance names no installer.
   string install_command = 3;
-  // Joins a machine that has grund already.
+  // Connects a machine that has the grund CLI: `sudo grund join INSTANCE
+  // --code CODE` installs what the machine runs and registers it.
   string join_command = 4;
   // Present for --hosted; state can be waiting, joining or active.
   grund.machine.v1.Machine machine = 5;

@@ -12,6 +12,7 @@ pub mod notifications;
 pub mod orgs;
 pub mod registries;
 pub mod selfdesc;
+pub mod server;
 pub mod stacks;
 pub mod system;
 pub mod system_update;
@@ -29,9 +30,10 @@ use crate::{
 /// The first word of every client command, so a refused command line can
 /// be told apart from an operator's.
 pub const CLIENT_NOUNS: &[&str] = &[
-    "install",
-    "uninstall",
+    "join",
+    "leave",
     "update",
+    "server",
     "auth",
     "context",
     "org",
@@ -52,16 +54,14 @@ pub const CLIENT_NOUNS: &[&str] = &[
 /// A client command.
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    #[command(
-        about = "Install the self-hosted dashboard or connect this machine; requires Linux and root"
-    )]
-    Install(system::InstallArgs),
-    #[command(about = "Stop and remove managed services, keeping configuration, identity and data")]
-    Uninstall(system::UninstallArgs),
-    #[command(
-        about = "Update grund on this computer, or back up and update the self-hosted server"
-    )]
+    #[command(about = "Connect this machine to an instance")]
+    Join(system::JoinArgs),
+    #[command(about = "Disconnect this machine, keeping its identity and data")]
+    Leave(system::LeaveArgs),
+    #[command(about = "Update grund on this computer")]
     Update(system_update::UpdateArgs),
+    #[command(about = "Run your own dashboard here")]
+    Server(server::ServerCommand),
     #[command(about = "Sign in and access tokens")]
     Auth(auth::AuthCommand),
     #[command(about = "Switch between instances and organisations")]
@@ -107,9 +107,10 @@ impl Command {
     /// The global flags given with it.
     pub fn global(&self) -> &Global {
         match self {
-            Command::Install(a) => &a.global,
-            Command::Uninstall(a) => &a.global,
+            Command::Join(a) => &a.global,
+            Command::Leave(a) => &a.global,
             Command::Update(a) => &a.global,
+            Command::Server(c) => &c.global,
             Command::Auth(c) => &c.global,
             Command::Context(c) => &c.global,
             Command::Org(c) => &c.global,
@@ -138,9 +139,20 @@ pub async fn execute(
     revision: &'static str,
 ) -> CliResult<Option<Output>> {
     let output = match command {
-        Command::Install(args) => system::install(ctx, args).await?,
-        Command::Uninstall(args) => system::uninstall(ctx, args).await?,
+        Command::Join(args) => system::install(ctx, args.into_install()).await?,
+        Command::Leave(args) => system::uninstall(ctx, args.into_uninstall()).await?,
         Command::Update(args) => system_update::update(ctx, args).await?,
+        Command::Server(command) => match command.action {
+            server::ServerAction::Install(args) => {
+                system::install(ctx, args.into_install()).await?
+            }
+            server::ServerAction::Update(args) => {
+                system_update::update(ctx, args.into_update()).await?
+            }
+            server::ServerAction::Uninstall(args) => {
+                system::uninstall(ctx, args.into_uninstall()).await?
+            }
+        },
         Command::Auth(command) => match command.action {
             auth::AuthAction::Login(args) => auth::login(ctx, args, revision).await?,
             auth::AuthAction::Logout => auth::logout(ctx).await?,

@@ -385,7 +385,8 @@ pub async fn run(ctx: &Ctx, action: MachinesAction) -> CliResult<Output> {
                 .call(&format!("{SERVICE}/CreateJoinToken"), request)
                 .await?;
             let token = answer["token"].as_str().unwrap_or_default().to_string();
-            answer["joinCommand"] = json!(format!("grund join --url {} {token}", api.origin()));
+            answer["joinCommand"] =
+                json!(format!("sudo grund join {} --code {token}", api.origin()));
             let shown = if answer["installCommand"]
                 .as_str()
                 .is_some_and(|c| !c.is_empty())

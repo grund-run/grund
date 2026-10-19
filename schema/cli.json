@@ -1728,7 +1728,7 @@
           "type": "string"
         },
         "joinCommand": {
-          "description": "Joins a machine that has grund already.",
+          "description": "Connects a machine that has the grund CLI: `sudo grund join INSTANCE --code CODE` installs what the machine runs and registers it.",
           "type": "string"
         },
         "machine": {
@@ -3580,21 +3580,15 @@
           "value_name": "JSON"
         },
         {
-          "description": "DNS name for the self-hosted dashboard; requires root, systemd and Docker Compose v2",
-          "flag": "--domain",
-          "name": "domain",
-          "type": "string",
-          "value_name": "DOMAIN"
-        },
-        {
-          "description": "Instance HTTPS address for a machine-only installation; a new machine also needs --code",
-          "flag": "--url",
+          "description": "The instance's HTTPS address, such as https://grund.example.com",
           "name": "url",
+          "positional": true,
+          "required": true,
           "type": "string",
-          "value_name": "URL"
+          "value_name": "INSTANCE"
         },
         {
-          "description": "One-time machine enrollment code; existing identity is preserved",
+          "description": "One-time setup code from the instance's Machines page; a machine already connected keeps its identity without one",
           "flag": "--code",
           "name": "code",
           "type": "string",
@@ -3612,21 +3606,21 @@
           "value_name": "CHANNEL"
         },
         {
-          "description": "Do not install VM prerequisites",
+          "description": "Do not install what runs VMs",
           "flag": "--no-vms",
           "name": "no_vms",
           "type": "boolean",
           "value_name": "NO_VMS"
         },
         {
-          "description": "Show the operation without downloading or changing this machine",
+          "description": "Show what would happen without downloading or changing this machine",
           "flag": "--dry-run",
           "name": "dry_run",
           "type": "boolean",
           "value_name": "DRY_RUN"
         },
         {
-          "description": "Use the local default without prompts or animated output",
+          "description": "Do not ask, and show no animated output",
           "flag": "--yes",
           "name": "yes",
           "type": "boolean",
@@ -3641,19 +3635,19 @@
         }
       ],
       "audience": "client",
-      "command": "grund install",
+      "command": "grund join",
       "destructive": false,
       "dry_run": true,
       "examples": [
-        "grund install --domain grund.example.com",
-        "grund install --url https://grund.example.com --code CODE"
+        "sudo grund join https://grund.example.com --code CODE",
+        "sudo grund join https://grund.example.com --dry-run"
       ],
       "mutates": true,
       "output": {
         "$ref": "#/$defs/grund.cli.v1.HostInstallation"
       },
-      "path": "install",
-      "summary": "Install the self-hosted dashboard or connect this machine; requires Linux and root"
+      "path": "join",
+      "summary": "Connect this machine to an instance"
     },
     {
       "args": [
@@ -3695,26 +3689,14 @@
           "value_name": "JSON"
         },
         {
-          "default": "all",
-          "enum": [
-            "server",
-            "agent",
-            "all"
-          ],
-          "name": "scope",
-          "positional": true,
-          "type": "string",
-          "value_name": "SCOPE"
-        },
-        {
-          "description": "Confirm service removal",
+          "description": "Confirm removing the machine's services",
           "flag": "--yes",
           "name": "yes",
           "type": "boolean",
           "value_name": "YES"
         },
         {
-          "description": "Show exactly which managed services would be removed",
+          "description": "Show exactly which services would be removed",
           "flag": "--dry-run",
           "name": "dry_run",
           "type": "boolean",
@@ -3729,20 +3711,19 @@
         }
       ],
       "audience": "client",
-      "command": "grund uninstall",
+      "command": "grund leave",
       "destructive": true,
       "dry_run": true,
       "examples": [
-        "grund uninstall --dry-run",
-        "grund uninstall --yes",
-        "grund uninstall agent --yes"
+        "sudo grund leave --dry-run",
+        "sudo grund leave --yes"
       ],
       "mutates": true,
       "output": {
         "$ref": "#/$defs/grund.cli.v1.HostUninstallation"
       },
-      "path": "uninstall",
-      "summary": "Stop and remove managed services, keeping configuration, identity and data"
+      "path": "leave",
+      "summary": "Disconnect this machine, keeping its identity and data"
     },
     {
       "args": [
@@ -3829,7 +3810,115 @@
         "$ref": "#/$defs/grund.cli.v1.HostUpdate"
       },
       "path": "update",
-      "summary": "Update grund on this computer, or back up and update the self-hosted server"
+      "summary": "Update grund on this computer"
+    },
+    {
+      "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
+          "description": "The organisation. Default: grund org use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "description": "DNS name for the dashboard, served over HTTPS; without it, the dashboard is local only",
+          "flag": "--domain",
+          "name": "domain",
+          "type": "string",
+          "value_name": "DOMAIN"
+        },
+        {
+          "description": "One-time machine setup code; existing identity is preserved",
+          "flag": "--code",
+          "name": "code",
+          "type": "string",
+          "value_name": "CODE"
+        },
+        {
+          "description": "Release channel; development builds require an explicit selection",
+          "enum": [
+            "stable",
+            "alpha"
+          ],
+          "flag": "--channel",
+          "name": "channel",
+          "type": "string",
+          "value_name": "CHANNEL"
+        },
+        {
+          "description": "Do not install what runs VMs",
+          "flag": "--no-vms",
+          "name": "no_vms",
+          "type": "boolean",
+          "value_name": "NO_VMS"
+        },
+        {
+          "description": "Show what would happen without downloading or changing this computer",
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        },
+        {
+          "description": "Do not ask, and show no animated output",
+          "flag": "--yes",
+          "name": "yes",
+          "type": "boolean",
+          "value_name": "YES"
+        },
+        {
+          "description": "Show technical failure details",
+          "flag": "--verbose",
+          "name": "verbose",
+          "type": "boolean",
+          "value_name": "VERBOSE"
+        }
+      ],
+      "audience": "client",
+      "command": "grund server install",
+      "destructive": false,
+      "dry_run": true,
+      "examples": [
+        "sudo grund server install --domain grund.example.com",
+        "sudo grund server install --dry-run"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.cli.v1.HostInstallation"
+      },
+      "path": "server install",
+      "summary": "Install the dashboard here, or add HTTPS to it; requires Linux, root, systemd and Docker Compose v2"
     },
     {
       "args": [
@@ -3882,7 +3971,7 @@
           "value_name": "CHANNEL"
         },
         {
-          "description": "Confirm executable replacement or server downtime",
+          "description": "Confirm the downtime",
           "flag": "--yes",
           "name": "yes",
           "type": "boolean",
@@ -3896,7 +3985,7 @@
           "value_name": "VERBOSE"
         },
         {
-          "description": "Resolve and show the update without downloading or mutating local state",
+          "description": "Resolve and show the update without downloading or changing anything",
           "flag": "--dry-run",
           "name": "dry_run",
           "type": "boolean",
@@ -3904,19 +3993,95 @@
         }
       ],
       "audience": "client",
-      "command": "grund update server",
+      "command": "grund server update",
       "destructive": true,
       "dry_run": true,
       "examples": [
-        "grund update server --dry-run",
-        "grund update server --channel alpha --yes"
+        "sudo grund server update --dry-run",
+        "sudo grund server update --channel alpha --yes"
       ],
       "mutates": true,
       "output": {
         "$ref": "#/$defs/grund.cli.v1.HostUpdate"
       },
-      "path": "update server",
-      "summary": "Back up, check and update the installer-managed server; requires root and downtime"
+      "path": "server update",
+      "summary": "Back up, check and update the dashboard; requires root and downtime"
+    },
+    {
+      "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
+          "description": "The organisation. Default: grund org use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "description": "Confirm removing the dashboard's services",
+          "flag": "--yes",
+          "name": "yes",
+          "type": "boolean",
+          "value_name": "YES"
+        },
+        {
+          "description": "Show exactly which services would be removed",
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        },
+        {
+          "description": "Show technical failure details",
+          "flag": "--verbose",
+          "name": "verbose",
+          "type": "boolean",
+          "value_name": "VERBOSE"
+        }
+      ],
+      "audience": "client",
+      "command": "grund server uninstall",
+      "destructive": true,
+      "dry_run": true,
+      "examples": [
+        "sudo grund server uninstall --dry-run",
+        "sudo grund server uninstall --yes"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.cli.v1.HostUninstallation"
+      },
+      "path": "server uninstall",
+      "summary": "Stop and remove the dashboard's services, keeping its configuration and data"
     },
     {
       "args": [
