@@ -3,6 +3,8 @@
 //! an app stops its volumes immediately; managed data is erased after the
 //! recovery window, never customer-owned host paths.
 
+use std::fmt::Write as _;
+
 use clap::Subcommand;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -234,10 +236,13 @@ fn volume_status_output(volume: Value) -> Output {
     {
         return output;
     }
+    let selection = grund_config::stack::data_volume_yaml_line(name);
     let mut text = output.render(crate::output::Format::Text);
-    text.push_str(&format!(
-        "\nRestore completed; the app is not switched automatically.\nFor a template service, set this line under that service in its stack YAML:\n  data_volume: {name}\nSave the stack file, then deploy it with grund stacks deploy -f <stack-file>.\n"
-    ));
+    writeln!(
+        text,
+        "\nRestore completed; the app is not switched automatically.\nFor a template service, set this line under that service in its stack YAML:\n  {selection}\nSave the stack file, then deploy it with grund stacks deploy -f <stack-file>."
+    )
+    .expect("write cutover guidance");
     Output::with_text(output.value, text)
 }
 
@@ -641,6 +646,29 @@ pub async fn run(ctx: &Ctx, action: VolumesAction) -> CliResult<Output> {
 mod tests {
     use super::*;
     use crate::output::Format;
+
+    #[test]
+    fn completed_restore_guidance_selects_a_volume_named_null_instead_of_the_default() {
+        let output = volume_status_output(json!({
+            "name": "null",
+            "restoreStatus": "completed",
+            "status": "available",
+        }));
+        let text = output.render(Format::Text);
+        let line = text
+            .lines()
+            .find(|line| line.trim_start().starts_with("data_volume:"))
+            .expect("completed restore has a selection line")
+            .trim();
+        let yaml = format!(
+            "stack:\n  name: recovery\n  services:\n    storage:\n      template: seaweedfs\n      {line}\n"
+        );
+        let definition = grund_config::stack::parse(&yaml).expect("selection is valid stack YAML");
+        assert_eq!(
+            definition.services["storage"].data_volume.as_deref(),
+            Some("null")
+        );
+    }
 
     #[test]
     fn only_completed_live_restores_offer_cutover_without_changing_machine_output() {

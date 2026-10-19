@@ -708,6 +708,7 @@ requires an existing ready same-app volume on the stack's machine; a typo
 cannot create an empty disk. The source remains retained. Restored capacity
 and backup policy are preserved; `volumes.data.backup` can explicitly request
 daily backup for the selected volume. Image services cannot use `data_volume`.
+Recovery guidance includes the YAML quoting required by volume names such as `null`.
 
 
 ### Data templates

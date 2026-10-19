@@ -1923,7 +1923,7 @@ async fn completed_data_selections(
             .await
             .map_err(|error| PageError::from(anyhow::anyhow!(error)))?;
         if restore.is_some_and(|(status, _)| status == "completed") {
-            selections.push(format!("data_volume: {}", row.name));
+            selections.push(grund_config::stack::data_volume_yaml_line(&row.name));
         }
     }
     Ok(selections)

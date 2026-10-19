@@ -714,6 +714,17 @@ pub fn validate_expanded<T: Serialize + ?Sized>(value: &T) -> Result<(), SpecErr
     })
 }
 
+/// The stack YAML selection line for a validated volume name.
+pub fn data_volume_yaml_line(name: &str) -> String {
+    #[derive(Serialize)]
+    struct Selection<'a> {
+        data_volume: &'a str,
+    }
+    let mut line = crate::yaml::to_string(&Selection { data_volume: name });
+    line.truncate(line.trim_end().len());
+    line
+}
+
 /// Parses exactly one stack document; ordinary app files retain their own 64 KiB limit.
 pub fn parse(text: &str) -> Result<Definition, SpecError> {
     if text.len() > MAX_FILE_BYTES {
