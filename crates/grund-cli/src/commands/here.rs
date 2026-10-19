@@ -11,7 +11,7 @@ use crate::{
     api::Api,
     context::{Ctx, Global, Source},
     credentials,
-    error::{CliResult, Code},
+    error::{CliError, CliResult, Code},
     output::Output,
 };
 
@@ -31,7 +31,7 @@ pub struct DoctorArgs {
     pub global: Global,
 }
 
-fn agent() -> Option<PathBuf> {
+pub(crate) fn agent() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("GRUND_AGENT_BIN").filter(|p| !p.is_empty()) {
         return Some(PathBuf::from(path));
     }
@@ -45,7 +45,7 @@ fn agent() -> Option<PathBuf> {
     })
 }
 
-async fn agent_json(agent: &PathBuf, args: &[&str]) -> Option<(bool, Value)> {
+pub(crate) async fn agent_json(agent: &PathBuf, args: &[&str]) -> Option<(bool, Value)> {
     let mut command = tokio::process::Command::new(agent);
     command
         .arg0("grund-agent")
@@ -62,7 +62,7 @@ async fn agent_json(agent: &PathBuf, args: &[&str]) -> Option<(bool, Value)> {
     Some((output.status.success(), value))
 }
 
-fn root() -> bool {
+pub(crate) fn root() -> bool {
     std::fs::metadata("/proc/self").is_ok_and(|m| m.uid() == 0)
 }
 
@@ -378,6 +378,233 @@ pub async fn doctor(ctx: &Ctx) -> CliResult<Output> {
     } else {
         output
     })
+}
+
+async fn agent_status(agent: &PathBuf) -> Option<Value> {
+    agent_json(agent, &["status"])
+        .await
+        .map(|(_, status)| status)
+}
+
+/// Pauses or resumes this machine's following of its instance's updates
+/// (`grund update --pause|--resume`). Needs root and grund's agent.
+pub async fn follow(pause: bool) -> CliResult<Output> {
+    let agent = agent().ok_or_else(|| {
+        CliError::new(
+            Code::NotFound,
+            "grund's agent is not installed on this computer",
+        )
+        .hint("sudo grund join <instance> --code <code>")
+    })?;
+    if !root() {
+        return Err(CliError::new(
+            Code::PermissionDenied,
+            "pausing or resuming this machine's updates needs root",
+        )
+        .hint(if pause {
+            "sudo grund update --pause"
+        } else {
+            "sudo grund update --resume"
+        }));
+    }
+    let verb = if pause { "pause" } else { "resume" };
+    let answer = match agent_json(&agent, &["follow", verb]).await {
+        Some(answer) => Some(answer),
+        None => agent_json(&agent, &["machine-follow", verb]).await,
+    };
+    match answer {
+        Some((true, follow)) => {
+            let message = if pause {
+                "This machine no longer takes updates from its instance until sudo grund update --resume."
+            } else {
+                "This machine follows its instance's updates again."
+            };
+            Ok(Output::line(
+                json!({"message": message, "following": follow}),
+                "/message",
+            ))
+        }
+        _ => Err(CliError::new(
+            Code::Failed,
+            format!("grund's agent could not {verb} following"),
+        )
+        .hint("this machine follows only after an install that enabled it; sudo grund doctor")),
+    }
+}
+
+fn outcome(outcome: &str, detail: impl Into<String>, hint: &str) -> Value {
+    let mut value = json!({"outcome": outcome, "detail": detail.into()});
+    crate::context::set_if(&mut value, "hint", hint);
+    value
+}
+
+/// Brings this machine's agent to the build its instance offers, through
+/// the agent's own updater: it waits for the updater's next pass to take an
+/// offer, and follows it until it is committed or rolled back. It never
+/// names a revision. `None` on a computer without grund's agent.
+pub async fn machine_update(dry_run: bool) -> CliResult<Option<Value>> {
+    let Some(agent) = agent() else {
+        return Ok(None);
+    };
+    if !root() {
+        return Ok(Some(outcome(
+            "unreadable",
+            "grund's agent is installed here; updating it needs root",
+            "sudo grund update",
+        )));
+    }
+    let Some(status) = agent_status(&agent).await else {
+        return Ok(Some(outcome(
+            "unsupported",
+            "this machine's agent predates updating from the machine; it updates when its instance offers",
+            "sudo grund status",
+        )));
+    };
+    if status["registered"] != true {
+        return Ok(Some(outcome(
+            "not_connected",
+            "this machine is not connected to an instance",
+            "sudo grund join <instance> --code <code>",
+        )));
+    }
+    if status["following"]["enabled"] != true {
+        return Ok(Some(outcome(
+            "not_following",
+            "this machine does not follow its instance's updates",
+            "rerun sudo grund join <instance> to enable it",
+        )));
+    }
+    if status["following"]["paused"] == true {
+        return Ok(Some(outcome(
+            "paused",
+            "this machine's updates are paused (by its owner, or after a rolled-back update)",
+            "sudo grund update --resume, then sudo grund update",
+        )));
+    }
+    let running = status["agent"]["revision"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let instance = status["machine"]["instance"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let target = match Api::new(&instance, None)?.revision().await {
+        Ok(revision) => revision.rsplit('+').next().unwrap_or_default().to_string(),
+        Err(error) => {
+            return Ok(Some(outcome(
+                "unreachable",
+                error.message.clone(),
+                "sudo grund doctor",
+            )));
+        }
+    };
+    let result = |name: &str, detail: String, hint: &str| {
+        let mut value = outcome(name, detail, hint);
+        value["from"] = json!(running);
+        value["target"] = json!(target);
+        value
+    };
+    if !running.is_empty() && running == target && status["update"].is_null() {
+        return Ok(Some(result(
+            "current",
+            format!("the agent runs {}, its instance's build", short(&target)),
+            "",
+        )));
+    }
+    if dry_run {
+        return Ok(Some(result(
+            "would_update",
+            format!(
+                "the agent runs {}; its instance offers {}",
+                short(&running),
+                short(&target)
+            ),
+            "",
+        )));
+    }
+    let started = std::time::Instant::now();
+    let mut seen_attempt = !status["update"].is_null();
+    loop {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let Some(now) = agent_status(&agent).await else {
+            continue;
+        };
+        let state = now["following"]["state"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        if !now["update"].is_null() {
+            seen_attempt = true;
+            if started.elapsed() > Duration::from_secs(20 * 60) {
+                return Ok(Some(result(
+                    "in_progress",
+                    format!(
+                        "an update is still {}",
+                        now["update"]["phase"].as_str().unwrap_or("running")
+                    ),
+                    "sudo grund status",
+                )));
+            }
+            continue;
+        }
+        if seen_attempt {
+            let revision = now["agent"]["revision"].as_str().unwrap_or_default();
+            return Ok(Some(match state.as_str() {
+                "committed" => result(
+                    "committed",
+                    format!("the agent now runs {}", short(revision)),
+                    "",
+                ),
+                "rolled_back" => result(
+                    "rolled_back",
+                    format!(
+                        "the new build did not become healthy ({}); the agent runs {} again and following is paused",
+                        now["following"]["failureCode"]
+                            .as_str()
+                            .unwrap_or("no code"),
+                        short(revision)
+                    ),
+                    "sudo grund doctor; then sudo grund update --resume",
+                ),
+                other => result(
+                    "ended",
+                    format!(
+                        "the update ended: {}",
+                        if other.is_empty() { "no state" } else { other }
+                    ),
+                    "sudo grund status",
+                ),
+            }));
+        }
+        if started.elapsed() > Duration::from_secs(60) {
+            return Ok(Some(result(
+                "not_offered",
+                format!(
+                    "the instance offered no update within a minute; the agent runs {} and the instance {}",
+                    short(&running),
+                    short(&target)
+                ),
+                "an instance updates one machine at a time and can pause its rollout; this machine updates when offered",
+            )));
+        }
+    }
+}
+
+fn short(revision: &str) -> String {
+    revision.chars().take(12).collect()
+}
+
+/// The text lines for a machine update's outcome.
+pub fn machine_update_text(machine: &Value) -> String {
+    let mut text = format!(
+        "machine  {}\n",
+        machine["detail"].as_str().unwrap_or_default()
+    );
+    if let Some(hint) = machine["hint"].as_str().filter(|h| !h.is_empty()) {
+        text.push_str(&format!("         {hint}\n"));
+    }
+    text
 }
 
 #[cfg(test)]

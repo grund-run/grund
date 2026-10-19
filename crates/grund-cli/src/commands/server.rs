@@ -120,6 +120,8 @@ impl ServerUpdateArgs {
             yes: self.yes,
             verbose: self.verbose,
             dry_run: self.dry_run,
+            pause: false,
+            resume: false,
             server: true,
         }
     }

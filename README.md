@@ -361,13 +361,24 @@ container retains its last applied network identity while control-plane or
 private-network configuration is unavailable; that temporary loss does not
 recreate it.
 
-Local root controls stop new authorization, not recovery of an existing attempt:
+On the machine:
 
 ```sh
-sudo /usr/local/lib/grund/agent/grund machine-follow status
-sudo /usr/local/lib/grund/agent/grund machine-follow pause
-sudo /usr/local/lib/grund/agent/grund machine-follow resume
+sudo grund status            # the agent's build, last contact, following
+sudo grund update            # this CLI, then the agent to the instance's build
+sudo grund update --pause    # take no new updates from the instance
+sudo grund update --resume
 ```
+
+`grund update` on a machine adds no update path of its own. After updating
+the CLI it waits for the agent's updater to take the instance's offer (it
+asks every 10 seconds) and follows that attempt until it is committed or
+rolled back. It never names a build: the instance's is the only target. It
+says so and stops when nothing is offered within a minute (another machine
+holds the instance's one update slot, or the rollout is paused), when the
+agent already runs the instance's build, or when following is paused; a
+rollback pauses it, and `--resume` lifts that. `--pause` stops new
+authorization, not recovery of an attempt already under way.
 
 An instance operator runs `/grund agent-updates status`,
 `/grund agent-updates pause` or `/grund agent-updates resume` inside the configured

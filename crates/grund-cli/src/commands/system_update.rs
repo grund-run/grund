@@ -25,7 +25,8 @@ use crate::{
     progress::Progress,
 };
 
-/// `grund update`: this computer's grund. `grund server update` sets
+/// `grund update`: this computer's grund, and on a machine its agent.
+/// `grund server update` sets
 /// `server` to update the installer-managed server instead.
 #[derive(Debug, Args)]
 pub struct UpdateArgs {
@@ -49,6 +50,18 @@ pub struct UpdateArgs {
         help = "Resolve and show the update without downloading or mutating local state"
     )]
     pub dry_run: bool,
+    #[arg(
+        long,
+        conflicts_with_all = ["resume", "version", "channel", "dry_run"],
+        help = "On a machine: stop taking updates from its instance"
+    )]
+    pub pause: bool,
+    #[arg(
+        long,
+        conflicts_with_all = ["version", "channel", "dry_run"],
+        help = "On a machine: take updates from its instance again"
+    )]
+    pub resume: bool,
     /// Update the installer-managed server instead (`grund server update`).
     #[arg(skip)]
     pub server: bool,
@@ -254,7 +267,7 @@ async fn binary_update(ctx: &Ctx, args: UpdateArgs) -> CliResult<Output> {
             &[
                 ("Version", &release.tag),
                 ("Executable", &destination.to_string_lossy()),
-                ("Server and agent", "Unchanged"),
+                ("Server", "Unchanged"),
             ],
         ),
     ))
@@ -1120,10 +1133,33 @@ async fn server_update(ctx: &Ctx, args: UpdateArgs) -> CliResult<Output> {
 pub async fn update(ctx: &Ctx, args: UpdateArgs) -> CliResult<Output> {
     let progress = Progress::new(ctx, args.yes, args.verbose);
     let server = args.server;
+    if !server && (args.pause || args.resume) {
+        return crate::commands::here::follow(args.pause).await;
+    }
+    let dry_run = args.dry_run;
     let result = if server {
         server_update(ctx, args).await
     } else {
-        binary_update(ctx, args).await
+        match binary_update(ctx, args).await {
+            Ok(output) => match crate::commands::here::machine_update(dry_run).await {
+                Ok(Some(machine)) => {
+                    let text = format!(
+                        "{}{}",
+                        output.render(crate::output::Format::Text),
+                        crate::commands::here::machine_update_text(&machine)
+                    );
+                    let mut value = output.value;
+                    if machine["outcome"] == "committed" {
+                        value["agentChanged"] = serde_json::json!(true);
+                    }
+                    value["machine"] = machine;
+                    Ok(Output::with_text(value, text))
+                }
+                Ok(None) => Ok(output),
+                Err(error) => Err(error),
+            },
+            Err(error) => Err(error),
+        }
     };
     result.map_err(|error| {
         if matches!(error.code, Code::ConfirmationRequired | Code::Usage) {

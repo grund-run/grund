@@ -253,6 +253,23 @@ message HostUpdate {
   string health = 18;
   UpdateDoctor preflight = 19;
   UpdateDoctor postflight = 20;
+  // On a machine: what happened to its agent.
+  MachineUpdate machine = 21;
+}
+
+// `grund update` on a machine: the agent's update, through its own updater
+// and the build its instance offers.
+message MachineUpdate {
+  // current, would_update, committed, rolled_back, not_offered,
+  // in_progress, ended, paused, not_following, not_connected, unreadable,
+  // unsupported or unreachable.
+  string outcome = 1;
+  string detail = 2;
+  // What to do next, when there is something.
+  string hint = 3;
+  // The agent's build before, and the build its instance offers.
+  string from = 4;
+  string target = 5;
 }
 
 // Doctor results omit diagnostic details that can contain operator configuration.

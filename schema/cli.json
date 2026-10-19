@@ -1693,6 +1693,14 @@
         "installedVersion": {
           "type": "string"
         },
+        "machine": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/grund.cli.v1.MachineUpdate"
+            }
+          ],
+          "description": "On a machine: what happened to its agent."
+        },
         "migration": {
           "type": "string"
         },
@@ -1878,6 +1886,32 @@
         }
       },
       "title": "grund.cli.v1.MachineStatus",
+      "type": "object"
+    },
+    "grund.cli.v1.MachineUpdate": {
+      "additionalProperties": false,
+      "description": "`grund update` on a machine: the agent's update, through its own updater and the build its instance offers.",
+      "properties": {
+        "detail": {
+          "type": "string"
+        },
+        "from": {
+          "description": "The agent's build before, and the build its instance offers.",
+          "type": "string"
+        },
+        "hint": {
+          "description": "What to do next, when there is something.",
+          "type": "string"
+        },
+        "outcome": {
+          "description": "current, would_update, committed, rolled_back, not_offered, in_progress, ended, paused, not_following, not_connected, unreadable, unsupported or unreachable.",
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        }
+      },
+      "title": "grund.cli.v1.MachineUpdate",
       "type": "object"
     },
     "grund.cli.v1.OrganisationList": {
@@ -3983,6 +4017,20 @@
           "name": "dry_run",
           "type": "boolean",
           "value_name": "DRY_RUN"
+        },
+        {
+          "description": "On a machine: stop taking updates from its instance",
+          "flag": "--pause",
+          "name": "pause",
+          "type": "boolean",
+          "value_name": "PAUSE"
+        },
+        {
+          "description": "On a machine: take updates from its instance again",
+          "flag": "--resume",
+          "name": "resume",
+          "type": "boolean",
+          "value_name": "RESUME"
         }
       ],
       "audience": "client",

@@ -62,6 +62,30 @@ impl Api {
         &self.origin
     }
 
+    /// The build the instance reports at `/health/ready`, ready or not.
+    pub async fn revision(&self) -> CliResult<String> {
+        let unavailable = |e: String| {
+            CliError::new(
+                Code::Unavailable,
+                format!("cannot read {}/health/ready: {e}", self.origin),
+            )
+        };
+        let response = self
+            .http
+            .get(format!("{}/health/ready", self.origin))
+            .send()
+            .await
+            .map_err(|e| unavailable(e.to_string()))?;
+        let body: Value = response
+            .json()
+            .await
+            .map_err(|e| unavailable(e.to_string()))?;
+        body["revision"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| unavailable("no revision in the answer".into()))
+    }
+
     /// Calls `rpc` (`package.Service/Method`) with a protobuf JSON request.
     pub async fn call(&self, rpc: &str, request: Value) -> CliResult<Value> {
         let mut builder = self
