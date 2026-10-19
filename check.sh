@@ -7,6 +7,7 @@
 # this script starts. A script because it is docker orchestration; every
 # assertion lives in the Rust accepttests.
 set -euo pipefail
+umask 022
 cd "$(dirname "$0")"
 
 img=grund:check
