@@ -93,7 +93,7 @@ component Sidebar(viewer: &TypedViewer, section: &str, csrf: &str, footer: Optio
 }
 component TopbarAction(org: &TypedOrg, section: &str, state: &str) {
 {if org.manages && *section != "deploy" && *section != "stack-deploy" && *section != "machine-add" && *section != "pool" && *section != "admin" && *section != "billing" && *section != "notifications" && *section != "org-settings" && *section != "members" {
-  <span class="topbar-end"><a class="btn btn-primary{if !state.is_empty() { " is-" } else { "" }}{state}" href="/{org.slug}{if *section == "machines" { "/machines/add" } else if *section == "stacks" { "/stacks/deploy" } else { "/deploy" }}"><Icon name="plus" class="icon-sm" /><span class="btn-label">{if *section == "machines" { Add machine } else if *section == "stacks" { Deploy stack } else { Deploy app }}</span></a></span>
+  <span class="topbar-end"><a class="btn btn-primary{if !state.is_empty() { " is-" } else { "" }}{state}" href="/{org.slug}{if *section == "machines" { "/machines/add" } else if *section == "stacks" { "/stacks/deploy" } else { "/deploy" }}"><Icon name="plus" class="icon-sm" /><span class={if *section == "stacks" { None } else { Some("btn-label") }}>{if *section == "machines" { Add machine } else if *section == "stacks" { Create stack } else { Deploy app }}</span></a></span>
 }}
 }
 component NotificationBell(count: i64, active: bool, state: &str) {
@@ -105,7 +105,7 @@ component NotificationBell(count: i64, active: bool, state: &str) {
 component Topbar(viewer: &TypedViewer, section: &str, list: Option<&AppSearch>) {
 <header class="topbar">
   {if let Some(org) = &viewer.current {
-    {if *section != "machines" && *section != "machine-add" && *section != "pool" && *section != "admin" {
+    {if *section != "machines" && *section != "machine-add" && *section != "stacks" && *section != "stack-deploy" && *section != "pool" && *section != "admin" {
       <form class="search" role="search" method="get" action="/{org.slug}/apps">
         <label class="visually-hidden" for="search">Search apps</label>
         <Icon name="search" class="icon-sm search-icon" />
