@@ -25,7 +25,7 @@ API = HOST + "/api/v1/repos/grund/grund"
 TAG = os.environ.get("CI_COMMIT_TAG", "")
 REVISION = os.environ.get("CI_COMMIT_SHA", "")
 VERSION = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-alpha\.([1-9][0-9]*))?")
-FILES = ("grund-linux-amd64", "grund-linux-arm64", "compose.yaml", "agent-install.sh", "release.txt", "image-digest.txt")
+FILES = ("grund-linux-amd64", "grund-linux-arm64", "grund-cli-linux-amd64", "grund-cli-linux-arm64", "compose.yaml", "agent-install.sh", "release.txt", "image-digest.txt")
 
 
 def fail(message):
@@ -102,7 +102,7 @@ def verify(architectures=("amd64", "arm64")):
         runner = ["qemu-aarch64"] if arch == "arm64" else []
         if output(*runner, str(binary), "--version") != f"grund {TAG}":
             fail(f"{binary.name} does not report the exact release tag")
-        for args in (("--help",), ("login", "--help"), ("serve", "--help"), ("join", "--help"), ("agent", "--help")):
+        for args in (("--help",), ("auth", "--help"), ("serve", "--help"), ("join", "--help"), ("agent", "--help")):
             run(*runner, str(binary), *args, stdout=subprocess.DEVNULL)
         context = WORK / f"image-{arch}"
         (context / "var/lib/grund").mkdir(parents=True, exist_ok=True)
@@ -117,6 +117,27 @@ def verify(architectures=("amd64", "arm64")):
     # Detect stale or foreign artifacts instead of accidentally publishing them.
     if set(p.name for p in DIST.iterdir()) - set(FILES) - {"SHA256SUMS"}:
         fail("unexpected files in release staging directory")
+
+
+def verify_cli(arch):
+    """The slim client: static, this commit and tag, the client commands only."""
+    identity()
+    machine = {"amd64": "Advanced Micro Devices X86-64", "arm64": "AArch64"}[arch]
+    binary = DIST / f"grund-cli-linux-{arch}"
+    binary.chmod(0o755)
+    if machine not in output("readelf", "-h", str(binary)):
+        fail(f"{binary.name} has the wrong ELF architecture")
+    if "NEEDED" in output("readelf", "-d", str(binary)) or "INTERP" in output("readelf", "-l", str(binary)):
+        fail(f"{binary.name} must be static and have no ELF interpreter")
+    if REVISION not in output("strings", str(binary)):
+        fail(f"{binary.name} does not carry the release commit")
+    runner = ["qemu-aarch64"] if arch == "arm64" else []
+    if output(*runner, str(binary), "--version") != f"grund {TAG}":
+        fail(f"{binary.name} does not report the exact release tag")
+    for args in (("--help",), ("auth", "--help"), ("join", "--help"), ("update", "--help")):
+        run(*runner, str(binary), *args, stdout=subprocess.DEVNULL)
+    if subprocess.run([*runner, str(binary), "serve", "--help"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+        fail(f"{binary.name} runs the server; it must be the client alone")
 
 
 def json_bytes(value):
@@ -259,6 +280,7 @@ def publish():
         stage += "v0.0.0-alpha.1 and v0.0.0-alpha.2 were failed, unpublished tags; no binaries or Gitea releases were published for them. This is the first downloadable alpha.\n\n"
     notes = (f"{stage}Linux downloads for amd64 and arm64 include the command-line client, server and machine commands in one static binary.\n\n"
              f"[Linux amd64]({base}grund-linux-amd64) · [Linux arm64]({base}grund-linux-arm64) · [SHA256SUMS]({base}SHA256SUMS)\n\n"
+             f"The client alone, for laptops and CI: [Linux amd64]({base}grund-cli-linux-amd64) · [Linux arm64]({base}grund-cli-linux-arm64)\n\n"
              f"Self-host image: `{IMAGE}:{TAG}`\n\nPublic source commit: `{REVISION}`.\n\n"
              "macOS downloads are not included in this release.")
     payload = {"tag_name": TAG, "target_commitish": REVISION, "name": f"grund {TAG}", "body": notes, "draft": False, "prerelease": alpha}
@@ -283,6 +305,8 @@ def main():
         "verify": verify,
         "verify-amd64": lambda: verify(("amd64",)),
         "verify-arm64": lambda: verify(("arm64",)),
+        "verify-cli-amd64": lambda: verify_cli("amd64"),
+        "verify-cli-arm64": lambda: verify_cli("arm64"),
         "merge-images": merge_images,
         "publish-image": publish_image,
         "publish": publish,

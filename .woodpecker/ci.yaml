@@ -437,6 +437,45 @@ steps:
       # Zig supplies musl C; QEMU executes the static result without binfmt.
       - sh tools/release-build.sh arm64
 
+  # The client alone (grund-cli-linux-<arch>), for laptops and CI, beside
+  # the full binary machines and the image run. Built in parallel with the
+  # full builds, so it does not lengthen the release.
+  cli-amd64:
+    image: rust:1.98.1-alpine3.24
+    depends_on: []
+    when: *tag-release
+    environment:
+      RUSTUP_TOOLCHAIN: 1.98.1-x86_64-unknown-linux-musl
+      CARGO_INCREMENTAL: "0"
+      CARGO_TARGET_DIR: target/release-cli
+    commands:
+      - apk add --no-cache musl-dev binutils protobuf-dev ca-certificates python3 git
+      - . .woodpecker/jobs.sh
+      - |
+        export GRUND_REVISION="$$(git rev-parse "$${CI_COMMIT_SHA}^{commit}")"
+        export GRUND_VERSION="$${CI_COMMIT_TAG}"
+        export GRUND_BUILD_TIME="$$(git show -s --format=%cI "$${GRUND_REVISION}")"
+        cargo build --locked --release -p grund-cli --features standalone --bin grund
+        mkdir -p scratch/tag-release/dist
+        cp target/release-cli/release/grund scratch/tag-release/dist/grund-cli-linux-amd64
+      - python3 tools/release.py verify-cli-amd64
+
+  cli-arm64:
+    image: rust:1.98.1-alpine3.24
+    depends_on: []
+    when: *tag-release
+    environment:
+      CARGO_BUILD_JOBS: "4"
+      CARGO_TARGET_DIR: target/release-cli-arm64
+      GRUND_RELEASE_TOOLING: scratch/tag-release/tooling-cli
+      RUSTC_WRAPPER: sccache
+      SCCACHE_CACHE_SIZE: 2G
+      CARGO_INCREMENTAL: "0"
+      RUSTUP_TOOLCHAIN: 1.98.1-x86_64-unknown-linux-musl
+    commands:
+      - apk add --no-cache musl-dev binutils protobuf-dev sccache ca-certificates curl python3 xz qemu-aarch64 git
+      - sh tools/release-build.sh cli-arm64
+
   released-binary-runtime:
     image: alpine:3.24.0
     depends_on: [release, release-postgres, release-nats]
@@ -492,7 +531,7 @@ steps:
 
   publish-verified-release:
     image: alpine:3.24.0
-    depends_on: [lint, proto, contract, guest-image, image-amd64, image-arm64]
+    depends_on: [lint, proto, contract, guest-image, image-amd64, image-arm64, cli-amd64, cli-arm64]
     when: *tag-release
     environment:
       REGISTRY_TOKEN:

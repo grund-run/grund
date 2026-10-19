@@ -1362,7 +1362,7 @@
           "type": "string"
         },
         "files": {
-          "description": "Every file in it: grund's release files, then the pinned archives a machine install needs (restic; Firecracker on amd64).",
+          "description": "Every file in it: grund's release files (with the client alone, grund-cli-linux-<arch>, when the release has it), then the pinned archives a machine install needs (restic; Firecracker on amd64).",
           "items": {
             "type": "string"
           },

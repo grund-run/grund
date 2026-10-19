@@ -530,6 +530,16 @@ pub fn binary_name() -> CliResult<String> {
     Ok(format!("grund-{os}-{arch}"))
 }
 
+pub fn client_name(release: &Release) -> CliResult<String> {
+    let full = binary_name()?;
+    let slim = full.replacen("grund-", "grund-cli-", 1);
+    if cfg!(feature = "standalone") && release.checksums.contains_key(&slim) {
+        Ok(slim)
+    } else {
+        Ok(full)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

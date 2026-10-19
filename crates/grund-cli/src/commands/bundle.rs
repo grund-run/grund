@@ -158,9 +158,11 @@ pub async fn run(_ctx: &Ctx, action: BundleAction) -> CliResult<Output> {
         .tempdir()
         .map_err(|e| CliError::new(Code::Failed, format!("could not stage the bundle: {e}")))?;
     let binary = format!("grund-linux-{}", arch.name());
+    let client = format!("grund-cli-linux-{}", arch.name());
     let mut names = Vec::new();
     for name in [
         binary.as_str(),
+        client.as_str(),
         "compose.yaml",
         "image-digest.txt",
         "release.txt",

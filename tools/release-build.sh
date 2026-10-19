@@ -4,9 +4,9 @@ set -eu
 # The native CI build stages the amd64 artifact once for all tag gates.
 # ARM has its own target directory and read-only cache; the library producer
 # never stages a binary or release payload.
-[ "$#" -eq 1 ] || { echo "usage: release-build.sh {arm64|cache-arm64}" >&2; exit 2; }
+[ "$#" -eq 1 ] || { echo "usage: release-build.sh {arm64|cli-arm64|cache-arm64}" >&2; exit 2; }
 mode="$1"
-case "$mode" in arm64|cache-arm64) ;; *) echo "unknown release build: $mode" >&2; exit 2;; esac
+case "$mode" in arm64|cli-arm64|cache-arm64) ;; *) echo "unknown release build: $mode" >&2; exit 2;; esac
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 export GRUND_REVISION="$(git rev-parse "${CI_COMMIT_SHA}^{commit}")"
@@ -29,7 +29,9 @@ export GRUND_VERSION="${CI_COMMIT_TAG:-}"
 # A rerun reproduces the same immutable package, including attribution.
 export GRUND_BUILD_TIME="$(git show -s --format=%cI "$GRUND_REVISION")"
 
-tooling="$root/scratch/tag-release/tooling"
+# cli-arm64 runs beside arm64: its own tooling directory, so the two never
+# download or unpack zig into the same place at once.
+tooling="${GRUND_RELEASE_TOOLING:-$root/scratch/tag-release/tooling}"
 mkdir -p "$tooling"
 if [ ! -f "$tooling/zig.tar.xz" ]; then
     curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
@@ -43,15 +45,21 @@ export PATH="$tooling/zig-linux-x86_64-0.13.0:$tooling/cargo/bin:$PATH"
 host=$(rustc -vV | sed -n 's/^host: //p')
 if ! "$tooling/cargo/bin/cargo-zigbuild" --version 2>/dev/null | grep -qx 'cargo-zigbuild 0.22.1'; then
     # Reuse the installed tool, not its otherwise unbounded build directory.
-    CARGO_TARGET_DIR="$root/scratch/tag-release/tool-target" \
+    CARGO_TARGET_DIR="$tooling.target" \
         cargo install --locked --target "$host" --version 0.22.1 --root "$tooling/cargo" cargo-zigbuild
-    rm -rf "$root/scratch/tag-release/tool-target"
+    rm -rf "$tooling.target"
 fi
 rustup target add aarch64-unknown-linux-musl
 # Rust's linker retains Cortex-A53's erratum fix, absent in Zig's driver.
 linker="$(rustc --print sysroot)/lib/rustlib/$host/bin/rust-lld"
 test -x "$linker"
-if [ "$mode" = cache-arm64 ]; then
+if [ "$mode" = cli-arm64 ]; then
+    # The client alone, beside the full binary: its own target directory, as
+    # both are named grund.
+    RUSTFLAGS="-C linker=$linker" cargo zigbuild --locked --release -p grund-cli --features standalone --bin grund --target aarch64-unknown-linux-musl
+    cp "$CARGO_TARGET_DIR/aarch64-unknown-linux-musl/release/grund" scratch/tag-release/dist/grund-cli-linux-arm64
+    python3 tools/release.py verify-cli-arm64
+elif [ "$mode" = cache-arm64 ]; then
     # Seed reusable dependencies without building the final application binary.
     RUSTFLAGS="-C linker=$linker" cargo zigbuild --locked --release -p grund --lib --target aarch64-unknown-linux-musl
 else

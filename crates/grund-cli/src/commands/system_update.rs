@@ -242,7 +242,7 @@ async fn binary_update(ctx: &Ctx, args: UpdateArgs) -> CliResult<Output> {
             "Check internet access and free space in the executable directory, then retry.",
             async {
                 release
-                    .download(&release::binary_name()?, &candidate)
+                    .download(&release::client_name(&release)?, &candidate)
                     .await?;
                 binary_identity(&candidate, &release.tag).await
             },

@@ -380,7 +380,8 @@ message BundleCreated {
   string version = 2;
   // amd64 or arm64.
   string arch = 3;
-  // Every file in it: grund's release files, then the pinned archives a
+  // Every file in it: grund's release files (with the client alone,
+  // grund-cli-linux-<arch>, when the release has it), then the pinned archives a
   // machine install needs (restic; Firecracker on amd64).
   repeated string files = 4;
 }
