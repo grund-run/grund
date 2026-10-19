@@ -257,11 +257,13 @@ message Rental {
   google.protobuf.Timestamp period_end = 5;
   bool cancel_at_period_end = 6;
   int64 monthly_cap_cents = 7;
-  // Completed machine-hours observed in the authoritative current period.
+  // Completed machine-hours; meaningful only when completed_hours_available.
   int64 completed_hours = 8;
   // Cumulative delivered rental cents; absent before a provider observation.
   optional int64 observed_amount_cents = 9;
   string currency = 10;
+  // Distinguishes an observed zero from no authoritative provider period.
+  bool completed_hours_available = 11;
 }
 
 message ChangePlanRequest {

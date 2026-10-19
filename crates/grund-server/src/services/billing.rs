@@ -703,7 +703,14 @@ fn view_from_response(answer: &serde_json::Value) -> BillingView {
                     period_end: rental["periodEnd"].as_str().map(str::to_owned),
                     cancel_at_period_end: rental["cancelAtPeriodEnd"].as_bool().unwrap_or(false),
                     monthly_cap_cents: json_i64(&rental["monthlyCapCents"]),
-                    completed_hours: json_i64(&rental["completedHours"]),
+                    completed_hours: if rental["completedHoursAvailable"].as_bool() == Some(true) {
+                        match rental.get("completedHours") {
+                            None | Some(serde_json::Value::Null) => Some(0),
+                            Some(value) => json_i64(value),
+                        }
+                    } else {
+                        None
+                    },
                     observed_amount_cents: json_i64(&rental["observedAmountCents"]),
                     currency: rental["currency"].as_str().unwrap_or("").to_owned(),
                 })
@@ -1022,5 +1029,29 @@ mod tests {
         assert!(details.usage.is_none());
         assert!(details.invoices.is_empty());
         assert!(details.period_end.is_none());
+    }
+
+    #[test]
+    fn rental_hour_availability_distinguishes_zero_unknown_and_malformed_counts() {
+        let decode = |mut rental: serde_json::Value| {
+            rental["rentalId"] = serde_json::json!("018d7820-0000-7000-8000-000000000001");
+            rental["size"] = serde_json::json!("small");
+            rental["status"] = serde_json::json!("active");
+            let BillingView::Account(details) = view_from_response(&serde_json::json!({
+                "account": {"plan":"Free","status":"ACCOUNT_STATUS_ACTIVE","rentals":[rental]}
+            })) else {
+                panic!("rental account is unavailable");
+            };
+            details.rentals.first().unwrap().completed_hours
+        };
+        assert_eq!(
+            decode(serde_json::json!({"completedHoursAvailable":true})),
+            Some(0)
+        );
+        assert_eq!(decode(serde_json::json!({})), None);
+        assert_eq!(
+            decode(serde_json::json!({"completedHoursAvailable":true,"completedHours":"invalid"})),
+            None
+        );
     }
 }
