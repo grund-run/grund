@@ -83,6 +83,7 @@ pub struct AccountDetails {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HostedEntitlement {
     pub enabled: bool,
+    pub provisional: bool,
     pub max_machines: u32,
     pub max_vcpus: u32,
     pub max_memory_mib: u64,
@@ -561,12 +562,13 @@ fn decode_hosted_entitlement(account: &serde_json::Value) -> Option<HostedEntitl
             .and_then(|raw| raw.parse::<u64>().ok())
             .or_else(|| value.as_u64()),
     };
-    let enabled = match value.get("enabled") {
-        None | Some(serde_json::Value::Null) => false,
-        Some(value) => value.as_bool()?,
+    let flag = |key| match value.get(key) {
+        None | Some(serde_json::Value::Null) => Some(false),
+        Some(value) => value.as_bool(),
     };
     Some(HostedEntitlement {
-        enabled,
+        enabled: flag("enabled")?,
+        provisional: flag("provisional")?,
         max_machines: u32::try_from(number("maxMachines")?).ok()?,
         max_vcpus: u32::try_from(number("maxVcpus")?).ok()?,
         max_memory_mib: number("maxMemoryMib")?,
@@ -790,6 +792,7 @@ mod tests {
             decode_hosted_entitlement(&serde_json::json!({"hostedEntitlement": {}})),
             Some(HostedEntitlement {
                 enabled: false,
+                provisional: false,
                 max_machines: 0,
                 max_vcpus: 0,
                 max_memory_mib: 0
@@ -797,6 +800,7 @@ mod tests {
         );
         let expected = HostedEntitlement {
             enabled: true,
+            provisional: false,
             max_machines: 1,
             max_vcpus: 2,
             max_memory_mib: 4096,
@@ -811,6 +815,7 @@ mod tests {
         }
         for malformed in [
             serde_json::json!({"enabled":"true"}),
+            serde_json::json!({"provisional":"true"}),
             serde_json::json!({"maxMachines":4294967296_u64}),
             serde_json::json!({"maxVcpus":-1}),
             serde_json::json!({"maxMemoryMib":"18446744073709551616"}),
@@ -857,6 +862,7 @@ mod tests {
                 }}),
                 Some(HostedEntitlement {
                     enabled: false,
+                    provisional: false,
                     max_machines: 0,
                     max_vcpus: 0,
                     max_memory_mib: 0,

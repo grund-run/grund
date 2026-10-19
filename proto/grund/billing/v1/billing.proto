@@ -119,6 +119,8 @@ message HostedEntitlement {
   uint32 max_machines = 2;
   uint32 max_vcpus = 3;
   uint64 max_memory_mib = 4;
+  // Explicit sandbox interim provenance, never inferred from missing/expired rentals.
+  bool provisional = 5;
 }
 
 enum HostedEntitlementReason {
