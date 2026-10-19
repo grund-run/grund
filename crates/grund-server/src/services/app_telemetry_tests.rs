@@ -1366,9 +1366,10 @@ async fn log_volume_counts_each_stream_per_bucket_for_members_of_the_app_only(po
 }
 
 #[test]
-fn log_volume_uses_at_most_180_buckets_for_every_offered_range() {
+fn log_volume_buckets_are_at_most_180_and_never_shorter_than_collection() {
     for (seconds, bucket) in [
-        (900, 5),
+        (60, 10),
+        (900, 10),
         (3600, 30),
         (6 * 3600, 120),
         (86400, 600),
@@ -1376,5 +1377,6 @@ fn log_volume_uses_at_most_180_buckets_for_every_offered_range() {
     ] {
         assert_eq!(volume_bucket(seconds), bucket);
         assert!(seconds / bucket <= 180);
+        assert!(bucket >= 10);
     }
 }

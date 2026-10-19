@@ -30,11 +30,13 @@ pub struct Invalid(pub &'static str);
 const FORWARD: u8 = 1;
 const BACKWARD: u8 = 2;
 const VOLUME_BUCKETS: i64 = 180;
-const VOLUME_STEPS: [i64; 16] = [
-    1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600,
+const VOLUME_STEPS: [i64; 13] = [
+    10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600,
 ];
 
-/// The smallest bucket that covers `seconds` in at most 180 buckets.
+/// The smallest bucket that covers `seconds` in at most 180 buckets, and never
+/// shorter than the agent's 10 s collection interval: records arrive in
+/// batches, so a shorter bucket alternates between a batch and nothing.
 pub fn volume_bucket(seconds: i64) -> i64 {
     VOLUME_STEPS
         .into_iter()

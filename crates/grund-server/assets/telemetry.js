@@ -189,7 +189,7 @@
     tick();
   }
 
-  var PALETTE = ["--accent", "--violet", "--blue", "--ok"];
+  var PALETTE = ["--accent", "--violet", "--blue", "--text-2"];
 
   function metrics(root, signal) {
     var range = RANGES[root.dataset.telemetryRange || ""] || RANGES[""];

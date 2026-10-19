@@ -3417,7 +3417,7 @@ a.endpoint-text:hover {
 .swatch-0 { background: var(--accent); }
 .swatch-1 { background: var(--violet); }
 .swatch-2 { background: var(--blue); }
-.swatch-3 { background: var(--ok); }
+.swatch-3 { background: var(--text-2); }
 .swatch-stdout { background: var(--accent); }
 .swatch-stderr { background: var(--danger); }
 .swatch-combined { background: var(--blue); }

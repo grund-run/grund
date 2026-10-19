@@ -144,7 +144,8 @@ message AppLogVolumeBucket {
 message GetAppLogVolumeResponse {
   // Oldest first; buckets without retained records are omitted, not zero-filled.
   repeated AppLogVolumeBucket buckets = 1;
-  // Chosen by the server so that at most 180 buckets cover the range.
+  // Chosen by the server so that at most 180 buckets cover the range, and at
+  // least 10 seconds: the agent collects output every 10 seconds.
   uint32 bucket_seconds = 2;
   google.protobuf.Timestamp since = 3;
   google.protobuf.Timestamp until = 4;
