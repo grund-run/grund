@@ -61,7 +61,7 @@ props crate::web::stacks::DetailPage<'_> { slug, stack, manages, csrf, action, f
   {if stack.volumes.iter().any(|volume| volume.retained == retained) {
     <Panel id={id} title={title}>
       <Rows>{for volume in stack.volumes.iter().filter(|volume| volume.retained == retained) {
-        <Row name={&format!("{}/{}", volume.service, volume.storage.name)} sub={&volume.storage.path} detail={&crate::web::stacks::volume_detail(volume)} href="/{slug}/apps/{volume.app_name}/storage" icon_name="disk" status_text={Some(&volume.status)} status_tone="muted" />
+        <Row name={&format!("{}/{}", volume.service, volume.storage.name)} sub={&volume.storage.path} detail={&crate::web::stacks::volume_detail(volume)} href="/{slug}/apps/{volume.app_name}/settings" icon_name="disk" status_text={Some(&volume.status)} status_tone="muted" />
       }}</Rows>
     </Panel>
   }}
