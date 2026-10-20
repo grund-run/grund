@@ -551,7 +551,7 @@ async fn install_inner(ctx: &Ctx, mut args: InstallArgs, progress: &Progress) ->
         .await?;
     if args.code.is_some() && args.url.is_none() && args.domain.is_none() {
         return Err(CliError::usage(
-            "Use --url HTTPS-ADDRESS with the machine setup code, or --domain NAME for this server.",
+            "Use grund join INSTANCE --code CODE for a machine, or --domain NAME for this server.",
         ));
     }
     let default_setup = args.url.is_none() && args.domain.is_none();

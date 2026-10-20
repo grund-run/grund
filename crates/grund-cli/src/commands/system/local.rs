@@ -25,8 +25,11 @@ pub(super) fn target<'a>(
         if domain.is_some() {
             return Err(CliError::usage("choose either --domain or --url"));
         }
-        let parsed = reqwest::Url::parse(url)
-            .map_err(|_| CliError::usage("--url needs an HTTPS address"))?;
+        let parsed = reqwest::Url::parse(url).map_err(|_| {
+            CliError::usage(
+                "the instance needs an HTTPS address, such as https://grund.example.com",
+            )
+        })?;
         if parsed.scheme() != "https"
             || parsed.host_str().is_none()
             || !parsed.username().is_empty()
@@ -36,7 +39,7 @@ pub(super) fn target<'a>(
             || parsed.path() != "/"
         {
             return Err(CliError::usage(
-                "--url needs an HTTPS address without a path or password",
+                "the instance needs an HTTPS address without a path or password, such as https://grund.example.com",
             ));
         }
         return Ok(Target {

@@ -35,7 +35,8 @@ pub(crate) fn agent() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("GRUND_AGENT_BIN").filter(|p| !p.is_empty()) {
         return Some(PathBuf::from(path)).filter(|p| p.is_file());
     }
-    if std::path::Path::new(INSTALLED_AGENT).is_file() {
+    let installed = std::path::Path::new(INSTALLED_AGENT);
+    if installed.is_file() || installed.parent().is_some_and(|dir| dir.is_dir()) {
         return Some(PathBuf::from(INSTALLED_AGENT));
     }
     std::env::var_os("PATH").and_then(|paths| {
@@ -78,23 +79,7 @@ async fn machine() -> Option<Value> {
     if !root() {
         return Some(json!({"readable": false}));
     }
-    let (_, status) = match agent_json(&agent, &["status"]).await {
-        Some(answer) => answer,
-        None => agent_json(&agent, &["machine-follow", "status"])
-            .await
-            .map(|(ok, follow)| {
-                (
-                    ok,
-                    json!({"registered": true, "following": {
-                        "enabled": follow["enabled"], "paused": follow["paused"],
-                        "state": follow["status"]["state"],
-                        "targetRevision": follow["status"]["target_revision"],
-                        "failureCode": follow["status"]["failure_code"],
-                    }, "update": {"phase": follow["phase"]}}),
-                )
-            })
-            .unwrap_or((false, json!({"registered": false}))),
-    };
+    let status = agent_status(&agent).await?;
     let mut machine =
         json!({"readable": true, "registered": status["registered"].as_bool().unwrap_or(false)});
     let set = |machine: &mut Value, key: &str, value: &Value| {
@@ -381,9 +366,52 @@ pub async fn doctor(ctx: &Ctx) -> CliResult<Output> {
 }
 
 async fn agent_status(agent: &PathBuf) -> Option<Value> {
-    agent_json(agent, &["status"])
-        .await
-        .map(|(_, status)| status)
+    if let Some((_, status)) = agent_json(agent, &["status"]).await {
+        return Some(status);
+    }
+    let dir = std::env::var_os("GRUND_AGENT_DATA_DIR")
+        .filter(|d| !d.is_empty())
+        .map_or_else(|| PathBuf::from("/var/lib/grund/agent"), PathBuf::from);
+    Some(status_from_files(&dir))
+}
+
+fn read_json(path: &std::path::Path) -> Option<Value> {
+    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+}
+
+fn status_from_files(dir: &std::path::Path) -> Value {
+    let Some(record) = read_json(&dir.join("machine.json")) else {
+        return json!({"registered": false});
+    };
+    let mut status = json!({
+        "registered": true,
+        "machine": {
+            "id": record["machine_id"],
+            "name": record["name"],
+            "instance": record["instance_url"],
+        },
+    });
+    if let Some(health) = read_json(&dir.join("update-health.json")) {
+        status["agent"] = json!({
+            "revision": health["revision"],
+            "ready": health["ready"],
+            "lastContactUnix": health["observed_at_unix"],
+        });
+    }
+    if let Some(policy) = read_json(&dir.join("follow.json")) {
+        let mut following = json!({"enabled": policy["enabled"], "paused": policy["paused"]});
+        if let Some(observed) = read_json(&dir.join("follow-status.json")) {
+            following["state"] = observed["state"].clone();
+            following["targetRevision"] = observed["target_revision"].clone();
+            following["failureCode"] = observed["failure_code"].clone();
+        }
+        status["following"] = following;
+    }
+    if let Some(journal) = read_json(&dir.join("update-journal.json")) {
+        status["update"] =
+            json!({"phase": journal["phase"], "target": journal["offer"]["target"]["revision"]});
+    }
+    status
 }
 
 /// Pauses or resumes this machine's following of its instance's updates
@@ -621,6 +649,35 @@ mod tests {
         let text = status_text(&value);
         assert!(text.contains("home (https://grund.example.com), acme"));
         assert!(text.contains("run with sudo"));
+    }
+
+    #[test]
+    fn an_older_agents_files_give_the_same_status_as_its_status_command() {
+        let dir = std::env::temp_dir().join(format!("grund-here-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(status_from_files(&dir), json!({"registered": false}));
+        let write = |name: &str, value: Value| {
+            std::fs::write(dir.join(name), value.to_string()).unwrap();
+        };
+        write(
+            "machine.json",
+            json!({"machine_id": "m-1", "name": "web-1", "instance_url": "http://localhost:8080", "trust_key": {"k": "x"}}),
+        );
+        write(
+            "update-health.json",
+            json!({"revision": "r1", "ready": true, "observed_at_unix": 7, "registration_key": "secret"}),
+        );
+        write("follow.json", json!({"enabled": true, "paused": false}));
+        write(
+            "follow-status.json",
+            json!({"state": "waiting", "target_revision": null}),
+        );
+        let status = status_from_files(&dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(status["machine"]["name"], "web-1");
+        assert_eq!(status["agent"]["lastContactUnix"], 7);
+        assert_eq!(status["following"]["state"], "waiting");
+        assert!(!status.to_string().contains("secret"));
     }
 
     #[test]
