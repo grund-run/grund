@@ -590,56 +590,58 @@ impl Agents {
                     .await?;
                 }
             }
-            let mut awaiting_block_receipt = false;
-            for spec in &row.spec.0.volumes {
-                let Some(mount) = mounts
-                    .iter()
-                    .find(|v| v.app_id == row.app_id && v.name == spec.name)
-                else {
+            if !replica.stopping {
+                let mut awaiting_block_receipt = false;
+                for spec in &row.spec.0.volumes {
+                    let Some(mount) = mounts
+                        .iter()
+                        .find(|v| v.app_id == row.app_id && v.name == spec.name)
+                    else {
+                        if spec.size_gib.is_some() {
+                            awaiting_block_receipt = true;
+                            break;
+                        }
+                        anyhow::bail!(
+                            "volume {} of app {} is not attached to its placement machine",
+                            spec.name,
+                            row.app_id
+                        );
+                    };
                     if spec.size_gib.is_some() {
-                        awaiting_block_receipt = true;
-                        break;
+                        if mount.status != "attached"
+                            || mount.slot.is_none()
+                            || mount.size_gib != spec.size_gib.map(|size| size as i64)
+                        {
+                            awaiting_block_receipt = true;
+                            break;
+                        }
+                        let ready = match &volume_backend {
+                            Some(backend) => backend.mount_ready(connection, mount).await?,
+                            None => false,
+                        };
+                        if !ready {
+                            awaiting_block_receipt = true;
+                            break;
+                        }
                     }
-                    anyhow::bail!(
-                        "volume {} of app {} is not attached to its placement machine",
+                    anyhow::ensure!(
+                        mount.path == spec.path && mount.source == spec.source,
+                        "volume {} of app {} does not match release mount",
                         spec.name,
                         row.app_id
                     );
-                };
-                if spec.size_gib.is_some() {
-                    if mount.status != "attached"
-                        || mount.slot.is_none()
-                        || mount.size_gib != spec.size_gib.map(|size| size as i64)
-                    {
-                        awaiting_block_receipt = true;
-                        break;
-                    }
-                    let ready = match &volume_backend {
-                        Some(backend) => backend.mount_ready(connection, mount).await?,
-                        None => false,
-                    };
-                    if !ready {
-                        awaiting_block_receipt = true;
-                        break;
-                    }
+                    replica.volumes.push(agent::VolumeMount {
+                        volume_id: mount.volume_id.to_string(),
+                        name: spec.name.clone(),
+                        path: spec.path.clone(),
+                        source: spec.source.clone().unwrap_or_default(),
+                        block_device: spec.size_gib.is_some(),
+                        ..Default::default()
+                    });
                 }
-                anyhow::ensure!(
-                    mount.path == spec.path && mount.source == spec.source,
-                    "volume {} of app {} does not match release mount",
-                    spec.name,
-                    row.app_id
-                );
-                replica.volumes.push(agent::VolumeMount {
-                    volume_id: mount.volume_id.to_string(),
-                    name: spec.name.clone(),
-                    path: spec.path.clone(),
-                    source: spec.source.clone().unwrap_or_default(),
-                    block_device: spec.size_gib.is_some(),
-                    ..Default::default()
-                });
-            }
-            if awaiting_block_receipt {
-                continue;
+                if awaiting_block_receipt {
+                    continue;
+                }
             }
             if crate::services::entry::publishes(&row.spec.0) {
                 if let std::collections::hash_map::Entry::Vacant(slot) = addresses.entry(row.app_id)
@@ -1150,7 +1152,7 @@ mod tests {
         config: crate::config::ServeConfig,
     }
 
-    async fn state(pool: sqlx::PgPool) -> State {
+    pub(super) async fn state(pool: sqlx::PgPool) -> State {
         grund_store::migrate(&pool).await.unwrap();
         let mut config =
             TestConfig::try_parse_from(["test", "--database-url", "postgres://unused/test"])
@@ -1331,3 +1333,7 @@ mod tests {
         assert!(!connected(None, now));
     }
 }
+
+#[cfg(test)]
+#[path = "agents_stop_tests.rs"]
+mod stop_tests;

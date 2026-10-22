@@ -400,7 +400,7 @@ impl mire::Command for Command {
             }
             Self::Operate { operation, at } => {
                 if state.operation.as_ref().is_some_and(|current| {
-                    operation.kind != Kind::Delete || current.kind == Kind::Delete
+                    operation.kind != Kind::Delete || current.id == operation.id
                 }) {
                     return Err(Error::Busy);
                 }
@@ -602,6 +602,61 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_fresh_deletion_supersedes_a_timed_out_deletion_without_unfencing_its_worker() {
+        let at = DateTime::from_timestamp(1_000, 0).unwrap();
+        let expired = Operation {
+            id: Uuid::from_u128(1),
+            kind: Kind::Delete,
+            target_revision: 1,
+            previous_revision: 1,
+            order: vec!["consumer".into(), "producer".into()],
+            cursor: 1,
+            step: Step::Stopping,
+            started_at: at,
+            deadline: at,
+            compensating: false,
+            failure: Some("operation_deadline".into()),
+            releases: BTreeMap::new(),
+            halting: false,
+        };
+        let mut retry = expired.clone();
+        retry.id = Uuid::from_u128(2);
+        retry.cursor = 0;
+        retry.step = Step::Pending;
+        retry.failure = None;
+        retry.deadline = at + chrono::Duration::minutes(30);
+        let mut state = Stack {
+            exists: true,
+            status: Status::Deleting,
+            operation: Some(expired.clone()),
+            failure: expired.failure.clone(),
+            ..Stack::default()
+        };
+        for event in (Command::Operate {
+            operation: retry.clone(),
+            at,
+        })
+        .handle(&state)
+        .unwrap()
+        {
+            state.apply(&event);
+        }
+        assert_eq!(state.status, Status::Deleting);
+        assert!(state.failure.is_none());
+        assert_eq!(state.operation.as_ref(), Some(&retry));
+        assert_eq!(
+            Command::Advance {
+                operation: expired,
+                status: Status::Deleting,
+                machine_id: None,
+                failure: Some("operation_deadline".into()),
+            }
+            .handle(&state),
+            Err(Error::Conflict)
+        );
     }
 
     #[test]

@@ -123,6 +123,12 @@ impl Stacks {
             .context("target stack revision exists")?
             .clone();
 
+        if op.kind == Kind::Delete
+            && now >= op.deadline
+            && op.failure.as_deref() != Some("operation_deadline")
+        {
+            op.failure = Some("operation_deadline".into());
+        }
         if op.kind == Kind::Delete || op.halting {
             self.stop_turn(&mut work, &stack, id, &revision, &mut op, now)
                 .await?;
@@ -798,7 +804,7 @@ impl Stacks {
                         Status::Halted
                     },
                     purge_after,
-                    failure: op.failure.clone(),
+                    failure: if deleting { None } else { op.failure.clone() },
                 },
             )
             .await?;

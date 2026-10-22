@@ -737,15 +737,19 @@ grund stack metrics shop --service database --range hour
 `--service web` updates only that service and refuses hidden sibling changes.
 Removing a service also needs its explicit `--confirm-remove NAME`; omission
 never purges data. Stack deletion drains and fences writers before the existing
-[data-recovery window](#app-volumes-on-your-own-machines) begins. **A singleton
-stateful restart briefly interrupts that service.** Rollback pins images and
-secret versions, not database contents. Change backing apps through their stack;
-`grund stack --help` lists lifecycle commands and protected secret input.
+[data-recovery window](#app-volumes-on-your-own-machines) begins. If stopping takes
+longer than 30 minutes, status shows `operation_deadline`; stopping continues
+without restarting services or deleting their data. A returning machine does not
+shorten the recovery window. **A singleton stateful restart briefly interrupts
+that service.** Rollback pins images and secret versions, not database contents.
+Change backing apps through their stack; `grund stack --help` lists lifecycle
+commands and protected secret input.
 
 Strict rolling services require positive `release.max_surge`; there is no stop-first fallback.
 A failed first deployment retains its owned data without starting a deletion deadline.
 Accepting Restore cancels child and volume deletion deadlines before waiting for capacity.
-For explicit retries, reuse both `--idempotency-key` and the original `--expected-version`.
+To replay a request, reuse both `--idempotency-key` and the original `--expected-version`.
+To retry deletion as a new attempt, use a new key and the stack's current version.
 
 A verified backup restores into a new volume of the same backing app, without
 switching its writer. After restore status is `completed`, set

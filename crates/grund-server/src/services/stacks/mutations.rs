@@ -886,11 +886,7 @@ impl Stacks {
             return Err(Error::Conflict);
         }
         let state = work.load_stack(row.stack_id).await?;
-        if state
-            .operation
-            .as_ref()
-            .is_some_and(|operation| kind != Kind::Delete || operation.kind == Kind::Delete)
-        {
+        if state.operation.is_some() && kind != Kind::Delete {
             return Err(Error::Busy);
         }
         let now: DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
@@ -2706,5 +2702,312 @@ mod tests {
         .unwrap();
         assert_eq!(volume.purge_after, deadline);
         Ok(())
+    }
+
+    async fn expired_deletion_waits_for_fenced_stop(
+        pool: sqlx::PgPool,
+        retry: bool,
+    ) -> anyhow::Result<()> {
+        let state = state(pool).await?;
+        let bundle = bundle(&state, true).await?;
+        let stacks = state.stacks();
+        let mut work = Work::begin(&state.events, Uuid::now_v7(), "test").await?;
+        let mut former = bundle.former.clone();
+        former.step = Step::Applying;
+        work.stack(
+            bundle.id,
+            Command::Advance {
+                operation: former,
+                status: Status::Deploying,
+                machine_id: Some(bundle.machine),
+                failure: None,
+            },
+        )
+        .await?;
+        work.commit().await?;
+        let version = store::get(&state.pool, bundle.org, bundle.id)
+            .await?
+            .unwrap()
+            .stream_version;
+        stacks
+            .delete(
+                Uuid::nil(),
+                bundle.org,
+                "ordered",
+                Some(version),
+                "delete-expiring",
+            )
+            .await?;
+        stacks.reconcile_one(bundle.org, bundle.id).await?;
+        state
+            .apps()
+            .reconcile_app(bundle.consumer, bundle.org)
+            .await?;
+        let consumer = apps::app_replicas(&state.pool, bundle.consumer).await?;
+        let consumer_gate = store::member(&state.pool, bundle.org, bundle.consumer)
+            .await?
+            .unwrap();
+        let mut connection = state.pool.acquire().await?;
+        assert!(
+            apps::record_stack_receipt(
+                &mut connection,
+                bundle.org,
+                bundle.machine,
+                consumer[0].replica_id,
+                consumer_gate.required_generation,
+                consumer_gate.operation_id.unwrap(),
+            )
+            .await?
+        );
+        drop(connection);
+        state
+            .apps()
+            .reconcile_app(bundle.consumer, bundle.org)
+            .await?;
+        stacks.reconcile_one(bundle.org, bundle.id).await?;
+        stacks.reconcile_one(bundle.org, bundle.id).await?;
+        state
+            .apps()
+            .reconcile_app(bundle.producer, bundle.org)
+            .await?;
+        let blocked = store::get(&state.pool, bundle.org, bundle.id)
+            .await?
+            .unwrap();
+        let mut expired = blocked.state.0.operation.unwrap();
+        assert_eq!(expired.cursor, 1);
+        assert_eq!(expired.step, Step::Stopping);
+        expired.deadline = expired.started_at - Duration::seconds(1);
+        let mut work = Work::begin(&state.events, Uuid::now_v7(), "test").await?;
+        work.stack(
+            bundle.id,
+            Command::Advance {
+                operation: expired.clone(),
+                status: Status::Deleting,
+                machine_id: Some(bundle.machine),
+                failure: None,
+            },
+        )
+        .await?;
+        work.commit().await?;
+        let old_gate = store::member(&state.pool, bundle.org, bundle.producer)
+            .await?
+            .unwrap();
+        let producer = apps::app_replicas(&state.pool, bundle.producer).await?;
+        assert_eq!(producer.len(), 1);
+        assert_eq!(producer[0].state, "draining");
+        assert!(old_gate.required_generation > 0);
+        stacks.reconcile_one(bundle.org, bundle.id).await?;
+        let view = stacks.get(bundle.org, "ordered", None).await?;
+        assert_eq!(view.failure.as_deref(), Some("operation_deadline"));
+        assert_eq!(view.status, "deleting");
+        assert_eq!(view.operation, Some(expired.id.to_string()));
+        let timed_out = store::get(&state.pool, bundle.org, bundle.id)
+            .await?
+            .unwrap();
+        let mut expected = expired.clone();
+        expected.failure = Some("operation_deadline".into());
+        assert_eq!(timed_out.state.0.operation.as_ref(), Some(&expected));
+        assert_eq!(timed_out.state.0.machine_id, Some(bundle.machine));
+        assert!(timed_out.state.0.purge_after.is_none());
+        for app_id in [bundle.consumer, bundle.producer] {
+            let app = apps::app(&state.pool, app_id).await?.unwrap();
+            assert!(app.deleted_at.is_none());
+            assert!(app.purge_after.is_none());
+            let gate = store::member(&state.pool, bundle.org, app_id)
+                .await?
+                .unwrap();
+            assert!(!gate.enabled);
+            assert!(gate.stopping);
+            assert_eq!(gate.operation_id, Some(expired.id));
+        }
+        let volume = grund_store::volumes::any_volume(
+            &state.pool,
+            bundle.org,
+            bundle.producer,
+            bundle.volume,
+        )
+        .await?
+        .unwrap();
+        assert!(volume.purge_after.is_none());
+        assert_ne!(volume.status, "pending_deletion");
+        let before = snapshot(&state).await?;
+        for _ in 0..3 {
+            stacks.reconcile_one(bundle.org, bundle.id).await?;
+        }
+        assert_eq!(snapshot(&state).await?, before);
+        for app in [bundle.consumer, bundle.producer] {
+            assert!(!state.apps().reconcile_app(app, bundle.org).await?);
+        }
+        let operation_id = if retry {
+            let response = stacks
+                .delete(
+                    Uuid::nil(),
+                    bundle.org,
+                    "ordered",
+                    Some(timed_out.stream_version),
+                    "delete-retry",
+                )
+                .await?;
+            assert_eq!(response.status, "deleting");
+            assert!(response.failure.is_none());
+            let operation_id = Uuid::parse_str(response.operation.as_deref().unwrap())?;
+            assert_ne!(operation_id, expired.id);
+            let before_replay = snapshot(&state).await?;
+            let replay = stacks
+                .delete(
+                    Uuid::nil(),
+                    bundle.org,
+                    "ordered",
+                    Some(timed_out.stream_version),
+                    "delete-retry",
+                )
+                .await?;
+            assert_eq!(
+                serde_json::to_value(response)?,
+                serde_json::to_value(replay)?
+            );
+            assert_eq!(snapshot(&state).await?, before_replay);
+            for _ in 0..3 {
+                stacks.reconcile_one(bundle.org, bundle.id).await?;
+            }
+            operation_id
+        } else {
+            expired.id
+        };
+        let gate = store::member(&state.pool, bundle.org, bundle.producer)
+            .await?
+            .unwrap();
+        assert_eq!(gate.operation_id, Some(operation_id));
+        assert!(gate.required_generation > 0);
+        if !retry {
+            assert_eq!(gate.required_generation, old_gate.required_generation);
+        }
+        assert!(
+            !state
+                .apps()
+                .reconcile_app(bundle.consumer, bundle.org)
+                .await?
+        );
+        assert!(
+            apps::app_replicas(&state.pool, bundle.consumer)
+                .await?
+                .is_empty()
+        );
+        let mut connection = state.pool.acquire().await?;
+        if retry {
+            assert!(gate.required_generation > old_gate.required_generation);
+            assert!(
+                !apps::record_stack_receipt(
+                    &mut connection,
+                    bundle.org,
+                    bundle.machine,
+                    producer[0].replica_id,
+                    gate.required_generation,
+                    expired.id,
+                )
+                .await?
+            );
+        }
+        for (machine, generation) in [
+            (Uuid::now_v7(), gate.required_generation),
+            (bundle.machine, gate.required_generation - 1),
+        ] {
+            assert!(
+                !apps::record_stack_receipt(
+                    &mut connection,
+                    bundle.org,
+                    machine,
+                    producer[0].replica_id,
+                    generation,
+                    operation_id,
+                )
+                .await?
+            );
+        }
+        drop(connection);
+        state
+            .apps()
+            .reconcile_app(bundle.producer, bundle.org)
+            .await?;
+        stacks.reconcile_one(bundle.org, bundle.id).await?;
+        assert_eq!(
+            apps::app_replicas(&state.pool, bundle.producer)
+                .await?
+                .len(),
+            1
+        );
+        let mut connection = state.pool.acquire().await?;
+        assert!(
+            apps::record_stack_receipt(
+                &mut connection,
+                bundle.org,
+                bundle.machine,
+                producer[0].replica_id,
+                gate.required_generation,
+                operation_id,
+            )
+            .await?
+        );
+        drop(connection);
+        state
+            .apps()
+            .reconcile_app(bundle.producer, bundle.org)
+            .await?;
+        assert!(
+            apps::app_replicas(&state.pool, bundle.producer)
+                .await?
+                .is_empty()
+        );
+        let completed_after: DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(&state.pool)
+            .await?;
+        stacks.reconcile_one(bundle.org, bundle.id).await?;
+        stacks.reconcile_one(bundle.org, bundle.id).await?;
+        let deleted = store::get(&state.pool, bundle.org, bundle.id)
+            .await?
+            .unwrap();
+        assert_eq!(deleted.state.0.status, Status::Deleted);
+        assert!(deleted.state.0.operation.is_none());
+        assert!(deleted.state.0.failure.is_none());
+        let deadline = deleted.state.0.purge_after.unwrap();
+        assert!(deadline >= completed_after + Duration::days(7));
+        assert!(deadline <= Utc::now() + Duration::from_std(state.config.volume_delete_window)?);
+        for app_id in [bundle.consumer, bundle.producer] {
+            let app = apps::app(&state.pool, app_id).await?.unwrap();
+            assert!(app.deleted_at.is_some());
+            assert_eq!(app.purge_after, Some(deadline));
+            assert!(apps::app_replicas(&state.pool, app_id).await?.is_empty());
+        }
+        let volume = grund_store::volumes::any_volume(
+            &state.pool,
+            bundle.org,
+            bundle.producer,
+            bundle.volume,
+        )
+        .await?
+        .unwrap();
+        assert_eq!(volume.status, "pending_deletion");
+        assert_eq!(volume.purge_after, Some(deadline));
+        let view = stacks.get(bundle.org, "ordered", None).await?;
+        assert_eq!(view.status, "deleted");
+        assert!(view.failure.is_none());
+        let completed = snapshot(&state).await?;
+        stacks.reconcile_one(bundle.org, bundle.id).await?;
+        assert_eq!(snapshot(&state).await?, completed);
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn expired_deletion_reports_once_and_finishes_retention_only_after_current_stop_receipt(
+        pool: sqlx::PgPool,
+    ) -> anyhow::Result<()> {
+        expired_deletion_waits_for_fenced_stop(pool, false).await
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn expired_deletion_accepts_fresh_fenced_retry_and_replays_without_restarting_children(
+        pool: sqlx::PgPool,
+    ) -> anyhow::Result<()> {
+        expired_deletion_waits_for_fenced_stop(pool, true).await
     }
 }
