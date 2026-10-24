@@ -232,6 +232,15 @@ pub fn verify(
             Refusal::Equivocation
         });
     }
+    check_features(&state)?;
+    Ok(state)
+}
+
+/// The checks every document passes after it is trusted, signed or local:
+/// it requires only features this agent knows, and requires each feature its
+/// replicas use, so a document never relies on semantics an agent would
+/// ignore.
+pub fn check_features(state: &DesiredState) -> Result<(), Refusal> {
     if let Some(unknown) = state
         .required_features
         .iter()
@@ -272,7 +281,7 @@ pub fn verify(
     {
         return Err(Refusal::MissingProcessFeature);
     }
-    Ok(state)
+    Ok(())
 }
 
 /// The control link to the instance: every call signed by the machine key.

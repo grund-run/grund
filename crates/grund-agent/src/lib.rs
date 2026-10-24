@@ -17,6 +17,7 @@ pub mod gate;
 pub mod guest_boot;
 pub mod join;
 pub mod lease;
+pub mod local;
 pub mod local_bootstrap;
 pub mod net;
 pub mod policy;
