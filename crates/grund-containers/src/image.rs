@@ -62,6 +62,25 @@ pub fn normalize_name(reference: &str) -> anyhow::Result<String> {
     Ok(format!("{domain}/{path}"))
 }
 
+/// `reference` normalised with its tag, `latest` when it names none: the
+/// name the image store keeps a pulled or built image under by reference.
+pub fn tagged_name(reference: &str) -> anyhow::Result<String> {
+    let without_digest = reference.split('@').next().unwrap_or_default();
+    let tag = match without_digest.rfind(':') {
+        Some(colon) if !without_digest[colon..].contains('/') => &without_digest[colon + 1..],
+        _ => "latest",
+    };
+    anyhow::ensure!(
+        !tag.is_empty()
+            && tag.len() <= 128
+            && tag
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)),
+        "not an image tag in {reference:?}"
+    );
+    Ok(format!("{}:{tag}", normalize_name(reference)?))
+}
+
 /// Whether `digest` is `sha256:` and 64 lowercase hex digits.
 pub fn valid_digest(digest: &str) -> bool {
     digest.strip_prefix("sha256:").is_some_and(|hex| {
@@ -225,6 +244,26 @@ impl ImageConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tagged_name_keeps_the_tag_and_defaults_to_latest() {
+        assert_eq!(
+            tagged_name("busybox:1.36.1-glibc").unwrap(),
+            "docker.io/library/busybox:1.36.1-glibc"
+        );
+        assert_eq!(
+            tagged_name("local/web").unwrap(),
+            "docker.io/local/web:latest"
+        );
+        assert_eq!(
+            tagged_name("localhost:5000/app:2").unwrap(),
+            "localhost:5000/app:2"
+        );
+        assert_eq!(
+            tagged_name("localhost:5000/app").unwrap(),
+            "localhost:5000/app:latest"
+        );
+    }
 
     #[test]
     fn an_images_stop_signal_and_healthcheck_are_read_from_its_config() {

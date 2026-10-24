@@ -381,7 +381,7 @@ impl Containerd {
     /// not a pinned name), if it holds one.
     pub async fn image_by_name(&self, reference: &str) -> anyhow::Result<Option<String>> {
         let request = GetImageRequest {
-            name: image::normalize_name(reference)?,
+            name: image::tagged_name(reference)?,
             ..Default::default()
         };
         match self.client().images().get(request).await {
@@ -399,7 +399,7 @@ impl Containerd {
     /// Pulls `reference` by its tag into the image store under that name,
     /// unpacked, and returns the digest it names now.
     pub async fn pull_name(&self, reference: &str) -> anyhow::Result<String> {
-        let name = image::normalize_name(reference)?;
+        let name = image::tagged_name(reference)?;
         let platform = Platform {
             os: "linux".into(),
             architecture: self.config.arch.oci().into(),
@@ -438,7 +438,7 @@ impl Containerd {
     /// loop never asks a registry for it, which a locally built image could
     /// not answer.
     pub async fn pin(&self, reference: &str, digest: &str) -> anyhow::Result<()> {
-        let name = image::normalize_name(reference)?;
+        let name = image::tagged_name(reference)?;
         let record = self
             .client()
             .images()
