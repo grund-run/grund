@@ -451,11 +451,19 @@ mod tests {
     fn process_overrides_follow_dockers_entrypoint_and_cmd_rules() {
         let image = image();
         let cases: [(Option<Vec<&str>>, Option<Vec<&str>>, Vec<&str>); 5] = [
-            (None, Some(vec!["nginx", "-T"]), vec!["/docker-entrypoint.sh", "nginx", "-T"]),
+            (
+                None,
+                Some(vec!["nginx", "-T"]),
+                vec!["/docker-entrypoint.sh", "nginx", "-T"],
+            ),
             (Some(vec!["/bin/sh", "-c"]), None, vec!["/bin/sh", "-c"]),
             (Some(vec![]), Some(vec!["/app"]), vec!["/app"]),
             (None, Some(vec![]), vec!["/docker-entrypoint.sh"]),
-            (Some(vec!["/bin/sh"]), Some(vec!["-c", "exit 0"]), vec!["/bin/sh", "-c", "exit 0"]),
+            (
+                Some(vec!["/bin/sh"]),
+                Some(vec!["-c", "exit 0"]),
+                vec!["/bin/sh", "-c", "exit 0"],
+            ),
         ];
         for (entrypoint, cmd, want) in cases {
             let mut spec = spec();
