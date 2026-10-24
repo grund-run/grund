@@ -1044,6 +1044,7 @@ impl ContainerRuntime for Containerd {
             .image_config(&spec.image.digest)
             .await?
             .with_context(|| format!("image {name} is not pulled"))?;
+        spec::process_args(spec, &config)?;
         self.ensure_snapshot(&spec.id, &config.chain_id()?).await?;
         let user = self
             .resolve_user(
