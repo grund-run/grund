@@ -1430,7 +1430,7 @@ mod tests {
         fs::create_dir(host.join("sub")).unwrap();
         let refused = prepare(
             &base,
-            &[host.clone()],
+            std::slice::from_ref(&host),
             "app-a",
             &[VolumeMount {
                 copy_up: true,
