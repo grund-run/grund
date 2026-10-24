@@ -135,7 +135,8 @@ pub struct MeshConfig {
     pub tun_name: String,
     /// grund's relays, used to reach members before a direct path exists.
     pub relays: Vec<RelayUrl>,
-    /// Honour [`crate::membership::AppReplica::open`]: only the mesh of one
+    /// Honour [`crate::membership::AppReplica::open`] for packets from this
+    /// mesh's own replicas, never from other members: only the mesh of one
     /// local project, fed by a list built on this machine, sets it. A mesh
     /// fed by signed lists leaves it false and filters every replica by its
     /// declared ports whatever the list says.
@@ -652,7 +653,12 @@ impl Mesh {
                     view.as_ref()
                         .and_then(|v| {
                             v.list.replica_at(dst).map(|(_, r)| {
-                                (r.ports.clone(), r.open && self.inner.config.local_project)
+                                (
+                                    r.ports.clone(),
+                                    r.open
+                                        && self.inner.config.local_project
+                                        && from == Origin::Replica,
+                                )
                             })
                         })
                         .unwrap_or_default()

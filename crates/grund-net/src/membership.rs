@@ -129,11 +129,11 @@ pub struct AppReplica {
     /// only. They answer with these ready replica addresses, never a VIP.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<String>,
-    /// Every port is reachable from the network, as on a Compose network,
-    /// not only [`AppReplica::ports`]. Honoured only by a local project's
-    /// mesh ([`crate::mesh::MeshConfig::local_project`]), whose list grund up
-    /// builds on this machine; a mesh fed by signed lists ignores it.
-    /// grund-server never sets it, and lists without it encode as they did.
+    /// Every port is reachable from the project's other replicas, as on a
+    /// Compose network, not only [`AppReplica::ports`]. Honoured only by a
+    /// local project's mesh ([`crate::mesh::MeshConfig::local_project`]) for
+    /// its own replicas' packets. The agent refuses a signed list that sets
+    /// it; grund-server never does, and lists without it encode as they did.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub open: bool,
 }
@@ -422,6 +422,14 @@ impl MembershipList {
             .collect();
         out.sort();
         out
+    }
+
+    /// Whether any replica is marked [`AppReplica::open`], which only a local
+    /// project's own list may do.
+    pub fn opens_any_replica(&self) -> bool {
+        self.members
+            .iter()
+            .any(|member| member.apps.iter().any(|app| app.open))
     }
 
     /// The member with this key, if any.

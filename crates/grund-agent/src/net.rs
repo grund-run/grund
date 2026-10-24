@@ -108,6 +108,12 @@ pub fn accept_list(
     if list.epoch <= current_epoch {
         return Err(ListRefusal::Older(list.epoch, current_epoch));
     }
+    if list.opens_any_replica() {
+        return Err(ListRefusal::Invalid(
+            "a signed list may not open a replica's ports; only a local project's own list does"
+                .into(),
+        ));
+    }
     Ok(list)
 }
 
@@ -974,6 +980,31 @@ mod tests {
             Duration::from_millis(125),
             "jitter never below half"
         );
+    }
+
+    #[test]
+    fn a_signed_list_that_opens_a_replica_is_refused() {
+        let key = SigningKey::from_bytes(&[5; 32]);
+        let mut open = list(2, "net-1");
+        open.members[0]
+            .apps
+            .push(grund_net::membership::AppReplica {
+                app: "web".into(),
+                replica_id: "web-1".into(),
+                address: grund_net::membership::replica_address(open.prefix, 1, "web-1"),
+                ports: Vec::new(),
+                ready: true,
+                aliases: Vec::new(),
+                open: true,
+            });
+        let signed = SignedList::sign(&open, &key);
+        assert!(matches!(
+            accept_list(&network(&key), "k1", &signed.body, &signed.signature, 1),
+            Err(ListRefusal::Invalid(_))
+        ));
+        open.members[0].apps[0].open = false;
+        let signed = SignedList::sign(&open, &key);
+        assert!(accept_list(&network(&key), "k1", &signed.body, &signed.signature, 1).is_ok());
     }
 
     #[test]
