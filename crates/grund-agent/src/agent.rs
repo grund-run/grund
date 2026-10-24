@@ -57,6 +57,7 @@ pub const KNOWN_FEATURES: &[&str] = &[
     "process-overrides",
     "restart-policy",
     "exec-checks",
+    "volume-copy-up",
 ];
 
 /// The largest document the agent decodes (apps.md §15).
@@ -161,6 +162,7 @@ pub enum Refusal {
     MissingProcessFeature,
     MissingRestartFeature,
     MissingExecCheckFeature,
+    MissingCopyUpFeature,
     NoTrustKey,
     /// Signed by a key other than the one pinned.
     UnknownKey,
@@ -187,6 +189,7 @@ impl std::fmt::Display for Refusal {
             Refusal::MissingProcessFeature => f.write_str("document overrides a process entrypoint, cmd, working directory or user without requiring process-overrides"),
             Refusal::MissingRestartFeature => f.write_str("document sets a restart policy without requiring restart-policy"),
             Refusal::MissingExecCheckFeature => f.write_str("document sets an exec check or check retries without requiring exec-checks"),
+            Refusal::MissingCopyUpFeature => f.write_str("document asks for a volume copy-up without requiring volume-copy-up"),
             Refusal::NoTrustKey => f.write_str("this machine pinned no organisation key"),
             Refusal::UnknownKey => f.write_str("document is signed by a key this machine did not pin"),
             Refusal::Same => f.write_str("document is the one applied"),
@@ -312,6 +315,17 @@ pub fn check_features(state: &DesiredState) -> Result<(), Refusal> {
         .any(|feature| feature == "exec-checks")
     {
         return Err(Refusal::MissingExecCheckFeature);
+    }
+    if state
+        .replicas
+        .iter()
+        .any(|replica| replica.volumes.iter().any(|v| v.copy_up))
+        && !state
+            .required_features
+            .iter()
+            .any(|feature| feature == "volume-copy-up")
+    {
+        return Err(Refusal::MissingCopyUpFeature);
     }
     Ok(())
 }

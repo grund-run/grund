@@ -620,14 +620,21 @@ pub fn prepare(
                 .any(|v: &VolumeBind| overlaps(Path::new(&v.source), &source)),
             "overlapping writable host directories"
         );
+        let managed = mount.source.is_empty() && !mount.block_device;
+        ensure!(
+            !mount.copy_up || managed,
+            "volume {} asks for a copy-up but is not a grund-managed directory",
+            mount.name
+        );
         binds.push(VolumeBind {
             volume_id: mount.volume_id.clone(),
             app_id: app.into(),
             name: mount.name.clone(),
             path: mount.path.clone(),
             source: source.display().to_string(),
-            managed: mount.source.is_empty() && !mount.block_device,
+            managed,
             block_device: mount.block_device,
+            copy_up: mount.copy_up,
         });
     }
     Ok(binds)
@@ -730,6 +737,7 @@ pub fn restore_guard(
         source: path.display().to_string(),
         managed: true,
         block_device: false,
+        copy_up: false,
     };
     let verified = verify_bind(data_dir, &[], &bind)?;
     let old = dir.metadata()?;
@@ -789,6 +797,7 @@ pub fn grant_access(
 ) -> anyhow::Result<()> {
     let mut meta = dir.metadata()?;
     if bind.managed
+        && !bind.copy_up
         && meta.uid() == 0
         && meta.permissions().mode() & 0o777 == 0o700
         && uid != 0
@@ -802,7 +811,7 @@ pub fn grant_access(
         dir.sync_all()?;
         meta = dir.metadata()?;
     }
-    if uid != 0 {
+    if uid != 0 && !bind.copy_up {
         let mode = meta.permissions().mode();
         let access = if meta.uid() == uid {
             (mode >> 6) & 7
@@ -817,6 +826,122 @@ pub fn grant_access(
             bind.name
         );
     }
+    Ok(())
+}
+
+/// A managed volume held exclusively while the image's files are copied in
+/// ([`copy_up_begin`]). Until [`CopyUp::finish`], a marker beside the
+/// volume's owner record says the copy is incomplete, so a crash midway
+/// never lets the volume be used half-copied.
+pub struct CopyUp {
+    dir: File,
+    owners: File,
+    marker: CString,
+}
+
+fn copy_up_marker(id: &str) -> anyhow::Result<CString> {
+    Ok(CString::new(format!("{id}.copyup"))?)
+}
+
+fn marker_exists(owners: &File, marker: &CString) -> anyhow::Result<bool> {
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    let result = unsafe {
+        libc::fstatat(
+            owners.as_raw_fd(),
+            marker.as_ptr(),
+            stat.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    };
+    if result == 0 {
+        return Ok(true);
+    }
+    let error = io::Error::last_os_error();
+    if error.kind() == io::ErrorKind::NotFound {
+        Ok(false)
+    } else {
+        Err(error.into())
+    }
+}
+
+/// Locks managed volume `bind` (verified as `dir`) for its copy-up and says
+/// whether to copy: `None` when it holds data, which is never copied into or
+/// changed. An empty volume, or one holding only the output of a copy-up a
+/// crash interrupted (which is removed first), is marked incomplete and
+/// returned for the caller to fill and [`CopyUp::finish`].
+pub fn copy_up_begin(
+    data_dir: &Path,
+    bind: &VolumeBind,
+    dir: File,
+) -> anyhow::Result<Option<CopyUp>> {
+    ensure!(
+        bind.copy_up && bind.managed && !bind.block_device,
+        "volume {} is not a grund-managed directory to copy into",
+        bind.name
+    );
+    let (_, owners_path) = managed_roots(data_dir)?;
+    let owners = directory(&owners_path)?;
+    lock_directory(&dir, true)?;
+    let marker = copy_up_marker(&bind.volume_id)?;
+    if marker_exists(&owners, &marker)? {
+        for entry in fs::read_dir(&bind.source)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                fs::remove_dir_all(entry.path())?;
+            } else {
+                fs::remove_file(entry.path())?;
+            }
+        }
+        dir.sync_all()?;
+    } else if fs::read_dir(&bind.source)?.next().is_some() {
+        return Ok(None);
+    }
+    let fd = unsafe {
+        libc::openat(
+            owners.as_raw_fd(),
+            marker.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o600,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error()).context("mark the copy-up incomplete");
+    }
+    let file = unsafe { File::from_raw_fd(fd) };
+    file.sync_all()?;
+    owners.sync_all()?;
+    Ok(Some(CopyUp {
+        dir,
+        owners,
+        marker,
+    }))
+}
+
+impl CopyUp {
+    /// The copy is complete: removes the marker, durably.
+    pub fn finish(self) -> anyhow::Result<()> {
+        self.dir.sync_all()?;
+        if unsafe { libc::unlinkat(self.owners.as_raw_fd(), self.marker.as_ptr(), 0) } < 0 {
+            return Err(io::Error::last_os_error()).context("mark the copy-up complete");
+        }
+        self.owners.sync_all()?;
+        Ok(())
+    }
+}
+
+/// Refuses to start a replica on a volume whose copy-up was interrupted;
+/// only a new create redoes it.
+pub fn ensure_copied(data_dir: &Path, bind: &VolumeBind) -> anyhow::Result<()> {
+    if !bind.copy_up {
+        return Ok(());
+    }
+    let (_, owners_path) = managed_roots(data_dir)?;
+    let owners = directory(&owners_path)?;
+    ensure!(
+        !marker_exists(&owners, &copy_up_marker(&bind.volume_id)?)?,
+        "volume {}'s copy of the image's files was interrupted; it is redone when the replica is created again",
+        bind.name
+    );
     Ok(())
 }
 
@@ -1269,6 +1394,7 @@ mod tests {
             source: path.display().to_string(),
             managed: false,
             block_device: true,
+            copy_up: false,
         };
         release_unused(&base, None, &[("replica".into(), bind)]).unwrap();
         assert_eq!(fs::read(&bytes).unwrap(), b"do not erase");

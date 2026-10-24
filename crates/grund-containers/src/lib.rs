@@ -736,6 +736,7 @@ impl Containerd {
                 bind.name
             );
             let dir = volume::verify_bind(&self.config.data_dir, roots, bind)?;
+            volume::ensure_copied(&self.config.data_dir, bind)?;
             volume::grant_access(&dir, bind, uid, gid, &groups)?;
         }
         Ok(())
@@ -1151,6 +1152,23 @@ impl ContainerRuntime for Containerd {
             .await?;
         for bind in &spec.volumes {
             let dir = volume::verify_bind(&self.config.data_dir, &spec.volume_roots, bind)?;
+            if bind.copy_up
+                && let Some(copy) =
+                    volume::copy_up_begin(&self.config.data_dir, bind, dir.try_clone()?)?
+            {
+                let mounts = self.mounts(&spec.id).await?;
+                let scratch = self
+                    .config
+                    .scratch_dir()
+                    .join(format!("{}.copy-up", spec.id));
+                let (from, into) = (bind.path.clone(), PathBuf::from(&bind.source));
+                tokio::task::spawn_blocking(move || {
+                    rootfs::copy_tree(&mounts, &scratch, &from, &into)
+                })
+                .await?
+                .with_context(|| format!("copy the image's files into volume {}", bind.name))?;
+                copy.finish()?;
+            }
             volume::grant_access(&dir, bind, user.uid, user.gid, &user.additional_gids)?;
         }
         let netns = self.ensure_netns(&spec.id)?;

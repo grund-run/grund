@@ -1,7 +1,7 @@
-//! Reading a few files from a container's root filesystem before it runs:
-//! the snapshot's mounts are mounted read-only on a scratch directory, the
-//! files read, and the mounts undone. Only regular files under real
-//! directories are read: a symlink in the image is never followed onto the
+//! Reading a few files from a container's root filesystem before it runs,
+//! and copying an image directory into a new volume: the snapshot's mounts
+//! are mounted read-only on a scratch directory, the files read or copied,
+//! and the mounts undone. A symlink in the image is never followed onto the
 //! host.
 
 use std::{
@@ -124,9 +124,191 @@ pub fn read_files(
     Ok(read)
 }
 
+/// Mounts `mounts` read-only on `scratch` and copies the image's directory
+/// `from` (absolute in the image) into the empty directory `into`, as
+/// Docker's copy-up does: modes, owners and times kept, the directory's own
+/// on `into` too, symlinks copied as symlinks. Nothing is copied when `from`
+/// is absent or not a directory in the image. A symlink on the way to
+/// `from`, or a device, FIFO or socket in it, is refused.
+pub fn copy_tree(mounts: &[Mount], scratch: &Path, from: &str, into: &Path) -> io::Result<()> {
+    let [mount] = mounts else {
+        return Err(io::Error::other(format!(
+            "expected one rootfs mount, containerd gave {}",
+            mounts.len()
+        )));
+    };
+    std::fs::create_dir_all(scratch)?;
+    mount_one(mount, scratch)?;
+    let copied = image_directory(scratch, from).and_then(|source| match source {
+        Some(source) => copy_directory(&source, into),
+        None => Ok(()),
+    });
+    unmount(scratch);
+    let _ = std::fs::remove_dir(scratch);
+    copied
+}
+
+fn image_directory(root: &Path, from: &str) -> io::Result<Option<std::path::PathBuf>> {
+    let mut path = root.to_path_buf();
+    for component in Path::new(from).components() {
+        match component {
+            Component::RootDir => {}
+            Component::Normal(name) => {
+                path.push(name);
+                match std::fs::symlink_metadata(&path) {
+                    Ok(meta) if meta.file_type().is_symlink() => {
+                        return Err(io::Error::other(format!(
+                            "{from} passes through a symlink in the image"
+                        )));
+                    }
+                    Ok(meta) if !meta.is_dir() => return Ok(None),
+                    Ok(_) => {}
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+                    Err(e) => return Err(e),
+                }
+            }
+            _ => {
+                return Err(io::Error::other(format!(
+                    "{from} is not a plain absolute path"
+                )));
+            }
+        }
+    }
+    Ok(Some(path))
+}
+
+fn copy_directory(source: &Path, into: &Path) -> io::Result<()> {
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = into.join(entry.file_name());
+        let meta = std::fs::symlink_metadata(&from)?;
+        let kind = meta.file_type();
+        if kind.is_dir() {
+            std::fs::create_dir(&to)?;
+            copy_directory(&from, &to)?;
+        } else if kind.is_file() {
+            std::fs::copy(&from, &to)?;
+        } else if kind.is_symlink() {
+            std::os::unix::fs::symlink(std::fs::read_link(&from)?, &to)?;
+        } else {
+            return Err(io::Error::other(format!(
+                "{} is a device, FIFO or socket, which a volume copy does not take",
+                from.display()
+            )));
+        }
+        keep_metadata(&to, &meta)?;
+    }
+    keep_metadata(into, &std::fs::symlink_metadata(source)?)
+}
+
+fn keep_metadata(path: &Path, meta: &std::fs::Metadata) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let to = CString::new(path.as_os_str().as_bytes()).map_err(io::Error::other)?;
+    if unsafe { libc::lchown(to.as_ptr(), meta.uid(), meta.gid()) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if !meta.file_type().is_symlink()
+        && unsafe { libc::chmod(to.as_ptr(), meta.mode() & 0o7777) } < 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let times = [
+        libc::timespec {
+            tv_sec: meta.atime(),
+            tv_nsec: meta.atime_nsec(),
+        },
+        libc::timespec {
+            tv_sec: meta.mtime(),
+            tv_nsec: meta.mtime_nsec(),
+        },
+    ];
+    if unsafe {
+        libc::utimensat(
+            libc::AT_FDCWD,
+            to.as_ptr(),
+            times.as_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } < 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn temp(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "grund-copy-up-{name}-{}",
+            uuid::Uuid::now_v7().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn an_image_directory_is_copied_with_its_modes_and_symlinks_kept() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let image = temp("image");
+        let data = image.join("var/lib/app");
+        std::fs::create_dir_all(data.join("nested")).unwrap();
+        std::fs::write(data.join("nested/seed.txt"), "seed").unwrap();
+        std::fs::set_permissions(
+            data.join("nested/seed.txt"),
+            std::fs::Permissions::from_mode(0o640),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("/etc/passwd", data.join("link")).unwrap();
+        std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o750)).unwrap();
+        let volume = temp("volume");
+        let source = image_directory(&image, "/var/lib/app").unwrap().unwrap();
+        copy_directory(&source, &volume).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(volume.join("nested/seed.txt")).unwrap(),
+            "seed"
+        );
+        assert_eq!(
+            std::fs::metadata(volume.join("nested/seed.txt"))
+                .unwrap()
+                .mode()
+                & 0o777,
+            0o640
+        );
+        assert_eq!(
+            std::fs::read_link(volume.join("link")).unwrap(),
+            Path::new("/etc/passwd")
+        );
+        assert_eq!(std::fs::metadata(&volume).unwrap().mode() & 0o777, 0o750);
+        assert_eq!(
+            std::fs::metadata(volume.join("nested/seed.txt"))
+                .unwrap()
+                .mtime(),
+            std::fs::metadata(data.join("nested/seed.txt"))
+                .unwrap()
+                .mtime()
+        );
+        std::fs::remove_dir_all(image).unwrap();
+        std::fs::remove_dir_all(volume).unwrap();
+    }
+
+    #[test]
+    fn a_symlink_on_the_way_or_a_fifo_inside_is_refused_and_an_absent_path_copies_nothing() {
+        let image = temp("refuse");
+        std::fs::create_dir_all(image.join("real")).unwrap();
+        std::os::unix::fs::symlink("/etc", image.join("via")).unwrap();
+        assert!(image_directory(&image, "/via/ssl").is_err());
+        assert_eq!(image_directory(&image, "/missing/dir").unwrap(), None);
+        let fifo = CString::new(image.join("real/pipe").as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        let volume = temp("refuse-volume");
+        assert!(copy_directory(&image.join("real"), &volume).is_err());
+        std::fs::remove_dir_all(image).unwrap();
+        std::fs::remove_dir_all(volume).unwrap();
+    }
 
     #[test]
     fn overlay_options_become_data_and_bind_options_flags() {

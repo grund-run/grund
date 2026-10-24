@@ -48,6 +48,10 @@ pub struct VolumeBind {
     /// An attached ext4 device, never an agent-provisioned directory.
     #[serde(default)]
     pub block_device: bool,
+    /// Copy the image's files at `path` in before the first start, when the
+    /// managed directory is empty ([`crate::volume::copy_up_begin`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub copy_up: bool,
 }
 
 /// An image pinned by digest.

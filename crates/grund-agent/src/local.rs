@@ -470,6 +470,23 @@ mod tests {
         );
         checked.required_features.push("exec-checks".into());
         assert_eq!(handle.apply(checked), Ok(()));
+        let mut copying = document(4);
+        copying.replicas[0]
+            .volumes
+            .push(grund_proto::grund::agent::v1::VolumeMount {
+                volume_id: "11111111-1111-1111-1111-111111111111".into(),
+                name: "data".into(),
+                path: "/var/lib/postgresql/data".into(),
+                copy_up: true,
+                ..Default::default()
+            });
+        copying.required_features.push("volumes".into());
+        assert_eq!(
+            handle.apply(copying.clone()),
+            Err(Refusal::MissingCopyUpFeature)
+        );
+        copying.required_features.push("volume-copy-up".into());
+        assert_eq!(handle.apply(copying), Ok(()));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

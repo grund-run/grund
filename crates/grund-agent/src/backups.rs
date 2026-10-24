@@ -432,6 +432,7 @@ fn signed_source(
         },
         managed,
         block_device: false,
+        copy_up: false,
     })
 }
 
@@ -562,6 +563,7 @@ pub async fn run(
                                 source: path.display().to_string(),
                                 managed: true,
                                 block_device: false,
+                                copy_up: false,
                             };
                             crate::volume::verify_bind(&volume_root, &[], &bind)?;
                         }

@@ -512,6 +512,12 @@ message VolumeMount {
   // UUIDv5(app_id, UTF8 name). source must be empty; no directory is created
   // as a fallback.
   bool block_device = 5;
+  // Docker's copy-up: before the first start, the image's files at path are
+  // copied into the grund-managed directory when it is empty, keeping their
+  // modes, owners and times. Never into a non-empty volume, a host source
+  // or a block device. Set only by a local source such as grund up, with the
+  // volume-copy-up feature.
+  bool copy_up = 6;
 }
 
 message SecretEnv {
