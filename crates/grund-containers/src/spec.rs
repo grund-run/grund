@@ -450,7 +450,8 @@ mod tests {
     #[test]
     fn process_overrides_follow_dockers_entrypoint_and_cmd_rules() {
         let image = image();
-        let cases: [(Option<Vec<&str>>, Option<Vec<&str>>, Vec<&str>); 5] = [
+        type Argv<'a> = Option<Vec<&'a str>>;
+        let cases: [(Argv, Argv, Vec<&str>); 5] = [
             (
                 None,
                 Some(vec!["nginx", "-T"]),

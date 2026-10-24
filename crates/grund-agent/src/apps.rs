@@ -2652,7 +2652,12 @@ mod tests {
         assert_eq!(spec_hash(&a), spec_hash(&a.clone()));
     }
 
-    fn argv(args: &[&str]) -> buffa::MessageField<grund_proto::grund::agent::v1::Argv> {
+    fn argv(
+        args: &[&str],
+    ) -> buffa::MessageField<
+        grund_proto::grund::agent::v1::Argv,
+        buffa::Inline<grund_proto::grund::agent::v1::Argv>,
+    > {
         buffa::MessageField::from(grund_proto::grund::agent::v1::Argv {
             args: args.iter().map(|a| a.to_string()).collect(),
             ..Default::default()
