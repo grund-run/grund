@@ -1007,40 +1007,6 @@ impl CopyUp {
 
     fn roll_forward(&self, manifest: &Manifest) -> anyhow::Result<()> {
         let staged = self.staging.exists();
-        for name in &manifest.names {
-            let from = self.staging.join(name);
-            let to = self.volume.join(name);
-            let in_staging = staged && fs::symlink_metadata(&from).is_ok();
-            let in_volume = fs::symlink_metadata(&to).is_ok();
-            match (in_staging, in_volume) {
-                (true, false) => {
-                    let (from_c, to_c) = (
-                        CString::new(from.as_os_str().as_bytes())?,
-                        CString::new(to.as_os_str().as_bytes())?,
-                    );
-                    if unsafe {
-                        libc::renameat2(
-                            libc::AT_FDCWD,
-                            from_c.as_ptr(),
-                            libc::AT_FDCWD,
-                            to_c.as_ptr(),
-                            libc::RENAME_NOREPLACE,
-                        )
-                    } < 0
-                    {
-                        return Err(io::Error::last_os_error())
-                            .with_context(|| format!("move {name} into the volume"));
-                    }
-                }
-                (false, true) => {}
-                (true, true) => anyhow::bail!(
-                    "the volume has a {name} the copy-up did not put there; leaving it and the staged copy alone"
-                ),
-                (false, false) => {
-                    anyhow::bail!("the staged {name} is missing; leaving the volume alone")
-                }
-            }
-        }
         let expected: std::collections::BTreeSet<&str> =
             manifest.names.iter().map(String::as_str).collect();
         if let Some(extra) = names_in(&self.volume)?
@@ -1048,8 +1014,44 @@ impl CopyUp {
             .find(|name| !expected.contains(name.as_str()))
         {
             anyhow::bail!(
-                "the volume has a {extra} the copy-up did not put there; refusing to finish it"
+                "the volume has a {extra} the copy-up did not put there; refusing to finish it, and leaving the volume and the staged copy as they are"
             );
+        }
+        let mut moves = Vec::new();
+        for name in &manifest.names {
+            let from = self.staging.join(name);
+            let to = self.volume.join(name);
+            let in_staging = staged && fs::symlink_metadata(&from).is_ok();
+            let in_volume = fs::symlink_metadata(&to).is_ok();
+            match (in_staging, in_volume) {
+                (true, false) => moves.push((name, from, to)),
+                (false, true) => {}
+                (true, true) => anyhow::bail!(
+                    "both the volume and the staged copy have {name}; leaving both as they are"
+                ),
+                (false, false) => {
+                    anyhow::bail!("the staged {name} is missing; leaving the volume as it is")
+                }
+            }
+        }
+        for (name, from, to) in moves {
+            let (from_c, to_c) = (
+                CString::new(from.as_os_str().as_bytes())?,
+                CString::new(to.as_os_str().as_bytes())?,
+            );
+            if unsafe {
+                libc::renameat2(
+                    libc::AT_FDCWD,
+                    from_c.as_ptr(),
+                    libc::AT_FDCWD,
+                    to_c.as_ptr(),
+                    libc::RENAME_NOREPLACE,
+                )
+            } < 0
+            {
+                return Err(io::Error::last_os_error())
+                    .with_context(|| format!("move {name} into the volume"));
+            }
         }
         let target = CString::new(self.volume.as_os_str().as_bytes())?;
         if unsafe { libc::chown(target.as_ptr(), manifest.uid, manifest.gid) } < 0
@@ -1419,6 +1421,14 @@ mod tests {
             b"not ours"
         );
         assert!(Path::new(&bind.source).join("a").exists());
+        assert!(
+            !Path::new(&bind.source).join("b").exists(),
+            "nothing is moved into a volume holding foreign content"
+        );
+        assert!(
+            base.join("volume-staging").join(ID).join("b").exists(),
+            "the staged copy stays where it was"
+        );
         assert!(ensure_copied(&base, &bind).is_err());
         fs::remove_dir_all(base).unwrap();
     }
