@@ -157,6 +157,10 @@ pub enum Probe {
     Http { port: u16, path: String },
     /// A TCP connect to `127.0.0.1:port` passes.
     Tcp { port: u16 },
+    /// `args` run inside the container as its own process (its user,
+    /// working directory and environment), with output discarded; exit 0
+    /// passes and the timeout fails. Only the runtime can run it.
+    Exec { args: Vec<String> },
 }
 
 /// What this machine can do with containers, reported in every heartbeat.

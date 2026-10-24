@@ -527,10 +527,19 @@ message ReplicaCheck {
     // GET; any 2xx or 3xx passes.
     string http_path = 1;
     bool tcp = 2;
+    // Runs inside the replica's container as its own process (its user,
+    // working directory and environment); exit 0 passes, and a timeout
+    // fails. Output is discarded. It decides readiness only, never a
+    // restart. Set only by a local source such as grund up, with the
+    // exec-checks feature; port is unused.
+    Argv exec = 6;
   }
   uint32 port = 3;
   uint32 interval_ms = 4;
   uint32 timeout_ms = 5;
+  // Failures in a row that make a ready replica not ready; 0 means 3.
+  // Nonzero requires the exec-checks feature.
+  uint32 retries = 7;
 }
 
 message ReplicaStop {

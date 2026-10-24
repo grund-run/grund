@@ -458,6 +458,18 @@ mod tests {
         );
         restarting.required_features.push("restart-policy".into());
         assert_eq!(handle.apply(restarting), Ok(()));
+        let mut checked = document(3);
+        checked.replicas[0].check =
+            buffa::MessageField::from(grund_proto::grund::agent::v1::ReplicaCheck {
+                retries: 5,
+                ..Default::default()
+            });
+        assert_eq!(
+            handle.apply(checked.clone()),
+            Err(Refusal::MissingExecCheckFeature)
+        );
+        checked.required_features.push("exec-checks".into());
+        assert_eq!(handle.apply(checked), Ok(()));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

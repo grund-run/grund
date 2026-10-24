@@ -587,7 +587,10 @@ impl ContainerRuntime for SimulatedContainers {
             return Err("its process is not running".into());
         }
         let netns = self.netns(id);
-        if grund_net::netns::is_namespace(&netns) && !Self::ports(&record.spec).is_empty() {
+        if !matches!(probe, Probe::Exec { .. })
+            && grund_net::netns::is_namespace(&netns)
+            && !Self::ports(&record.spec).is_empty()
+        {
             return crate::probe::run(Some(netns), probe.clone(), timeout).await;
         }
         match Self::behaviour(&record.spec) {

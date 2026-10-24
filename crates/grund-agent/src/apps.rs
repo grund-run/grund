@@ -106,6 +106,17 @@ pub fn backoff(exits: u32) -> Duration {
     Duration::from_secs(seconds).min(BACKOFF_CAP)
 }
 
+/// How many failed checks in a row make `replica` not ready: its check's
+/// `retries`, or [`FAILURES_BEFORE_UNREADY`].
+pub fn failures_before_unready(replica: &Replica) -> u32 {
+    replica
+        .check
+        .as_option()
+        .map(|check| check.retries)
+        .filter(|retries| *retries > 0)
+        .unwrap_or(FAILURES_BEFORE_UNREADY)
+}
+
 /// Whether `replica`'s restart policy keeps it exited after exiting with
 /// `code`, having restarted `restarts` times. With no policy it never does.
 pub fn stays_exited(replica: &Replica, code: i32, restarts: u32) -> bool {
@@ -339,14 +350,17 @@ pub fn spec_hash(replica: &Replica) -> String {
 /// The probe a replica's check makes, if it has one.
 pub fn probe_of(replica: &Replica) -> Option<(Probe, Duration, Duration)> {
     let check = replica.check.as_option()?;
-    let port = u16::try_from(check.port).ok().filter(|p| *p > 0)?;
+    let port = u16::try_from(check.port).ok().filter(|p| *p > 0);
     let probe = match &check.kind {
         Some(replica_check::Kind::HttpPath(path)) => Probe::Http {
-            port,
+            port: port?,
             path: path.clone(),
         },
-        Some(replica_check::Kind::Tcp(_)) => Probe::Tcp { port },
-        None => return None,
+        Some(replica_check::Kind::Tcp(_)) => Probe::Tcp { port: port? },
+        Some(replica_check::Kind::Exec(argv)) if !argv.args.is_empty() => Probe::Exec {
+            args: argv.args.clone(),
+        },
+        _ => return None,
     };
     let interval = Duration::from_millis(u64::from(check.interval_ms.max(500)));
     let timeout = Duration::from_millis(u64::from(check.timeout_ms.clamp(100, 30_000)));
@@ -1365,6 +1379,9 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                         let mut ipv4_only = false;
                         let result = match address {
                             None => runtime.probe(&id, &probe, timeout).await,
+                            Some(_) if matches!(probe, Probe::Exec { .. }) => {
+                                runtime.probe(&id, &probe, timeout).await
+                            }
                             Some(address) => {
                                 let result = crate::probe::run_at(
                                     IpAddr::V6(address),
@@ -1396,6 +1413,10 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
             if ipv4_only {
                 forward.push(id.clone());
             }
+            let threshold = wanted
+                .iter()
+                .find(|r| r.replica_id == id)
+                .map_or(FAILURES_BEFORE_UNREADY, failures_before_unready);
             let tracked = self.tracked.entry(id).or_default();
             let readiness = &mut tracked.readiness;
             match result {
@@ -1410,7 +1431,7 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                 Err(reason) => {
                     readiness.failures += 1;
                     readiness.reason = reason;
-                    if readiness.failures >= FAILURES_BEFORE_UNREADY || !readiness.ready {
+                    if readiness.failures >= threshold || !readiness.ready {
                         readiness.ready = false;
                         readiness.since = None;
                     }
@@ -2716,6 +2737,44 @@ mod tests {
         let limited = with(RestartMode::RESTART_MODE_ON_FAILURE, 3);
         assert!(!stays_exited(&limited, 2, 2));
         assert!(stays_exited(&limited, 2, 3));
+    }
+
+    #[test]
+    fn an_exec_check_needs_no_port_and_sets_its_own_failure_threshold() {
+        use grund_proto::grund::agent::v1::{Argv, ReplicaCheck};
+        let mut r = replica("r1", &[]);
+        r.check = buffa::MessageField::from(ReplicaCheck {
+            kind: Some(replica_check::Kind::Exec(Box::new(Argv {
+                args: vec!["pg_isready".into(), "-U".into(), "postgres".into()],
+                ..Default::default()
+            }))),
+            interval_ms: 5_000,
+            timeout_ms: 3_000,
+            retries: 5,
+            ..Default::default()
+        });
+        let (probe, interval, timeout) = probe_of(&r).unwrap();
+        assert_eq!(
+            probe,
+            Probe::Exec {
+                args: vec!["pg_isready".into(), "-U".into(), "postgres".into()]
+            }
+        );
+        assert_eq!(
+            (interval, timeout),
+            (Duration::from_secs(5), Duration::from_secs(3))
+        );
+        assert_eq!(failures_before_unready(&r), 5);
+        assert_eq!(
+            failures_before_unready(&replica("r2", &[])),
+            FAILURES_BEFORE_UNREADY
+        );
+        let mut empty = r.clone();
+        empty.check = buffa::MessageField::from(ReplicaCheck {
+            kind: Some(replica_check::Kind::Exec(Box::default())),
+            ..Default::default()
+        });
+        assert!(probe_of(&empty).is_none());
     }
 
     #[test]

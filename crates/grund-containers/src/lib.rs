@@ -84,8 +84,8 @@ use crate::{
                 MountsRequest, PrepareSnapshotRequest, RemoveSnapshotRequest, StatSnapshotRequest,
             },
             tasks::v1::{
-                CreateTaskRequest, DeleteTaskRequest, GetRequest, KillRequest, ListTasksRequest,
-                StartRequest, WaitRequest,
+                CreateTaskRequest, DeleteProcessRequest, DeleteTaskRequest, ExecProcessRequest,
+                GetRequest, KillRequest, ListTasksRequest, StartRequest, WaitRequest,
             },
             transfer::v1::TransferRequest,
         },
@@ -103,6 +103,8 @@ use crate::{
 
 /// The only containerd namespace grund uses.
 pub const NAMESPACE: &str = "grund";
+
+static EXEC_CHECKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Writes everything the filesystem holding `dir` has in memory to its disk
 /// (syncfs), so an image unpacked there survives the machine losing power.
@@ -502,6 +504,98 @@ impl Containerd {
             Ok(response) => Ok(response.into_owned().container.into_option()),
             Err(e) if not_found(&e) => Ok(None),
             Err(e) => Err(failed("get a container", e)),
+        }
+    }
+
+    async fn exec_check(&self, id: &str, args: &[String], timeout: Duration) -> Result<(), String> {
+        let container = self
+            .get_container(id)
+            .await
+            .map_err(|e| format!("{e:#}"))?
+            .ok_or("no such container")?;
+        let spec: serde_json::Value = serde_json::from_slice(
+            &container
+                .spec
+                .into_option()
+                .ok_or("the container has no spec")?
+                .value,
+        )
+        .map_err(|e| format!("the container's spec does not decode: {e}"))?;
+        let mut process = spec
+            .get("process")
+            .cloned()
+            .ok_or("the container's spec has no process")?;
+        process["args"] = serde_json::json!(args);
+        process["terminal"] = serde_json::json!(false);
+        let exec_id = format!(
+            "check-{}-{}",
+            std::process::id(),
+            EXEC_CHECKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        let tasks = self.client().tasks();
+        tasks
+            .exec(ExecProcessRequest {
+                container_id: id.into(),
+                exec_id: exec_id.clone(),
+                spec: Any {
+                    type_url: spec::PROCESS_TYPE_URL.into(),
+                    value: serde_json::to_vec(&process)
+                        .map_err(|e| e.to_string())?
+                        .into(),
+                    ..Default::default()
+                }
+                .into(),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| format!("{:#}", failed("exec the check", e)))?;
+        let outcome = self.run_exec(id, &exec_id, timeout).await;
+        let _ = tasks
+            .delete_process(DeleteProcessRequest {
+                container_id: id.into(),
+                exec_id,
+                ..Default::default()
+            })
+            .await;
+        outcome
+    }
+
+    async fn run_exec(&self, id: &str, exec_id: &str, timeout: Duration) -> Result<(), String> {
+        let tasks = self.client().tasks();
+        tasks
+            .start(StartRequest {
+                container_id: id.into(),
+                exec_id: exec_id.into(),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| format!("{:#}", failed("start the check", e)))?;
+        let wait = WaitRequest {
+            container_id: id.into(),
+            exec_id: exec_id.into(),
+            ..Default::default()
+        };
+        match tokio::time::timeout(timeout, tasks.wait(wait.clone())).await {
+            Ok(Ok(response)) => match response.into_owned().exit_status {
+                0 => Ok(()),
+                code => Err(format!("the check exited with code {code}")),
+            },
+            Ok(Err(e)) => Err(format!("{:#}", failed("wait for the check", e))),
+            Err(_) => {
+                let _ = tasks
+                    .kill(KillRequest {
+                        container_id: id.into(),
+                        exec_id: exec_id.into(),
+                        signal: 9,
+                        ..Default::default()
+                    })
+                    .await;
+                let _ = tokio::time::timeout(Duration::from_secs(2), tasks.wait(wait)).await;
+                Err(format!(
+                    "the check gave no answer within {} ms",
+                    timeout.as_millis()
+                ))
+            }
         }
     }
 
@@ -1272,6 +1366,9 @@ impl ContainerRuntime for Containerd {
 
     async fn probe(&self, id: &str, probe: &Probe, timeout: Duration) -> Result<(), String> {
         valid_id(id).map_err(|e| e.to_string())?;
+        if let Probe::Exec { args } = probe {
+            return self.exec_check(id, args, timeout).await;
+        }
         let path = netns::path(&self.config.netns_dir(), id);
         if !netns::is_namespace(&path) {
             return Err("the container has no network namespace".into());

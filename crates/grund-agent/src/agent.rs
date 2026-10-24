@@ -56,6 +56,7 @@ pub const KNOWN_FEATURES: &[&str] = &[
     "stack-services",
     "process-overrides",
     "restart-policy",
+    "exec-checks",
 ];
 
 /// The largest document the agent decodes (apps.md §15).
@@ -159,6 +160,7 @@ pub enum Refusal {
     MissingStackFeature,
     MissingProcessFeature,
     MissingRestartFeature,
+    MissingExecCheckFeature,
     NoTrustKey,
     /// Signed by a key other than the one pinned.
     UnknownKey,
@@ -184,6 +186,7 @@ impl std::fmt::Display for Refusal {
             Refusal::MissingStackFeature => f.write_str("document coordinates stack services without requiring stack-services"),
             Refusal::MissingProcessFeature => f.write_str("document overrides a process entrypoint, cmd, working directory or user without requiring process-overrides"),
             Refusal::MissingRestartFeature => f.write_str("document sets a restart policy without requiring restart-policy"),
+            Refusal::MissingExecCheckFeature => f.write_str("document sets an exec check or check retries without requiring exec-checks"),
             Refusal::NoTrustKey => f.write_str("this machine pinned no organisation key"),
             Refusal::UnknownKey => f.write_str("document is signed by a key this machine did not pin"),
             Refusal::Same => f.write_str("document is the one applied"),
@@ -294,6 +297,21 @@ pub fn check_features(state: &DesiredState) -> Result<(), Refusal> {
             .any(|feature| feature == "restart-policy")
     {
         return Err(Refusal::MissingRestartFeature);
+    }
+    if state.replicas.iter().any(|replica| {
+        replica.check.as_option().is_some_and(|check| {
+            check.retries != 0
+                || matches!(
+                    check.kind,
+                    Some(grund_proto::grund::agent::v1::replica_check::Kind::Exec(_))
+                )
+        })
+    }) && !state
+        .required_features
+        .iter()
+        .any(|feature| feature == "exec-checks")
+    {
+        return Err(Refusal::MissingExecCheckFeature);
     }
     Ok(())
 }

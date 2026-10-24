@@ -22,6 +22,9 @@ use crate::image::ImageConfig;
 /// The type URL containerd records a runtime spec under.
 pub const SPEC_TYPE_URL: &str = "types.containerd.io/opencontainers/runtime-spec/1/Spec";
 
+/// The type of an exec'd process's spec, as containerd's runc shim takes it.
+pub const PROCESS_TYPE_URL: &str = "types.containerd.io/opencontainers/runtime-spec/1/Process";
+
 /// Docker's default capability set (moby `oci/caps/defaults.go`).
 pub const DEFAULT_CAPABILITIES: [&str; 14] = [
     "CAP_CHOWN",

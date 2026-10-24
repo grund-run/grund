@@ -92,6 +92,9 @@ pub fn check_at(ip: IpAddr, probe: &Probe, timeout: Duration) -> Result<(), Stri
     let deadline = Instant::now() + timeout;
     let port = match probe {
         Probe::Http { port, .. } | Probe::Tcp { port } => *port,
+        Probe::Exec { .. } => {
+            return Err("an exec check runs inside the container, through the runtime".into());
+        }
     };
     let address = SocketAddr::from((ip, port));
     let mut stream = TcpStream::connect_timeout(&address, timeout).map_err(|e| match e.kind() {
