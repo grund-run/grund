@@ -191,6 +191,10 @@ enum Origin {
     Member,
 }
 
+fn opens_every_port(open: bool, local_project: bool, from: Origin) -> bool {
+    open && local_project && from == Origin::Replica
+}
+
 #[derive(Debug, Clone)]
 struct View {
     list: MembershipList,
@@ -655,9 +659,7 @@ impl Mesh {
                             v.list.replica_at(dst).map(|(_, r)| {
                                 (
                                     r.ports.clone(),
-                                    r.open
-                                        && self.inner.config.local_project
-                                        && from == Origin::Replica,
+                                    opens_every_port(r.open, self.inner.config.local_project, from),
                                 )
                             })
                         })
@@ -1398,6 +1400,19 @@ fn ipv6_addrs(packet: &[u8]) -> Option<(Ipv6Addr, Ipv6Addr)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_local_projects_own_replicas_pass_an_open_replicas_ports() {
+        assert!(opens_every_port(true, true, Origin::Replica));
+        for (open, local_project, from) in [
+            (true, false, Origin::Replica),
+            (true, true, Origin::Member),
+            (true, true, Origin::Host),
+            (false, true, Origin::Replica),
+        ] {
+            assert!(!opens_every_port(open, local_project, from));
+        }
+    }
 
     #[test]
     fn a_member_is_dialled_through_its_home_relay_alone_until_that_fails() {
