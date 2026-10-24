@@ -16,7 +16,8 @@
 //! relay: every packet stays on this machine. Instead of an instance
 //! signing the membership list, it is built here from the apps loop's own
 //! endpoints, with a newer epoch whenever a replica's address, ports or
-//! readiness change. The stub resolver answers `<app>.grund.internal` and,
+//! readiness change. Every port of a replica is reachable from the others
+//! (`AppReplica::open`), as on a Compose network. The stub resolver answers `<app>.grund.internal` and,
 //! with a stack, `<app>.<stack>.grund.internal`, for ready replicas only,
 //! and forwards other names to the resolvers in `/etc/resolv.conf`. Unlike
 //! the agent, it never routes the host's own resolver to the stub. It needs
@@ -143,6 +144,7 @@ impl<C: ContainerRuntime + 'static> Local<C> {
                 .iter()
                 .map(|stack| format!("probe.{stack}"))
                 .collect(),
+            open: true,
         };
         list(&config, self.own, 0, vec![probe])
             .validate()
@@ -266,6 +268,7 @@ fn app_replicas(config: &LocalNetwork, endpoints: &[ReplicaEndpoint]) -> Vec<App
                     .iter()
                     .map(|stack| format!("{}.{stack}", e.app))
                     .collect(),
+                open: true,
             })
         })
         .collect();
@@ -494,6 +497,7 @@ mod tests {
             [("web-1", true), ("web-2", false)]
         );
         assert_eq!(apps[0].aliases, ["web.shop"]);
+        assert!(apps.iter().all(|a| a.open));
         assert_eq!(
             apps[0].ports,
             [80, 8080].map(|port| Port {

@@ -396,6 +396,7 @@ fn app_replicas(
             replica_id: id,
             ports,
             ready: e.ready,
+            open: false,
         });
     }
     out

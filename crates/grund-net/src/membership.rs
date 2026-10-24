@@ -129,6 +129,12 @@ pub struct AppReplica {
     /// only. They answer with these ready replica addresses, never a VIP.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<String>,
+    /// Every port is reachable from the network, as on a Compose network,
+    /// not only [`AppReplica::ports`]. Only a local source such as grund up
+    /// sets it on its own list; grund-server never does, and lists without
+    /// it encode as they did.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub open: bool,
 }
 
 /// The most ports one replica may accept, as apps.md §15 allows an app.
@@ -531,6 +537,7 @@ mod tests {
             }],
             ready: true,
             aliases: Vec::new(),
+            open: false,
         };
         l.members[0].apps = vec![good.clone()];
         assert_eq!(l.validate(), Ok(()));
@@ -556,6 +563,30 @@ mod tests {
     }
 
     #[test]
+    fn a_closed_replica_encodes_as_before_and_an_open_one_round_trips() {
+        let mut membership = list();
+        let replica = AppReplica {
+            app: "web".into(),
+            replica_id: "web-1".into(),
+            address: replica_address(membership.prefix, 1, "web-1"),
+            ready: true,
+            ports: Vec::new(),
+            aliases: Vec::new(),
+            open: false,
+        };
+        let closed = serde_json::to_value(&replica).unwrap();
+        assert!(closed.get("open").is_none(), "{closed}");
+        let open = AppReplica {
+            open: true,
+            ..replica
+        };
+        let encoded = serde_json::to_string(&open).unwrap();
+        assert_eq!(serde_json::from_str::<AppReplica>(&encoded).unwrap(), open);
+        membership.members[0].apps.push(open);
+        assert_eq!(membership.validate(), Ok(()));
+    }
+
+    #[test]
     fn signed_stack_aliases_cannot_escape_the_stack_dns_namespace() {
         let mut membership = list();
         membership.members[0].apps.push(AppReplica {
@@ -565,6 +596,7 @@ mod tests {
             ready: true,
             ports: Vec::new(),
             aliases: vec!["web.store".into()],
+            open: false,
         });
         assert_eq!(membership.validate(), Ok(()));
         for alias in [

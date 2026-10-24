@@ -642,21 +642,27 @@ impl Mesh {
         let now = Instant::now();
         if let Some(replica) = self.replica(dst) {
             if from != Origin::Host {
-                let ports = {
+                let (ports, open) = {
                     let view = self.inner.view.read().expect("view lock");
                     view.as_ref()
-                        .and_then(|v| v.list.replica_at(dst).map(|(_, r)| r.ports.clone()))
+                        .and_then(|v| {
+                            v.list
+                                .replica_at(dst)
+                                .map(|(_, r)| (r.ports.clone(), r.open))
+                        })
                         .unwrap_or_default()
                 };
-                match replica.filter.inbound(packet, &ports, now) {
-                    crate::filter::Inbound::Closed => {
-                        c.dropped_replica_closed.fetch_add(1, Relaxed);
-                        return;
+                if !open {
+                    match replica.filter.inbound(packet, &ports, now) {
+                        crate::filter::Inbound::Closed => {
+                            c.dropped_replica_closed.fetch_add(1, Relaxed);
+                            return;
+                        }
+                        crate::filter::Inbound::Reply => {
+                            c.admitted_replies.fetch_add(1, Relaxed);
+                        }
+                        _ => {}
                     }
-                    crate::filter::Inbound::Reply => {
-                        c.admitted_replies.fetch_add(1, Relaxed);
-                    }
-                    _ => {}
                 }
             }
             c.replica_in.fetch_add(1, Relaxed);

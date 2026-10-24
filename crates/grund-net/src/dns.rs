@@ -430,6 +430,7 @@ mod tests {
             ports: vec![],
             ready,
             aliases: vec!["web.store".into()],
+            open: false,
         };
         l.members[0].apps = vec![replica(1, "r-1", true), replica(1, "r-2", false)];
         l.members[1].apps = vec![replica(2, "r-3", true)];
