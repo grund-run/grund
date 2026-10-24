@@ -474,7 +474,7 @@ async fn resolve_or_warn(resolving: impl std::future::Future<Output = anyhow::Re
     std::future::pending::<()>().await;
 }
 
-async fn bind_resolver(address: Ipv6Addr) -> anyhow::Result<tokio::net::UdpSocket> {
+pub(crate) async fn bind_resolver(address: Ipv6Addr) -> anyhow::Result<tokio::net::UdpSocket> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     loop {
         match tokio::net::UdpSocket::bind(SocketAddr::new(address.into(), 53)).await {
