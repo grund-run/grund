@@ -1903,6 +1903,7 @@ mod tests {
                 grund_net::mesh::MeshConfig {
                     tun_name: "grund-test".into(),
                     relays: Vec::new(),
+                    local_project: false,
                 },
             ),
             prefix: "fd12:3456:789a::".parse().unwrap(),

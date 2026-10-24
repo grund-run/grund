@@ -130,9 +130,10 @@ pub struct AppReplica {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<String>,
     /// Every port is reachable from the network, as on a Compose network,
-    /// not only [`AppReplica::ports`]. Only a local source such as grund up
-    /// sets it on its own list; grund-server never does, and lists without
-    /// it encode as they did.
+    /// not only [`AppReplica::ports`]. Honoured only by a local project's
+    /// mesh ([`crate::mesh::MeshConfig::local_project`]), whose list grund up
+    /// builds on this machine; a mesh fed by signed lists ignores it.
+    /// grund-server never sets it, and lists without it encode as they did.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub open: bool,
 }

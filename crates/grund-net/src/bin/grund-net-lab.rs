@@ -345,6 +345,7 @@ async fn node(
         MeshConfig {
             tun_name: tun,
             relays: vec![relay],
+            local_project: false,
         },
     );
     mesh.attach(endpoint.clone())?;

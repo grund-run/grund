@@ -266,6 +266,7 @@ pub(crate) async fn run(
         MeshConfig {
             tun_name: TUN_NAME.into(),
             relays: relays.clone(),
+            local_project: false,
         },
     );
     if let Some(handle) = &options.mesh {

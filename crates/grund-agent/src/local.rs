@@ -154,6 +154,7 @@ impl<C: ContainerRuntime + 'static> Local<C> {
             MeshConfig {
                 tun_name: config.tun_name.clone(),
                 relays: Vec::new(),
+                local_project: true,
             },
         );
         let lists = watch::channel(None).0;
