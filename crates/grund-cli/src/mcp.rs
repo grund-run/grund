@@ -50,6 +50,7 @@ pub fn tools(root: &clap::Command) -> Vec<Tool> {
                         | "api"
                         | "completion"
                         | "mcp"
+                        | "up"
                 )
                 && !path.starts_with("skill")
         })

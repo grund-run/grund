@@ -11,7 +11,7 @@ pub const GROUPS: &[(&str, &[&str])] = &[
     (
         "THIS COMPUTER",
         &[
-            "join", "leave", "status", "update", "doctor", "server", "bundle",
+            "join", "leave", "status", "up", "update", "doctor", "server", "bundle",
         ],
     ),
     ("SETUP", &["auth", "context", "completion"]),

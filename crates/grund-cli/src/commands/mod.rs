@@ -20,6 +20,7 @@ pub mod stacks;
 pub mod system;
 pub mod system_update;
 pub mod tokens;
+pub mod up;
 pub mod volumes;
 
 use clap::{Args, Subcommand};
@@ -68,6 +69,8 @@ pub enum Command {
     Leave(system::LeaveArgs),
     #[command(about = "What this computer is signed in to and runs")]
     Status(here::StatusArgs),
+    #[command(about = "Run a grund.yaml or compose.yaml on this computer")]
+    Up(up::UpArgs),
     #[command(about = "Update grund on this computer")]
     Update(system_update::UpdateArgs),
     #[command(about = "Check this computer and what it connects to")]
@@ -128,6 +131,7 @@ impl Command {
             Command::Join(a) => &a.global,
             Command::Leave(a) => &a.global,
             Command::Status(a) => &a.global,
+            Command::Up(a) => &a.global,
             Command::Update(a) => &a.global,
             Command::Doctor(a) => &a.global,
             Command::Server(c) => &c.global,
@@ -165,6 +169,7 @@ pub async fn execute(
         Command::Join(args) => system::install(ctx, args.into_install()).await?,
         Command::Leave(args) => system::uninstall(ctx, args.into_uninstall()).await?,
         Command::Status(_) => here::status(ctx).await?,
+        Command::Up(args) => return Err(up::exec(ctx, args)),
         Command::Update(args) => system_update::update(ctx, args).await?,
         Command::Doctor(_) => here::doctor(ctx).await?,
         Command::Bundle(command) => bundle::run(ctx, command.action).await?,

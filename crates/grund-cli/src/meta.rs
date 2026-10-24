@@ -1058,6 +1058,16 @@ pub const LEAVES: &[Leaf] = &[
         ],
     ),
     read("mcp", "", &[], &["claude mcp add grund -- grund mcp"]),
+    write(
+        "up",
+        "",
+        &[],
+        &[
+            "sudo grund up",
+            "sudo grund up -d -f compose.yaml",
+            "sudo grund up -p shop --pull always",
+        ],
+    ),
 ];
 
 /// Procedures a user can reach through the dashboard's API that the CLI
