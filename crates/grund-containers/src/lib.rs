@@ -1161,13 +1161,17 @@ impl ContainerRuntime for Containerd {
                     .config
                     .scratch_dir()
                     .join(format!("{}.copy-up", spec.id));
-                let (from, into) = (bind.path.clone(), PathBuf::from(&bind.source));
-                tokio::task::spawn_blocking(move || {
+                let (from, into) = (bind.path.clone(), copy.staging().to_path_buf());
+                let copied = tokio::task::spawn_blocking(move || {
                     rootfs::copy_tree(&mounts, &scratch, &from, &into)
                 })
                 .await?
-                .with_context(|| format!("copy the image's files into volume {}", bind.name))?;
-                copy.finish()?;
+                .with_context(|| format!("stage the image's files for volume {}", bind.name))?;
+                if copied {
+                    copy.install()?;
+                } else {
+                    copy.abandon()?;
+                }
             }
             volume::grant_access(&dir, bind, user.uid, user.gid, &user.additional_gids)?;
         }

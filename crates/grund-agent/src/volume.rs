@@ -11,7 +11,7 @@ use std::{
         fd::{AsRawFd, FromRawFd},
         unix::{
             ffi::OsStrExt,
-            fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
+            fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
         },
     },
     path::{Component, Path, PathBuf},
@@ -797,7 +797,6 @@ pub fn grant_access(
 ) -> anyhow::Result<()> {
     let mut meta = dir.metadata()?;
     if bind.managed
-        && !bind.copy_up
         && meta.uid() == 0
         && meta.permissions().mode() & 0o777 == 0o700
         && uid != 0
@@ -829,46 +828,91 @@ pub fn grant_access(
     Ok(())
 }
 
-/// A managed volume held exclusively while the image's files are copied in
-/// ([`copy_up_begin`]). Until [`CopyUp::finish`], a marker beside the
-/// volume's owner record says the copy is incomplete, so a crash midway
-/// never lets the volume be used half-copied.
+/// A managed volume held exclusively while the image's files are staged
+/// for it ([`copy_up_begin`]). They are copied into an agent-owned staging
+/// directory, never into the volume, until [`CopyUp::install`] moves them in.
 pub struct CopyUp {
     dir: File,
     owners: File,
+    staging: PathBuf,
+    volume: PathBuf,
     marker: CString,
+}
+
+/// What [`CopyUp::install`] moves into a volume, written beside the owner
+/// record before the first move so an interrupted install is completed,
+/// never undone, and refused if the volume holds anything else.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct Manifest {
+    names: Vec<String>,
+    uid: u32,
+    gid: u32,
+    mode: u32,
+    atime: (i64, i64),
+    mtime: (i64, i64),
 }
 
 fn copy_up_marker(id: &str) -> anyhow::Result<CString> {
     Ok(CString::new(format!("{id}.copyup"))?)
 }
 
-fn marker_exists(owners: &File, marker: &CString) -> anyhow::Result<bool> {
-    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-    let result = unsafe {
-        libc::fstatat(
+fn read_marker(owners: &File, marker: &CString) -> anyhow::Result<Option<Manifest>> {
+    let fd = unsafe {
+        libc::openat(
             owners.as_raw_fd(),
             marker.as_ptr(),
-            stat.as_mut_ptr(),
-            libc::AT_SYMLINK_NOFOLLOW,
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
         )
     };
-    if result == 0 {
-        return Ok(true);
+    if fd < 0 {
+        let error = io::Error::last_os_error();
+        return if error.kind() == io::ErrorKind::NotFound {
+            Ok(None)
+        } else {
+            Err(error.into())
+        };
     }
-    let error = io::Error::last_os_error();
-    if error.kind() == io::ErrorKind::NotFound {
-        Ok(false)
-    } else {
-        Err(error.into())
-    }
+    let file = unsafe { File::from_raw_fd(fd) };
+    Ok(Some(
+        serde_json::from_reader(file).context("the copy-up manifest does not decode")?,
+    ))
 }
 
-/// Locks managed volume `bind` (verified as `dir`) for its copy-up and says
-/// whether to copy: `None` when it holds data, which is never copied into or
-/// changed. An empty volume, or one holding only the output of a copy-up a
-/// crash interrupted (which is removed first), is marked incomplete and
-/// returned for the caller to fill and [`CopyUp::finish`].
+fn staging_root(data_dir: &Path, volumes: &Path) -> anyhow::Result<PathBuf> {
+    let data = directory(data_dir)?;
+    mkdir_child(&data, "volume-staging")?;
+    let root = data_dir.join("volume-staging");
+    let staging = directory(&root)?;
+    let meta = staging.metadata()?;
+    ensure!(
+        meta.uid() == unsafe { libc::geteuid() } && meta.permissions().mode() & 0o077 == 0,
+        "{} must be owned by the agent and private",
+        root.display()
+    );
+    ensure!(
+        meta.dev() == directory(volumes)?.metadata()?.dev(),
+        "volume staging and volumes must share one filesystem for an atomic install"
+    );
+    Ok(root)
+}
+
+fn names_in(path: &Path) -> anyhow::Result<std::collections::BTreeSet<String>> {
+    fs::read_dir(path)?
+        .map(|entry| {
+            entry?
+                .file_name()
+                .into_string()
+                .map_err(|name| anyhow::anyhow!("{name:?} is not UTF-8"))
+        })
+        .collect()
+}
+
+/// Locks managed volume `bind` (verified as `dir`) for its copy-up. An
+/// install a crash interrupted is completed first, and nothing more is
+/// copied. Otherwise `None` when the volume holds data, which is never
+/// copied into, changed or removed; for an empty volume, a fresh staging
+/// directory to copy the image's files into. Only that staging directory,
+/// which the agent alone creates and never mounts, is ever deleted.
 pub fn copy_up_begin(
     data_dir: &Path,
     bind: &VolumeBind,
@@ -879,48 +923,159 @@ pub fn copy_up_begin(
         "volume {} is not a grund-managed directory to copy into",
         bind.name
     );
-    let (_, owners_path) = managed_roots(data_dir)?;
+    let (volumes, owners_path) = managed_roots(data_dir)?;
     let owners = directory(&owners_path)?;
     lock_directory(&dir, true)?;
-    let marker = copy_up_marker(&bind.volume_id)?;
-    if marker_exists(&owners, &marker)? {
-        for entry in fs::read_dir(&bind.source)? {
-            let entry = entry?;
-            if entry.file_type()?.is_dir() {
-                fs::remove_dir_all(entry.path())?;
-            } else {
-                fs::remove_file(entry.path())?;
-            }
-        }
-        dir.sync_all()?;
-    } else if fs::read_dir(&bind.source)?.next().is_some() {
-        return Ok(None);
-    }
-    let fd = unsafe {
-        libc::openat(
-            owners.as_raw_fd(),
-            marker.as_ptr(),
-            libc::O_WRONLY | libc::O_CREAT | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            0o600,
-        )
-    };
-    if fd < 0 {
-        return Err(io::Error::last_os_error()).context("mark the copy-up incomplete");
-    }
-    let file = unsafe { File::from_raw_fd(fd) };
-    file.sync_all()?;
-    owners.sync_all()?;
-    Ok(Some(CopyUp {
+    let staging = staging_root(data_dir, &volumes)?.join(&bind.volume_id);
+    let copy = CopyUp {
         dir,
         owners,
-        marker,
-    }))
+        staging,
+        volume: PathBuf::from(&bind.source),
+        marker: copy_up_marker(&bind.volume_id)?,
+    };
+    if let Some(manifest) = read_marker(&copy.owners, &copy.marker)? {
+        copy.roll_forward(&manifest)?;
+        return Ok(None);
+    }
+    match fs::symlink_metadata(&copy.staging) {
+        Ok(meta) => {
+            ensure!(
+                meta.is_dir(),
+                "{} is not a staging directory",
+                copy.staging.display()
+            );
+            fs::remove_dir_all(&copy.staging)?;
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    if fs::read_dir(&copy.volume)?.next().is_some() {
+        return Ok(None);
+    }
+    fs::DirBuilder::new().mode(0o700).create(&copy.staging)?;
+    Ok(Some(copy))
 }
 
 impl CopyUp {
-    /// The copy is complete: removes the marker, durably.
-    pub fn finish(self) -> anyhow::Result<()> {
+    /// Where to copy the image's files, the directory's own metadata
+    /// included.
+    pub fn staging(&self) -> &Path {
+        &self.staging
+    }
+
+    /// The image had nothing to copy: removes the empty staging directory
+    /// and leaves the volume as it was.
+    pub fn abandon(self) -> anyhow::Result<()> {
+        fs::remove_dir(&self.staging)?;
+        Ok(())
+    }
+
+    /// Makes the staged files durable, records them, and moves each into
+    /// the volume without replacing anything.
+    pub fn install(self) -> anyhow::Result<()> {
+        let staged = directory(&self.staging)?;
+        if unsafe { libc::syncfs(staged.as_raw_fd()) } < 0 {
+            return Err(io::Error::last_os_error()).context("make the staged copy durable");
+        }
+        let meta = staged.metadata()?;
+        let manifest = Manifest {
+            names: names_in(&self.staging)?.into_iter().collect(),
+            uid: meta.uid(),
+            gid: meta.gid(),
+            mode: meta.mode() & 0o7777,
+            atime: (meta.atime(), meta.atime_nsec()),
+            mtime: (meta.mtime(), meta.mtime_nsec()),
+        };
+        let fd = unsafe {
+            libc::openat(
+                self.owners.as_raw_fd(),
+                self.marker.as_ptr(),
+                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                0o600,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error()).context("record the copy-up manifest");
+        }
+        let mut file = unsafe { File::from_raw_fd(fd) };
+        serde_json::to_writer(&mut file, &manifest)?;
+        file.sync_all()?;
+        self.owners.sync_all()?;
+        self.roll_forward(&manifest)
+    }
+
+    fn roll_forward(&self, manifest: &Manifest) -> anyhow::Result<()> {
+        let staged = self.staging.exists();
+        for name in &manifest.names {
+            let from = self.staging.join(name);
+            let to = self.volume.join(name);
+            let in_staging = staged && fs::symlink_metadata(&from).is_ok();
+            let in_volume = fs::symlink_metadata(&to).is_ok();
+            match (in_staging, in_volume) {
+                (true, false) => {
+                    let (from_c, to_c) = (
+                        CString::new(from.as_os_str().as_bytes())?,
+                        CString::new(to.as_os_str().as_bytes())?,
+                    );
+                    if unsafe {
+                        libc::renameat2(
+                            libc::AT_FDCWD,
+                            from_c.as_ptr(),
+                            libc::AT_FDCWD,
+                            to_c.as_ptr(),
+                            libc::RENAME_NOREPLACE,
+                        )
+                    } < 0
+                    {
+                        return Err(io::Error::last_os_error())
+                            .with_context(|| format!("move {name} into the volume"));
+                    }
+                }
+                (false, true) => {}
+                (true, true) => anyhow::bail!(
+                    "the volume has a {name} the copy-up did not put there; leaving it and the staged copy alone"
+                ),
+                (false, false) => {
+                    anyhow::bail!("the staged {name} is missing; leaving the volume alone")
+                }
+            }
+        }
+        let expected: std::collections::BTreeSet<&str> =
+            manifest.names.iter().map(String::as_str).collect();
+        if let Some(extra) = names_in(&self.volume)?
+            .into_iter()
+            .find(|name| !expected.contains(name.as_str()))
+        {
+            anyhow::bail!(
+                "the volume has a {extra} the copy-up did not put there; refusing to finish it"
+            );
+        }
+        let target = CString::new(self.volume.as_os_str().as_bytes())?;
+        if unsafe { libc::chown(target.as_ptr(), manifest.uid, manifest.gid) } < 0
+            || unsafe { libc::chmod(target.as_ptr(), manifest.mode) } < 0
+        {
+            return Err(io::Error::last_os_error())
+                .context("give the volume the image directory's owner and mode");
+        }
+        let times = [
+            libc::timespec {
+                tv_sec: manifest.atime.0,
+                tv_nsec: manifest.atime.1,
+            },
+            libc::timespec {
+                tv_sec: manifest.mtime.0,
+                tv_nsec: manifest.mtime.1,
+            },
+        ];
+        if unsafe { libc::utimensat(libc::AT_FDCWD, target.as_ptr(), times.as_ptr(), 0) } < 0 {
+            return Err(io::Error::last_os_error())
+                .context("give the volume the image directory's times");
+        }
         self.dir.sync_all()?;
+        if staged {
+            fs::remove_dir(&self.staging).context("remove the emptied staging directory")?;
+        }
         if unsafe { libc::unlinkat(self.owners.as_raw_fd(), self.marker.as_ptr(), 0) } < 0 {
             return Err(io::Error::last_os_error()).context("mark the copy-up complete");
         }
@@ -929,8 +1084,8 @@ impl CopyUp {
     }
 }
 
-/// Refuses to start a replica on a volume whose copy-up was interrupted;
-/// only a new create redoes it.
+/// Refuses to start a replica on a volume whose copy-up install was
+/// interrupted; the next create completes it.
 pub fn ensure_copied(data_dir: &Path, bind: &VolumeBind) -> anyhow::Result<()> {
     if !bind.copy_up {
         return Ok(());
@@ -938,8 +1093,8 @@ pub fn ensure_copied(data_dir: &Path, bind: &VolumeBind) -> anyhow::Result<()> {
     let (_, owners_path) = managed_roots(data_dir)?;
     let owners = directory(&owners_path)?;
     ensure!(
-        !marker_exists(&owners, &copy_up_marker(&bind.volume_id)?)?,
-        "volume {}'s copy of the image's files was interrupted; it is redone when the replica is created again",
+        read_marker(&owners, &copy_up_marker(&bind.volume_id)?)?.is_none(),
+        "volume {}'s copy of the image's files is not installed yet; the next create completes it",
         bind.name
     );
     Ok(())
@@ -1151,6 +1306,141 @@ mod tests {
         }
     }
     const ID: &str = "11111111-1111-1111-1111-111111111111";
+
+    fn copy_up_volume(name: &str) -> (PathBuf, VolumeBind) {
+        let base = scratch(name);
+        let bind = prepare(
+            &base,
+            &[],
+            "app-a",
+            &[VolumeMount {
+                copy_up: true,
+                ..mount(ID, "")
+            }],
+        )
+        .unwrap()
+        .remove(0);
+        (base, bind)
+    }
+
+    fn begin(base: &Path, bind: &VolumeBind) -> anyhow::Result<Option<CopyUp>> {
+        copy_up_begin(base, bind, verify_bind(base, &[], bind)?)
+    }
+
+    #[test]
+    fn a_copy_up_stages_then_installs_into_an_empty_volume() {
+        let (base, bind) = copy_up_volume("copy-up-fresh");
+        let copy = begin(&base, &bind)
+            .unwrap()
+            .expect("an empty volume is copied into");
+        fs::write(copy.staging().join("seed"), b"from the image").unwrap();
+        fs::create_dir(copy.staging().join("conf")).unwrap();
+        fs::set_permissions(copy.staging(), fs::Permissions::from_mode(0o750)).unwrap();
+        let staging = copy.staging().to_path_buf();
+        copy.install().unwrap();
+        let volume = Path::new(&bind.source);
+        assert_eq!(fs::read(volume.join("seed")).unwrap(), b"from the image");
+        assert!(volume.join("conf").is_dir());
+        assert_eq!(fs::metadata(volume).unwrap().mode() & 0o777, 0o750);
+        assert!(!staging.exists());
+        ensure_copied(&base, &bind).unwrap();
+        assert!(begin(&base, &bind).unwrap().is_none());
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn a_volume_with_data_is_never_copied_into_or_changed() {
+        let (base, bind) = copy_up_volume("copy-up-data");
+        fs::write(Path::new(&bind.source).join("user"), b"mine").unwrap();
+        assert!(begin(&base, &bind).unwrap().is_none());
+        assert_eq!(names_in(Path::new(&bind.source)).unwrap().len(), 1);
+        assert_eq!(
+            fs::read(Path::new(&bind.source).join("user")).unwrap(),
+            b"mine"
+        );
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn leftover_staging_without_a_manifest_is_the_only_thing_removed() {
+        let (base, bind) = copy_up_volume("copy-up-leftover");
+        let copy = begin(&base, &bind).unwrap().unwrap();
+        fs::write(copy.staging().join("half"), b"partial").unwrap();
+        drop(copy);
+        let again = begin(&base, &bind)
+            .unwrap()
+            .expect("still empty, so copied again");
+        assert!(names_in(again.staging()).unwrap().is_empty());
+        assert!(names_in(Path::new(&bind.source)).unwrap().is_empty());
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    fn interrupted(name: &str) -> (PathBuf, VolumeBind) {
+        let (base, bind) = copy_up_volume(name);
+        let copy = begin(&base, &bind).unwrap().unwrap();
+        for file in ["a", "b"] {
+            fs::write(copy.staging().join(file), file).unwrap();
+        }
+        let manifest = Manifest {
+            names: vec!["a".into(), "b".into()],
+            uid: unsafe { libc::geteuid() },
+            gid: unsafe { libc::getegid() },
+            mode: 0o755,
+            atime: (0, 0),
+            mtime: (0, 0),
+        };
+        let marker = base.join("volume-owners").join(format!("{ID}.copyup"));
+        fs::write(&marker, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        fs::rename(copy.staging().join("a"), Path::new(&bind.source).join("a")).unwrap();
+        drop(copy);
+        (base, bind)
+    }
+
+    #[test]
+    fn an_interrupted_install_refuses_a_start_and_is_completed_not_undone() {
+        let (base, bind) = interrupted("copy-up-resume");
+        assert!(ensure_copied(&base, &bind).is_err());
+        assert!(begin(&base, &bind).unwrap().is_none());
+        assert_eq!(
+            names_in(Path::new(&bind.source)).unwrap(),
+            ["a".to_string(), "b".to_string()].into()
+        );
+        ensure_copied(&base, &bind).unwrap();
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn an_interrupted_install_next_to_foreign_content_is_left_alone() {
+        let (base, bind) = interrupted("copy-up-tamper");
+        fs::write(Path::new(&bind.source).join("foreign"), b"not ours").unwrap();
+        assert!(begin(&base, &bind).is_err());
+        assert_eq!(
+            fs::read(Path::new(&bind.source).join("foreign")).unwrap(),
+            b"not ours"
+        );
+        assert!(Path::new(&bind.source).join("a").exists());
+        assert!(ensure_copied(&base, &bind).is_err());
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn a_host_bind_or_block_volume_cannot_ask_for_a_copy_up() {
+        let base = scratch("copy-up-bind");
+        let host = scratch("copy-up-bind-host");
+        fs::create_dir(host.join("sub")).unwrap();
+        let refused = prepare(
+            &base,
+            &[host.clone()],
+            "app-a",
+            &[VolumeMount {
+                copy_up: true,
+                ..mount(ID, host.join("sub").to_str().unwrap())
+            }],
+        );
+        assert!(refused.is_err());
+        fs::remove_dir_all(base).unwrap();
+        fs::remove_dir_all(host).unwrap();
+    }
     #[test]
     fn mount_identity_distinguishes_the_proc_filesystem_from_the_root() {
         let root = File::open("/").unwrap();

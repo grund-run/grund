@@ -127,10 +127,10 @@ pub fn read_files(
 /// Mounts `mounts` read-only on `scratch` and copies the image's directory
 /// `from` (absolute in the image) into the empty directory `into`, as
 /// Docker's copy-up does: modes, owners and times kept, the directory's own
-/// on `into` too, symlinks copied as symlinks. Nothing is copied when `from`
-/// is absent or not a directory in the image. A symlink on the way to
-/// `from`, or a device, FIFO or socket in it, is refused.
-pub fn copy_tree(mounts: &[Mount], scratch: &Path, from: &str, into: &Path) -> io::Result<()> {
+/// on `into` too, symlinks copied as symlinks. False, with nothing copied,
+/// when `from` is absent or not a directory in the image. A symlink on the
+/// way to `from`, or a device, FIFO or socket in it, is refused.
+pub fn copy_tree(mounts: &[Mount], scratch: &Path, from: &str, into: &Path) -> io::Result<bool> {
     let [mount] = mounts else {
         return Err(io::Error::other(format!(
             "expected one rootfs mount, containerd gave {}",
@@ -140,8 +140,8 @@ pub fn copy_tree(mounts: &[Mount], scratch: &Path, from: &str, into: &Path) -> i
     std::fs::create_dir_all(scratch)?;
     mount_one(mount, scratch)?;
     let copied = image_directory(scratch, from).and_then(|source| match source {
-        Some(source) => copy_directory(&source, into),
-        None => Ok(()),
+        Some(source) => copy_directory(&source, into).map(|()| true),
+        None => Ok(false),
     });
     unmount(scratch);
     let _ = std::fs::remove_dir(scratch);
