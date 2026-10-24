@@ -8,10 +8,11 @@ use grund_containers::{
     api::containerd::{
         services::{
             containers::v1::{
-                Container, CreateContainerRequest, DeleteContainerRequest, ListContainersRequest,
-                container::Runtime,
+                Container, CreateContainerRequest, DeleteContainerRequest, GetContainerRequest,
+                ListContainersRequest, container::Runtime,
             },
             images::v1::GetImageRequest,
+            tasks::v1::GetRequest,
             transfer::v1::TransferRequest,
         },
         types::{
@@ -52,6 +53,75 @@ fn spec(id: &str, command: &[String]) -> ContainerSpec {
         working_dir: None,
         user: None,
     }
+}
+
+fn argv_env(name: &str) -> anyhow::Result<Option<Vec<String>>> {
+    match std::env::var(name) {
+        Ok(json) => serde_json::from_str(&json).with_context(|| format!("{name} is a JSON array")),
+        Err(_) => Ok(None),
+    }
+}
+
+async fn inspect(runtime: &Containerd, id: &str) -> anyhow::Result<()> {
+    let container = runtime
+        .client()
+        .containers()
+        .get(GetContainerRequest {
+            id: id.into(),
+            ..Default::default()
+        })
+        .await
+        .context("get container")?
+        .into_owned()
+        .container
+        .into_option()
+        .context("no container")?;
+    let spec: serde_json::Value =
+        serde_json::from_slice(&container.spec.into_option().context("no spec")?.value)?;
+    say(format!(
+        "spec id={id} args={} user={} cwd={}",
+        spec["process"]["args"], spec["process"]["user"], spec["process"]["cwd"]
+    ));
+    let pid = match runtime
+        .client()
+        .tasks()
+        .get(GetRequest {
+            container_id: id.into(),
+            ..Default::default()
+        })
+        .await
+    {
+        Ok(response) => response
+            .into_owned()
+            .process
+            .into_option()
+            .map(|p| (p.pid, p.status)),
+        Err(e) => {
+            say(format!("task id={id}: {e}"));
+            None
+        }
+    };
+    let Some((pid, status)) = pid else {
+        return Ok(());
+    };
+    let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+    let args: Vec<String> = cmdline
+        .split(|b| *b == 0)
+        .filter(|a| !a.is_empty())
+        .map(|a| String::from_utf8_lossy(a).into_owned())
+        .collect();
+    let proc_status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
+    let ids: Vec<&str> = proc_status
+        .lines()
+        .filter(|l| l.starts_with("Uid:") || l.starts_with("Gid:") || l.starts_with("Groups:"))
+        .collect();
+    let cwd = std::fs::read_link(format!("/proc/{pid}/cwd"))
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|e| format!("unreadable: {e}"));
+    say(format!(
+        "task id={id} pid={pid} status={status:?} cmdline={args:?} {ids:?} cwd={cwd}"
+    ));
+    Ok(())
 }
 
 fn say(text: impl std::fmt::Display) {
@@ -405,6 +475,20 @@ async fn main() -> anyhow::Result<()> {
             runtime.create(&spec(id, &args[2..])).await?;
             say(format!("create_ms={} id={id}", ms(t)));
         }
+        "create-with" => {
+            let id = args.get(1).context("create-with <id>")?;
+            let mut spec = spec(id, &[]);
+            spec.entrypoint = argv_env("LAB_ENTRYPOINT")?;
+            spec.cmd = argv_env("LAB_CMD")?;
+            spec.working_dir = std::env::var("LAB_WORKDIR").ok();
+            spec.user = std::env::var("LAB_USER").ok();
+            let t = Instant::now();
+            match runtime.create(&spec).await {
+                Ok(()) => say(format!("create_ms={} id={id}", ms(t))),
+                Err(e) => say(format!("create id={id} refused: {e:#}")),
+            }
+        }
+        "inspect" => inspect(&runtime, args.get(1).context("inspect <id>")?).await?,
         "create-again" => {
             let id = args.get(1).context("create-again <id>")?;
             match runtime.create(&spec(id, &[])).await {
@@ -485,7 +569,7 @@ async fn main() -> anyhow::Result<()> {
             ));
         }
         _ => anyhow::bail!(
-            "usage: lab transport|watch|caps|prepare|pull|create|create-again|ready|probe|list|wait-exited|restart|remove"
+            "usage: lab transport|watch|caps|prepare|pull|create|create-with|inspect|create-again|ready|probe|list|wait-exited|restart|remove"
         ),
     }
     Ok(())
