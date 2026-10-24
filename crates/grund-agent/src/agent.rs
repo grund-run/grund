@@ -1780,6 +1780,59 @@ mod tests {
     }
 
     #[test]
+    fn a_hosted_replica_with_no_process_fields_needs_no_process_overrides() {
+        use grund_proto::grund::agent::v1::{EnvVar, Image, Port, Replica, ReplicaStop};
+        let key = SigningKey::from_bytes(&[8; 32]);
+        let record = record(&key);
+        let trust = key.verifying_key();
+        let mut document = state(4);
+        document.required_features.push("replicas".into());
+        document.replicas.push(Replica {
+            replica_id: "r-1".into(),
+            app: "web".into(),
+            app_id: "a-1".into(),
+            release: 3,
+            image: buffa::MessageField::from(Image {
+                reference: "nginx:1.27".into(),
+                digest: format!("sha256:{}", "a".repeat(64)),
+                ..Default::default()
+            }),
+            command: vec!["nginx".into(), "-g".into(), "daemon off;".into()],
+            env: vec![EnvVar {
+                name: "X".into(),
+                value: "1".into(),
+                ..Default::default()
+            }],
+            ports: vec![Port {
+                name: "http".into(),
+                port: 80,
+                protocol: "http".into(),
+                ..Default::default()
+            }],
+            memory_mib: 128,
+            cpu_millis: 250,
+            stop: buffa::MessageField::from(ReplicaStop {
+                signal: "SIGQUIT".into(),
+                grace_seconds: 10,
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let (payload, signature) = signed(&key, &document);
+        assert_eq!(
+            verify(
+                &record,
+                &trust,
+                "k",
+                &payload,
+                &signature,
+                &Applied::default()
+            ),
+            Ok(document)
+        );
+    }
+
+    #[test]
     fn the_same_generation_again_is_nothing_or_an_equivocation_and_only_a_lower_one_is_older() {
         let key = SigningKey::from_bytes(&[5; 32]);
         let record = record(&key);
