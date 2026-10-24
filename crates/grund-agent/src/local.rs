@@ -445,6 +445,18 @@ mod tests {
             .required_features
             .push("process-overrides".into());
         assert_eq!(handle.apply(overridden), Ok(()));
+        let mut restarting = document(2);
+        restarting.replicas[0].restart =
+            buffa::MessageField::from(grund_proto::grund::agent::v1::RestartPolicy {
+                mode: grund_proto::grund::agent::v1::RestartMode::RESTART_MODE_NEVER.into(),
+                ..Default::default()
+            });
+        assert_eq!(
+            handle.apply(restarting.clone()),
+            Err(Refusal::MissingRestartFeature)
+        );
+        restarting.required_features.push("restart-policy".into());
+        assert_eq!(handle.apply(restarting), Ok(()));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

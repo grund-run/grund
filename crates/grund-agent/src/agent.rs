@@ -55,6 +55,7 @@ pub const KNOWN_FEATURES: &[&str] = &[
     "block-volumes",
     "stack-services",
     "process-overrides",
+    "restart-policy",
 ];
 
 /// The largest document the agent decodes (apps.md §15).
@@ -157,6 +158,7 @@ pub enum Refusal {
     MissingBlockFeature,
     MissingStackFeature,
     MissingProcessFeature,
+    MissingRestartFeature,
     NoTrustKey,
     /// Signed by a key other than the one pinned.
     UnknownKey,
@@ -181,6 +183,7 @@ impl std::fmt::Display for Refusal {
             Refusal::MissingBlockFeature => f.write_str("document mounts a block volume without requiring block-volumes"),
             Refusal::MissingStackFeature => f.write_str("document coordinates stack services without requiring stack-services"),
             Refusal::MissingProcessFeature => f.write_str("document overrides a process entrypoint, cmd, working directory or user without requiring process-overrides"),
+            Refusal::MissingRestartFeature => f.write_str("document sets a restart policy without requiring restart-policy"),
             Refusal::NoTrustKey => f.write_str("this machine pinned no organisation key"),
             Refusal::UnknownKey => f.write_str("document is signed by a key this machine did not pin"),
             Refusal::Same => f.write_str("document is the one applied"),
@@ -280,6 +283,17 @@ pub fn check_features(state: &DesiredState) -> Result<(), Refusal> {
         .any(|feature| feature == "process-overrides")
     {
         return Err(Refusal::MissingProcessFeature);
+    }
+    if state
+        .replicas
+        .iter()
+        .any(|replica| replica.restart.as_option().is_some())
+        && !state
+            .required_features
+            .iter()
+            .any(|feature| feature == "restart-policy")
+    {
+        return Err(Refusal::MissingRestartFeature);
     }
     Ok(())
 }

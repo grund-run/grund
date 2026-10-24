@@ -470,6 +470,27 @@ message Replica {
   // "uid", "uid:gid", "name" or "name:group", resolved against the image's
   // /etc/passwd and /etc/group like the image's own User.
   optional string user = 30;
+  // When an exited replica starts again, set only by a local source such
+  // as grund up. Absent restarts it always, on the back-off, as for every
+  // grund-server document.
+  optional RestartPolicy restart = 31;
+}
+
+// Compose's restart policies. A replica the policy keeps exited is reported
+// exited with its code until its document changes.
+message RestartPolicy {
+  RestartMode mode = 1;
+  // For on-failure: the restarts after which it stays exited; 0 is no limit.
+  uint32 max_retries = 2;
+}
+
+enum RestartMode {
+  // Treated as always.
+  RESTART_MODE_UNSPECIFIED = 0;
+  RESTART_MODE_ALWAYS = 1;
+  // Restart only after a nonzero exit code.
+  RESTART_MODE_ON_FAILURE = 2;
+  RESTART_MODE_NEVER = 3;
 }
 
 // An argument vector whose presence matters: absent and empty differ.

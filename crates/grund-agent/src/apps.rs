@@ -23,7 +23,8 @@
 //!   the runtime can observe its process again.
 //! - **Exited**: restart at once, then after 10 s, 20 s, 40 s, … capped at
 //!   5 minutes, and forget the back-off after 10 minutes of running
-//!   ([`backoff`], the kubelet's schedule except for the first restart).
+//!   ([`backoff`], the kubelet's schedule except for the first restart),
+//!   unless the replica's restart policy keeps it exited ([`stays_exited`]).
 //! - **Not in the document**: stopped with the stop settings its container
 //!   carries, each stop on its own, never holding up a start (§7.3).
 //! - **Refused** by the machine's policy: not run, and reported with why.
@@ -65,7 +66,7 @@ use grund_net::{
 use grund_proto::grund::agent::v1::{
     DesiredState, GetPullCredentialRequest, GetPullCredentialResponse, GetReplicaSecretsRequest,
     GetReplicaSecretsResponse, Replica, ReplicaObserved, ReplicaObservedState, ReplicaState,
-    VolumeDeleted, replica_check,
+    RestartMode, VolumeDeleted, replica_check,
 };
 use sha2::{Digest, Sha256};
 use tokio::{sync::Notify, task::JoinHandle};
@@ -103,6 +104,21 @@ pub fn backoff(exits: u32) -> Duration {
     }
     let seconds = 10u64.saturating_mul(1u64 << (exits - 2).min(16));
     Duration::from_secs(seconds).min(BACKOFF_CAP)
+}
+
+/// Whether `replica`'s restart policy keeps it exited after exiting with
+/// `code`, having restarted `restarts` times. With no policy it never does.
+pub fn stays_exited(replica: &Replica, code: i32, restarts: u32) -> bool {
+    let Some(policy) = replica.restart.as_option() else {
+        return false;
+    };
+    match policy.mode.as_known() {
+        Some(RestartMode::RESTART_MODE_NEVER) => true,
+        Some(RestartMode::RESTART_MODE_ON_FAILURE) => {
+            code == 0 || (policy.max_retries > 0 && restarts >= policy.max_retries)
+        }
+        _ => false,
+    }
 }
 
 /// The name of a replica's device inside its namespace.
@@ -216,6 +232,7 @@ struct Tracked {
     last_exit_code: i32,
     failed: Option<(String, Instant)>,
     readiness: Readiness,
+    stays_exited: bool,
 }
 
 impl Shared {
@@ -1263,6 +1280,7 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                     let tracked = self.tracked.entry(id.clone()).or_default();
                     let started = *tracked.started.get_or_insert(now);
                     tracked.restart_at = None;
+                    tracked.stays_exited = false;
                     if now.duration_since(started) >= BACKOFF_RESET {
                         tracked.exits_since_reset = 0;
                         tracked.start_failures = 0;
@@ -1294,16 +1312,21 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                 Some(TaskState::Exited { code, .. }) => {
                     let code = *code;
                     let tracked = self.tracked.entry(id.clone()).or_default();
-                    if tracked.restart_at.is_none() {
+                    if tracked.restart_at.is_none() && !tracked.stays_exited {
                         tracked.exits_since_reset += 1;
                         tracked.last_exit_code = code;
                         tracked.readiness = Readiness {
                             reason: format!("its process exited with code {code}"),
                             ..Readiness::default()
                         };
-                        let wait = backoff(tracked.exits_since_reset);
-                        tracked.restart_at = Some(now + wait);
-                        tracing::info!(replica = %id, code, wait_s = wait.as_secs(), "a replica exited; restarting after its back-off");
+                        if stays_exited(replica, code, tracked.restarts) {
+                            tracked.stays_exited = true;
+                            tracing::info!(replica = %id, code, "a replica exited; its restart policy keeps it exited");
+                        } else {
+                            let wait = backoff(tracked.exits_since_reset);
+                            tracked.restart_at = Some(now + wait);
+                            tracing::info!(replica = %id, code, wait_s = wait.as_secs(), "a replica exited; restarting after its back-off");
+                        }
                     }
                     if tracked.restart_at.is_some_and(|at| now >= at) {
                         match self
@@ -2662,6 +2685,48 @@ mod tests {
             args: args.iter().map(|a| a.to_string()).collect(),
             ..Default::default()
         })
+    }
+
+    #[test]
+    fn a_restart_policy_keeps_a_replica_exited_as_compose_would() {
+        use grund_proto::grund::agent::v1::RestartPolicy;
+        let with = |mode: RestartMode, max_retries: u32| {
+            let mut r = replica("r1", &[]);
+            r.restart = buffa::MessageField::from(RestartPolicy {
+                mode: mode.into(),
+                max_retries,
+                ..Default::default()
+            });
+            r
+        };
+        let none = replica("r1", &[]);
+        assert!(!stays_exited(&none, 0, 0));
+        assert!(!stays_exited(&none, 1, 99));
+        let never = with(RestartMode::RESTART_MODE_NEVER, 0);
+        assert!(stays_exited(&never, 0, 0));
+        assert!(stays_exited(&never, 1, 0));
+        let always = with(RestartMode::RESTART_MODE_ALWAYS, 0);
+        assert!(!stays_exited(&always, 0, 5));
+        let unspecified = with(RestartMode::RESTART_MODE_UNSPECIFIED, 0);
+        assert!(!stays_exited(&unspecified, 0, 5));
+        let on_failure = with(RestartMode::RESTART_MODE_ON_FAILURE, 0);
+        assert!(stays_exited(&on_failure, 0, 0));
+        assert!(!stays_exited(&on_failure, 2, 50));
+        let limited = with(RestartMode::RESTART_MODE_ON_FAILURE, 3);
+        assert!(!stays_exited(&limited, 2, 2));
+        assert!(stays_exited(&limited, 2, 3));
+    }
+
+    #[test]
+    fn a_restart_policy_leaves_the_container_hash_alone() {
+        use grund_proto::grund::agent::v1::RestartPolicy;
+        let plain = replica("r1", &[("X", "1")]);
+        let mut never = plain.clone();
+        never.restart = buffa::MessageField::from(RestartPolicy {
+            mode: RestartMode::RESTART_MODE_NEVER.into(),
+            ..Default::default()
+        });
+        assert_eq!(spec_hash(&plain), spec_hash(&never));
     }
 
     #[test]
