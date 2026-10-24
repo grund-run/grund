@@ -97,6 +97,19 @@ pub struct ContainerSpec {
     /// Machine-local roots; never supplied by the signed document.
     #[serde(default)]
     pub volume_roots: Vec<PathBuf>,
+    /// Replaces the image's entrypoint and drops its cmd unless [`Self::cmd`]
+    /// is set; `Some(vec![])` clears it. Never set together with `command`.
+    #[serde(default)]
+    pub entrypoint: Option<Vec<String>>,
+    /// Replaces only the image's cmd; `Some(vec![])` clears it.
+    #[serde(default)]
+    pub cmd: Option<Vec<String>>,
+    /// Absolute; `None` keeps the image's working directory.
+    #[serde(default)]
+    pub working_dir: Option<String>,
+    /// Resolved like the image's own `User`; `None` keeps the image's.
+    #[serde(default)]
+    pub user: Option<String>,
 }
 
 /// Where a container's process is.

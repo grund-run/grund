@@ -174,15 +174,24 @@ pub fn resolve_user(user: &str, passwd: Option<&str>, group: Option<&str>) -> an
     })
 }
 
-/// The process to run: the spec's command when it has one, else the
-/// image's entrypoint followed by its cmd.
+/// The process to run: the spec's command when it has one; otherwise the
+/// entrypoint followed by the cmd, each from the spec when it overrides it
+/// and from the image when not. As in Docker, overriding the entrypoint
+/// drops the image's cmd unless the spec also sets one.
 pub fn process_args(spec: &ContainerSpec, image: &ImageConfig) -> anyhow::Result<Vec<String>> {
-    let args = if spec.command.is_empty() {
-        let mut args = image.config.entrypoint.clone().unwrap_or_default();
-        args.extend(image.config.cmd.clone().unwrap_or_default());
-        args
-    } else {
+    let args = if !spec.command.is_empty() {
         spec.command.clone()
+    } else {
+        let mut args = match &spec.entrypoint {
+            Some(entrypoint) => entrypoint.clone(),
+            None => image.config.entrypoint.clone().unwrap_or_default(),
+        };
+        match (&spec.cmd, &spec.entrypoint) {
+            (Some(cmd), _) => args.extend(cmd.iter().cloned()),
+            (None, Some(_)) => {}
+            (None, None) => args.extend(image.config.cmd.clone().unwrap_or_default()),
+        }
+        args
     };
     anyhow::ensure!(
         !args.is_empty(),
@@ -250,10 +259,10 @@ pub fn oci_spec(
 ) -> anyhow::Result<Value> {
     let args = process_args(spec, image)?;
     let env = process_env(spec, image, user);
-    let cwd = image
-        .config
+    let cwd = spec
         .working_dir
         .clone()
+        .or_else(|| image.config.working_dir.clone())
         .filter(|d| d.starts_with('/'))
         .unwrap_or_else(|| "/".into());
     let memory = memory_bytes(spec.memory_mib);
@@ -370,6 +379,10 @@ mod tests {
             resolv_conf: None,
             volumes: Vec::new(),
             volume_roots: Vec::new(),
+            entrypoint: None,
+            cmd: None,
+            working_dir: None,
+            user: None,
         }
     }
 
@@ -432,6 +445,49 @@ mod tests {
             oci["process"]["env"].as_array().unwrap().last().unwrap(),
             "HOME=/root"
         );
+    }
+
+    #[test]
+    fn process_overrides_follow_dockers_entrypoint_and_cmd_rules() {
+        let image = image();
+        let cases: [(Option<Vec<&str>>, Option<Vec<&str>>, Vec<&str>); 5] = [
+            (None, Some(vec!["nginx", "-T"]), vec!["/docker-entrypoint.sh", "nginx", "-T"]),
+            (Some(vec!["/bin/sh", "-c"]), None, vec!["/bin/sh", "-c"]),
+            (Some(vec![]), Some(vec!["/app"]), vec!["/app"]),
+            (None, Some(vec![]), vec!["/docker-entrypoint.sh"]),
+            (Some(vec!["/bin/sh"]), Some(vec!["-c", "exit 0"]), vec!["/bin/sh", "-c", "exit 0"]),
+        ];
+        for (entrypoint, cmd, want) in cases {
+            let mut spec = spec();
+            spec.entrypoint = entrypoint.map(|v| v.iter().map(|a| a.to_string()).collect());
+            spec.cmd = cmd.map(|v| v.iter().map(|a| a.to_string()).collect());
+            assert_eq!(process_args(&spec, &image).unwrap(), want, "{spec:?}");
+        }
+    }
+
+    #[test]
+    fn clearing_the_entrypoint_with_no_cmd_leaves_nothing_to_run_and_is_refused() {
+        let mut spec = spec();
+        spec.entrypoint = Some(Vec::new());
+        assert!(process_args(&spec, &image()).is_err());
+    }
+
+    #[test]
+    fn without_overrides_the_image_entrypoint_cmd_and_working_directory_stay() {
+        let oci = oci_spec(&spec(), &image(), &root(), Path::new("/n")).unwrap();
+        assert_eq!(
+            oci["process"]["args"],
+            json!(["/docker-entrypoint.sh", "nginx", "-g", "daemon off;"])
+        );
+        assert_eq!(oci["process"]["cwd"], "/srv");
+    }
+
+    #[test]
+    fn a_working_directory_override_replaces_the_images() {
+        let mut spec = spec();
+        spec.working_dir = Some("/data".into());
+        let oci = oci_spec(&spec, &image(), &root(), Path::new("/n")).unwrap();
+        assert_eq!(oci["process"]["cwd"], "/data");
     }
 
     #[test]

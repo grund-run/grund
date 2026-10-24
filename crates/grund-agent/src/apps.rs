@@ -298,6 +298,24 @@ pub fn spec_hash(replica: &Replica) -> String {
             part("volume-block-device", &[1]);
         }
     }
+    if let Some(entrypoint) = replica.entrypoint.as_option() {
+        part("entrypoint", &(entrypoint.args.len() as u64).to_le_bytes());
+        for arg in &entrypoint.args {
+            part("entrypoint-arg", arg.as_bytes());
+        }
+    }
+    if let Some(cmd) = replica.cmd.as_option() {
+        part("cmd", &(cmd.args.len() as u64).to_le_bytes());
+        for arg in &cmd.args {
+            part("cmd-arg", arg.as_bytes());
+        }
+    }
+    if let Some(dir) = &replica.working_dir {
+        part("working-dir", dir.as_bytes());
+    }
+    if let Some(user) = &replica.user {
+        part("user", user.as_bytes());
+    }
     hex::encode(hasher.finalize())
 }
 
@@ -362,6 +380,16 @@ fn spec(
     } else {
         roots.to_vec()
     };
+    let entrypoint = replica.entrypoint.as_option().map(|a| a.args.clone());
+    let cmd = replica.cmd.as_option().map(|a| a.args.clone());
+    if !replica.command.is_empty() && (entrypoint.is_some() || cmd.is_some()) {
+        return Err("it sets command together with entrypoint or cmd".into());
+    }
+    if let Some(dir) = &replica.working_dir
+        && !dir.starts_with('/')
+    {
+        return Err(format!("its working directory {dir:?} is not absolute"));
+    }
     Ok(ContainerSpec {
         id: replica.replica_id.clone(),
         image: ImageRef {
@@ -395,6 +423,10 @@ fn spec(
         }),
         volumes,
         volume_roots,
+        entrypoint,
+        cmd,
+        working_dir: replica.working_dir.clone(),
+        user: replica.user.clone(),
     })
 }
 
@@ -2618,5 +2650,76 @@ mod tests {
         b.secrets[0].version = 2;
         assert_ne!(spec_hash(&a), spec_hash(&b));
         assert_eq!(spec_hash(&a), spec_hash(&a.clone()));
+    }
+
+    fn argv(args: &[&str]) -> buffa::MessageField<grund_proto::grund::agent::v1::Argv> {
+        buffa::MessageField::from(grund_proto::grund::agent::v1::Argv {
+            args: args.iter().map(|a| a.to_string()).collect(),
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn a_replica_without_process_overrides_keeps_the_spec_hash_it_had_before_them() {
+        assert_eq!(
+            spec_hash(&replica("r1", &[("X", "1")])),
+            "2a9c6fa61b49b3b084ca14fc553fa556a9eb67cd16d0c4b877a67b66a3ab6b1a"
+        );
+    }
+
+    #[test]
+    fn an_empty_process_override_is_a_different_container_from_an_absent_one() {
+        let absent = replica("r1", &[]);
+        let mut cleared = absent.clone();
+        cleared.entrypoint = argv(&[]);
+        let mut cmd = absent.clone();
+        cmd.cmd = argv(&[]);
+        let mut dir = absent.clone();
+        dir.working_dir = Some("/srv".into());
+        let mut user = absent.clone();
+        user.user = Some("1000".into());
+        let hashes = [&absent, &cleared, &cmd, &dir, &user].map(spec_hash);
+        for (i, a) in hashes.iter().enumerate() {
+            for b in &hashes[i + 1..] {
+                assert_ne!(a, b);
+            }
+        }
+    }
+
+    #[test]
+    fn process_overrides_reach_the_container_spec_unchanged() {
+        let mut replica = replica("r1", &[]);
+        replica.entrypoint = argv(&[]);
+        replica.cmd = argv(&["serve", "--port", "8080"]);
+        replica.working_dir = Some("/srv/app".into());
+        replica.user = Some("app:app".into());
+        let spec = spec(&replica, &[], None, Vec::new(), &[]).unwrap();
+        assert_eq!(spec.entrypoint, Some(Vec::new()));
+        assert_eq!(
+            spec.cmd,
+            Some(vec!["serve".to_string(), "--port".into(), "8080".into()])
+        );
+        assert_eq!(spec.working_dir.as_deref(), Some("/srv/app"));
+        assert_eq!(spec.user.as_deref(), Some("app:app"));
+        assert!(spec.command.is_empty());
+    }
+
+    #[test]
+    fn a_replica_mixing_command_with_entrypoint_or_cmd_is_refused() {
+        let mut both = replica("r1", &[]);
+        both.command = vec!["serve".into()];
+        both.cmd = argv(&["--port", "8080"]);
+        assert!(spec(&both, &[], None, Vec::new(), &[]).is_err());
+        let mut entry = replica("r1", &[]);
+        entry.command = vec!["serve".into()];
+        entry.entrypoint = argv(&["/bin/sh"]);
+        assert!(spec(&entry, &[], None, Vec::new(), &[]).is_err());
+    }
+
+    #[test]
+    fn a_relative_working_directory_is_refused() {
+        let mut replica = replica("r1", &[]);
+        replica.working_dir = Some("srv".into());
+        assert!(spec(&replica, &[], None, Vec::new(), &[]).is_err());
     }
 }

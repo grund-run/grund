@@ -47,6 +47,10 @@ fn spec(id: &str, command: &[String]) -> ContainerSpec {
         resolv_conf: None,
         volumes: Vec::new(),
         volume_roots: Vec::new(),
+        entrypoint: None,
+        cmd: None,
+        working_dir: None,
+        user: None,
     }
 }
 

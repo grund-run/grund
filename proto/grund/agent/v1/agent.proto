@@ -459,6 +459,22 @@ message Replica {
   string operation_id = 25;
   // Relative stack DNS suffix, such as "shop.grund.internal".
   string stack_search = 26;
+  // Process overrides with Docker's rules, set only by a local source such
+  // as grund up; grund-server never sets them. Absent keeps the image's
+  // value. An empty Argv clears it. A replica that sets entrypoint or cmd
+  // must leave command empty.
+  optional Argv entrypoint = 27;
+  optional Argv cmd = 28;
+  // Absolute directory; absent keeps the image's working directory.
+  optional string working_dir = 29;
+  // "uid", "uid:gid", "name" or "name:group", resolved against the image's
+  // /etc/passwd and /etc/group like the image's own User.
+  optional string user = 30;
+}
+
+// An argument vector whose presence matters: absent and empty differ.
+message Argv {
+  repeated string args = 1;
 }
 
 message VolumeMount {

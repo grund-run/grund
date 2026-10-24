@@ -1046,7 +1046,13 @@ impl ContainerRuntime for Containerd {
             .with_context(|| format!("image {name} is not pulled"))?;
         self.ensure_snapshot(&spec.id, &config.chain_id()?).await?;
         let user = self
-            .resolve_user(&spec.id, config.config.user.as_deref().unwrap_or_default())
+            .resolve_user(
+                &spec.id,
+                spec.user
+                    .as_deref()
+                    .or(config.config.user.as_deref())
+                    .unwrap_or_default(),
+            )
             .await?;
         for bind in &spec.volumes {
             let dir = volume::verify_bind(&self.config.data_dir, &spec.volume_roots, bind)?;
@@ -1329,6 +1335,10 @@ mod tests {
             resolv_conf: None,
             volumes: Vec::new(),
             volume_roots: Vec::new(),
+            entrypoint: None,
+            cmd: None,
+            working_dir: None,
+            user: None,
         };
         let labels = container_labels(&spec);
         assert_eq!(labels[REPLICA_LABEL], "web-1");

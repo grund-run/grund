@@ -54,6 +54,7 @@ pub const KNOWN_FEATURES: &[&str] = &[
     "volumes",
     "block-volumes",
     "stack-services",
+    "process-overrides",
 ];
 
 /// The largest document the agent decodes (apps.md §15).
@@ -155,6 +156,7 @@ pub enum Refusal {
     UnknownFeature(String),
     MissingBlockFeature,
     MissingStackFeature,
+    MissingProcessFeature,
     NoTrustKey,
     /// Signed by a key other than the one pinned.
     UnknownKey,
@@ -178,6 +180,7 @@ impl std::fmt::Display for Refusal {
             Refusal::UnknownFeature(name) => write!(f, "document requires unknown feature {name}"),
             Refusal::MissingBlockFeature => f.write_str("document mounts a block volume without requiring block-volumes"),
             Refusal::MissingStackFeature => f.write_str("document coordinates stack services without requiring stack-services"),
+            Refusal::MissingProcessFeature => f.write_str("document overrides a process entrypoint, cmd, working directory or user without requiring process-overrides"),
             Refusal::NoTrustKey => f.write_str("this machine pinned no organisation key"),
             Refusal::UnknownKey => f.write_str("document is signed by a key this machine did not pin"),
             Refusal::Same => f.write_str("document is the one applied"),
@@ -256,6 +259,18 @@ pub fn verify(
         .any(|feature| feature == "stack-services")
     {
         return Err(Refusal::MissingStackFeature);
+    }
+    if state.replicas.iter().any(|replica| {
+        replica.entrypoint.as_option().is_some()
+            || replica.cmd.as_option().is_some()
+            || replica.working_dir.is_some()
+            || replica.user.is_some()
+    }) && !state
+        .required_features
+        .iter()
+        .any(|feature| feature == "process-overrides")
+    {
+        return Err(Refusal::MissingProcessFeature);
     }
     Ok(state)
 }
@@ -1708,6 +1723,48 @@ mod tests {
             Err(Refusal::MissingStackFeature)
         );
         document.required_features.push("stack-services".into());
+        let (payload, signature) = signed(&key, &document);
+        assert_eq!(
+            verify(
+                &record,
+                &trust,
+                "k",
+                &payload,
+                &signature,
+                &Applied::default()
+            ),
+            Ok(document)
+        );
+    }
+
+    #[test]
+    fn a_process_override_requires_process_overrides_negotiation() {
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let record = record(&key);
+        let trust = key.verifying_key();
+        let mut document = state(4);
+        document
+            .replicas
+            .push(grund_proto::grund::agent::v1::Replica {
+                cmd: buffa::MessageField::from(grund_proto::grund::agent::v1::Argv {
+                    args: vec!["serve".into()],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            });
+        let (payload, signature) = signed(&key, &document);
+        assert_eq!(
+            verify(
+                &record,
+                &trust,
+                "k",
+                &payload,
+                &signature,
+                &Applied::default()
+            ),
+            Err(Refusal::MissingProcessFeature)
+        );
+        document.required_features.push("process-overrides".into());
         let (payload, signature) = signed(&key, &document);
         assert_eq!(
             verify(
