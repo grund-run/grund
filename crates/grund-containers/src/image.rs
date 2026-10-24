@@ -183,6 +183,24 @@ pub struct ProcessConfig {
     pub cmd: Option<Vec<String>>,
     #[serde(rename = "WorkingDir", default)]
     pub working_dir: Option<String>,
+    #[serde(rename = "StopSignal", default)]
+    pub stop_signal: Option<String>,
+    #[serde(rename = "Healthcheck", default)]
+    pub healthcheck: Option<HealthConfig>,
+}
+
+/// The image's `HEALTHCHECK`, as Docker writes it into the config: durations
+/// in nanoseconds, 0 for unset.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct HealthConfig {
+    #[serde(rename = "Test", default)]
+    pub test: Vec<String>,
+    #[serde(rename = "Interval", default)]
+    pub interval: i64,
+    #[serde(rename = "Timeout", default)]
+    pub timeout: i64,
+    #[serde(rename = "Retries", default)]
+    pub retries: u32,
 }
 
 /// The image's layers, as uncompressed digests.
@@ -207,6 +225,21 @@ impl ImageConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_images_stop_signal_and_healthcheck_are_read_from_its_config() {
+        let config: ImageConfig = serde_json::from_str(
+            r#"{"architecture":"amd64","os":"linux","config":{"StopSignal":"SIGQUIT","Healthcheck":{"Test":["CMD-SHELL","pg_isready"],"Interval":5000000000,"Retries":4}},"rootfs":{"type":"layers","diff_ids":[]}}"#,
+        )
+        .unwrap();
+        assert_eq!(config.config.stop_signal.as_deref(), Some("SIGQUIT"));
+        let health = config.config.healthcheck.unwrap();
+        assert_eq!(health.test, ["CMD-SHELL", "pg_isready"]);
+        assert_eq!(
+            (health.interval, health.timeout, health.retries),
+            (5_000_000_000, 0, 4)
+        );
+    }
 
     #[test]
     fn references_are_normalised_the_way_docker_does() {

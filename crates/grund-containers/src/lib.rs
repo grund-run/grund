@@ -79,7 +79,7 @@ use crate::{
                 ListContainersRequest, container::Runtime,
             },
             content::v1::ReadContentRequest,
-            images::v1::GetImageRequest,
+            images::v1::{CreateImageRequest, GetImageRequest, Image as ImageRecord},
             snapshots::v1::{
                 MountsRequest, PrepareSnapshotRequest, RemoveSnapshotRequest, StatSnapshotRequest,
             },
@@ -377,6 +377,116 @@ async fn capture_before_cleanup(
 }
 
 impl Containerd {
+    /// The digest the image store holds under `reference` itself (its tag,
+    /// not a pinned name), if it holds one.
+    pub async fn image_by_name(&self, reference: &str) -> anyhow::Result<Option<String>> {
+        let request = GetImageRequest {
+            name: image::normalize_name(reference)?,
+            ..Default::default()
+        };
+        match self.client().images().get(request).await {
+            Ok(response) => Ok(response
+                .into_owned()
+                .image
+                .into_option()
+                .and_then(|record| record.target.into_option())
+                .map(|target| target.digest)),
+            Err(e) if not_found(&e) => Ok(None),
+            Err(e) => Err(failed("get an image", e)),
+        }
+    }
+
+    /// Pulls `reference` by its tag into the image store under that name,
+    /// unpacked, and returns the digest it names now.
+    pub async fn pull_name(&self, reference: &str) -> anyhow::Result<String> {
+        let name = image::normalize_name(reference)?;
+        let platform = Platform {
+            os: "linux".into(),
+            architecture: self.config.arch.oci().into(),
+            ..Default::default()
+        };
+        let source = OCIRegistry {
+            reference: name.clone(),
+            ..Default::default()
+        };
+        let destination = ImageStore {
+            name: name.clone(),
+            platforms: vec![platform.clone()],
+            unpacks: vec![UnpackConfiguration {
+                platform: platform.into(),
+                snapshotter: SNAPSHOTTER.into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        self.client()
+            .transfer()
+            .transfer(TransferRequest {
+                source: any(OCI_REGISTRY_TYPE_URL, &source).into(),
+                destination: any(IMAGE_STORE_TYPE_URL, &destination).into(),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| failed(&format!("pull {name}"), e))?;
+        self.image_by_name(reference)
+            .await?
+            .with_context(|| format!("pulled {name}, but the image store has no record of it"))
+    }
+
+    /// Names the image `reference` holds, which must be `digest`, also by its
+    /// pinned name, so [`ContainerRuntime::has_image`] finds it and the apps
+    /// loop never asks a registry for it, which a locally built image could
+    /// not answer.
+    pub async fn pin(&self, reference: &str, digest: &str) -> anyhow::Result<()> {
+        let name = image::normalize_name(reference)?;
+        let record = self
+            .client()
+            .images()
+            .get(GetImageRequest {
+                name: name.clone(),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| failed("get an image", e))?
+            .into_owned()
+            .image
+            .into_option()
+            .with_context(|| format!("the image store has no {name}"))?;
+        let target = record
+            .target
+            .into_option()
+            .with_context(|| format!("{name} has no target"))?;
+        anyhow::ensure!(
+            target.digest == digest,
+            "{name} names {} now, not {digest}",
+            target.digest
+        );
+        let pinned = image::pinned_name(reference, digest)?;
+        let create = CreateImageRequest {
+            image: ImageRecord {
+                name: pinned.clone(),
+                target: target.into(),
+                ..Default::default()
+            }
+            .into(),
+            ..Default::default()
+        };
+        match self.client().images().create(create).await {
+            Ok(_) => {}
+            Err(e) if already_exists(&e) => {}
+            Err(e) => return Err(failed(&format!("name {pinned}"), e)),
+        }
+        let image = ImageRef {
+            reference: reference.into(),
+            digest: digest.into(),
+        };
+        anyhow::ensure!(
+            self.has_image(&image).await?,
+            "{pinned} is named, but its content or unpacked layers are not all there"
+        );
+        Ok(())
+    }
+
     /// A runtime with `config`. Nothing is fetched or started until
     /// [`ContainerRuntime::prepare`].
     pub fn new(config: Config) -> Self {
