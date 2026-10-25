@@ -839,9 +839,6 @@ pub struct CopyUp {
     marker: CString,
 }
 
-/// What [`CopyUp::install`] moves into a volume, written beside the owner
-/// record before the first move so an interrupted install is completed,
-/// never undone, and refused if the volume holds anything else.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Manifest {
     names: Vec<String>,
@@ -1040,7 +1037,8 @@ impl CopyUp {
                 CString::new(to.as_os_str().as_bytes())?,
             );
             if unsafe {
-                libc::renameat2(
+                libc::syscall(
+                    libc::SYS_renameat2,
                     libc::AT_FDCWD,
                     from_c.as_ptr(),
                     libc::AT_FDCWD,
