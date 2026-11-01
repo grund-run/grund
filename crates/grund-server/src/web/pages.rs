@@ -531,7 +531,11 @@ pub async fn login_form(
     Query(query): Query<LoginQuery>,
 ) -> PageResult {
     if browser.session.is_some() {
-        return Ok(redirect("/"));
+        return Ok(redirect(
+            safe_return_to(query.return_to.as_deref())
+                .as_deref()
+                .unwrap_or("/"),
+        ));
     }
     login_page(
         &state,
@@ -642,14 +646,21 @@ pub async fn login(
             None,
             return_to,
         ),
-        LoginOutcome::Unverified => message(
-            &state,
-            &browser,
-            StatusCode::OK,
-            "Confirm your email first",
-            "We sent a new link to the address on your account. Open it, then sign in again.",
-            Some(("/login", "Back to sign in")),
-        ),
+        LoginOutcome::Unverified => {
+            let back = return_to.map(|target| {
+                let query = serde_urlencoded::to_string([("return_to", target)])
+                    .expect("a return path can be URL encoded");
+                format!("/login?{query}")
+            });
+            message(
+                &state,
+                &browser,
+                StatusCode::OK,
+                "Confirm your email first",
+                "We sent a new link to the address on your account. Open it, then sign in again.",
+                Some((back.as_deref().unwrap_or("/login"), "Back to sign in")),
+            )
+        }
     }
 }
 

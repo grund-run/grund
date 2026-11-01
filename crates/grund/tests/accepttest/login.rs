@@ -168,3 +168,81 @@ async fn pages_that_need_a_session_send_the_browser_to_sign_in_and_back() -> any
     then.status(200)?.body_lacks("evil.example")?;
     Ok(())
 }
+
+#[tokio::test]
+async fn a_signed_in_browser_resumes_the_device_target_from_a_stale_login_page()
+-> anyhow::Result<()> {
+    let Some((given, when, then)) = testcase_with_mail().await? else {
+        return Ok(());
+    };
+    given.a_signed_in_account().await?;
+    when.visiting("/login?return_to=%2Fdevice%3Fcode%3DAAAA-BBBB")
+        .await?;
+    then.redirects_to("/device?code=AAAA-BBBB")?;
+    for target in ["https://evil.example", "//evil.example", "/\\evil.example"] {
+        let query = serde_urlencoded::to_string([("return_to", target)])?;
+        when.visiting(&format!("/login?{query}")).await?;
+        then.redirects_to("/")?;
+    }
+    when.visiting("/login").await?;
+    then.redirects_to("/")?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_unverified_login_backlink_resumes_the_pending_device_after_confirmation()
+-> anyhow::Result<()> {
+    let Some((given, when, then)) = testcase_with_mail().await? else {
+        return Ok(());
+    };
+    let account = given.an_unconfirmed_account().await?;
+    let device = "/device?code=AAAA-BBBB";
+    let login = "/login?return_to=%2Fdevice%3Fcode%3DAAAA-BBBB";
+    when.submitting(
+        login,
+        "/login",
+        &[
+            ("login", &account.username),
+            ("password", &account.password),
+            ("return_to", device),
+        ],
+    )
+    .await?;
+    then.status(200)?.sets_no_session_cookie()?;
+    let page = then.body()?;
+    let back = page
+        .split("href=\"")
+        .skip(1)
+        .filter_map(|part| part.split_once('"'))
+        .find(|(_, tail)| tail.starts_with(">Back to sign in"))
+        .map(|(href, _)| href.replace("&amp;", "&"))
+        .ok_or_else(|| anyhow::anyhow!("no return to sign-in link"))?;
+    when.following_the_mailed_link(&account.email, "Confirm your email", "/verify?token=")
+        .await?;
+    when.submitting_on_current_page("/verify", &[("token", &given.last_token()?)])
+        .await?;
+    when.visiting(&back).await?;
+    then.status(200)?;
+    let page = then.body()?;
+    let return_to = page
+        .split("name=\"return_to\" value=\"")
+        .nth(1)
+        .and_then(|part| part.split_once('"'))
+        .map(|(value, _)| value.replace("&amp;", "&"))
+        .ok_or_else(|| anyhow::anyhow!("no pending device target on resumed login form"))?;
+    when.submitting_on_current_page(
+        "/login",
+        &[
+            ("login", &account.username),
+            ("password", &account.password),
+            ("return_to", &return_to),
+        ],
+    )
+    .await?;
+    then.redirects_to(device)?;
+    anyhow::ensure!(
+        back == login,
+        "the backlink discarded the device target: {back}"
+    );
+    Ok(())
+}

@@ -36,6 +36,12 @@ For your own instance, `grund auth login https://grund.example.com` selects it.
 An explicit address, `--instance` or `GRUND_INSTANCE` wins over the last
 signed-in instance; only a fresh login falls back to the hosted dashboard.
 
+Open the CLI's printed device link, check the code and choose **Approve**
+within ten minutes. Signing in to the dashboard alone does not approve the
+CLI. If email confirmation is required, confirm it, then return to the
+original tab's **Back to sign in** link to keep the pending request.
+If the code expires, start a fresh login.
+
 ## What is open, and what is paid
 
 grund is open source. The self-hosted edition is free, and it is the real
