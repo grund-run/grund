@@ -109,6 +109,8 @@ pub enum AppsError {
     RestartNoBase,
     #[error("only an owner or admin can restart an app")]
     RestartNotAllowed,
+    #[error("this organisation does not have access to choose hosted resources")]
+    HostedAccessRequired,
     #[error("this target was not offered by the running release's explicit check")]
     UpdateNotOffered,
     #[error("the update request key was already used for a different request")]
@@ -146,6 +148,7 @@ impl AppsError {
             AppsError::RestartRollout => "rollout_in_progress",
             AppsError::RestartNoBase => "restart_no_base",
             AppsError::RestartNotAllowed => "not_allowed",
+            AppsError::HostedAccessRequired => "hosted_access_required",
             AppsError::UpdateNotOffered => "update_not_available",
             AppsError::UpdateRequestConflict => "idempotency_conflict",
             AppsError::ExternalOwnerConflict => "external_owner_conflict",
@@ -627,7 +630,43 @@ async fn require_restart_mutator(
     }
 }
 
+pub(super) fn selects_hosted(settings: &AppSettings, spec: Option<&AppSpec>) -> bool {
+    settings.placement.kind == Some(MachineKind::Hosted)
+        || spec.is_some_and(|spec| spec.volumes.iter().any(|volume| volume.size_gib.is_some()))
+}
+
 impl Apps {
+    async fn require_hosted_access(
+        &self,
+        organisation_id: Uuid,
+        settings: &AppSettings,
+        spec: Option<&AppSpec>,
+        previous: Option<&App>,
+        connection: Option<&mut PgConnection>,
+    ) -> Result<(), AppsError> {
+        if selects_hosted(settings, spec)
+            && !previous.is_some_and(|app| {
+                selects_hosted(
+                    &app.settings,
+                    app.releases.last().map(|release| &release.spec),
+                )
+            })
+        {
+            let allowed = match connection {
+                Some(connection) => {
+                    self.state
+                        .hosted_access_in(connection, organisation_id)
+                        .await?
+                }
+                None => self.state.hosted_access(organisation_id).await?,
+            };
+            if !allowed {
+                return Err(AppsError::HostedAccessRequired);
+            }
+        }
+        Ok(())
+    }
+
     async fn require_domain(
         &self,
         connection: &mut PgConnection,
@@ -870,6 +909,8 @@ impl Apps {
     ) -> Result<AppView, AppsError> {
         let name = AppName::parse(name)?;
         let settings = AppSettings::validate(settings)?;
+        self.require_hosted_access(organisation_id, &settings, None, None, None)
+            .await?;
         if apps::count_live_apps(&self.state.pool, organisation_id).await?
             >= MAX_APPS_PER_ORGANISATION
         {
@@ -969,6 +1010,8 @@ impl Apps {
         }
         let settings = AppSettings::validate(launch.settings)?;
         let mut spec = launch.spec;
+        self.require_hosted_access(organisation_id, &settings, Some(&spec), None, None)
+            .await?;
         if let Some(template) = generated_template {
             for variable in template.secret_variables {
                 spec.secrets.push(SecretEnv {
@@ -1418,6 +1461,14 @@ impl Apps {
             }
             _ => unreachable!("record_release only makes releases"),
         };
+        self.require_hosted_access(
+            app.organisation_id,
+            settings.as_ref().unwrap_or(&app.settings),
+            Some(spec),
+            Some(&app),
+            Some(work.sql()),
+        )
+        .await?;
         self.require_domain(work.sql(), app_id, spec).await?;
         if let Some(settings) = settings {
             work.app(
@@ -1474,6 +1525,15 @@ impl Apps {
             AppCommand::Release { spec, .. } => spec,
             _ => unreachable!("preview_release only makes releases"),
         };
+        let app = work.load_app(app_id).await?;
+        self.require_hosted_access(
+            app.organisation_id,
+            settings.as_ref().unwrap_or(&app.settings),
+            Some(spec),
+            Some(&app),
+            Some(work.sql()),
+        )
+        .await?;
         self.require_domain(work.sql(), app_id, spec).await?;
         if let Some(settings) = settings {
             work.app(
@@ -1605,6 +1665,8 @@ impl Apps {
                 )
             }
         };
+        self.require_hosted_access(organisation_id, &settings, Some(&spec), None, None)
+            .await?;
         if !spec.secrets.is_empty() {
             return Err(AppsError::Spec(SpecError {
                 field: "secrets".into(),
@@ -1962,6 +2024,14 @@ impl Apps {
     ) -> Result<AppView, AppsError> {
         let mut work = Work::begin(&self.state.events, Uuid::now_v7(), &actor.to_string()).await?;
         let app = work.load_app(row.app_id).await?;
+        self.require_hosted_access(
+            app.organisation_id,
+            &settings,
+            app.releases.last().map(|release| &release.spec),
+            Some(&app),
+            Some(work.sql()),
+        )
+        .await?;
         if settings.copies != 1
             && !grund_store::volumes::app_volumes(
                 &mut **work.sql(),

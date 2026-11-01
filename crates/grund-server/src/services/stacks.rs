@@ -164,6 +164,8 @@ pub enum Error {
     Busy,
     #[error("this app is owned by a stack")]
     Owned,
+    #[error("this organisation does not have access to choose hosted resources")]
+    HostedAccessRequired,
     #[error("stack operation unavailable")]
     Internal(#[from] anyhow::Error),
 }
@@ -178,6 +180,7 @@ impl Error {
             Self::IdempotencyConflict => "idempotency_conflict",
             Self::Busy => "operation_in_progress",
             Self::Owned => "stack_owned",
+            Self::HostedAccessRequired => "hosted_access_required",
             Self::Internal(_) => "internal",
         }
     }
@@ -306,6 +309,37 @@ impl StacksState for State {
 }
 
 impl Stacks {
+    async fn require_hosted_access(
+        &self,
+        org: Uuid,
+        revision: &Revision,
+        previous: Option<&Stack>,
+        connection: Option<&mut PgConnection>,
+    ) -> Result<(), Error> {
+        let newly_hosted = revision.services.iter().any(|(name, service)| {
+            crate::services::apps::selects_hosted(&service.settings, Some(&service.release.spec))
+                && !previous
+                    .and_then(|stack| retained_service(&stack.revisions, name))
+                    .is_some_and(|prior| {
+                        prior.app_id == service.app_id
+                            && crate::services::apps::selects_hosted(
+                                &prior.settings,
+                                Some(&prior.release.spec),
+                            )
+                    })
+        });
+        if newly_hosted {
+            let allowed = match connection {
+                Some(connection) => self.state.hosted_access_in(connection, org).await?,
+                None => self.state.hosted_access(org).await?,
+            };
+            if !allowed {
+                return Err(Error::HostedAccessRequired);
+            }
+        }
+        Ok(())
+    }
+
     async fn prepare(
         &self,
         org: Uuid,
@@ -548,6 +582,8 @@ impl Stacks {
             revision.services.insert(name.clone(), candidate);
         }
         stack::validate_expanded(&revision.services)?;
+        self.require_hosted_access(org, &revision, old.as_ref().map(|row| &row.state.0), None)
+            .await?;
         for name in changed.clone() {
             let candidate = revision.services.get_mut(&name).expect("planned service");
             let inspection = self
@@ -641,6 +677,13 @@ impl Stacks {
                     .machine
                     .is_some()
                 {
+                    self.require_hosted_access(
+                        org,
+                        &hosted,
+                        old.as_ref().map(|row| &row.state.0),
+                        Some(&mut connection),
+                    )
+                    .await?;
                     revision = hosted;
                 }
             }

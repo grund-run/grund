@@ -109,7 +109,9 @@ fn failed(error: AppsError) -> ConnectError {
             ConnectError::invalid_argument(message)
         }
         AppsError::ImageUnresolved(_) => ConnectError::failed_precondition(message),
-        AppsError::RestartNotAllowed => ConnectError::permission_denied(message),
+        AppsError::RestartNotAllowed | AppsError::HostedAccessRequired => {
+            ConnectError::permission_denied(message)
+        }
         AppsError::Volume(error) => match error {
             crate::services::volumes::VolumesError::Internal(cause) => {
                 tracing::error!(error = %format!("{cause:#}"), "app volume operation failed");

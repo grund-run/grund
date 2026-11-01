@@ -109,6 +109,18 @@ pub trait Extension: Send + Sync + 'static {
     fn billing_enabled(&self) -> bool {
         false
     }
+    /// Whether this organisation may newly choose hosted resources.
+    /// Existing resource inspection, updates and recovery do not require this grant.
+    /// The caller supplies its current connection so transactional checks do not
+    /// acquire a second pool slot while retaining a unit of work.
+    fn hosted_access<'a>(
+        &'a self,
+        _state: &'a State,
+        _connection: &'a mut PgConnection,
+        _organisation_id: Uuid,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<bool>> + Send + 'a>> {
+        Box::pin(async { Ok(false) })
+    }
     /// The organisation allowed to operate extension-owned infrastructure.
     fn operator_organisation<'a>(
         &'a self,

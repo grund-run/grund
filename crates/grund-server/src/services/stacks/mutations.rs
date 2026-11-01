@@ -1153,6 +1153,162 @@ mod tests {
         })
     }
 
+    #[sqlx::test(migrations = false)]
+    async fn hosted_access_refuses_new_selections_without_blocking_own_or_existing_apps(
+        pool: sqlx::PgPool,
+    ) -> anyhow::Result<()> {
+        use crate::services::apps::AppsError;
+        use grund_config::app::spec::{AppSettings, SettingsInput};
+
+        let state = state(pool).await?;
+        let org = Uuid::now_v7();
+        let actor = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO grund_organisations \
+             (organisation_id,slug,kind,created_at,stream_version) \
+             VALUES($1,$2,'personal',clock_timestamp(),1)",
+        )
+        .bind(org)
+        .bind("admission")
+        .execute(&state.pool)
+        .await?;
+        assert!(!state.hosted_access(org).await?);
+        let hosted = || SettingsInput {
+            kind: "hosted".into(),
+            ..Default::default()
+        };
+        let apps = state.apps();
+        assert!(matches!(
+            apps.create(actor, org, "new-hosted", hosted()).await,
+            Err(AppsError::HostedAccessRequired)
+        ));
+        assert!(apps::organisation_apps(&state.pool, org).await?.is_empty());
+        apps.create(actor, org, "own", SettingsInput::default())
+            .await?;
+        assert!(matches!(
+            apps.configure(actor, org, "own", hosted()).await,
+            Err(AppsError::HostedAccessRequired)
+        ));
+        assert_eq!(
+            apps.get(org, "own").await?.row.settings.0.placement.kind,
+            None
+        );
+
+        let existing = Uuid::now_v7();
+        let mut work = Work::begin(&state.events, Uuid::now_v7(), &actor.to_string()).await?;
+        work.app(
+            existing,
+            AppCommand::Create {
+                actor,
+                organisation_id: org,
+                name: AppName::parse("existing-hosted")?,
+                settings: AppSettings::validate(hosted())?,
+                at: Utc::now(),
+            },
+        )
+        .await?;
+        work.commit().await?;
+        let mut settings = hosted();
+        settings.copies = Some(2);
+        assert_eq!(
+            apps.configure(actor, org, "existing-hosted", settings)
+                .await?
+                .row
+                .settings
+                .0
+                .copies,
+            2
+        );
+        apps.configure(actor, org, "existing-hosted", SettingsInput::default())
+            .await?;
+        Ok(())
+    }
+
+    struct TransactionAdmission(tokio::sync::Barrier);
+
+    impl crate::extension::Extension for TransactionAdmission {
+        fn name(&self) -> &'static str {
+            "transaction-admission"
+        }
+
+        fn routes(&self) -> axum::Router<State> {
+            axum::Router::new()
+        }
+
+        fn hosted_access<'a>(
+            &'a self,
+            _state: &'a State,
+            connection: &'a mut PgConnection,
+            org: Uuid,
+        ) -> std::pin::Pin<Box<dyn Future<Output = anyhow::Result<bool>> + Send + 'a>> {
+            Box::pin(async move {
+                self.0.wait().await;
+                Ok(sqlx::query_scalar(
+                    "SELECT false FROM grund_organisations WHERE organisation_id=$1",
+                )
+                .bind(org)
+                .fetch_one(connection)
+                .await?)
+            })
+        }
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn concurrent_hosted_transitions_finish_when_work_occupies_every_available_pool_slot(
+        pool: sqlx::PgPool,
+    ) -> anyhow::Result<()> {
+        use crate::services::apps::AppsError;
+        use grund_config::app::spec::SettingsInput;
+
+        let mut state = state(pool).await?;
+        state.extensions = Arc::new(vec![Arc::new(TransactionAdmission(
+            tokio::sync::Barrier::new(2),
+        ))]);
+        let first_org = Uuid::now_v7();
+        let second_org = Uuid::now_v7();
+        let actor = Uuid::now_v7();
+        let apps = state.apps();
+        for (org, name) in [(first_org, "first"), (second_org, "second")] {
+            sqlx::query(
+                "INSERT INTO grund_organisations \
+                 (organisation_id,slug,kind,created_at,stream_version) \
+                 VALUES($1,$2,'personal',clock_timestamp(),1)",
+            )
+            .bind(org)
+            .bind(name)
+            .execute(&state.pool)
+            .await?;
+            apps.create(actor, org, name, SettingsInput::default())
+                .await?;
+        }
+        let held_slots = state.pool.options().get_max_connections().saturating_sub(2);
+        let mut held = Vec::with_capacity(held_slots as usize);
+        for _ in 0..held_slots {
+            held.push(state.pool.acquire().await?);
+        }
+        let hosted = || SettingsInput {
+            kind: "hosted".into(),
+            ..Default::default()
+        };
+        let (first, second) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(
+                apps.configure(actor, first_org, "first", hosted()),
+                apps.configure(actor, second_org, "second", hosted()),
+            )
+        })
+        .await?;
+        assert!(matches!(first, Err(AppsError::HostedAccessRequired)));
+        assert!(matches!(second, Err(AppsError::HostedAccessRequired)));
+        drop(held);
+        for (org, name) in [(first_org, "first"), (second_org, "second")] {
+            assert_eq!(
+                apps.get(org, name).await?.row.settings.0.placement.kind,
+                None
+            );
+        }
+        Ok(())
+    }
+
     struct PlacementStorage(std::sync::atomic::AtomicBool);
 
     impl crate::services::volumes::VolumeBackend for PlacementStorage {

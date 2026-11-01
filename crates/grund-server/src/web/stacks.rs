@@ -278,6 +278,10 @@ fn service_error(error: Error) -> Result<Errors, PageError> {
             "operation",
             "This resource is managed by its stack.",
         )),
+        Error::HostedAccessRequired => Ok(field_error(
+            "file",
+            "This organisation does not have access to choose hosted resources.",
+        )),
         Error::NotFound => Ok(field_error("operation", "The stack was not found.")),
     }
 }

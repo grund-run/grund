@@ -43,6 +43,28 @@ pub struct State {
     pub hearing: Arc<crate::hearing::Hearing>,
 }
 impl State {
+    /// New hosted selections require an explicit grant from an installed extension.
+    pub async fn hosted_access(&self, organisation_id: uuid::Uuid) -> anyhow::Result<bool> {
+        let mut connection = self.pool.acquire().await?;
+        self.hosted_access_in(&mut connection, organisation_id)
+            .await
+    }
+    /// Checks hosted admission on the caller's transaction without another pool slot.
+    pub async fn hosted_access_in(
+        &self,
+        connection: &mut sqlx::PgConnection,
+        organisation_id: uuid::Uuid,
+    ) -> anyhow::Result<bool> {
+        for extension in self.extensions.iter() {
+            if extension
+                .hosted_access(self, &mut *connection, organisation_id)
+                .await?
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
     /// The organisation that operates extension-owned infrastructure, when present.
     pub async fn operator_organisation(&self) -> anyhow::Result<Option<uuid::Uuid>> {
         for extension in self.extensions.iter() {

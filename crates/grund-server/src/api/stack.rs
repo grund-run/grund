@@ -58,6 +58,7 @@ fn failed(error: Error) -> ConnectError {
         Error::Conflict => ConnectError::aborted(error.to_string()),
         Error::IdempotencyConflict => ConnectError::already_exists(error.to_string()),
         Error::Busy | Error::Owned => ConnectError::failed_precondition(error.to_string()),
+        Error::HostedAccessRequired => ConnectError::permission_denied(error.to_string()),
         Error::Internal(cause) => {
             tracing::error!(error = %format!("{cause:#}"), "stack API call failed");
             ConnectError::internal("grund could not finish that")
