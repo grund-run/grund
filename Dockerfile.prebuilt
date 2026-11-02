@@ -1,7 +1,7 @@
 # Packages the static musl binary that CI already built and tested. Nothing is
 # compiled, pulled or run here: the image holds exactly the artifact the
-# accepttests ran against, and the release step stages everything else beside
-# it in the build context (.image/):
+# accepttests ran against. The native release step stages .image/; the tag
+# verifier in tools/release.py stages the same layout per architecture:
 #
 #   grund                  the binary
 #   ca-certificates.crt    Alpine's CA bundle, from the release step's image
