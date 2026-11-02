@@ -1032,8 +1032,9 @@ Tags on the `v0.0.0-alpha.N` line publish alpha prereleases. The tag workflow
 waits for the normal CI gates, checks static amd64/arm64 full binaries and
 standalone clients, runs the arm64 commands under QEMU, and exercises the final
 amd64 full binary against real PostgreSQL and NATS before packaging those bytes
-into a multiarch image. A green pull-request pipeline does not exercise these
-tag-only builds.
+into a multiarch image. Extra architecture and standalone-client builds run
+one at a time after the normal gates and native runtime check succeed.
+A green pull-request pipeline does not exercise these tag-only builds.
 It publishes the immutable generic package at
 `https://git.kjuulh.io/api/packages/grund/generic/grund/<tag>/`
 (`grund-linux-amd64`, `grund-linux-arm64`, `grund-cli-linux-amd64`,
