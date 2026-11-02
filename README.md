@@ -1029,13 +1029,17 @@ Mailpit. Point them at a running instance with `GRUND_ACCEPT_URL` (and
 ## Releases
 
 Tags on the `v0.0.0-alpha.N` line publish alpha prereleases. The tag workflow
-waits for the normal CI gates, checks static amd64/arm64 binaries, runs the
-arm64 commands under QEMU, and exercises the final amd64 binary against real
-PostgreSQL and NATS before packaging those bytes into a multiarch image.
+waits for the normal CI gates, checks static amd64/arm64 full binaries and
+standalone clients, runs the arm64 commands under QEMU, and exercises the final
+amd64 full binary against real PostgreSQL and NATS before packaging those bytes
+into a multiarch image. A green pull-request pipeline does not exercise these
+tag-only builds.
 It publishes the immutable generic package at
 `https://git.kjuulh.io/api/packages/grund/generic/grund/<tag>/`
-(`grund-linux-amd64`, `grund-linux-arm64`, `SHA256SUMS`, `compose.yaml`,
-`agent-install.sh`, the source `release.txt`, and `image-digest.txt`).
+(`grund-linux-amd64`, `grund-linux-arm64`, `grund-cli-linux-amd64`,
+`grund-cli-linux-arm64`, `SHA256SUMS`, `compose.yaml`, `agent-install.sh`,
+the source `release.txt`, and `image-digest.txt`). The `grund-cli-linux-<arch>`
+downloads contain only the client; server and agent commands use the full binary.
 Existing package files and image tags have to match; a conflict never
 overwrites a release. The public Gitea release is created last, and is what
 the installer's release list resolves. There is no mutable `latest` package

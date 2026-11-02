@@ -33,6 +33,9 @@ export GRUND_BUILD_TIME="$(git show -s --format=%cI "$GRUND_REVISION")"
 # download or unpack zig into the same place at once.
 tooling="${GRUND_RELEASE_TOOLING:-$root/scratch/tag-release/tooling}"
 mkdir -p "$tooling"
+# Cargo build scripts and sccache's compiler probe run outside the repo root.
+# Resolve the cli-arm64 override before adding tooling to PATH.
+tooling=$(CDPATH= cd -- "$tooling" && pwd)
 if [ ! -f "$tooling/zig.tar.xz" ]; then
     curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
         https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz \
