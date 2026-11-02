@@ -106,12 +106,18 @@ def verify(architectures=("amd64", "arm64")):
             run(*runner, str(binary), *args, stdout=subprocess.DEVNULL)
         context = WORK / f"image-{arch}"
         (context / "var/lib/grund").mkdir(parents=True, exist_ok=True)
+        links = context / "links"
+        links.mkdir(exist_ok=True)
+        server = links / "grund-server"
+        server.unlink(missing_ok=True)
+        server.symlink_to("grund")
         shutil.copyfile(binary, context / "grund")
         (context / "grund").chmod(0o755)
         shutil.copyfile("/etc/ssl/certs/ca-certificates.crt", context / "ca-certificates.crt")
         # COPY metadata must not change an immutable image on a rerun.
+        # The role link resolves at the image root, not inside links/.
         for path in (*context.rglob("*"), context):
-            os.utime(path, (0, 0))
+            os.utime(path, (0, 0), follow_symlinks=False)
     if (DIST / "release.txt").read_text() != REVISION + "\n":
         fail("release.txt does not name this public commit")
     # Detect stale or foreign artifacts instead of accidentally publishing them.
