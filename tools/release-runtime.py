@@ -94,9 +94,9 @@ def main():
                 # CSRF/session handling, and owner creation without logging links.
                 subprocess.run(["sh", str(root / "accept-bootstrap.sh"), binary], env=environment, check=True, timeout=120)
                 client = environment | {"GRUND_INSTANCE": origin, "GRUND_TOKEN": "grund_pat_release-runtime-deliberately-invalid"}
-                result = subprocess.run([binary, "whoami", "--output", "json"], env=client, capture_output=True, text=True, timeout=15)
+                result = subprocess.run([binary, "auth", "status", "--output", "json"], env=client, capture_output=True, text=True, timeout=15)
                 if result.returncode != 3:
-                    raise RuntimeError("released CLI did not reject the live request's invalid credential")
+                    raise RuntimeError(f"released CLI auth status exited {result.returncode}; expected invalid-credential exit 3")
                 error = json.loads(result.stderr)["error"]
                 if error.get("code") != "unauthenticated" or error.get("rpc") != "grund.token.v1.TokenService/GetCurrentToken":
                     raise RuntimeError("released CLI did not complete the expected real authentication RPC")
