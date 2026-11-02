@@ -17,6 +17,11 @@ async fn app_address_forms_preserve_refusals_and_require_explicit_restoration_af
     let (when, then) = (&stack.when, &stack.then);
     stack.deploy(&org, "other", "1", 1).await?;
     let parent = a_custom_name();
+    let original = format!("hello.{parent}");
+    let other = format!("other.{parent}");
+    for name in [&original, &other] {
+        stack.pebble.set_ipv4(name, "192.0.2.1").await?;
+    }
     verified(&stack, when, then, &org, &parent).await?;
     let bound = domain_call(
         when,
@@ -46,7 +51,6 @@ async fn app_address_forms_preserve_refusals_and_require_explicit_restoration_af
         parent_view["isAppDomain"] == true && parent_view["app"] == "hello",
         "enabling the namespace changed its independent apex binding: {parent_view}"
     );
-    let original = format!("hello.{parent}");
     let chosen = format!("api.{parent}");
     when.visiting(&domains).await?;
     then.body_contains(&format!("*.{parent}"))?
@@ -74,7 +78,6 @@ async fn app_address_forms_preserve_refusals_and_require_explicit_restoration_af
         status_of(when, then, &org, &chosen).await?["parentDomain"] == parent,
         "the chosen app address lost verified-parent provenance"
     );
-    let other = format!("other.{parent}");
     let unbound = domain_call(
         when,
         then,
