@@ -950,17 +950,14 @@ async fn edge_falls_back_during_fault(
     name: &str,
     healthy: &mut Conn,
     healthy_replica: &str,
-    gate_entered: Option<&AtomicU64>,
+    fault_observed: impl Fn() -> bool,
 ) -> anyhow::Result<()> {
     let started = Instant::now();
     let mut fault_attempt_started = None;
     while started.elapsed() < Duration::from_secs(12) {
         let attempted_at = Instant::now();
-        let latency = new_failover_connection(stack, name, healthy_replica, FAILOVER_WHOLE).await?;
-        let faulty_answered = gate_entered
-            .map(|entered| entered.load(Relaxed) > 0)
-            .unwrap_or(latency >= Duration::from_millis(700));
-        if faulty_answered {
+        new_failover_connection(stack, name, healthy_replica, FAILOVER_WHOLE).await?;
+        if fault_observed() {
             fault_attempt_started = Some(attempted_at);
             break;
         }
@@ -1017,13 +1014,9 @@ async fn an_unanswering_gate_is_ejected_before_it_can_receive_client_bytes() -> 
         first.status,
         first.header("x-replica")
     );
-    edge_falls_back_during_fault(
-        &stack,
-        &name,
-        &mut established,
-        healthy_replica,
-        Some(&gate.counters.entered),
-    )
+    edge_falls_back_during_fault(&stack, &name, &mut established, healthy_replica, || {
+        gate.counters.entered.load(Relaxed) > 0
+    })
     .await?;
     tokio::time::sleep(Duration::from_secs(7)).await;
     anyhow::ensure!(
@@ -1045,16 +1038,51 @@ async fn a_stopped_agent_blackholes_setup_but_healthy_connections_stay_served() 
     let healthy_replica = first
         .header("x-replica")
         .ok_or_else(|| anyhow::anyhow!("no x-replica"))?;
-    let faulty_machine = copies
+    let (faulty_replica, faulty_machine) = copies
         .iter()
         .find(|(replica, _)| replica != healthy_replica)
-        .ok_or_else(|| anyhow::anyhow!("no second ready copy: {copies:?}"))?
-        .1
-        .as_str();
+        .ok_or_else(|| anyhow::anyhow!("no second ready copy: {copies:?}"))?;
     let faulty = if faulty_machine == "box-a" { &a } else { &b };
+    let warming = Instant::now();
+    loop {
+        let mut conn = stack.connect(&name).await?;
+        let answer = conn.get(&name, "/", &[]).await?;
+        anyhow::ensure!(answer.status == 200, "{}", answer.text());
+        if answer.header("x-replica") == Some(faulty_replica.as_str()) {
+            break;
+        }
+        anyhow::ensure!(
+            warming.elapsed() < Duration::from_secs(60),
+            "the second ready copy never served before SIGSTOP:\n{}",
+            stack.edge_log()
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let seed: [u8; 32] =
+        hex::decode(std::fs::read_to_string(faulty.dir.join("machine.key"))?.trim())?
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("the joined machine key is not 32 bytes"))?;
+    let machine_key = grund_net::key::secret_key(&seed).public().to_string();
+    let machine_field = format!("machine_key={machine_key}");
+    let failed_setups = || {
+        stack
+            .edge_log()
+            .lines()
+            .filter(|line| {
+                line.contains("edge.failover_attempt")
+                    && line.contains(&machine_field)
+                    && (line.contains("outcome=\"stalled\"")
+                        || line.contains("outcome=\"answer_failed\""))
+            })
+            .count()
+    };
+    let before_fault = failed_setups();
     let _paused = PausedAgent::new(faulty)?;
     let paused_at = Instant::now();
-    edge_falls_back_during_fault(&stack, &name, &mut established, healthy_replica, None).await?;
+    edge_falls_back_during_fault(&stack, &name, &mut established, healthy_replica, || {
+        failed_setups() > before_fault
+    })
+    .await?;
     while paused_at.elapsed() < Duration::from_secs(10) {
         new_failover_connection(&stack, &name, healthy_replica, FAILOVER_WHOLE).await?;
         keep_healthy_while_failing(&stack, &name, &mut established, healthy_replica).await?;
