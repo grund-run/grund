@@ -373,6 +373,9 @@ enum ProviderCommandOutcome {
   // A created legacy checkout is confirmed closed/unpaid, with no current
   // subscription. This is not a claim that session creation never happened.
   PROVIDER_COMMAND_OUTCOME_CHECKOUT_CLOSED = 2;
+  // Writes off the cents of the exact held meter emission without changing its
+  // provider delivery state. The actor and reason are recorded in the audit log.
+  PROVIDER_COMMAND_OUTCOME_METER_WRITTEN_OFF = 3;
 }
 
 message ResolveProviderCommandRequest {
