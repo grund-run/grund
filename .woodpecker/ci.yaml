@@ -413,11 +413,13 @@ steps:
       - 'command -v ci-cache >/dev/null || { (curl -fsS --connect-timeout 5 --max-time 60 -o /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.3.1/ci-cache-0.3.1-x86_64-linux-musl 2>/dev/null || { if command -v timeout >/dev/null; then timeout 60 wget -q -T 5 -O /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.3.1/ci-cache-0.3.1-x86_64-linux-musl; else wget -q -T 5 -O /usr/local/bin/.ci-cache.part https://git.kjuulh.io/api/packages/kjuulh/generic/ci-cache/0.3.1/ci-cache-0.3.1-x86_64-linux-musl; fi; } 2>/dev/null) && echo "460ac0386515e7ce2704c65e414ed1ee2a938fe0b1ed05ec8dd363d9ef3a5f7e  /usr/local/bin/.ci-cache.part" | sha256sum -c - >/dev/null 2>&1 && chmod 0755 /usr/local/bin/.ci-cache.part && mv /usr/local/bin/.ci-cache.part /usr/local/bin/ci-cache; rm -f /usr/local/bin/.ci-cache.part; command -v ci-cache >/dev/null || echo "ci-cache client unavailable, building uncached"; }'  # ci-cache: managed by kjuulh/woodpecker-forest
       - 'if command -v ci-cache >/dev/null; then ci-cache save-all --refresh; fi'  # ci-cache: managed by kjuulh/woodpecker-forest
 
-# Tags share this workspace and the one native build above. Every publication
-# still waits for the normal CI gates as well as runtime and both OCI archives.
+# Tags share this workspace and the one native build above. Finish the normal
+# gates and native runtime before serializing the extra compilation targets:
+# six build steps at once OOM-killed lint and starved test in pipeline 377.
+# Publication still waits for every gate and both verified OCI archives.
   linux-arm64:
     image: rust:1.98.1-alpine3.24
-    depends_on: []
+    depends_on: [lint, proto, contract, guest-image, released-binary-runtime]
     when: &tag-release
       - event: tag
         ref: refs/tags/v*
@@ -438,11 +440,11 @@ steps:
       - sh tools/release-build.sh arm64
 
   # The client alone (grund-cli-linux-<arch>), for laptops and CI, beside
-  # the full binary machines and the image run. Built in parallel with the
-  # full builds, so it does not lengthen the release.
+  # the full binary machines and the image run. Keep one extra build active
+  # at a time; per-Cargo job limits do not bound concurrent build steps.
   cli-amd64:
     image: rust:1.98.1-alpine3.24
-    depends_on: []
+    depends_on: [linux-arm64]
     when: *tag-release
     environment:
       RUSTUP_TOOLCHAIN: 1.98.1-x86_64-unknown-linux-musl
@@ -462,7 +464,7 @@ steps:
 
   cli-arm64:
     image: rust:1.98.1-alpine3.24
-    depends_on: []
+    depends_on: [cli-amd64]
     when: *tag-release
     environment:
       CARGO_BUILD_JOBS: "4"
