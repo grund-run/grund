@@ -183,6 +183,14 @@ impl Pebble {
         Ok(())
     }
 
+    pub async fn set_ipv4(&self, host: &str, address: &str) -> anyhow::Result<()> {
+        self.challtest(
+            "add-a",
+            serde_json::json!({"host": format!("{host}."), "addresses": [address]}),
+        )
+        .await
+    }
+
     pub async fn set_txt(&self, host: &str, value: &str) -> anyhow::Result<()> {
         self.challtest(
             "set-txt",

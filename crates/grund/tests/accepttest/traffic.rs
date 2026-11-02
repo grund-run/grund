@@ -924,7 +924,11 @@ async fn new_failover_connection(
         );
         Ok::<_, anyhow::Error>(())
     };
-    tokio::time::timeout(budget, attempt).await??;
+    tokio::time::timeout(budget, attempt)
+        .await?
+        .map_err(|error| {
+            error.context(format!("new failover connection:\n{}", stack.edge_log()))
+        })?;
     Ok(started.elapsed())
 }
 
@@ -934,7 +938,14 @@ async fn keep_healthy_while_failing(
     healthy: &mut Conn,
     expected_replica: &str,
 ) -> anyhow::Result<()> {
-    let answer = tokio::time::timeout(FAILOVER_WHOLE, healthy.get(name, "/?wait=5", &[])).await??;
+    let answer = tokio::time::timeout(FAILOVER_WHOLE, healthy.get(name, "/?wait=5", &[]))
+        .await?
+        .map_err(|error| {
+            error.context(format!(
+                "established healthy connection:\n{}",
+                stack.edge_log()
+            ))
+        })?;
     anyhow::ensure!(
         answer.status == 200 && answer.header("x-replica") == Some(expected_replica),
         "established healthy connection broke: {} {:?}\n{}",
@@ -1033,23 +1044,28 @@ async fn a_stopped_agent_blackholes_setup_but_healthy_connections_stay_served() 
         return Ok(());
     };
     let mut established = stack.connect(&name).await?;
-    let first = established.get(&name, "/", &[]).await?;
+    let first = established.get(&name, "/", &[]).await.map_err(|error| {
+        error.context(format!("initial healthy connection:\n{}", stack.edge_log()))
+    })?;
     anyhow::ensure!(first.status == 200, "{}", first.text());
     let healthy_replica = first
         .header("x-replica")
         .ok_or_else(|| anyhow::anyhow!("no x-replica"))?;
-    let (faulty_replica, faulty_machine) = copies
+    let second_replica = &copies
         .iter()
         .find(|(replica, _)| replica != healthy_replica)
-        .ok_or_else(|| anyhow::anyhow!("no second ready copy: {copies:?}"))?;
-    let faulty = if faulty_machine == "box-a" { &a } else { &b };
+        .ok_or_else(|| anyhow::anyhow!("no second ready copy: {copies:?}"))?
+        .0;
     let warming = Instant::now();
-    loop {
+    let warmed = loop {
         let mut conn = stack.connect(&name).await?;
-        let answer = conn.get(&name, "/", &[]).await?;
+        let answer = conn.get(&name, "/", &[]).await.map_err(|error| {
+            error.context(format!("warming second copy:\n{}", stack.edge_log()))
+        })?;
         anyhow::ensure!(answer.status == 200, "{}", answer.text());
-        if answer.header("x-replica") == Some(faulty_replica.as_str()) {
-            break;
+        if answer.header("x-replica") == Some(second_replica.as_str()) {
+            established = conn;
+            break answer;
         }
         anyhow::ensure!(
             warming.elapsed() < Duration::from_secs(60),
@@ -1057,7 +1073,16 @@ async fn a_stopped_agent_blackholes_setup_but_healthy_connections_stay_served() 
             stack.edge_log()
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    };
+    let healthy_replica = warmed
+        .header("x-replica")
+        .ok_or_else(|| anyhow::anyhow!("no x-replica from the warmed copy"))?;
+    let faulty_machine = &copies
+        .iter()
+        .find(|(replica, _)| replica != healthy_replica)
+        .ok_or_else(|| anyhow::anyhow!("no other warmed copy: {copies:?}"))?
+        .1;
+    let faulty = if faulty_machine == "box-a" { &a } else { &b };
     let seed: [u8; 32] =
         hex::decode(std::fs::read_to_string(faulty.dir.join("machine.key"))?.trim())?
             .try_into()
