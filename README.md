@@ -614,6 +614,42 @@ are reserved; `api`, `www` and `admin` remain usable on your own parent.
 Each assigned hostname uses its own HTTP-01 certificate. Wildcard DNS does
 not require a wildcard certificate, DNS-01 or DNS-provider credentials.
 
+### Operator-authorised alternate ingress
+
+`GRUND_ALTERNATE_INGRESS` (or `grund serve --alternate-ingress`) accepts
+**one** JSON object with `organisation_id` (the actual owning organisation UUID),
+`domain` (one exact custom-domain name), and `addresses` (1–16 literal IPv4/IPv6
+strings). It is unset by default. This grants the setup checker destinations,
+not edge enrollment, TXT ownership, app binding or application access.
+
+The checker obtains the owner from the stored bound domain, never a request
+header. Every observed A/AAAA address still belongs to the normal edge address
+set or that exact owner's exact-domain grant; empty answers, more than 16
+addresses and any extra address fail before probing. A parent, child, another
+organisation or a CNAME pointing at the granted name cannot inherit the grant.
+This avoids turning a private ingress into a general Grund edge.
+
+To activate, first land and deploy this change with the grant unset. Obtain the
+real owner UUID from the instance's organisation record; set the single JSON
+grant in the server process configuration only after reviewing its exact name
+and the A/AAAA answers from the checker's configured resolver
+(`GRUND_DNS_RESOLVER`, otherwise the system resolver). Grant only those intended
+literal IPs, not an assumed gateway address. Leave `GRUND_EDGES` unchanged.
+Arrange DNS and forwarding separately: the server probes each observed IP
+directly on ports 80 and 443, without a proxy, so a VPN-only ingress admits
+the server's actual network source. Public certificate-authority HTTP-01
+validators still need public DNS and reachable port-80 challenge responses;
+private DNS answers alone do not establish that path.
+Keep HTTP-01 probe bytes intact and TLS end-to-end: the checker pins addresses,
+verifies the HTTPS chain and hostname, and refuses HTTP/HTTPS redirects.
+Use Domains → **Check now**, then inspect DNS, reachability and HTTPS details.
+Removing the grant restores normal-edge-only checks; it does not remove a
+binding, certificate, gateway route or application session.
+
+This setting does not configure VPNs, DNS, forwarding, identity-provider access
+or certificate-authority reachability. No production activation or live probe
+is established by adding this opt-in.
+
 ## Deploy from CI
 
 CI runs the CLI with a personal access token:

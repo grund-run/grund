@@ -4,7 +4,12 @@
 //! reference. `validated()` refuses a configuration that would run insecurely
 //! or not at all, and every refusal names the variable to fix.
 
-use std::{net::SocketAddr, path::PathBuf, time::Duration};
+use std::{
+    collections::BTreeSet,
+    net::{IpAddr, SocketAddr},
+    path::PathBuf,
+    time::Duration,
+};
 
 use clap::Args;
 
@@ -351,6 +356,12 @@ pub struct EntryArgs {
     #[arg(long, env = "GRUND_EDGES", value_delimiter = ',', value_parser = dns_name)]
     pub edges: Vec<String>,
 
+    /// One JSON {organisation_id, domain, addresses} grant for custom-domain
+    /// setup probes only. Unset disables alternate ingress; at most 16 literal
+    /// IPs, scoped to the exact domain and its stored owning organisation.
+    #[arg(long, env = "GRUND_ALTERNATE_INGRESS", value_parser = alternate_ingress)]
+    pub alternate_ingress: Option<AlternateIngress>,
+
     /// Seconds a custom domain that was verified and then removed is held
     /// before another organisation can verify it (app-domains.md §3,
     /// "takeover protection"). Default 7 days, at most 90; the organisation
@@ -368,6 +379,39 @@ pub struct EntryArgs {
     /// (/etc/resolv.conf).
     #[arg(long, env = "GRUND_DNS_RESOLVER")]
     pub dns_resolver: Option<std::net::SocketAddr>,
+}
+
+/// An operator grant, not an edge enrollment or proof of domain ownership.
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AlternateIngress {
+    /// The persisted domain owner's UUID, never an identity from request headers.
+    pub organisation_id: uuid::Uuid,
+    /// One normalized custom-domain name; no wildcard or suffix matching.
+    pub domain: grund_domain::custom_domain::DomainName,
+    /// Literal destinations; hostnames and CNAME targets cannot expand this set.
+    pub addresses: BTreeSet<IpAddr>,
+}
+
+impl AlternateIngress {
+    /// Returns destinations only for the exact name and its persisted owner.
+    pub fn addresses_for(
+        &self,
+        organisation_id: uuid::Uuid,
+        name: &str,
+    ) -> Option<&BTreeSet<IpAddr>> {
+        (self.organisation_id == organisation_id && self.domain.as_str() == name)
+            .then_some(&self.addresses)
+    }
+}
+
+fn alternate_ingress(input: &str) -> Result<AlternateIngress, String> {
+    let grant: AlternateIngress = serde_json::from_str(input)
+        .map_err(|error| format!("GRUND_ALTERNATE_INGRESS: {error}"))?;
+    if grant.addresses.is_empty() || grant.addresses.len() > crate::domain_setup::MAX_ADDRESSES {
+        return Err("GRUND_ALTERNATE_INGRESS requires 1 to 16 literal IP addresses".into());
+    }
+    Ok(grant)
 }
 
 /// A bare DNS name, lowercase, without a trailing dot.
@@ -1537,6 +1581,38 @@ mod tests {
         let mut config = Harness::try_parse_from(base.iter().chain(args).copied())?.serve;
         config.validate()?;
         Ok(config)
+    }
+
+    #[test]
+    fn alternate_ingress_is_disabled_by_default_and_accepts_only_one_typed_grant() {
+        assert!(parse(&[]).unwrap().entry.alternate_ingress.is_none());
+        let grant = r#"{"organisation_id":"00000000-0000-0000-0000-000000000001","domain":"App.Example.com.","addresses":["192.0.2.1","2001:db8::1"]}"#;
+        let config = parse(&["--alternate-ingress", grant]).unwrap();
+        let configured = config.entry.alternate_ingress.unwrap();
+        assert_eq!(configured.domain.as_str(), "app.example.com");
+        assert_eq!(configured.addresses.len(), 2);
+        assert!(config.entry.edges.is_empty());
+        for invalid in [
+            "[]".to_owned(),
+            format!("[{grant}]"),
+            r#"{"organisation_id":"not-a-uuid","domain":"app.example.com","addresses":["192.0.2.1"]}"#.into(),
+            r#"{"organisation_id":"00000000-0000-0000-0000-000000000001","domain":"*.example.com","addresses":["192.0.2.1"]}"#.into(),
+            r#"{"organisation_id":"00000000-0000-0000-0000-000000000001","domain":"app.example.com","addresses":[]}"#.into(),
+            r#"{"organisation_id":"00000000-0000-0000-0000-000000000001","domain":"app.example.com","addresses":["edge.example.com"]}"#.into(),
+            r#"{"organisation_id":"00000000-0000-0000-0000-000000000001","domain":"app.example.com","addresses":["192.0.2.1"],"domains":["other.example.com"]}"#.into(),
+            format!(
+                r#"{{"organisation_id":"00000000-0000-0000-0000-000000000001","domain":"app.example.com","addresses":[{}]}}"#,
+                (1..=17)
+                    .map(|last| format!("\"192.0.2.{last}\""))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+        ] {
+            assert!(
+                parse(&["--alternate-ingress", &invalid]).is_err(),
+                "{invalid} must not start"
+            );
+        }
     }
 
     #[test]

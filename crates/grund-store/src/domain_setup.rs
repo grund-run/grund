@@ -80,6 +80,7 @@ pub async fn request_check(
 #[derive(Debug, sqlx::FromRow)]
 pub struct Claim {
     pub domain_id: Uuid,
+    pub organisation_id: Uuid,
     pub generation: Uuid,
     pub name: String,
     pub steps: Json<Vec<Step>>,
@@ -94,7 +95,7 @@ pub async fn claim(
     holder: Uuid,
 ) -> Result<Option<Claim>, sqlx::Error> {
     sqlx::query_as(
-        "WITH due AS (SELECT s.domain_id, d.name FROM grund_domain_setup s \
+        "WITH due AS (SELECT s.domain_id, d.organisation_id, d.name FROM grund_domain_setup s \
            JOIN grund_domains d ON d.domain_id = s.domain_id AND d.state = 'bound' \
            JOIN grund_apps a ON a.app_id = d.app_id AND a.deleted_at IS NULL \
            WHERE s.next_check_at <= clock_timestamp() \
@@ -104,7 +105,7 @@ pub async fn claim(
            leased_until = clock_timestamp() + interval '30 seconds', leased_request = requested, \
            next_check_at = clock_timestamp() + interval '59 seconds' \
          FROM due WHERE s.domain_id = due.domain_id \
-         RETURNING s.domain_id, s.generation, due.name, s.steps, clock_timestamp() AS checked_at, s.next_check_at",
+         RETURNING s.domain_id, due.organisation_id, s.generation, due.name, s.steps, clock_timestamp() AS checked_at, s.next_check_at",
     )
     .bind(holder)
     .fetch_optional(executor)
@@ -321,9 +322,10 @@ mod tests {
     async fn concurrent_check_requests_are_coalesced_without_losing_the_leased_request(
         pool: PgPool,
     ) {
-        let (domain, _, _) = bound(&pool).await;
+        let (domain, organisation, _) = bound(&pool).await;
         let holder = Uuid::now_v7();
         let first = claim(&pool, holder).await.unwrap().unwrap();
+        assert_eq!(first.organisation_id, organisation);
         assert!(claim(&pool, Uuid::now_v7()).await.unwrap().is_none());
         assert!(request_check(&pool, domain).await.unwrap());
         assert!(request_check(&pool, domain).await.unwrap());

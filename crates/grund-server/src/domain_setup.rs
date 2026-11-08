@@ -131,8 +131,16 @@ async fn dns(server: Option<SocketAddr>, edges: &[String], name: &str) -> anyhow
     })
 }
 
-fn matches_edges(addresses: &BTreeSet<IpAddr>, expected: &BTreeSet<IpAddr>) -> bool {
-    !addresses.is_empty() && addresses.len() <= MAX_ADDRESSES && addresses.is_subset(expected)
+fn matches_edges(
+    addresses: &BTreeSet<IpAddr>,
+    expected: &BTreeSet<IpAddr>,
+    alternate: Option<&BTreeSet<IpAddr>>,
+) -> bool {
+    !addresses.is_empty()
+        && addresses.len() <= MAX_ADDRESSES
+        && addresses.iter().all(|address| {
+            expected.contains(address) || alternate.is_some_and(|grant| grant.contains(address))
+        })
 }
 
 fn observation(claim: &store::Claim, name: &str, state: StepState, detail: String) -> Step {
@@ -199,7 +207,11 @@ async fn http_probe(
 }
 
 async fn https_probe(client: &reqwest::Client, name: &str) -> anyhow::Result<()> {
-    client.head(format!("https://{name}/")).send().await?;
+    let response = client.head(format!("https://{name}/")).send().await?;
+    anyhow::ensure!(
+        !response.status().is_redirection(),
+        "the HTTPS edge returned a redirect"
+    );
     Ok(())
 }
 
@@ -235,7 +247,13 @@ async fn observe(
             return Ok(());
         }
     };
-    let ready = matches_edges(&resolved.addresses, &resolved.expected);
+    let alternate = state
+        .config
+        .entry
+        .alternate_ingress
+        .as_ref()
+        .and_then(|grant| grant.addresses_for(claim.organisation_id, &claim.name));
+    let ready = matches_edges(&resolved.addresses, &resolved.expected, alternate);
     let addresses = resolved
         .addresses
         .iter()
@@ -249,6 +267,12 @@ async fn observe(
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(", ");
+    let alternate = alternate
+        .into_iter()
+        .flatten()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
     steps[0] = observation(
         claim,
         "dns_record",
@@ -258,7 +282,7 @@ async fn observe(
             StepState::Failed
         },
         format!(
-            "Addresses: {}. CNAME: {}. Configured edge addresses: {}.{}{}{}",
+            "Addresses: {}. CNAME: {}. Configured edge addresses: {}. Scoped alternate ingress addresses: {}.{}{}{}",
             if addresses.is_empty() {
                 "none"
             } else {
@@ -273,6 +297,11 @@ async fn observe(
                 "none resolved"
             } else {
                 &expected
+            },
+            if alternate.is_empty() {
+                "none granted"
+            } else {
+                &alternate
             },
             if resolved.addresses.len() > MAX_ADDRESSES {
                 " More than 16 addresses; no probes sent."
@@ -494,14 +523,75 @@ mod tests {
         let edge = "192.0.2.10".parse().unwrap();
         let other = "192.0.2.11".parse().unwrap();
         let expected = BTreeSet::from([edge]);
-        assert!(matches_edges(&BTreeSet::from([edge]), &expected));
-        assert!(!matches_edges(&BTreeSet::from([edge, other]), &expected));
+        assert!(matches_edges(&BTreeSet::from([edge]), &expected, None));
+        assert!(!matches_edges(&BTreeSet::from([edge, other]), &expected, None));
         assert!(!matches_edges(
             &BTreeSet::from(["127.0.0.1".parse().unwrap()]),
-            &expected
+            &expected,
+            None
         ));
-        assert!(!matches_edges(&BTreeSet::new(), &expected));
-        assert!(!matches_edges(&BTreeSet::from([edge]), &BTreeSet::new()));
+        assert!(!matches_edges(&BTreeSet::new(), &expected, None));
+        assert!(!matches_edges(
+            &BTreeSet::from([edge]),
+            &BTreeSet::new(),
+            None
+        ));
+    }
+
+    #[test]
+    fn alternate_ingress_cannot_be_borrowed_by_another_owner_host_or_address() {
+        let owner = Uuid::now_v7();
+        let other_owner = Uuid::now_v7();
+        let edge = "192.0.2.10".parse().unwrap();
+        let alternate = "192.0.2.11".parse().unwrap();
+        let extra = "2001:db8::bad".parse().unwrap();
+        let grant = crate::config::AlternateIngress {
+            organisation_id: owner,
+            domain: grund_domain::custom_domain::DomainName::parse("app.example.com").unwrap(),
+            addresses: BTreeSet::from([alternate]),
+        };
+        let expected = BTreeSet::from([edge]);
+        let permitted = grant.addresses_for(owner, "app.example.com");
+        assert!(matches_edges(
+            &BTreeSet::from([alternate]),
+            &expected,
+            permitted
+        ));
+        assert!(matches_edges(
+            &BTreeSet::from([edge, alternate]),
+            &expected,
+            permitted
+        ));
+        assert!(!matches_edges(
+            &BTreeSet::from([alternate, extra]),
+            &expected,
+            permitted
+        ));
+        assert!(!matches_edges(&BTreeSet::new(), &expected, permitted));
+        let too_many = (1..=17)
+            .map(|last| IpAddr::from([192, 0, 2, last]))
+            .collect::<BTreeSet<_>>();
+        assert!(!matches_edges(
+            &too_many,
+            &expected,
+            Some(&too_many)
+        ));
+        for (organisation, name) in [
+            (other_owner, "app.example.com"),
+            (owner, "other.example.com"),
+            (owner, "sub.app.example.com"),
+            (owner, "example.com"),
+            (owner, "alias.example.com"),
+        ] {
+            let permitted = grant.addresses_for(organisation, name);
+            assert!(!matches_edges(
+                &BTreeSet::from([alternate]),
+                &expected,
+                permitted
+            ));
+            assert!(matches_edges(&BTreeSet::from([edge]), &expected, permitted));
+        }
+        assert!(!matches_edges(&BTreeSet::from([alternate]), &expected, None));
     }
 
     #[tokio::test]
@@ -579,7 +669,7 @@ mod tests {
             BTreeSet::from(["192.0.2.10".parse().unwrap()])
         );
         assert!(resolved.issue.is_some());
-        assert!(!matches_edges(&resolved.addresses, &resolved.expected));
+        assert!(!matches_edges(&resolved.addresses, &resolved.expected, None));
     }
 
     async fn http_response(
@@ -645,8 +735,11 @@ mod tests {
         use std::sync::Arc;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         grund_crypto::install_default();
-        let certificate =
-            rcgen::generate_simple_self_signed(vec!["probe.example.com".into()]).unwrap();
+        let certificate = rcgen::generate_simple_self_signed(vec![
+            "probe.example.com".into(),
+            "redirect.example.com".into(),
+        ])
+        .unwrap();
         let config = rustls::ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(
@@ -668,9 +761,12 @@ mod tests {
                 };
                 let mut request = [0u8; 4096];
                 if socket.read(&mut request).await.is_ok() {
-                    let _ = socket
-                        .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
-                        .await;
+                    let response = if request.windows(20).any(|part| part == b"redirect.example.com") {
+                        b"HTTP/1.1 302 Found\r\nLocation: https://127.0.0.1:9/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".as_slice()
+                    } else {
+                        b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n".as_slice()
+                    };
+                    let _ = socket.write_all(response).await;
                 }
             }
         });
@@ -682,6 +778,11 @@ mod tests {
             .build()
             .unwrap();
         assert!(https_probe(&trusted, "probe.example.com").await.is_ok());
+        let redirect = pinned_client("redirect.example.com", address)
+            .tls_certs_merge([root.clone()])
+            .build()
+            .unwrap();
+        assert!(https_probe(&redirect, "redirect.example.com").await.is_err());
         let wrong_name = pinned_client("wrong.example.com", address)
             .tls_certs_merge([root])
             .build()
