@@ -641,7 +641,8 @@ the server's actual network source. Public certificate-authority HTTP-01
 validators still need public DNS and reachable port-80 challenge responses;
 private DNS answers alone do not establish that path.
 Keep HTTP-01 probe bytes intact and TLS end-to-end: the checker pins addresses,
-verifies the HTTPS chain and hostname, and refuses HTTP/HTTPS redirects.
+verifies the HTTPS chain and hostname, and never follows redirects. A verified
+HTTPS response may redirect to an application's login page.
 Use Domains → **Check now**, then inspect DNS, reachability and HTTPS details.
 Removing the grant restores normal-edge-only checks; it does not remove a
 binding, certificate, gateway route or application session.

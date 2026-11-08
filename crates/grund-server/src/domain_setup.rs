@@ -207,11 +207,7 @@ async fn http_probe(
 }
 
 async fn https_probe(client: &reqwest::Client, name: &str) -> anyhow::Result<()> {
-    let response = client.head(format!("https://{name}/")).send().await?;
-    anyhow::ensure!(
-        !response.status().is_redirection(),
-        "the HTTPS edge returned a redirect"
-    );
+    client.head(format!("https://{name}/")).send().await?;
     Ok(())
 }
 
@@ -524,7 +520,11 @@ mod tests {
         let other = "192.0.2.11".parse().unwrap();
         let expected = BTreeSet::from([edge]);
         assert!(matches_edges(&BTreeSet::from([edge]), &expected, None));
-        assert!(!matches_edges(&BTreeSet::from([edge, other]), &expected, None));
+        assert!(!matches_edges(
+            &BTreeSet::from([edge, other]),
+            &expected,
+            None
+        ));
         assert!(!matches_edges(
             &BTreeSet::from(["127.0.0.1".parse().unwrap()]),
             &expected,
@@ -571,11 +571,7 @@ mod tests {
         let too_many = (1..=17)
             .map(|last| IpAddr::from([192, 0, 2, last]))
             .collect::<BTreeSet<_>>();
-        assert!(!matches_edges(
-            &too_many,
-            &expected,
-            Some(&too_many)
-        ));
+        assert!(!matches_edges(&too_many, &expected, Some(&too_many)));
         for (organisation, name) in [
             (other_owner, "app.example.com"),
             (owner, "other.example.com"),
@@ -591,7 +587,11 @@ mod tests {
             ));
             assert!(matches_edges(&BTreeSet::from([edge]), &expected, permitted));
         }
-        assert!(!matches_edges(&BTreeSet::from([alternate]), &expected, None));
+        assert!(!matches_edges(
+            &BTreeSet::from([alternate]),
+            &expected,
+            None
+        ));
     }
 
     #[tokio::test]
@@ -669,7 +669,11 @@ mod tests {
             BTreeSet::from(["192.0.2.10".parse().unwrap()])
         );
         assert!(resolved.issue.is_some());
-        assert!(!matches_edges(&resolved.addresses, &resolved.expected, None));
+        assert!(!matches_edges(
+            &resolved.addresses,
+            &resolved.expected,
+            None
+        ));
     }
 
     async fn http_response(
@@ -761,7 +765,10 @@ mod tests {
                 };
                 let mut request = [0u8; 4096];
                 if socket.read(&mut request).await.is_ok() {
-                    let response = if request.windows(20).any(|part| part == b"redirect.example.com") {
+                    let response = if request
+                        .windows(20)
+                        .any(|part| part == b"redirect.example.com")
+                    {
                         b"HTTP/1.1 302 Found\r\nLocation: https://127.0.0.1:9/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".as_slice()
                     } else {
                         b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n".as_slice()
@@ -782,7 +789,7 @@ mod tests {
             .tls_certs_merge([root.clone()])
             .build()
             .unwrap();
-        assert!(https_probe(&redirect, "redirect.example.com").await.is_err());
+        assert!(https_probe(&redirect, "redirect.example.com").await.is_ok());
         let wrong_name = pinned_client("wrong.example.com", address)
             .tls_certs_merge([root])
             .build()

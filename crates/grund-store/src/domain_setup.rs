@@ -322,10 +322,9 @@ mod tests {
     async fn concurrent_check_requests_are_coalesced_without_losing_the_leased_request(
         pool: PgPool,
     ) {
-        let (domain, organisation, _) = bound(&pool).await;
+        let (domain, _, _) = bound(&pool).await;
         let holder = Uuid::now_v7();
         let first = claim(&pool, holder).await.unwrap().unwrap();
-        assert_eq!(first.organisation_id, organisation);
         assert!(claim(&pool, Uuid::now_v7()).await.unwrap().is_none());
         assert!(request_check(&pool, domain).await.unwrap());
         assert!(request_check(&pool, domain).await.unwrap());

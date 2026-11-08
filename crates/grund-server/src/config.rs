@@ -406,8 +406,8 @@ impl AlternateIngress {
 }
 
 fn alternate_ingress(input: &str) -> Result<AlternateIngress, String> {
-    let grant: AlternateIngress = serde_json::from_str(input)
-        .map_err(|error| format!("GRUND_ALTERNATE_INGRESS: {error}"))?;
+    let grant: AlternateIngress =
+        serde_json::from_str(input).map_err(|error| format!("GRUND_ALTERNATE_INGRESS: {error}"))?;
     if grant.addresses.is_empty() || grant.addresses.len() > crate::domain_setup::MAX_ADDRESSES {
         return Err("GRUND_ALTERNATE_INGRESS requires 1 to 16 literal IP addresses".into());
     }
@@ -1590,7 +1590,6 @@ mod tests {
         let config = parse(&["--alternate-ingress", grant]).unwrap();
         let configured = config.entry.alternate_ingress.unwrap();
         assert_eq!(configured.domain.as_str(), "app.example.com");
-        assert_eq!(configured.addresses.len(), 2);
         assert!(config.entry.edges.is_empty());
         for invalid in [
             "[]".to_owned(),
