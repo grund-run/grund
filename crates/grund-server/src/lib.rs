@@ -73,9 +73,26 @@ pub async fn serve(
         extension.migrate(&pool).await?;
     }
     if config.billing.enabled() {
-        services::billing::queue_existing(&pool)
+        let epoch = config
+            .billing
+            .billing_epoch
+            .context("GRUND_BILLING_EPOCH is required")?;
+        let url = config
+            .billing
+            .billing_url
+            .as_deref()
+            .context("GRUND_BILLING_URL is required")?;
+        let mode = match config.billing.mode() {
+            config::BillingMode::Sandbox => "sandbox",
+            config::BillingMode::Live => "live",
+            config::BillingMode::Off => anyhow::bail!("configured billing cannot use off mode"),
+        };
+        grund_store::billing_epochs::activate(&pool, epoch, url, mode)
             .await
-            .context("queue existing organisations for billing")?;
+            .context("activate billing destination epoch")?;
+        services::billing::queue_existing(&pool, epoch)
+            .await
+            .context("queue existing organisations for billing epoch")?;
     }
     if config.organisations == config::OrganisationMode::Single {
         use grund_store::organisations::{InstanceCheck, prepare_single_instance};

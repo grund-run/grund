@@ -456,9 +456,15 @@ is queued or sent. See [.env.example](.env.example).
   deletion in the durable outbox, and consults billing before completing a
   deletion. An unavailable billing service delays deletion; it never
   grants deletion by default. Enabling billing on an existing instance
-  queues its live organisations for registration at startup with stable
-  event IDs. Customer checkout, payment portal, complimentary grants,
-  machine usage and hourly metering are not part of the public build.
+  queues its live organisations for registration at startup with stable,
+  destination-scoped event IDs. Configured billing requires an explicit
+  `GRUND_BILLING_EPOCH` UUID: keep it across restarts of one ledger, change it
+  with a new destination, and never reuse a retired epoch. Retired/unknown
+  financial work is retained superseded, never forwarded to the new ledger;
+  turning billing off holds pending financial work rather than discarding it.
+  Upgrade every sender before switching epochs. Customer checkout, payment
+  portal, complimentary grants, machine usage and hourly metering are not
+  part of the public build.
   `GRUND_BILLING_MODE` is `off` without that service and defaults to
   `sandbox` when it is configured; live mode requires `live` explicitly.
   Customer checkout in sandbox is disabled unless

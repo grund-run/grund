@@ -2026,6 +2026,7 @@ dependencies = [
  "grund-net",
  "grund-proto",
  "grund-server",
+ "grund-store",
  "grund-vm",
  "hex",
  "iroh",

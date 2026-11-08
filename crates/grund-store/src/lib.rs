@@ -13,6 +13,7 @@ pub mod app_telemetry;
 pub mod app_telemetry_gaps;
 pub mod apps;
 pub mod backup;
+pub mod billing_epochs;
 pub mod certificates;
 pub mod device_logins;
 pub mod doctor;

@@ -70,8 +70,20 @@ impl OutboxDrain {
 
     #[tracing::instrument(name = "outbox.drain", skip(self))]
     async fn drain(&self) {
+        let epoch = self
+            .state
+            .config
+            .billing
+            .billing_epoch
+            .filter(|_| self.state.billing.enabled());
+        if let Some(epoch) = epoch
+            && let Err(error) = outbox::supersede_billing(&self.state.pool, epoch, 200).await
+        {
+            tracing::warn!(%error, "billing supersession failed; retrying next tick");
+            return;
+        }
         for _ in 0..200 {
-            let claimed = match outbox::claim(&self.state.pool, BATCH, LEASE).await {
+            let claimed = match outbox::claim(&self.state.pool, BATCH, LEASE, epoch).await {
                 Ok(claimed) => claimed,
                 Err(error) => {
                     tracing::warn!(error = %error, "outbox claim failed; retrying next tick");
@@ -154,19 +166,28 @@ impl OutboxDrain {
     }
 
     async fn bill(&self, row: Claimed) -> anyhow::Result<()> {
+        let epoch = self
+            .state
+            .config
+            .billing
+            .billing_epoch
+            .filter(|_| self.state.billing.enabled())
+            .ok_or_else(|| anyhow::anyhow!("billing work held without a configured epoch"))?;
         match self.state.billing.record(&row).await {
             Ok(()) => {
-                outbox::delivered(&self.state.pool, row.outbox_id).await?;
-                tracing::info!(outbox_id = %row.outbox_id, "organisation change recorded by billing");
+                if outbox::delivered_billing(&self.state.pool, row.outbox_id, epoch).await? {
+                    tracing::info!(outbox_id = %row.outbox_id, "billing change recorded");
+                }
             }
-            Err(error @ (RecordError::NotConfigured | RecordError::Permanent)) => {
-                tracing::warn!(outbox_id = %row.outbox_id, reason = %error, "billing change dropped");
-                outbox::delivered(&self.state.pool, row.outbox_id).await?;
+            Err(error @ RecordError::Permanent) => {
+                tracing::warn!(outbox_id = %row.outbox_id, reason = %error, "billing change refused permanently");
+                outbox::delivered_billing(&self.state.pool, row.outbox_id, epoch).await?;
             }
-            Err(error @ RecordError::Transient) => {
-                outbox::failed(
+            Err(error @ (RecordError::NotConfigured | RecordError::Transient)) => {
+                outbox::failed_billing(
                     &self.state.pool,
                     row.outbox_id,
+                    epoch,
                     row.attempts,
                     &error.to_string(),
                 )

@@ -36,6 +36,10 @@ async fn billed_by(billing: &FakeBilling) -> anyhow::Result<Option<(Given, When,
     testcase_configured(&[
         ("GRUND_BILLING_URL", &billing.url),
         ("GRUND_BILLING_TOKEN", BILLING_TOKEN),
+        (
+            "GRUND_BILLING_EPOCH",
+            "00000000-0000-0000-0000-000000000001",
+        ),
     ])
     .await
 }

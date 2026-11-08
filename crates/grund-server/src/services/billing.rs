@@ -198,6 +198,7 @@ pub enum Billing {
 /// A configured billing service.
 pub struct Remote {
     url: String,
+    epoch: Uuid,
     token: String,
     http: reqwest::Client,
     redirect_origins: Vec<String>,
@@ -218,6 +219,10 @@ impl Billing {
         let (Some(url), Some(token)) = (&config.billing_url, &config.billing_token) else {
             return Ok(Billing::Free);
         };
+        let epoch = config
+            .billing_epoch
+            .filter(|epoch| !epoch.is_nil())
+            .context("GRUND_BILLING_EPOCH is required with configured billing")?;
         grund_crypto::install_default();
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
@@ -228,6 +233,7 @@ impl Billing {
             .context("build the HTTP client for billing")?;
         Ok(Billing::Remote(Arc::new(Remote {
             url: url.clone(),
+            epoch,
             token: token.clone(),
             redirect_origins: config
                 .billing_redirect_origins
@@ -432,6 +438,9 @@ impl Billing {
         let Billing::Remote(remote) = self else {
             return Err(RecordError::NotConfigured);
         };
+        if row.billing_epoch != Some(remote.epoch) {
+            return Err(RecordError::Transient);
+        }
         let method = match Kind::parse(&row.kind) {
             Some(Kind::BillingMachineCount) => "RecordMachineCount",
             Some(Kind::BillingMachineChange) => "RecordMachineChange",
@@ -726,7 +735,7 @@ fn view_from_response(answer: &serde_json::Value) -> BillingView {
 /// Enqueues existing live organisations when billing is enabled on a populated
 /// instance. The stable event ID makes restart retries safe, and the original
 /// creation timestamp prevents a delayed seed from undoing a later rename.
-pub async fn queue_existing(pool: &PgPool) -> Result<(), sqlx::Error> {
+pub async fn queue_existing(pool: &PgPool, epoch: Uuid) -> Result<(), sqlx::Error> {
     let mut tx = pool.begin().await?;
     let organisations: Vec<(Uuid, String, DateTime<Utc>)> = sqlx::query_as(
         "SELECT organisation_id,slug,created_at FROM grund_organisations WHERE deleted_at IS NULL",
@@ -734,14 +743,25 @@ pub async fn queue_existing(pool: &PgPool) -> Result<(), sqlx::Error> {
     .fetch_all(&mut *tx)
     .await?;
     for (id, slug, created_at) in organisations {
-        let event_id = Uuid::new_v5(&id, b"billing-existing-organisation-v1");
-        enqueue_change(&mut tx, event_id, id, &slug, Change::Created, created_at).await?;
+        let namespace = Uuid::new_v5(&epoch, id.as_bytes());
+        let event_id = Uuid::new_v5(&namespace, b"billing-existing-organisation-v1");
+        enqueue_change(
+            &mut tx,
+            epoch,
+            event_id,
+            id,
+            &slug,
+            Change::Created,
+            created_at,
+        )
+        .await?;
     }
     tx.commit().await
 }
 
 async fn enqueue_change(
     connection: &mut PgConnection,
+    epoch: Uuid,
     event_id: Uuid,
     organisation_id: Uuid,
     slug: &str,
@@ -755,11 +775,12 @@ async fn enqueue_change(
         "change": change.as_proto(),
         "changedAt": at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
     });
-    outbox::enqueue(
+    outbox::enqueue_billing(
         connection,
         event_id,
         Kind::BillingOrganisation,
-        "",
+        epoch,
+        Some(epoch),
         &payload,
     )
     .await
@@ -778,9 +799,13 @@ pub async fn queue_change(
     if !state.billing.enabled() {
         return Ok(());
     }
+    let epoch = state.config.billing.billing_epoch.ok_or_else(|| {
+        sqlx::Error::Protocol("configured billing requires GRUND_BILLING_EPOCH".into())
+    })?;
     enqueue_change(
         connection,
-        Uuid::now_v7(),
+        epoch,
+        Uuid::new_v5(&epoch, Uuid::now_v7().as_bytes()),
         organisation_id,
         slug,
         change,
@@ -892,6 +917,7 @@ mod tests {
             let billing = Billing::new(&BillingArgs {
                 billing_url: Some(url),
                 billing_token: Some("local-test-token".into()),
+                billing_epoch: Some(Uuid::from_u128(1)),
                 ..Default::default()
             })
             .unwrap();
@@ -920,6 +946,7 @@ mod tests {
         let billing = Billing::new(&BillingArgs {
             billing_url: Some("http://127.0.0.1:1".into()),
             billing_token: Some("local-test-token".into()),
+            billing_epoch: Some(Uuid::from_u128(1)),
             ..Default::default()
         })
         .unwrap();
@@ -955,6 +982,7 @@ mod tests {
         let billing = Billing::new(&BillingArgs {
             billing_url: Some("http://127.0.0.1:1".into()),
             billing_token: Some("local-test-token".into()),
+            billing_epoch: Some(Uuid::from_u128(1)),
             ..Default::default()
         })
         .unwrap();

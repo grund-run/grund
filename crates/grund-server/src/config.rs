@@ -12,6 +12,7 @@ use std::{
 };
 
 use clap::Args;
+use uuid::Uuid;
 
 /// Where PostgreSQL is. Shared by `serve` and `migrate`.
 #[derive(Clone, Debug, Args)]
@@ -528,7 +529,7 @@ impl AccountEventArgs {
 pub struct BillingArgs {
     /// The billing service, e.g. http://billing:8080, reached from grund's
     /// servers only. grund calls `grund.billing.v1.BillingService` on it. Set
-    /// with GRUND_BILLING_TOKEN.
+    /// with GRUND_BILLING_TOKEN and GRUND_BILLING_EPOCH.
     #[arg(long, env = "GRUND_BILLING_URL")]
     pub billing_url: Option<String>,
 
@@ -536,6 +537,11 @@ pub struct BillingArgs {
     /// ASCII characters.
     #[arg(long, env = "GRUND_BILLING_TOKEN", hide_env_values = true)]
     pub billing_token: Option<String>,
+
+    /// Immutable destination-ledger epoch. Required with billing; change it
+    /// with the destination, never reuse an epoch retired by this instance.
+    #[arg(long = "billing-epoch", env = "GRUND_BILLING_EPOCH")]
+    pub billing_epoch: Option<Uuid>,
 
     /// HTTPS origins allowed for checkout, payment portal and invoice document redirects, separated by commas.
     #[arg(long, env = "GRUND_BILLING_REDIRECT_ORIGINS")]
@@ -1096,6 +1102,11 @@ impl BillingArgs {
             "GRUND_BILLING_URL and GRUND_BILLING_TOKEN must be set together"
         );
         anyhow::ensure!(
+            self.billing_epoch.is_some() == self.enabled()
+                && self.billing_epoch.is_none_or(|epoch| !epoch.is_nil()),
+            "GRUND_BILLING_EPOCH must be a non-nil UUID with GRUND_BILLING_URL and unset without billing"
+        );
+        anyhow::ensure!(
             (self.enabled() && self.mode() != BillingMode::Off)
                 || (!self.enabled() && self.mode() == BillingMode::Off),
             "GRUND_BILLING_MODE must be off without GRUND_BILLING_URL, or sandbox/live with it"
@@ -1144,6 +1155,15 @@ impl BillingArgs {
                     && !url.ends_with('/')
                     && !url.contains(['?', '#']),
                 "GRUND_BILLING_URL must be an http or https URL without a trailing slash"
+            );
+        }
+        if let Some(url) = &self.billing_url {
+            let parsed = reqwest::Url::parse(url)?;
+            anyhow::ensure!(
+                parsed.host_str().is_some()
+                    && parsed.username().is_empty()
+                    && parsed.password().is_none(),
+                "GRUND_BILLING_URL must not contain credentials"
             );
         }
         if let Some(token) = &self.billing_token {
@@ -1755,12 +1775,44 @@ mod tests {
     }
 
     #[test]
+    fn billing_requires_an_explicit_non_nil_epoch_and_off_does_not_accept_one() {
+        let configured = [
+            "--billing-url",
+            "http://billing:8080",
+            "--billing-token",
+            "0123456789abcdef0123456789abcdef",
+        ];
+        assert!(
+            parse(&configured)
+                .unwrap_err()
+                .to_string()
+                .contains("GRUND_BILLING_EPOCH")
+        );
+        for epoch in ["00000000-0000-0000-0000-000000000000", "invalid"] {
+            assert!(parse(&[&configured[..], &["--billing-epoch", epoch]].concat()).is_err());
+        }
+        assert!(parse(&["--billing-epoch", "00000000-0000-0000-0000-000000000001"]).is_err());
+        assert!(
+            parse(
+                &[
+                    &configured[..],
+                    &["--billing-epoch", "00000000-0000-0000-0000-000000000001"]
+                ]
+                .concat()
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
     fn live_billing_can_keep_obligations_connected_without_accepting_new_sales() {
         let config = parse(&[
             "--billing-url",
             "http://billing:8080",
             "--billing-token",
             "0123456789abcdef0123456789abcdef",
+            "--billing-epoch",
+            "00000000-0000-0000-0000-000000000001",
             "--billing-mode",
             "live",
         ])
@@ -1774,6 +1826,8 @@ mod tests {
             "http://billing:8080",
             "--billing-token",
             "0123456789abcdef0123456789abcdef",
+            "--billing-epoch",
+            "00000000-0000-0000-0000-000000000001",
             "--billing-mode",
             "live",
             "--billing-live-checkout",
@@ -1792,6 +1846,8 @@ mod tests {
             "http://billing:8080",
             "--billing-token",
             "0123456789abcdef0123456789abcdef",
+            "--billing-epoch",
+            "00000000-0000-0000-0000-000000000001",
         ];
         assert_eq!(parse(&[]).unwrap().billing.mode(), BillingMode::Off);
         let sandbox = parse(&billing).unwrap();
@@ -1816,6 +1872,8 @@ mod tests {
             "http://billing:8080",
             "--billing-token",
             "0123456789abcdef0123456789abcdef",
+            "--billing-epoch",
+            "00000000-0000-0000-0000-000000000001",
             "--billing-mode",
         ];
         assert!(parse(&[&args[..], &["off"]].concat()).is_err());
