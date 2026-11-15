@@ -76,6 +76,7 @@ pub struct AccountDetails {
     pub hosted_entitlement: Option<HostedEntitlement>,
     /// Display-only explanation; never grants allocation authority.
     pub hosted_entitlement_reason: HostedEntitlementReason,
+    pub payment_set_up: bool,
 }
 
 /// Absolute hosted capacity authority. Disabled or zero limits never imply a
@@ -140,6 +141,9 @@ pub struct RentalDetails {
     pub completed_hours: Option<i64>,
     pub observed_amount_cents: Option<i64>,
     pub currency: String,
+    pub capacity: bool,
+    pub estimated_amount_cents: i64,
+    pub machine_created: bool,
 }
 
 /// Whether an organisation may be deleted, as far as billing is concerned.
@@ -722,6 +726,9 @@ fn view_from_response(answer: &serde_json::Value) -> BillingView {
                     },
                     observed_amount_cents: json_i64(&rental["observedAmountCents"]),
                     currency: rental["currency"].as_str().unwrap_or("").to_owned(),
+                    capacity: rental["capacity"].as_bool().unwrap_or(false),
+                    estimated_amount_cents: json_i64(&rental["estimatedAmountCents"]).unwrap_or(0),
+                    machine_created: rental["machineCreated"].as_bool().unwrap_or(false),
                 })
             })
             .collect(),
@@ -729,6 +736,7 @@ fn view_from_response(answer: &serde_json::Value) -> BillingView {
         hosted_entitlement_reason: decode_hosted_entitlement_reason(
             &account["hostedEntitlementReason"],
         ),
+        payment_set_up: account["paymentSetUp"].as_bool().unwrap_or(false),
     }))
 }
 
@@ -1081,5 +1089,28 @@ mod tests {
             decode(serde_json::json!({"completedHoursAvailable":true,"completedHours":"invalid"})),
             None
         );
+    }
+
+    #[test]
+    fn capacity_allocations_and_payment_setup_decode_with_old_backends_defaulting_off() {
+        let BillingView::Account(details) = view_from_response(&serde_json::json!({
+            "account": {"plan":"Free","status":"ACCOUNT_STATUS_ACTIVE","paymentSetUp":true,
+                "rentals":[{"rentalId":"018d7820-0000-7000-8000-000000000002","size":"medium",
+                    "status":"active","capacity":true,"estimatedAmountCents":"123","machineCreated":true}]}
+        })) else {
+            panic!("capacity account is unavailable");
+        };
+        assert!(details.payment_set_up);
+        let rental = &details.rentals[0];
+        assert!(rental.capacity && rental.machine_created);
+        assert_eq!(rental.estimated_amount_cents, 123);
+
+        let BillingView::Account(old) = view_from_response(&serde_json::json!({
+            "account": {"plan":"Free","status":"ACCOUNT_STATUS_ACTIVE",
+                "rentals":[{"rentalId":"018d7820-0000-7000-8000-000000000003","size":"small","status":"active"}]}
+        })) else {
+            panic!("older billing backend should still have an account");
+        };
+        assert!(!old.payment_set_up && !old.rentals[0].capacity);
     }
 }
