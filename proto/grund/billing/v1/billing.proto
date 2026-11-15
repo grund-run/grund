@@ -46,6 +46,16 @@ service BillingService {
   // Requests period-end cancellation; does not delete workloads or end paid time.
   rpc CancelRental(CancelRentalRequest) returns (CancelRentalResponse);
   rpc OpenPortal(OpenPortalRequest) returns (OpenPortalResponse);
+  // Setup-mode checkout: saves payment details, never charges.
+  rpc BeginBillingSetup(BeginBillingSetupRequest) returns (BeginBillingSetupResponse);
+  // The allocation returns as an active capacity rental; claim it by rental_id.
+  rpc AllocateCapacity(AllocateCapacityRequest) returns (AllocateCapacityResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  // Charging stops at release or machine removal, whichever is first.
+  rpc ReleaseCapacity(ReleaseCapacityRequest) returns (ReleaseCapacityResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
   rpc RecordMachineCount(RecordMachineCountRequest) returns (RecordMachineCountResponse) {
     option idempotency_level = IDEMPOTENT;
   }
@@ -110,6 +120,7 @@ message Account {
   // hosted_entitlement authority, including when this reason is GRANTED.
   HostedEntitlementReason hosted_entitlement_reason = 21;
   repeated Rental rentals = 22;
+  bool payment_set_up = 23;
 }
 
 // Absolute organisation-wide ceilings, including reserved/provisioning hosted
@@ -264,7 +275,38 @@ message Rental {
   string currency = 10;
   // Distinguishes an observed zero from no authoritative provider period.
   bool completed_hours_available = 11;
+  // Capacity allocations have no per-rental portal or cancellation.
+  bool capacity = 12;
+  int64 estimated_amount_cents = 13;
+  bool machine_created = 14;
 }
+
+message BeginBillingSetupRequest {
+  string organisation_id = 1;
+  string return_url = 2;
+  string idempotency_key = 3;
+}
+
+message BeginBillingSetupResponse { string url = 1; }
+
+message AllocateCapacityRequest {
+  string organisation_id = 1;
+  // UUID chosen by the caller; becomes the hosted order id.
+  string allocation_id = 2;
+  // small, medium, large or dedicated.
+  string size = 3;
+  string idempotency_key = 4;
+}
+
+message AllocateCapacityResponse { Account account = 1; }
+
+message ReleaseCapacityRequest {
+  string organisation_id = 1;
+  string allocation_id = 2;
+  string idempotency_key = 3;
+}
+
+message ReleaseCapacityResponse { Account account = 1; }
 
 message ChangePlanRequest {
   string organisation_id = 1;
