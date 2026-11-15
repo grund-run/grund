@@ -191,7 +191,74 @@ impl<'a> Work<'a> {
         if let Some(at) = lifecycle_at {
             self.guard_machine_update(machine_id, at).await?;
         }
-        self.persist_machine(machine_id, command).await
+        let events = self.persist_machine(machine_id, command).await?;
+        if let Some(at) = events.iter().find_map(|event| match event {
+            MachineEvent::LeaseEnded { ended_at, .. } => Some(*ended_at),
+            _ => None,
+        }) {
+            self.lose_leased_directories(machine_id, at).await?;
+        }
+        Ok(events)
+    }
+
+    async fn lose_leased_directories(
+        &mut self,
+        machine_id: Uuid,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), WorkError> {
+        let lost: Vec<(Uuid, Uuid, String, String, Option<String>)> = sqlx::query_as(
+            "SELECT v.volume_id, v.app_id, v.name, m.name, \
+               (SELECT p.snapshot_id FROM grund_volume_backup_points p \
+                WHERE p.organisation_id = v.organisation_id AND p.volume_id = v.volume_id \
+                ORDER BY p.completed_at DESC, p.snapshot_id DESC LIMIT 1) \
+             FROM grund_volumes v JOIN grund_machines m ON m.machine_id = v.machine_id \
+             WHERE v.machine_id = $1 AND v.size_gib IS NULL AND v.source IS NULL \
+               AND v.status NOT IN ('deleting', 'deleted', 'lost') \
+             ORDER BY v.volume_id",
+        )
+        .bind(machine_id)
+        .fetch_all(&mut **self.sql())
+        .await?;
+        for (volume_id, app_id, name, host_name, snapshot_id) in lost {
+            self.volume(
+                volume_id,
+                VolumeCommand::DeclareLost {
+                    host_id: machine_id,
+                    host_name: host_name.clone(),
+                    snapshot_id: snapshot_id.clone(),
+                    at,
+                },
+            )
+            .await?;
+            let owner = self.load_app(app_id).await?.stack_owner;
+            let allowed = std::mem::replace(&mut self.stack_owner, owner);
+            let decided = self
+                .app_decide(app_id, |app| {
+                    let known = !app.exists
+                        || app
+                            .lost_volumes
+                            .iter()
+                            .any(|loss| loss.volume_id == volume_id);
+                    Ok((
+                        if known {
+                            vec![]
+                        } else {
+                            vec![AppEvent::HostedVolumeLost {
+                                volume_id,
+                                name,
+                                host_name,
+                                lost_at: at,
+                                snapshot_id,
+                            }]
+                        },
+                        (),
+                    ))
+                })
+                .await;
+            self.stack_owner = allowed;
+            decided?;
+        }
+        Ok(())
     }
 
     async fn persist_machine(

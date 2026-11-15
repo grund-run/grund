@@ -145,6 +145,17 @@ pub struct HostedLoss {
     pub at: chrono::DateTime<Utc>,
 }
 
+pub(crate) fn holds_managed_directories(row: &MachineRow) -> bool {
+    row.capabilities
+        .as_ref()
+        .is_some_and(|c| c.0["volumes"].as_bool() == Some(true))
+        && if row.pool == "management" {
+            row.state == "leased"
+        } else {
+            row.state == "active" && row.minted_by.starts_with("account:")
+        }
+}
+
 async fn backend_holder_allowed(
     connection: &mut sqlx::PgConnection,
     org: Uuid,
@@ -335,11 +346,13 @@ impl Volumes {
             .await
             .map_err(anyhow::Error::from)?
             .ok_or(VolumesError::InvalidMachine)?;
-        let hosted = holder.pool == "management";
+        let blocks = specs.iter().any(|spec| spec.size_gib.is_some());
+        let hosted = holder.pool == "management" && blocks;
         if holder.pool_organisation_id != Some(org)
             || holder.cordoned_at.is_some()
-            || (hosted && holder.state != "leased")
-            || (!hosted && holder.state != "active")
+            || (holder.pool == "management" && holder.state != "leased")
+            || (holder.pool != "management" && holder.state != "active")
+            || (!blocks && !holds_managed_directories(&holder))
         {
             return Err(VolumesError::InvalidMachine);
         }

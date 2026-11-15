@@ -1168,13 +1168,7 @@ impl Stacks {
                     {
                         continue;
                     }
-                } else if row.pool == "management"
-                    || !row.minted_by.starts_with("account:")
-                    || !row
-                        .capabilities
-                        .as_ref()
-                        .is_some_and(|c| c.0["volumes"].as_bool() == Some(true))
-                {
+                } else if !crate::services::volumes::holds_managed_directories(&row) {
                     continue;
                 }
             }

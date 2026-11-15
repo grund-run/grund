@@ -711,7 +711,9 @@ impl mire::Command for VolumeCommand {
                 snapshot_id,
                 at,
             } => {
-                if state.size_gib.is_none() || state.machine_id.is_none() {
+                if state.machine_id.is_none()
+                    || (state.size_gib.is_none() && state.source.is_some())
+                {
                     return Err(VolumeError::BackendNotReady);
                 }
                 match state.status {
@@ -1174,5 +1176,36 @@ mod tests {
         volume.apply(&VolumeCommand::AbandonLost { at }.handle(&volume).unwrap()[0]);
         assert_eq!(volume.status, Some(VolumeStatus::Deleted));
         assert_eq!(volume.lost_host_id, Some(host));
+    }
+    #[test]
+    fn a_managed_directory_on_an_ended_lease_is_lost_but_a_host_directory_is_not() {
+        let at = DateTime::from_timestamp(1_790_000_000, 0).unwrap();
+        let machine = Uuid::from_u128(1);
+        let mut volume = Volume {
+            organisation_id: Some(Uuid::from_u128(4)),
+            app_id: Some(Uuid::from_u128(5)),
+            name: "data".into(),
+            path: "/data".into(),
+            machine_id: Some(machine),
+            status: Some(VolumeStatus::Attached),
+            ..Volume::default()
+        };
+        let loss = VolumeCommand::DeclareLost {
+            host_id: machine,
+            host_name: "hosted-1".into(),
+            snapshot_id: None,
+            at,
+        };
+        let mut bound = volume.clone();
+        bound.source = Some("/srv/data".into());
+        assert!(matches!(
+            loss.clone().handle(&bound),
+            Err(VolumeError::BackendNotReady)
+        ));
+        let events = loss.handle(&volume).unwrap();
+        assert_eq!(events.len(), 1);
+        volume.apply(&events[0]);
+        assert_eq!(volume.status, Some(VolumeStatus::Lost));
+        assert_eq!(volume.lost_host_id, Some(machine));
     }
 }

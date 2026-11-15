@@ -1525,6 +1525,158 @@ mod tests {
         Ok(())
     }
 
+    #[sqlx::test(migrations = false)]
+    async fn a_leased_hosted_machine_takes_own_disk_directories_without_a_storage_backend(
+        pool: sqlx::PgPool,
+    ) -> anyhow::Result<()> {
+        let state = state(pool).await?;
+        let org = Uuid::now_v7();
+        let machine = Uuid::now_v7();
+        let app_id = Uuid::now_v7();
+        let at = Utc::now();
+        sqlx::query("INSERT INTO grund_organisations(organisation_id,slug,kind,created_at,stream_version) VALUES($1,'hosted-disk','personal',$2,1)")
+            .bind(org).bind(at).execute(&state.pool).await?;
+        sqlx::query("INSERT INTO grund_machines(machine_id,pool,name,state,public_key,pool_organisation_id,pool_name,lease_id,minted_by,registered_at,key_registered_at,stream_version) VALUES($1,'management','physical','leased',repeat('a',64),$2,'hosted',$3,'hosted:test',$4,$4,1)")
+            .bind(machine).bind(org).bind(Uuid::now_v7()).bind(at).execute(&state.pool).await?;
+        let capabilities = |volumes: bool| {
+            Json(serde_json::json!({
+                "apps": true, "stack_services": true, "resources_allocatable": true,
+                "volumes": volumes, "arch": "x86_64", "memory_mib": 4096, "cpu_millis": 2000
+            }))
+        };
+        sqlx::query("INSERT INTO grund_machine_presence(machine_id,last_seen_at,capabilities) VALUES($1,$2,$3)")
+            .bind(machine).bind(at).bind(capabilities(false)).execute(&state.pool).await?;
+        let spec = grund_domain::app::templates::find("postgres")
+            .unwrap()
+            .spec(false)
+            .unwrap();
+        assert!(
+            spec.volumes
+                .iter()
+                .all(|v| v.size_gib.is_none() && v.source.is_none())
+        );
+        let revision = Revision {
+            number: 1,
+            yaml: "stack:\n  name: shop\n  services:\n    db:\n      template: postgres\n".into(),
+            services: BTreeMap::from([(
+                "db".into(),
+                Service {
+                    app_id,
+                    app_name: "db".into(),
+                    release: Release {
+                        number: 1,
+                        spec: spec.clone(),
+                        image_digest: String::new(),
+                        platforms: Vec::new(),
+                        exposed_ports: None,
+                        secret_versions: Vec::new(),
+                        source: ReleaseSource::File,
+                        rollback_of: None,
+                        note: String::new(),
+                        created_by: Uuid::nil(),
+                        created_at: at,
+                        external_release: None,
+                        request: None,
+                    },
+                    settings: grund_config::app::spec::AppSettings::default(),
+                    depends_on: Vec::new(),
+                    exclusive: true,
+                    template: Some("postgres".into()),
+                },
+            )]),
+            public_service: None,
+            public_port: None,
+            created_at: at,
+            created_by: Uuid::nil(),
+            rollback_of: None,
+        };
+        let stacks = state.stacks();
+        let mut conn = state.pool.acquire().await?;
+        assert_eq!(
+            stacks
+                .choose_machine(&mut conn, org, &revision, None, None)
+                .await?
+                .machine,
+            None,
+            "a machine that does not report volume support holds no directories"
+        );
+        sqlx::query("UPDATE grund_machine_presence SET capabilities=$2 WHERE machine_id=$1")
+            .bind(machine)
+            .bind(capabilities(true))
+            .execute(&mut *conn)
+            .await?;
+        assert_eq!(
+            stacks
+                .choose_machine(&mut conn, org, &revision, None, None)
+                .await?
+                .machine,
+            Some(machine),
+            "a leased hosted machine holds directories on its own disk"
+        );
+        drop(conn);
+
+        let volume = Uuid::now_v7();
+        let data = spec.volumes[0].clone();
+        let mut work = Work::begin(&state.events, Uuid::now_v7(), "test").await?;
+        work.volume(
+            volume,
+            VolumeCommand::Request {
+                organisation_id: org,
+                app_id,
+                name: data.name.clone(),
+                path: data.path.clone(),
+                source: None,
+                backup: false,
+                size_gib: None,
+                at,
+            },
+        )
+        .await?;
+        work.commit().await?;
+        let status = || {
+            sqlx::query_as::<_, (String, Option<Uuid>)>(
+                "SELECT status, machine_id FROM grund_volumes WHERE volume_id=$1",
+            )
+            .bind(volume)
+            .fetch_one(&state.pool)
+        };
+        assert_eq!(status().await?, ("requested".into(), None));
+        let mut block = data.clone();
+        block.size_gib = Some(10);
+        let mut work = Work::begin(&state.events, Uuid::now_v7(), "test").await?;
+        assert!(
+            matches!(
+                state
+                    .volumes()
+                    .place_release_in(&mut work, org, app_id, machine, &[block])
+                    .await,
+                Err(crate::services::volumes::VolumesError::InvalidMachine)
+            ),
+            "a hosted block still needs the storage backend"
+        );
+        drop(work);
+        let mut work = Work::begin(&state.events, Uuid::now_v7(), "test").await?;
+        state
+            .volumes()
+            .place_release_in(&mut work, org, app_id, machine, std::slice::from_ref(&data))
+            .await?;
+        work.commit().await?;
+        assert_eq!(status().await?, ("attached".into(), Some(machine)));
+
+        sqlx::query("UPDATE grund_machines SET state='returning', returning_organisation_id=pool_organisation_id, pool_organisation_id=NULL WHERE machine_id=$1")
+            .bind(machine).execute(&state.pool).await?;
+        let mut conn = state.pool.acquire().await?;
+        assert_eq!(
+            stacks
+                .choose_machine(&mut conn, org, &revision, None, None)
+                .await?
+                .machine,
+            None,
+            "a returning machine is wiped and holds nothing"
+        );
+        Ok(())
+    }
+
     struct Bundle {
         org: Uuid,
         id: Uuid,

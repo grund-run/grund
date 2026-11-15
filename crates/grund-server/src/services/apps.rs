@@ -558,13 +558,7 @@ fn reconcile_machine_view(
         || ((if hosted_storage {
             row.pool == "management" && row.state == "leased" && backend_eligible
         } else {
-            row.pool != "management"
-                && row.state == "active"
-                && row.minted_by.starts_with("account:")
-                && row
-                    .capabilities
-                    .as_ref()
-                    .is_some_and(|c| c.0["volumes"].as_bool() == Some(true))
+            crate::services::volumes::holds_managed_directories(row)
         }) && pinned.is_none_or(|id| id == row.machine_id));
     if !eligible && !placed {
         return None;

@@ -636,6 +636,126 @@ async fn a_lease_moves_a_machine_into_the_lessee_pool_and_back_out(pool: PgPool)
 }
 
 #[sqlx::test(migrations = false)]
+async fn an_ended_lease_loses_the_managed_directories_on_its_wiped_machine(pool: PgPool) {
+    use grund_config::app::spec::{AppName, AppSettings};
+    use grund_domain::{
+        app::AppCommand,
+        machine::{MachineCommand, Pool},
+        volume::VolumeCommand,
+    };
+    let events = store(&pool).await;
+    let username = name("lessee");
+    register(&events, &username).await;
+    let organisation_id: Uuid =
+        sqlx::query_scalar("SELECT organisation_id FROM grund_organisations WHERE slug = $1")
+            .bind(username.as_str())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let machine_id = machine(&events, Pool::Management, "gm-1", 1).await;
+    let app_id = Uuid::now_v7();
+    let stack_id = Uuid::now_v7();
+    let directory = Uuid::now_v7();
+    let bound = Uuid::now_v7();
+    let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();
+    work.machine(
+        machine_id,
+        MachineCommand::Lease {
+            actor: Uuid::now_v7(),
+            lease_id: Uuid::now_v7(),
+            organisation_id,
+            name: machine_name("web-1"),
+            at: Utc::now(),
+        },
+    )
+    .await
+    .unwrap();
+    work.app(
+        app_id,
+        AppCommand::Create {
+            actor: Uuid::nil(),
+            organisation_id,
+            name: AppName::parse("db").unwrap(),
+            settings: AppSettings::default(),
+            at: Utc::now(),
+        },
+    )
+    .await
+    .unwrap();
+    work.app(
+        app_id,
+        AppCommand::AssignStack {
+            stack_id,
+            at: Utc::now(),
+        },
+    )
+    .await
+    .unwrap();
+    for (volume_id, volume, source) in [
+        (directory, "data", None),
+        (bound, "srv", Some("/srv/data".to_string())),
+    ] {
+        for command in [
+            VolumeCommand::Request {
+                organisation_id,
+                app_id,
+                name: volume.into(),
+                path: format!("/{volume}"),
+                source,
+                backup: false,
+                size_gib: None,
+                at: Utc::now(),
+            },
+            VolumeCommand::Place {
+                machine_id,
+                at: Utc::now(),
+            },
+            VolumeCommand::Attach {
+                machine_id,
+                path: format!("/{volume}"),
+                at: Utc::now(),
+            },
+        ] {
+            work.volume(volume_id, command).await.unwrap();
+        }
+    }
+    work.commit().await.unwrap();
+
+    let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();
+    work.machine(
+        machine_id,
+        MachineCommand::EndLease {
+            actor: Uuid::now_v7(),
+            at: Utc::now(),
+        },
+    )
+    .await
+    .unwrap();
+    work.commit().await.unwrap();
+
+    let status = |volume_id: Uuid| {
+        sqlx::query_as::<_, (String, Option<Uuid>, Option<String>)>(
+            "SELECT status, lost_host_id, lost_host_name FROM grund_volumes WHERE volume_id = $1",
+        )
+        .bind(volume_id)
+        .fetch_one(&pool)
+    };
+    assert_eq!(
+        status(directory).await.unwrap(),
+        ("lost".into(), Some(machine_id), Some("gm-1".into()))
+    );
+    assert_eq!(
+        status(bound).await.unwrap(),
+        ("attached".into(), None, None)
+    );
+    let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();
+    let app = work.load_app(app_id).await.unwrap();
+    assert_eq!(app.lost_volumes.len(), 1);
+    assert_eq!(app.lost_volumes[0].volume_id, directory);
+    assert_eq!(app.stack_owner, Some(stack_id));
+}
+
+#[sqlx::test(migrations = false)]
 async fn replaying_a_machine_event_leaves_its_row_unchanged(pool: PgPool) {
     use grund_domain::machine::{MachineEvent, Pool};
     use grund_store::machines;
