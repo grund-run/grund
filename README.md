@@ -996,11 +996,14 @@ What a token can do:
   `Scale`, `ConfigureApp`, `SetSecret` and explicit app-image checks/updates.
   `full` may also change stacks, delete apps and manage machines, custom domains,
   members, invitations and registry logins. Stack changes need a full organisation
-  token; otherwise the CLI says `stack changes need a full token`. Deploy tokens
-  have read-only stack access. App-limited tokens can read a stack only when their
-  allowlist covers its current and retained backing apps. A narrower stack-deploy
-  grant is not available. Neither scope reaches the account, sessions, tokens, or
-  creating, renaming and deleting organisations: those get `permission_denied`.
+  token, with one exception: a deploy token whose `--apps` list covers every
+  current and retained backing app of an existing stack may redeploy that stack
+  (a release bot's grant). It cannot create stacks, add or remove services, set
+  launch secrets or refresh templates. App-limited tokens can read a stack only
+  when their allowlist covers those backing apps; organisation-wide deploy tokens
+  read every stack but change none. Neither scope reaches the account, sessions,
+  tokens, or creating, renaming and deleting organisations: those get
+  `permission_denied`.
 - It expires after 7, 30, 90 or 365 days, chosen when it is made. Owners and
   admins see and revoke every token of the organisation, members their own.
   A revoked or expired token is `unauthenticated` from the next call.

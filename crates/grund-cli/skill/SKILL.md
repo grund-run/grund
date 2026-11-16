@@ -119,7 +119,10 @@ before and after) without changing anything.
 distinct app names (repeat the flag or comma-separate names), restricting
 the token to those apps in its own organisation. It can get/list only their
 apps and bound domains, deploy and change those apps, but not write domains
-or use VolumeService. Leaving out `--apps` preserves organisation-wide
+or use VolumeService. When the list names every backing app of an existing
+stack (`grund stack status STACK --json` lists `appName` per service), it can
+also `grund stack deploy` that stack, but not add or remove services, set
+launch secrets or refresh templates. Leaving out `--apps` preserves organisation-wide
 deploy access for existing workflows. `full` does everything its maker's
 role allows in the organisation (delete apps, machines, domains, members)
 but never tokens or the account; it cannot be combined with `--apps`.
