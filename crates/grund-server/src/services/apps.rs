@@ -339,7 +339,7 @@ pub(crate) async fn generate_template_credentials_in(
         )
         .await?;
         sqlx::query("INSERT INTO grund_template_credentials (organisation_id,app_id,name,version,template) VALUES ($1,$2,$3,$4,$5)")
-            .bind(org).bind(app_id).bind(&name).bind(version).bind(template.key)
+            .bind(org).bind(app_id).bind(&name).bind(version).bind(template.family)
             .execute(&mut **work.sql()).await?;
         versions.push(SecretVersion {
             name,

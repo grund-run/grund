@@ -821,7 +821,7 @@ their TCP readiness checks confirm a listening port, not a data transaction.
 
 | Template | Default hosted capacity | Data mount |
 |---|---|---|
-| PostgreSQL | 10 GiB | `/var/lib/postgresql/data` |
+| PostgreSQL 17 (`postgres`) or 18 (`postgres-18`) | 10 GiB | `/var/lib/postgresql/data` |
 | Redis | 1 GiB | `/data` |
 | SeaweedFS | 10 GiB | `/data` |
 
@@ -836,6 +836,18 @@ PostgreSQL stops with a fast shutdown (SIGINT, 120 s grace): open sessions,
 such as an app's pool, are ended rather than waited for, so a restart is a few
 seconds and leaves a clean data directory. A stack deployed before this keeps
 SIGTERM until its db service is next changed or refreshed.
+
+**Upgrading PostgreSQL** is a change of template within the family: deploy the
+stack with `template: postgres-18` where it said `template: postgres`. The data
+volume, credentials and connection URL stay. The new container upgrades the
+cluster in place with `pg_upgrade --copy` before it listens, and keeps the 17
+cluster beside it for 7 days; it refuses, changing nothing, when the volume has
+too little free space for that copy. Deploying `template: postgres` again rolls
+back to that kept cluster, without anything written on 18. The upgrade needs
+the 17 binaries the PostgreSQL 17 template keeps on its volume since this
+release, so restart a db deployed earlier once first. Changing to another
+family, or to an image service, is refused. Take and verify a backup before
+upgrading; the runbook is in grund-docs, `docs/postgres-upgrade.md`.
 
 On every start PostgreSQL restores its template host-auth rule and any missing
 default configuration files. This does not repair database files or make a

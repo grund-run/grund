@@ -576,3 +576,88 @@ async fn an_app_restricted_deploy_token_redeploys_only_the_stack_it_covers() -> 
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn a_postgres_service_moves_between_majors_with_its_volume_and_credentials_but_not_to_another_family()
+-> anyhow::Result<()> {
+    let registry = FakeRegistry::start().await?;
+    let Some((given, when, then)) =
+        testcase_configured(&[("GRUND_INSECURE_REGISTRIES", &registry.host)]).await?
+    else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let org = owner.username.as_str();
+    let _agent = a_machine(&when, &then, org, "stack-box").await?;
+    registry.publish("acme/web", "1");
+    let image = registry.image("acme/web", "1");
+    let file = |template: &str| {
+        format!(
+            "stack:\n  name: ordered\n  services:\n    db:\n      template: {template}\n      release:\n        min_ready: 0\n        ready_deadline: 30\n        drain: 1\n    web:\n      image: {image}\n      depends_on: [db]\n      env:\n        DATABASE_URL: ${{{{ db.url }}}}\n      resources:\n        memory: 128 MiB\n        cpu: 0.1\n      release:\n        min_ready: 0\n        ready_deadline: 30\n        drain: 1\n",
+        )
+    };
+    call(
+        &when,
+        &then,
+        "DeployStack",
+        json!({"organisation":org,"yaml":file("postgres"),"idempotencyKey":"majors-17"}),
+    )
+    .await?;
+    then.status(200)?;
+    let first = ready(&when, &then, org).await?;
+    let db = child(&first, "db")?;
+    let owned = || async {
+        let app = db["appName"].as_str().context("db app name")?;
+        let volumes = stack_volumes(&when, &then, org, app).await?;
+        let mut ids: Vec<String> = volumes
+            .as_array()
+            .context("volumes")?
+            .iter()
+            .map(|volume| volume["volumeId"].as_str().unwrap_or_default().to_string())
+            .collect();
+        ids.sort();
+        anyhow::Ok(ids)
+    };
+    let before = owned().await?;
+    ensure!(before.len() == 1, "one data volume: {before:?}");
+
+    call(
+        &when,
+        &then,
+        "DeployStack",
+        json!({"organisation":org,"yaml":file("postgres-18"),
+               "expectedVersion":first["version"],"idempotencyKey":"majors-18"}),
+    )
+    .await?;
+    then.status(200)?;
+    let upgraded = ready(&when, &then, org).await?;
+    let moved = child(&upgraded, "db")?;
+    ensure!(moved["appId"] == db["appId"], "{moved}");
+    ensure!(moved["template"] == "postgres-18", "{moved}");
+    ensure!(
+        moved["image"]
+            .as_str()
+            .is_some_and(|image| image.starts_with("postgres:18.")),
+        "{moved}"
+    );
+    ensure!(
+        owned().await? == before,
+        "a major change keeps the one data volume"
+    );
+    ensure!(
+        child(&upgraded, "web")?["desiredRelease"] == child(&first, "web")?["desiredRelease"],
+        "the consumer keeps its release: the connection URL and credentials did not change"
+    );
+
+    let other = file("redis");
+    for method in ["PreviewStack", "DeployStack"] {
+        let mut request = json!({"organisation":org,"yaml":other});
+        if method == "DeployStack" {
+            request["expectedVersion"] = upgraded["version"].clone();
+            request["idempotencyKey"] = json!("majors-redis");
+        }
+        call(&when, &then, method, request).await?;
+        then.status(400)?.connect_code("invalid_argument")?;
+    }
+    Ok(())
+}

@@ -463,10 +463,19 @@ impl Stacks {
                         })
                 })
                 .transpose()?;
-            if prior.is_some_and(|prior| prior.template != service.template) {
+            if prior.is_some_and(|prior| {
+                prior
+                    .template
+                    .as_deref()
+                    .map(grund_domain::app::templates::family)
+                    != service
+                        .template
+                        .as_deref()
+                        .map(grund_domain::app::templates::family)
+            }) {
                 return Err(invalid(
                     format!("stack.services.{name}.template"),
-                    "a retained service cannot change between image and template identities",
+                    "a retained service cannot change between image and template identities, or to another template family",
                 ));
             }
             let unchanged_template = service.template.is_some()
@@ -543,7 +552,7 @@ impl Stacks {
                         .template
                         .as_deref()
                         .and_then(grund_domain::app::templates::find)
-                    && !matches!(template.key, "postgres" | "redis")
+                    && !matches!(template.family, "postgres" | "redis")
                     && template
                         .ports
                         .iter()

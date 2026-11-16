@@ -101,6 +101,88 @@ mv "$PGDATA/pg_hba.conf.regression" "$PGDATA/pg_hba.conf""#,
     );
 }
 
+#[test]
+#[ignore = "requires Docker and both catalogue PostgreSQL images already provisioned locally"]
+fn postgres_18_upgrades_a_killed_17_cluster_in_place_and_17_rolls_back_to_the_kept_copy() {
+    let old = templates::find("postgres").expect("PostgreSQL 17 template exists");
+    let new = templates::find("postgres-18").expect("PostgreSQL 18 template exists");
+    for template in [old, new] {
+        checked(
+            &["image", "inspect", "--format", "{{.Id}}", template.image],
+            "both pinned PostgreSQL images must be provisioned before this opt-in test (never pulled here)",
+        );
+    }
+    let mut fixture = Postgres::new();
+    fixture.start(old);
+    fixture.wait_until_listening();
+    fixture.query(
+        "CREATE TABLE upgrade_marker (id int PRIMARY KEY, value text NOT NULL); \
+         INSERT INTO upgrade_marker SELECT g, md5(g::text) FROM generate_series(1, 20000) g",
+        "seed the PostgreSQL 17 cluster",
+    );
+    let digest =
+        "SELECT count(*) || ':' || md5(string_agg(value, ',' ORDER BY id)) FROM upgrade_marker";
+    let seeded = fixture.query(digest, "digest the seeded rows");
+    checked(
+        &["kill", "--signal", "KILL", fixture.id()],
+        "kill PostgreSQL 17 without a clean shutdown",
+    );
+
+    fixture.replace(new);
+    fixture.wait_until_listening();
+    assert!(
+        fixture
+            .query("SHOW server_version", "PostgreSQL 18 answers")
+            .starts_with("18.")
+    );
+    assert_eq!(fixture.query(digest, "the upgraded rows"), seeded);
+    fixture.reject_wrong_password();
+    fixture.assert_broad_rule_count("1");
+    fixture.query(
+        "INSERT INTO upgrade_marker VALUES (20001, 'written on 18')",
+        "write after the upgrade",
+    );
+    assert!(fixture.logs().contains("upgraded PostgreSQL 17 to 18"));
+    assert_eq!(
+        fixture.exec(
+            &["find", "/var/lib/postgresql/data", "-type", "l"],
+            "list symlinks on the data volume",
+        ),
+        "",
+        "volume backups refuse symlinks, so the kept binaries must not add any",
+    );
+
+    checked(
+        &["stop", "--time", "30", fixture.id()],
+        "stop PostgreSQL 18 cleanly",
+    );
+    fixture.replace(old);
+    fixture.wait_until_listening();
+    assert!(
+        fixture
+            .query("SHOW server_version", "PostgreSQL 17 answers again")
+            .starts_with("17.")
+    );
+    assert_eq!(
+        fixture.query(digest, "the rolled back rows"),
+        seeded,
+        "the rollback runs the cluster kept before the upgrade, without later writes",
+    );
+    assert!(
+        fixture
+            .logs()
+            .contains("rolled back to the PostgreSQL 17 cluster")
+    );
+
+    checked(
+        &["stop", "--time", "30", fixture.id()],
+        "stop PostgreSQL 17 cleanly",
+    );
+    fixture.replace(new);
+    fixture.wait_until_listening();
+    assert_eq!(fixture.query(digest, "upgrading again"), seeded);
+}
+
 struct Postgres {
     directory: PathBuf,
     name: String,
@@ -198,6 +280,56 @@ impl Postgres {
             !address.is_loopback() && !address.is_unspecified(),
             "the client must exercise host authentication, not loopback trust",
         );
+    }
+
+    fn replace(&mut self, template: &templates::Template) {
+        checked(
+            &["rm", "--force", self.id()],
+            "remove the previous container",
+        );
+        let mount = format!(
+            "type=volume,source={},target={}",
+            self.volume.as_deref().unwrap(),
+            template
+                .storage
+                .expect("PostgreSQL has persistent data")
+                .path,
+        );
+        let envfile = self.directory.join("postgres.env");
+        let envfile = envfile.to_str().expect("environment path is UTF-8");
+        let mut args = vec![
+            "create",
+            "--pull=never",
+            "--network",
+            self.network.as_deref().unwrap(),
+            "--mount",
+            &mount,
+            "--env-file",
+            envfile,
+            "--entrypoint",
+            template
+                .command
+                .first()
+                .expect("PostgreSQL template has a command"),
+            template.image,
+        ];
+        args.extend_from_slice(&template.command[1..]);
+        self.container = Some(checked(&args, "create the replacement template container"));
+        checked(&["start", self.id()], "start the replacement");
+        self.address = checked(
+            &[
+                "inspect",
+                "--format",
+                "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
+                self.id(),
+            ],
+            "find the replacement's address",
+        );
+    }
+
+    fn logs(&self) -> String {
+        let output = docker(&["logs", self.id()]);
+        String::from_utf8_lossy(&output.stderr).into_owned()
     }
 
     fn id(&self) -> &str {

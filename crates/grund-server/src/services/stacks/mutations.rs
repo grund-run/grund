@@ -318,7 +318,12 @@ impl Stacks {
                     .bind(service.app_id)
                     .bind(&pinned.name)
                     .bind(pinned.version as i32)
-                    .bind(service.template.as_deref())
+                    .bind(
+                        service
+                            .template
+                            .as_deref()
+                            .and_then(grund_domain::app::templates::family),
+                    )
                     .fetch_one(&mut **work.sql())
                     .await?;
                     if !provenance
@@ -730,14 +735,16 @@ impl Stacks {
         let port = ports
             .iter()
             .find(|p| matches!(p.protocol, Protocol::Http | Protocol::H2c));
-        if producer.template.is_none()
-            || !matches!(producer.template.as_deref(), Some("postgres" | "redis"))
-        {
+        let family = producer
+            .template
+            .as_deref()
+            .and_then(grund_domain::app::templates::family);
+        if !matches!(family, Some("postgres" | "redis")) {
             return port
                 .map(|p| format!("http://{host}:{}", p.port))
                 .ok_or_else(|| invalid("env", "producer exports no HTTP URL"));
         }
-        let (scheme, variable, port, user, database) = match producer.template.as_deref() {
+        let (scheme, variable, port, user, database) = match family {
             Some("postgres") => ("postgresql", "POSTGRES_PASSWORD", 5432, "grund", "grund"),
             Some("redis") => ("redis", "REDIS_PASSWORD", 6379, "", "0"),
             _ => return Err(invalid("env", "template URL unavailable")),

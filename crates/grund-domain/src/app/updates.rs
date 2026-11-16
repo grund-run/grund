@@ -77,7 +77,12 @@ pub fn discovery_references(
         .filter(|template| template.unavailable.is_none())
     {
         let reference = ImageReference::parse(template.image)?;
-        if reference.registry == current.registry && reference.repository == current.repository {
+        if reference.registry == current.registry
+            && reference.repository == current.repository
+            && template
+                .major
+                .is_none_or(|major| same_major(current.tag.as_deref(), major))
+        {
             references.push((
                 reference,
                 CandidateKind::Catalogue,
@@ -86,6 +91,11 @@ pub fn discovery_references(
         }
     }
     Ok(references)
+}
+
+fn same_major(tag: Option<&str>, major: &str) -> bool {
+    tag.and_then(|tag| tag.strip_prefix(major))
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '-']))
 }
 
 /// Copy the approved base, replacing only its image reference.
@@ -119,12 +129,33 @@ mod tests {
     }
 
     #[test]
+    fn a_catalogue_image_of_another_postgres_major_is_never_suggested() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let suggested = |image: &str| -> Vec<String> {
+            discovery_references(image)
+                .unwrap()
+                .into_iter()
+                .filter(|(_, kind, _)| *kind == CandidateKind::Catalogue)
+                .map(|(reference, _, _)| reference.tag.unwrap())
+                .collect()
+        };
+        assert_eq!(
+            suggested(&format!("postgres:17.2-alpine@{digest}")),
+            ["17.11-alpine"]
+        );
+        assert_eq!(suggested(&format!("postgres:18@{digest}")), ["18.7-alpine"]);
+        assert!(suggested(&format!("postgres:16.4@{digest}")).is_empty());
+        assert!(suggested(&format!("postgres:170@{digest}")).is_empty());
+        assert!(suggested(&format!("postgres@{digest}")).is_empty());
+    }
+
+    #[test]
     fn catalogue_matches_repository_not_provenance_and_preserves_custom_settings() {
         for key in ["nginx", "postgres", "redis"] {
             let template = super::super::templates::find(key).unwrap();
             let mut base = template.spec(false).unwrap();
             let mut old_reference = ImageReference::parse(&base.image).unwrap();
-            old_reference.tag = Some("old".into());
+            old_reference.tag = Some(template.major.map_or("old".into(), |m| format!("{m}.0")));
             old_reference.digest = Some(format!("sha256:{}", "a".repeat(64)));
             base.image = old_reference.to_string();
             base.memory_mib = 512;
