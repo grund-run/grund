@@ -101,7 +101,15 @@ impl Stacks {
         request_key: &str,
         secrets: Vec<InputSecret>,
         mut confirmed_removals: Vec<String>,
+        allowed_apps: Option<&[String]>,
     ) -> Result<StackView, Error> {
+        if let Some(apps) = allowed_apps {
+            let name = stack::parse(yaml)?.name;
+            let row = store::by_name(&self.state.pool, org, &name)
+                .await?
+                .ok_or(Error::NotFound)?;
+            self.require_scope(org, row.stack_id, apps).await?;
+        }
         confirmed_removals.sort_unstable();
         let digest = self.fingerprint(&(
             yaml,
@@ -120,8 +128,9 @@ impl Stacks {
                 return Ok(response);
             }
         }
-        let (definition, mut revision, mut changed, before) =
-            self.prepare(org, yaml, selected, refresh, None).await?;
+        let (definition, mut revision, mut changed, before) = self
+            .prepare(org, yaml, selected, refresh, allowed_apps)
+            .await?;
         let id = before.as_ref().map_or_else(Uuid::now_v7, |r| r.stack_id);
         let mut work = Work::begin(&self.state.events, Uuid::now_v7(), &actor.to_string()).await?;
         self.lock(&mut work, org).await?;

@@ -12,7 +12,7 @@ async fn call(when: &When, then: &Then, method: &str, body: Value) -> anyhow::Re
     then.json()
 }
 
-async fn token(
+pub(crate) async fn token(
     when: &When,
     then: &Then,
     org: &str,
@@ -34,7 +34,7 @@ async fn token(
     ))
 }
 
-async fn token_call(
+pub(crate) async fn token_call(
     when: &When,
     then: &Then,
     bearer: &str,
@@ -159,6 +159,9 @@ async fn stack_tokens_read_only_complete_authorised_bundles_before_pagination() 
             "DeleteStack",
             "RestoreStack",
         ] {
+            if method == "DeployStack" && bearer == &bounded {
+                continue;
+            }
             let refused = token_call(
                 &client,
                 &result,
@@ -168,10 +171,12 @@ async fn stack_tokens_read_only_complete_authorised_bundles_before_pagination() 
             )
             .await?;
             result.status(403)?.connect_code("permission_denied")?;
-            anyhow::ensure!(
-                refused["message"] == "stack changes need a full token",
-                "{refused}"
-            );
+            let expected = if method == "DeployStack" {
+                "stack changes need a full token or a deploy token restricted to the stack's apps"
+            } else {
+                "stack changes need a full token"
+            };
+            anyhow::ensure!(refused["message"] == expected, "{refused}");
         }
     }
     let inspections = registry.manifest_calls();
@@ -304,7 +309,6 @@ async fn stack_authentication_and_tenant_checks_precede_invalid_input() -> anyho
         .to_string();
     let bearer = format!("Bearer {secret}");
     for method in [
-        "DeployStack",
         "RestartStack",
         "RollbackStack",
         "DeleteStack",
@@ -327,6 +331,7 @@ async fn stack_authentication_and_tenant_checks_precede_invalid_input() -> anyho
         ("GetStack", 404),
         ("ListStacks", 200),
         ("PreviewStack", 400),
+        ("DeployStack", 400),
     ] {
         other_when
             .calling_with(
@@ -375,8 +380,9 @@ async fn stack_authentication_and_tenant_checks_precede_invalid_input() -> anyho
         .await?;
     other_then.status(403)?.connect_code("permission_denied")?;
     anyhow::ensure!(
-        other_then.json()?["message"] == "stack changes need a full token",
-        "unrestricted deploy tokens must receive the same refusal"
+        other_then.json()?["message"]
+            == "stack changes need a full token or a deploy token restricted to the stack's apps",
+        "unrestricted deploy tokens must be refused before input checks"
     );
     Ok(())
 }

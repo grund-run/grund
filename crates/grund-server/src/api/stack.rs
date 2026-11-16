@@ -1,4 +1,6 @@
 //! Organisation-scoped stack reads and full-token or session-authorised changes.
+//! A deploy token restricted to apps may also redeploy an existing stack whose
+//! every backing app it names, which is how a release bot ships one stack.
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use buffa::{MessageField, MessageView};
@@ -186,6 +188,32 @@ fn changes(ctx: &RequestContext) -> Result<(), ConnectError> {
     Ok(())
 }
 
+fn deploy_scope<'a>(
+    ctx: &'a RequestContext,
+    input: &DeployStackRequest,
+) -> Result<Option<&'a [String]>, ConnectError> {
+    let Some(token) = ctx.extensions().get::<TokenCaller>() else {
+        return Ok(None);
+    };
+    match (token.scope, token.apps.as_deref()) {
+        (TokenScope::Full, None) => Ok(None),
+        (TokenScope::Deploy, Some(apps)) => {
+            if !input.confirmed_removals.is_empty()
+                || !input.secrets.is_empty()
+                || !input.refresh_template.is_empty()
+            {
+                return Err(ConnectError::permission_denied(
+                    "an app-restricted token cannot remove services, set secrets or refresh templates",
+                ));
+            }
+            Ok(Some(apps))
+        }
+        _ => Err(ConnectError::permission_denied(
+            "stack changes need a full token or a deploy token restricted to the stack's apps",
+        )),
+    }
+}
+
 fn mutation(expected: Option<i64>, key: &str, create: bool) -> Result<(), ConnectError> {
     if expected.is_none() && !create {
         return Err(ConnectError::invalid_argument(
@@ -268,7 +296,7 @@ impl StackService for StackApi {
         let caller = principal(&ctx)?;
         let input: DeployStackRequest = owned(&*request)?;
         let org = self.member(&caller, &input.organisation, true).await?;
-        changes(&ctx)?;
+        let allowed_apps = deploy_scope(&ctx, &input)?;
         mutation(input.expected_version, &input.idempotency_key, true)?;
         let view = self
             .state
@@ -291,6 +319,7 @@ impl StackService for StackApi {
                     })
                     .collect(),
                 input.confirmed_removals,
+                allowed_apps,
             )
             .await
             .map_err(failed)?;

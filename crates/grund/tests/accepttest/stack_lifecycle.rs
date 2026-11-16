@@ -1,6 +1,7 @@
 use crate::accepttest::{
     apps::{a_machine, app, ready_on},
     fixtures::{FakeRegistry, Then, When, testcase_configured},
+    stacks::{token, token_call},
 };
 use anyhow::{Context, ensure};
 use serde_json::{Value, json};
@@ -470,6 +471,108 @@ async fn a_rollout_whose_peak_exceeds_every_eligible_machine_is_refused_and_one_
             && child(&second, "web")?["ready"] == 2
             && second["failure"].as_str().is_none_or(str::is_empty),
         "a rollout that fits did not reach ready: {second}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_app_restricted_deploy_token_redeploys_only_the_stack_it_covers() -> anyhow::Result<()> {
+    let registry = FakeRegistry::start().await?;
+    let Some((given, when, then)) =
+        testcase_configured(&[("GRUND_INSECURE_REGISTRIES", &registry.host)]).await?
+    else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let org = owner.username.as_str();
+    let (_, client, result) = given.testcase.another_browser();
+    let _agent = a_machine(&when, &then, org, "stack-box").await?;
+    registry.publish("acme/web", "1");
+    registry.publish("acme/web", "2");
+    let stack = |name: &str, tag: &str, extra: &str| {
+        let image = registry.image("acme/web", tag);
+        format!(
+            "stack:\n  name: {name}\n  services:\n    web:\n      image: {image}\n      resources:\n        memory: 64 MiB\n        cpu: 0.1\n      release:\n        min_ready: 0\n        ready_deadline: 30\n        drain: 1\n{extra}"
+        )
+    };
+    for name in ["ordered", "other"] {
+        call(
+            &when,
+            &then,
+            "DeployStack",
+            json!({"organisation":org,"yaml":stack(name, "1", ""),"idempotencyKey":name}),
+        )
+        .await?;
+        then.status(200)?;
+    }
+    let first = ready(&when, &then, org).await?;
+    let apps = vec![
+        child(&first, "web")?["appName"]
+            .as_str()
+            .context("web app name")?
+            .to_string(),
+    ];
+    let bot = token(
+        &when,
+        &then,
+        org,
+        "release-bot",
+        "TOKEN_SCOPE_DEPLOY",
+        &apps,
+    )
+    .await?;
+    for widening in [
+        json!({"confirmedRemovals":["web"]}),
+        json!({"secrets":[{"service":"web","name":"api-key","value":"never-stored"}]}),
+        json!({"refreshTemplate":"web"}),
+    ] {
+        let mut body = json!({"organisation":org,"yaml":stack("ordered", "2", ""),
+            "expectedVersion":first["version"],"idempotencyKey":"widen"});
+        for (key, value) in widening.as_object().into_iter().flatten() {
+            body[key] = value.clone();
+        }
+        let refused = token_call(&client, &result, &bot, "DeployStack", body).await?;
+        result.status(403)?.connect_code("permission_denied")?;
+        ensure!(
+            refused["message"]
+                == "an app-restricted token cannot remove services, set secrets or refresh templates",
+            "{refused}"
+        );
+    }
+    let sidecar = "    sidecar:\n      image: busybox\n";
+    for (name, extra, key) in [
+        ("other", "", "other"),
+        ("other", "", "other-bot"),
+        ("brand-new", "", "brand-new"),
+        ("ordered", sidecar, "sidecar"),
+    ] {
+        let refused = token_call(
+            &client,
+            &result,
+            &bot,
+            "DeployStack",
+            json!({"organisation":org,"yaml":stack(name, "2", extra),"idempotencyKey":key}),
+        )
+        .await?;
+        result.status(404)?.connect_code("not_found")?;
+        ensure!(refused.get("stack").is_none(), "{refused}");
+    }
+    let request = json!({"organisation":org,"yaml":stack("ordered", "2", ""),
+        "expectedVersion":first["version"],"idempotencyKey":"forest-intent-1"});
+    let deployed = token_call(&client, &result, &bot, "DeployStack", request.clone()).await?;
+    result.status(200)?;
+    ensure!(
+        deployed["stack"]["revision"] == 2
+            && deployed["stack"]["yaml"] == stack("ordered", "2", ""),
+        "{deployed}"
+    );
+    let replayed = token_call(&client, &result, &bot, "DeployStack", request).await?;
+    result.status(200)?;
+    ensure!(replayed["stack"]["revision"] == 2, "{replayed}");
+    ready(&when, &then, org).await?;
+    ensure!(
+        ready_on(&app(&when, &then, org, &apps[0]).await?, 2) == 1,
+        "the token's release never went live"
     );
     Ok(())
 }
