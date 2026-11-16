@@ -110,6 +110,32 @@ impl Entry {
         if let Some(name) = grund_store::domains::first_bound_name(&mut *executor, app_id).await? {
             return Ok(Some(name));
         }
+        self.shared_address_of(executor, app_id, &app_name, slug)
+            .await
+    }
+
+    /// The app's address under the instance's app domain, which the edge
+    /// routes whether or not a custom domain is also bound to it.
+    pub async fn shared_address(
+        &self,
+        executor: &mut sqlx::PgConnection,
+        app_id: Uuid,
+        slug: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let Some(app_name) = grund_store::entry::public_name(&mut *executor, app_id).await? else {
+            return Ok(None);
+        };
+        self.shared_address_of(executor, app_id, &app_name, slug)
+            .await
+    }
+
+    async fn shared_address_of(
+        &self,
+        executor: &mut sqlx::PgConnection,
+        app_id: Uuid,
+        app_name: &str,
+        slug: &str,
+    ) -> anyhow::Result<Option<String>> {
         let Some(domain) = self.app_domain() else {
             return Ok(None);
         };
@@ -385,8 +411,11 @@ impl EntryState for State {
     }
 }
 
+const HOSTNAME_RULES: i32 = 1;
+
 /// Republishes the document of every machine with a copy when the entry
-/// keys change: an edge enrolled, was revoked, or left GRUND_EDGES.
+/// keys change (an edge enrolled, was revoked, or left GRUND_EDGES), or when
+/// the app domain or hostname rules differ from those last published.
 pub struct EntryKeys {
     state: State,
 }
@@ -400,7 +429,13 @@ impl EntryKeys {
         use crate::services::agents::AgentsState;
         let mut connection = self.state.pool.acquire().await?;
         let keys = self.state.entry().entry_keys(&mut connection).await?;
-        if last.as_ref() == Some(&keys) {
+        let domain = self.state.entry().app_domain().map(str::to_owned);
+        let published: Option<(i32, Option<String>)> =
+            sqlx::query_as("SELECT rules_version, app_domain FROM grund_entry_publications")
+                .fetch_optional(&mut *connection)
+                .await?;
+        let names_changed = published.as_ref() != Some(&(HOSTNAME_RULES, domain.clone()));
+        if last.as_ref() == Some(&keys) && !names_changed {
             return Ok(());
         }
         let machines: Vec<Uuid> = sqlx::query_scalar(
@@ -408,17 +443,29 @@ impl EntryKeys {
         )
         .fetch_all(&mut *connection)
         .await?;
-        drop(connection);
-        if last.is_some() {
+        if last.is_some() || names_changed {
             for machine in &machines {
                 self.state.agents().publish(*machine).await?;
             }
             tracing::info!(
                 edges = keys.len(),
                 machines = machines.len(),
-                "entry keys changed; machines get new documents"
+                names_changed,
+                "entry keys or app names changed; machines get new documents"
             );
         }
+        if names_changed {
+            sqlx::query(
+                "INSERT INTO grund_entry_publications (rules_version, app_domain) VALUES ($1, $2) \
+                 ON CONFLICT (singleton) DO UPDATE SET rules_version = EXCLUDED.rules_version, \
+                   app_domain = EXCLUDED.app_domain",
+            )
+            .bind(HOSTNAME_RULES)
+            .bind(&domain)
+            .execute(&mut *connection)
+            .await?;
+        }
+        drop(connection);
         *last = Some(keys);
         Ok(())
     }
@@ -446,6 +493,43 @@ impl Component for EntryKeys {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn published(pool: &sqlx::PgPool) -> Option<(i32, Option<String>)> {
+        sqlx::query_as("SELECT rules_version, app_domain FROM grund_entry_publications")
+            .fetch_optional(pool)
+            .await
+            .unwrap()
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn documents_are_republished_once_when_the_app_names_they_list_change(
+        pool: sqlx::PgPool,
+    ) {
+        let state = crate::services::agents::tests::state(pool.clone()).await;
+        let keys = EntryKeys::new(state.clone());
+        let mut last = None;
+        assert_eq!(published(&pool).await, None);
+        keys.once(&mut last).await.unwrap();
+        let current = (
+            HOSTNAME_RULES,
+            state.entry().app_domain().map(str::to_owned),
+        );
+        assert_eq!(published(&pool).await, Some(current.clone()));
+
+        sqlx::query("UPDATE grund_entry_publications SET app_domain = 'old.example'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        keys.once(&mut last).await.unwrap();
+        assert_eq!(published(&pool).await, Some(current.clone()));
+
+        sqlx::query("UPDATE grund_entry_publications SET rules_version = 0")
+            .execute(&pool)
+            .await
+            .unwrap();
+        keys.once(&mut last).await.unwrap();
+        assert_eq!(published(&pool).await, Some(current));
+    }
 
     #[test]
     fn custom_only_routes_bound_public_apps_without_a_shared_address() {

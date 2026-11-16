@@ -523,6 +523,10 @@ async fn a_verified_domain_bound_to_an_app_is_served_through_the_edge_with_a_cer
         "a foreign name on the custom domain's connection: {}",
         foreign.status
     );
+    stack
+        .served(&address, Duration::from_secs(60))
+        .await
+        .map_err(|error| anyhow::anyhow!("binding a domain stopped the shared address: {error}"))?;
     anyhow::ensure!(
         stack
             .edge_log()

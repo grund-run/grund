@@ -522,7 +522,7 @@ impl Agents {
         let slug = grund_store::entry::organisation_slug(&mut *connection, organisation_id)
             .await?
             .unwrap_or_default();
-        let mut addresses: std::collections::HashMap<Uuid, Option<String>> = Default::default();
+        let mut addresses: std::collections::HashMap<Uuid, Vec<String>> = Default::default();
         let mut custom: std::collections::HashMap<Uuid, Vec<String>> = Default::default();
         let mut replicas: Vec<agent::Replica> = Vec::with_capacity(placed.len());
         let volume_backend = self.state.volume_backend();
@@ -646,11 +646,19 @@ impl Agents {
             if crate::services::entry::publishes(&row.spec.0) {
                 if let std::collections::hash_map::Entry::Vacant(slot) = addresses.entry(row.app_id)
                 {
-                    slot.insert(
-                        entry
-                            .address(&mut *connection, row.app_id, &row.app_name, &slug)
-                            .await?,
-                    );
+                    let mut names: Vec<String> = entry
+                        .address(&mut *connection, row.app_id, &row.app_name, &slug)
+                        .await?
+                        .into_iter()
+                        .collect();
+                    if let Some(shared) = entry
+                        .shared_address(&mut *connection, row.app_id, &slug)
+                        .await?
+                        .filter(|shared| !names.contains(shared))
+                    {
+                        names.push(shared);
+                    }
+                    slot.insert(names);
                 }
                 if let std::collections::hash_map::Entry::Vacant(slot) = custom.entry(row.app_id) {
                     slot.insert(
@@ -1141,7 +1149,7 @@ impl AgentsState for State {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use clap::Parser;
     use std::sync::Arc;
@@ -1152,7 +1160,7 @@ mod tests {
         config: crate::config::ServeConfig,
     }
 
-    pub(super) async fn state(pool: sqlx::PgPool) -> State {
+    pub(crate) async fn state(pool: sqlx::PgPool) -> State {
         grund_store::migrate(&pool).await.unwrap();
         let mut config =
             TestConfig::try_parse_from(["test", "--database-url", "postgres://unused/test"])
