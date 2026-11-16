@@ -247,6 +247,24 @@ impl Stacks {
             .choose_machine(work.sql(), org, &revision, stack.machine_id, Some(id))
             .await?;
         let Some(machine) = placement.machine else {
+            if placement.exceeds.is_some() && !op.compensating {
+                self.fail_turn(&mut work, &stack, id, op, INSUFFICIENT_CAPACITY, now)
+                    .await?;
+                let failed = work.load_stack(id).await?;
+                if let Some(operation) = failed.operation.clone() {
+                    work.stack(
+                        id,
+                        Command::Advance {
+                            operation,
+                            status: failed.status,
+                            machine_id: failed.machine_id,
+                            failure: Some(INSUFFICIENT_CAPACITY.into()),
+                        },
+                    )
+                    .await?;
+                }
+                return self.finish_turn(work, org, id, stack.machine_id).await;
+            }
             work.stack(
                 id,
                 Command::Advance {

@@ -69,6 +69,14 @@ fn state(revision: &Revision, kind: Kind, names: &[&str]) -> Stack {
     }
 }
 
+fn reservation(
+    revision: &Revision,
+    previous: Option<&Stack>,
+    live: &[(Uuid, i64, i64, i32)],
+) -> Result<(u64, u64), Error> {
+    peak(revision, previous, live).map(|peak| (peak.memory, peak.cpu))
+}
+
 #[test]
 fn an_already_created_initial_target_does_not_reserve_a_phantom_second_copy() {
     let revision = revision(&[

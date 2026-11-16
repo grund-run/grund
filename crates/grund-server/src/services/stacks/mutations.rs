@@ -357,14 +357,19 @@ impl Stacks {
                 "hosted block volumes require an installed storage backend",
             ));
         }
-        self.choose_machine(
-            work.sql(),
-            org,
-            &revision,
-            previous.machine_id,
-            previous.exists.then_some(id),
-        )
-        .await?;
+        if let Some(error) = self
+            .choose_machine(
+                work.sql(),
+                org,
+                &revision,
+                previous.machine_id,
+                previous.exists.then_some(id),
+            )
+            .await?
+            .insufficient()
+        {
+            return Err(error);
+        }
         if !previous.exists {
             work.stack(
                 id,
@@ -3674,6 +3679,264 @@ mod tests {
             assert_fresh_volume(&state, &purged).await?.volume_id,
             fresh.volume_id
         );
+        Ok(())
+    }
+
+    struct PinnedShop {
+        org: Uuid,
+        id: Uuid,
+    }
+
+    async fn pinned_shop_rolling_web(
+        state: &State,
+        web_cpu: u32,
+        busy_cpu: u32,
+    ) -> anyhow::Result<PinnedShop> {
+        let org = Uuid::now_v7();
+        let id = Uuid::now_v7();
+        let machine = Uuid::now_v7();
+        let at: DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(&state.pool)
+            .await?;
+        sqlx::query("INSERT INTO grund_organisations(organisation_id,slug,kind,created_at,stream_version) VALUES($1,'capacity','personal',$2,1)")
+            .bind(org).bind(at).execute(&state.pool).await?;
+        sqlx::query("INSERT INTO grund_machines(machine_id,pool,home_organisation_id,name,state,public_key,pool_organisation_id,pool_name,minted_by,registered_at,key_registered_at,stream_version) VALUES($1,'organisation',$2,'butik-01','active',repeat('a',64),$2,'butik-01','test',$3,$3,1)")
+            .bind(machine).bind(org).bind(at).execute(&state.pool).await?;
+        sqlx::query("INSERT INTO grund_machine_presence(machine_id,last_seen_at,capabilities) VALUES($1,$2,$3)")
+            .bind(machine).bind(at).bind(Json(serde_json::json!({
+                "apps": true, "stack_services": true, "resources_allocatable": true,
+                "arch": "x86_64", "memory_mib": 3683, "cpu_millis": 1750
+            }))).execute(&state.pool).await?;
+        let mut work = Work::begin(&state.events, Uuid::now_v7(), "test").await?;
+        work.allow_stack(id);
+        work.stack(
+            id,
+            Command::Create {
+                organisation_id: org,
+                name: "shop".into(),
+            },
+        )
+        .await?;
+        let mut spec = grund_domain::app::templates::find("redis")
+            .unwrap()
+            .spec(false)
+            .context("Redis catalogue entry is available")?;
+        spec.volumes.clear();
+        spec.secrets.clear();
+        spec.memory_mib = 256;
+        let mut services = BTreeMap::new();
+        for (name, cpu, member) in [
+            ("db", 500, true),
+            ("restore", 100, true),
+            ("web", 500, true),
+            ("other", busy_cpu, false),
+        ] {
+            if !member && busy_cpu == 0 {
+                continue;
+            }
+            let app_id = Uuid::now_v7();
+            let settings = grund_config::app::spec::AppSettings::default();
+            work.app(
+                app_id,
+                AppCommand::Create {
+                    actor: Uuid::nil(),
+                    organisation_id: org,
+                    name: AppName::parse(name)?,
+                    settings: settings.clone(),
+                    at,
+                },
+            )
+            .await?;
+            if member {
+                work.app(app_id, AppCommand::AssignStack { stack_id: id, at })
+                    .await?;
+            }
+            let mut spec = spec.clone();
+            spec.cpu_millis = cpu;
+            work.app(
+                app_id,
+                AppCommand::Release {
+                    actor: Uuid::nil(),
+                    spec,
+                    image_digest: format!("sha256:{}", "a".repeat(64)),
+                    platforms: Vec::new(),
+                    exposed_ports: None,
+                    secret_versions: Vec::new(),
+                    source: ReleaseSource::File,
+                    external_release: None,
+                    request: None,
+                    rollback_of: None,
+                    note: String::new(),
+                    rollout_id: Uuid::now_v7(),
+                    at,
+                },
+            )
+            .await?;
+            work.app_decide(app_id, |_| {
+                Ok((
+                    vec![AppEvent::ReplicaPlaced {
+                        replica_id: Uuid::now_v7(),
+                        slot: 0,
+                        release: 1,
+                        machine_id: machine,
+                        placement: 0,
+                        reason: PlaceReason::Scale,
+                        placed_at: at,
+                    }],
+                    (),
+                ))
+            })
+            .await?;
+            if member {
+                let app = work.load_app(app_id).await?;
+                services.insert(
+                    name.to_string(),
+                    Service {
+                        app_id,
+                        app_name: name.into(),
+                        release: app.releases[0].clone(),
+                        settings,
+                        depends_on: Vec::new(),
+                        exclusive: false,
+                        template: None,
+                    },
+                );
+            }
+        }
+        let yaml = "stack:\n  name: shop\n  machines: [butik-01]\n  services:\n    db:\n      image: redis\n    restore:\n      image: redis\n    web:\n      image: redis\n";
+        let first = Revision {
+            number: 1,
+            yaml: yaml.into(),
+            services,
+            public_service: None,
+            public_port: None,
+            created_at: at,
+            created_by: Uuid::nil(),
+            rollback_of: None,
+        };
+        let deploy = operation(
+            Kind::Deploy,
+            1,
+            0,
+            vec!["db".into(), "restore".into(), "web".into()],
+            at,
+        );
+        work.stack(
+            id,
+            Command::Revise {
+                revision: first.clone(),
+                operation: deploy.clone(),
+            },
+        )
+        .await?;
+        work.stack(
+            id,
+            Command::Complete {
+                operation_id: deploy.id,
+                applied_revision: 1,
+                status: Status::Ready,
+                purge_after: None,
+                failure: None,
+            },
+        )
+        .await?;
+        let mut second = first;
+        second.number = 2;
+        second.yaml = yaml.replace(
+            "    web:\n      image: redis\n",
+            "    web:\n      image: redis\n      copies: 2\n      restart: rolling\n      release: {max_surge: 1, max_unavailable: 0}\n",
+        );
+        let web = second.services.get_mut("web").unwrap();
+        web.release.number = 2;
+        web.release.spec.cpu_millis = web_cpu;
+        web.settings.copies = 2;
+        web.settings.rollout.max_surge = 1;
+        web.settings.rollout.max_unavailable = 0;
+        work.stack(
+            id,
+            Command::Revise {
+                revision: second,
+                operation: operation(Kind::Deploy, 2, 1, vec!["web".into()], at),
+            },
+        )
+        .await?;
+        work.commit().await?;
+        Ok(PinnedShop { org, id })
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn an_active_rollout_whose_peak_exceeds_its_only_machine_fails_with_insufficient_capacity(
+        pool: sqlx::PgPool,
+    ) -> anyhow::Result<()> {
+        let state = state(pool).await?;
+        let shop = pinned_shop_rolling_web(&state, 350, 0).await?;
+        let stacks = state.stacks();
+        let stack = store::get(&state.pool, shop.org, shop.id).await?.unwrap();
+        let revision = stack.state.0.revisions[&2].clone();
+        let placement = stacks
+            .choose_machine(
+                &mut *state.pool.acquire().await?,
+                shop.org,
+                &revision,
+                None,
+                Some(shop.id),
+            )
+            .await?;
+        assert_eq!(placement.machine, None);
+        assert_eq!(
+            (placement.cpu, placement.exceeds),
+            (1800, Some((3683, 1750)))
+        );
+        let refusal = placement.insufficient().unwrap();
+        assert_eq!(refusal.reason(), "insufficient_capacity");
+        assert_eq!(
+            refusal.to_string(),
+            "stack.services.web: the rollout peak of 1800 mCPU / 1280 MiB exceeds the largest eligible machine's allocatable 1750 mCPU / 3683 MiB"
+        );
+        stacks.reconcile_one(shop.org, shop.id).await?;
+        let stack = store::get(&state.pool, shop.org, shop.id)
+            .await?
+            .unwrap()
+            .state
+            .0;
+        assert_eq!(stack.status, Status::RollingBack);
+        assert_eq!(stack.failure.as_deref(), Some("insufficient_capacity"));
+        let op = stack.operation.unwrap();
+        assert!(op.compensating && op.kind == Kind::Rollback);
+        assert_eq!(op.failure.as_deref(), Some("insufficient_capacity"));
+        assert!(op.order.is_empty() && op.releases.is_empty());
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn a_rollout_that_fits_an_empty_machine_waits_without_failing_while_it_is_busy(
+        pool: sqlx::PgPool,
+    ) -> anyhow::Result<()> {
+        let state = state(pool).await?;
+        let shop = pinned_shop_rolling_web(&state, 300, 200).await?;
+        let stacks = state.stacks();
+        let stack = store::get(&state.pool, shop.org, shop.id).await?.unwrap();
+        let revision = stack.state.0.revisions[&2].clone();
+        let placement = stacks
+            .choose_machine(
+                &mut *state.pool.acquire().await?,
+                shop.org,
+                &revision,
+                None,
+                Some(shop.id),
+            )
+            .await?;
+        assert_eq!((placement.machine, placement.cpu), (None, 1700));
+        assert!(placement.exceeds.is_none() && placement.insufficient().is_none());
+        stacks.reconcile_one(shop.org, shop.id).await?;
+        let stack = store::get(&state.pool, shop.org, shop.id)
+            .await?
+            .unwrap()
+            .state
+            .0;
+        assert_eq!(stack.status, Status::Waiting);
+        assert_eq!(stack.failure, None);
+        assert_eq!(stack.operation.unwrap().failure, None);
         Ok(())
     }
 }

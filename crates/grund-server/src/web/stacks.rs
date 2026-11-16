@@ -283,6 +283,7 @@ fn service_error(error: Error) -> Result<Errors, PageError> {
             "This organisation does not have access to choose hosted resources.",
         )),
         Error::NotFound => Ok(field_error("operation", "The stack was not found.")),
+        Error::InsufficientCapacity(problem) => Ok(field_error("file", problem)),
     }
 }
 

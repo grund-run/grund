@@ -352,3 +352,111 @@ async fn a_stack_restored_after_its_volume_was_purged_runs_on_a_fresh_empty_volu
     );
     Ok(())
 }
+
+fn stack_reason(error: &Value) -> String {
+    use base64::Engine;
+    error["details"]
+        .as_array()
+        .and_then(|d| d.iter().find(|d| d["type"] == "grund.stack.v1.ErrorReason"))
+        .and_then(|d| d["value"].as_str())
+        .and_then(|v| {
+            base64::engine::general_purpose::STANDARD_NO_PAD
+                .decode(v.trim_end_matches('='))
+                .ok()
+        })
+        .map(|bytes| String::from_utf8_lossy(&bytes).to_string())
+        .unwrap_or_default()
+}
+
+fn pinned(web: &str) -> String {
+    let service = |name: &str, cpu: &str| {
+        format!(
+            "    {name}:\n      image: {{image}}\n      resources:\n        memory: 64 MiB\n        cpu: {cpu}\n      release:\n        min_ready: 0\n        ready_deadline: 30\n        drain: 1\n"
+        )
+    };
+    format!(
+        "stack:\n  name: ordered\n  machines: [cap-box]\n  services:\n{}{}{}",
+        service("db", "2.5"),
+        service("restore", "0.1"),
+        web
+    )
+}
+
+#[tokio::test]
+async fn a_rollout_whose_peak_exceeds_every_eligible_machine_is_refused_and_one_that_fits_deploys()
+-> anyhow::Result<()> {
+    let registry = FakeRegistry::start().await?;
+    let Some((given, when, then)) =
+        testcase_configured(&[("GRUND_INSECURE_REGISTRIES", &registry.host)]).await?
+    else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let org = owner.username.as_str();
+    let _agent = a_machine(&when, &then, org, "cap-box").await?;
+    registry.publish("acme/service", "1");
+    let image = registry.image("acme/service", "1");
+    let web = |copies: u32, cpu: &str| {
+        format!(
+            "    web:\n      image: {{image}}\n      copies: {copies}\n      restart: rolling\n      resources:\n        memory: 64 MiB\n        cpu: {cpu}\n      release:\n        min_ready: 0\n        ready_deadline: 30\n        drain: 1\n        max_surge: 1\n        max_unavailable: 0\n"
+        )
+    };
+    let file = |web: String| pinned(&web).replace("{image}", &image);
+    call(
+        &when,
+        &then,
+        "DeployStack",
+        json!({"organisation":org,"yaml":file(web(1, "0.5")),"idempotencyKey":"first"}),
+    )
+    .await?;
+    then.status(200)?;
+    let first = ready(&when, &then, org).await?;
+
+    let wedged = file(web(2, "0.35"));
+    let preview = call(
+        &when,
+        &then,
+        "PreviewStack",
+        json!({"organisation":org,"yaml":wedged}),
+    )
+    .await?;
+    then.connect_code("failed_precondition")?;
+    let message = preview["message"].as_str().unwrap_or_default();
+    ensure!(
+        message.contains("stack.services.web")
+            && message.contains("3800 mCPU")
+            && message.contains("allocatable 3750 mCPU"),
+        "preview did not name the service and its peak against the machine: {preview}"
+    );
+    let refused = call(&when,&then,"DeployStack",json!({"organisation":org,"yaml":wedged,"expectedVersion":first["version"],"idempotencyKey":"wedged"})).await?;
+    then.connect_code("failed_precondition")?;
+    ensure!(
+        refused["message"] == preview["message"]
+            && stack_reason(&refused).contains("insufficient_capacity"),
+        "deploy accepted or misreported a revision that can never fit: {refused}"
+    );
+    let unchanged = call(
+        &when,
+        &then,
+        "GetStack",
+        json!({"organisation":org,"name":"ordered"}),
+    )
+    .await?;
+    then.status(200)?;
+    ensure!(
+        unchanged["stack"]["revision"] == first["revision"]
+            && unchanged["stack"]["status"] == "ready",
+        "refused revision changed the stack: {unchanged}"
+    );
+
+    call(&when,&then,"DeployStack",json!({"organisation":org,"yaml":file(web(2, "0.3")),"expectedVersion":first["version"],"idempotencyKey":"fits"})).await?;
+    then.status(200)?;
+    let second = ready(&when, &then, org).await?;
+    ensure!(
+        second["revision"] != first["revision"]
+            && child(&second, "web")?["ready"] == 2
+            && second["failure"].as_str().is_none_or(str::is_empty),
+        "a rollout that fits did not reach ready: {second}"
+    );
+    Ok(())
+}

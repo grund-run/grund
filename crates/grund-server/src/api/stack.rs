@@ -57,7 +57,9 @@ fn failed(error: Error) -> ConnectError {
         Error::Invalid(_) => ConnectError::invalid_argument(error.to_string()),
         Error::Conflict => ConnectError::aborted(error.to_string()),
         Error::IdempotencyConflict => ConnectError::already_exists(error.to_string()),
-        Error::Busy | Error::Owned => ConnectError::failed_precondition(error.to_string()),
+        Error::Busy | Error::Owned | Error::InsufficientCapacity(_) => {
+            ConnectError::failed_precondition(error.to_string())
+        }
         Error::HostedAccessRequired => ConnectError::permission_denied(error.to_string()),
         Error::Internal(cause) => {
             tracing::error!(error = %format!("{cause:#}"), "stack API call failed");

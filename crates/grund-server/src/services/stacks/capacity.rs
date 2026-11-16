@@ -10,7 +10,7 @@ impl Stacks {
         org: Uuid,
         revision: &Revision,
         stack_id: Option<Uuid>,
-    ) -> Result<(u64, u64), Error> {
+    ) -> Result<Peak, Error> {
         let live: Vec<(Uuid, i64, i64, i32)> = if let Some(id) = stack_id {
             sqlx::query_as("SELECT r.app_id,(rel.spec->>'memory_mib')::bigint,(rel.spec->>'cpu_millis')::bigint,r.release FROM grund_replicas r JOIN grund_releases rel ON rel.app_id=r.app_id AND rel.number=r.release JOIN grund_stack_members sm ON sm.app_id=r.app_id AND sm.organisation_id=r.organisation_id WHERE sm.organisation_id=$1 AND sm.stack_id=$2")
                 .bind(org).bind(id).fetch_all(&mut *connection).await?
@@ -24,15 +24,21 @@ impl Stacks {
         } else {
             None
         };
-        reservation(revision, previous.as_ref(), &live)
+        peak(revision, previous.as_ref(), &live)
     }
 }
 
-fn reservation(
+pub(super) struct Peak {
+    pub(super) memory: u64,
+    pub(super) cpu: u64,
+    pub(super) service: Option<String>,
+}
+
+fn peak(
     revision: &Revision,
     previous: Option<&Stack>,
     live: &[(Uuid, i64, i64, i32)],
-) -> Result<(u64, u64), Error> {
+) -> Result<Peak, Error> {
     let mut current_memory = live
         .iter()
         .map(|(_, m, _, _)| (*m).max(0) as u64)
@@ -74,6 +80,7 @@ fn reservation(
     }
     let mut peak_memory = current_memory;
     let mut peak_cpu = current_cpu;
+    let mut peak_service = None;
     for name in planned {
         let Some(service) = revision.services.get(name) else {
             if let Some(retained) = previous.and_then(|state| {
@@ -167,11 +174,19 @@ fn reservation(
                     old_cpu.max(cpu.into_iter().take(bound).sum()),
                 )
             };
-        peak_memory =
-            peak_memory.max(current_memory.saturating_sub(old_memory) + transition_memory);
-        peak_cpu = peak_cpu.max(current_cpu.saturating_sub(old_cpu) + transition_cpu);
+        let step_memory = current_memory.saturating_sub(old_memory) + transition_memory;
+        let step_cpu = current_cpu.saturating_sub(old_cpu) + transition_cpu;
+        if step_memory > peak_memory || step_cpu > peak_cpu {
+            peak_service = Some(name.clone());
+        }
+        peak_memory = peak_memory.max(step_memory);
+        peak_cpu = peak_cpu.max(step_cpu);
         current_memory = current_memory.saturating_sub(old_memory) + new_memory;
         current_cpu = current_cpu.saturating_sub(old_cpu) + new_cpu;
     }
-    Ok((peak_memory, peak_cpu))
+    Ok(Peak {
+        memory: peak_memory,
+        cpu: peak_cpu,
+        service: peak_service,
+    })
 }

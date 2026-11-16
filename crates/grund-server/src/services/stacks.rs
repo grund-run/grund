@@ -139,6 +139,24 @@ struct Placement {
     machine: Option<Uuid>,
     memory: u64,
     cpu: u64,
+    service: Option<String>,
+    exceeds: Option<(u64, u64)>,
+}
+
+const INSUFFICIENT_CAPACITY: &str = "insufficient_capacity";
+
+impl Placement {
+    fn insufficient(&self) -> Option<Error> {
+        let (memory, cpu) = self.exceeds?;
+        let field = self.service.as_ref().map_or_else(
+            || "stack.services".into(),
+            |name| format!("stack.services.{name}"),
+        );
+        Some(Error::InsufficientCapacity(format!(
+            "{field}: the rollout peak of {} mCPU / {} MiB exceeds the largest eligible machine's allocatable {cpu} mCPU / {memory} MiB",
+            self.cpu, self.memory
+        )))
+    }
 }
 
 /// Initial or explicitly changed values are supplied separately from versioned YAML.
@@ -166,6 +184,8 @@ pub enum Error {
     Owned,
     #[error("this organisation does not have access to choose hosted resources")]
     HostedAccessRequired,
+    #[error("{0}")]
+    InsufficientCapacity(String),
     #[error("stack operation unavailable")]
     Internal(#[from] anyhow::Error),
 }
@@ -181,6 +201,7 @@ impl Error {
             Self::Busy => "operation_in_progress",
             Self::Owned => "stack_owned",
             Self::HostedAccessRequired => "hosted_access_required",
+            Self::InsufficientCapacity(_) => INSUFFICIENT_CAPACITY,
             Self::Internal(_) => "internal",
         }
     }
@@ -717,6 +738,9 @@ impl Stacks {
                 old.as_ref().map(|r| r.stack_id),
             )
             .await?;
+        if let Some(error) = placement.insufficient() {
+            return Err(error);
+        }
         Ok(Preview {
             name: definition.name,
             expected_version: old.as_ref().map_or(0, |r| r.stream_version),
@@ -1006,14 +1030,19 @@ impl Stacks {
         pinned: Option<Uuid>,
         stack_id: Option<Uuid>,
     ) -> Result<Placement, Error> {
-        let (memory, cpu) = self
+        let peak = self
             .transition_reservation(connection, org, revision, stack_id)
             .await?;
-        let placement = Placement {
+        let (memory, cpu) = (peak.memory, peak.cpu);
+        let mut placement = Placement {
             machine: None,
             memory,
             cpu,
+            service: peak.service,
+            exceeds: None,
         };
+        let mut largest: Option<(u64, u64)> = None;
+        let mut fits_empty = false;
         let reservations = apps::reservations_for_stack(&mut *connection, org, stack_id).await?;
         let definition = stack::parse(&revision.yaml)?;
         let app_ids = revision
@@ -1172,6 +1201,14 @@ impl Stacks {
                     continue;
                 }
             }
+            let total = (
+                view.allocatable_memory_mib(),
+                u64::from(view.allocatable_cpu_millis()),
+            );
+            fits_empty |= memory <= total.0 && cpu <= total.1;
+            if largest.is_none_or(|(m, c)| (total.1, total.0) > (c, m)) {
+                largest = Some(total);
+            }
             if memory
                 > view
                     .allocatable_memory_mib()
@@ -1188,6 +1225,9 @@ impl Stacks {
                 machine: Some(row.machine_id),
                 ..placement
             });
+        }
+        if !fits_empty {
+            placement.exceeds = largest;
         }
         Ok(placement)
     }
