@@ -390,6 +390,23 @@ pub async fn apply_machine(
             .execute(&mut *connection)
             .await?;
         }
+        MachineEvent::Rekeyed {
+            key,
+            facts,
+            rekeyed_at,
+            ..
+        } => {
+            sqlx::query(
+                "UPDATE grund_machines SET public_key = $2, facts = $3, key_registered_at = $4 \
+                 WHERE machine_id = $1",
+            )
+            .bind(machine_id)
+            .bind(key.as_hex())
+            .bind(sqlx::types::Json(facts))
+            .bind(rekeyed_at)
+            .execute(&mut *connection)
+            .await?;
+        }
         MachineEvent::ProviderLinked {
             provider_machine_id,
             ..

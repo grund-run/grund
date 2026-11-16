@@ -576,6 +576,32 @@ async fn a_lease_moves_a_machine_into_the_lessee_pool_and_back_out(pool: PgPool)
     let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();
     work.machine(
         machine_id,
+        MachineCommand::Rekey {
+            key: machine_key(2),
+            token_id: Uuid::now_v7(),
+            facts: grund_domain::machine::MachineFacts::default(),
+            at: Utc::now(),
+        },
+    )
+    .await
+    .unwrap();
+    work.commit().await.unwrap();
+    let serviced = machines::organisation_machines(&pool, organisation_id)
+        .await
+        .unwrap();
+    assert_eq!(serviced.len(), 1, "a serviced machine stays leased");
+    assert_eq!(serviced[0].pool_name.as_deref(), Some("web-1"));
+    let key: String =
+        sqlx::query_scalar("SELECT public_key FROM grund_machines WHERE machine_id=$1")
+            .bind(machine_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(key, machine_key(2).as_hex());
+
+    let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();
+    work.machine(
+        machine_id,
         MachineCommand::EndLease {
             actor: Uuid::now_v7(),
             at: Utc::now(),

@@ -343,6 +343,15 @@ pub enum MachineEvent {
         facts: MachineFacts,
         reregistered_at: DateTime<Utc>,
     },
+    /// A machine serviced onto a fresh disk registered again under a new key
+    /// without leaving its lease or pool.
+    Rekeyed {
+        key: MachineKey,
+        retired_key: MachineKey,
+        token_id: Uuid,
+        facts: MachineFacts,
+        rekeyed_at: DateTime<Utc>,
+    },
     Revoked {
         revoked_by: Uuid,
         revoked_at: DateTime<Utc>,
@@ -480,6 +489,12 @@ impl mire::Aggregate for Machine {
                 self.key = Some(key.clone());
                 self.state = Some(MachineState::Available);
             }
+            MachineEvent::Rekeyed {
+                key, retired_key, ..
+            } => {
+                self.retired_keys.push(retired_key.clone());
+                self.key = Some(key.clone());
+            }
             MachineEvent::ProviderLinked {
                 provider_machine_id,
                 ..
@@ -540,6 +555,14 @@ pub enum MachineCommand {
     /// Ends the lease in force; the machine must be wiped and registered
     /// again before it can be leased.
     EndLease { actor: Uuid, at: DateTime<Utc> },
+    /// Registers a leased or available machine again under a key it has
+    /// never used, keeping its lease: a serviced machine's fresh disk.
+    Rekey {
+        key: MachineKey,
+        token_id: Uuid,
+        facts: MachineFacts,
+        at: DateTime<Utc>,
+    },
     /// Registers a returning machine again under a key it has never used.
     Reregister {
         key: MachineKey,
@@ -692,6 +715,27 @@ impl mire::Command for MachineCommand {
                     token_id,
                     facts,
                     reregistered_at: at,
+                }])
+            }
+            MachineCommand::Rekey {
+                key,
+                token_id,
+                facts,
+                at,
+            } => {
+                if !matches!(state, MachineState::Leased | MachineState::Available) {
+                    return Err(MachineError::NotLeased);
+                }
+                if machine.used(&key) {
+                    return Err(MachineError::KeyReused);
+                }
+                let retired_key = machine.key.clone().ok_or(MachineError::NotFound)?;
+                Ok(vec![MachineEvent::Rekeyed {
+                    key,
+                    retired_key,
+                    token_id,
+                    facts,
+                    rekeyed_at: at,
                 }])
             }
             MachineCommand::LinkProvider {
@@ -957,6 +1001,40 @@ mod tests {
             Err(MachineError::KeyReused)
         );
         run(&mut machine, reregister(3)).unwrap();
+    }
+
+    #[test]
+    fn a_serviced_machine_takes_a_new_key_and_keeps_its_lease() {
+        let org = Uuid::now_v7();
+        let mut machine = registered(Pool::Management);
+        lease(&mut machine, org).unwrap();
+        let lease_before = machine.lease.clone();
+        let rekey = |k: u8| MachineCommand::Rekey {
+            key: key(k),
+            token_id: Uuid::now_v7(),
+            facts: MachineFacts::default(),
+            at: at(),
+        };
+        assert_eq!(run(&mut machine, rekey(1)), Err(MachineError::KeyReused));
+        run(&mut machine, rekey(2)).unwrap();
+        assert_eq!(machine.state, Some(MachineState::Leased));
+        assert_eq!(machine.lease, lease_before);
+        assert_eq!(machine.organisation(), Some(org));
+        assert_eq!(machine.key, Some(key(2)));
+        assert_eq!(run(&mut machine, rekey(1)), Err(MachineError::KeyReused));
+        run(
+            &mut machine,
+            MachineCommand::EndLease {
+                actor: Uuid::now_v7(),
+                at: at(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            run(&mut machine, rekey(3)),
+            Err(MachineError::NotLeased),
+            "a returning machine is wiped and registers again instead"
+        );
     }
 
     #[test]

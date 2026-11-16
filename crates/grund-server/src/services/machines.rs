@@ -28,6 +28,10 @@ use crate::{
 /// exists.
 pub const HEARTBEAT_INTERVAL_SECONDS: i32 = 5;
 
+/// Mints a machine-bound token that keeps the machine's lease when it is
+/// consumed: the provider serviced the machine onto a fresh disk.
+pub const SERVICE_TOKEN_MINTER: &str = "grund/machine-service";
+
 /// The shortest lifetime a minted token may be given.
 pub const TOKEN_TTL_MIN: Duration = Duration::seconds(60);
 
@@ -383,6 +387,12 @@ impl Machines {
 
         let machine_id = token.machine_id.unwrap_or_else(Uuid::now_v7);
         let command = match token.machine_id {
+            Some(_) if token.minted_by == SERVICE_TOKEN_MINTER => MachineCommand::Rekey {
+                key: key.clone(),
+                token_id: token.token_id,
+                facts: request.facts.clone(),
+                at: now,
+            },
             Some(_) => MachineCommand::Reregister {
                 key: key.clone(),
                 token_id: token.token_id,

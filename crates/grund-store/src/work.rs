@@ -184,6 +184,7 @@ impl<'a> Work<'a> {
             MachineCommand::Lease { at, .. }
             | MachineCommand::EndLease { at, .. }
             | MachineCommand::Reregister { at, .. }
+            | MachineCommand::Rekey { at, .. }
             | MachineCommand::LinkProvider { at, .. }
             | MachineCommand::Revoke { at, .. }
             | MachineCommand::SetInService { at, .. } => Some(*at),
