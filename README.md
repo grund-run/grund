@@ -832,6 +832,11 @@ and same-site only, not protection against whole-site loss. Hosted capacity
 is fixed; resizing is not supported. Redis syncs disk writes about once a second,
 so abrupt power loss can lose recent writes.
 
+PostgreSQL stops with a fast shutdown (SIGINT, 120 s grace): open sessions,
+such as an app's pool, are ended rather than waited for, so a restart is a few
+seconds and leaves a clean data directory. A stack deployed before this keeps
+SIGTERM until its db service is next changed or refreshed.
+
 On every start PostgreSQL restores its template host-auth rule and any missing
 default configuration files. This does not repair database files or make a
 snapshot database-consistent; test a restored copy before relying on it.

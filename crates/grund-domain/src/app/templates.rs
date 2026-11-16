@@ -37,6 +37,8 @@ pub struct Template {
     pub check: Option<(&'static str, &'static str)>,
     pub memory_mib: u64,
     pub cpu_millis: u32,
+    /// `(signal, grace seconds)` when SIGTERM and 30 seconds do not stop the image cleanly.
+    pub stop: Option<(&'static str, u32)>,
     pub storage: Option<TemplateStorage>,
     /// Why this app cannot currently be deployed.
     pub unavailable: Option<&'static str>,
@@ -71,6 +73,7 @@ pub const CATALOGUE: &[Template] = &[
         check: Some(("monitor", "/healthz")),
         memory_mib: 256,
         cpu_millis: 500,
+        stop: None,
         storage: None,
         unavailable: None,
     },
@@ -87,6 +90,7 @@ pub const CATALOGUE: &[Template] = &[
         check: Some(("http", "/health")),
         memory_mib: 64,
         cpu_millis: 100,
+        stop: None,
         storage: None,
         unavailable: None,
     },
@@ -103,6 +107,7 @@ pub const CATALOGUE: &[Template] = &[
         check: Some(("http", "/")),
         memory_mib: 128,
         cpu_millis: 250,
+        stop: None,
         storage: None,
         unavailable: None,
     },
@@ -123,6 +128,7 @@ pub const CATALOGUE: &[Template] = &[
         check: None,
         memory_mib: 512,
         cpu_millis: 500,
+        stop: Some(("SIGINT", 120)),
         storage: Some(TemplateStorage {
             path: "/var/lib/postgresql/data",
             size_gib: 10,
@@ -146,6 +152,7 @@ pub const CATALOGUE: &[Template] = &[
         check: None,
         memory_mib: 256,
         cpu_millis: 500,
+        stop: None,
         storage: Some(TemplateStorage {
             path: "/data",
             size_gib: 1,
@@ -165,6 +172,7 @@ pub const CATALOGUE: &[Template] = &[
         check: None,
         memory_mib: 512,
         cpu_millis: 500,
+        stop: None,
         storage: Some(TemplateStorage {
             path: "/data",
             size_gib: 10,
@@ -242,7 +250,12 @@ impl Template {
                 .collect(),
             secrets: Vec::new(),
             check,
-            stop: StopSpec::default(),
+            stop: self
+                .stop
+                .map_or_else(StopSpec::default, |(signal, grace_seconds)| StopSpec {
+                    signal: signal.into(),
+                    grace_seconds,
+                }),
         })
     }
 }
@@ -323,6 +336,23 @@ mod tests {
             let check = spec.check.unwrap();
             assert_eq!(check.kind, CheckKind::Tcp);
             assert_eq!(check.port, spec.ports[0].port);
+        }
+    }
+
+    #[test]
+    fn postgres_stops_with_a_fast_shutdown_so_pooled_sessions_cannot_hold_it_until_sigkill() {
+        let spec = find("postgres")
+            .unwrap()
+            .spec(false)
+            .unwrap()
+            .validate()
+            .unwrap();
+        assert_eq!(spec.stop.signal, "SIGINT");
+        assert!(spec.stop.grace_seconds > StopSpec::default().grace_seconds);
+        for template in CATALOGUE.iter().filter(|t| t.key != "postgres") {
+            if let Some(spec) = template.spec(false) {
+                assert_eq!(spec.stop, StopSpec::default(), "{}", template.key);
+            }
         }
     }
 
