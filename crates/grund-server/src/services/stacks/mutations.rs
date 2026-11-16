@@ -426,8 +426,15 @@ impl Stacks {
                 return Err(Error::Owned);
             }
             if existing.deleted {
-                self.restore_child(&mut work, org, service.app_id, actor, revision.created_at)
-                    .await?;
+                self.restore_child(
+                    &mut work,
+                    org,
+                    service.app_id,
+                    actor,
+                    revision.created_at,
+                    &service.release.spec.volumes,
+                )
+                .await?;
             }
             if changed.contains(name) {
                 service.release.number = existing.releases.last().map_or(1, |r| r.number + 1);
@@ -934,8 +941,15 @@ impl Stacks {
         }
         if matches!(kind, Kind::Restore | Kind::Rollback) {
             for service in revision.services.values() {
-                self.restore_child(&mut work, org, service.app_id, actor, now)
-                    .await?;
+                self.restore_child(
+                    &mut work,
+                    org,
+                    service.app_id,
+                    actor,
+                    now,
+                    &service.release.spec.volumes,
+                )
+                .await?;
             }
         }
         if kind == Kind::Rollback {
@@ -3317,5 +3331,349 @@ mod tests {
         pool: sqlx::PgPool,
     ) -> anyhow::Result<()> {
         expired_deletion_waits_for_fenced_stop(pool, true).await
+    }
+
+    struct PurgedStack {
+        org: Uuid,
+        id: Uuid,
+        app_id: Uuid,
+        machine: Uuid,
+        purged: Uuid,
+        data: grund_config::app::spec::VolumeSpec,
+    }
+
+    async fn purged_template_stack(state: &State) -> anyhow::Result<PurgedStack> {
+        let org = Uuid::now_v7();
+        let id = Uuid::now_v7();
+        let app_id = Uuid::now_v7();
+        let machine = Uuid::now_v7();
+        let at: DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(&state.pool)
+            .await?;
+        sqlx::query("INSERT INTO grund_organisations(organisation_id,slug,kind,created_at,stream_version) VALUES($1,'purged','personal',$2,1)")
+            .bind(org).bind(at).execute(&state.pool).await?;
+        sqlx::query("INSERT INTO grund_machines(machine_id,pool,name,state,public_key,pool_organisation_id,pool_name,lease_id,minted_by,registered_at,key_registered_at,stream_version) VALUES($1,'management','physical','leased',repeat('a',64),$2,'hosted',$3,'hosted:test',$4,$4,1)")
+            .bind(machine).bind(org).bind(Uuid::now_v7()).bind(at).execute(&state.pool).await?;
+        sqlx::query("INSERT INTO grund_machine_presence(machine_id,last_seen_at,capabilities) VALUES($1,$2,$3)")
+            .bind(machine).bind(at).bind(Json(serde_json::json!({
+                "apps": true, "stack_services": true, "resources_allocatable": true,
+                "volumes": true, "arch": "x86_64", "memory_mib": 4096, "cpu_millis": 2000
+            }))).execute(&state.pool).await?;
+        let mut spec = grund_domain::app::templates::find("postgres")
+            .unwrap()
+            .spec(false)
+            .unwrap();
+        spec.volumes[0].backup = true;
+        let data = spec.volumes[0].clone();
+        assert!(data.size_gib.is_none() && data.source.is_none());
+        let settings = grund_config::app::spec::AppSettings::default();
+        let mut work = Work::begin(&state.events, Uuid::now_v7(), "test").await?;
+        work.allow_stack(id);
+        work.stack(
+            id,
+            Command::Create {
+                organisation_id: org,
+                name: "shop".into(),
+            },
+        )
+        .await?;
+        work.app(
+            app_id,
+            AppCommand::Create {
+                actor: Uuid::nil(),
+                organisation_id: org,
+                name: AppName::parse("shop-db")?,
+                settings: settings.clone(),
+                at,
+            },
+        )
+        .await?;
+        work.app(app_id, AppCommand::AssignStack { stack_id: id, at })
+            .await?;
+        work.app(
+            app_id,
+            AppCommand::Release {
+                actor: Uuid::nil(),
+                spec: spec.clone(),
+                image_digest: format!("sha256:{}", "a".repeat(64)),
+                platforms: Vec::new(),
+                exposed_ports: None,
+                secret_versions: Vec::new(),
+                source: ReleaseSource::File,
+                external_release: None,
+                request: None,
+                rollback_of: None,
+                note: String::new(),
+                rollout_id: Uuid::now_v7(),
+                at,
+            },
+        )
+        .await?;
+        state
+            .volumes()
+            .resolve_release_in(&mut work, org, app_id, &spec.volumes)
+            .await?;
+        state
+            .volumes()
+            .place_release_in(&mut work, org, app_id, machine, &spec.volumes)
+            .await?;
+        let release = work.load_app(app_id).await?.releases[0].clone();
+        let deploy = operation(Kind::Deploy, 1, 0, vec!["db".into()], at);
+        work.stack(
+            id,
+            Command::Revise {
+                revision: Revision {
+                    number: 1,
+                    yaml: "stack:\n  name: shop\n  services:\n    db:\n      template: postgres\n      volumes:\n        data:\n          backup: daily\n".into(),
+                    services: BTreeMap::from([(
+                        "db".into(),
+                        Service {
+                            app_id,
+                            app_name: "shop-db".into(),
+                            release,
+                            settings,
+                            depends_on: Vec::new(),
+                            exclusive: true,
+                            template: Some("postgres".into()),
+                        },
+                    )]),
+                    public_service: None,
+                    public_port: None,
+                    created_at: at,
+                    created_by: Uuid::nil(),
+                    rollback_of: None,
+                },
+                operation: deploy.clone(),
+            },
+        )
+        .await?;
+        work.stack(
+            id,
+            Command::Complete {
+                operation_id: deploy.id,
+                applied_revision: 1,
+                status: Status::Ready,
+                purge_after: None,
+                failure: None,
+            },
+        )
+        .await?;
+        work.commit().await?;
+        let deadline = at + chrono::Duration::hours(1);
+        let mut work = Work::begin(&state.events, Uuid::now_v7(), "test").await?;
+        work.allow_stack(id);
+        let deletion = operation(Kind::Delete, 1, 1, Vec::new(), at);
+        work.stack(
+            id,
+            Command::Operate {
+                operation: deletion.clone(),
+                at,
+            },
+        )
+        .await?;
+        work.app(
+            app_id,
+            AppCommand::Delete {
+                actor: Uuid::nil(),
+                at,
+                purge_after: deadline,
+            },
+        )
+        .await?;
+        state
+            .volumes()
+            .delete_app_in(&mut work, org, app_id, deadline)
+            .await?;
+        work.stack(
+            id,
+            Command::Complete {
+                operation_id: deletion.id,
+                applied_revision: 1,
+                status: Status::Deleted,
+                purge_after: Some(deadline),
+                failure: None,
+            },
+        )
+        .await?;
+        work.commit().await?;
+        let retained = grund_store::volumes::app_volumes(&state.pool, org, app_id).await?;
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained[0].status, "pending_deletion");
+        let purged = retained[0].volume_id;
+        state
+            .volumes()
+            .purge_now(
+                Uuid::nil(),
+                org,
+                app_id,
+                purged,
+                retained[0].stream_version,
+                "verified test data cleanup".into(),
+            )
+            .await?;
+        state
+            .volumes()
+            .acknowledge(org, machine, app_id, purged)
+            .await?;
+        let rows = grund_store::volumes::all_app_volumes(&state.pool, org, app_id).await?;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, "deleted");
+        Ok(PurgedStack {
+            org,
+            id,
+            app_id,
+            machine,
+            purged,
+            data,
+        })
+    }
+
+    async fn assert_fresh_volume(
+        state: &State,
+        purged: &PurgedStack,
+    ) -> anyhow::Result<grund_store::volumes::VolumeRow> {
+        let rows =
+            grund_store::volumes::all_app_volumes(&state.pool, purged.org, purged.app_id).await?;
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        let old = rows
+            .iter()
+            .find(|row| row.volume_id == purged.purged)
+            .unwrap();
+        assert_eq!(old.status, "deleted");
+        let fresh = rows
+            .iter()
+            .find(|row| row.volume_id != purged.purged)
+            .unwrap();
+        assert_ne!(fresh.status, "deleted");
+        assert_eq!(fresh.name, purged.data.name);
+        assert_eq!(fresh.path, purged.data.path);
+        assert_eq!(fresh.source, purged.data.source);
+        assert_eq!(fresh.size_gib, None);
+        assert!(fresh.backup);
+        assert!(fresh.purge_after.is_none());
+        Ok(fresh.clone())
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn restoring_a_stack_whose_volume_was_purged_requests_a_fresh_volume_and_advances(
+        pool: sqlx::PgPool,
+    ) -> anyhow::Result<()> {
+        let state = state(pool).await?;
+        let purged = purged_template_stack(&state).await?;
+        let version = store::get(&state.pool, purged.org, purged.id)
+            .await?
+            .unwrap()
+            .stream_version;
+        state
+            .stacks()
+            .restore(
+                Uuid::nil(),
+                purged.org,
+                "shop",
+                Some(version),
+                "restore-purged",
+            )
+            .await?;
+        let requested = assert_fresh_volume(&state, &purged).await?;
+        assert_eq!(requested.status, "requested");
+        state.stacks().reconcile_one(purged.org, purged.id).await?;
+        let stack = store::get(&state.pool, purged.org, purged.id)
+            .await?
+            .unwrap()
+            .state
+            .0;
+        let op = stack.operation.unwrap();
+        assert_eq!(op.kind, Kind::Restore);
+        assert_eq!(op.step, Step::Applying);
+        assert_eq!(stack.machine_id, Some(purged.machine));
+        assert_eq!(
+            assert_fresh_volume(&state, &purged).await?.volume_id,
+            requested.volume_id
+        );
+        state
+            .apps()
+            .reconcile_app(purged.app_id, purged.org)
+            .await?;
+        let attached = assert_fresh_volume(&state, &purged).await?;
+        assert_eq!(attached.volume_id, requested.volume_id);
+        assert_eq!(attached.status, "attached");
+        assert_eq!(attached.machine_id, Some(purged.machine));
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn an_in_flight_restore_wedged_on_a_purged_volume_requests_it_and_compensates_without_duplicating(
+        pool: sqlx::PgPool,
+    ) -> anyhow::Result<()> {
+        let state = state(pool).await?;
+        let purged = purged_template_stack(&state).await?;
+        let at: DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(&state.pool)
+            .await?;
+        let mut work = Work::begin(&state.events, Uuid::now_v7(), "test").await?;
+        work.allow_stack(purged.id);
+        work.stack(
+            purged.id,
+            Command::Operate {
+                operation: operation(Kind::Restore, 1, 1, vec!["db".into()], at),
+                at,
+            },
+        )
+        .await?;
+        work.app(
+            purged.app_id,
+            AppCommand::Restore {
+                actor: Uuid::nil(),
+                at,
+            },
+        )
+        .await?;
+        work.commit().await?;
+        let stacks = state.stacks();
+        stacks.reconcile_one(purged.org, purged.id).await?;
+        let current = || async {
+            anyhow::Ok(
+                store::get(&state.pool, purged.org, purged.id)
+                    .await?
+                    .unwrap()
+                    .state
+                    .0,
+            )
+        };
+        let stack = current().await?;
+        let mut op = stack.operation.clone().unwrap();
+        assert_eq!(op.step, Step::Applying);
+        let fresh = assert_fresh_volume(&state, &purged).await?;
+        assert_eq!(fresh.status, "requested");
+
+        op.deadline = at - chrono::Duration::seconds(1);
+        let mut work = Work::begin(&state.events, Uuid::now_v7(), "test").await?;
+        work.allow_stack(purged.id);
+        work.stack(
+            purged.id,
+            Command::Advance {
+                operation: op,
+                status: stack.status,
+                machine_id: stack.machine_id,
+                failure: None,
+            },
+        )
+        .await?;
+        work.commit().await?;
+        stacks.reconcile_one(purged.org, purged.id).await?;
+        let stack = current().await?;
+        assert_eq!(stack.status, Status::RollingBack);
+        let op = stack.operation.unwrap();
+        assert!(op.compensating && op.kind == Kind::Rollback);
+        assert_eq!(op.order, vec!["db".to_string()]);
+        assert_eq!(op.step, Step::Pending);
+        stacks.reconcile_one(purged.org, purged.id).await?;
+        let op = current().await?.operation.unwrap();
+        assert!(op.compensating && op.step == Step::Applying);
+        assert_eq!(
+            assert_fresh_volume(&state, &purged).await?.volume_id,
+            fresh.volume_id
+        );
+        Ok(())
     }
 }

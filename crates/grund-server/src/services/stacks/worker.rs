@@ -1,4 +1,5 @@
 use super::*;
+use grund_config::app::spec::VolumeSpec;
 use grund_domain::volume::VolumeCommand;
 use tokio_util::sync::CancellationToken;
 
@@ -295,8 +296,15 @@ impl Stacks {
                     .fetch_one(&mut **work.sql())
                     .await?;
             if app.deleted {
-                self.restore_child(&mut work, org, service.app_id, Uuid::nil(), now)
-                    .await?;
+                self.restore_child(
+                    &mut work,
+                    org,
+                    service.app_id,
+                    Uuid::nil(),
+                    now,
+                    &service.release.spec.volumes,
+                )
+                .await?;
                 if revision
                     .public_service
                     .as_ref()
@@ -330,6 +338,16 @@ impl Stacks {
                 },
             )
             .await?;
+            self.state
+                .volumes()
+                .request_purged_in(
+                    &mut work,
+                    org,
+                    service.app_id,
+                    &service.release.spec.volumes,
+                )
+                .await
+                .map_err(anyhow::Error::from)?;
             self.state
                 .volumes()
                 .resolve_release_in(
@@ -451,6 +469,7 @@ impl Stacks {
         app_id: Uuid,
         actor: Uuid,
         now: DateTime<Utc>,
+        declared: &[VolumeSpec],
     ) -> Result<(), Error> {
         let app = work.load_app(app_id).await?;
         if !app.deleted {
@@ -464,6 +483,11 @@ impl Stacks {
         }
         work.app(app_id, AppCommand::Restore { actor, at: now })
             .await?;
+        self.state
+            .volumes()
+            .request_purged_in(work, org, app_id, declared)
+            .await
+            .map_err(anyhow::Error::from)?;
         Ok(())
     }
 

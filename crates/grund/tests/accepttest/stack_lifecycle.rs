@@ -214,3 +214,141 @@ async fn a_restart_distinguishes_its_unassigned_successor_from_the_running_execu
     );
     Ok(())
 }
+
+async fn stack_volumes(when: &When, then: &Then, org: &str, app: &str) -> anyhow::Result<Value> {
+    when.calling(
+        "/grund.volume.v1.VolumeService/ListVolumes",
+        &json!({"organisation": org, "app": app}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    Ok(then.json()?["volumes"].clone())
+}
+
+#[tokio::test]
+async fn a_stack_restored_after_its_volume_was_purged_runs_on_a_fresh_empty_volume()
+-> anyhow::Result<()> {
+    let registry = FakeRegistry::start().await?;
+    let Some((given, when, then)) =
+        testcase_configured(&[("GRUND_INSECURE_REGISTRIES", &registry.host)]).await?
+    else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let org = owner.username.as_str();
+    let agent = a_machine(&when, &then, org, "stack-box").await?;
+    registry.publish("acme/db", "1");
+    let file = format!(
+        "stack:\n  name: ordered\n  services:\n    db:\n      image: {}\n      volumes:\n        data:\n          path: /data\n      resources:\n        memory: 128 MiB\n        cpu: 0.1\n      release:\n        min_ready: 0\n        ready_deadline: 30\n        drain: 1\n",
+        registry.image("acme/db", "1")
+    );
+    call(
+        &when,
+        &then,
+        "DeployStack",
+        json!({"organisation":org,"yaml":file,"idempotencyKey":"initial"}),
+    )
+    .await?;
+    then.status(200)?;
+    let first = ready(&when, &then, org).await?;
+    let db = child(&first, "db")?;
+    let db_name = db["appName"].as_str().context("db app name")?;
+    let original = stack_volumes(&when, &then, org, db_name).await?;
+    ensure!(
+        original.as_array().is_some_and(|v| v.len() == 1) && original[0]["status"] == "attached",
+        "the first deploy attached one volume: {original}"
+    );
+    let original = original[0].clone();
+    let original_id = original["volumeId"].as_str().context("volume ID")?;
+    let original_root = agent.dir.join("volumes").join(original_id);
+    std::fs::write(original_root.join("customer-marker"), b"purged later")?;
+
+    call(&when,&then,"DeleteStack",json!({"organisation":org,"name":"ordered","expectedVersion":first["version"],"idempotencyKey":"delete"})).await?;
+    then.status(200)?;
+    let started = Instant::now();
+    let deleted = loop {
+        let value = call(
+            &when,
+            &then,
+            "GetStack",
+            json!({"organisation":org,"name":"ordered"}),
+        )
+        .await?;
+        then.status(200)?;
+        if value["stack"]["status"] == "deleted" {
+            break value["stack"].clone();
+        }
+        ensure!(
+            started.elapsed() < Duration::from_secs(60),
+            "stack deletion did not finish: {value}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
+    let pending = stack_volumes(&when, &then, org, db_name).await?;
+    ensure!(
+        pending[0]["status"] == "pending_deletion",
+        "deletion retains the volume: {pending}"
+    );
+    when.calling(
+        "/grund.volume.v1.VolumeService/PurgeVolumeNow",
+        &json!({
+            "organisation": org,
+            "app": db_name,
+            "volumeId": original_id,
+            "expectedVersion": pending[0]["version"],
+            "reason": "verified test data cleanup"
+        })
+        .to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    let started = Instant::now();
+    while original_root.exists()
+        || !stack_volumes(&when, &then, org, db_name)
+            .await?
+            .as_array()
+            .is_none_or(Vec::is_empty)
+    {
+        ensure!(
+            started.elapsed() < Duration::from_secs(45),
+            "the purge was not erased and acknowledged"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    call(&when,&then,"RestoreStack",json!({"organisation":org,"name":"ordered","expectedVersion":deleted["version"],"idempotencyKey":"restore"})).await?;
+    then.status(200)?;
+    let restored = ready(&when, &then, org).await?;
+    ensure!(
+        child(&restored, "db")?["appId"] == db["appId"],
+        "restore kept the service's app identity: {restored}"
+    );
+    let fresh = stack_volumes(&when, &then, org, db_name).await?;
+    ensure!(
+        fresh.as_array().is_some_and(|v| v.len() == 1),
+        "one fresh volume: {fresh}"
+    );
+    let fresh = &fresh[0];
+    let fresh_id = fresh["volumeId"].as_str().context("fresh volume ID")?;
+    ensure!(
+        fresh_id != original_id
+            && fresh["status"] == "attached"
+            && fresh["name"] == original["name"]
+            && fresh["path"] == original["path"]
+            && fresh["backup"] == original["backup"],
+        "the fresh volume matches the declaration under a new identity: {fresh} vs {original}"
+    );
+    let fresh_root = agent.dir.join("volumes").join(fresh_id);
+    ensure!(
+        fresh_root.exists() && !fresh_root.join("customer-marker").exists(),
+        "the fresh volume is a new empty directory"
+    );
+    ensure!(
+        agent.containers().iter().any(|container| {
+            container["spec"]["volumes"][0]["source"] == fresh_root.to_string_lossy().as_ref()
+        }),
+        "the restored service mounts the fresh volume: {:?}",
+        agent.containers()
+    );
+    Ok(())
+}

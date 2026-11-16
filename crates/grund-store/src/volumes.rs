@@ -72,7 +72,8 @@ pub async fn by_name(
     name: &str,
 ) -> Result<Option<VolumeRow>, sqlx::Error> {
     sqlx::query_as(select_volumes!(
-        "WHERE organisation_id = $1 AND app_id = $2 AND name = $3"
+        "WHERE organisation_id = $1 AND app_id = $2 AND name = $3 \
+         ORDER BY status = 'deleted', created_at DESC LIMIT 1"
     ))
     .bind(organisation_id)
     .bind(app_id)

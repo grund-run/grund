@@ -329,6 +329,42 @@ impl Volumes {
         }
         Ok(())
     }
+    /// Request a fresh, empty volume under a new identity for each declared
+    /// name whose latest volume has been purged, exactly as a first release
+    /// would. A name with any retained or live volume is left untouched.
+    pub async fn request_purged_in(
+        &self,
+        work: &mut Work<'_>,
+        org: Uuid,
+        app: Uuid,
+        specs: &[VolumeSpec],
+    ) -> Result<(), VolumesError> {
+        for spec in specs {
+            let purged = volumes::by_name(&mut **work.sql(), org, app, &spec.name)
+                .await
+                .map_err(anyhow::Error::from)?
+                .is_some_and(|row| row.status == "deleted");
+            if !purged {
+                continue;
+            }
+            work.volume(
+                Uuid::now_v7(),
+                VolumeCommand::Request {
+                    organisation_id: org,
+                    app_id: app,
+                    name: spec.name.clone(),
+                    path: spec.path.clone(),
+                    source: spec.source.clone(),
+                    backup: spec.backup,
+                    size_gib: spec.size_gib,
+                    at: Utc::now(),
+                },
+            )
+            .await
+            .map_err(volume_work)?;
+        }
+        Ok(())
+    }
     /// Bind each app-owned volume to its sole machine in the placement
     /// transaction. Hosted blocks wait for a fenced physical host receipt.
     pub async fn place_release_in(
