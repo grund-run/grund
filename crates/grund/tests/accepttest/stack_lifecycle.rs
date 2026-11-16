@@ -86,6 +86,13 @@ async fn dependencies_start_after_success_and_removal_rollback_preserves_owned_i
     let producer = child(&first, "producer")?;
     let consumer = child(&first, "consumer")?;
     let producer_name = producer["appName"].as_str().context("producer app name")?;
+    ensure!(
+        producer_name.starts_with("ordered-producer-")
+            && consumer["appName"]
+                .as_str()
+                .is_some_and(|name| name.starts_with("ordered-consumer-")),
+        "members are not named for their stack and service: {first}"
+    );
     let producer_before = app(&when, &then, org, producer_name).await?;
     ensure!(
         ready_on(&producer_before, 1) == 1,
@@ -109,6 +116,11 @@ async fn dependencies_start_after_success_and_removal_rollback_preserves_owned_i
         "selected-service update replaced its dependency"
     );
     let consumer_name = consumer["appName"].as_str().context("consumer app name")?;
+    ensure!(
+        child(&second, "producer")?["appName"] == producer_name
+            && child(&second, "consumer")?["appName"] == consumer_name,
+        "an update renamed a member: {second}"
+    );
     ensure!(
         ready_on(&app(&when, &then, org, consumer_name).await?, 2) == 1,
         "consumer update never started behind its successful dependency"
@@ -163,7 +175,8 @@ async fn dependencies_start_after_success_and_removal_rollback_preserves_owned_i
     then.status(200)?;
     let restored = ready(&when, &then, org).await?;
     ensure!(
-        child(&restored, "consumer")?["appId"] == consumer["appId"],
+        child(&restored, "consumer")?["appId"] == consumer["appId"]
+            && child(&restored, "consumer")?["appName"] == consumer_name,
         "rollback changed retained app ownership"
     );
     ensure!(

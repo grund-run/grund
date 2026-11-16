@@ -62,6 +62,27 @@ pub struct Revision {
     pub rollback_of: Option<u32>,
 }
 
+pub const MEMBER_NAME_LIMIT: usize = 32;
+
+/// Over [`MEMBER_NAME_LIMIT`] stack and service are cut, never the suffix:
+/// it alone keeps members of truncated names apart.
+pub fn member_app_name(stack: &str, service: &str, suffix: &str) -> String {
+    let budget = MEMBER_NAME_LIMIT.saturating_sub(suffix.len() + 2);
+    let half = budget / 2;
+    let (stack_len, service_len) = if stack.len() + service.len() <= budget {
+        (stack.len(), service.len())
+    } else if stack.len() <= half {
+        (stack.len(), budget - stack.len())
+    } else if service.len() <= budget - half {
+        (budget - service.len(), service.len())
+    } else {
+        (half, budget - half)
+    };
+    let stack = stack[..stack_len].trim_end_matches('-');
+    let service = service[..service_len].trim_end_matches('-');
+    format!("{stack}-{service}-{suffix}")
+}
+
 /// Durable customer-visible operation categories.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -481,6 +502,45 @@ impl mire::Command for Command {
 mod tests {
     use super::*;
     use mire::{Aggregate, Command as _};
+
+    #[test]
+    fn a_member_name_reads_stack_service_and_suffix() {
+        assert_eq!(member_app_name("butik", "web", "7f3k"), "butik-web-7f3k");
+        assert_eq!(
+            member_app_name("butik", "postgres", "a91c"),
+            "butik-postgres-a91c"
+        );
+    }
+
+    #[test]
+    fn a_long_member_name_is_a_capped_dns_label_that_keeps_its_suffix() {
+        let longest = "a".repeat(32);
+        let hyphenated = "ab-cd-ef-gh-ij-kl-mn-op-qr-st-uv";
+        for (stack, service) in [
+            (longest.as_str(), longest.as_str()),
+            ("shop", longest.as_str()),
+            (longest.as_str(), "db"),
+            (hyphenated, hyphenated),
+            ("s", "x"),
+        ] {
+            let name = member_app_name(stack, service, "z9z9");
+            assert!(name.len() <= MEMBER_NAME_LIMIT, "{name}");
+            assert!(name.ends_with("-z9z9"), "{name}");
+            assert!(
+                grund_config::app::spec::AppName::parse(&name)
+                    .is_ok_and(|parsed| parsed.as_str() == name),
+                "{name}"
+            );
+        }
+        assert_eq!(
+            member_app_name("shop", &longest, "z9z9"),
+            format!("shop-{}-z9z9", "a".repeat(22))
+        );
+        assert_eq!(
+            member_app_name(&longest, "db", "z9z9"),
+            format!("{}-db-z9z9", "a".repeat(24))
+        );
+    }
 
     #[test]
     fn an_expired_deleted_stack_cannot_be_restored() {

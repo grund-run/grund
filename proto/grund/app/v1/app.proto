@@ -295,6 +295,9 @@ message App {
   int64 version = 11;
   // Irreversible hosted volume loss history, owner-scoped with this app.
   repeated LostVolume lost_volumes = 12;
+  // Empty for an app no stack owns.
+  string stack = 13;
+  string service = 14;
 }
 
 message LostVolume {

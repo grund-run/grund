@@ -384,12 +384,15 @@ impl Stacks {
         for (name, service) in &mut revision.services {
             let existing = work.load_app(service.app_id).await?;
             if !existing.exists {
-                if apps::app_by_name_including_deleted(&mut **work.sql(), org, &service.app_name)
-                    .await?
-                    .is_some()
-                {
-                    return Err(Error::Conflict);
-                }
+                service.app_name = free_member_name(
+                    work.sql(),
+                    org,
+                    &definition.name,
+                    name,
+                    std::mem::take(&mut service.app_name),
+                    retained_service(&previous.revisions, name).is_none(),
+                )
+                .await?;
                 work.app(
                     service.app_id,
                     AppCommand::Create {
@@ -1115,6 +1118,32 @@ fn deletion_order(state: &Stack) -> Result<Vec<String>, Error> {
     Ok(result)
 }
 
+async fn free_member_name(
+    connection: &mut PgConnection,
+    org: Uuid,
+    stack_name: &str,
+    service: &str,
+    mut name: String,
+    generated: bool,
+) -> Result<String, Error> {
+    for _ in 0..NAME_ATTEMPTS {
+        if apps::app_by_name_including_deleted(&mut *connection, org, &name)
+            .await?
+            .is_none()
+            && store::by_name(&mut *connection, org, &name)
+                .await?
+                .is_none()
+        {
+            return Ok(name);
+        }
+        if !generated {
+            break;
+        }
+        name = member_app_name(stack_name, service);
+    }
+    Err(Error::Conflict)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1240,6 +1269,61 @@ mod tests {
         );
         apps.configure(actor, org, "existing-hosted", SettingsInput::default())
             .await?;
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn a_generated_member_name_is_drawn_again_while_held_and_a_retained_one_never(
+        pool: sqlx::PgPool,
+    ) -> anyhow::Result<()> {
+        let state = state(pool).await?;
+        let org = Uuid::now_v7();
+        let actor = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO grund_organisations \
+             (organisation_id,slug,kind,created_at,stream_version) \
+             VALUES($1,'names','personal',clock_timestamp(),1)",
+        )
+        .bind(org)
+        .execute(&state.pool)
+        .await?;
+        state
+            .apps()
+            .create(actor, org, "shop-web-held", Default::default())
+            .await?;
+        sqlx::query(
+            "INSERT INTO grund_stacks(organisation_id,stack_id,name,state,status,stream_version) \
+             VALUES($1,$2,'shop-db-held',$3,'ready',1)",
+        )
+        .bind(org)
+        .bind(Uuid::now_v7())
+        .bind(Json(Stack::default()))
+        .execute(&state.pool)
+        .await?;
+        let mut connection = state.pool.acquire().await?;
+        for (service, held) in [("web", "shop-web-held"), ("db", "shop-db-held")] {
+            let name =
+                free_member_name(&mut connection, org, "shop", service, held.into(), true).await?;
+            assert_ne!(name, held);
+            assert!(name.starts_with(&format!("shop-{service}-")), "{name}");
+            assert_eq!(name.len(), format!("shop-{service}-").len() + 4, "{name}");
+            assert!(matches!(
+                free_member_name(&mut connection, org, "shop", service, held.into(), false).await,
+                Err(Error::Conflict)
+            ));
+        }
+        assert_eq!(
+            free_member_name(
+                &mut connection,
+                org,
+                "shop",
+                "web",
+                "sabuhs2me7sonlzb3v3h4b3cw72".into(),
+                false
+            )
+            .await?,
+            "sabuhs2me7sonlzb3v3h4b3cw72"
+        );
         Ok(())
     }
 

@@ -267,6 +267,9 @@
           },
           "type": "array"
         },
+        "service": {
+          "type": "string"
+        },
         "settings": {
           "allOf": [
             {
@@ -274,6 +277,10 @@
             }
           ],
           "description": "The settings in force, with every default filled in."
+        },
+        "stack": {
+          "description": "Empty for an app no stack owns.",
+          "type": "string"
         },
         "version": {
           "description": "Mire stream version, including rollout decisions; pass to Deploy to refuse a plan whose observed app state changed.",

@@ -595,3 +595,95 @@ async fn raw_stack_file_bound_survives_json_escaping_and_request_envelopes() -> 
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn stack_members_are_named_for_their_stack_and_service_beside_the_stack_address()
+-> anyhow::Result<()> {
+    let registry = FakeRegistry::start().await?;
+    let Some((given, when, then)) = testcase_configured(&[
+        ("GRUND_INSECURE_REGISTRIES", &registry.host),
+        ("GRUND_APP_DOMAIN", "apps.grund.test"),
+    ])
+    .await?
+    else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let org = owner.username.as_str();
+    registry.publish("acme/web", "1");
+    let image = registry.image("acme/web", "1");
+    let yaml = format!(
+        "stack:\n  name: shop\n  public: {{service: web, port: http}}\n  services:\n    web:\n      image: {image}\n      ports:\n        - {{name: http, port: 8080, protocol: http}}\n    postgres:\n      image: {image}\n"
+    );
+    let first = call(
+        &when,
+        &then,
+        "DeployStack",
+        json!({"organisation":org,"yaml":yaml,"idempotencyKey":"first"}),
+    )
+    .await?;
+    then.status(200)?;
+    let names = |stack: &Value| -> anyhow::Result<Vec<(String, String)>> {
+        stack["services"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|service| {
+                Ok((
+                    service["name"].as_str().unwrap_or_default().to_string(),
+                    service["appName"]
+                        .as_str()
+                        .ok_or_else(|| anyhow::anyhow!("member app name absent: {service}"))?
+                        .to_string(),
+                ))
+            })
+            .collect()
+    };
+    let named = names(&first["stack"])?;
+    anyhow::ensure!(named.len() == 2, "both services are members: {first}");
+    for (service, app) in &named {
+        let suffix = app
+            .strip_prefix(&format!("shop-{service}-"))
+            .ok_or_else(|| anyhow::anyhow!("{app} is not named for shop and {service}"))?;
+        anyhow::ensure!(
+            suffix.len() == 4
+                && suffix
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()),
+            "{app} lacks a short random suffix"
+        );
+    }
+    let address = format!("shop-{org}.apps.grund.test");
+    let read = call(
+        &when,
+        &then,
+        "GetStack",
+        json!({"organisation":org,"name":"shop"}),
+    )
+    .await?;
+    then.status(200)?;
+    anyhow::ensure!(
+        read["stack"]["address"] == address,
+        "the stack address is not shop-<org>: {read}"
+    );
+
+    when.calling(
+        "/grund.app.v1.AppService/ListApps",
+        &json!({"organisation":org}).to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    let listed = then.json()?;
+    for (service, app) in &named {
+        anyhow::ensure!(
+            listed["apps"].as_array().into_iter().flatten().any(|row| {
+                row["name"] == app.as_str()
+                    && row["stack"] == "shop"
+                    && row["service"] == service.as_str()
+            }),
+            "{app} is not listed as shop/{service}: {listed}"
+        );
+    }
+
+    Ok(())
+}

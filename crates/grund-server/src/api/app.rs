@@ -838,10 +838,23 @@ impl AppService for AppApi {
         } else {
             Vec::new()
         };
+        let mut stacks = self
+            .state
+            .apps()
+            .stack_owners(membership.organisation_id)
+            .await
+            .map_err(failed)?;
         Response::ok(ListAppsResponse {
             apps: views
                 .iter()
-                .map(|view| app_message(view, &history))
+                .map(|view| {
+                    let mut app = app_message(view, &history);
+                    if let Some(owner) = stacks.remove(&view.row.app_id) {
+                        app.stack = owner.name;
+                        app.service = owner.service;
+                    }
+                    app
+                })
                 .collect(),
             ..Default::default()
         })

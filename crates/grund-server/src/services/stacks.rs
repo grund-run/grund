@@ -236,16 +236,23 @@ fn key(state: &State) -> LessSafeKey {
             .expect("a 32-byte app sealing key"),
     )
 }
-fn app_name(id: Uuid) -> String {
-    const ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
-    let mut value = id.as_u128();
-    let mut bytes = [b'a'; 27];
-    bytes[0] = b's';
-    for i in (1..27).rev() {
-        bytes[i] = ALPHABET[(value & 31) as usize];
-        value >>= 5;
+const NAME_ATTEMPTS: usize = 8;
+
+fn member_app_name(stack_name: &str, service: &str) -> String {
+    const ALPHABET: &[u8; 36] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+    let mut suffix = String::with_capacity(4);
+    while suffix.len() < 4 {
+        let mut random = [0u8; 8];
+        getrandom::fill(&mut random).expect("the operating system provides randomness");
+        suffix.extend(
+            random
+                .iter()
+                .filter(|byte| usize::from(**byte) < 252)
+                .map(|byte| char::from(ALPHABET[usize::from(*byte) % 36]))
+                .take(4 - suffix.len()),
+        );
     }
-    String::from_utf8(bytes.to_vec()).expect("base32 is ASCII")
+    grund_domain::stack::member_app_name(stack_name, service, &suffix)
 }
 fn operation(
     kind: Kind,
@@ -592,7 +599,10 @@ impl Stacks {
                 || retained_exclusive;
             let candidate = Service {
                 app_id: id,
-                app_name: prior.map_or_else(|| app_name(id), |s| s.app_name.clone()),
+                app_name: prior.map_or_else(
+                    || member_app_name(&definition.name, name),
+                    |s| s.app_name.clone(),
+                ),
                 release,
                 settings,
                 depends_on: service.depends_on.clone(),

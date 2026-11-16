@@ -512,6 +512,8 @@ pub enum SetItem {
 
 const APPS: &[(&str, &str)] = &[
     ("NAME", "/name"),
+    ("STACK", "/stack"),
+    ("SERVICE", "/service"),
     ("RELEASE", "/currentRelease"),
     ("COPIES", "/settings/copies"),
     ("ROLLOUT", "/rollout/state"),
@@ -1569,6 +1571,22 @@ async fn set(ctx: &Ctx, api: &Api, org: &str, args: SetArgs) -> CliResult<Output
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_app_list_shows_each_member_beside_its_stack_and_service() {
+        let listed = json!({"apps": [
+            {"name": "sabuhs2me7sonlzb3v3h4b3cw72", "stack": "shop", "service": "web", "currentRelease": 4, "settings": {"copies": 1}},
+            {"name": "shop-postgres-a91c", "stack": "shop", "service": "postgres", "currentRelease": 1, "settings": {"copies": 1}},
+            {"name": "blog", "currentRelease": 2, "settings": {"copies": 1}},
+        ]});
+        assert_eq!(
+            Output::table(listed, "/apps", APPS).render(crate::output::Format::Text),
+            "NAME                         STACK  SERVICE   RELEASE  COPIES  ROLLOUT\n\
+             sabuhs2me7sonlzb3v3h4b3cw72  shop   web       4        1\n\
+             shop-postgres-a91c           shop   postgres  1        1\n\
+             blog                                          2        1\n"
+        );
+    }
 
     #[test]
     fn multiple_checked_updates_require_an_explicit_selection() {
