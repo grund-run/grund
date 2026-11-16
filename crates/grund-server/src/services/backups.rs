@@ -704,7 +704,7 @@ impl Backups {
             self.state.wakes.documents_changed();
             return Ok(attempt_id);
         }
-        let eligible: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM grund_machines m JOIN grund_machine_presence p ON p.machine_id = m.machine_id WHERE m.machine_id=$1 AND m.pool_organisation_id=$2 AND m.state='active' AND m.pool <> 'management' AND m.minted_by LIKE 'account:%' AND m.cordoned_at IS NULL AND p.capabilities->>'volumes' = 'true')")
+        let eligible: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM grund_machines m JOIN grund_machine_presence p ON p.machine_id = m.machine_id WHERE m.machine_id=$1 AND m.pool_organisation_id=$2 AND ((m.state='active' AND m.pool <> 'management' AND m.minted_by LIKE 'account:%') OR (m.pool='management' AND m.state='leased')) AND m.cordoned_at IS NULL AND p.capabilities->>'volumes' = 'true')")
             .bind(machine).bind(org).fetch_one(&mut **work.sql()).await.map_err(anyhow::Error::from)?;
         if !eligible {
             return Err(BackupError::NotFound);
