@@ -786,8 +786,87 @@ pub fn restore_target(
     provision(data_dir, app_id, new_volume_id)
 }
 
-/// Grant a freshly provisioned managed directory to the image's numeric
-/// identity. Never change ownership of populated data or existing host paths.
+const FRESH_BLOCK_LABEL: &[u8] = b"GRUND-FRESH-v1";
+
+fn block_label(dir: &File) -> anyhow::Result<[u8; 256]> {
+    let mut label = [0u8; 256];
+    if unsafe { libc::ioctl(dir.as_raw_fd(), 0x8100_9431_u32 as _, label.as_mut_ptr()) } < 0 {
+        return Err(io::Error::last_os_error()).context("read managed block filesystem label");
+    }
+    Ok(label)
+}
+
+fn clear_block_label(dir: &File) -> anyhow::Result<()> {
+    let label = [0u8; 256];
+    if unsafe { libc::ioctl(dir.as_raw_fd(), 0x4100_9432_u32 as _, label.as_ptr()) } < 0 {
+        return Err(io::Error::last_os_error()).context("consume managed block freshness label");
+    }
+    dir.sync_all()?;
+    Ok(())
+}
+
+fn empty_block_root(dir: &File) -> anyhow::Result<bool> {
+    let root = PathBuf::from(format!("/proc/self/fd/{}", dir.as_raw_fd()));
+    for entry in fs::read_dir(&root)? {
+        let entry = entry?;
+        if entry.file_name() != "lost+found" {
+            return Ok(false);
+        }
+        let fd = unsafe {
+            libc::openat(
+                dir.as_raw_fd(),
+                c"lost+found".as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error()).context("inspect block recovery directory");
+        }
+        let recovery = unsafe { File::from_raw_fd(fd) };
+        if fs::read_dir(format!("/proc/self/fd/{}", recovery.as_raw_fd()))?
+            .next()
+            .is_some()
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn initialize_block(
+    dir: &File,
+    label: &[u8],
+    uid: u32,
+    gid: u32,
+    clear: impl FnOnce(&File) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    if label.split(|byte| *byte == 0).next() != Some(FRESH_BLOCK_LABEL) {
+        return Ok(());
+    }
+    ensure!(
+        empty_block_root(dir)?,
+        "marked block volume contains data; refusing ownership initialization"
+    );
+    let meta = dir.metadata()?;
+    ensure!(
+        meta.uid() == 0 || (meta.uid() == uid && meta.gid() == gid && meta.mode() & 0o777 == 0o700),
+        "marked block volume is no longer owned by its provisioner or image user"
+    );
+    if meta.uid() != uid || meta.gid() != gid || meta.mode() & 0o777 != 0o700 {
+        if unsafe { libc::fchmod(dir.as_raw_fd(), 0o700) } < 0 {
+            return Err(io::Error::last_os_error()).context("make new block volume private");
+        }
+        if unsafe { libc::fchown(dir.as_raw_fd(), uid, gid) } < 0 {
+            return Err(io::Error::last_os_error()).context("grant new block volume to image user");
+        }
+        dir.sync_all()?;
+    }
+    clear(dir)
+}
+
+/// Grant fresh managed storage to the image's numeric identity. Block roots
+/// require a provision-time label consumed after durable initialization;
+/// populated data and existing host paths are never chowned.
 pub fn grant_access(
     dir: &File,
     bind: &VolumeBind,
@@ -795,6 +874,18 @@ pub fn grant_access(
     gid: u32,
     groups: &[u32],
 ) -> anyhow::Result<()> {
+    if bind.block_device {
+        lock_directory(dir, true)?;
+        let initialized = (|| {
+            let label = block_label(dir)?;
+            initialize_block(dir, &label, uid, gid, clear_block_label)
+        })();
+        if unsafe { libc::flock(dir.as_raw_fd(), libc::LOCK_UN) } < 0 {
+            return Err(io::Error::last_os_error())
+                .context("unlock block ownership initialization");
+        }
+        initialized?;
+    }
     let mut meta = dir.metadata()?;
     if bind.managed
         && meta.uid() == 0
@@ -1306,6 +1397,108 @@ mod tests {
         }
     }
     const ID: &str = "11111111-1111-1111-1111-111111111111";
+
+    fn fresh_block_fixture(name: &str) -> (PathBuf, File, u32, u32) {
+        let base = scratch(name);
+        fs::create_dir(base.join("lost+found")).unwrap();
+        let root = unsafe { libc::geteuid() } == 0;
+        let uid = if root {
+            1002
+        } else {
+            unsafe { libc::geteuid() }
+        };
+        let gid = if root {
+            1004
+        } else {
+            unsafe { libc::getegid() }
+        };
+        if !root {
+            fs::set_permissions(&base, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let dir = directory(&base).unwrap();
+        (base, dir, uid, gid)
+    }
+
+    #[test]
+    fn a_marked_fresh_block_root_with_lost_found_gets_private_image_ownership() {
+        let (base, dir, uid, gid) = fresh_block_fixture("block-owner-fresh");
+        let mut consumed = false;
+        initialize_block(&dir, FRESH_BLOCK_LABEL, uid, gid, |_| {
+            consumed = true;
+            Ok(())
+        })
+        .unwrap();
+        let meta = dir.metadata().unwrap();
+        assert_eq!(
+            (meta.uid(), meta.gid(), meta.mode() & 0o777),
+            (uid, gid, 0o700)
+        );
+        assert!(consumed);
+        assert!(base.join("lost+found").is_dir());
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn a_marked_block_root_with_data_is_never_granted_or_consumed() {
+        for recovery_data in [false, true] {
+            let (base, dir, uid, gid) = fresh_block_fixture(if recovery_data {
+                "block-owner-recovery-data"
+            } else {
+                "block-owner-data"
+            });
+            let file = if recovery_data {
+                base.join("lost+found").join("recovered")
+            } else {
+                base.join("app-data")
+            };
+            fs::write(&file, b"keep").unwrap();
+            let before = dir.metadata().unwrap();
+            assert!(
+                initialize_block(&dir, FRESH_BLOCK_LABEL, uid, gid, |_| {
+                    panic!("populated volumes cannot consume freshness");
+                })
+                .is_err()
+            );
+            let after = dir.metadata().unwrap();
+            assert_eq!(
+                (before.uid(), before.gid(), before.mode()),
+                (after.uid(), after.gid(), after.mode())
+            );
+            assert_eq!(fs::read(file).unwrap(), b"keep");
+            fs::remove_dir_all(base).unwrap();
+        }
+    }
+
+    #[test]
+    fn an_unmarked_block_root_is_not_granted_even_when_empty() {
+        let (base, dir, uid, gid) = fresh_block_fixture("block-owner-unmarked");
+        fs::set_permissions(&base, fs::Permissions::from_mode(0o755)).unwrap();
+        initialize_block(&dir, b"", uid, gid, |_| {
+            panic!("unmarked volumes cannot be initialized");
+        })
+        .unwrap();
+        assert_eq!(dir.metadata().unwrap().mode() & 0o777, 0o755);
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn consumed_freshness_never_changes_a_volume_on_a_second_run() {
+        let (base, dir, uid, gid) = fresh_block_fixture("block-owner-once");
+        initialize_block(&dir, FRESH_BLOCK_LABEL, uid, gid, |_| Ok(())).unwrap();
+        fs::write(base.join("data"), b"owned").unwrap();
+        let before = dir.metadata().unwrap();
+        initialize_block(&dir, b"", uid + 1, gid + 1, |_| {
+            panic!("consumed freshness cannot grant another image user");
+        })
+        .unwrap();
+        let after = dir.metadata().unwrap();
+        assert_eq!(
+            (before.uid(), before.gid(), before.mode()),
+            (after.uid(), after.gid(), after.mode())
+        );
+        assert_eq!(fs::read(base.join("data")).unwrap(), b"owned");
+        fs::remove_dir_all(base).unwrap();
+    }
 
     fn copy_up_volume(name: &str) -> (PathBuf, VolumeBind) {
         let base = scratch(name);

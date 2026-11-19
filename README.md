@@ -976,6 +976,13 @@ unbacked-up host loses its data; `backup: daily` is a request, not a
 successful recovery point. Hosted provider snapshots do not use the
 customer's own-machine S3 destination.
 
+Fresh hosted filesystems carry a provision-time `GRUND-FRESH-v1` ext4 label.
+Before the first app starts, its agent assigns the root to the image's numeric
+user and group with mode `0700`, then clears that label. Only an empty root
+or one containing just an empty `lost+found` can be initialized. Populated
+volumes and unmanaged host paths keep their owners and permissions; an
+unmarked volume that the image cannot access is refused, not chowned.
+
 ### Other app placement
 
 For apps without volumes, copies spread over machines, one per machine first;
