@@ -801,7 +801,9 @@ fn clear_block_label(dir: &File) -> anyhow::Result<()> {
     if unsafe { libc::ioctl(dir.as_raw_fd(), 0x4100_9432_u32 as _, label.as_ptr()) } < 0 {
         return Err(io::Error::last_os_error()).context("consume managed block freshness label");
     }
-    dir.sync_all()?;
+    if unsafe { libc::syncfs(dir.as_raw_fd()) } < 0 {
+        return Err(io::Error::last_os_error()).context("persist consumed block freshness label");
+    }
     Ok(())
 }
 
