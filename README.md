@@ -729,6 +729,10 @@ dashboard, an app's Settings has its newest release as this file, to copy,
 download, or edit and apply. An unknown key is refused with its line,
 column and path.
 
+Declared ports on IPv4-only apps are forwarded onto their private IPv6
+addresses even without a readiness check. Without `check`, a running process
+is considered ready; configure an HTTP or TCP check to verify that it answers.
+
 ### Stacks
 
 In the dashboard, open **Stacks → Create stack**. Paste a stack file or load

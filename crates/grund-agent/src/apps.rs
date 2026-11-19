@@ -989,6 +989,7 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
         }
         let mut runtime_ready = true;
         let mut probes = Vec::new();
+        let mut forward = Vec::new();
         for replica in &wanted {
             let id = replica.replica_id.clone();
             if (!replica.volumes.is_empty() || replica.exclusive || replica.stopping)
@@ -1301,6 +1302,7 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                     }
                     match probe_of(replica) {
                         None => {
+                            forward.push(id.clone());
                             if !tracked.readiness.ready {
                                 tracked.readiness = Readiness {
                                     ready: true,
@@ -1310,6 +1312,9 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                             }
                         }
                         Some((probe, interval, timeout)) => {
+                            if matches!(probe, Probe::Exec { .. }) {
+                                forward.push(id.clone());
+                            }
                             let due = tracked
                                 .readiness
                                 .last_probe
@@ -1408,7 +1413,6 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                 .collect(),
         )
         .await;
-        let mut forward = Vec::new();
         for (id, result, ipv4_only) in results {
             if ipv4_only {
                 forward.push(id.clone());

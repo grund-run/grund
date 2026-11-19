@@ -2091,6 +2091,50 @@ async fn a_replica_keeps_its_address_across_an_agent_restart_and_one_listening_o
 }
 
 #[tokio::test]
+async fn an_ipv4_only_replica_without_a_readiness_check_is_reachable() -> anyhow::Result<()> {
+    let Some((net, registry)) = a_lab_with_registry().await? else {
+        return Ok(());
+    };
+    let a = net.join("a", "a").await?;
+    let b = net.join("b", "b").await?;
+    registry.publish("acme/legacy", "1");
+    net.apps(
+        "CreateApp",
+        json!({"organisation": net.owner, "name": "legacy", "settings": {
+            "copies": 1, "machines": ["b"],
+            "rollout": {"minReadySeconds": 1, "readyDeadlineSeconds": 30},
+        }}),
+    )
+    .await?;
+    net.apps(
+        "Deploy",
+        json!({"organisation": net.owner, "name": "legacy", "spec": {
+            "image": registry.image("acme/legacy", "1"),
+            "ports": [{"name": "http", "port": 8080, "public": true}],
+            "resources": {"memoryMib": "64", "cpuMillis": 100},
+            "env": [
+                {"name": "GRUND_SIMULATE_LISTEN", "value": "8080"},
+                {"name": "GRUND_SIMULATE_LISTEN_ON", "value": "ipv4"},
+            ],
+            "stop": {"graceSeconds": 1},
+        }}),
+    )
+    .await?;
+    anyhow::ensure!(
+        eventually(Duration::from_secs(30), || async {
+            net.fetch(&a, "http://legacy.grund.internal:8080/")
+                .await
+                .is_some_and(|body| body.starts_with("simulated "))
+        })
+        .await
+        .is_some(),
+        "an IPv4-only app without a check is unreachable: {}",
+        b.status()
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn what_a_replicas_traffic_costs_through_the_mesh_and_the_userspace_egress_is_measured()
 -> anyhow::Result<()> {
     let Some((net, registry)) = a_lab_with_registry().await? else {
