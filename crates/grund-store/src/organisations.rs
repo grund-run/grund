@@ -6,6 +6,30 @@ use chrono::{DateTime, Utc};
 use sqlx::{PgConnection, PgExecutor};
 use uuid::Uuid;
 
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct OwnershipAuditRow {
+    pub actor: Uuid,
+    pub target: Uuid,
+    pub old_role: Option<String>,
+    pub new_role: Option<String>,
+    pub reason: String,
+    pub occurred_at: DateTime<Utc>,
+}
+
+pub async fn operator_ownership_history(
+    executor: impl PgExecutor<'_>,
+    organisation_id: Uuid,
+) -> Result<Vec<OwnershipAuditRow>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT actor, target, old_role, new_role, reason, occurred_at \
+         FROM grund_operator_ownership_audit WHERE organisation_id = $1 \
+         ORDER BY stream_version DESC LIMIT 100",
+    )
+    .bind(organisation_id)
+    .fetch_all(executor)
+    .await
+}
+
 /// An organisation as one of its members sees it.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Membership {

@@ -191,6 +191,101 @@ pub async fn apply_organisation(
             .execute(&mut *connection)
             .await?;
         }
+        OrganisationEvent::OperatorOwnershipChanged {
+            operator_organisation,
+            actor,
+            target,
+            old_role,
+            new_role,
+            previous_owners,
+            reason,
+            occurred_at,
+            ..
+        } => {
+            sqlx::query(
+                "INSERT INTO grund_operator_ownership_audit \
+                   (organisation_id, stream_version, operator_organisation, actor, target, \
+                    old_role, new_role, reason, occurred_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+                 ON CONFLICT (organisation_id, stream_version) DO NOTHING",
+            )
+            .bind(organisation_id)
+            .bind(version)
+            .bind(operator_organisation)
+            .bind(actor)
+            .bind(target)
+            .bind(old_role.map(|role| role.as_str()))
+            .bind(new_role.map(|role| role.as_str()))
+            .bind(reason)
+            .bind(occurred_at)
+            .execute(&mut *connection)
+            .await?;
+            if let Some(role) = new_role {
+                sqlx::query(
+                    "INSERT INTO grund_memberships \
+                       (organisation_id, account_id, role, stream_version, joined_at) \
+                     VALUES ($1, $2, $3, $4, $5) \
+                     ON CONFLICT (organisation_id, account_id) DO UPDATE SET \
+                       role = EXCLUDED.role, stream_version = EXCLUDED.stream_version",
+                )
+                .bind(organisation_id)
+                .bind(target)
+                .bind(role.as_str())
+                .bind(version)
+                .bind(occurred_at)
+                .execute(&mut *connection)
+                .await?;
+            } else {
+                sqlx::query(
+                    "DELETE FROM grund_memberships WHERE organisation_id = $1 AND account_id = $2",
+                )
+                .bind(organisation_id)
+                .bind(target)
+                .execute(&mut *connection)
+                .await?;
+                sqlx::query(
+                    "DELETE FROM grund_notifications WHERE organisation_id = $1 AND account_id = $2",
+                )
+                .bind(organisation_id)
+                .bind(target)
+                .execute(&mut *connection)
+                .await?;
+            }
+            let recipients: Vec<(Uuid, String, String, String)> = sqlx::query_as(
+                "SELECT a.account_id, e.email, o.slug, t.username \
+                 FROM grund_accounts a JOIN grund_account_emails e ON e.account_id = a.account_id \
+                 JOIN grund_organisations o ON o.organisation_id = $2 \
+                 JOIN grund_accounts t ON t.account_id = $3 \
+                 WHERE a.account_id = ANY($1) OR ($4 AND a.account_id = $3)",
+            )
+            .bind(previous_owners)
+            .bind(organisation_id)
+            .bind(target)
+            .bind(*new_role == Some(grund_domain::organisation::Role::Owner))
+            .fetch_all(&mut *connection)
+            .await?;
+            for (recipient, email, slug, username) in recipients {
+                let payload = serde_json::json!({
+                    "organisation": slug,
+                    "target": username,
+                    "old_role": old_role.map(|role| role.as_str()).unwrap_or("not a member"),
+                    "new_role": new_role.map(|role| role.as_str()).unwrap_or("not a member"),
+                    "reason": reason,
+                });
+                let id = Uuid::new_v5(
+                    &organisation_id,
+                    format!("operator-ownership:{version}:{recipient}").as_bytes(),
+                );
+                crate::outbox::enqueue(
+                    connection,
+                    id,
+                    crate::outbox::Kind::OwnershipChangedMail,
+                    &email,
+                    &payload,
+                )
+                .await?;
+            }
+        }
         OrganisationEvent::Renamed {
             from,
             to,

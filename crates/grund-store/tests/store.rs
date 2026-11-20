@@ -63,6 +63,154 @@ async fn register(events: &EventStore, username: &Username) -> Uuid {
 }
 
 #[sqlx::test(migrations = false)]
+async fn ownership_membership_audit_and_mail_commit_together_and_replay_does_not_duplicate_mail(
+    pool: PgPool,
+) {
+    use grund_domain::organisation::Role;
+
+    let events = store(&pool).await;
+    let owner = register(&events, &name("old-owner")).await;
+    let target = register(&events, &name("new-owner")).await;
+    let organisation: Uuid =
+        sqlx::query_scalar("SELECT organisation_id FROM grund_accounts WHERE account_id = $1")
+            .bind(owner)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let operator_organisation = Uuid::now_v7();
+    let actor = Uuid::now_v7();
+    let command = OrganisationCommand::OperatorChangeOwnership {
+        operator_organisation,
+        organisation_id: organisation,
+        actor,
+        target,
+        new_role: Some(Role::Owner),
+        expected_role: None,
+        reason: "Restore access".into(),
+        at: Utc::now(),
+    };
+    let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();
+    work.organisation(organisation, command.clone())
+        .await
+        .unwrap();
+    drop(work);
+    let audit_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM grund_operator_ownership_audit WHERE organisation_id = $1",
+    )
+    .bind(organisation)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(audit_count, 0);
+    let membership_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM grund_memberships WHERE organisation_id = $1 AND account_id = $2",
+    )
+    .bind(organisation)
+    .bind(target)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(membership_count, 0);
+    let mail_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM grund_outbox WHERE kind = 'mail.ownership_changed'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(mail_count, 0);
+
+    let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();
+    let emitted = work.organisation(organisation, command).await.unwrap();
+    work.commit().await.unwrap();
+    let audit = grund_store::organisations::operator_ownership_history(&pool, organisation)
+        .await
+        .unwrap();
+    assert_eq!(audit.len(), 1);
+    assert_eq!(audit[0].actor, actor);
+    assert_eq!(audit[0].target, target);
+    assert_eq!(audit[0].old_role, None);
+    assert_eq!(audit[0].new_role.as_deref(), Some("owner"));
+    assert_eq!(audit[0].reason, "Restore access");
+    let mut connection = pool.acquire().await.unwrap();
+    projections::apply_organisation(organisation, 3, &emitted[0], &mut connection)
+        .await
+        .unwrap();
+    drop(connection);
+    let recipients: Vec<String> = sqlx::query_scalar(
+        "SELECT recipient FROM grund_outbox WHERE kind = 'mail.ownership_changed'",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(recipients.len(), 2);
+    for account in [owner, target] {
+        let email: String =
+            sqlx::query_scalar("SELECT email FROM grund_account_emails WHERE account_id = $1")
+                .bind(account)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(recipients.contains(&email));
+    }
+}
+
+#[sqlx::test(migrations = false)]
+async fn racing_operator_demotions_cannot_remove_both_owners(pool: PgPool) {
+    use grund_domain::organisation::Role;
+
+    let events = store(&pool).await;
+    let owner = register(&events, &name("first-owner")).await;
+    let target = register(&events, &name("second-owner")).await;
+    let organisation: Uuid =
+        sqlx::query_scalar("SELECT organisation_id FROM grund_accounts WHERE account_id = $1")
+            .bind(owner)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let operator_organisation = Uuid::now_v7();
+    let command = |target, new_role, expected_role| OrganisationCommand::OperatorChangeOwnership {
+        operator_organisation,
+        organisation_id: organisation,
+        actor: Uuid::now_v7(),
+        target,
+        new_role,
+        expected_role,
+        reason: "Support request".into(),
+        at: Utc::now(),
+    };
+    let mut work = Work::begin(&events, Uuid::now_v7(), "test").await.unwrap();
+    work.organisation(organisation, command(target, Some(Role::Owner), None))
+        .await
+        .unwrap();
+    work.commit().await.unwrap();
+    let demote = |account| {
+        let command = command(account, Some(Role::Member), Some(Role::Owner));
+        let events = &events;
+        async move {
+            let mut work = Work::begin(events, Uuid::now_v7(), "test").await.unwrap();
+            work.organisation(organisation, command).await?;
+            work.commit().await
+        }
+    };
+    let (first, second) = tokio::join!(demote(owner), demote(target));
+    assert_ne!(first.is_ok(), second.is_ok());
+    let owners: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM grund_memberships WHERE organisation_id = $1 AND role = 'owner'",
+    )
+    .bind(organisation)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(owners, 1);
+    let history = grund_store::organisations::operator_ownership_history(&pool, organisation)
+        .await
+        .unwrap();
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[0].new_role.as_deref(), Some("member"));
+    assert_eq!(history[1].new_role.as_deref(), Some("owner"));
+}
+
+#[sqlx::test(migrations = false)]
 async fn a_registration_writes_the_account_its_organisation_and_the_owner_membership(pool: PgPool) {
     let events = store(&pool).await;
     let username = name("owner");

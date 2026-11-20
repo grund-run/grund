@@ -119,6 +119,7 @@ impl OutboxDrain {
             Kind::PasswordResetMail => Mail::PasswordReset,
             Kind::SignupExistingMail => Mail::SignupExisting,
             Kind::InvitationMail => Mail::Invitation,
+            Kind::OwnershipChangedMail => Mail::OwnershipChanged,
         };
         match self.mailer.send(mail, &row.recipient, &row.payload).await {
             Ok(()) => {

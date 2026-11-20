@@ -123,6 +123,17 @@ pub enum OrganisationEvent {
         removed_by: Uuid,
         removed_at: DateTime<Utc>,
     },
+    OperatorOwnershipChanged {
+        operator_organisation: Uuid,
+        organisation_id: Uuid,
+        actor: Uuid,
+        target: Uuid,
+        old_role: Option<Role>,
+        new_role: Option<Role>,
+        previous_owners: Vec<Uuid>,
+        reason: String,
+        occurred_at: DateTime<Utc>,
+    },
     InvitationIssued {
         invitation_id: Uuid,
         email_digest: String,
@@ -276,6 +287,17 @@ impl mire::Aggregate for Organisation {
             OrganisationEvent::MemberRemoved { account_id, .. } => {
                 self.members.retain(|m| m.account_id != *account_id);
             }
+            OrganisationEvent::OperatorOwnershipChanged {
+                target, new_role, ..
+            } => {
+                self.members.retain(|m| m.account_id != *target);
+                if let Some(role) = new_role {
+                    self.members.push(Member {
+                        account_id: *target,
+                        role: *role,
+                    });
+                }
+            }
             OrganisationEvent::InvitationIssued {
                 invitation_id,
                 email_digest,
@@ -373,6 +395,18 @@ pub enum OrganisationCommand {
         role: Role,
         at: DateTime<Utc>,
     },
+    /// The service must authorise the operator and verify promotion targets
+    /// before submitting this command under the organisation's stream lock.
+    OperatorChangeOwnership {
+        operator_organisation: Uuid,
+        organisation_id: Uuid,
+        actor: Uuid,
+        target: Uuid,
+        new_role: Option<Role>,
+        expected_role: Option<Role>,
+        reason: String,
+        at: DateTime<Utc>,
+    },
     /// Removes a member; when `actor` is the member, they leave.
     RemoveMember {
         actor: Uuid,
@@ -429,6 +463,14 @@ pub enum OrganisationError {
     TooManyInvitations,
     #[error("owners are made by promoting a member, not by invitation")]
     OwnerByInvitation,
+    #[error("the membership changed; confirm the change again")]
+    OwnershipConflict,
+    #[error("choose a promotion to owner or a demotion or removal of an owner")]
+    InvalidOwnershipChange,
+    #[error("enter a reason of at most 2000 characters")]
+    InvalidOwnershipReason,
+    #[error("the operator organisation cannot be changed here")]
+    OperatorOrganisation,
 }
 
 impl mire::Command for OrganisationCommand {
@@ -632,6 +674,52 @@ impl mire::Command for OrganisationCommand {
                     removed_at: at,
                 }])
             }
+            OrganisationCommand::OperatorChangeOwnership {
+                operator_organisation,
+                organisation_id,
+                actor,
+                target,
+                new_role,
+                expected_role,
+                reason,
+                at,
+            } => {
+                if operator_organisation == organisation_id {
+                    return Err(OrganisationError::OperatorOrganisation);
+                }
+                let old_role = organisation.role_of(target);
+                if old_role != expected_role {
+                    return Err(OrganisationError::OwnershipConflict);
+                }
+                if old_role == new_role
+                    || (new_role != Some(Role::Owner) && old_role != Some(Role::Owner))
+                {
+                    return Err(OrganisationError::InvalidOwnershipChange);
+                }
+                if old_role == Some(Role::Owner) && organisation.owners() == 1 {
+                    return Err(OrganisationError::LastOwner);
+                }
+                let reason = reason.trim();
+                if reason.is_empty() || reason.chars().count() > 2000 {
+                    return Err(OrganisationError::InvalidOwnershipReason);
+                }
+                Ok(vec![OrganisationEvent::OperatorOwnershipChanged {
+                    operator_organisation,
+                    organisation_id,
+                    actor,
+                    target,
+                    old_role,
+                    new_role,
+                    previous_owners: organisation
+                        .members
+                        .iter()
+                        .filter(|member| member.role == Role::Owner)
+                        .map(|member| member.account_id)
+                        .collect(),
+                    reason: reason.to_owned(),
+                    occurred_at: at,
+                }])
+            }
             OrganisationCommand::Rename { actor, slug, at } => {
                 owning(actor)?;
                 let from = organisation
@@ -769,6 +857,130 @@ mod tests {
         fn role_of(&self, account_id: Uuid) -> Option<Role> {
             self.root.state.role_of(account_id)
         }
+    }
+
+    #[test]
+    fn an_operator_can_add_an_owner_but_stale_confirmations_and_last_owner_changes_fail() {
+        let mut org = Org::new();
+        let organisation_id = Uuid::now_v7();
+        let operator_organisation = Uuid::now_v7();
+        let actor = Uuid::now_v7();
+        let target = Uuid::now_v7();
+        let promotion = OrganisationCommand::OperatorChangeOwnership {
+            operator_organisation,
+            organisation_id,
+            actor,
+            target,
+            new_role: Some(Role::Owner),
+            expected_role: None,
+            reason: "Account recovery".into(),
+            at: at(),
+        };
+        org.run(promotion.clone()).unwrap();
+        assert_eq!(org.role_of(target), Some(Role::Owner));
+        assert_eq!(org.root.state.owners(), 2);
+        assert_eq!(
+            org.run(promotion),
+            Err(OrganisationError::OwnershipConflict)
+        );
+        org.run(OrganisationCommand::OperatorChangeOwnership {
+            operator_organisation,
+            organisation_id,
+            actor,
+            target: org.owner,
+            new_role: None,
+            expected_role: Some(Role::Owner),
+            reason: "Former owner requested removal".into(),
+            at: at(),
+        })
+        .unwrap();
+        assert_eq!(org.role_of(org.owner), None);
+        assert_eq!(
+            org.run(OrganisationCommand::OperatorChangeOwnership {
+                operator_organisation,
+                organisation_id,
+                actor,
+                target,
+                new_role: Some(Role::Admin),
+                expected_role: Some(Role::Owner),
+                reason: "Cannot remove the final owner".into(),
+                at: at(),
+            }),
+            Err(OrganisationError::LastOwner)
+        );
+        assert_eq!(org.role_of(target), Some(Role::Owner));
+    }
+
+    #[test]
+    fn operator_changes_require_a_reason_an_ownership_transition_and_a_nonoperator_org() {
+        let org = Org::new();
+        let organisation_id = Uuid::now_v7();
+        let command = |operator_organisation, target, new_role, expected_role, reason: &str| {
+            OrganisationCommand::OperatorChangeOwnership {
+                operator_organisation,
+                organisation_id,
+                actor: Uuid::now_v7(),
+                target,
+                new_role,
+                expected_role,
+                reason: reason.into(),
+                at: at(),
+            }
+        };
+        for reason in ["", "   ", &"x".repeat(2001)] {
+            assert_eq!(
+                mire::Command::handle(
+                    command(
+                        Uuid::now_v7(),
+                        Uuid::now_v7(),
+                        Some(Role::Owner),
+                        None,
+                        reason
+                    ),
+                    &org.root.state,
+                ),
+                Err(OrganisationError::InvalidOwnershipReason)
+            );
+        }
+        assert_eq!(
+            mire::Command::handle(
+                command(
+                    Uuid::now_v7(),
+                    org.owner,
+                    Some(Role::Owner),
+                    Some(Role::Owner),
+                    "No change"
+                ),
+                &org.root.state,
+            ),
+            Err(OrganisationError::InvalidOwnershipChange)
+        );
+        assert_eq!(
+            mire::Command::handle(
+                command(
+                    Uuid::now_v7(),
+                    Uuid::now_v7(),
+                    Some(Role::Admin),
+                    None,
+                    "Not ownership"
+                ),
+                &org.root.state,
+            ),
+            Err(OrganisationError::InvalidOwnershipChange)
+        );
+        assert_eq!(
+            mire::Command::handle(
+                command(
+                    organisation_id,
+                    Uuid::now_v7(),
+                    Some(Role::Owner),
+                    None,
+                    "Not allowed"
+                ),
+                &org.root.state,
+            ),
+            Err(OrganisationError::OperatorOrganisation)
+        );
     }
 
     #[test]

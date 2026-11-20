@@ -1,0 +1,8 @@
+props crate::services::mail::OwnershipChangedMail<'_> { organisation, target, old_role, new_role, reason };
+
+An operator changed ownership of {organisation} on grund.
+
+Account: {target}
+Previous role: {old_role}
+New role: {new_role}
+Reason: {reason}

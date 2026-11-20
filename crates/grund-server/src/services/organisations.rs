@@ -28,6 +28,19 @@ use crate::{
     state::State,
 };
 
+pub use grund_store::organisations::OwnershipAuditRow;
+
+#[derive(Debug, Clone)]
+pub struct OperatorOwnershipChange {
+    pub operator_organisation: Uuid,
+    pub actor: Uuid,
+    pub organisation: Uuid,
+    pub target: Uuid,
+    pub new_role: Option<Role>,
+    pub expected_role: Option<Role>,
+    pub reason: String,
+}
+
 /// Where a new account will live, decided before its unit of work opens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Home {
@@ -240,6 +253,87 @@ pub struct Organisations {
 }
 
 impl Organisations {
+    pub async fn operator_change_ownership(
+        &self,
+        change: OperatorOwnershipChange,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.state.operator_organisation().await? == Some(change.operator_organisation),
+            "operator access is required"
+        );
+        anyhow::ensure!(
+            change.organisation != change.operator_organisation,
+            "the operator organisation cannot be changed here"
+        );
+        let mut work = Work::begin(
+            &self.state.events,
+            Uuid::now_v7(),
+            &change.actor.to_string(),
+        )
+        .await?;
+        let operator = work.load_organisation(change.operator_organisation).await?;
+        anyhow::ensure!(
+            operator.exists
+                && !operator.deleted
+                && operator
+                    .role_of(change.actor)
+                    .is_some_and(|role| role.manages_members()),
+            "operator access is required"
+        );
+        let live_actor: Option<Uuid> = sqlx::query_scalar(
+            "SELECT a.account_id FROM grund_accounts a \
+             JOIN grund_account_emails e ON e.account_id = a.account_id \
+             JOIN grund_memberships m ON m.account_id = a.account_id \
+             JOIN grund_organisations o ON o.organisation_id = m.organisation_id \
+             WHERE a.account_id = $1 AND o.organisation_id = $2 \
+               AND o.deleted_at IS NULL AND m.role IN ('owner', 'admin') \
+             FOR SHARE OF a, e, m, o",
+        )
+        .bind(change.actor)
+        .bind(change.operator_organisation)
+        .fetch_optional(&mut **work.sql())
+        .await?;
+        anyhow::ensure!(live_actor.is_some(), "operator access is required");
+        if change.new_role == Some(Role::Owner) {
+            let verified: Option<bool> = sqlx::query_scalar(
+                "SELECT a.email_verified_at IS NOT NULL FROM grund_accounts a \
+                 JOIN grund_account_emails e ON e.account_id = a.account_id \
+                 WHERE a.account_id = $1 FOR SHARE OF a, e",
+            )
+            .bind(change.target)
+            .fetch_optional(&mut **work.sql())
+            .await?;
+            anyhow::ensure!(
+                verified == Some(true),
+                "the new owner must be an existing verified account"
+            );
+        }
+        work.organisation(
+            change.organisation,
+            OrganisationCommand::OperatorChangeOwnership {
+                operator_organisation: change.operator_organisation,
+                organisation_id: change.organisation,
+                actor: change.actor,
+                target: change.target,
+                new_role: change.new_role,
+                expected_role: change.expected_role,
+                reason: change.reason,
+                at: Utc::now(),
+            },
+        )
+        .await?;
+        work.commit().await?;
+        wake(&self.state).await;
+        Ok(())
+    }
+
+    pub async fn operator_ownership_history(
+        &self,
+        organisation: Uuid,
+    ) -> anyhow::Result<Vec<OwnershipAuditRow>> {
+        Ok(organisations::operator_ownership_history(&self.state.pool, organisation).await?)
+    }
+
     /// The organisation `slug` if the account is a member, and remembers it
     /// as the one `/` opens next. `None` for "no such organisation" and "not
     /// a member" alike.

@@ -14,6 +14,7 @@ pub enum Mail {
     PasswordReset,
     SignupExisting,
     Invitation,
+    OwnershipChanged,
 }
 
 impl Mail {
@@ -62,6 +63,19 @@ impl Mail {
                     mail::invitation::render(&props),
                 )
             }
+            Self::OwnershipChanged => {
+                let props = OwnershipChangedMail {
+                    organisation: field(context, "organisation")?,
+                    target: field(context, "target")?,
+                    old_role: field(context, "old_role")?,
+                    new_role: field(context, "new_role")?,
+                    reason: field(context, "reason")?,
+                };
+                (
+                    mail::ownership_changed_txt::render(&props),
+                    mail::ownership_changed::render(&props),
+                )
+            }
         };
         let (mut plain, html) = pair;
         if plain.ends_with('\n') {
@@ -75,6 +89,7 @@ impl Mail {
             Mail::VerifyEmail => "Confirm your email for grund".into(),
             Mail::PasswordReset => "Reset your grund password".into(),
             Mail::SignupExisting => "You already have a grund account".into(),
+            Mail::OwnershipChanged => "Organisation ownership changed".into(),
             Mail::Invitation => format!(
                 "Join {} on grund",
                 context["organisation"]
@@ -108,6 +123,14 @@ pub struct InvitationMail<'a> {
     pub role_article: &'a str,
     pub role: &'a str,
     pub link: &'a str,
+}
+
+pub struct OwnershipChangedMail<'a> {
+    pub organisation: &'a str,
+    pub target: &'a str,
+    pub old_role: &'a str,
+    pub new_role: &'a str,
+    pub reason: &'a str,
 }
 
 /// Why a mail was not sent.
@@ -214,6 +237,22 @@ mod tests {
             )
         );
         assert!(!html.contains("<Ada & Ben>"));
+    }
+
+    #[test]
+    fn ownership_mail_preserves_the_reason_as_text_not_html() {
+        let payload = serde_json::json!({
+            "organisation": "customer",
+            "target": "new-owner",
+            "old_role": "member",
+            "new_role": "owner",
+            "reason": "<script>alert('ownership')</script> & recovery",
+        });
+        let (plain, html) = Mail::OwnershipChanged.bodies(&payload).unwrap();
+        assert!(plain.contains("<script>alert('ownership')</script> & recovery"));
+        assert!(!html.contains("<script>"));
+        assert!(html.contains("&lt;script&gt;"));
+        assert!(html.contains("&amp; recovery"));
     }
 
     #[test]
