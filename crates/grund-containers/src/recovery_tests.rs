@@ -89,8 +89,8 @@ impl Drop for FakeContainerd {
 
 impl FakeContainerd {
     async fn new(task: Option<Process>) -> Self {
-        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../../.workspace-cache/container-recovery-tests")
+        let dir = std::env::temp_dir()
+            .join("grund-container-recovery-tests")
             .join(uuid::Uuid::new_v4().to_string());
         let run_dir = dir.join("run");
         std::fs::create_dir_all(&run_dir).unwrap();

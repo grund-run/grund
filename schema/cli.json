@@ -9042,7 +9042,7 @@
           "default": "10m",
           "flag": "--timeout",
           "name": "timeout",
-          "type": "integer",
+          "type": "string",
           "value_name": "TIMEOUT"
         },
         {
@@ -14259,6 +14259,11 @@
       "code": "rollout_failed",
       "exit": 9,
       "meaning": "With --wait: the release did not go live."
+    },
+    {
+      "code": "unknown_execution",
+      "exit": 125,
+      "meaning": "A run may have been created; inspect its history before deciding whether to try again."
     },
     {
       "code": "failed",

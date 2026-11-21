@@ -162,7 +162,7 @@ impl mire::Aggregate for Run {
 
 /// Commands distinguish verified process exit from a stop request or missed heartbeat.
 pub enum Command {
-    Request(Request),
+    Request(Box<Request>),
     Cancel {
         at: DateTime<Utc>,
         timed_out: bool,
@@ -199,7 +199,7 @@ impl mire::Command for Command {
     fn handle(self, run: &Run) -> Result<Vec<Event>, Error> {
         if let Self::Request(request) = self {
             return if run.request.is_none() {
-                Ok(vec![Event::Requested { request }])
+                Ok(vec![Event::Requested { request: *request }])
             } else {
                 Ok(vec![])
             };

@@ -203,7 +203,6 @@ pub struct Shared {
     pub reports: Mutex<Vec<ReplicaObserved>>,
     /// Single-attempt task observations, never service readiness or gate endpoints.
     pub run_reports: Mutex<Vec<grund_proto::grund::agent::v1::RunObserved>>,
-    /// Run telemetry owners retained until final local output collection completes.
     pub(crate) run_telemetry: Mutex<std::collections::BTreeSet<String>>,
     /// Why the machine refused a replica, for the next status report.
     pub refusals: Mutex<Vec<String>>,

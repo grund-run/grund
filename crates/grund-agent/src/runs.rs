@@ -725,10 +725,11 @@ impl<C: ContainerRuntime + 'static, I: Inputs> Worker<C, I> {
     }
 
     async fn attach(&mut self, run: &DesiredRun) -> anyhow::Result<Option<String>> {
-        let access = match &self.network {
-            Network::Private(access) => access,
-            #[cfg(test)]
-            Network::Isolated => return Ok(None),
+        #[cfg(not(test))]
+        let Network::Private(access) = &self.network;
+        #[cfg(test)]
+        let Network::Private(access) = &self.network else {
+            return Ok(None);
         };
         let mesh = access
             .mesh

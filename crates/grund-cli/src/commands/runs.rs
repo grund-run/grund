@@ -282,6 +282,18 @@ async fn wait(ctx: &Ctx, api: &Api, org: &str, id: &str, mut answer: Value) -> O
     }
 }
 
+fn creation_error(error: CliError, dry_run: bool) -> CliError {
+    if !dry_run && matches!(error.code, Code::Unavailable | Code::Failed) {
+        CliError::new(
+            Code::UnknownExecution,
+            "could not confirm whether a run was created",
+        )
+        .hint("Inspect grund stack run-list before deciding whether to try again; do not retry with a new idempotency key.")
+    } else {
+        error
+    }
+}
+
 /// Starts one command without changing the stack; following it never retries work.
 pub async fn create(ctx: &Ctx, args: RunArgs) -> CliResult<Output> {
     if args.args.len() > 128
@@ -298,7 +310,7 @@ pub async fn create(ctx: &Ctx, args: RunArgs) -> CliResult<Output> {
     let key = args
         .idempotency_key
         .unwrap_or_else(|| Uuid::now_v7().to_string());
-    let answer = api.call(&rpc("CreateRun"), json!({"organisation":org,"stack":args.stack,"service":args.service,"args":args.args,"timeoutSeconds":args.timeout.as_secs(),"idempotencyKey":key,"dryRun":args.dry_run})).await?;
+    let answer = api.call(&rpc("CreateRun"), json!({"organisation":org,"stack":args.stack,"service":args.service,"args":args.args,"timeoutSeconds":args.timeout.as_secs(),"idempotencyKey":key,"dryRun":args.dry_run})).await.map_err(|error| creation_error(error, args.dry_run))?;
     if args.dry_run {
         return Ok(Output::with_text(
             answer,
@@ -308,7 +320,12 @@ pub async fn create(ctx: &Ctx, args: RunArgs) -> CliResult<Output> {
     let id = answer["run"]["id"]
         .as_str()
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| CliError::new(Code::Failed, "the instance did not return a run id"))?
+        .ok_or_else(|| {
+            creation_error(
+                CliError::new(Code::Failed, "the instance did not return a run id"),
+                false,
+            )
+        })?
         .to_string();
     eprintln!("Run {}", safe_text(&id));
     Ok(wait(ctx, &api, &org, &id, answer).await)
@@ -391,6 +408,23 @@ pub async fn logs(ctx: &Ctx, args: RunLogsArgs) -> CliResult<Option<Output>> {
 mod tests {
     use super::*;
     use crate::output::Format;
+
+    #[test]
+    fn a_lost_creation_reply_reports_unknown_execution_not_retryable_unavailability() {
+        for code in [Code::Unavailable, Code::Failed] {
+            let error = creation_error(CliError::new(code, "unconfirmed response"), false);
+            assert_eq!(error.code.exit_status(), 125);
+            assert_eq!(error.code.as_str(), "unknown_execution");
+        }
+        assert_eq!(
+            creation_error(CliError::new(Code::PermissionDenied, "not an owner"), false).code,
+            Code::PermissionDenied,
+        );
+        assert_eq!(
+            creation_error(CliError::new(Code::Unavailable, "offline"), true).code,
+            Code::Unavailable,
+        );
+    }
 
     #[test]
     fn application_exit_codes_do_not_become_cli_error_codes() {

@@ -165,8 +165,8 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let data = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../../.workspace-cache/run-agent-tests")
+        let data = std::env::temp_dir()
+            .join("grund-run-agent-tests")
             .join(uuid::Uuid::now_v7().to_string());
         std::fs::create_dir_all(&data).unwrap();
         let id = uuid::Uuid::now_v7().to_string();

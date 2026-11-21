@@ -59,7 +59,8 @@ async fn arguments_are_erasable_but_never_copied_into_audit_or_receipts(
     let id = Uuid::now_v7();
     let sentinel = "private-email-sentinel@example.invalid";
     let mut work = Work::begin(&events, Uuid::now_v7(), "test-owner").await?;
-    work.run(id, Command::Request(request.clone())).await?;
+    work.run(id, Command::Request(Box::new(request.clone())))
+        .await?;
     sqlx::query("INSERT INTO grund_run_payloads(organisation_id,run_id,args) VALUES($1,$2,$3)")
         .bind(request.organisation_id)
         .bind(id)
@@ -251,7 +252,8 @@ async fn rolling_back_a_request_leaves_no_projection_payload_or_event(
     let id = Uuid::now_v7();
     {
         let mut work = Work::begin(&events, Uuid::now_v7(), "test").await?;
-        work.run(id, Command::Request(request.clone())).await?;
+        work.run(id, Command::Request(Box::new(request.clone())))
+            .await?;
         sqlx::query("INSERT INTO grund_run_payloads(organisation_id,run_id,args) VALUES($1,$2,'[\"command\"]')").bind(request.organisation_id).bind(id).execute(&mut **work.sql()).await?;
     }
     assert!(get(&pool, request.organisation_id, id).await?.is_none());

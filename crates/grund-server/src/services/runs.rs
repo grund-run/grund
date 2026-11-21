@@ -150,7 +150,6 @@ impl Runs {
     }
 
     async fn receipt(
-        &self,
         conn: &mut PgConnection,
         org: Uuid,
         actor: Uuid,
@@ -329,7 +328,7 @@ impl Runs {
         let secret_count = release.secret_versions.len() as i64;
         work.run(
             id,
-            Command::Request(Request {
+            Command::Request(Box::new(Request {
                 organisation_id: org,
                 stack_id: stack.stack_id,
                 stack_name: state.name.clone(),
@@ -349,7 +348,7 @@ impl Runs {
                     } else {
                         i64::from(input.timeout_seconds)
                     }),
-            }),
+            })),
         )
         .await?;
         let pinned: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM grund_run_inputs WHERE organisation_id=$1 AND run_id=$2) AND (SELECT COUNT(*) FROM grund_run_secret_pins WHERE organisation_id=$1 AND run_id=$2)=$3")
@@ -363,7 +362,7 @@ impl Runs {
             .bind(Json(&input.args))
             .execute(&mut **work.sql())
             .await?;
-        self.receipt(
+        Self::receipt(
             work.sql(),
             org,
             actor,
@@ -466,8 +465,7 @@ impl Runs {
             },
         )
         .await?;
-        self.receipt(work.sql(), org, actor, "cancel", key, &digest, id)
-            .await?;
+        Self::receipt(work.sql(), org, actor, "cancel", key, &digest, id).await?;
         let machine = row
             .state
             .0

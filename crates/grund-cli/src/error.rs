@@ -18,6 +18,7 @@ pub enum Code {
     Invalid,
     Unavailable,
     RolloutFailed,
+    UnknownExecution,
     Failed,
 }
 
@@ -35,6 +36,7 @@ impl Code {
         Code::Invalid,
         Code::Unavailable,
         Code::RolloutFailed,
+        Code::UnknownExecution,
         Code::Failed,
     ];
 
@@ -52,6 +54,7 @@ impl Code {
             Code::Invalid => "invalid",
             Code::Unavailable => "unavailable",
             Code::RolloutFailed => "rollout_failed",
+            Code::UnknownExecution => "unknown_execution",
             Code::Failed => "failed",
         }
     }
@@ -68,6 +71,7 @@ impl Code {
             Code::Invalid => 7,
             Code::Unavailable => 8,
             Code::RolloutFailed => 9,
+            Code::UnknownExecution => 125,
         }
     }
 
@@ -103,6 +107,9 @@ impl Code {
                 "The instance could not be reached or could not answer now; retrying may work."
             }
             Code::RolloutFailed => "With --wait: the release did not go live.",
+            Code::UnknownExecution => {
+                "A run may have been created; inspect its history before deciding whether to try again."
+            }
             Code::Failed => "Anything else.",
         }
     }
@@ -221,7 +228,11 @@ mod tests {
     fn every_code_has_one_exit_status_and_a_meaning() {
         for code in Code::ALL {
             assert!(!code.meaning().is_empty());
-            assert!((1..=9).contains(&code.exit_status()), "{}", code.as_str());
+            assert!(
+                matches!(code.exit_status(), 1..=9 | 125),
+                "{}",
+                code.as_str()
+            );
         }
     }
 
