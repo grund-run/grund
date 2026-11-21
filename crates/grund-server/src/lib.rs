@@ -68,10 +68,18 @@ pub async fn serve(
     certificates::check_files(&config)?;
     let secret = secrets::SecretKey::load(&config)?;
     let pool = db::connect_waiting(&config.database, config.database_wait, config.listen).await?;
-    grund_store::migrate(&pool).await?;
-    for extension in &extensions {
-        extension.migrate(&pool).await?;
+    let migrations = db::connect_migrations(&config.database).await?;
+    let migrated = async {
+        grund_store::migrate(&migrations).await?;
+        for extension in &extensions {
+            extension.migrate(&migrations).await?;
+        }
+        mire_sagas::migrate(&mire::EventStore::new(migrations.clone())).await?;
+        Ok::<_, anyhow::Error>(())
     }
+    .await;
+    migrations.close().await;
+    migrated?;
     if config.billing.enabled() {
         let epoch = config
             .billing
@@ -115,7 +123,6 @@ pub async fn serve(
     )
     .await?;
     let events = mire::EventStore::new(pool.clone());
-    mire_sagas::migrate(&events).await?;
     let nats = connect_nats(&config).await?;
 
     let mailer = services::mail::Mailer::new(&config)?;
@@ -245,7 +252,7 @@ fn entitlements(config: &ServeConfig) -> anyhow::Result<services::entitlements::
 /// on start; this is for running it as its own step.
 pub async fn migrate(args: config::DatabaseArgs) -> anyhow::Result<()> {
     args.validate()?;
-    let pool = db::connect(&args).await?;
+    let pool = db::connect_migrations(&args).await?;
     grund_store::migrate(&pool).await?;
     tracing::info!("migrations applied");
     Ok(())

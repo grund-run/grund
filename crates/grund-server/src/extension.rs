@@ -70,7 +70,7 @@ pub trait Extension: Send + Sync + 'static {
     /// Routes to merge into the page router, under the same middleware as
     /// the core's pages.
     fn routes(&self) -> axum::Router<State>;
-    /// Apply extension-owned migrations after the public migration chain.
+    /// Apply extension-owned migrations on a migration-only pool without request timeouts.
     fn migrate<'a>(
         &'a self,
         _pool: &'a PgPool,
