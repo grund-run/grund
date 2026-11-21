@@ -1476,6 +1476,27 @@ async fn an_app_is_served_through_the_edge_while_grund_is_down_and_keeps_its_cop
 
 const EDGE_REDIALS_WITHIN: Duration = Duration::from_secs(2);
 
+fn accepted_copy_machine(line: &str) -> Option<&str> {
+    let fields = line.split_once("edge.failover_attempt ")?.1;
+    let mut machine = None;
+    for field in fields.split_whitespace() {
+        if let Some(value) = field.strip_prefix("machine_key=") {
+            machine.get_or_insert(value);
+        } else if let Some(value) = field.strip_prefix("outcome=") {
+            return (value == "\"accepted\"").then_some(machine?);
+        }
+    }
+    None
+}
+
+#[test]
+fn an_accepted_copy_is_not_confused_with_keys_and_outcomes_in_parent_spans() {
+    let accepted = "edge.failover_attempt copy_index=1 machine_key=accepted-key outcome=\"accepted\" copy_index=0 machine_key=failed-key outcome=\"answer_failed\"";
+    assert_eq!(accepted_copy_machine(accepted), Some("accepted-key"));
+    let refused = "edge.failover_attempt copy_index=0 machine_key=failed-key outcome=\"answer_failed\" copy_index=1 machine_key=accepted-key outcome=\"accepted\"";
+    assert_eq!(accepted_copy_machine(refused), None);
+}
+
 #[tokio::test]
 async fn an_agent_restarted_under_load_costs_no_request_and_the_edge_redials_it_at_once()
 -> anyhow::Result<()> {
@@ -1529,14 +1550,14 @@ async fn an_agent_restarted_under_load_costs_no_request_and_the_edge_redials_it_
     let accepted = log
         .lines()
         .rev()
-        .find(|line| line.contains("edge.failover_attempt") && line.contains("accepted"))
+        .find_map(accepted_copy_machine)
         .ok_or_else(|| anyhow::anyhow!("no accepted edge connection:\n{log}"))?;
-    let (machine_name, machine_key) = keys
-        .iter()
-        .find(|(_, key)| accepted.contains(&format!("machine_key={key}")))
-        .ok_or_else(|| {
-            anyhow::anyhow!("the accepted connection has no known machine:\n{accepted}")
-        })?;
+    let (machine_name, machine_key) =
+        keys.iter()
+            .find(|(_, key)| key == accepted)
+            .ok_or_else(|| {
+                anyhow::anyhow!("the accepted connection has no known machine:\n{accepted}")
+            })?;
     let agent = if machine_name == "box-a" {
         &mut a
     } else {
