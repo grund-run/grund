@@ -90,6 +90,7 @@ impl AgentService for AgentApi {
                     "apps": c.apps,
                     "volumes": c.volumes,
                     "stack_services": c.stack_services,
+                    "runs_v1": c.runs_v1,
                     "arch": c.arch.chars().take(16).collect::<String>(),
                     "memory_mib": c.memory_mib,
                     "cpu_millis": c.cpu_millis,
@@ -267,6 +268,25 @@ impl AgentService for AgentApi {
                 .collect(),
             ..Default::default()
         })
+    }
+    async fn get_run_input(
+        &self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, grund_proto::grund::agent::v1::GetRunInputRequest>,
+    ) -> ServiceResult<grund_proto::grund::agent::v1::GetRunInputResponse> {
+        use crate::services::runs::RunsState;
+        let caller = machine(&ctx)?;
+        let missing = || ConnectError::not_found("no authorised run attempt on this machine");
+        let id = Uuid::parse_str(request.run_id).map_err(|_| missing())?;
+        let attempt = Uuid::parse_str(request.attempt_id).map_err(|_| missing())?;
+        let input = self
+            .state
+            .runs()
+            .input(&caller, id, attempt)
+            .await
+            .map_err(internal)?
+            .ok_or_else(missing)?;
+        Response::ok(input)
     }
 
     async fn get_pull_credential(
@@ -505,6 +525,25 @@ impl AgentService for AgentApi {
             )
             .await
             .map_err(internal)?;
+        {
+            use crate::services::runs::RunsState;
+            use buffa::MessageView;
+            let observations = request
+                .runs
+                .iter()
+                .map(|run| {
+                    run.to_owned_message()
+                        .map_err(|_| ConnectError::invalid_argument("invalid run observation"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if !observations.is_empty() {
+                self.state
+                    .runs()
+                    .report(&caller, &observations)
+                    .await
+                    .map_err(internal)?;
+            }
+        }
         Response::ok(ReportStatusResponse::default())
     }
 

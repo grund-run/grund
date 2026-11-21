@@ -52,6 +52,10 @@ impl Projections {
                 grund_store::stacks::Projection,
             )
             .subscribe_transactional(
+                grund_store::runs::SUBSCRIPTION,
+                grund_store::runs::Projection,
+            )
+            .subscribe_transactional(
                 grund_store::projections::VOLUME_SUBSCRIPTION,
                 grund_store::projections::VolumeProjection,
             )

@@ -26,6 +26,7 @@ mod placement;
 mod registries;
 mod relay_certificates;
 mod reset;
+mod runs;
 mod sessions;
 mod setup;
 mod signup;

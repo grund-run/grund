@@ -2359,6 +2359,7 @@ impl Apps {
             "SELECT a.app_id FROM grund_apps a WHERE a.deleted_at IS NOT NULL \
              AND a.purge_after <= $1 AND NOT EXISTS (SELECT 1 FROM grund_volumes v \
              WHERE v.app_id = a.app_id AND v.status = 'pending_deletion') \
+             AND NOT EXISTS (SELECT 1 FROM grund_runs r WHERE r.app_id=a.app_id AND r.outstanding) \
              ORDER BY a.purge_after, a.app_id LIMIT 100",
         )
         .bind(at)
@@ -2375,7 +2376,7 @@ impl Apps {
                 work.allow_stack(stack_id);
             }
             let pending: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM grund_volumes WHERE app_id = $1 AND status = 'pending_deletion')"
+                "SELECT EXISTS (SELECT 1 FROM grund_volumes WHERE app_id = $1 AND status = 'pending_deletion') OR EXISTS(SELECT 1 FROM grund_runs WHERE app_id=$1 AND outstanding)"
             ).bind(id).fetch_one(&mut **work.sql()).await?;
             if pending {
                 continue;

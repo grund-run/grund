@@ -30,6 +30,29 @@ pub type StacksCommand = Noun<StacksAction>;
 pub enum StacksAction {
     #[command(about = "Deploy a complete stack, or preview the resolved bundle without changes")]
     Deploy(DeployArgs),
+    #[command(
+        about = "Run one command from a service's current release without changing the stack",
+        long_about = "Run once as the current organisation owner, signed in with a session (not a token). The service must have no persistent volumes. Arguments replace the image command while keeping its entrypoint; no shell expansion or interactive input. Output follows as log pages, then a final run outcome; JSON is one response per line and YAML is separate documents. Normal completion returns the command's exit code; confirmed timeout is 124, cancellation 130, and unknown execution or lost observation 125. Agent downtime can overrun the deadline until restart. Ctrl-C requests cancellation and reports whether stop is confirmed. Never rerun an unknown outcome without checking its effects."
+    )]
+    Run(super::runs::RunArgs),
+    #[command(about = "Read a run's outcome and retained arguments (owners only)")]
+    RunStatus {
+        #[arg(value_name = "RUN_ID")]
+        id: String,
+    },
+    #[command(about = "One page of a stack's run history (owners only)")]
+    RunList(super::runs::RunListArgs),
+    #[command(about = "Read or follow one run's private output (owners only)")]
+    RunLogs(super::runs::RunLogsArgs),
+    #[command(about = "Request cancellation without rolling back command effects")]
+    RunCancel {
+        #[arg(value_name = "RUN_ID")]
+        id: String,
+        #[arg(long)]
+        idempotency_key: Option<String>,
+        #[arg(long)]
+        dry_run: bool,
+    },
     #[command(about = "One bounded page of the organisation's stacks")]
     List {
         #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(u32).range(1..=100))]

@@ -16,6 +16,7 @@ use crate::api::containerd::services::{
     snapshots::v1::{MountsResponse, StatSnapshotResponse},
     tasks::v1::{
         CreateTaskResponse, DeleteResponse, GetResponse, ListTasksResponse, StartResponse,
+        WaitResponse,
     },
 };
 
@@ -32,6 +33,7 @@ struct DaemonState {
     empty_get: bool,
     starts_during_delete: bool,
     mutations: Vec<&'static str>,
+    run_owned: bool,
 }
 
 fn process(status: Status, pid: u32) -> Process {
@@ -58,6 +60,18 @@ fn container() -> Container {
     }
 }
 
+fn owned_container(state: &DaemonState) -> Container {
+    let mut container = container();
+    if state.run_owned {
+        container
+            .labels
+            .insert(grund_agent::runtime::RUN_LABEL.into(), ID.into());
+        container.created_at =
+            buffa_types::google::protobuf::Timestamp::from_unix(1_700_000_000, 123_000_000).into();
+    }
+    container
+}
+
 struct FakeContainerd {
     runtime: Containerd,
     state: Arc<Mutex<DaemonState>>,
@@ -75,7 +89,9 @@ impl Drop for FakeContainerd {
 
 impl FakeContainerd {
     async fn new(task: Option<Process>) -> Self {
-        let dir = std::env::temp_dir().join(format!("grund-recovery-{}", uuid::Uuid::new_v4()));
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../../.workspace-cache/container-recovery-tests")
+            .join(uuid::Uuid::new_v4().to_string());
         let run_dir = dir.join("run");
         std::fs::create_dir_all(&run_dir).unwrap();
         let run_directory = std::fs::File::open(run_dir).unwrap();
@@ -93,6 +109,7 @@ impl FakeContainerd {
             empty_get: false,
             starts_during_delete: false,
             mutations: Vec::new(),
+            run_owned: false,
         }));
         let mut router = Router::new();
         macro_rules! rpc {
@@ -112,9 +129,9 @@ impl FakeContainerd {
             CONTAINERS,
             "List",
             ListContainersRequest,
-            |_state: &mut DaemonState, _| {
+            |state: &mut DaemonState, _| {
                 Ok::<_, ConnectError>(ListContainersResponse {
-                    containers: vec![container()],
+                    containers: vec![owned_container(state)],
                     ..Default::default()
                 })
             }
@@ -123,9 +140,9 @@ impl FakeContainerd {
             CONTAINERS,
             "Get",
             GetContainerRequest,
-            |_state: &mut DaemonState, _| {
+            |state: &mut DaemonState, _| {
                 Ok::<_, ConnectError>(GetContainerResponse {
-                    container: container().into(),
+                    container: owned_container(state).into(),
                     ..Default::default()
                 })
             }
@@ -154,8 +171,13 @@ impl FakeContainerd {
         });
         rpc!(TASKS, "Kill", KillRequest, |state: &mut DaemonState, _| {
             state.mutations.push("kill");
-            state.task = Some(process(Status::STOPPED, PID));
+            let mut exited = process(Status::STOPPED, PID);
+            exited.exit_status = 143;
+            state.task = Some(exited);
             Ok::<_, ConnectError>(Empty::default())
+        });
+        rpc!(TASKS, "Wait", WaitRequest, |_state: &mut DaemonState, _| {
+            Ok::<_, ConnectError>(WaitResponse::default())
         });
         rpc!(
             TASKS,
@@ -352,4 +374,96 @@ async fn an_exited_task_is_discarded_without_a_signal_before_starting_a_new_proc
         TaskState::Running { pid: STARTED_PID }
     );
     assert_eq!(daemon.state.lock().mutations, ["delete", "create", "start"]);
+}
+
+#[tokio::test]
+async fn run_ownership_is_disjoint_even_when_a_container_also_has_a_replica_label() {
+    let daemon = FakeContainerd::new(Some(process(Status::RUNNING, PID))).await;
+    daemon.state.lock().run_owned = true;
+    assert!(daemon.runtime.list().await.unwrap().is_empty());
+    let runs = daemon.runtime.list_runs().await.unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].state, TaskState::Running { pid: PID });
+    daemon.assert_untouched(PID);
+}
+
+#[tokio::test]
+async fn stopping_a_run_retains_the_real_exit_task_until_its_receipt_is_durable() {
+    let daemon = FakeContainerd::new(Some(process(Status::RUNNING, PID))).await;
+    daemon.state.lock().run_owned = true;
+    let stopped = daemon.runtime.stop_run(ID).await.unwrap();
+    assert!(stopped.signalled);
+    assert!(matches!(
+        stopped.state,
+        Some(TaskState::Exited { code: 143, .. })
+    ));
+    assert_eq!(daemon.state.lock().mutations, vec!["kill"]);
+    assert_eq!(daemon.state.lock().task.as_ref().unwrap().exit_status, 143);
+}
+
+#[tokio::test]
+async fn an_exit_observed_before_run_cancellation_is_not_relabelled_as_cancelled() {
+    let mut exited = process(Status::STOPPED, PID);
+    exited.exit_status = 23;
+    let daemon = FakeContainerd::new(Some(exited)).await;
+    daemon.state.lock().run_owned = true;
+    let stopped = daemon.runtime.stop_run(ID).await.unwrap();
+    assert!(!stopped.signalled);
+    assert!(matches!(
+        stopped.state,
+        Some(TaskState::Exited { code: 23, .. })
+    ));
+    daemon.assert_untouched(PID);
+}
+
+#[tokio::test]
+async fn a_run_can_never_enter_the_services_restart_path() {
+    let daemon = FakeContainerd::new(Some(process(Status::STOPPED, PID))).await;
+    daemon.state.lock().run_owned = true;
+    assert!(daemon.runtime.restart(ID).await.is_err());
+    daemon.assert_untouched(PID);
+}
+
+#[tokio::test]
+async fn uncertain_run_task_inspection_never_claims_a_confirmed_stop() {
+    let daemon = FakeContainerd::new(Some(process(Status::RUNNING, PID))).await;
+    daemon.state.lock().run_owned = true;
+    daemon.state.lock().get_error = Some(ErrorCode::Unavailable);
+    assert!(daemon.runtime.stop_run(ID).await.is_err());
+    daemon.assert_untouched(PID);
+}
+
+#[tokio::test]
+async fn cancellation_after_task_creation_prevents_the_process_start_rpc() {
+    let daemon = FakeContainerd::new(None).await;
+    daemon.state.lock().run_owned = true;
+    let container = owned_container(&daemon.state.lock());
+    let cancel = tokio_util::sync::CancellationToken::new();
+    cancel.cancel();
+    assert!(
+        daemon
+            .runtime
+            .start_task(&container, &[], &[], Some(&cancel))
+            .await
+            .is_err()
+    );
+    assert_eq!(daemon.state.lock().mutations, vec!["create"]);
+    assert_eq!(
+        daemon.state.lock().task.as_ref().unwrap().status.as_known(),
+        Some(Status::CREATED)
+    );
+}
+
+#[tokio::test]
+async fn a_fast_exited_run_retains_a_durable_start_estimate_without_a_live_proc_entry() {
+    let mut exited = process(Status::STOPPED, PID);
+    exited.exit_status = 23;
+    let fake = FakeContainerd::new(Some(exited)).await;
+    fake.state.lock().run_owned = true;
+    assert_eq!(
+        fake.runtime.run_started_at(ID).await.unwrap(),
+        Some(1_700_000_000_123)
+    );
+    fake.state.lock().task = Some(process(Status::CREATED, PID));
+    assert_eq!(fake.runtime.run_started_at(ID).await.unwrap(), None);
 }

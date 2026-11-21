@@ -804,12 +804,63 @@ impl Machines {
             MachineCommand::Revoke { at, .. } => Some(*at),
             _ => None,
         };
+        let stopping_at = match &command {
+            MachineCommand::Revoke { at, .. } | MachineCommand::EndLease { at, .. } => Some(*at),
+            _ => None,
+        };
         let mut work = Work::begin(
             &self.state.events,
             Uuid::now_v7(),
             &format!("account:{actor}"),
         )
         .await?;
+        if let Some(at) = stopping_at {
+            use mire::Command;
+            let org: Option<Uuid> = sqlx::query_scalar(
+                "SELECT pool_organisation_id FROM grund_machines WHERE machine_id=$1",
+            )
+            .bind(machine_id)
+            .fetch_optional(&mut **work.sql())
+            .await?
+            .flatten();
+            if let Some(org) = org {
+                grund_store::domains::lock_hierarchy_policy(&mut **work.sql()).await?;
+                sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+                    .bind(format!("grund-apps-placement:{org}"))
+                    .execute(&mut **work.sql())
+                    .await?;
+            }
+            let machine = work.load_machine(machine_id).await?;
+            if let Err(error) = command.clone().handle(&machine) {
+                return Ok(
+                    refused(Err(WorkError::Machine(error)))?.unwrap_or(ChangeOutcome::NotAllowed)
+                );
+            }
+            let runs = grund_store::runs::blocking_machine(&mut **work.sql(), machine_id).await?;
+            if !runs.is_empty() {
+                use crate::services::agents::AgentsState;
+                let mut targets = std::collections::BTreeSet::new();
+                for run in runs {
+                    if let Some(request) = &run.state.0.request {
+                        targets.insert(request.machine_id);
+                    }
+                    work.run(
+                        run.run_id,
+                        grund_domain::run::Command::Cancel {
+                            at,
+                            timed_out: false,
+                        },
+                    )
+                    .await?;
+                }
+                for target in targets {
+                    self.state.agents().publish_in(work.sql(), target).await?;
+                }
+                work.commit().await?;
+                self.state.wakes.documents_changed();
+                return Ok(ChangeOutcome::NotAvailable);
+            }
+        }
         if let Some(outcome) = refused(work.machine(machine_id, command).await)? {
             return Ok(outcome);
         }

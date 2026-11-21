@@ -51,6 +51,7 @@ pub fn tools(root: &clap::Command) -> Vec<Tool> {
                         | "completion"
                         | "mcp"
                         | "up"
+                        | "stack run"
                 )
                 && !path.starts_with("skill")
         })
@@ -64,7 +65,7 @@ pub fn tools(root: &clap::Command) -> Vec<Tool> {
             if !leaf.output.is_empty() {
                 description.push_str(&format!(" Answers {} as JSON.", leaf.output));
             }
-            if path == "app logs" {
+            if matches!(path.as_str(), "app logs" | "stack run-logs") {
                 description.push_str(" This tool reads one bounded page; live follow is available only in the terminal command.");
             }
             if leaf.destructive {
@@ -76,7 +77,7 @@ pub fn tools(root: &clap::Command) -> Vec<Tool> {
                 description,
                 args: args
                     .into_iter()
-                    .filter(|a| leaf.path != "app logs" || a.get_id() != "follow")
+                    .filter(|a| !matches!(leaf.path, "app logs" | "stack run-logs") || a.get_id() != "follow")
                     .filter(|a| {
                         !matches!(
                             a.get_id().as_str(),
@@ -356,4 +357,22 @@ pub async fn serve(root: clap::Command, revision: &'static str) -> CliResult<()>
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[tokio::test]
+    async fn mcp_refuses_foreground_run_execution_and_unbounded_run_log_following() {
+        let root = Standalone::command();
+        let request = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"stack_run","arguments":{}}});
+        let response = handle(&root, "test", &request).await.unwrap();
+        assert_eq!(response["result"]["isError"], true);
+        let request = json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"stack_run_logs","arguments":{"id":"run-id","follow":true}}});
+        let response = handle(&root, "test", &request).await.unwrap();
+        assert_eq!(response["result"]["isError"], true);
+        assert!(response.to_string().contains("takes no argument follow"));
+    }
 }

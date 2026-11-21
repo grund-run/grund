@@ -33,6 +33,8 @@ pub enum Text {
     Json,
     /// Text made for it ([`Output::with_text`]).
     Own,
+    /// A final stream page: compact JSON or a separate YAML document.
+    Stream,
 }
 
 /// What a command produced.
@@ -40,10 +42,9 @@ pub enum Text {
 pub struct Output {
     pub value: Value,
     pub text: Text,
-    /// For [`Text::Own`].
+    /// For [`Text::Own`] and [`Text::Stream`].
     pub own: String,
-    /// The exit status after printing it: 0, or 1 for a report that found a
-    /// failure (`grund doctor`).
+    /// The process exit status, including an app command's observed exit code.
     pub status: i32,
 }
 
@@ -110,6 +111,10 @@ impl Output {
     /// The result in `format`, ending in a newline.
     pub fn render(&self, format: Format) -> String {
         match format {
+            Format::Json if matches!(self.text, Text::Stream) => format!("{}\n", self.value),
+            Format::Yaml if matches!(self.text, Text::Stream) => {
+                format!("---\n{}", yaml(&self.value))
+            }
             Format::Json => format!(
                 "{}\n",
                 serde_json::to_string_pretty(&self.value).unwrap_or_default()
@@ -117,7 +122,7 @@ impl Output {
             Format::Yaml => yaml(&self.value),
             Format::Text => match self.text {
                 Text::Fields => yaml(&self.value),
-                Text::Own => self.own.clone(),
+                Text::Own | Text::Stream => self.own.clone(),
                 Text::Json => format!(
                     "{}\n",
                     serde_json::to_string_pretty(&self.value).unwrap_or_default()

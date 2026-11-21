@@ -201,6 +201,10 @@ pub struct Shared {
     pub desired: Mutex<Option<DesiredState>>,
     /// The replicas as last observed, for the next status report.
     pub reports: Mutex<Vec<ReplicaObserved>>,
+    /// Single-attempt task observations, never service readiness or gate endpoints.
+    pub run_reports: Mutex<Vec<grund_proto::grund::agent::v1::RunObserved>>,
+    /// Run telemetry owners retained until final local output collection completes.
+    pub(crate) run_telemetry: Mutex<std::collections::BTreeSet<String>>,
     /// Why the machine refused a replica, for the next status report.
     pub refusals: Mutex<Vec<String>>,
     /// Whether the apps loop successfully observed the runtimes its desired work requires.
@@ -498,10 +502,11 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
     ) -> Self {
         let cache_key = secrets::key(machine_seed);
         let secrets = secrets::load(&data_dir, &cache_key);
-        *shared.telemetry_secrets.lock() = secrets
-            .iter()
-            .map(|(id, values)| (id.clone(), Arc::new(values.clone())))
-            .collect();
+        shared.telemetry_secrets.lock().extend(
+            secrets
+                .iter()
+                .map(|(id, values)| (id.clone(), Arc::new(values.clone()))),
+        );
         let volume_data_dir = runtime.volume_data_dir();
         Self {
             runtime,

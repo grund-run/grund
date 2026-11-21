@@ -6,8 +6,8 @@ description: Deploy and operate apps on a grund instance with the grund CLI inst
 # grund CLI
 
 `grund` drives a grund instance over the same API the dashboard uses. Every
-command takes `--json` and prints one JSON document on stdout, except
-`app logs --follow`, which emits one response per line until interrupted.
+command takes `--json` and prints one JSON document on stdout, except log
+following and `stack run`, which emit separate response lines.
 A failure prints `{"error": {"code", "message", "hint", "field", "reason"}}`
 on stderr and exits with the code's status. Always pass `--json` and read
 fields, not text.
@@ -78,6 +78,39 @@ vCPU); memory is bytes from `memory.current`, including cache, not process
 RSS. Missing values and absent buckets are unknown, never zero; do not
 interpolate gaps. Responses include their time buckets and retention bounds.
 
+## One-off stack commands
+
+```sh
+grund stack run STACK --service SERVICE --timeout 10m --json -- ARGS...
+grund stack run-status RUN_ID --json
+grund stack run-list STACK --json
+grund stack run-logs RUN_ID --follow --json
+grund stack run-cancel RUN_ID --json
+```
+
+Only a current organisation owner signed in with `grund auth login` can
+use these commands. No PAT works, including an owner's Full token.
+Do not borrow the owner's session or execute destructive admin commands
+without their explicit direction.
+
+Arguments replace the image command while keeping its entrypoint: no
+shell expansion, TTY or stdin. The selected service must have no volumes.
+A run never changes stack versions or automatically retries. The CLI
+prints its id on stderr, follows private log pages, then prints the final
+run outcome. Normal completion returns the app's exact exit code; confirmed
+timeout is 124, cancellation 130, unknown execution or lost observation 125.
+Use state/exitCode to distinguish an app returning the same number.
+Foreground `stack run` is terminal-only, not an MCP tool: its output stream
+would corrupt MCP's stdio. MCP can read status/history, request cancellation
+and read a bounded page of run logs; following is terminal-only.
+
+Ctrl-C requests stop and reports whether it is confirmed. Lost observation
+does not mean the task stopped: inspect its id rather than running again.
+The 10m default timeout (maximum 1h) includes startup; agent downtime can
+overrun it until restart. Arguments are owner-readable for seven days after
+completion; logs are sensitive and best-effort, at most 24 hours. Never
+put credentials in arguments or paste retained personal data into chat.
+
 ## Change one thing
 
 Each makes a new release from the newest one, as the dashboard's Settings
@@ -125,7 +158,7 @@ also `grund stack deploy` that stack, but not add or remove services, set
 launch secrets or refresh templates. Leaving out `--apps` preserves organisation-wide
 deploy access for existing workflows. `full` does everything its maker's
 role allows in the organisation (delete apps, machines, domains, members)
-but never tokens or the account; it cannot be combined with `--apps`.
+but never tokens, the account or one-off stack runs; it cannot use `--apps`.
 Making tokens needs `grund auth login`, not a token.
 
 ## When something fails

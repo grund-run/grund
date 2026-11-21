@@ -6,6 +6,7 @@ package grund.agent.v1;
 
 import "google/protobuf/timestamp.proto";
 import "grund/agent/v1/enrollment.proto";
+import "grund/run/v1/run.proto";
 
 // The control link: how a registered machine's agent talks to its instance
 // (grund-docs design/machines.md §7b). Until it moves onto iroh, it is HTTPS,
@@ -61,6 +62,12 @@ service AgentService {
 
   // What actually runs, level-triggered: the whole picture every time.
   rpc ReportStatus(ReportStatusRequest) returns (ReportStatusResponse);
+
+  // Arguments and resolved environment for one authorised run attempt on this
+  // machine. No values travel in persisted desired-state documents.
+  rpc GetRunInput(GetRunInputRequest) returns (GetRunInputResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
 
   // Lease one pending backup/restore/probe/prune attempt for this signed
   // machine only. Never place repository credentials in desired state.
@@ -252,6 +259,8 @@ message Capabilities {
   // 0 means unsupported. Version 1 stages and physically fences guest roots;
   // an older host must never receive replacement work.
   uint32 vm_replacement_version = 18;
+  // Supports isolated single-attempt tasks and agent-owned absolute deadlines.
+  bool runs_v1 = 19;
 }
 
 // Active kernel configuration and owned-process attachment, not a benchmark.
@@ -400,6 +409,41 @@ message DesiredState {
   // mount NEVER implies deletion. The signature covers these tombstones,
   // including their app owner; never erase an existing host-path source.
   repeated VolumeDeletion volume_deletions = 12;
+  // Single-attempt tasks, separate from service replicas and gate endpoints.
+  // Requires the runs-v1 feature; arguments are fetched separately.
+  repeated DesiredRun runs = 13;
+}
+
+message DesiredRun {
+  string run_id = 1;
+  string attempt_id = 2;
+  // Pinned execution snapshot. replica_id equals run_id; no ports or volumes.
+  Replica replica = 3;
+  google.protobuf.Timestamp deadline = 4;
+  bool cancel = 5;
+}
+
+message GetRunInputRequest {
+  string run_id = 1;
+  string attempt_id = 2;
+}
+message GetRunInputResponse {
+  repeated string args = 1;
+  // Includes resolved pinned secret environment. Never persist as desired state.
+  repeated EnvVar env = 2;
+}
+
+message RunObserved {
+  string run_id = 1;
+  string attempt_id = 2;
+  grund.run.v1.RunState state = 3;
+  optional int32 exit_code = 4;
+  optional int32 signal = 5;
+  // Stable bounded reason; never argv, image stderr or raw runtime errors.
+  string reason = 6;
+  google.protobuf.Timestamp started_at = 7;
+  google.protobuf.Timestamp finished_at = 8;
+  bool stop_confirmed = 9;
 }
 
 message VolumeDeletion {
@@ -669,6 +713,7 @@ message ReportStatusRequest {
   // each pass until the server stops sending their signed tombstones.
   // A failure belongs in refusals, not here.
   repeated VolumeDeleted volume_deletions = 6;
+  repeated RunObserved runs = 7;
 }
 
 message VolumeDeleted {

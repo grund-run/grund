@@ -58,6 +58,7 @@ pub const KNOWN_FEATURES: &[&str] = &[
     "restart-policy",
     "exec-checks",
     "volume-copy-up",
+    "runs-v1",
 ];
 
 /// The largest document the agent decodes (apps.md §15).
@@ -163,6 +164,7 @@ pub enum Refusal {
     MissingRestartFeature,
     MissingExecCheckFeature,
     MissingCopyUpFeature,
+    MissingRunFeature,
     NoTrustKey,
     /// Signed by a key other than the one pinned.
     UnknownKey,
@@ -190,6 +192,7 @@ impl std::fmt::Display for Refusal {
             Refusal::MissingRestartFeature => f.write_str("document sets a restart policy without requiring restart-policy"),
             Refusal::MissingExecCheckFeature => f.write_str("document sets an exec check or check retries without requiring exec-checks"),
             Refusal::MissingCopyUpFeature => f.write_str("document asks for a volume copy-up without requiring volume-copy-up"),
+            Refusal::MissingRunFeature => f.write_str("document contains runs without requiring runs-v1"),
             Refusal::NoTrustKey => f.write_str("this machine pinned no organisation key"),
             Refusal::UnknownKey => f.write_str("document is signed by a key this machine did not pin"),
             Refusal::Same => f.write_str("document is the one applied"),
@@ -256,6 +259,14 @@ pub fn check_features(state: &DesiredState) -> Result<(), Refusal> {
         .find(|f| !KNOWN_FEATURES.contains(&f.as_str()))
     {
         return Err(Refusal::UnknownFeature(unknown.clone()));
+    }
+    if !state.runs.is_empty()
+        && !state
+            .required_features
+            .iter()
+            .any(|feature| feature == "runs-v1")
+    {
+        return Err(Refusal::MissingRunFeature);
     }
     if state
         .replicas
@@ -418,7 +429,7 @@ impl Link {
                 .and_then(|h| h.to_str().ok())
                 .and_then(|v| v.parse::<u64>().ok())
                 .map(|s| Duration::from_secs(s.min(300)));
-            let maximum = if procedure == "GetReplicaSecrets" {
+            let maximum = if matches!(procedure, "GetReplicaSecrets" | "GetRunInput") {
                 grund_config::app::spec::MAX_SECRETS * grund_config::app::spec::MAX_SECRET_BYTES
                     + MAX_DOCUMENT_BYTES
             } else {
@@ -436,6 +447,7 @@ impl Link {
             let bytes = if service == "MachineUpdateService"
                 || service == "AppTelemetryService"
                 || procedure == "GetReplicaSecrets"
+                || procedure == "GetRunInput"
             {
                 if response
                     .content_length()
@@ -603,6 +615,19 @@ pub async fn run<R: VmRuntime, C: ContainerRuntime + 'static>(
         own: grund_net::key::endpoint_id(&link.key.to_bytes()).to_string(),
     });
     if !args.once {
+        tokio::spawn(crate::runs::run(
+            containers.clone(),
+            link.clone(),
+            shared.clone(),
+            policy.clone(),
+            args.data_dir.clone(),
+            link.key.to_bytes(),
+            crate::apps::NetworkAccess {
+                lists: lists.subscribe(),
+                mesh: mesh.clone(),
+                own: grund_net::key::endpoint_id(&link.key.to_bytes()).to_string(),
+            },
+        ));
         tokio::spawn(apps.run());
         apps = Apps::new(
             containers.clone(),
@@ -663,6 +688,7 @@ pub async fn run<R: VmRuntime, C: ContainerRuntime + 'static>(
         gate: &gate,
         boot_id: uuid::Uuid::now_v7(),
         update_ready: std::sync::atomic::AtomicBool::new(false),
+        runs_enabled: !args.once,
     };
     let lease_changed = crate::lease::changed(link.clone(), registered.clone(), lease.clone());
     tokio::pin!(lease_changed);
@@ -1102,6 +1128,7 @@ struct Round<'a, R, C> {
     gate: &'a crate::gate::Gate,
     boot_id: uuid::Uuid,
     update_ready: std::sync::atomic::AtomicBool,
+    runs_enabled: bool,
 }
 
 async fn round<R: VmRuntime, C: ContainerRuntime>(
@@ -1151,6 +1178,10 @@ async fn round<R: VmRuntime, C: ContainerRuntime>(
                     apps: apps.apps && policy.apps,
                     volumes: apps.apps && policy.apps,
                     stack_services: apps.apps && policy.apps,
+                    runs_v1: context.runs_enabled
+                        && apps.apps
+                        && policy.apps
+                        && containers.supports_runs(),
                     arch: apps.arch.clone(),
                     memory_mib: apps.memory_mib,
                     cpu_millis: apps.cpu_millis,
@@ -1212,6 +1243,7 @@ async fn round<R: VmRuntime, C: ContainerRuntime>(
         replica.idle = idle.contains(&replica.replica_id);
     }
     let volume_deletions = { shared.volume_deletions.lock().expect("shared lock").clone() };
+    let runs = shared.run_reports.lock().expect("shared lock").clone();
     let update_ready = refusals.is_empty()
         && shared
             .runtime_ready
@@ -1224,6 +1256,7 @@ async fn round<R: VmRuntime, C: ContainerRuntime>(
                 machines: observed,
                 refusals,
                 replicas,
+                runs,
                 volume_deletions,
                 reports_replicas: true,
                 ..Default::default()

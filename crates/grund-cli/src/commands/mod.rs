@@ -14,6 +14,7 @@ pub mod members;
 pub mod notifications;
 pub mod orgs;
 pub mod registries;
+pub mod runs;
 pub mod selfdesc;
 pub mod server;
 pub mod stacks;
@@ -206,6 +207,15 @@ pub async fn execute(
             action => apps::run(ctx, action).await?,
         },
         Command::Stack(command) => match command.action {
+            stacks::StacksAction::Run(args) => runs::create(ctx, args).await?,
+            stacks::StacksAction::RunStatus { id } => runs::status(ctx, id).await?,
+            stacks::StacksAction::RunList(args) => runs::list(ctx, args).await?,
+            stacks::StacksAction::RunLogs(args) => return runs::logs(ctx, args).await,
+            stacks::StacksAction::RunCancel {
+                id,
+                idempotency_key,
+                dry_run,
+            } => runs::cancel(ctx, id, idempotency_key, dry_run).await?,
             stacks::StacksAction::Logs {
                 stack,
                 service,

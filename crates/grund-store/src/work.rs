@@ -47,6 +47,8 @@ pub enum WorkError {
     Volume(#[from] VolumeError),
     #[error(transparent)]
     Stack(#[from] StackError),
+    #[error(transparent)]
+    Run(#[from] grund_domain::run::Error),
     #[error("event store: {0}")]
     Events(#[from] EventStoreError),
     #[error("database: {0}")]
@@ -83,6 +85,7 @@ pub struct Work<'a> {
     scope: TransactionScope<'a>,
     metadata: EventMetadata,
     touched: Vec<Touched>,
+    run_changed: bool,
     stack_owner: Option<Uuid>,
 }
 
@@ -103,8 +106,33 @@ impl<'a> Work<'a> {
                 actor: Some(actor.to_string()),
             },
             touched: Vec::new(),
+            run_changed: false,
             stack_owner: None,
         })
+    }
+    /// Saves a bounded run lifecycle and its inline projection in this transaction.
+    pub async fn run(
+        &mut self,
+        id: Uuid,
+        command: grund_domain::run::Command,
+    ) -> Result<Vec<grund_domain::run::Event>, WorkError> {
+        let mut root = self
+            .scope
+            .load_or_default_for_update::<grund_domain::run::Run>(&id.to_string())
+            .await?;
+        let base = root.version;
+        let events = mire::Command::handle(command, &root.state)?;
+        if events.is_empty() {
+            return Ok(events);
+        }
+        root.set_metadata(self.metadata.clone());
+        root.record_many(events.clone());
+        self.scope.save(&mut root).await?;
+        self.run_changed = true;
+        for (offset, event) in events.iter().enumerate() {
+            crate::runs::apply(id, base + 1 + offset as i64, event, self.scope.tx()).await?;
+        }
+        Ok(events)
     }
 
     /// Decides `command` against the account's current state, then records,
@@ -177,6 +205,33 @@ impl<'a> Work<'a> {
         machine_id: Uuid,
         command: MachineCommand,
     ) -> Result<Vec<MachineEvent>, WorkError> {
+        if matches!(
+            &command,
+            MachineCommand::Revoke { .. }
+                | MachineCommand::EndLease { .. }
+                | MachineCommand::Rekey { .. }
+                | MachineCommand::Reregister { .. }
+        ) {
+            let org: Option<Uuid> = sqlx::query_scalar(
+                "SELECT pool_organisation_id FROM grund_machines WHERE machine_id=$1",
+            )
+            .bind(machine_id)
+            .fetch_optional(&mut **self.sql())
+            .await?
+            .flatten();
+            if let Some(org) = org {
+                sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+                    .bind(format!("grund-apps-placement:{org}"))
+                    .execute(&mut **self.sql())
+                    .await?;
+            }
+            if !crate::runs::blocking_machine(&mut **self.sql(), machine_id)
+                .await?
+                .is_empty()
+            {
+                return Err(MachineError::NotAvailable.into());
+            }
+        }
         let lifecycle_at = match &command {
             MachineCommand::Register { .. }
             | MachineCommand::DeclarePorts { .. }
@@ -296,6 +351,35 @@ impl<'a> Work<'a> {
         app_id: Uuid,
         command: AppCommand,
     ) -> Result<Vec<AppEvent>, WorkError> {
+        if matches!(&command, AppCommand::Purge { .. }) {
+            let held: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM grund_runs WHERE app_id=$1 AND outstanding)",
+            )
+            .bind(app_id)
+            .fetch_one(&mut **self.sql())
+            .await?;
+            if held {
+                return Err(grund_domain::run::Error::StaleAttempt.into());
+            }
+        }
+        if let AppCommand::Delete { at, .. } = &command {
+            let runs: Vec<Uuid> = sqlx::query_scalar(
+                "SELECT run_id FROM grund_runs WHERE app_id=$1 AND outstanding ORDER BY run_id",
+            )
+            .bind(app_id)
+            .fetch_all(&mut **self.sql())
+            .await?;
+            for id in runs {
+                self.run(
+                    id,
+                    grund_domain::run::Command::Cancel {
+                        at: *at,
+                        timed_out: false,
+                    },
+                )
+                .await?;
+            }
+        }
         let (events, ()) = self
             .app_decide(app_id, |app| {
                 mire::Command::handle(command, app).map(|events| (events, ()))
@@ -430,6 +514,10 @@ impl<'a> Work<'a> {
             .push(Touched::Domain(domain_id, root.state, base, root.version));
         Ok(events)
     }
+    /// Loads a machine for a lifecycle precondition without recording effects.
+    pub async fn load_machine(&mut self, id: Uuid) -> Result<Machine, WorkError> {
+        Ok(self.load::<Machine>(id).await?.state)
+    }
 
     /// The organisation's state, under its stream lock, without recording
     /// anything.
@@ -456,6 +544,12 @@ impl<'a> Work<'a> {
         machine_id: Uuid,
         at: chrono::DateTime<chrono::Utc>,
     ) -> Result<(), WorkError> {
+        let held = !crate::runs::blocking_machine(&mut **self.sql(), machine_id)
+            .await?
+            .is_empty();
+        if held {
+            return Err(MachineError::NotAvailable.into());
+        }
         let rollout = self.load_agent_updates().await?;
         if let Some(attempt) = rollout
             .active
@@ -711,7 +805,7 @@ impl<'a> Work<'a> {
 
     /// Whether this transaction recorded changes through its core aggregate methods.
     pub fn has_changes(&self) -> bool {
-        !self.touched.is_empty()
+        self.run_changed || !self.touched.is_empty()
     }
 
     /// Commits, then snapshots every aggregate whose version crossed a

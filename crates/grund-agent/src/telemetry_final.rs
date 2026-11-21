@@ -48,7 +48,12 @@ pub(crate) fn remember(
     };
     let mut identities = shared.telemetry.identities.lock();
     let mut changed = false;
-    for replica in &document.replicas {
+    for replica in document.replicas.iter().chain(
+        document
+            .runs
+            .iter()
+            .filter_map(|run| run.replica.as_option()),
+    ) {
         if identities.contains_key(&replica.replica_id) {
             continue;
         }
@@ -88,15 +93,25 @@ pub(crate) fn install(shared: &Shared, spool: Arc<Mutex<Spool>>) -> anyhow::Resu
 }
 
 pub(crate) fn prune(shared: &Shared, keep: &BTreeSet<String>) {
+    let run_ids: BTreeSet<_> = shared
+        .desired
+        .lock()
+        .expect("shared lock")
+        .as_ref()
+        .into_iter()
+        .flat_map(|document| document.runs.iter().map(|run| run.run_id.clone()))
+        .collect();
+    let active_runs = shared.run_telemetry.lock().expect("shared lock").clone();
     let mut identities = shared.telemetry.identities.lock();
     let before = identities.len();
-    identities.retain(|id, _| keep.contains(id));
+    identities
+        .retain(|id, _| keep.contains(id) || run_ids.contains(id) || active_runs.contains(id));
     let changed = before != identities.len();
     drop(identities);
     shared
         .telemetry_secrets
         .lock()
-        .retain(|id, _| keep.contains(id));
+        .retain(|id, _| keep.contains(id) || run_ids.contains(id) || active_runs.contains(id));
     if changed {
         shared
             .telemetry

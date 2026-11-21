@@ -2051,6 +2051,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "buffa",
+ "buffa-types",
  "bytes",
  "chrono",
  "clap",
@@ -2159,6 +2160,7 @@ dependencies = [
  "tar",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-util",
  "tracing",
  "uuid",
 ]

@@ -1373,7 +1373,11 @@ async fn resource_reservations(
            UNION ALL \
            SELECT v.host_machine_id,v.memory_mib::bigint+$3,v.vcpus::bigint*1000,'{}'::text[] \
            FROM grund_vms v WHERE v.organisation_id=$1 AND (v.state='running' \
-             OR COALESCE(v.observed_state,'') NOT IN ('stopped','exited','failed'))) \
+             OR COALESCE(v.observed_state,'') NOT IN ('stopped','exited','failed')) \
+           UNION ALL \
+           SELECT machine_id,(state->'request'->'release'->'spec'->>'memory_mib')::bigint, \
+             (state->'request'->'release'->'spec'->>'cpu_millis')::bigint,'{}'::text[] \
+           FROM grund_runs WHERE organisation_id=$1 AND outstanding) \
          SELECT machine_id,sum(memory_mib)::bigint AS memory_mib,sum(cpu_millis)::bigint AS cpu_millis, \
            COALESCE((SELECT array_agg(DISTINCT name) FROM held names CROSS JOIN LATERAL unnest(names.apps) name \
              WHERE names.machine_id=held.machine_id),'{}') AS apps \

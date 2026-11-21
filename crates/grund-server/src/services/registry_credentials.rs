@@ -324,18 +324,45 @@ impl RegistryCredentials {
         caller: &MachineCaller,
         replica_id: Uuid,
     ) -> anyhow::Result<Option<Option<Credential>>> {
-        let Some(placed) =
+        let placed =
             grund_store::apps::placed_replica(&self.state.pool, caller.machine_id, replica_id)
-                .await?
-        else {
-            return Ok(None);
+                .await?;
+        let (image, app_id) = if let Some(placed) = &placed {
+            (placed.spec.0.image.clone(), placed.app_id)
+        } else {
+            let Some(org) = caller.organisation_id else {
+                return Ok(None);
+            };
+            let Some(run) = grund_store::runs::authorised(
+                &self.state.pool,
+                org,
+                caller.machine_id,
+                replica_id,
+                None,
+            )
+            .await?
+            else {
+                return Ok(None);
+            };
+            let request = run
+                .state
+                .0
+                .request
+                .as_ref()
+                .context("run request missing")?;
+            let Ok(reference) = ImageReference::parse(&request.release.spec.image) else {
+                return Ok(Some(None));
+            };
+            return self
+                .for_organisation(org, &reference.registry)
+                .await
+                .map(Some);
         };
-        let Ok(reference) = ImageReference::parse(&placed.spec.0.image) else {
+        let Ok(reference) = ImageReference::parse(&image) else {
             return Ok(Some(None));
         };
         let Some(sealed) =
-            registry_credentials::for_app(&self.state.pool, placed.app_id, &reference.registry)
-                .await?
+            registry_credentials::for_app(&self.state.pool, app_id, &reference.registry).await?
         else {
             return Ok(Some(None));
         };

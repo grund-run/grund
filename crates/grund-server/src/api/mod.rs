@@ -54,6 +54,7 @@ pub mod organisation;
 pub mod registry;
 pub mod relay_access;
 pub mod relay_enrollment;
+pub mod run;
 pub mod stack;
 pub mod token;
 pub mod volume;
@@ -87,6 +88,7 @@ use grund_proto::grund::{
     organisation::v1::ORGANISATION_SERVICE_SERVICE_NAME,
     registry::v1::REGISTRY_SERVICE_SERVICE_NAME,
     relay::v1::RELAY_ENROLLMENT_SERVICE_SERVICE_NAME,
+    run::v1::RUN_SERVICE_SERVICE_NAME,
     stack::v1::STACK_SERVICE_SERVICE_NAME,
     token::v1::TOKEN_SERVICE_SERVICE_NAME,
 };
@@ -161,6 +163,15 @@ pub enum Requirement {
 /// Every procedure and what it requires. A procedure missing here is denied,
 /// whatever the router serves (`every_procedure_has_an_authorization_entry`).
 pub const AUTHORIZATION: &[(&str, Requirement)] = &[
+    ("/grund.run.v1.RunService/CreateRun", Requirement::Session),
+    ("/grund.run.v1.RunService/GetRun", Requirement::Session),
+    ("/grund.run.v1.RunService/ListRuns", Requirement::Session),
+    ("/grund.run.v1.RunService/CancelRun", Requirement::Session),
+    ("/grund.run.v1.RunService/ListRunLogs", Requirement::Session),
+    (
+        "/grund.agent.v1.AgentService/GetRunInput",
+        Requirement::Machine,
+    ),
     (
         "/grund.agent.v1.AppTelemetryService/ExportTelemetry",
         Requirement::Machine,
@@ -683,6 +694,10 @@ pub fn router(state: State) -> axum::Router {
             stack_service(state.clone()),
         )
         .route_service(
+            &format!("/{RUN_SERVICE_SERVICE_NAME}/{{method}}"),
+            run_service(state.clone()),
+        )
+        .route_service(
             &format!("/{VOLUME_SERVICE_SERVICE_NAME}/{{method}}"),
             volume_service(state.clone()),
         )
@@ -867,6 +882,24 @@ pub fn stack_service(state: State) -> ConnectRpcService {
             .with_default_timeout(Duration::from_secs(30)),
     )
     .with_interceptor(authorize)
+}
+
+pub fn run_service(state: State) -> ConnectRpcService {
+    let authorize = Authorize::new(&state);
+    ConnectRpcService::new(connectrpc::Router::new().add_service(Arc::new(run::RunApi::new(state))))
+        .with_limits(
+            Limits::default()
+                .with_max_request_body_size(256 * 1024)
+                .with_max_message_size(256 * 1024)
+                .with_element_memory_limit(512 * 1024),
+        )
+        .with_deadline_policy(
+            DeadlinePolicy::new()
+                .with_min(Duration::from_millis(5))
+                .with_max(Duration::from_secs(30))
+                .with_default_timeout(Duration::from_secs(10)),
+        )
+        .with_interceptor(authorize)
 }
 
 pub fn volume_service(state: State) -> ConnectRpcService {
@@ -1815,6 +1848,13 @@ mod tests {
         ) -> ServiceResult<agent::GetReplicaSecretsResponse> {
             unreachable!()
         }
+        async fn get_run_input(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, agent::GetRunInputRequest>,
+        ) -> ServiceResult<agent::GetRunInputResponse> {
+            unreachable!()
+        }
         async fn get_pull_credential(
             &self,
             _: RequestContext,
@@ -2716,6 +2756,66 @@ mod tests {
             authorized(&context(&path, &["edge"])).unwrap();
         }
     }
+    #[test]
+    fn every_run_method_denies_owner_issued_pats_and_machine_credentials() {
+        for method in [
+            "CreateRun",
+            "GetRun",
+            "ListRuns",
+            "CancelRun",
+            "ListRunLogs",
+        ] {
+            let path = format!("/grund.run.v1.RunService/{method}");
+            authorized(&context(&path, &["session"])).unwrap();
+            for credential in ["token", "full_token", "machine"] {
+                assert!(
+                    authorized(&context(&path, &[credential])).is_err(),
+                    "{method} {credential}"
+                );
+            }
+            assert!(authorized(&context(&path, &[])).is_err());
+        }
+    }
+
+    struct UnusedRuns;
+    #[allow(refining_impl_trait)]
+    impl grund_proto::grund::run::v1::RunService for UnusedRuns {
+        async fn create_run(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, grund_proto::grund::run::v1::CreateRunRequest>,
+        ) -> ServiceResult<grund_proto::grund::run::v1::CreateRunResponse> {
+            unreachable!()
+        }
+        async fn get_run(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, grund_proto::grund::run::v1::GetRunRequest>,
+        ) -> ServiceResult<grund_proto::grund::run::v1::GetRunResponse> {
+            unreachable!()
+        }
+        async fn list_runs(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, grund_proto::grund::run::v1::ListRunsRequest>,
+        ) -> ServiceResult<grund_proto::grund::run::v1::ListRunsResponse> {
+            unreachable!()
+        }
+        async fn cancel_run(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, grund_proto::grund::run::v1::CancelRunRequest>,
+        ) -> ServiceResult<grund_proto::grund::run::v1::CancelRunResponse> {
+            unreachable!()
+        }
+        async fn list_run_logs(
+            &self,
+            _: RequestContext,
+            _: ServiceRequest<'_, grund_proto::grund::run::v1::ListRunLogsRequest>,
+        ) -> ServiceResult<grund_proto::grund::run::v1::ListRunLogsResponse> {
+            unreachable!()
+        }
+    }
 
     struct UnusedAgentTelemetry;
     struct UnusedAppTelemetry;
@@ -2771,6 +2871,7 @@ mod tests {
             .add_service(Arc::new(UnusedMachineUpdates))
             .add_service(Arc::new(UnusedApps))
             .add_service(Arc::new(UnusedStacks))
+            .add_service(Arc::new(UnusedRuns))
             .add_service(Arc::new(UnusedVolumes))
             .add_service(Arc::new(UnusedDomains))
             .add_service(Arc::new(UnusedNotifications))

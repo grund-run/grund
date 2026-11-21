@@ -656,6 +656,86 @@ impl AppTelemetry {
             ..Default::default()
         })
     }
+    /// Run output uses a disjoint storage identity and only the run owner's authorization.
+    pub async fn run_logs(
+        &self,
+        org: Uuid,
+        run: Uuid,
+        page_size: i32,
+        page_token: &str,
+    ) -> Result<grund_proto::grund::run::v1::ListRunLogsResponse> {
+        valid((0..=1000).contains(&page_size), "invalid page size")?;
+        let filter: [u8; 32] = Sha256::digest(b"run-only-logs-v1").into();
+        let after = self.cursor(page_token, org, run, &filter)?;
+        let through = store::highwater(&self.state.pool, org).await?;
+        valid(after <= through, "page token is ahead of retained cursor")?;
+        let size = if page_size == 0 {
+            200
+        } else {
+            i64::from(page_size)
+        };
+        let seconds = self.policy().log_seconds.min(86400);
+        let rows: Vec<store::LogRow> = sqlx::query_as(
+            "SELECT l.cursor,l.observed_at,l.instance_id,l.machine_id,l.release,l.stream,l.body,l.truncated \
+             FROM grund_app_logs l JOIN grund_runs r ON r.organisation_id=l.organisation_id AND r.run_id=l.app_id \
+             WHERE l.organisation_id=$1 AND r.run_id=$2 AND l.instance_id=$2 \
+             AND l.cursor>$3 AND l.cursor<=$4 AND l.observed_at>clock_timestamp()-make_interval(secs=>$5::double precision) \
+             ORDER BY l.cursor LIMIT $6",
+        ).bind(org).bind(run).bind(after).bind(through).bind(seconds).bind(size).fetch_all(&self.state.pool).await?;
+        let next = if rows.len() == size as usize {
+            rows.last().map_or(through, |row| row.cursor)
+        } else {
+            through
+        };
+        let dropped: i64 = sqlx::query_scalar("SELECT r.dropped_records+COALESCE(l.dropped_records,0) FROM grund_runs r LEFT JOIN grund_app_telemetry_losses l ON l.organisation_id=r.organisation_id AND l.app_id=r.run_id WHERE r.organisation_id=$1 AND r.run_id=$2")
+            .bind(org).bind(run).fetch_one(&self.state.pool).await?;
+        let now = Utc::now();
+        let mut gaps: Vec<app::AppTelemetryGap> = grund_store::app_telemetry_gaps::query(
+            &self.state.pool,
+            org,
+            run,
+            Some(run),
+            None,
+            now - Duration::seconds(seconds),
+            now,
+        )
+        .await
+        .map_err(gap_error)?
+        .into_iter()
+        .map(gap_message)
+        .collect();
+        if dropped > 0 {
+            gaps.push(app::AppTelemetryGap {
+                since: timestamp(now - Duration::seconds(seconds)).into(),
+                until: timestamp(now).into(),
+                instance: run.to_string(),
+                reason: "coverage_unknown".into(),
+                ..Default::default()
+            });
+        }
+        Ok(grund_proto::grund::run::v1::ListRunLogsResponse {
+            logs: rows
+                .into_iter()
+                .map(|row| app::AppLog {
+                    cursor: self.token(org, run, &filter, row.cursor),
+                    observed_at: timestamp(row.observed_at).into(),
+                    instance: row.instance_id.to_string(),
+                    release: row.release as u32,
+                    machine: row.machine_id.to_string(),
+                    stream: row.stream,
+                    body: row.body,
+                    truncated: row.truncated,
+                    ..Default::default()
+                })
+                .collect(),
+            next_page_token: self.token(org, run, &filter, next),
+            dropped_records: dropped as u64,
+            retention_hours: (seconds / 3600) as u32,
+            payload_limit_bytes: (10 * 1024 * 1024u64).min(self.policy().log_bytes as u64),
+            gaps,
+            ..Default::default()
+        })
+    }
 
     /// Counts already-authorized live app logs per stream and bucket.
     pub async fn volume(

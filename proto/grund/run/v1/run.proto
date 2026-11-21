@@ -1,0 +1,120 @@
+// SPDX-License-Identifier: Apache-2.0
+syntax = "proto3";
+package grund.run.v1;
+
+import "google/protobuf/timestamp.proto";
+import "grund/app/v1/telemetry.proto";
+
+// Only current organisation owners authenticated with a session may access runs.
+// PATs, including full tokens issued by an owner, cannot call these procedures.
+// Runs never change stack versions and never automatically retry application work.
+service RunService {
+  rpc CreateRun(CreateRunRequest) returns (CreateRunResponse);
+  rpc GetRun(GetRunRequest) returns (GetRunResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  rpc ListRuns(ListRunsRequest) returns (ListRunsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  rpc CancelRun(CancelRunRequest) returns (CancelRunResponse);
+  rpc ListRunLogs(ListRunLogsRequest) returns (ListRunLogsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+}
+
+enum RunState {
+  RUN_STATE_UNSPECIFIED = 0;
+  RUN_STATE_PENDING = 1;
+  RUN_STATE_RUNNING = 2;
+  RUN_STATE_CANCELLING = 3;
+  RUN_STATE_SUCCEEDED = 4;
+  RUN_STATE_FAILED = 5;
+  RUN_STATE_CANCELLED = 6;
+  RUN_STATE_TIMED_OUT = 7;
+  RUN_STATE_NOT_STARTED = 8;
+  // Execution may have had effects. Never retry automatically or infer absence.
+  RUN_STATE_UNKNOWN = 9;
+}
+
+message Run {
+  string id = 1;
+  string organisation = 2;
+  string stack = 3;
+  string service = 4;
+  uint32 stack_revision = 5;
+  uint32 release = 6;
+  string image_digest = 7;
+  string machine_id = 8;
+  string requester_id = 9;
+  RunState state = 10;
+  optional int32 exit_code = 11;
+  optional int32 signal = 12;
+  // A bounded machine reason, never command arguments or provider errors.
+  string reason = 13;
+  google.protobuf.Timestamp requested_at = 14;
+  google.protobuf.Timestamp started_at = 15;
+  google.protobuf.Timestamp cancel_requested_at = 16;
+  google.protobuf.Timestamp finished_at = 17;
+  google.protobuf.Timestamp deadline = 18;
+  // Only GetRun includes arguments; deleted seven days after terminal outcome.
+  repeated string args = 19;
+  bool args_expired = 20;
+  // Unknown execution can continue holding the service's single-run fence.
+  bool stop_confirmed = 21;
+}
+message CreateRunRequest {
+  string organisation = 1;
+  string stack = 2;
+  string service = 3;
+  // Replaces image CMD, retaining ENTRYPOINT. No shell expansion or stdin.
+  // Required: 1–128 elements, at most 32 KiB combined UTF-8, no NUL.
+  repeated string args = 4;
+  // Zero selects 600 seconds. Accepted range is 1–3600, including queue/pull.
+  // Agent downtime across the deadline can overrun until restart and stop grace.
+  uint32 timeout_seconds = 5;
+  // Required printable ASCII, 1–128 bytes. Replay for 24 hours per caller/org.
+  string idempotency_key = 6;
+  // Validate admission without creating a run or reserving resources.
+  bool dry_run = 7;
+}
+message CreateRunResponse { Run run = 1; }
+message GetRunRequest {
+  string organisation = 1;
+  string id = 2;
+}
+message GetRunResponse { Run run = 1; }
+message ListRunsRequest {
+  string organisation = 1;
+  string stack = 2;
+  string service = 3;
+  // Default 50, maximum 100; opaque tokens bind stack/service filters.
+  int32 page_size = 4;
+  string page_token = 5;
+}
+message ListRunsResponse {
+  repeated Run runs = 1;
+  string next_page_token = 2;
+}
+message CancelRunRequest {
+  string organisation = 1;
+  string id = 2;
+  string idempotency_key = 3;
+  bool dry_run = 4;
+}
+message CancelRunResponse { Run run = 1; }
+message ListRunLogsRequest {
+  string organisation = 1;
+  string id = 2;
+  // Default 200, maximum 1000. Keep next_page_token even on empty pages.
+  int32 page_size = 3;
+  string page_token = 4;
+}
+message ListRunLogsResponse {
+  repeated grund.app.v1.AppLog logs = 1;
+  string next_page_token = 2;
+  repeated grund.app.v1.AppTelemetryGap gaps = 3;
+  uint64 dropped_records = 4;
+  uint32 retention_hours = 5;
+  uint64 payload_limit_bytes = 6;
+}
+message ErrorReason { string reason = 1; }

@@ -19,6 +19,7 @@ pub const FILES: &[&str] = &[
     "grund/registry/v1/registry.proto",
     "grund/relay/v1/relay.proto",
     "grund/stack/v1/stack.proto",
+    "grund/run/v1/run.proto",
     "grund/token/v1/token.proto",
     "grund/volume/v1/volume.proto",
 ];

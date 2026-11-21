@@ -308,12 +308,6 @@ impl Entry {
             "machine:provider-migration",
         )
         .await?;
-        let rollout = work.load_agent_updates().await?;
-        let now = Utc::now();
-        if !rollout.initialized {
-            work.agent_updates(grund_domain::agent_updates::Command::Initialize { at: now })
-                .await?;
-        }
         let machine_id: Option<Uuid> = sqlx::query_scalar(
             "SELECT machine_id FROM grund_machines WHERE provider_machine_id = $1 \
              AND pool = 'management' AND state <> 'revoked' ORDER BY registered_at DESC LIMIT 1",
@@ -324,6 +318,26 @@ impl Entry {
         let Some(machine_id) = machine_id else {
             return Ok(false);
         };
+        let org: Option<Uuid> = sqlx::query_scalar(
+            "SELECT pool_organisation_id FROM grund_machines WHERE machine_id=$1",
+        )
+        .bind(machine_id)
+        .fetch_optional(&mut **work.sql())
+        .await?
+        .flatten();
+        if let Some(org) = org {
+            grund_store::domains::lock_hierarchy_policy(&mut **work.sql()).await?;
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+                .bind(format!("grund-apps-placement:{org}"))
+                .execute(&mut **work.sql())
+                .await?;
+        }
+        let rollout = work.load_agent_updates().await?;
+        let now = Utc::now();
+        if !rollout.initialized {
+            work.agent_updates(grund_domain::agent_updates::Command::Initialize { at: now })
+                .await?;
+        }
         if paused {
             work.guard_machine_update(machine_id, now).await?;
             work.agent_updates(grund_domain::agent_updates::Command::HoldMigration {

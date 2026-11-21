@@ -681,6 +681,7 @@ impl Agents {
             replicas.push(replica);
         }
         let entry_keys = entry.entry_keys(&mut *connection).await?;
+        let runs = crate::services::runs::desired(&mut *connection, host_machine_id).await?;
         let mut required_features = Vec::new();
         if !machines.is_empty() {
             required_features.push("machines".to_string());
@@ -703,6 +704,9 @@ impl Agents {
         {
             required_features.push("stack-services".into());
         }
+        if !runs.is_empty() {
+            required_features.push("runs-v1".into());
+        }
         let payload = agent::DesiredState {
             machine_id: host_machine_id.to_string(),
             organisation_id: organisation_id.to_string(),
@@ -711,6 +715,7 @@ impl Agents {
             required_features,
             machines,
             replicas,
+            runs,
             entry_keys,
             volume_deletions: cleanup
                 .iter()
@@ -877,6 +882,36 @@ impl Agents {
         let mut work =
             grund_store::work::Work::begin(&self.state.events, Uuid::now_v7(), "agent-vm-stop")
                 .await?;
+        grund_store::domains::lock_hierarchy_policy(&mut **work.sql()).await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+            .bind(format!("grund-apps-placement:{organisation_id}"))
+            .execute(&mut **work.sql())
+            .await?;
+        if let Some(machine) = vm.machine_id {
+            let runs = grund_store::runs::blocking_machine(&mut **work.sql(), machine).await?;
+            if !runs.is_empty() {
+                let mut targets = std::collections::BTreeSet::new();
+                for run in runs {
+                    if let Some(request) = &run.state.0.request {
+                        targets.insert(request.machine_id);
+                    }
+                    work.run(
+                        run.run_id,
+                        grund_domain::run::Command::Cancel {
+                            at: Utc::now(),
+                            timed_out: false,
+                        },
+                    )
+                    .await?;
+                }
+                for target in targets {
+                    self.publish_in(work.sql(), target).await?;
+                }
+                work.commit().await?;
+                self.state.wakes.documents_changed();
+                return Ok(VmOutcome::CannotHost("run_stop_pending".into()));
+            }
+        }
         let updates = work.load_agent_updates().await?;
         if updates
             .active

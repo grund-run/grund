@@ -347,6 +347,7 @@ fn capabilities(value: &serde_json::Value) -> agent::Capabilities {
         apps: value["apps"].as_bool().unwrap_or(false),
         volumes: value["volumes"].as_bool().unwrap_or(false),
         stack_services: value["stack_services"].as_bool().unwrap_or(false),
+        runs_v1: value["runs_v1"].as_bool().unwrap_or(false),
         vm_replacement_version: value["vm_replacement_version"].as_u64().unwrap_or(0) as u32,
         arch: value["arch"].as_str().unwrap_or_default().to_string(),
         memory_mib: value["memory_mib"].as_u64().unwrap_or(0),

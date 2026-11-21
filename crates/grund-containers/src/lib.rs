@@ -302,7 +302,11 @@ pub fn container_labels(spec: &ContainerSpec) -> BTreeMap<String, String> {
         Some(contents) => labels.insert(RESOLV_CONF_LABEL.into(), contents.clone()),
         None => labels.remove(RESOLV_CONF_LABEL),
     };
-    labels.insert(REPLICA_LABEL.into(), spec.id.clone());
+    if labels.contains_key(grund_agent::runtime::RUN_LABEL) {
+        labels.remove(REPLICA_LABEL);
+    } else {
+        labels.insert(REPLICA_LABEL.into(), spec.id.clone());
+    }
     labels.insert(SPEC_HASH_LABEL.into(), spec.spec_hash.clone());
     labels.insert(STOP_SIGNAL_LABEL.into(), spec.stop_signal.clone());
     labels.insert(
@@ -857,6 +861,7 @@ impl Containerd {
         container: &Container,
         volumes: &[VolumeBind],
         roots: &[PathBuf],
+        cancel: Option<&tokio_util::sync::CancellationToken>,
     ) -> anyhow::Result<()> {
         self.check_volume_binds(container, volumes, roots)?;
         let id = container.id.as_str();
@@ -894,6 +899,10 @@ impl Containerd {
             Err(e) if already_exists(&e) => {}
             Err(e) => return Err(failed("create the task", e)),
         }
+        anyhow::ensure!(
+            !cancel.is_some_and(tokio_util::sync::CancellationToken::is_cancelled),
+            "run start revoked"
+        );
         let start = StartRequest {
             container_id: id.into(),
             ..Default::default()
@@ -1034,6 +1043,193 @@ impl Containerd {
         }
         Ok(())
     }
+    async fn list_owned(&self, owner: &str) -> anyhow::Result<Vec<ContainerStatus>> {
+        let request = ListContainersRequest {
+            filters: vec![format!("labels.\"{owner}\"")],
+            ..Default::default()
+        };
+        let containers = self
+            .client()
+            .containers()
+            .list(request)
+            .await
+            .map_err(|e| failed("list containers", e))?
+            .into_owned()
+            .containers;
+        let tasks: HashMap<String, Process> = self
+            .client()
+            .tasks()
+            .list(ListTasksRequest::default())
+            .await
+            .map_err(|e| failed("list tasks", e))?
+            .into_owned()
+            .tasks
+            .into_iter()
+            .map(|p| {
+                let id = if p.container_id.is_empty() {
+                    p.id.clone()
+                } else {
+                    p.container_id.clone()
+                };
+                (id, p)
+            })
+            .collect();
+        let mut statuses = Vec::with_capacity(containers.len());
+        for mut c in containers {
+            if !c.labels.contains_key(owner)
+                || (owner == REPLICA_LABEL
+                    && c.labels.contains_key(grund_agent::runtime::RUN_LABEL))
+            {
+                continue;
+            }
+            let state = match tasks.get(&c.id) {
+                Some(process) => task_state(Some(process)),
+                None => match self.get_task(&c.id).await {
+                    Ok(Some(process)) => task_state(Some(&process)),
+                    Ok(None) => TaskState::Created,
+                    Err(error) => {
+                        tracing::warn!(
+                            id = %c.id,
+                            error = %error,
+                            "task omitted from containerd list could not be inspected; recovery deferred"
+                        );
+                        TaskState::Unknown
+                    }
+                },
+            };
+            let (stop_signal, stop_grace) = stop_settings(&c.labels);
+            let network_resolver = c.labels.get(RESOLV_CONF_LABEL).and_then(|contents| {
+                contents.lines().find_map(|line| {
+                    let mut words = line.split_whitespace();
+                    (words.next()? == "nameserver")
+                        .then(|| words.next()?.parse().ok())
+                        .flatten()
+                })
+            });
+            statuses.push(ContainerStatus {
+                state,
+                spec_hash: c.labels.remove(SPEC_HASH_LABEL).unwrap_or_default(),
+                app_id: c.labels.remove(APP_ID_LABEL).unwrap_or_default(),
+                id: c.id,
+                network_resolver,
+                stop_signal,
+                stop_grace,
+            });
+        }
+        statuses.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(statuses)
+    }
+    async fn create_with_cancel(
+        &self,
+        spec: &ContainerSpec,
+        cancel: Option<&tokio_util::sync::CancellationToken>,
+    ) -> anyhow::Result<()> {
+        valid_id(&spec.id)?;
+        anyhow::ensure!(
+            signal_number(&spec.stop_signal).is_some(),
+            "unknown stop signal {:?}",
+            spec.stop_signal
+        );
+        if self.get_container(&spec.id).await?.is_some() {
+            anyhow::bail!("container {} exists already", spec.id);
+        }
+        let name = image::pinned_name(&spec.image.reference, &spec.image.digest)?;
+        let config = self
+            .image_config(&spec.image.digest)
+            .await?
+            .with_context(|| format!("image {name} is not pulled"))?;
+        spec::process_args(spec, &config)?;
+        self.ensure_snapshot(&spec.id, &config.chain_id()?).await?;
+        let user = self
+            .resolve_user(
+                &spec.id,
+                spec.user
+                    .as_deref()
+                    .or(config.config.user.as_deref())
+                    .unwrap_or_default(),
+            )
+            .await?;
+        for bind in &spec.volumes {
+            let dir = volume::verify_bind(&self.config.data_dir, &spec.volume_roots, bind)?;
+            if bind.copy_up
+                && let Some(copy) =
+                    volume::copy_up_begin(&self.config.data_dir, bind, dir.try_clone()?)?
+            {
+                let mounts = self.mounts(&spec.id).await?;
+                let scratch = self
+                    .config
+                    .scratch_dir()
+                    .join(format!("{}.copy-up", spec.id));
+                let (from, into) = (bind.path.clone(), copy.staging().to_path_buf());
+                let copied = tokio::task::spawn_blocking(move || {
+                    rootfs::copy_tree(&mounts, &scratch, &from, &into)
+                })
+                .await?
+                .with_context(|| format!("stage the image's files for volume {}", bind.name))?;
+                if copied {
+                    copy.install()?;
+                } else {
+                    copy.abandon()?;
+                }
+            }
+            volume::grant_access(&dir, bind, user.uid, user.gid, &user.additional_gids)?;
+        }
+        let netns = self.ensure_netns(&spec.id)?;
+        let mut oci = spec::oci_spec(spec, &config, &user, &netns)?;
+        if let Some(contents) = &spec.resolv_conf {
+            let path = self.write_resolv_conf(&spec.id, contents)?;
+            oci["mounts"]
+                .as_array_mut()
+                .expect("mounts is a list")
+                .push(serde_json::json!({
+                    "destination": "/etc/resolv.conf",
+                    "type": "bind",
+                    "source": path.display().to_string(),
+                    "options": ["rbind", "ro", "nosuid", "nodev", "noexec"],
+                }));
+        }
+        let options = RuncOptions {
+            binary_name: self
+                .config
+                .bin_dir()
+                .join(binaries::RUNC)
+                .display()
+                .to_string(),
+            root: self.config.runc_root().display().to_string(),
+            ..Default::default()
+        };
+        let container = Container {
+            id: spec.id.clone(),
+            labels: container_labels(spec).into_iter().collect(),
+            image: name,
+            runtime: Runtime {
+                name: RUNTIME.into(),
+                options: any(RUNC_OPTIONS_TYPE_URL, &options).into(),
+                ..Default::default()
+            }
+            .into(),
+            spec: Any {
+                type_url: spec::SPEC_TYPE_URL.into(),
+                value: serde_json::to_vec(&oci)?.into(),
+                ..Default::default()
+            }
+            .into(),
+            snapshotter: SNAPSHOTTER.into(),
+            snapshot_key: spec.id.clone(),
+            ..Default::default()
+        };
+        let request = CreateContainerRequest {
+            container: container.clone().into(),
+            ..Default::default()
+        };
+        self.client()
+            .containers()
+            .create(request)
+            .await
+            .map_err(|e| failed("create the container", e))?;
+        self.start_task(&container, &spec.volumes, &spec.volume_roots, cancel)
+            .await
+    }
 }
 
 fn any(type_url: &str, message: &impl Message) -> Any {
@@ -1047,6 +1243,116 @@ fn any(type_url: &str, message: &impl Message) -> Any {
 impl ContainerRuntime for Containerd {
     async fn capabilities(&self) -> AppsCapabilities {
         capabilities::assess(&capabilities::HostFacts::read())
+    }
+
+    fn supports_runs(&self) -> bool {
+        true
+    }
+
+    async fn list(&self) -> anyhow::Result<Vec<ContainerStatus>> {
+        self.list_owned(REPLICA_LABEL).await
+    }
+
+    async fn list_runs(&self) -> anyhow::Result<Vec<ContainerStatus>> {
+        self.list_owned(grund_agent::runtime::RUN_LABEL).await
+    }
+
+    async fn run_started_at(&self, id: &str) -> anyhow::Result<Option<i64>> {
+        let Some(process) = self.get_task(id).await? else {
+            return Ok(None);
+        };
+        let state = task_state(Some(&process));
+        if !matches!(state, TaskState::Running { .. } | TaskState::Exited { .. }) {
+            return Ok(None);
+        }
+        if matches!(state, TaskState::Running { .. })
+            && let Ok(stat) = std::fs::read_to_string(format!("/proc/{}/stat", process.pid))
+        {
+            let ticks = stat
+                .rsplit_once(')')
+                .and_then(|(_, fields)| fields.split_whitespace().nth(19))
+                .and_then(|value| value.parse::<i64>().ok());
+            let boot = std::fs::read_to_string("/proc/stat").ok().and_then(|stat| {
+                stat.lines().find_map(|line| {
+                    line.strip_prefix("btime ")
+                        .and_then(|value| value.parse::<i64>().ok())
+                })
+            });
+            let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+            if let (Some(ticks), Some(boot)) = (ticks, boot)
+                && hz > 0
+                && let Some(start) = boot.checked_mul(1000).and_then(|boot| {
+                    ticks
+                        .checked_mul(1000)
+                        .and_then(|ticks| boot.checked_add(ticks / hz))
+                })
+            {
+                return Ok(Some(start));
+            }
+        }
+        Ok(self.get_container(id).await?.and_then(|container| {
+            let at = container.created_at.as_option()?;
+            at.seconds
+                .checked_mul(1000)?
+                .checked_add(i64::from(at.nanos / 1_000_000))
+        }))
+    }
+
+    async fn stop_run(&self, id: &str) -> anyhow::Result<grund_agent::runtime::RunStop> {
+        valid_id(id)?;
+        if let Some(container) = self.get_container(id).await? {
+            anyhow::ensure!(
+                container
+                    .labels
+                    .get(grund_agent::runtime::RUN_LABEL)
+                    .map(String::as_str)
+                    == Some(id),
+                "not a run container"
+            );
+        }
+        let Some(process) = self.get_task(id).await? else {
+            return Ok(grund_agent::runtime::RunStop {
+                state: None,
+                signalled: false,
+            });
+        };
+        if let state @ TaskState::Exited { .. } = task_state(Some(&process)) {
+            return Ok(grund_agent::runtime::RunStop {
+                state: Some(state),
+                signalled: false,
+            });
+        }
+        let signalled = match self
+            .client()
+            .tasks()
+            .kill(KillRequest {
+                container_id: id.into(),
+                signal: libc::SIGTERM as u32,
+                all: false,
+                ..Default::default()
+            })
+            .await
+        {
+            Ok(_) => true,
+            Err(error)
+                if not_found(&error) || error.code == connectrpc::ErrorCode::FailedPrecondition =>
+            {
+                false
+            }
+            Err(error) => return Err(failed("signal the run", error)),
+        };
+        if !self.wait_exit(id, Duration::from_secs(10)).await? {
+            self.kill(id, libc::SIGKILL as u32, true).await?;
+            anyhow::ensure!(self.wait_exit(id, KILL_WAIT).await?, "run stop unconfirmed");
+        }
+        Ok(grund_agent::runtime::RunStop {
+            state: self
+                .get_task(id)
+                .await?
+                .as_ref()
+                .map(|task| task_state(Some(task))),
+            signalled,
+        })
     }
 
     async fn resource_limit_probe(&self) -> Option<ResourceLimitProof> {
@@ -1235,111 +1541,26 @@ impl ContainerRuntime for Containerd {
     }
 
     async fn create(&self, spec: &ContainerSpec) -> anyhow::Result<()> {
-        valid_id(&spec.id)?;
         anyhow::ensure!(
-            signal_number(&spec.stop_signal).is_some(),
-            "unknown stop signal {:?}",
-            spec.stop_signal
+            !spec.labels.contains_key(grund_agent::runtime::RUN_LABEL),
+            "run creation requires a single-attempt latch"
         );
-        if self.get_container(&spec.id).await?.is_some() {
-            anyhow::bail!("container {} exists already", spec.id);
-        }
-        let name = image::pinned_name(&spec.image.reference, &spec.image.digest)?;
-        let config = self
-            .image_config(&spec.image.digest)
-            .await?
-            .with_context(|| format!("image {name} is not pulled"))?;
-        spec::process_args(spec, &config)?;
-        self.ensure_snapshot(&spec.id, &config.chain_id()?).await?;
-        let user = self
-            .resolve_user(
-                &spec.id,
-                spec.user
-                    .as_deref()
-                    .or(config.config.user.as_deref())
-                    .unwrap_or_default(),
-            )
-            .await?;
-        for bind in &spec.volumes {
-            let dir = volume::verify_bind(&self.config.data_dir, &spec.volume_roots, bind)?;
-            if bind.copy_up
-                && let Some(copy) =
-                    volume::copy_up_begin(&self.config.data_dir, bind, dir.try_clone()?)?
-            {
-                let mounts = self.mounts(&spec.id).await?;
-                let scratch = self
-                    .config
-                    .scratch_dir()
-                    .join(format!("{}.copy-up", spec.id));
-                let (from, into) = (bind.path.clone(), copy.staging().to_path_buf());
-                let copied = tokio::task::spawn_blocking(move || {
-                    rootfs::copy_tree(&mounts, &scratch, &from, &into)
-                })
-                .await?
-                .with_context(|| format!("stage the image's files for volume {}", bind.name))?;
-                if copied {
-                    copy.install()?;
-                } else {
-                    copy.abandon()?;
-                }
-            }
-            volume::grant_access(&dir, bind, user.uid, user.gid, &user.additional_gids)?;
-        }
-        let netns = self.ensure_netns(&spec.id)?;
-        let mut oci = spec::oci_spec(spec, &config, &user, &netns)?;
-        if let Some(contents) = &spec.resolv_conf {
-            let path = self.write_resolv_conf(&spec.id, contents)?;
-            oci["mounts"]
-                .as_array_mut()
-                .expect("mounts is a list")
-                .push(serde_json::json!({
-                    "destination": "/etc/resolv.conf",
-                    "type": "bind",
-                    "source": path.display().to_string(),
-                    "options": ["rbind", "ro", "nosuid", "nodev", "noexec"],
-                }));
-        }
-        let options = RuncOptions {
-            binary_name: self
-                .config
-                .bin_dir()
-                .join(binaries::RUNC)
-                .display()
-                .to_string(),
-            root: self.config.runc_root().display().to_string(),
-            ..Default::default()
-        };
-        let container = Container {
-            id: spec.id.clone(),
-            labels: container_labels(spec).into_iter().collect(),
-            image: name,
-            runtime: Runtime {
-                name: RUNTIME.into(),
-                options: any(RUNC_OPTIONS_TYPE_URL, &options).into(),
-                ..Default::default()
-            }
-            .into(),
-            spec: Any {
-                type_url: spec::SPEC_TYPE_URL.into(),
-                value: serde_json::to_vec(&oci)?.into(),
-                ..Default::default()
-            }
-            .into(),
-            snapshotter: SNAPSHOTTER.into(),
-            snapshot_key: spec.id.clone(),
-            ..Default::default()
-        };
-        let request = CreateContainerRequest {
-            container: container.clone().into(),
-            ..Default::default()
-        };
-        self.client()
-            .containers()
-            .create(request)
-            .await
-            .map_err(|e| failed("create the container", e))?;
-        self.start_task(&container, &spec.volumes, &spec.volume_roots)
-            .await
+        self.create_with_cancel(spec, None).await
+    }
+
+    async fn create_run(
+        &self,
+        spec: &ContainerSpec,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            spec.labels.get(grund_agent::runtime::RUN_LABEL) == Some(&spec.id)
+                && spec.volumes.is_empty()
+                && spec.command.is_empty()
+                && spec.entrypoint.is_none(),
+            "invalid run specification"
+        );
+        self.create_with_cancel(spec, Some(cancel)).await
     }
 
     async fn restart(&self, id: &str) -> anyhow::Result<()> {
@@ -1356,6 +1577,12 @@ impl ContainerRuntime for Containerd {
             .get_container(id)
             .await?
             .with_context(|| format!("no container {id}"))?;
+        anyhow::ensure!(
+            !container
+                .labels
+                .contains_key(grund_agent::runtime::RUN_LABEL),
+            "run tasks cannot restart"
+        );
         self.check_volume_binds(&container, volumes, roots)?;
         match self
             .get_task(id)
@@ -1372,7 +1599,7 @@ impl ContainerRuntime for Containerd {
             }
             None => {}
         }
-        self.start_task(&container, volumes, roots).await
+        self.start_task(&container, volumes, roots, None).await
     }
 
     async fn remove(&self, id: &str, signal: &str, grace: Duration) -> anyhow::Result<()> {
@@ -1423,77 +1650,6 @@ impl ContainerRuntime for Containerd {
             }
         }
         Ok(binds)
-    }
-
-    async fn list(&self) -> anyhow::Result<Vec<ContainerStatus>> {
-        let request = ListContainersRequest {
-            filters: vec![format!("labels.\"{REPLICA_LABEL}\"")],
-            ..Default::default()
-        };
-        let containers = self
-            .client()
-            .containers()
-            .list(request)
-            .await
-            .map_err(|e| failed("list containers", e))?
-            .into_owned()
-            .containers;
-        let tasks: HashMap<String, Process> = self
-            .client()
-            .tasks()
-            .list(ListTasksRequest::default())
-            .await
-            .map_err(|e| failed("list tasks", e))?
-            .into_owned()
-            .tasks
-            .into_iter()
-            .map(|p| {
-                let id = if p.container_id.is_empty() {
-                    p.id.clone()
-                } else {
-                    p.container_id.clone()
-                };
-                (id, p)
-            })
-            .collect();
-        let mut statuses = Vec::with_capacity(containers.len());
-        for mut c in containers {
-            let state = match tasks.get(&c.id) {
-                Some(process) => task_state(Some(process)),
-                None => match self.get_task(&c.id).await {
-                    Ok(Some(process)) => task_state(Some(&process)),
-                    Ok(None) => TaskState::Created,
-                    Err(error) => {
-                        tracing::warn!(
-                            id = %c.id,
-                            error = %error,
-                            "task omitted from containerd list could not be inspected; recovery deferred"
-                        );
-                        TaskState::Unknown
-                    }
-                },
-            };
-            let (stop_signal, stop_grace) = stop_settings(&c.labels);
-            let network_resolver = c.labels.get(RESOLV_CONF_LABEL).and_then(|contents| {
-                contents.lines().find_map(|line| {
-                    let mut words = line.split_whitespace();
-                    (words.next()? == "nameserver")
-                        .then(|| words.next()?.parse().ok())
-                        .flatten()
-                })
-            });
-            statuses.push(ContainerStatus {
-                state,
-                spec_hash: c.labels.remove(SPEC_HASH_LABEL).unwrap_or_default(),
-                app_id: c.labels.remove(APP_ID_LABEL).unwrap_or_default(),
-                id: c.id,
-                network_resolver,
-                stop_signal,
-                stop_grace,
-            });
-        }
-        statuses.sort_by(|a, b| a.id.cmp(&b.id));
-        Ok(statuses)
     }
 
     async fn probe(&self, id: &str, probe: &Probe, timeout: Duration) -> Result<(), String> {

@@ -82,6 +82,10 @@
           "description": "The VM runtime runs with root rather than in user namespaces.",
           "type": "boolean"
         },
+        "runsV1": {
+          "description": "Supports isolated single-attempt tasks and agent-owned absolute deadlines.",
+          "type": "boolean"
+        },
         "stackServices": {
           "description": "Supports stack-exclusive replacement and operation-fenced stop receipts.",
           "type": "boolean"
@@ -3224,6 +3228,184 @@
       "title": "grund.registry.v1.SetRegistryLoginResponse",
       "type": "object"
     },
+    "grund.run.v1.CancelRunResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "run": {
+          "$ref": "#/$defs/grund.run.v1.Run"
+        }
+      },
+      "title": "grund.run.v1.CancelRunResponse",
+      "type": "object"
+    },
+    "grund.run.v1.CreateRunResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "run": {
+          "$ref": "#/$defs/grund.run.v1.Run"
+        }
+      },
+      "title": "grund.run.v1.CreateRunResponse",
+      "type": "object"
+    },
+    "grund.run.v1.GetRunResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "run": {
+          "$ref": "#/$defs/grund.run.v1.Run"
+        }
+      },
+      "title": "grund.run.v1.GetRunResponse",
+      "type": "object"
+    },
+    "grund.run.v1.ListRunLogsResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "droppedRecords": {
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "gaps": {
+          "items": {
+            "$ref": "#/$defs/grund.app.v1.AppTelemetryGap"
+          },
+          "type": "array"
+        },
+        "logs": {
+          "items": {
+            "$ref": "#/$defs/grund.app.v1.AppLog"
+          },
+          "type": "array"
+        },
+        "nextPageToken": {
+          "type": "string"
+        },
+        "payloadLimitBytes": {
+          "pattern": "^-?[0-9]+$",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "retentionHours": {
+          "type": "integer"
+        }
+      },
+      "title": "grund.run.v1.ListRunLogsResponse",
+      "type": "object"
+    },
+    "grund.run.v1.ListRunsResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "nextPageToken": {
+          "type": "string"
+        },
+        "runs": {
+          "items": {
+            "$ref": "#/$defs/grund.run.v1.Run"
+          },
+          "type": "array"
+        }
+      },
+      "title": "grund.run.v1.ListRunsResponse",
+      "type": "object"
+    },
+    "grund.run.v1.Run": {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "description": "Only GetRun includes arguments; deleted seven days after terminal outcome.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "argsExpired": {
+          "type": "boolean"
+        },
+        "cancelRequestedAt": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "deadline": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "exitCode": {
+          "type": "integer"
+        },
+        "finishedAt": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "imageDigest": {
+          "type": "string"
+        },
+        "machineId": {
+          "type": "string"
+        },
+        "organisation": {
+          "type": "string"
+        },
+        "reason": {
+          "description": "A bounded machine reason, never command arguments or provider errors.",
+          "type": "string"
+        },
+        "release": {
+          "type": "integer"
+        },
+        "requestedAt": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "requesterId": {
+          "type": "string"
+        },
+        "service": {
+          "type": "string"
+        },
+        "signal": {
+          "type": "integer"
+        },
+        "stack": {
+          "type": "string"
+        },
+        "stackRevision": {
+          "type": "integer"
+        },
+        "startedAt": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "RUN_STATE_UNSPECIFIED",
+            "RUN_STATE_PENDING",
+            "RUN_STATE_RUNNING",
+            "RUN_STATE_CANCELLING",
+            "RUN_STATE_SUCCEEDED",
+            "RUN_STATE_FAILED",
+            "RUN_STATE_CANCELLED",
+            "RUN_STATE_TIMED_OUT",
+            "RUN_STATE_NOT_STARTED",
+            "RUN_STATE_UNKNOWN"
+          ],
+          "type": "string"
+        },
+        "stopConfirmed": {
+          "description": "Unknown execution can continue holding the service's single-run fence.",
+          "type": "boolean"
+        }
+      },
+      "title": "grund.run.v1.Run",
+      "type": "object"
+    },
     "grund.stack.v1.DeleteStackResponse": {
       "additionalProperties": false,
       "properties": {
@@ -4047,6 +4229,59 @@
       },
       "path": "status",
       "summary": "What this computer is signed in to and runs"
+    },
+    {
+      "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
+          "description": "The organisation. Default: grund org use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "description": "Passed to grund-up up as they are; grund-up up --help lists them",
+          "name": "args",
+          "positional": true,
+          "repeated": true,
+          "type": "string",
+          "value_name": "ARGS"
+        }
+      ],
+      "audience": "operator",
+      "command": "grund up",
+      "path": "up",
+      "summary": "Run a grund.yaml or compose.yaml on this computer"
     },
     {
       "args": [
@@ -8749,6 +8984,416 @@
       ],
       "stdin": "with --secrets-stdin: a protected JSON object {service:{name:value}}; otherwise --secret SERVICE/NAME prompts without echo",
       "summary": "Deploy a complete stack, or preview the resolved bundle without changes"
+    },
+    {
+      "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
+          "description": "The organisation. Default: grund org use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "stack",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "STACK"
+        },
+        {
+          "flag": "--service",
+          "name": "service",
+          "required": true,
+          "type": "string",
+          "value_name": "SERVICE"
+        },
+        {
+          "default": "10m",
+          "flag": "--timeout",
+          "name": "timeout",
+          "type": "integer",
+          "value_name": "TIMEOUT"
+        },
+        {
+          "flag": "--idempotency-key",
+          "name": "idempotency_key",
+          "type": "string",
+          "value_name": "IDEMPOTENCY_KEY"
+        },
+        {
+          "description": "Check permission and capacity without starting a command",
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        },
+        {
+          "after_double_dash": true,
+          "name": "args",
+          "positional": true,
+          "repeated": true,
+          "required": true,
+          "type": "string",
+          "value_name": "ARGS"
+        }
+      ],
+      "audience": "client",
+      "command": "grund stack run",
+      "destructive": false,
+      "dry_run": true,
+      "examples": [
+        "grund stack run shop --service web --timeout 10m -- --admin-command",
+        "grund stack run shop --service web --dry-run -- --admin-command"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.run.v1.CreateRunResponse"
+      },
+      "path": "stack run",
+      "rpcs": [
+        "grund.run.v1.RunService/CreateRun",
+        "grund.run.v1.RunService/GetRun",
+        "grund.run.v1.RunService/ListRunLogs",
+        "grund.run.v1.RunService/CancelRun"
+      ],
+      "summary": "Run one command from a service's current release without changing the stack"
+    },
+    {
+      "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
+          "description": "The organisation. Default: grund org use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "id",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "RUN_ID"
+        }
+      ],
+      "audience": "client",
+      "command": "grund stack run-status",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund stack run-status RUN_ID --json"
+      ],
+      "mutates": false,
+      "output": {
+        "$ref": "#/$defs/grund.run.v1.GetRunResponse"
+      },
+      "path": "stack run-status",
+      "rpcs": [
+        "grund.run.v1.RunService/GetRun"
+      ],
+      "summary": "Read a run's outcome and retained arguments (owners only)"
+    },
+    {
+      "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
+          "description": "The organisation. Default: grund org use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "stack",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "STACK"
+        },
+        {
+          "flag": "--service",
+          "name": "service",
+          "type": "string",
+          "value_name": "SERVICE"
+        },
+        {
+          "default": "50",
+          "flag": "--page-size",
+          "name": "page_size",
+          "type": "integer",
+          "value_name": "PAGE_SIZE"
+        },
+        {
+          "flag": "--page-token",
+          "name": "page_token",
+          "type": "string",
+          "value_name": "PAGE_TOKEN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund stack run-list",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund stack run-list shop --service web"
+      ],
+      "mutates": false,
+      "output": {
+        "$ref": "#/$defs/grund.run.v1.ListRunsResponse"
+      },
+      "path": "stack run-list",
+      "rpcs": [
+        "grund.run.v1.RunService/ListRuns"
+      ],
+      "summary": "One page of a stack's run history (owners only)"
+    },
+    {
+      "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
+          "description": "The organisation. Default: grund org use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "id",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "RUN_ID"
+        },
+        {
+          "flag": "--follow",
+          "name": "follow",
+          "type": "boolean",
+          "value_name": "FOLLOW"
+        },
+        {
+          "default": "200",
+          "flag": "--page-size",
+          "name": "page_size",
+          "type": "integer",
+          "value_name": "PAGE_SIZE"
+        },
+        {
+          "flag": "--page-token",
+          "name": "page_token",
+          "type": "string",
+          "value_name": "PAGE_TOKEN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund stack run-logs",
+      "destructive": false,
+      "dry_run": false,
+      "examples": [
+        "grund stack run-logs RUN_ID --follow"
+      ],
+      "mutates": false,
+      "output": {
+        "$ref": "#/$defs/grund.run.v1.ListRunLogsResponse"
+      },
+      "path": "stack run-logs",
+      "rpcs": [
+        "grund.run.v1.RunService/ListRunLogs"
+      ],
+      "summary": "Read or follow one run's private output (owners only)"
+    },
+    {
+      "args": [
+        {
+          "description": "The context: an instance, its credential and organisation. Default: grund context use",
+          "env": "GRUND_CONTEXT",
+          "flag": "--context",
+          "name": "context",
+          "type": "string",
+          "value_name": "NAME"
+        },
+        {
+          "description": "The organisation. Default: grund org use, else the token's, else the only one",
+          "env": "GRUND_ORG",
+          "flag": "--org",
+          "name": "org",
+          "type": "string",
+          "value_name": "SLUG"
+        },
+        {
+          "description": "text (default), json or yaml. JSON goes to stdout, errors as JSON to stderr",
+          "enum": [
+            "text",
+            "json",
+            "yaml"
+          ],
+          "env": "GRUND_OUTPUT",
+          "flag": "--output",
+          "name": "output",
+          "short": "-o",
+          "type": "string",
+          "value_name": "FORMAT"
+        },
+        {
+          "description": "The same as --output json",
+          "flag": "--json",
+          "name": "json",
+          "type": "boolean",
+          "value_name": "JSON"
+        },
+        {
+          "name": "id",
+          "positional": true,
+          "required": true,
+          "type": "string",
+          "value_name": "RUN_ID"
+        },
+        {
+          "flag": "--idempotency-key",
+          "name": "idempotency_key",
+          "type": "string",
+          "value_name": "IDEMPOTENCY_KEY"
+        },
+        {
+          "flag": "--dry-run",
+          "name": "dry_run",
+          "type": "boolean",
+          "value_name": "DRY_RUN"
+        }
+      ],
+      "audience": "client",
+      "command": "grund stack run-cancel",
+      "destructive": false,
+      "dry_run": true,
+      "examples": [
+        "grund stack run-cancel RUN_ID"
+      ],
+      "mutates": true,
+      "output": {
+        "$ref": "#/$defs/grund.run.v1.CancelRunResponse"
+      },
+      "path": "stack run-cancel",
+      "rpcs": [
+        "grund.run.v1.RunService/CancelRun"
+      ],
+      "summary": "Request cancellation without rolling back command effects"
     },
     {
       "args": [

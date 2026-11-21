@@ -78,13 +78,15 @@ async fn prune(
     incoming_logs: i64,
     incoming_metrics: i64,
 ) -> Result<(), sqlx::Error> {
+    sqlx::query("WITH candidates AS (SELECT l.cursor FROM grund_app_logs l JOIN grund_runs r ON r.organisation_id=l.organisation_id AND r.run_id=l.app_id AND r.run_id=l.instance_id WHERE l.organisation_id=$1 AND l.observed_at<=clock_timestamp()-interval '24 hours' ORDER BY l.observed_at,l.cursor LIMIT 1024), deleted AS (DELETE FROM grund_app_logs WHERE organisation_id=$1 AND cursor IN (SELECT cursor FROM candidates) RETURNING app_id,payload_bytes), losses AS (INSERT INTO grund_app_telemetry_losses(organisation_id,app_id,dropped_records) SELECT $1,app_id,count(*) FROM deleted GROUP BY app_id ON CONFLICT(organisation_id,app_id) DO UPDATE SET dropped_records=grund_app_telemetry_losses.dropped_records+EXCLUDED.dropped_records) UPDATE grund_app_telemetry_usage SET log_bytes=log_bytes-COALESCE((SELECT sum(payload_bytes) FROM deleted),0) WHERE organisation_id=$1")
+        .bind(org).execute(&mut *connection).await?;
     sqlx::query(
         "WITH expired AS MATERIALIZED (SELECT cursor,payload_bytes FROM grund_app_logs WHERE organisation_id = $1 AND observed_at <= statement_timestamp() - make_interval(secs => $2::bigint::double precision) ORDER BY observed_at LIMIT 1024), budget AS (SELECT greatest(log_bytes + $3 - $4 - COALESCE((SELECT sum(payload_bytes) FROM expired),0),0) AS deficit FROM grund_app_telemetry_usage WHERE organisation_id = $1), oldest AS MATERIALIZED (SELECT cursor,payload_bytes FROM grund_app_logs WHERE organisation_id = $1 AND (SELECT deficit > 0 FROM budget) AND cursor NOT IN (SELECT cursor FROM expired) ORDER BY cursor LIMIT 4096), candidates AS (SELECT cursor FROM (SELECT cursor,sum(payload_bytes) OVER (ORDER BY cursor) - payload_bytes AS preceding FROM oldest) l WHERE preceding < (SELECT deficit FROM budget)), deleted AS (DELETE FROM grund_app_logs WHERE organisation_id = $1 AND cursor IN (SELECT cursor FROM candidates UNION SELECT cursor FROM expired) RETURNING app_id,payload_bytes), losses AS (INSERT INTO grund_app_telemetry_losses (organisation_id,app_id,dropped_records) SELECT $1,app_id,count(*) FROM deleted GROUP BY app_id ON CONFLICT (organisation_id,app_id) DO UPDATE SET dropped_records = grund_app_telemetry_losses.dropped_records + EXCLUDED.dropped_records) UPDATE grund_app_telemetry_usage SET log_bytes = log_bytes - COALESCE((SELECT sum(payload_bytes) FROM deleted),0) WHERE organisation_id = $1")
         .bind(org).bind(policy.log_seconds).bind(incoming_logs).bind(policy.log_bytes).execute(&mut *connection).await?;
     rollup::maintain(&mut *connection, org, policy, incoming_metrics).await?;
     sqlx::query("WITH deleted AS (DELETE FROM grund_app_telemetry_batches WHERE organisation_id = $1 AND (machine_id, batch_id) IN (SELECT machine_id, batch_id FROM grund_app_telemetry_batches WHERE organisation_id = $1 AND received_at <= statement_timestamp() - make_interval(secs => $2::bigint::double precision) ORDER BY received_at LIMIT 4096) RETURNING 1) UPDATE grund_app_telemetry_usage SET receipts = receipts - (SELECT count(*)::int FROM deleted) WHERE organisation_id = $1")
         .bind(org).bind(policy.receipt_seconds).execute(&mut *connection).await?;
-    sqlx::query("DELETE FROM grund_app_telemetry_losses WHERE organisation_id = $1 AND app_id IN (SELECT l.app_id FROM grund_app_telemetry_losses l LEFT JOIN grund_apps a ON a.organisation_id = l.organisation_id AND a.app_id = l.app_id WHERE l.organisation_id = $1 AND (a.app_id IS NULL OR a.deleted_at <= statement_timestamp() - interval '7 days') ORDER BY l.app_id LIMIT 1024)")
+    sqlx::query("DELETE FROM grund_app_telemetry_losses WHERE organisation_id = $1 AND app_id IN (SELECT l.app_id FROM grund_app_telemetry_losses l LEFT JOIN grund_apps a ON a.organisation_id = l.organisation_id AND a.app_id = l.app_id WHERE l.organisation_id = $1 AND (a.app_id IS NULL OR a.deleted_at <= statement_timestamp() - interval '7 days') AND NOT EXISTS(SELECT 1 FROM grund_runs r WHERE r.organisation_id=l.organisation_id AND r.run_id=l.app_id) ORDER BY l.app_id LIMIT 1024)")
         .bind(org).execute(&mut *connection).await?;
     crate::app_telemetry_gaps::prune(&mut *connection, org).await?;
     sqlx::query("DELETE FROM grund_app_telemetry_instances WHERE organisation_id = $1 AND instance_id IN (SELECT instance_id FROM grund_app_telemetry_instances WHERE organisation_id = $1 AND stopped_at <= statement_timestamp() - interval '7 days' LIMIT 1024)")
@@ -133,9 +135,26 @@ pub async fn ingest(
             identities.push(identity);
         }
     }
+    let mut run_remaining = std::collections::BTreeMap::new();
     for identity in identities {
-        let placement: Option<DateTime<Utc>> = sqlx::query_scalar("SELECT i.placed_at FROM grund_app_telemetry_instances i JOIN grund_apps a ON a.app_id = i.app_id AND a.organisation_id = i.organisation_id WHERE i.organisation_id = $1 AND i.instance_id = $2 AND i.machine_id = $3 AND i.app_id = $4 AND i.release = $5 AND a.deleted_at IS NULL AND (i.stopped_at IS NULL OR i.stopped_at > statement_timestamp() - interval '7 days')")
+        let run: Option<(DateTime<Utc>, i64)> = sqlx::query_as("SELECT i.placed_at,r.log_bytes_received FROM grund_app_telemetry_instances i JOIN grund_runs r ON r.organisation_id=i.organisation_id AND r.run_id=i.run_id WHERE i.organisation_id=$1 AND i.instance_id=$2 AND i.machine_id=$3 AND r.app_id=$4 AND i.release=$5 AND (i.stopped_at IS NULL OR i.stopped_at>clock_timestamp()-interval '7 days')")
             .bind(org).bind(identity.instance_id).bind(machine).bind(identity.app_id).bind(identity.release).fetch_optional(&mut *tx).await?;
+        let placement = if let Some((at, received)) = run {
+            if samples
+                .iter()
+                .any(|s| s.identity.instance_id == identity.instance_id)
+            {
+                return Err(IngestError::Identity);
+            }
+            run_remaining.insert(
+                identity.instance_id,
+                (10 * 1024 * 1024 - received, received, 0i64),
+            );
+            Some(at)
+        } else {
+            sqlx::query_scalar("SELECT i.placed_at FROM grund_app_telemetry_instances i JOIN grund_apps a ON a.app_id = i.app_id AND a.organisation_id = i.organisation_id WHERE i.organisation_id = $1 AND i.instance_id = $2 AND i.machine_id = $3 AND i.app_id = $4 AND i.release = $5 AND i.run_id IS NULL AND a.deleted_at IS NULL AND (i.stopped_at IS NULL OR i.stopped_at > statement_timestamp() - interval '7 days')")
+                .bind(org).bind(identity.instance_id).bind(machine).bind(identity.app_id).bind(identity.release).fetch_optional(&mut *tx).await?
+        };
         let Some(placed) = placement else {
             return Err(IngestError::Identity);
         };
@@ -157,14 +176,37 @@ pub async fn ingest(
             }
         }
     }
-    let retained_logs = logs
-        .iter()
-        .filter(|l| l.at > now - chrono::Duration::seconds(policy.log_seconds));
+    let mut retained_logs = Vec::with_capacity(logs.len());
+    for log in logs {
+        let run = run_remaining.get_mut(&log.identity.instance_id);
+        let retention = if run.is_some() {
+            policy.log_seconds.min(86400)
+        } else {
+            policy.log_seconds
+        };
+        if log.at <= now - chrono::Duration::seconds(retention) {
+            continue;
+        }
+        if let Some((remaining, received, dropped)) = run {
+            let bytes = log.body.len() as i64 + LOG_ROW_BYTES;
+            if bytes > *remaining {
+                *dropped += 1;
+                continue;
+            }
+            *remaining -= bytes;
+            *received += bytes;
+        }
+        retained_logs.push(log);
+    }
+    for (id, (_, received, dropped)) in &run_remaining {
+        sqlx::query("UPDATE grund_runs SET log_bytes_received=$3,dropped_records=dropped_records+$4 WHERE organisation_id=$1 AND run_id=$2")
+            .bind(org).bind(id).bind(received).bind(dropped).execute(&mut *tx).await?;
+    }
     let retained_samples = samples
         .iter()
         .filter(|s| s.at > now - chrono::Duration::seconds(policy.metric_seconds));
     let log_bytes = retained_logs
-        .clone()
+        .iter()
         .map(|l| l.body.len() as i64 + LOG_ROW_BYTES)
         .sum::<i64>();
     let accepted_samples = retained_samples.clone().count() as i32;
@@ -177,7 +219,7 @@ pub async fn ingest(
     {
         return Err(IngestError::Capacity);
     }
-    let accepted_logs = retained_logs.clone().count() as i32;
+    let accepted_logs = retained_logs.len() as i32;
     if accepted_logs > 0 {
         let mut query = sqlx::QueryBuilder::new(
             "INSERT INTO grund_app_logs (organisation_id,cursor,app_id,instance_id,machine_id,release,observed_at,stream,body,truncated,payload_bytes) ",
@@ -186,7 +228,11 @@ pub async fn ingest(
             cursor += 1;
             row.push_bind(org)
                 .push_bind(cursor)
-                .push_bind(log.identity.app_id)
+                .push_bind(if run_remaining.contains_key(&log.identity.instance_id) {
+                    log.identity.instance_id
+                } else {
+                    log.identity.app_id
+                })
                 .push_bind(log.identity.instance_id)
                 .push_bind(machine)
                 .push_bind(log.identity.release)

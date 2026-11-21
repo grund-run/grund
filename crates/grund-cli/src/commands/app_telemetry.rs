@@ -245,14 +245,14 @@ fn advance_cursor(request: &mut Value, answer: &Value) -> CliResult<bool> {
     Ok(caught_up)
 }
 
-struct FollowOutput {
+pub(crate) struct FollowOutput {
     fd: OwnedFd,
     original_flags: rustix::fs::OFlags,
     readiness: Option<tokio::io::unix::AsyncFd<OwnedFd>>,
 }
 
 impl FollowOutput {
-    fn new(fd: OwnedFd) -> io::Result<Self> {
+    pub(crate) fn new(fd: OwnedFd) -> io::Result<Self> {
         let original_flags = rustix::fs::fcntl_getfl(&fd)?;
         rustix::fs::fcntl_setfl(&fd, original_flags | rustix::fs::OFlags::NONBLOCK)?;
         let mut output = Self {
@@ -268,7 +268,7 @@ impl FollowOutput {
         Ok(output)
     }
 
-    async fn write_page(&self, output: &Output, format: Format) -> CliResult<bool> {
+    pub(crate) async fn write_page(&self, output: &Output, format: Format) -> CliResult<bool> {
         let text = match format {
             Format::Json => format!("{}\n", output.value),
             Format::Yaml => format!("---\n{}", output.render(Format::Yaml)),
@@ -542,7 +542,7 @@ fn default_counter(value: &Value, field: &str) -> String {
     }
 }
 
-fn safe_text(text: &str) -> String {
+pub(crate) fn safe_text(text: &str) -> String {
     let mut safe = String::with_capacity(text.len());
     for character in text.chars() {
         if character.is_control()

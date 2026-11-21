@@ -14,5 +14,6 @@ pub mod doctor;
 pub mod machine;
 
 pub mod organisation;
+pub mod run;
 pub mod stack;
 pub mod volume;

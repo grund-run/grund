@@ -76,6 +76,44 @@ const fn with_stdin(leaf: Leaf, stdin: &'static str) -> Leaf {
 
 /// Every client command.
 pub const LEAVES: &[Leaf] = &[
+    write(
+        "stack run",
+        "grund.run.v1.CreateRunResponse",
+        &[
+            "grund.run.v1.RunService/CreateRun",
+            "grund.run.v1.RunService/GetRun",
+            "grund.run.v1.RunService/ListRunLogs",
+            "grund.run.v1.RunService/CancelRun",
+        ],
+        &[
+            "grund stack run shop --service web --timeout 10m -- --admin-command",
+            "grund stack run shop --service web --dry-run -- --admin-command",
+        ],
+    ),
+    read(
+        "stack run-status",
+        "grund.run.v1.GetRunResponse",
+        &["grund.run.v1.RunService/GetRun"],
+        &["grund stack run-status RUN_ID --json"],
+    ),
+    read(
+        "stack run-list",
+        "grund.run.v1.ListRunsResponse",
+        &["grund.run.v1.RunService/ListRuns"],
+        &["grund stack run-list shop --service web"],
+    ),
+    read(
+        "stack run-logs",
+        "grund.run.v1.ListRunLogsResponse",
+        &["grund.run.v1.RunService/ListRunLogs"],
+        &["grund stack run-logs RUN_ID --follow"],
+    ),
+    write(
+        "stack run-cancel",
+        "grund.run.v1.CancelRunResponse",
+        &["grund.run.v1.RunService/CancelRun"],
+        &["grund stack run-cancel RUN_ID"],
+    ),
     with_stdin(
         write(
             "stack deploy",

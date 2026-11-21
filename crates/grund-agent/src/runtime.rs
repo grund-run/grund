@@ -22,6 +22,8 @@ use serde::{Deserialize, Serialize};
 
 /// The label every grund container carries: its replica id.
 pub const REPLICA_LABEL: &str = "grund.replica";
+/// Run-only ownership, deliberately disjoint from service replica cleanup.
+pub const RUN_LABEL: &str = "grund.run";
 /// The immutable app identity retained after a replica leaves the desired document.
 pub const APP_ID_LABEL: &str = "grund.app-id";
 /// The label holding the hash of the spec it was created from.
@@ -134,6 +136,12 @@ pub enum TaskState {
         code: i32,
         exited_at_unix_ms: i64,
     },
+}
+
+/// Exit-preserving stop evidence. A prior exit wins over later stop intent.
+pub struct RunStop {
+    pub state: Option<TaskState>,
+    pub signalled: bool,
 }
 
 /// One of the runtime's containers, as it is now.
@@ -281,6 +289,41 @@ impl ResourceLimitFailure {
 pub trait ContainerRuntime: Send + Sync {
     /// What this machine can do. Cheap: no download, no daemon start.
     fn capabilities(&self) -> impl Future<Output = AppsCapabilities> + Send;
+
+    /// Supports durable single-attempt runs, isolated ownership and exit-preserving stop.
+    fn supports_runs(&self) -> bool {
+        false
+    }
+
+    /// Run containers only; never included in ordinary service reconciliation.
+    fn list_runs(&self) -> impl Future<Output = anyhow::Result<Vec<ContainerStatus>>> + Send {
+        async { Ok(Vec::new()) }
+    }
+
+    /// Stops a run without discarding exit evidence. None proves task absence;
+    /// `signalled` is false when a prior exit was observed without signalling.
+    fn stop_run(&self, id: &str) -> impl Future<Output = anyhow::Result<RunStop>> + Send {
+        let _ = id;
+        async { anyhow::bail!("single-attempt runs unsupported") }
+    }
+
+    /// Recoverable start estimate, including a durable launch-time floor for a
+    /// task that exited before its process clock could be sampled.
+    fn run_started_at(&self, id: &str) -> impl Future<Output = anyhow::Result<Option<i64>>> + Send {
+        let _ = id;
+        async { Ok(None) }
+    }
+
+    /// Creates at most one run attempt, checking stop intent immediately before start.
+    /// The caller durably latches the attempt first and never retries this call.
+    fn create_run(
+        &self,
+        spec: &ContainerSpec,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> impl Future<Output = anyhow::Result<()>> + Send {
+        let _ = (spec, cancel);
+        async { anyhow::bail!("single-attempt runs unsupported") }
+    }
 
     /// Actively proves local resource limits without preparing the runtime.
     /// Unsupported runtimes provide no proof. A positive result requires cleanup;

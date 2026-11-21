@@ -486,6 +486,12 @@ impl Collector {
         let wanted: BTreeSet<_> = document
             .replicas
             .iter()
+            .chain(
+                document
+                    .runs
+                    .iter()
+                    .filter_map(|run| run.replica.as_option()),
+            )
             .flat_map(|replica| {
                 ["stdout", "stderr", "combined"]
                     .map(|stream| format!("{}:{stream}", replica.replica_id))
@@ -688,7 +694,12 @@ pub(crate) async fn run<C: ContainerRuntime + 'static>(
             continue;
         };
         let mut instances = Vec::with_capacity(document.replicas.len());
-        for replica in &document.replicas {
+        for replica in document.replicas.iter().chain(
+            document
+                .runs
+                .iter()
+                .filter_map(|run| run.replica.as_option()),
+        ) {
             let observation = match runtime.observation(&replica.replica_id).await {
                 Ok(Some(observation)) => observation,
                 _ => continue,
