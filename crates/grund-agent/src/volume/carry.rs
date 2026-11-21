@@ -158,7 +158,8 @@ fn atomic_json<T: Serialize>(
         file.sync_all()?;
         let name = CString::new(name)?;
         if unsafe {
-            libc::renameat2(
+            libc::syscall(
+                libc::SYS_renameat2,
                 dir.as_raw_fd(),
                 temporary.as_ptr(),
                 dir.as_raw_fd(),
@@ -516,7 +517,8 @@ fn consume_at(
     }
     validate_entries(&attestation, data, uid, true, true)?;
     if unsafe {
-        libc::renameat2(
+        libc::syscall(
+            libc::SYS_renameat2,
             fleet.as_raw_fd(),
             c"volume-carry-attestation.json".as_ptr(),
             fleet.as_raw_fd(),
