@@ -109,7 +109,14 @@ async fn copies_spread_over_zones_and_leave_a_machine_taken_out_of_service_with_
         "hello",
         Duration::from_secs(30),
         "one copy in each zone",
-        |a| live(a, 1) && ready_on(a, 1) == 2,
+        |a| {
+            let on = running_on(a);
+            live(a, 1)
+                && ready_on(a, 1) == 2
+                && on.len() == 2
+                && on.iter().any(|machine| machine == "b1")
+                && on.iter().any(|machine| machine == "a1" || machine == "a2")
+        },
     )
     .await?;
     let on = running_on(&spread);
@@ -140,8 +147,10 @@ async fn copies_spread_over_zones_and_leave_a_machine_taken_out_of_service_with_
         Duration::from_secs(60),
         "both copies off b1",
         |a| {
-            fewest.set(fewest.get().min(ready_on(a, 1)));
-            ready_on(a, 1) == 2 && !running_on(a).contains(&"b1".to_string())
+            let ready = ready_on(a, 1);
+            fewest.set(fewest.get().min(ready));
+            let on = running_on(a);
+            ready == 2 && on.len() == 2 && on[0] == "a1" && on[1] == "a2"
         },
     )
     .await;
