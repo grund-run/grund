@@ -201,6 +201,11 @@ minutes. To run a published image instead, set `GRUND_IMAGE` and
 `GRUND_PULL_POLICY=missing` in `.env`. Every setting is documented in
 [.env.example](.env.example).
 
+Startup migrations use separate database sessions with `statement_timeout=0`,
+including extension and event-store migrations. Runtime query timeouts remain
+controlled by `GRUND_DATABASE_STATEMENT_TIMEOUT`; migration sessions are closed
+before requests are served.
+
 To add a machine, use "Add machine" on the Machines page. The command it
 gives installs grund and its agent on a Linux machine (root, systemd,
 amd64 or arm64) and connects it. This instance serves the installer and its

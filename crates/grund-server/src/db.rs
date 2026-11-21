@@ -22,7 +22,14 @@ pub const LONGEST_PAUSE: Duration = Duration::from_secs(10);
 /// `acquire_timeout` for a connection, and a `statement_timeout` on every
 /// connection, so one stuck statement cannot hold a request forever.
 pub async fn connect(args: &DatabaseArgs) -> anyhow::Result<PgPool> {
-    let options = options(args)?;
+    let options = options(args, args.database_statement_timeout)?;
+    open(args, options).await
+}
+
+/// Opens migration-only sessions without the request statement timeout.
+/// Keep this pool out of runtime state and close it after all migrators finish.
+pub async fn connect_migrations(args: &DatabaseArgs) -> anyhow::Result<PgPool> {
+    let options = options(args, Duration::ZERO)?.application_name("grund-migrations");
     open(args, options).await
 }
 
@@ -41,7 +48,7 @@ pub async fn connect_waiting(
     wait: Duration,
     listen: SocketAddr,
 ) -> anyhow::Result<PgPool> {
-    let options = options(args)?;
+    let options = options(args, args.database_statement_timeout)?;
     let mut last = match open(args, options.clone()).await {
         Ok(pool) => return Ok(pool),
         Err(error) if wait.is_zero() => return Err(error),
@@ -93,13 +100,13 @@ pub async fn connect_waiting(
     }
 }
 
-fn options(args: &DatabaseArgs) -> anyhow::Result<PgConnectOptions> {
+fn options(args: &DatabaseArgs, statement_timeout: Duration) -> anyhow::Result<PgConnectOptions> {
     let mut options = PgConnectOptions::from_str(&args.database_url)
         .context("DATABASE_URL is not a valid PostgreSQL URL")?
         .application_name("grund")
         .options([(
             "statement_timeout",
-            format!("{}", args.database_statement_timeout.as_millis()),
+            format!("{}", statement_timeout.as_millis()),
         )]);
     if let Some(path) = &args.database_password_file {
         let password = std::fs::read_to_string(path)
@@ -134,5 +141,64 @@ async fn stand_in(listen: SocketAddr, stop: CancellationToken) {
         .await
     {
         tracing::warn!(%error, "the listener answering while waiting for PostgreSQL stopped");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[sqlx::test]
+    async fn slow_migrations_complete_without_relaxing_the_request_statement_timeout(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
+        let mut url = reqwest::Url::parse(&std::env::var("DATABASE_URL")?)?;
+        url.set_path(
+            pool.connect_options()
+                .get_database()
+                .expect("test database"),
+        );
+        let args = DatabaseArgs {
+            database_url: url.to_string(),
+            database_password_file: None,
+            database_max_connections: 4,
+            database_acquire_timeout: Duration::from_secs(5),
+            database_statement_timeout: Duration::from_millis(20),
+        };
+        let requests = connect(&args).await?;
+        let migrations = connect_migrations(&args).await?;
+        let migrator =
+            sqlx::migrate::Migrator::with_migrations(vec![sqlx::migrate::Migration::new(
+                1,
+                "slow startup".into(),
+                sqlx::migrate::MigrationType::Simple,
+                sqlx::SqlStr::from_static(
+                    "SELECT pg_sleep(0.1); CREATE TABLE migration_completed (id integer);",
+                ),
+                false,
+            )]);
+        migrator.run(&migrations).await?;
+        migrations.close().await;
+        let completed: bool =
+            sqlx::query_scalar("SELECT to_regclass('migration_completed') IS NOT NULL")
+                .fetch_one(&requests)
+                .await?;
+        assert!(
+            completed,
+            "the slow migration must commit its schema change"
+        );
+        let error = sqlx::query("SELECT pg_sleep(0.1)")
+            .execute(&requests)
+            .await
+            .expect_err("ordinary queries must still time out");
+        assert_eq!(
+            error
+                .as_database_error()
+                .and_then(|error| error.code())
+                .as_deref(),
+            Some("57014"),
+        );
+        requests.close().await;
+        Ok(())
     }
 }
