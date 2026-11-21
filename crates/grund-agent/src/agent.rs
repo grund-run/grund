@@ -515,6 +515,7 @@ pub async fn run<R: VmRuntime, C: ContainerRuntime + 'static>(
     grund_crypto::install_default();
     let registered = join::read_record(&args.data_dir)?
         .context("this machine is not registered; run grund server install for a local instance, or grund join <instance> --code <code>")?;
+    crate::volume::consume_carry(&containers.volume_data_dir(), &registered.machine_id).await?;
     let key = join::machine_key(&args.data_dir)?;
     let policy = Policy::load(&args.policy)?;
     let link = Link {

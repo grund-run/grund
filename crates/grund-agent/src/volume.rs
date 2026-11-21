@@ -25,6 +25,13 @@ use uuid::Uuid;
 
 use crate::runtime::VolumeBind;
 
+mod carry;
+
+/// Consume a Fleet-verified volume carry before starting any storage workers.
+pub async fn consume_carry(data_dir: &Path, machine_id: &str) -> anyhow::Result<()> {
+    carry::consume(data_dir, machine_id).await
+}
+
 #[derive(Default)]
 struct Activity {
     workers: usize,

@@ -918,6 +918,16 @@ that host directory. Storage uses the host filesystem and its existing
 permissions and encryption; there is no volume size quota. Keep independent
 backups of the machine.
 
+Replacing a managed volume directory is refused, even when its name is
+unchanged. A Fleet guest upgrade can carry existing directories only with
+Fleet's private, boot- and placement-bound carry attestation. Before any
+workload or storage worker starts, the agent verifies every existing owner,
+directory identity and complete content digest, then durably consumes the
+handoff once. Interrupted consumption resumes only the identical recorded
+transition. This is not an operator rebind command or permission to adopt
+unregistered directories; ordinary machines without a handoff keep the same
+ownership guards.
+
 Creating another app with the same name during recovery is refused with
 `name_reserved_for_restore`. The API, dashboard and CLI messages show the
 recorded dates in UTC, for example `15 Oct 2026 19:04:03 UTC`. The API's
