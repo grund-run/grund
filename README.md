@@ -733,6 +733,10 @@ Declared ports on IPv4-only apps are forwarded onto their private IPv6
 addresses even without a readiness check. Without `check`, a running process
 is considered ready; configure an HTTP or TCP check to verify that it answers.
 
+Apps reach external TCP and UDP services through the machine's agent.
+Outbound TCP is acknowledged only after the upstream connection succeeds,
+so clients can fall back to IPv4 when the machine cannot reach IPv6.
+
 ### Stacks
 
 In the dashboard, open **Stacks → Create stack**. Paste a stack file or load

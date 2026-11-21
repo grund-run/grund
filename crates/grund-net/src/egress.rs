@@ -19,10 +19,11 @@
 //! forwards, can take a replica's packets instead of [`Userspace`].
 
 use std::{
+    collections::{HashMap, HashSet},
     fmt,
     net::{IpAddr, SocketAddr},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering::Relaxed},
     },
     time::Duration,
@@ -124,12 +125,111 @@ pub const TCP_BUFFER: u32 = 512 * 1024;
 
 type UdpMessage = (Vec<u8>, SocketAddr, SocketAddr);
 
+type TcpFlow = (SocketAddr, SocketAddr);
+type TcpHosts = Arc<Mutex<HashMap<TcpFlow, tokio::net::TcpStream>>>;
+
+fn initial_syn(packet: &[u8]) -> Option<TcpFlow> {
+    use netstack_smoltcp::smoltcp::wire::{
+        IpProtocol, IpVersion, Ipv4Packet, Ipv6Packet, TcpPacket,
+    };
+    let (source, destination, payload) = match IpVersion::of_packet(packet).ok()? {
+        IpVersion::Ipv4 => {
+            let ip = Ipv4Packet::new_checked(packet).ok()?;
+            if ip.next_header() != IpProtocol::Tcp {
+                return None;
+            }
+            (
+                IpAddr::V4(ip.src_addr()),
+                IpAddr::V4(ip.dst_addr()),
+                &packet[usize::from(ip.header_len())..usize::from(ip.total_len())],
+            )
+        }
+        IpVersion::Ipv6 => {
+            let ip = Ipv6Packet::new_checked(packet).ok()?;
+            if ip.next_header() != IpProtocol::Tcp {
+                return None;
+            }
+            (
+                IpAddr::V6(ip.src_addr()),
+                IpAddr::V6(ip.dst_addr()),
+                &packet[40..40 + usize::from(ip.payload_len())],
+            )
+        }
+    };
+    let tcp = TcpPacket::new_checked(payload).ok()?;
+    (tcp.syn() && !tcp.ack()).then(|| {
+        (
+            SocketAddr::new(source, tcp.src_port()),
+            SocketAddr::new(destination, tcp.dst_port()),
+        )
+    })
+}
+
+async fn feed_stack(
+    mut packets: mpsc::Receiver<Vec<u8>>,
+    mut stack: impl futures::Sink<Vec<u8>, Error = std::io::Error> + Unpin,
+    hosts: TcpHosts,
+    mut finished: mpsc::Receiver<TcpFlow>,
+    counts: Arc<Counts>,
+) {
+    use futures::SinkExt;
+    let mut active = HashSet::new();
+    let mut connecting = tokio::task::JoinSet::new();
+    loop {
+        tokio::select! {
+            packet = packets.recv() => {
+                let Some(packet) = packet else { return };
+                if let Some(flow) = initial_syn(&packet) {
+                    if !allowed(flow.1.ip()) {
+                        counts.refused.fetch_add(1, Relaxed);
+                        continue;
+                    }
+                    if active.contains(&flow) {
+                        continue;
+                    }
+                    if connecting.len() >= QUEUE {
+                        counts.dropped.fetch_add(1, Relaxed);
+                        continue;
+                    }
+                    active.insert(flow);
+                    connecting.spawn(async move {
+                        let host = tokio::time::timeout(
+                            CONNECT_TIMEOUT,
+                            tokio::net::TcpStream::connect(flow.1),
+                        ).await;
+                        (flow, packet, host)
+                    });
+                } else if stack.send(packet).await.is_err() {
+                    return;
+                }
+            }
+            Some(Ok((flow, packet, host))) = connecting.join_next(), if !connecting.is_empty() => {
+                match host {
+                    Ok(Ok(host)) => {
+                        hosts.lock().expect("TCP hosts lock").insert(flow, host);
+                        if stack.send(packet).await.is_err() {
+                            return;
+                        }
+                    }
+                    _ => {
+                        active.remove(&flow);
+                        counts.failed.fetch_add(1, Relaxed);
+                    }
+                }
+            }
+            Some(flow) = finished.recv() => {
+                active.remove(&flow);
+            }
+        }
+    }
+}
+
 impl Userspace {
     /// Starts a stack whose packets back to the replica are written to
     /// `tun`, the replica's own device.
     pub fn start(tun: Arc<Tun>) -> Self {
         use futures::{SinkExt, StreamExt};
-        let (packets, mut from_replica) = mpsc::channel::<Vec<u8>>(QUEUE);
+        let (packets, from_replica) = mpsc::channel::<Vec<u8>>(QUEUE);
         let counts = Arc::new(Counts::default());
         let built = netstack_smoltcp::StackBuilder::default()
             .enable_tcp(true)
@@ -159,14 +259,16 @@ impl Userspace {
                 let _ = runner.await;
             }));
         }
-        let (mut into_stack, mut out_of_stack) = stack.split();
-        tasks.push(tokio::spawn(async move {
-            while let Some(packet) = from_replica.recv().await {
-                if into_stack.send(packet).await.is_err() {
-                    return;
-                }
-            }
-        }));
+        let (into_stack, mut out_of_stack) = stack.split();
+        let hosts = TcpHosts::default();
+        let (finished_tx, finished_rx) = mpsc::channel(QUEUE);
+        tasks.push(tokio::spawn(feed_stack(
+            from_replica,
+            into_stack,
+            hosts.clone(),
+            finished_rx,
+            counts.clone(),
+        )));
         tasks.push(tokio::spawn(async move {
             while let Some(packet) = out_of_stack.next().await {
                 if let Ok(packet) = packet {
@@ -177,8 +279,17 @@ impl Userspace {
         if let Some(mut listener) = listener {
             let flows = counts.clone();
             tasks.push(tokio::spawn(async move {
-                while let Some((stream, _replica, destination)) = listener.next().await {
-                    tokio::spawn(carry_tcp(stream, destination, flows.clone()));
+                while let Some((stream, replica, destination)) = listener.next().await {
+                    let flow = (replica, destination);
+                    let host = hosts.lock().expect("TCP hosts lock").remove(&flow);
+                    if let Some(host) = host {
+                        let flows = flows.clone();
+                        let finished = finished_tx.clone();
+                        tokio::spawn(async move {
+                            carry_tcp(stream, host, flows).await;
+                            let _ = finished.send(flow).await;
+                        });
+                    }
                 }
             }));
         }
@@ -250,26 +361,11 @@ impl Egress for Userspace {
 
 async fn carry_tcp(
     mut stream: netstack_smoltcp::TcpStream,
-    destination: SocketAddr,
+    mut host: tokio::net::TcpStream,
     counts: Arc<Counts>,
 ) {
-    if !allowed(destination.ip()) {
-        counts.refused.fetch_add(1, Relaxed);
-        return;
-    }
     counts.tcp_flows.fetch_add(1, Relaxed);
-    let host =
-        match tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(destination))
-            .await
-        {
-            Ok(Ok(host)) => host,
-            _ => {
-                counts.failed.fetch_add(1, Relaxed);
-                return;
-            }
-        };
     let _ = host.set_nodelay(true);
-    let mut host = host;
     let _ = tokio::io::copy_bidirectional(&mut stream, &mut host).await;
     let _ = host.shutdown().await;
     let _ = stream.shutdown().await;
@@ -320,6 +416,108 @@ async fn carry_udp(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn syn(destination: SocketAddr, source_port: u16) -> Vec<u8> {
+        use netstack_smoltcp::smoltcp::wire::{
+            IpAddress, IpProtocol, Ipv4Packet, TcpPacket, TcpSeqNumber,
+        };
+        let IpAddr::V4(destination_ip) = destination.ip() else {
+            panic!("IPv4 test endpoint")
+        };
+        let source_ip = crate::tun::REPLICA_IPV4;
+        let mut bytes = vec![0u8; 40];
+        let mut ip = Ipv4Packet::new_unchecked(&mut bytes[..20]);
+        ip.set_version(4);
+        ip.set_header_len(20);
+        ip.set_total_len(40);
+        ip.set_hop_limit(64);
+        ip.set_next_header(IpProtocol::Tcp);
+        ip.set_src_addr(source_ip);
+        ip.set_dst_addr(destination_ip);
+        ip.fill_checksum();
+        let mut tcp = TcpPacket::new_unchecked(&mut bytes[20..]);
+        tcp.set_src_port(source_port);
+        tcp.set_dst_port(destination.port());
+        tcp.set_seq_number(TcpSeqNumber(1));
+        tcp.set_header_len(20);
+        tcp.set_syn(true);
+        tcp.set_window_len(65535);
+        tcp.fill_checksum(
+            &IpAddress::Ipv4(source_ip),
+            &IpAddress::Ipv4(destination_ip),
+        );
+        bytes
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_upstream_cannot_win_the_copys_connection_race() {
+        use futures::StreamExt;
+        let route = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+        route.connect("192.0.2.1:9").unwrap();
+        let local_ip = route.local_addr().unwrap().ip();
+        let refused = tokio::net::TcpSocket::new_v4().unwrap();
+        refused.bind("0.0.0.0:0".parse().unwrap()).unwrap();
+        let refused_address = SocketAddr::new(local_ip, refused.local_addr().unwrap().port());
+        let listening = tokio::net::TcpListener::bind((local_ip, 0)).await.unwrap();
+        let listening_address = listening.local_addr().unwrap();
+        let (stack, runner, _, listener) = netstack_smoltcp::StackBuilder::default()
+            .enable_tcp(true)
+            .build()
+            .unwrap();
+        let runner = tokio::spawn(runner.unwrap());
+        let (sink, mut replies) = stack.split();
+        let (packets, receiver) = mpsc::channel(16);
+        let (_finished, finished_rx) = mpsc::channel(16);
+        let counts = Arc::new(Counts::default());
+        let feeder = tokio::spawn(feed_stack(
+            receiver,
+            sink,
+            TcpHosts::default(),
+            finished_rx,
+            counts.clone(),
+        ));
+        packets.send(syn(refused_address, 40000)).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while counts.failed.load(Relaxed) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), replies.next())
+                .await
+                .is_err(),
+            "an unsuccessful upstream must not acknowledge the copy's SYN"
+        );
+        packets.send(syn(listening_address, 40001)).await.unwrap();
+        let _upstream = tokio::time::timeout(Duration::from_secs(2), listening.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let reply = tokio::time::timeout(Duration::from_secs(2), replies.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let ip =
+            netstack_smoltcp::smoltcp::wire::Ipv4Packet::new_checked(reply.as_slice()).unwrap();
+        let tcp = netstack_smoltcp::smoltcp::wire::TcpPacket::new_checked(ip.payload()).unwrap();
+        assert!(
+            tcp.syn() && tcp.ack(),
+            "only the reachable upstream may acknowledge the copy's SYN"
+        );
+        let _stream = listener.unwrap().next().await.unwrap();
+        packets.send(syn(listening_address, 40001)).await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), listening.accept())
+                .await
+                .is_err(),
+            "a retransmitted SYN must not open another upstream connection"
+        );
+        feeder.abort();
+        runner.abort();
+    }
 
     #[test]
     fn a_replica_reaches_the_internet_but_not_the_hosts_loopback_link_local_or_grunds_network() {
