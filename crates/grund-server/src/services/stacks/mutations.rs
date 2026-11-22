@@ -271,10 +271,15 @@ impl Stacks {
             if live_apps > MAX_APPS_PER_ORGANISATION {
                 return Err(invalid("stack.services", "organisation app limit exceeded"));
             }
-            let template = service
-                .template
-                .as_deref()
-                .and_then(grund_domain::app::templates::find);
+            let template = service.template.as_deref().and_then(|id| {
+                grund_domain::app::templates::resolve(
+                    id,
+                    definition.services[name]
+                        .settings
+                        .as_ref()
+                        .is_some_and(|s| s.jetstream),
+                )
+            });
             for secret in &service.release.spec.secrets {
                 let generated = template.is_some_and(|template| {
                     template.secret_variables.iter().any(|variable| {
@@ -287,6 +292,20 @@ impl Stacks {
                     || secrets
                         .iter()
                         .any(|input| input.service == *name && input.name == secret.secret)
+                {
+                    continue;
+                }
+                if generated
+                    && template.is_some_and(|t| t.family == "nats")
+                    && !service
+                        .release
+                        .secret_versions
+                        .iter()
+                        .any(|v| v.name == secret.secret)
+                    && existing
+                        .releases
+                        .iter()
+                        .all(|r| r.spec.secrets.iter().all(|s| s.env != secret.env))
                 {
                     continue;
                 }
@@ -426,11 +445,15 @@ impl Stacks {
                     },
                 )
                 .await?;
-                if let Some(template) = service
-                    .template
-                    .as_deref()
-                    .and_then(grund_domain::app::templates::find)
-                {
+                if let Some(template) = service.template.as_deref().and_then(|id| {
+                    grund_domain::app::templates::resolve(
+                        id,
+                        definition.services[name]
+                            .settings
+                            .as_ref()
+                            .is_some_and(|s| s.jetstream),
+                    )
+                }) {
                     service.release.secret_versions.extend(
                         crate::services::apps::generate_template_credentials_in(
                             &mut work,
@@ -446,6 +469,37 @@ impl Stacks {
                 }
             } else if existing.stack_owner != Some(id) {
                 return Err(Error::Owned);
+            }
+            if existing.exists
+                && let Some(template) = service.template.as_deref().and_then(|id| {
+                    grund_domain::app::templates::resolve(
+                        id,
+                        definition.services[name]
+                            .settings
+                            .as_ref()
+                            .is_some_and(|s| s.jetstream),
+                    )
+                })
+                && template.family == "nats"
+                && !template.secret_variables.is_empty()
+                && !service
+                    .release
+                    .secret_versions
+                    .iter()
+                    .any(|v| v.name == "nats-auth-token")
+            {
+                service.release.secret_versions.extend(
+                    crate::services::apps::generate_template_credentials_in(
+                        &mut work,
+                        &sealing,
+                        actor,
+                        org,
+                        service.app_id,
+                        template,
+                    )
+                    .await
+                    .map_err(anyhow::Error::from)?,
+                );
             }
             if existing.deleted {
                 self.restore_child(
@@ -504,7 +558,14 @@ impl Stacks {
         for name in order(&revision)? {
             let service_definition = &definition.services[&name];
             let template = match &service_definition.template {
-                Some(id) => grund_domain::app::templates::find(id).and_then(|t| t.spec(false)),
+                Some(id) => grund_domain::app::templates::resolve(
+                    id,
+                    service_definition
+                        .settings
+                        .as_ref()
+                        .is_some_and(|s| s.jetstream),
+                )
+                .and_then(|t| t.spec(false)),
                 None => None,
             };
             let (_, _, refs) = definition.service(&name, template)?;
@@ -739,7 +800,10 @@ impl Stacks {
             .template
             .as_deref()
             .and_then(grund_domain::app::templates::family);
-        if !matches!(family, Some("postgres" | "redis")) {
+        if family == Some("nats") && producer.release.spec.volumes.is_empty() {
+            return Err(invalid("env", "a NATS URL requires settings.jetstream"));
+        }
+        if !matches!(family, Some("postgres" | "redis" | "nats")) {
             return port
                 .map(|p| format!("http://{host}:{}", p.port))
                 .ok_or_else(|| invalid("env", "producer exports no HTTP URL"));
@@ -747,15 +811,22 @@ impl Stacks {
         let (scheme, variable, port, user, database) = match family {
             Some("postgres") => ("postgresql", "POSTGRES_PASSWORD", 5432, "grund", "grund"),
             Some("redis") => ("redis", "REDIS_PASSWORD", 6379, "", "0"),
+            Some("nats") => ("nats", "NATS_AUTH_TOKEN", 4222, "", ""),
             _ => return Err(invalid("env", "template URL unavailable")),
         };
         let password = Self::credential(work, sealing, producer, variable).await?;
         let mut url = reqwest::Url::parse(&format!("{scheme}://{host}:{port}/{database}"))
             .context("validated template URL")?;
-        url.set_username(user)
-            .map_err(|_| invalid("env", "template username cannot be encoded"))?;
-        url.set_password(Some(&password))
-            .map_err(|_| invalid("env", "template password cannot be encoded"))?;
+        url.set_username(if family == Some("nats") {
+            &password
+        } else {
+            user
+        })
+        .map_err(|_| invalid("env", "template username cannot be encoded"))?;
+        if family != Some("nats") {
+            url.set_password(Some(&password))
+                .map_err(|_| invalid("env", "template password cannot be encoded"))?;
+        }
         Ok(url.into())
     }
 
@@ -4037,6 +4108,58 @@ mod tests {
         assert_eq!(stack.status, Status::Waiting);
         assert_eq!(stack.failure, None);
         assert_eq!(stack.operation.unwrap().failure, None);
+        Ok(())
+    }
+    #[sqlx::test(migrations = false)]
+    async fn jetstream_urls_use_the_release_pinned_token(pool: sqlx::PgPool) -> anyhow::Result<()> {
+        let state = state(pool).await?;
+        let bundle = bundle(&state, false).await?;
+        let stacks = state.stacks();
+        let sealing = key(&state);
+        let mut work = Work::begin(&state.events, Uuid::now_v7(), "test").await?;
+        work.allow_stack(bundle.id);
+        let template = grund_domain::app::templates::resolve("nats", true).unwrap();
+        let mut producer =
+            work.load_stack(bundle.id).await?.revisions[&1].services["producer"].clone();
+        producer.template = Some("nats".into());
+        producer.release.spec = template.spec(false).unwrap();
+        producer.release.spec.secrets.push(SecretEnv {
+            env: "NATS_AUTH_TOKEN".into(),
+            secret: "nats-auth-token".into(),
+        });
+        producer.release.secret_versions = crate::services::apps::generate_template_credentials_in(
+            &mut work,
+            &sealing,
+            Uuid::nil(),
+            bundle.org,
+            bundle.producer,
+            template,
+        )
+        .await?;
+        let token = Stacks::credential(&mut work, &sealing, &producer, "NATS_AUTH_TOKEN").await?;
+        crate::services::apps::generate_template_credentials_in(
+            &mut work,
+            &sealing,
+            Uuid::nil(),
+            bundle.org,
+            bundle.producer,
+            template,
+        )
+        .await?;
+        let url = stacks
+            .output(&mut work, &sealing, "ordered", &producer, "producer", "url")
+            .await?;
+        let url = reqwest::Url::parse(&url)?;
+        assert!(url.scheme() == "nats");
+        assert!(url.username() == token);
+        assert!(url.password().is_none());
+        producer.release.secret_versions.clear();
+        assert!(
+            stacks
+                .output(&mut work, &sealing, "ordered", &producer, "producer", "url")
+                .await
+                .is_err()
+        );
         Ok(())
     }
 }

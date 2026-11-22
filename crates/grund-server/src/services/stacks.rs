@@ -453,14 +453,17 @@ impl Stacks {
                 .template
                 .as_deref()
                 .map(|id| {
-                    grund_domain::app::templates::find(id)
-                        .filter(|template| template.unavailable.is_none())
-                        .ok_or_else(|| {
-                            invalid(
-                                format!("stack.services.{name}.template"),
-                                "template is unavailable",
-                            )
-                        })
+                    grund_domain::app::templates::resolve(
+                        id,
+                        service.settings.as_ref().is_some_and(|s| s.jetstream),
+                    )
+                    .filter(|template| template.unavailable.is_none())
+                    .ok_or_else(|| {
+                        invalid(
+                            format!("stack.services.{name}.template"),
+                            "template is unavailable",
+                        )
+                    })
                 })
                 .transpose()?;
             if prior.is_some_and(|prior| {
@@ -514,11 +517,20 @@ impl Stacks {
                         matches!(policy, grund_config::app::file::FileBackup::Daily)
                     });
             }
+            if let Some(template) = catalogue {
+                template.configure_resources(&mut spec);
+            }
             for reference in &refs {
                 let producer = definition
                     .services
                     .get(&reference.service)
                     .ok_or_else(|| invalid("env", "unknown reference producer"))?;
+                if reference.output == "url"
+                    && producer.template.as_deref() == Some("nats")
+                    && !producer.settings.as_ref().is_some_and(|s| s.jetstream)
+                {
+                    return Err(invalid("env", "a NATS URL requires settings.jetstream"));
+                }
                 if matches!(
                     reference.output.as_str(),
                     "access_key_id" | "secret_access_key" | "region"
@@ -548,10 +560,12 @@ impl Stacks {
                     }
                 }
                 if reference.output == "url"
-                    && let Some(template) = producer
-                        .template
-                        .as_deref()
-                        .and_then(grund_domain::app::templates::find)
+                    && let Some(template) = producer.template.as_deref().and_then(|id| {
+                        grund_domain::app::templates::resolve(
+                            id,
+                            producer.settings.as_ref().is_some_and(|s| s.jetstream),
+                        )
+                    })
                     && !matches!(template.family, "postgres" | "redis")
                     && template
                         .ports
@@ -690,11 +704,15 @@ impl Stacks {
             {
                 let mut hosted = revision.clone();
                 for (name, service) in &mut hosted.services {
-                    if let Some(template) = service
-                        .template
-                        .as_deref()
-                        .and_then(grund_domain::app::templates::find)
-                        && let Some(storage) = template.storage
+                    if let Some(template) = service.template.as_deref().and_then(|id| {
+                        grund_domain::app::templates::resolve(
+                            id,
+                            definition.services[name]
+                                .settings
+                                .as_ref()
+                                .is_some_and(|s| s.jetstream),
+                        )
+                    }) && let Some(storage) = template.storage
                     {
                         service.settings.placement.kind =
                             Some(grund_config::app::spec::MachineKind::Hosted);
@@ -985,7 +1003,12 @@ impl Stacks {
         let storage = definition
             .template
             .as_deref()
-            .and_then(grund_domain::app::templates::find)
+            .and_then(|id| {
+                grund_domain::app::templates::resolve(
+                    id,
+                    definition.settings.as_ref().is_some_and(|s| s.jetstream),
+                )
+            })
             .and_then(|template| template.storage)
             .ok_or_else(|| invalid(&field, "only a stateful template can select a data volume"))?;
         let prior =
@@ -1379,6 +1402,23 @@ fn expand_service(
     let Some(template) = catalogue else {
         return Ok((spec, settings, refs));
     };
+    if definition
+        .public
+        .as_ref()
+        .is_some_and(|public| public.service == name)
+        && template.publishable.is_none()
+    {
+        return Err(invalid("stack.public", "this template is private only"));
+    }
+    if template.family == "nats"
+        && template.storage.is_none()
+        && prior.is_some_and(|prior| !prior.release.spec.volumes.is_empty())
+    {
+        return Err(invalid(
+            format!("stack.services.{name}.settings.jetstream"),
+            "a retained JetStream service cannot discard its data volume",
+        ));
+    }
     for variable in template.secret_variables {
         spec.secrets.push(SecretEnv {
             env: (*variable).into(),
@@ -1421,6 +1461,7 @@ fn expand_service(
             }
         }
     }
+    template.configure_resources(&mut spec);
     Ok((spec.validate()?, settings, refs))
 }
 
@@ -1429,4 +1470,60 @@ fn retained_service<'a>(revisions: &'a BTreeMap<u32, Revision>, name: &str) -> O
         .values()
         .rev()
         .find_map(|revision| revision.services.get(name))
+}
+
+#[cfg(test)]
+mod template_settings_tests {
+    use super::*;
+
+    #[test]
+    fn jetstream_is_opt_in_private_and_bounded_by_service_resources() {
+        let plain =
+            stack::parse("stack:\n  name: sight\n  services:\n    bus:\n      template: nats\n")
+                .unwrap();
+        let catalogue = grund_domain::app::templates::resolve("nats", false).unwrap();
+        let (spec, _, _) = expand_service(&plain, "bus", Some(catalogue), None).unwrap();
+        assert!(spec.volumes.is_empty());
+        assert!(spec.secrets.is_empty());
+        let yaml = "stack:\n  name: sight\n  services:\n    bus:\n      template: nats\n      settings: {jetstream: true}\n      resources: {memory: 512 MiB}\n";
+        let definition = stack::parse(yaml).unwrap();
+        let catalogue = grund_domain::app::templates::resolve("nats", true).unwrap();
+        let (spec, settings, _) =
+            expand_service(&definition, "bus", Some(catalogue), None).unwrap();
+        assert_eq!(spec.volumes.len(), 1);
+        assert!(spec.volumes[0].source.is_none());
+        assert!(spec.ports.iter().all(|port| !port.public));
+        assert_eq!(settings.copies, 1);
+        assert_eq!(
+            definition.services["bus"].restart(&spec),
+            stack::Restart::Exclusive
+        );
+        assert!(
+            spec.secrets
+                .iter()
+                .any(|secret| secret.env == "NATS_AUTH_TOKEN")
+        );
+        assert_eq!(
+            spec.env
+                .iter()
+                .find(|e| e.name == "NATS_MAX_MEM")
+                .unwrap()
+                .value,
+            (256u64 * 1024 * 1024).to_string()
+        );
+        assert_eq!(
+            spec.env
+                .iter()
+                .find(|e| e.name == "NATS_MAX_FILE")
+                .unwrap()
+                .value,
+            (1024u64 * 1024 * 1024).to_string()
+        );
+        let public = stack::parse(&yaml.replace(
+            "  services:",
+            "  public: {service: bus, port: monitor}\n  services:",
+        ))
+        .unwrap();
+        assert!(expand_service(&public, "bus", Some(catalogue), None).is_err());
+    }
 }

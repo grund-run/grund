@@ -619,6 +619,23 @@
       "allOf": [
         {
           "if": {
+            "required": [
+              "settings"
+            ]
+          },
+          "then": {
+            "properties": {
+              "template": {
+                "const": "nats"
+              }
+            },
+            "required": [
+              "template"
+            ]
+          }
+        },
+        {
+          "if": {
             "properties": {
               "restart": {
                 "const": "exclusive"
@@ -852,6 +869,9 @@
           "description": "Environment variables taken from the organisation's secrets: the\nvariable's name, then the secret's. The value never appears in the\nfile. At most 50.",
           "type": "object"
         },
+        "settings": {
+          "$ref": "#/definitions/TemplateSettings"
+        },
         "stop": {
           "anyOf": [
             {
@@ -917,6 +937,17 @@
             "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
           },
           "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "TemplateSettings": {
+      "additionalProperties": false,
+      "description": "Catalogue-specific options; omitted options preserve the template's defaults.",
+      "properties": {
+        "jetstream": {
+          "default": false,
+          "type": "boolean"
         }
       },
       "type": "object"

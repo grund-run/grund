@@ -13,7 +13,7 @@ pub struct TemplateStorage {
 }
 
 /// One premade app.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Template {
     /// Its key in addresses, and the name a new app gets by default.
     pub key: &'static str,
@@ -71,7 +71,7 @@ pub const CATALOGUE: &[Template] = &[
         family: "nats",
         major: None,
         title: "NATS",
-        summary: "A messaging server for your apps, without persistence: JetStream needs storage.",
+        summary: "A stateless messaging server; stacks can opt into persistent JetStream.",
         image: NATS_IMAGE,
         command: &[],
         env: &[],
@@ -228,6 +228,26 @@ pub const CATALOGUE: &[Template] = &[
     },
 ];
 
+const NATS_JETSTREAM: Template = Template {
+    command: &["/bin/sh", "-ec", include_str!("nats-start.sh")],
+    secret_variables: &["NATS_AUTH_TOKEN"],
+    check: Some(("monitor", "/healthz?js-enabled-only=true")),
+    storage: Some(TemplateStorage {
+        path: "/data",
+        size_gib: 1,
+    }),
+    ..CATALOGUE[0]
+};
+
+/// Resolves the existing NATS template's explicit persistence option.
+pub fn resolve(key: &str, jetstream: bool) -> Option<&'static Template> {
+    if key == "nats" && jetstream {
+        Some(&NATS_JETSTREAM)
+    } else {
+        find(key)
+    }
+}
+
 /// The template with this key.
 pub fn find(key: &str) -> Option<&'static Template> {
     CATALOGUE.iter().find(|t| t.key == key)
@@ -266,7 +286,7 @@ impl Template {
                 timeout_ms: 0,
             })
         };
-        Some(AppSpec {
+        let mut spec = AppSpec {
             image: self.image.to_string(),
             command: self.command.iter().map(|value| (*value).into()).collect(),
             ports: self
@@ -308,7 +328,28 @@ impl Template {
                     signal: signal.into(),
                     grace_seconds,
                 }),
-        })
+        };
+        self.configure_resources(&mut spec);
+        Some(spec)
+    }
+
+    /// Recomputes store limits after stack resource and volume selection.
+    pub fn configure_resources(&self, spec: &mut AppSpec) {
+        if self.family == "nats" && self.storage.is_some() {
+            let memory = spec.memory_mib * 1024 * 1024 / 2;
+            let disk =
+                spec.volumes.first().and_then(|v| v.size_gib).unwrap_or(1) * 1024 * 1024 * 1024;
+            for (name, value) in [("NATS_MAX_MEM", memory), ("NATS_MAX_FILE", disk)] {
+                if let Some(env) = spec.env.iter_mut().find(|env| env.name == name) {
+                    env.value = value.to_string();
+                } else {
+                    spec.env.push(EnvVar {
+                        name: name.into(),
+                        value: value.to_string(),
+                    });
+                }
+            }
+        }
     }
 }
 

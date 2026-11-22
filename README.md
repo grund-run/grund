@@ -850,6 +850,28 @@ and same-site only, not protection against whole-site loss. Hosted capacity
 is fixed; resizing is not supported. Redis syncs disk writes about once a second,
 so abrupt power loss can lose recent writes.
 
+**Persistent NATS is opt-in in stacks.** `template: nats` remains stateless.
+Add `settings: {jetstream: true}` to mount an owned `/data` volume and require
+a generated authentication token. Consumers use `depends_on: [bus]` and
+`NATS_URL: ${{ bus.url }}`; the authenticated URL is delivered as a secret.
+JetStream gets half the service memory (128 MiB at the 256 MiB default) and
+the volume capacity as its file-store bound (1 GiB on own machines).
+The own-machine bound limits JetStream, not the underlying directory.
+Startup refuses a missing or unwritable mount, credential or store bound;
+readiness requires JetStream's `/healthz?js-enabled-only=true`.
+This is one server, not a replicated queue or a verified backup. Stream
+retention and per-stream limits remain the consumer's responsibility.
+Once enabled, a retained service cannot disable persistence and discard its mount.
+
+```yaml
+stack:
+  name: sight
+  services:
+    bus:
+      template: nats
+      settings: {jetstream: true}
+```
+
 PostgreSQL stops with a fast shutdown (SIGINT, 120 s grace): open sessions,
 such as an app's pool, are ended rather than waited for, so a restart is a few
 seconds and leaves a clean data directory. A stack deployed before this keeps

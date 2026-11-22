@@ -84,11 +84,21 @@ pub enum Restart {
     Exclusive,
 }
 
+/// Catalogue-specific options; omitted options preserve the template's defaults.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TemplateSettings {
+    #[serde(default)]
+    pub jetstream: bool,
+}
+
 /// A service reuses the app-file fields, plus dependency and catalogue selection.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Service {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<TemplateSettings>,
     /// An existing volume in this retained template service's app, mounted at its canonical path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_volume: Option<String>,
@@ -104,6 +114,7 @@ pub struct Service {
 #[serde(deny_unknown_fields)]
 struct ServiceInput {
     template: Option<String>,
+    settings: Option<TemplateSettings>,
     data_volume: Option<String>,
     image: Option<String>,
     command: Option<Vec<String>>,
@@ -183,6 +194,7 @@ impl<'de> Deserialize<'de> for Service {
             .collect();
         Ok(Self {
             template: input.template,
+            settings: input.settings,
             data_volume: input.data_volume,
             depends_on: input.depends_on,
             restart: input.restart,
@@ -208,6 +220,10 @@ impl JsonSchema for Service {
             properties.insert(
                 "template".into(),
                 serde_json::json!({"type": "string", "minLength": 1}),
+            );
+            properties.insert(
+                "settings".into(),
+                generator.subschema_for::<TemplateSettings>().to_value(),
             );
             properties.insert(
                 "data_volume".into(),
@@ -238,6 +254,7 @@ impl JsonSchema for Service {
             }}
         ]));
         object.insert("allOf".into(), serde_json::json!([
+            {"if": {"required": ["settings"]}, "then": {"required": ["template"], "properties": {"template": {"const": "nats"}}}},
             {"if": {"properties": {"restart": {"const": "exclusive"}}, "required": ["restart"]}, "then": {"properties": {"copies": {"const": 1}, "release": {"not": {"anyOf": [{"required": ["max_surge"]}, {"required": ["max_unavailable"]}]}}}}},
             {"properties": {"release": {"properties": {"max_surge": {"minimum": 1}}}}}
         ]));
@@ -331,6 +348,12 @@ impl Service {
     fn validate(&self, field: &str) -> Result<(), SpecError> {
         if self.app.image.is_empty() == self.template.is_none() {
             return refuse(field, "give exactly one of image or template");
+        }
+        if self.settings.is_some() && self.template.as_deref() != Some("nats") {
+            return refuse(
+                format!("{field}.settings"),
+                "jetstream settings require the NATS template",
+            );
         }
         if self
             .template
@@ -743,6 +766,34 @@ mod tests {
     use super::*;
 
     const SIMPLE: &str = "stack:\n  name: demo\n  services:\n    web:\n      image: nginx\n";
+
+    #[test]
+    fn jetstream_options_reject_typos_and_non_nats_services() {
+        let nats = "stack:\n  name: sight\n  services:\n    bus:\n      template: nats\n      settings: {jetstream: true}\n";
+        let definition = parse(nats).unwrap();
+        assert!(
+            definition.services["bus"]
+                .settings
+                .as_ref()
+                .unwrap()
+                .jetstream
+        );
+        for invalid in [
+            nats.replace("jetstream", "jetsteam"),
+            nats.replace("template: nats", "template: redis"),
+            nats.replace("template: nats", "image: nats"),
+            nats.replace("jetstream: true", "jetstream: yes"),
+        ] {
+            assert!(parse(&invalid).is_err());
+        }
+        assert_eq!(
+            parse(&crate::yaml::to_string(
+                &crate::app::file::read(nats).unwrap()
+            ))
+            .unwrap(),
+            definition
+        );
+    }
 
     #[test]
     fn stack_and_app_files_remain_distinct_and_may_not_be_mixed() {
