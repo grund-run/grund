@@ -63,6 +63,7 @@ const POSTGRES_18_IMAGE: &str =
 const REDIS_IMAGE: &str =
     "redis:7.4.11-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499";
 const SEAWEEDFS_IMAGE: &str = "chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d";
+const CLICKHOUSE_IMAGE: &str = "clickhouse/clickhouse-server:25.8.33.6@sha256:0152dd511befe6a2c2ef53e930726179669b08116da78500b37c51c96ff5ee77";
 
 /// Every premade app, including unavailable entries.
 pub const CATALOGUE: &[Template] = &[
@@ -226,6 +227,31 @@ pub const CATALOGUE: &[Template] = &[
         }),
         unavailable: None,
     },
+    Template {
+        key: "clickhouse",
+        family: "clickhouse",
+        major: None,
+        title: "ClickHouse",
+        summary: "A private analytics database with authenticated query readiness.",
+        image: CLICKHOUSE_IMAGE,
+        command: &["/bin/bash", "-ec", include_str!("clickhouse-start.sh")],
+        env: &[("CLICKHOUSE_DB", "grund")],
+        secret_variables: &["CLICKHOUSE_USER", "CLICKHOUSE_PASSWORD"],
+        ports: &[
+            ("http", 8123, Protocol::Http),
+            ("native", 9000, Protocol::Tcp),
+        ],
+        publishable: None,
+        check: Some(("http", "/ping")),
+        memory_mib: 1024,
+        cpu_millis: 500,
+        stop: None,
+        storage: Some(TemplateStorage {
+            path: "/var/lib/clickhouse",
+            size_gib: 10,
+        }),
+        unavailable: None,
+    },
 ];
 
 const NATS_JETSTREAM: Template = Template {
@@ -348,6 +374,21 @@ impl Template {
                         value: value.to_string(),
                     });
                 }
+            }
+        }
+        if self.family == "clickhouse" {
+            let value = (spec.memory_mib * 1024 * 1024 * 3 / 4).to_string();
+            if let Some(env) = spec
+                .env
+                .iter_mut()
+                .find(|env| env.name == "CLICKHOUSE_MAX_SERVER_MEMORY_USAGE")
+            {
+                env.value = value;
+            } else {
+                spec.env.push(EnvVar {
+                    name: "CLICKHOUSE_MAX_SERVER_MEMORY_USAGE".into(),
+                    value,
+                });
             }
         }
     }

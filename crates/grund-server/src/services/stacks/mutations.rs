@@ -803,7 +803,7 @@ impl Stacks {
         if family == Some("nats") && producer.release.spec.volumes.is_empty() {
             return Err(invalid("env", "a NATS URL requires settings.jetstream"));
         }
-        if !matches!(family, Some("postgres" | "redis" | "nats")) {
+        if !matches!(family, Some("postgres" | "redis" | "nats" | "clickhouse")) {
             return port
                 .map(|p| format!("http://{host}:{}", p.port))
                 .ok_or_else(|| invalid("env", "producer exports no HTTP URL"));
@@ -812,11 +812,23 @@ impl Stacks {
             Some("postgres") => ("postgresql", "POSTGRES_PASSWORD", 5432, "grund", "grund"),
             Some("redis") => ("redis", "REDIS_PASSWORD", 6379, "", "0"),
             Some("nats") => ("nats", "NATS_AUTH_TOKEN", 4222, "", ""),
+            Some("clickhouse") => ("http", "CLICKHOUSE_PASSWORD", 8123, "", "grund"),
             _ => return Err(invalid("env", "template URL unavailable")),
         };
         let password = Self::credential(work, sealing, producer, variable).await?;
+        let generated_user;
+        let user = if family == Some("clickhouse") {
+            generated_user = Self::credential(work, sealing, producer, "CLICKHOUSE_USER").await?;
+            generated_user.as_str()
+        } else {
+            user
+        };
         let mut url = reqwest::Url::parse(&format!("{scheme}://{host}:{port}/{database}"))
             .context("validated template URL")?;
+        if family == Some("clickhouse") {
+            url.set_path("/");
+            url.query_pairs_mut().append_pair("database", database);
+        }
         url.set_username(if family == Some("nats") {
             &password
         } else {
@@ -4111,55 +4123,80 @@ mod tests {
         Ok(())
     }
     #[sqlx::test(migrations = false)]
-    async fn jetstream_urls_use_the_release_pinned_token(pool: sqlx::PgPool) -> anyhow::Result<()> {
+    async fn template_urls_use_the_release_pinned_credentials(
+        pool: sqlx::PgPool,
+    ) -> anyhow::Result<()> {
         let state = state(pool).await?;
         let bundle = bundle(&state, false).await?;
         let stacks = state.stacks();
         let sealing = key(&state);
         let mut work = Work::begin(&state.events, Uuid::now_v7(), "test").await?;
         work.allow_stack(bundle.id);
-        let template = grund_domain::app::templates::resolve("nats", true).unwrap();
-        let mut producer =
-            work.load_stack(bundle.id).await?.revisions[&1].services["producer"].clone();
-        producer.template = Some("nats".into());
-        producer.release.spec = template.spec(false).unwrap();
-        producer.release.spec.secrets.push(SecretEnv {
-            env: "NATS_AUTH_TOKEN".into(),
-            secret: "nats-auth-token".into(),
-        });
-        producer.release.secret_versions = crate::services::apps::generate_template_credentials_in(
-            &mut work,
-            &sealing,
-            Uuid::nil(),
-            bundle.org,
-            bundle.producer,
-            template,
-        )
-        .await?;
-        let token = Stacks::credential(&mut work, &sealing, &producer, "NATS_AUTH_TOKEN").await?;
-        crate::services::apps::generate_template_credentials_in(
-            &mut work,
-            &sealing,
-            Uuid::nil(),
-            bundle.org,
-            bundle.producer,
-            template,
-        )
-        .await?;
-        let url = stacks
-            .output(&mut work, &sealing, "ordered", &producer, "producer", "url")
+        for family in ["nats", "clickhouse"] {
+            let template = grund_domain::app::templates::resolve(family, true).unwrap();
+            let mut producer =
+                work.load_stack(bundle.id).await?.revisions[&1].services["producer"].clone();
+            producer.template = Some(family.into());
+            producer.release.spec = template.spec(false).unwrap();
+            for variable in template.secret_variables {
+                producer.release.spec.secrets.push(SecretEnv {
+                    env: (*variable).into(),
+                    secret: crate::services::apps::secret_name_for(variable),
+                });
+            }
+            producer.release.secret_versions =
+                crate::services::apps::generate_template_credentials_in(
+                    &mut work,
+                    &sealing,
+                    Uuid::nil(),
+                    bundle.org,
+                    bundle.producer,
+                    template,
+                )
+                .await?;
+            let variable = if family == "nats" {
+                "NATS_AUTH_TOKEN"
+            } else {
+                "CLICKHOUSE_PASSWORD"
+            };
+            let password = Stacks::credential(&mut work, &sealing, &producer, variable).await?;
+            let user = if family == "nats" {
+                password.clone()
+            } else {
+                Stacks::credential(&mut work, &sealing, &producer, "CLICKHOUSE_USER").await?
+            };
+            if family == "clickhouse" {
+                assert!(user.starts_with("grund_"));
+                assert!(user.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'));
+            }
+            crate::services::apps::generate_template_credentials_in(
+                &mut work,
+                &sealing,
+                Uuid::nil(),
+                bundle.org,
+                bundle.producer,
+                template,
+            )
             .await?;
-        let url = reqwest::Url::parse(&url)?;
-        assert!(url.scheme() == "nats");
-        assert!(url.username() == token);
-        assert!(url.password().is_none());
-        producer.release.secret_versions.clear();
-        assert!(
-            stacks
+            let url = stacks
                 .output(&mut work, &sealing, "ordered", &producer, "producer", "url")
-                .await
-                .is_err()
-        );
+                .await?;
+            let url = reqwest::Url::parse(&url)?;
+            assert!(url.username() == user);
+            if family == "nats" {
+                assert!(url.scheme() == "nats" && url.password().is_none());
+            } else {
+                assert!(url.scheme() == "http" && url.password() == Some(password.as_str()));
+                assert!(url.path() == "/" && url.query() == Some("database=grund"));
+            }
+            producer.release.secret_versions.clear();
+            assert!(
+                stacks
+                    .output(&mut work, &sealing, "ordered", &producer, "producer", "url")
+                    .await
+                    .is_err()
+            );
+        }
         Ok(())
     }
 }

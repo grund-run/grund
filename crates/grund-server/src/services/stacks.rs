@@ -1526,4 +1526,27 @@ mod template_settings_tests {
         .unwrap();
         assert!(expand_service(&public, "bus", Some(catalogue), None).is_err());
     }
+
+    #[test]
+    fn clickhouse_memory_overrides_change_the_server_cap_but_never_publish_its_ports() {
+        let yaml = "stack:\n  name: sight\n  services:\n    warehouse:\n      template: clickhouse\n      resources: {memory: 2 GiB}\n";
+        let definition = stack::parse(yaml).unwrap();
+        let template = grund_domain::app::templates::find("clickhouse").unwrap();
+        let (spec, _, _) = expand_service(&definition, "warehouse", Some(template), None).unwrap();
+        assert!(
+            spec.env
+                .iter()
+                .any(|e| e.name == "CLICKHOUSE_MAX_SERVER_MEMORY_USAGE"
+                    && e.value == (1536u64 * 1024 * 1024).to_string())
+        );
+        assert!(spec.ports.iter().all(|p| !p.public));
+        assert!(spec.secrets.iter().any(|s| s.env == "CLICKHOUSE_USER"));
+        assert!(spec.secrets.iter().any(|s| s.env == "CLICKHOUSE_PASSWORD"));
+        let public = stack::parse(&yaml.replace(
+            "  services:",
+            "  public: {service: warehouse, port: http}\n  services:",
+        ))
+        .unwrap();
+        assert!(expand_service(&public, "warehouse", Some(template), None).is_err());
+    }
 }

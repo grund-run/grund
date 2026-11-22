@@ -327,14 +327,22 @@ pub(crate) async fn generate_template_credentials_in(
         let name = secret_name_for(variable);
         let mut bytes = [0u8; 32];
         getrandom::fill(&mut bytes).map_err(anyhow::Error::from)?;
-        let mut value = [0u8; 64];
-        hex::encode_to_slice(bytes, &mut value).expect("a 32-byte secret is 64 hex bytes");
+        let mut value = [0u8; 70];
+        let value = if *variable == "CLICKHOUSE_USER" {
+            value[..6].copy_from_slice(b"grund_");
+            hex::encode_to_slice(bytes, &mut value[6..]).expect("a 32-byte secret is 64 hex bytes");
+            &value[..]
+        } else {
+            hex::encode_to_slice(bytes, &mut value[..64])
+                .expect("a 32-byte secret is 64 hex bytes");
+            &value[..64]
+        };
         let (version, _) = apps::insert_secret(
             work.sql(),
             app_id,
             org,
             &name,
-            |version| seal(sealing, app_id, &name, version, &value),
+            |version| seal(sealing, app_id, &name, version, value),
             actor,
         )
         .await?;

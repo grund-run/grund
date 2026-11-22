@@ -832,16 +832,18 @@ Recovery guidance includes the YAML quoting required by volume names such as `nu
 
 ### Data templates
 
-Deploy app → Template offers PostgreSQL, Redis and SeaweedFS when a connected
-machine has working storage and enough resources. Each creates an app-owned
-data volume and generated credentials stored as app secrets. They run one copy;
-their TCP readiness checks confirm a listening port, not a data transaction.
+Deploy app → Template offers PostgreSQL, Redis, SeaweedFS and ClickHouse when
+a connected machine has working storage and enough resources. Each creates
+an app-owned data volume and generated credentials stored as app secrets.
+They run one copy. PostgreSQL, Redis and SeaweedFS use TCP readiness, not a
+data transaction; ClickHouse uses `/ping` gated by authenticated queries.
 
 | Template | Default hosted capacity | Data mount |
 |---|---|---|
 | PostgreSQL 17 (`postgres`) or 18 (`postgres-18`) | 10 GiB | `/var/lib/postgresql/data` |
 | Redis | 1 GiB | `/data` |
 | SeaweedFS | 10 GiB | `/data` |
+| ClickHouse | 10 GiB | `/var/lib/clickhouse` |
 
 Own machines, including self-hosted instances, use local directories without
 a capacity quota or automatic backup. Hosted templates request daily snapshots;
@@ -871,6 +873,21 @@ stack:
       template: nats
       settings: {jetstream: true}
 ```
+
+**ClickHouse is private only**, with HTTP on 8123 and native TCP on 9000.
+Use `template: clickhouse`; consumers declare `depends_on: [warehouse]`
+and `CLICKHOUSE_URL: ${{ warehouse.url }}` for an authenticated HTTP URL
+including the generated username, password and `grund` database.
+Its default service memory is 1024 MiB; `max_server_memory_usage` is 75% of
+the selected service memory (768 MiB by default), leaving runtime headroom.
+Background pools, query concurrency and caches are reduced for trial workloads;
+this is not a large-ingest sizing promise. `/ping` succeeds only after an
+authenticated `SELECT 1` against `grund`; failed periodic queries remove
+readiness within approximately three seconds.
+ClickHouse uses the same own-machine local-volume backup policy as other
+data templates: no automatic backup. Hosted snapshot requests remain
+crash-consistent, not application-consistent or verified restores.
+No clustering, replication or public database access is configured.
 
 PostgreSQL stops with a fast shutdown (SIGINT, 120 s grace): open sessions,
 such as an app's pool, are ended rather than waited for, so a restart is a few
