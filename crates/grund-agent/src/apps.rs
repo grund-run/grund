@@ -464,9 +464,24 @@ fn spec(
     })
 }
 
+struct StoppingNetwork {
+    mesh: Option<Mesh>,
+    address: Option<Ipv6Addr>,
+    _forwards: Vec<crate::forward::Forward>,
+}
+
+impl Drop for StoppingNetwork {
+    fn drop(&mut self) {
+        if let (Some(mesh), Some(address)) = (&self.mesh, self.address) {
+            mesh.detach_replica(address);
+        }
+    }
+}
+
 struct PendingStop {
     app_id: String,
     task: JoinHandle<()>,
+    network: Arc<Mutex<Option<StoppingNetwork>>>,
 }
 
 /// The apps loop's state between passes.
@@ -619,12 +634,15 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
     }
 
     fn detach(&mut self, id: &str) {
+        if let Some(stop) = self.stops.get(id) {
+            stop.network.lock().expect("stop network lock").take();
+        }
         self.forwards.remove(id);
         self.netns_of.remove(id);
         if let Some(address) = self.attached.remove(id)
-            && let Some(net) = self.net()
+            && let Some(mesh) = self.network.as_ref().and_then(|access| access.mesh.get())
         {
-            net.mesh.detach_replica(address);
+            mesh.detach_replica(address);
         }
     }
 
@@ -746,22 +764,53 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
         if self.stopping(&status.id) {
             return;
         }
-        self.detach(&status.id);
         let runtime = self.runtime.clone();
         let (id, signal, grace) = (
             status.id.clone(),
             status.stop_signal.clone(),
             status.stop_grace,
         );
+        let network = Arc::new(Mutex::new(Some(StoppingNetwork {
+            mesh: self
+                .network
+                .as_ref()
+                .and_then(|access| access.mesh.get())
+                .cloned(),
+            address: self.attached.get(&id).copied(),
+            _forwards: self.forwards.remove(&id).unwrap_or_default(),
+        })));
+        if !matches!(status.state, TaskState::Running { .. } | TaskState::Unknown) {
+            network.lock().expect("stop network lock").take();
+            self.detach(&id);
+        }
+        let held_network = network.clone();
+        let shared = self.shared.clone();
+        let deadline = tokio::time::Instant::now() + grace;
         tracing::info!(replica = %id, %signal, grace_s = grace.as_secs(), "stopping a replica");
         self.stops.insert(
             status.id.clone(),
             PendingStop {
                 app_id: status.app_id.clone(),
+                network,
                 task: tokio::spawn(async move {
-                    if let Err(error) = runtime.remove(&id, &signal, grace).await {
+                    let remove = runtime.remove(&id, &signal, grace);
+                    tokio::pin!(remove);
+                    let result = tokio::select! {
+                        result = &mut remove => Some(result),
+                        () = tokio::time::sleep_until(deadline) => None,
+                    };
+                    if let Some(Err(error)) = &result {
+                        tracing::warn!(replica = %id, error = %format!("{error:#}"), "could not stop a replica");
+                        tokio::time::sleep_until(deadline).await;
+                    }
+                    held_network.lock().expect("stop network lock").take();
+                    shared.document.notify_one();
+                    if result.is_none()
+                        && let Err(error) = remove.await
+                    {
                         tracing::warn!(replica = %id, error = %format!("{error:#}"), "could not stop a replica");
                     }
+                    shared.document.notify_one();
                 }),
             },
         );
@@ -771,6 +820,31 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
         self.stops
             .get(id)
             .is_some_and(|stop| !stop.task.is_finished())
+    }
+
+    fn clean_stops(&mut self, containers: Option<&[ContainerStatus]>) {
+        let detached: Vec<_> = self
+            .stops
+            .iter()
+            .filter(|(id, stop)| {
+                stop.task.is_finished()
+                    || stop.network.lock().expect("stop network lock").is_none()
+                    || containers.is_some_and(|containers| {
+                        !containers.iter().any(|container| {
+                            container.id == **id
+                                && matches!(
+                                    container.state,
+                                    TaskState::Running { .. } | TaskState::Unknown
+                                )
+                        })
+                    })
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in detached {
+            self.detach(&id);
+        }
+        self.stops.retain(|_, stop| !stop.task.is_finished());
     }
 
     fn erase_deleted(&self, desired: Option<&DesiredState>, mounted: &[(String, VolumeBind)]) {
@@ -898,7 +972,7 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
     }
 
     async fn pass_with_network(&mut self, net: Option<Net>, now: Instant) -> anyhow::Result<()> {
-        self.stops.retain(|_, stop| !stop.task.is_finished());
+        self.clean_stops(None);
         let desired = self.shared.desired.lock().expect("shared lock").clone();
         crate::telemetry_final::remember(&self.shared, desired.as_ref());
         let wanted: Vec<Replica> = desired
@@ -913,6 +987,8 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
             && desired
                 .as_ref()
                 .is_none_or(|d| d.volume_deletions.is_empty())
+            && self.attached.is_empty()
+            && self.stops.is_empty()
         {
             let containers = match self.runtime.list().await {
                 Ok(containers) => containers,
@@ -922,6 +998,7 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                 }
             };
             self.prune_telemetry(&wanted, &containers);
+            self.clean_stops(Some(&containers));
             for container in &containers {
                 self.stop(container);
             }
@@ -938,6 +1015,7 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
             }
             self.erase_deleted(desired.as_ref(), &[]);
             self.publish(Vec::new(), Vec::new(), true);
+            self.shared.endpoints.0.send_replace(Vec::new());
             return Ok(());
         }
         if let Err(error) = self.runtime.prepare().await {
@@ -956,6 +1034,7 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
             return Ok(());
         }
         let containers = self.runtime.list().await?;
+        self.clean_stops(Some(&containers));
         self.prune_telemetry(&wanted, &containers);
         let mounted = if wanted.iter().any(|r| !r.volumes.is_empty())
             || desired
@@ -1486,12 +1565,22 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
         }
         let known: Vec<String> = self.attached.keys().cloned().collect();
         for id in known {
-            if !wanted_ids.contains(id.as_str()) && !containers.iter().any(|c| c.id == id) {
+            if !wanted_ids.contains(id.as_str())
+                && !containers.iter().any(|c| c.id == id)
+                && !self.stopping(&id)
+            {
                 self.detach(&id);
             }
         }
         let mut endpoints: Vec<ReplicaEndpoint> = Vec::new();
         for replica in &wanted {
+            if self
+                .stops
+                .get(&replica.replica_id)
+                .is_some_and(|stop| stop.network.lock().expect("stop network lock").is_none())
+            {
+                continue;
+            }
             let address = match self.attached.get(&replica.replica_id) {
                 Some(address) => Some(IpAddr::V6(*address)),
                 None => self.runtime.address(&replica.replica_id).await,
@@ -1514,13 +1603,27 @@ impl<C: ContainerRuntime + 'static> Apps<C> {
                         })
                     })
                     .collect(),
-                ready: self
-                    .tracked
-                    .get(&replica.replica_id)
-                    .is_some_and(|t| t.readiness.ready),
-                draining: replica.stopping
+                ready: !self.stopping(&replica.replica_id)
+                    && !replica.stopping
+                    && replica.state.as_known() != Some(ReplicaState::REPLICA_STATE_DRAINING)
+                    && self
+                        .tracked
+                        .get(&replica.replica_id)
+                        .is_some_and(|t| t.readiness.ready),
+                draining: self.stopping(&replica.replica_id)
+                    || replica.stopping
                     || replica.state.as_known() == Some(ReplicaState::REPLICA_STATE_DRAINING),
             });
+        }
+        for mut endpoint in self.shared.endpoints.0.borrow().iter().cloned() {
+            if !wanted_ids.contains(endpoint.replica_id.as_str())
+                && self.attached.contains_key(&endpoint.replica_id)
+                && self.stopping(&endpoint.replica_id)
+            {
+                endpoint.ready = false;
+                endpoint.draining = true;
+                endpoints.push(endpoint);
+            }
         }
         self.shared.endpoints.0.send_if_modified(|current| {
             let changed = *current != endpoints;
@@ -1774,7 +1877,7 @@ mod tests {
     use crate::simulated::SimulatedContainers;
 
     #[derive(Default)]
-    struct RecoveryRuntime(tokio::sync::Mutex<RecoveryState>);
+    struct RecoveryRuntime(tokio::sync::Mutex<RecoveryState>, Notify, Notify);
 
     #[derive(Default)]
     struct RecoveryState {
@@ -1784,6 +1887,8 @@ mod tests {
         restarts: u32,
         removes: u32,
         recovery_error_after_created_list: bool,
+        hold_removal: bool,
+        removal_error: bool,
     }
 
     impl ContainerRuntime for RecoveryRuntime {
@@ -1846,9 +1951,27 @@ mod tests {
         }
 
         async fn remove(&self, id: &str, _: &str, _: Duration) -> anyhow::Result<()> {
+            let hold = {
+                let mut state = self.0.lock().await;
+                if state
+                    .container
+                    .as_ref()
+                    .is_some_and(|container| container.id == id)
+                {
+                    state.removes += 1;
+                }
+                state.hold_removal
+            };
+            self.1.notify_one();
+            if hold {
+                self.2.notified().await;
+            }
             let mut state = self.0.lock().await;
+            if state.removal_error {
+                self.1.notify_one();
+                anyhow::bail!("runtime removal failed while the process is still running");
+            }
             if state.container.as_ref().is_some_and(|c| c.id == id) {
-                state.removes += 1;
                 state.container = None;
             }
             Ok(())
@@ -1959,6 +2082,205 @@ mod tests {
             &[9; 32],
         );
         (apps, shared, dir)
+    }
+
+    async fn stopping_harness(
+        name: &str,
+        wanted: bool,
+        grace: Duration,
+    ) -> (Apps<RecoveryRuntime>, Arc<Shared>, PathBuf) {
+        let (mut apps, shared, dir) = recovery_harness(name).await;
+        {
+            let mut state = apps.runtime.0.lock().await;
+            state.hold_removal = true;
+            state.container.as_mut().unwrap().stop_grace = grace;
+        }
+        let address = replica_address(network().prefix, 1, "r1");
+        apps.attached.insert("r1".into(), address);
+        apps.netns_of
+            .insert("r1".into(), "/proc/self/ns/net".into());
+        shared.endpoints.0.send_replace(vec![ReplicaEndpoint {
+            replica_id: "r1".into(),
+            app: "web".into(),
+            address: IpAddr::V6(address),
+            ports: Vec::new(),
+            ready: true,
+            draining: false,
+        }]);
+        if wanted {
+            let mut copy = replica("r1", &[]);
+            copy.state = ReplicaState::REPLICA_STATE_DRAINING.into();
+            copy.stopping = true;
+            copy.drain_seconds = Some(0);
+            set(&shared, vec![copy]);
+        } else {
+            set(&shared, Vec::new());
+        }
+        apps.pass().await.unwrap();
+        apps.runtime.1.notified().await;
+        (apps, shared, dir)
+    }
+
+    #[tokio::test]
+    async fn stopping_copies_keep_their_network_until_runtime_removal_finishes() {
+        for wanted in [false, true] {
+            let (mut apps, shared, dir) = stopping_harness(
+                if wanted {
+                    "wanted-stop-network"
+                } else {
+                    "unwanted-stop-network"
+                },
+                wanted,
+                Duration::from_secs(30),
+            )
+            .await;
+            for _ in 0..3 {
+                apps.pass().await.unwrap();
+                assert!(apps.attached.contains_key("r1"));
+                assert!(apps.netns_of.contains_key("r1"));
+                let stop = &apps.stops["r1"];
+                assert!(stop.network.lock().unwrap().is_some());
+                assert!(!stop.task.is_finished());
+                let endpoints = shared.endpoints.0.borrow();
+                assert_eq!(endpoints.len(), 1);
+                assert!(endpoints[0].draining);
+                assert!(!endpoints[0].ready);
+            }
+            assert_eq!(apps.runtime.0.lock().await.removes, 1);
+            apps.runtime.2.notify_one();
+            (&mut apps.stops.get_mut("r1").unwrap().task).await.unwrap();
+            apps.pass().await.unwrap();
+            assert!(!apps.attached.contains_key("r1"));
+            assert!(!apps.netns_of.contains_key("r1"));
+            assert!(apps.stops.is_empty());
+            assert!(shared.endpoints.0.borrow().is_empty());
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn an_exited_stopping_process_releases_its_network_before_runtime_cleanup() {
+        let (mut apps, shared, dir) =
+            stopping_harness("exited-stop-network", true, Duration::from_secs(30)).await;
+        apps.runtime
+            .0
+            .lock()
+            .await
+            .container
+            .as_mut()
+            .unwrap()
+            .state = TaskState::Exited {
+            code: 0,
+            exited_at_unix_ms: 0,
+        };
+        apps.pass().await.unwrap();
+        assert!(!apps.attached.contains_key("r1"));
+        assert!(!apps.netns_of.contains_key("r1"));
+        assert!(apps.stops["r1"].network.lock().unwrap().is_none());
+        assert!(!apps.stops["r1"].task.is_finished());
+        assert!(shared.endpoints.0.borrow().is_empty());
+        apps.runtime.2.notify_one();
+        (&mut apps.stops.get_mut("r1").unwrap().task).await.unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn stop_grace_bounds_network_retention_even_if_the_apps_loop_shuts_down() {
+        for shutdown in [false, true] {
+            let (mut apps, shared, dir) = stopping_harness(
+                if shutdown {
+                    "shutdown-stop-network"
+                } else {
+                    "grace-stop-network"
+                },
+                true,
+                Duration::from_millis(50),
+            )
+            .await;
+            let held_network = Arc::downgrade(&apps.stops["r1"].network);
+            let runtime = apps.runtime.clone();
+            if shutdown {
+                drop(apps);
+            } else {
+                tokio::time::timeout(Duration::from_secs(5), shared.document.notified())
+                    .await
+                    .unwrap();
+                assert!(apps.stops["r1"].network.lock().unwrap().is_none());
+                apps.pass().await.unwrap();
+                assert!(!apps.attached.contains_key("r1"));
+                assert!(!apps.netns_of.contains_key("r1"));
+                assert!(!apps.stops["r1"].task.is_finished());
+                assert!(shared.endpoints.0.borrow().is_empty());
+                runtime.2.notify_one();
+                (&mut apps.stops.get_mut("r1").unwrap().task).await.unwrap();
+            }
+            if shutdown {
+                assert!(held_network.upgrade().unwrap().lock().unwrap().is_some());
+                tokio::time::timeout(Duration::from_secs(5), shared.document.notified())
+                    .await
+                    .unwrap();
+                assert!(held_network.upgrade().unwrap().lock().unwrap().is_none());
+                runtime.2.notify_one();
+                tokio::time::timeout(Duration::from_secs(5), shared.document.notified())
+                    .await
+                    .unwrap();
+                assert!(held_network.upgrade().is_none());
+            }
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_stop_preserves_network_until_exit_or_the_original_grace() {
+        for outcome in ["exit", "grace", "shutdown"] {
+            let (mut apps, shared, dir) = stopping_harness(
+                &format!("failed-stop-network-{outcome}"),
+                true,
+                Duration::from_millis(100),
+            )
+            .await;
+            let runtime = apps.runtime.clone();
+            runtime.0.lock().await.removal_error = true;
+            runtime.2.notify_one();
+            runtime.1.notified().await;
+            assert!(!apps.stops["r1"].task.is_finished());
+            assert!(apps.stops["r1"].network.lock().unwrap().is_some());
+            apps.pass().await.unwrap();
+            assert!(apps.attached.contains_key("r1"));
+            assert!(apps.netns_of.contains_key("r1"));
+            assert_eq!(runtime.0.lock().await.removes, 1);
+            if outcome == "exit" {
+                runtime.0.lock().await.container = None;
+                apps.pass().await.unwrap();
+                assert!(!apps.attached.contains_key("r1"));
+                assert!(!apps.netns_of.contains_key("r1"));
+                assert!(apps.stops["r1"].network.lock().unwrap().is_none());
+                assert!(shared.endpoints.0.borrow().is_empty());
+            }
+            let network = Arc::downgrade(&apps.stops["r1"].network);
+            if outcome == "shutdown" {
+                drop(apps);
+                assert!(network.upgrade().unwrap().lock().unwrap().is_some());
+                tokio::time::timeout(Duration::from_secs(5), shared.document.notified())
+                    .await
+                    .unwrap();
+                assert!(network.upgrade().is_none());
+            } else {
+                tokio::time::timeout(
+                    Duration::from_secs(5),
+                    &mut apps.stops.get_mut("r1").unwrap().task,
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                assert!(network.upgrade().unwrap().lock().unwrap().is_none());
+                apps.clean_stops(None);
+                assert!(!apps.attached.contains_key("r1"));
+                assert!(!apps.netns_of.contains_key("r1"));
+                assert!(network.upgrade().is_none());
+            }
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 
     fn pid(status: &ContainerStatus) -> u32 {

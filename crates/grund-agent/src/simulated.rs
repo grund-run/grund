@@ -70,6 +70,7 @@ use crate::runtime::{
 pub struct SimulatedContainers {
     dir: PathBuf,
     servers: Arc<Mutex<HashMap<String, Server>>>,
+    processes: Arc<Mutex<HashMap<String, tokio::process::Child>>>,
 }
 
 #[derive(Debug)]
@@ -179,6 +180,7 @@ impl SimulatedContainers {
         Self {
             dir,
             servers: Arc::new(Mutex::new(HashMap::new())),
+            processes: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -257,6 +259,32 @@ impl SimulatedContainers {
             .map(|(_, value)| value.as_str())
     }
 
+    fn start_process(&self, spec: &ContainerSpec) -> anyhow::Result<u32> {
+        let Some((_, command)) = spec.env.iter().find(|(n, _)| n == "GRUND_SIMULATE_PROCESS")
+        else {
+            return Ok(std::process::id());
+        };
+        let netns = self.netns(&spec.id);
+        anyhow::ensure!(
+            grund_net::netns::is_namespace(&netns),
+            "GRUND_SIMULATE_PROCESS needs a network namespace"
+        );
+        let child = tokio::process::Command::new("nsenter")
+            .arg(format!("--net={}", netns.display()))
+            .args(["--", "setpriv", "--pdeathsig", "KILL", "sh", "-c", command])
+            .envs(spec.env.iter().map(|(n, v)| (n, v)))
+            .stdin(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .context("start the simulated container's process")?;
+        let pid = child.id().context("the simulated process has no pid")?;
+        self.processes
+            .lock()
+            .expect("processes lock")
+            .insert(spec.id.clone(), child);
+        Ok(pid)
+    }
+
     fn advance(&self, mut record: Record) -> anyhow::Result<Record> {
         let lost = self.dir.join("lost").join(&record.spec.id);
         if lost.exists() {
@@ -268,6 +296,20 @@ impl SimulatedContainers {
             self.write(&record)?;
         }
         let kill = self.dir.join("kill").join(&record.spec.id);
+        if let Some(process) = self
+            .processes
+            .lock()
+            .expect("processes lock")
+            .get_mut(&record.spec.id)
+            && let Some(status) = process.try_wait()?
+        {
+            use std::os::unix::process::ExitStatusExt;
+            record.state = TaskState::Exited {
+                code: status.code().unwrap_or(128 + status.signal().unwrap_or(0)),
+                exited_at_unix_ms: now_ms(),
+            };
+            self.write(&record)?;
+        }
         if let TaskState::Running { .. } = record.state {
             if kill.exists() {
                 let _ = std::fs::remove_file(&kill);
@@ -481,11 +523,10 @@ impl ContainerRuntime for SimulatedContainers {
             })?;
             anyhow::bail!("start the task: exec: \"/missing\": no such file or directory");
         }
+        let pid = self.start_process(spec)?;
         let record = Record {
             spec: spec.clone(),
-            state: TaskState::Running {
-                pid: std::process::id(),
-            },
+            state: TaskState::Running { pid },
             started_at_ms: now_ms(),
             task_lost: false,
         };
@@ -508,7 +549,7 @@ impl ContainerRuntime for SimulatedContainers {
             "create the task: the files its container was created with are gone"
         );
         record.state = TaskState::Running {
-            pid: std::process::id(),
+            pid: self.start_process(&record.spec)?,
         };
         record.started_at_ms = now_ms();
         self.write(&record)
@@ -525,7 +566,34 @@ impl ContainerRuntime for SimulatedContainers {
         Ok(true)
     }
 
-    async fn remove(&self, id: &str, _signal: &str, _grace: Duration) -> anyhow::Result<()> {
+    async fn remove(&self, id: &str, signal: &str, grace: Duration) -> anyhow::Result<()> {
+        let process = self.processes.lock().expect("processes lock").remove(id);
+        if let Some(mut process) = process {
+            let signal = match signal {
+                "SIGTERM" => libc::SIGTERM,
+                "SIGINT" => libc::SIGINT,
+                "SIGQUIT" => libc::SIGQUIT,
+                "SIGUSR1" => libc::SIGUSR1,
+                "SIGUSR2" => libc::SIGUSR2,
+                "SIGHUP" => libc::SIGHUP,
+                _ => anyhow::bail!("unknown stop signal {signal:?}"),
+            };
+            if let Some(pid) = process.id() {
+                let result = unsafe { libc::kill(pid as libc::pid_t, signal as libc::c_int) };
+                if result != 0 {
+                    let error = std::io::Error::last_os_error();
+                    if error.raw_os_error() != Some(libc::ESRCH) {
+                        return Err(error.into());
+                    }
+                }
+            }
+            match tokio::time::timeout(grace, process.wait()).await {
+                Ok(result) => {
+                    result?;
+                }
+                Err(_) => process.kill().await?,
+            }
+        }
         self.stop_server(id);
         self.unlisten(id);
         grund_net::netns::remove(&self.dir.join("netns"), id)?;

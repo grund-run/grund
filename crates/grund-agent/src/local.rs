@@ -240,7 +240,6 @@ async fn resolve(network: &Network) -> anyhow::Result<()> {
 fn app_replicas(config: &LocalNetwork, endpoints: &[ReplicaEndpoint]) -> Vec<AppReplica> {
     let mut apps: Vec<AppReplica> = endpoints
         .iter()
-        .filter(|e| !e.draining)
         .filter_map(|e| {
             let IpAddr::V6(address) = e.address else {
                 return None;
@@ -251,6 +250,7 @@ fn app_replicas(config: &LocalNetwork, endpoints: &[ReplicaEndpoint]) -> Vec<App
             let mut ports: Vec<Port> = e
                 .ports
                 .iter()
+                .filter(|_| !e.draining)
                 .map(|p| Port {
                     transport: Transport::Tcp,
                     port: p.port,
@@ -263,13 +263,13 @@ fn app_replicas(config: &LocalNetwork, endpoints: &[ReplicaEndpoint]) -> Vec<App
                 replica_id: e.replica_id.clone(),
                 address,
                 ports,
-                ready: e.ready,
+                ready: e.ready && !e.draining,
                 aliases: config
                     .stack
                     .iter()
                     .map(|stack| format!("{}.{stack}", e.app))
                     .collect(),
-                open: true,
+                open: !e.draining,
             })
         })
         .collect();
@@ -519,7 +519,7 @@ mod tests {
     }
 
     #[test]
-    fn the_list_names_addressed_replicas_that_are_not_draining() {
+    fn draining_replicas_keep_admission_but_leave_discovery_and_close_inbound_ports() {
         let config = network(Some("shop"));
         let mut elsewhere = endpoint(&config, "web-3", true, false);
         elsewhere.address = "127.0.0.1".parse().unwrap();
@@ -536,12 +536,14 @@ mod tests {
             apps.iter()
                 .map(|a| (a.replica_id.as_str(), a.ready))
                 .collect::<Vec<_>>(),
-            [("web-1", true), ("web-2", false)]
+            [("web-0", false), ("web-1", true), ("web-2", false)]
         );
         assert_eq!(apps[0].aliases, ["web.shop"]);
-        assert!(apps.iter().all(|a| a.open));
+        assert!(!apps[0].open);
+        assert!(apps[0].ports.is_empty());
+        assert!(apps[1..].iter().all(|a| a.open));
         assert_eq!(
-            apps[0].ports,
+            apps[1].ports,
             [80, 8080].map(|port| Port {
                 transport: Transport::Tcp,
                 port
@@ -589,6 +591,19 @@ mod tests {
         assert_eq!(third.epoch, 3);
         assert!(third.members[0].apps[0].ready);
         assert_eq!(third.member_by_id(&local.own).map(|m| m.slot), Some(SLOT));
+        endpoints.send_replace(vec![endpoint(&config, "web-1", true, true)]);
+        let draining = next(&mut publishing, &mut lists).await;
+        assert_eq!(draining.epoch, 4);
+        let [copy] = draining.members[0].apps.as_slice() else {
+            panic!("draining must preserve network admission");
+        };
+        assert!(!copy.ready);
+        assert!(!copy.open);
+        assert!(copy.ports.is_empty());
+        endpoints.send_replace(Vec::new());
+        let stopped = next(&mut publishing, &mut lists).await;
+        assert_eq!(stopped.epoch, 5);
+        assert!(stopped.members[0].apps.is_empty());
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

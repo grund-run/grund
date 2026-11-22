@@ -294,6 +294,11 @@ waiting for health and drain before the next. A single-copy app warns about
 possible interruption when a replacement cannot run alongside it. Stateful
 workloads keep their machine and volume fencing.
 
+A stopping copy leaves private DNS and new gate traffic at drain start. Its
+private address, routes and outbound connections remain usable until its process
+exits or its configured `stop.grace` expires, whichever comes first. It can finish
+a database query or open another outbound connection during that grace.
+
 **HTTPS.** With `GRUND_DOMAIN` set, grund terminates TLS itself on 443, with
 no proxy in front. It orders the certificate by ACME from Let's Encrypt
 (`GRUND_ACME_DIRECTORY` names another CA), proving the name with

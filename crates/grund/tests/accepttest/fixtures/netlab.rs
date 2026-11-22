@@ -22,6 +22,7 @@ const TOPOLOGY: &str = r#"
 set -euo pipefail
 W=$1
 T=$2
+NAT=$3
 mkdir -p "$W/ns"
 mk() {
   if [ "${2:-}" = own-mounts ]; then
@@ -75,12 +76,21 @@ mk lh
 plug lh 198.51.100.1/24
 for side in a:1:11 b:2:12; do
   IFS=: read -r n i pub <<<"$side"
-  mk "r$n"
-  mk "$n" own-mounts
-  plug "r$n" "198.51.100.$pub/24"
-  link "r$n" lan "10.$i.0.1/24" "$n" eth0 "10.$i.0.2/24"
-  nsx "$n" ip route add default via "10.$i.0.1"
-  nat_router "r$n"
+  if [ "$NAT" = 1 ]; then
+    mk "r$n"
+    mk "$n" own-mounts
+    plug "r$n" "198.51.100.$pub/24"
+    link "r$n" lan "10.$i.0.1/24" "$n" eth0 "10.$i.0.2/24"
+    nsx "$n" ip route add default via "10.$i.0.1"
+    nat_router "r$n"
+  else
+    mk "$n" own-mounts
+    plug "$n" "198.51.100.$pub/24"
+    nsx "$n" ip link set wan down
+    nsx "$n" ip link set wan name eth0
+    nsx "$n" ip link set eth0 up
+    nsx "$n" ip route add default via 198.51.100.1 dev eth0
+  fi
 done
 mk rl1
 plug rl1 198.51.100.2/24
@@ -132,6 +142,14 @@ pub fn lab_binary() -> PathBuf {
 
 impl Lab {
     pub async fn start() -> anyhow::Result<Option<Arc<Self>>> {
+        Self::start_with_nat(true).await
+    }
+
+    pub async fn start_routed() -> anyhow::Result<Option<Arc<Self>>> {
+        Self::start_with_nat(false).await
+    }
+
+    async fn start_with_nat(nat: bool) -> anyhow::Result<Option<Arc<Self>>> {
         if std::env::var("GRUND_ACCEPT_NETLAB").ok().as_deref() != Some("1") {
             eprintln!("skipped: the network lab runs only with GRUND_ACCEPT_NETLAB=1");
             return Ok(None);
@@ -147,7 +165,7 @@ impl Lab {
             "build it first: cargo build -p grund-net --bins ({})",
             lab_bin.display()
         );
-        let work = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("nl-{}", random_hex(4)));
+        let work = std::env::temp_dir().join(format!("grund-nl-{}", random_hex(8)));
         std::fs::create_dir_all(work.join("pg"))?;
         let mut lab = Self {
             ca: work.join("ca.crt"),
@@ -179,6 +197,7 @@ impl Lab {
             .args(["bash", "-c", TOPOLOGY, "topology"])
             .arg(&lab.work)
             .arg(std::process::id().to_string())
+            .arg(if nat { "1" } else { "0" })
             .stdout(Stdio::from(log.try_clone()?))
             .stderr(Stdio::from(log))
             .spawn()

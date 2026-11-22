@@ -1562,10 +1562,14 @@ async fn a_revocation_reaches_a_member_that_cannot_reach_grund_through_the_membe
 }
 
 async fn a_lab_with_registry() -> anyhow::Result<Option<(Net, FakeRegistry)>> {
-    let registry = FakeRegistry::start().await?;
     let Some(lab) = Lab::start().await? else {
         return Ok(None);
     };
+    a_lab_with_registry_in(lab).await
+}
+
+async fn a_lab_with_registry_in(lab: Arc<Lab>) -> anyhow::Result<Option<(Net, FakeRegistry)>> {
+    let registry = FakeRegistry::start().await?;
     lab.bridge_into("lh", &registry.host, &registry.host, "registry")?;
     let host = registry.host.clone();
     let Some(net) = a_lab_with(lab, &[("GRUND_INSECURE_REGISTRIES", &host)]).await? else {
@@ -1610,6 +1614,22 @@ impl Net {
         listen: &[u16],
         env: &[(&str, &str)],
     ) -> anyhow::Result<()> {
+        self.deploy_with_grace(registry, name, machines, copies, declared, listen, env, 1)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn deploy_with_grace(
+        &self,
+        registry: &FakeRegistry,
+        name: &str,
+        machines: &[&str],
+        copies: u32,
+        declared: &[u16],
+        listen: &[u16],
+        env: &[(&str, &str)],
+        grace_seconds: u32,
+    ) -> anyhow::Result<()> {
         registry.publish(&format!("acme/{name}"), "1");
         self.apps(
             "CreateApp",
@@ -1639,7 +1659,7 @@ impl Net {
                 "resources": {"memoryMib": "64", "cpuMillis": 100},
                 "env": env,
                 "check": {"httpPath": "/", "intervalMs": 1000, "timeoutMs": 800},
-                "stop": {"graceSeconds": 1},
+                "stop": {"graceSeconds": grace_seconds},
             }}),
         )
         .await?;
@@ -1827,6 +1847,248 @@ async fn an_app_on_one_machine_is_reached_by_name_from_a_member_behind_another_n
     eprintln!(
         "by name after {by_name:?}; {address} answers on 8080 only; egress to {PUBLIC_URL} 200, UDP echoed"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_draining_replica_finishes_its_postgres_query_and_connects_again_until_exit_or_grace()
+-> anyhow::Result<()> {
+    use std::{io::Write, os::unix::fs::OpenOptionsExt};
+
+    let Some(lab) = Lab::start_routed().await? else {
+        return Ok(());
+    };
+    let Some((net, registry)) = a_lab_with_registry_in(lab).await? else {
+        return Ok(());
+    };
+    for tool in ["psql", "python3", "dig"] {
+        anyhow::ensure!(
+            net.lab
+                .succeeds("a", &["sh", "-c", &format!("command -v {tool}")])
+                .await,
+            "the drain regression needs {tool}"
+        );
+    }
+    let a = net.join("a", "a").await?;
+    let b = net.join("b", "b").await?;
+    let db = net
+        .an_app(&registry, "db", &["b"], 1, &[8080, 5432], &[8080])
+        .await?;
+    let db_replica = &replica_ids(&db)[0].0;
+    let db_netns = b.dir.join("simulated-containers/netns").join(db_replica);
+    net.lab.spawn(
+        "b",
+        &[
+            "nsenter",
+            &format!("--net={}", db_netns.display()),
+            "--",
+            &crate::accepttest::fixtures::netlab::lab_binary().to_string_lossy(),
+            "forward",
+            "--listen",
+            "tcp:[::]:5432",
+            "--to",
+            &format!("unix:{}", net.lab.work.join("pg/.s.PGSQL.5432").display()),
+        ],
+        &[],
+        "replica-postgres.log",
+    )?;
+    let database_url = std::env::var("GRUND_ACCEPT_DATABASE_URL")
+        .unwrap_or_else(|_| crate::accepttest::fixtures::DEFAULT_DATABASE_URL.into());
+    let url_path = net.lab.work.join("drain-database-url");
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&url_path)?
+        .write_all(database_url.as_bytes())?;
+    let script = net.lab.work.join("draining_postgres.py");
+    std::fs::write(&script, include_str!("fixtures/draining_postgres.py"))?;
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&database_url)
+        .await?;
+    for (name, exits) in [("client-exits", true), ("client-expires", false)] {
+        let state = net.lab.work.join(name);
+        let application_name = format!("grund-drain-{}", random_hex(8));
+        let lock_key = i64::from_str_radix(&random_hex(7), 16)?;
+        let mut blocker = pool.begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(lock_key)
+            .execute(&mut *blocker)
+            .await?;
+        let env = [
+            (
+                "GRUND_SIMULATE_PROCESS",
+                "exec python3 \"$GRUND_DRAIN_SCRIPT\"".to_owned(),
+            ),
+            ("GRUND_DRAIN_SCRIPT", script.to_string_lossy().into_owned()),
+            ("GRUND_DRAIN_STATE", state.to_string_lossy().into_owned()),
+            (
+                "GRUND_DRAIN_DATABASE_URL_FILE",
+                url_path.to_string_lossy().into_owned(),
+            ),
+            ("GRUND_DRAIN_APPLICATION_NAME", application_name.clone()),
+            ("GRUND_DRAIN_LOCK_KEY", lock_key.to_string()),
+            (
+                "GRUND_DRAIN_EXIT",
+                if exits { "yes" } else { "no" }.to_owned(),
+            ),
+        ];
+        let env: Vec<(&str, &str)> = env.iter().map(|(n, v)| (*n, v.as_str())).collect();
+        net.deploy_with_grace(&registry, name, &["a"], 1, &[8080], &[8080], &env, 30)
+            .await?;
+        let url = format!("http://{name}.grund.internal:8080/");
+        let ready = eventually(Duration::from_secs(30), || async {
+            net.fetch(&b, &url).await.is_some()
+        })
+        .await;
+        anyhow::ensure!(
+            ready.is_some(),
+            "{name} never became ready: {}",
+            net.log("agent-a.log")
+        );
+        let app = net
+            .apps("GetApp", json!({"organisation": net.owner, "name": name}))
+            .await?;
+        let replica = replica_ids(&app["app"])[0].0.clone();
+        let address = grund_net::membership::replica_address(a.address(), a.slot(), &replica);
+        let waiting = eventually(Duration::from_secs(20), || async {
+            sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity \
+                 WHERE application_name = $1 AND wait_event_type = 'Lock' AND wait_event = 'advisory')"
+            )
+            .bind(&application_name)
+            .fetch_one(&pool)
+            .await
+            .unwrap_or(false)
+        }).await;
+        anyhow::ensure!(
+            waiting.is_some(),
+            "{name} never held an in-flight PostgreSQL query: {}",
+            std::fs::read_to_string(state.join("error")).unwrap_or_default()
+        );
+        net.apps(
+            "Deploy",
+            json!({"organisation": net.owner, "name": name, "spec": {
+                "image": registry.image(&format!("acme/{name}"), "1"),
+                "ports": [{"name": "p0", "port": 8080}],
+                "resources": {"memoryMib": "64", "cpuMillis": 100},
+                "env": [{"name": "GRUND_SIMULATE_LISTEN", "value": "8080"}],
+                "check": {"httpPath": "/", "intervalMs": 1000, "timeoutMs": 800},
+                "stop": {"graceSeconds": 30},
+            }}),
+        )
+        .await?;
+        let signalled = eventually(Duration::from_secs(30), || async {
+            state.join("sigterm").exists()
+        })
+        .await;
+        anyhow::ensure!(
+            signalled.is_some(),
+            "{name} never received SIGTERM: {}",
+            net.log("agent-a.log")
+        );
+        let grace_started = Instant::now();
+        let named = format!("{name}.grund.internal");
+        let resolver = format!("@{}", b.resolver());
+        let withdrawn = eventually(Duration::from_secs(5), || async {
+            net.lab
+                .run_async(
+                    "b",
+                    &[
+                        "dig", "+short", "+time=1", "+tries=1", "AAAA", &named, &resolver,
+                    ],
+                )
+                .await
+                .is_ok_and(|out| {
+                    out.status.success()
+                        && !String::from_utf8_lossy(&out.stdout)
+                            .lines()
+                            .filter_map(|line| line.parse::<Ipv6Addr>().ok())
+                            .any(|answer| answer == address)
+                })
+        })
+        .await;
+        anyhow::ensure!(
+            withdrawn.is_some(),
+            "DNS still advertises draining {replica} at {address}"
+        );
+        blocker.commit().await?;
+        let finished = eventually(Duration::from_secs(10), || async {
+            state.join("in-flight-finished").exists()
+                && state.join("new-outbound-finished").exists()
+        })
+        .await;
+        anyhow::ensure!(
+            finished.is_some(),
+            "{name}: the query or fresh outbound PostgreSQL connection failed after SIGTERM; \
+             query_finished={}, new_connection_finished={}, error={}\na={}\nb={}",
+            state.join("in-flight-finished").exists(),
+            state.join("new-outbound-finished").exists(),
+            std::fs::read_to_string(state.join("error")).unwrap_or_default(),
+            a.status(),
+            b.status(),
+        );
+        let netns = a.dir.join("simulated-containers/netns").join(&replica);
+        anyhow::ensure!(
+            grace_started.elapsed() < Duration::from_secs(20) && netns.exists(),
+            "PostgreSQL succeeded only after {replica}'s grace ended"
+        );
+        if exits {
+            std::fs::write(state.join("exit"), "")?;
+        }
+        let cleaned = eventually(Duration::from_secs(if exits { 10 } else { 40 }), || async {
+            !netns.exists() && !a.status()["replicas"].to_string().contains(&replica)
+        })
+        .await;
+        anyhow::ensure!(
+            cleaned.is_some(),
+            "{replica} retained its namespace or address: {}",
+            a.status()
+        );
+        if exits {
+            anyhow::ensure!(
+                state.join("exited").exists(),
+                "{replica} did not exit gracefully"
+            );
+        } else {
+            anyhow::ensure!(
+                grace_started.elapsed() >= Duration::from_secs(25)
+                    && !state.join("exited").exists(),
+                "{replica} was removed before stop.grace expired"
+            );
+        }
+        let route = net
+            .lab
+            .run_async(
+                "a",
+                &[
+                    "ip",
+                    "-6",
+                    "route",
+                    "show",
+                    "exact",
+                    &format!("{address}/128"),
+                ],
+            )
+            .await?;
+        anyhow::ensure!(
+            route.status.success() && route.stdout.is_empty(),
+            "{replica}'s route survived process teardown: {route:?}"
+        );
+        anyhow::ensure!(
+            net.fetch(&b, &format!("http://[{address}]:8080/"))
+                .await
+                .is_none(),
+            "the removed replica still accepts connections at {address}"
+        );
+        eprintln!(
+            "{name}: PostgreSQL query and fresh connection completed after SIGTERM in {:?}; \
+             DNS withdrawn in {withdrawn:?}, cleanup in {cleaned:?}",
+            finished.unwrap()
+        );
+    }
+    pool.close().await;
     Ok(())
 }
 
