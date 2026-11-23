@@ -161,18 +161,6 @@ async fn two_public_stack_services_keep_their_bound_domains_after_a_rerelease() 
                 .ok_or_else(|| anyhow::anyhow!("missing service {name}: {initial}"))
         })
         .collect::<anyhow::Result<_>>()?;
-    let domains = [a_custom_name(), a_custom_name()];
-    for (name, app) in domains.iter().zip(&names) {
-        verified(&edge, when, then, org, name).await?;
-        let answer = domain_call(
-            when,
-            then,
-            "BindDomain",
-            json!({"organisation": org, "name": name, "app": app}),
-        )
-        .await?;
-        anyhow::ensure!(answer.0 == 200, "bind stack member: {}", answer.1);
-    }
     let wait_ready = async || -> anyhow::Result<Value> {
         let started = Instant::now();
         loop {
@@ -198,6 +186,18 @@ async fn two_public_stack_services_keep_their_bound_domains_after_a_rerelease() 
         }
     };
     let mut current = wait_ready().await?;
+    let domains = [a_custom_name(), a_custom_name()];
+    for (name, app) in domains.iter().zip(&names) {
+        verified(&edge, when, then, org, name).await?;
+        let answer = domain_call(
+            when,
+            then,
+            "BindDomain",
+            json!({"organisation": org, "name": name, "app": app}),
+        )
+        .await?;
+        anyhow::ensure!(answer.0 == 200, "bind stack member: {}", answer.1);
+    }
     for (image, key) in [(&first_image, "publish"), (&updated_image, "rerelease")] {
         let mut request = deploy(yaml(image, true), key);
         request["expectedVersion"] = current["version"].clone();
