@@ -945,6 +945,9 @@
       "additionalProperties": false,
       "description": "Catalogue-specific options; omitted options preserve the template's defaults.",
       "properties": {
+        "admin": {
+          "type": "boolean"
+        },
         "jetstream": {
           "default": false,
           "type": "boolean"

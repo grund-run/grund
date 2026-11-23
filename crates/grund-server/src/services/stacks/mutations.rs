@@ -190,7 +190,12 @@ impl Stacks {
             if revision.services[&secret.service]
                 .template
                 .as_deref()
-                .and_then(grund_domain::app::templates::find)
+                .and_then(|id| {
+                    grund_domain::app::templates::resolve(
+                        id,
+                        definition.services[&secret.service].settings.as_ref(),
+                    )
+                })
                 .is_some_and(|template| {
                     template.secret_variables.iter().any(|variable| {
                         crate::services::apps::secret_name_for(variable) == secret.name
@@ -219,7 +224,7 @@ impl Stacks {
             }
         }
         let sealing = key(&self.state);
-        for (name, service) in &revision.services {
+        for (name, service) in &mut revision.services {
             let existing = work.load_app(service.app_id).await?;
             if existing.exists && existing.stack_owner != Some(id) {
                 return Err(Error::Owned);
@@ -274,12 +279,12 @@ impl Stacks {
             let template = service.template.as_deref().and_then(|id| {
                 grund_domain::app::templates::resolve(
                     id,
-                    definition.services[name]
-                        .settings
-                        .as_ref()
-                        .is_some_and(|s| s.jetstream),
+                    definition.services[name].settings.as_ref(),
                 )
             });
+            if let Some(template) = template {
+                reuse_template_credential_pins(name, service, template, &previous.revisions);
+            }
             for secret in &service.release.spec.secrets {
                 let generated = template.is_some_and(|template| {
                     template.secret_variables.iter().any(|variable| {
@@ -296,7 +301,17 @@ impl Stacks {
                     continue;
                 }
                 if generated
-                    && template.is_some_and(|t| t.family == "nats")
+                    && !previous.revisions.values().any(|revision| {
+                        revision.services.get(name).is_some_and(|prior| {
+                            prior.app_id == service.app_id
+                                && prior
+                                    .release
+                                    .spec
+                                    .secrets
+                                    .iter()
+                                    .any(|binding| binding.env == secret.env)
+                        })
+                    })
                     && !service
                         .release
                         .secret_versions
@@ -448,10 +463,7 @@ impl Stacks {
                 if let Some(template) = service.template.as_deref().and_then(|id| {
                     grund_domain::app::templates::resolve(
                         id,
-                        definition.services[name]
-                            .settings
-                            .as_ref()
-                            .is_some_and(|s| s.jetstream),
+                        definition.services[name].settings.as_ref(),
                     )
                 }) {
                     service.release.secret_versions.extend(
@@ -474,32 +486,22 @@ impl Stacks {
                 && let Some(template) = service.template.as_deref().and_then(|id| {
                     grund_domain::app::templates::resolve(
                         id,
-                        definition.services[name]
-                            .settings
-                            .as_ref()
-                            .is_some_and(|s| s.jetstream),
+                        definition.services[name].settings.as_ref(),
                     )
                 })
-                && template.family == "nats"
-                && !template.secret_variables.is_empty()
-                && !service
-                    .release
-                    .secret_versions
-                    .iter()
-                    .any(|v| v.name == "nats-auth-token")
             {
-                service.release.secret_versions.extend(
-                    crate::services::apps::generate_template_credentials_in(
-                        &mut work,
-                        &sealing,
-                        actor,
-                        org,
-                        service.app_id,
-                        template,
-                    )
-                    .await
-                    .map_err(anyhow::Error::from)?,
-                );
+                let generated = crate::services::apps::generate_missing_template_credentials_in(
+                    &mut work,
+                    &sealing,
+                    actor,
+                    org,
+                    service.app_id,
+                    template,
+                    &service.release.secret_versions,
+                )
+                .await
+                .map_err(anyhow::Error::from)?;
+                service.release.secret_versions.extend(generated);
             }
             if existing.deleted {
                 self.restore_child(
@@ -558,14 +560,10 @@ impl Stacks {
         for name in order(&revision)? {
             let service_definition = &definition.services[&name];
             let template = match &service_definition.template {
-                Some(id) => grund_domain::app::templates::resolve(
-                    id,
-                    service_definition
-                        .settings
-                        .as_ref()
-                        .is_some_and(|s| s.jetstream),
-                )
-                .and_then(|t| t.spec(false)),
+                Some(id) => {
+                    grund_domain::app::templates::resolve(id, service_definition.settings.as_ref())
+                        .and_then(|t| t.spec(false))
+                }
                 None => None,
             };
             let (_, _, refs) = definition.service(&name, template)?;
@@ -790,7 +788,7 @@ impl Stacks {
                 .map(|p| p.port.to_string())
                 .ok_or_else(|| invalid("env", "producer exports no port"));
         }
-        if output != "url" {
+        if output != "url" && output != "admin_url" {
             return Err(invalid("env", "producer does not export that output"));
         }
         let port = ports
@@ -800,6 +798,12 @@ impl Stacks {
             .template
             .as_deref()
             .and_then(grund_domain::app::templates::family);
+        if output == "admin_url" && !exports_admin_url(producer) {
+            return Err(invalid(
+                "env",
+                "admin_url requires a ClickHouse producer with settings.admin enabled",
+            ));
+        }
         if family == Some("nats") && producer.release.spec.volumes.is_empty() {
             return Err(invalid("env", "a NATS URL requires settings.jetstream"));
         }
@@ -812,13 +816,21 @@ impl Stacks {
             Some("postgres") => ("postgresql", "POSTGRES_PASSWORD", 5432, "grund", "grund"),
             Some("redis") => ("redis", "REDIS_PASSWORD", 6379, "", "0"),
             Some("nats") => ("nats", "NATS_AUTH_TOKEN", 4222, "", ""),
+            Some("clickhouse") if output == "admin_url" => {
+                ("http", "CLICKHOUSE_ADMIN_PASSWORD", 8123, "", "grund")
+            }
             Some("clickhouse") => ("http", "CLICKHOUSE_PASSWORD", 8123, "", "grund"),
             _ => return Err(invalid("env", "template URL unavailable")),
         };
         let password = Self::credential(work, sealing, producer, variable).await?;
         let generated_user;
         let user = if family == Some("clickhouse") {
-            generated_user = Self::credential(work, sealing, producer, "CLICKHOUSE_USER").await?;
+            let variable = if output == "admin_url" {
+                "CLICKHOUSE_ADMIN_USER"
+            } else {
+                "CLICKHOUSE_USER"
+            };
+            generated_user = Self::credential(work, sealing, producer, variable).await?;
             generated_user.as_str()
         } else {
             user
@@ -1189,6 +1201,45 @@ impl Stacks {
     }
 }
 
+fn reuse_template_credential_pins(
+    name: &str,
+    service: &mut Service,
+    template: &grund_domain::app::templates::Template,
+    revisions: &BTreeMap<u32, Revision>,
+) {
+    for variable in template.secret_variables {
+        let secret_name = crate::services::apps::secret_name_for(variable);
+        if service
+            .release
+            .secret_versions
+            .iter()
+            .any(|pin| pin.name == secret_name)
+        {
+            continue;
+        }
+        if let Some(pin) = revisions.values().rev().find_map(|revision| {
+            let prior = revision.services.get(name)?;
+            if prior.app_id != service.app_id
+                || !prior
+                    .release
+                    .spec
+                    .secrets
+                    .iter()
+                    .any(|binding| binding.env == *variable && binding.secret == secret_name)
+            {
+                return None;
+            }
+            prior
+                .release
+                .secret_versions
+                .iter()
+                .find(|pin| pin.name == secret_name)
+        }) {
+            service.release.secret_versions.push(pin.clone());
+        }
+    }
+}
+
 fn deletion_order(state: &Stack) -> Result<Vec<String>, Error> {
     let mut services = BTreeMap::new();
     for revision in state.revisions.values().rev() {
@@ -1252,6 +1303,336 @@ mod tests {
         volume::VolumeCommand,
     };
     use std::sync::Arc;
+
+    #[sqlx::test(migrations = false)]
+    async fn supplied_secrets_cannot_replace_generated_clickhouse_admin_credentials(
+        pool: sqlx::PgPool,
+    ) -> anyhow::Result<()> {
+        let state = state(pool).await?;
+        let bundle = bundle(&state, false).await?;
+        let mut work = Work::begin(&state.events, Uuid::now_v7(), "test").await?;
+        work.allow_stack(bundle.id);
+        work.stack(
+            bundle.id,
+            Command::Complete {
+                operation_id: bundle.former.id,
+                applied_revision: 1,
+                status: Status::Ready,
+                purge_after: None,
+                failure: None,
+            },
+        )
+        .await?;
+        let mut revision = work.load_stack(bundle.id).await?.revisions[&1].clone();
+        revision.number = 2;
+        revision.yaml = revision.yaml.replace(
+            "      image: redis\n      restart: exclusive\n    consumer:",
+            "      template: clickhouse\n      settings: {admin: true}\n      restart: exclusive\n    consumer:",
+        );
+        let definition = stack::parse(&revision.yaml)?;
+        let template = grund_domain::app::templates::resolve(
+            "clickhouse",
+            definition.services["producer"].settings.as_ref(),
+        )
+        .unwrap();
+        let producer = revision.services.get_mut("producer").unwrap();
+        producer.template = Some("clickhouse".into());
+        producer.release.spec = expand_service(&definition, "producer", Some(template), None)?.0;
+        let operation = operation(Kind::Deploy, 2, 1, vec!["producer".into()], Utc::now());
+        work.stack(
+            bundle.id,
+            Command::Revise {
+                revision: revision.clone(),
+                operation: operation.clone(),
+            },
+        )
+        .await?;
+        work.stack(
+            bundle.id,
+            Command::Complete {
+                operation_id: operation.id,
+                applied_revision: 2,
+                status: Status::Ready,
+                purge_after: None,
+                failure: None,
+            },
+        )
+        .await?;
+        work.commit().await?;
+        let row = store::get(&state.pool, bundle.org, bundle.id)
+            .await?
+            .unwrap();
+        for name in ["clickhouse-admin-user", "clickhouse-admin-password"] {
+            assert!(matches!(
+                state.stacks().deploy(
+                    Uuid::nil(), bundle.org, &revision.yaml, Some("producer"), None,
+                    Some(row.stream_version), &Uuid::now_v7().to_string(),
+                    vec![InputSecret { service: "producer".into(), name: name.into(), value: "supplied".into() }],
+                    Vec::new(), None,
+                ).await,
+                Err(Error::Invalid(SpecError { problem, .. }))
+                    if problem == "template credentials cannot be supplied"
+            ));
+        }
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn preview_and_deploy_refuse_admin_urls_without_an_enabled_clickhouse_producer(
+        pool: sqlx::PgPool,
+    ) -> anyhow::Result<()> {
+        let state = state(pool).await?;
+        let stacks = state.stacks();
+        let org = Uuid::now_v7();
+        for producer in [
+            "template: clickhouse",
+            "template: clickhouse\n      settings: {admin: false}",
+            "template: redis",
+            "image: redis",
+        ] {
+            let yaml = format!(
+                "stack:\n  name: admin-refusal\n  services:\n    consumer:\n      image: redis\n      depends_on: [producer]\n      env:\n        ADMIN_URL: '${{{{ producer.admin_url }}}}'\n    producer:\n      {producer}\n"
+            );
+            assert!(matches!(
+                stacks.preview(org, &yaml, None, None, None).await,
+                Err(Error::Invalid(SpecError { problem, .. }))
+                    if problem.contains("admin_url requires")
+            ));
+            assert!(matches!(
+                stacks
+                    .deploy(
+                        Uuid::nil(), org, &yaml, None, None, None,
+                        &Uuid::now_v7().to_string(), Vec::new(), Vec::new(), None,
+                    )
+                    .await,
+                Err(Error::Invalid(SpecError { problem, .. }))
+                    if problem.contains("admin_url requires")
+            ));
+        }
+        assert!(
+            store::by_name(&state.pool, org, "admin-refusal")
+                .await?
+                .is_none()
+        );
+        assert!(apps::organisation_apps(&state.pool, org).await?.is_empty());
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn clickhouse_admin_toggles_reuse_pins_without_rotating_the_application_credentials(
+        pool: sqlx::PgPool,
+    ) -> anyhow::Result<()> {
+        let state = state(pool).await?;
+        let bundle = bundle(&state, false).await?;
+        let stacks = state.stacks();
+        let sealing = key(&state);
+        let mut work = Work::begin(&state.events, Uuid::now_v7(), "test").await?;
+        let mut revision = work.load_stack(bundle.id).await?.revisions[&1].clone();
+        let mut producer = revision.services["producer"].clone();
+        producer.template = Some("clickhouse".into());
+        producer.release.secret_versions.clear();
+        let mut revisions = BTreeMap::new();
+        let mut application_url = None;
+        let mut admin_url = None;
+        for (index, enabled) in [false, true, true, false, true].into_iter().enumerate() {
+            let yaml = format!(
+                "stack:\n  name: ordered\n  services:\n    producer:\n      template: clickhouse\n      settings: {{admin: {enabled}}}\n"
+            );
+            let definition = stack::parse(&yaml)?;
+            let template = grund_domain::app::templates::resolve(
+                "clickhouse",
+                definition.services["producer"].settings.as_ref(),
+            )
+            .unwrap();
+            let (spec, _, _) =
+                expand_service(&definition, "producer", Some(template), Some(&producer))?;
+            producer.release.spec = spec;
+            reuse_template_credential_pins("producer", &mut producer, template, &revisions);
+            let generated = crate::services::apps::generate_missing_template_credentials_in(
+                &mut work,
+                &sealing,
+                Uuid::nil(),
+                bundle.org,
+                bundle.producer,
+                template,
+                &producer.release.secret_versions,
+            )
+            .await?;
+            assert_eq!(generated.len(), if index < 2 { 2 } else { 0 });
+            producer.release.secret_versions.extend(generated);
+            producer.release.secret_versions.retain(|pin| {
+                producer
+                    .release
+                    .spec
+                    .secrets
+                    .iter()
+                    .any(|binding| binding.secret == pin.name)
+            });
+            assert_eq!(
+                producer.release.secret_versions.len(),
+                if enabled { 4 } else { 2 }
+            );
+            assert!(
+                producer
+                    .release
+                    .secret_versions
+                    .iter()
+                    .all(|pin| pin.version == 1)
+            );
+            let url = stacks
+                .output(&mut work, &sealing, "ordered", &producer, "producer", "url")
+                .await?;
+            if let Some(expected) = &application_url {
+                assert!(
+                    &url == expected,
+                    "the ordinary URL must survive every admin toggle"
+                );
+            } else {
+                application_url = Some(url.clone());
+            }
+            let url = reqwest::Url::parse(&url)?;
+            assert!(url.scheme() == "http" && url.port() == Some(8123));
+            assert!(url.path() == "/" && url.query() == Some("database=grund"));
+            let output = stacks
+                .output(
+                    &mut work,
+                    &sealing,
+                    "ordered",
+                    &producer,
+                    "producer",
+                    "admin_url",
+                )
+                .await;
+            if enabled {
+                let output = output?;
+                if let Some(expected) = &admin_url {
+                    assert!(
+                        &output == expected,
+                        "re-enabling admin must reuse its original credentials"
+                    );
+                } else {
+                    admin_url = Some(output.clone());
+                }
+                let admin = reqwest::Url::parse(&output)?;
+                assert!(admin.username().starts_with("grund_"));
+                assert!(
+                    admin
+                        .username()
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                );
+                assert!(admin.username() != url.username());
+                assert!(admin.password() != url.password());
+                assert!(admin.scheme() == url.scheme() && admin.host() == url.host());
+                assert!(
+                    admin.port() == url.port()
+                        && admin.path() == url.path()
+                        && admin.query() == url.query()
+                );
+                for variable in ["CLICKHOUSE_ADMIN_USER", "CLICKHOUSE_ADMIN_PASSWORD"] {
+                    let mut missing = producer.clone();
+                    missing
+                        .release
+                        .spec
+                        .secrets
+                        .retain(|binding| binding.env != variable);
+                    assert!(matches!(
+                        stacks
+                            .output(
+                                &mut work,
+                                &sealing,
+                                "ordered",
+                                &missing,
+                                "producer",
+                                "admin_url"
+                            )
+                            .await,
+                        Err(Error::Invalid(_))
+                    ));
+                    let mut missing = producer.clone();
+                    let name = crate::services::apps::secret_name_for(variable);
+                    missing
+                        .release
+                        .secret_versions
+                        .retain(|pin| pin.name != name);
+                    assert!(matches!(
+                        stacks
+                            .output(
+                                &mut work,
+                                &sealing,
+                                "ordered",
+                                &missing,
+                                "producer",
+                                "admin_url"
+                            )
+                            .await,
+                        Err(Error::Invalid(_))
+                    ));
+                }
+            } else {
+                assert!(matches!(output, Err(Error::Invalid(_))));
+            }
+            revision.number = index as u32 + 1;
+            revision
+                .services
+                .insert("producer".into(), producer.clone());
+            revisions.insert(revision.number, revision.clone());
+        }
+        let counts: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT name,count(*) FROM grund_app_secrets WHERE organisation_id=$1 AND app_id=$2 GROUP BY name ORDER BY name",
+        )
+        .bind(bundle.org)
+        .bind(bundle.producer)
+        .fetch_all(&mut **work.sql())
+        .await?;
+        assert_eq!(counts.len(), 4);
+        assert!(counts.iter().all(|(_, count)| *count == 1));
+        crate::services::apps::generate_template_credentials_in(
+            &mut work,
+            &sealing,
+            Uuid::nil(),
+            bundle.org,
+            bundle.producer,
+            grund_domain::app::templates::resolve(
+                "clickhouse",
+                Some(&grund_config::stack::TemplateSettings {
+                    admin: true,
+                    ..Default::default()
+                }),
+            )
+            .unwrap(),
+        )
+        .await?;
+        assert!(
+            stacks
+                .output(
+                    &mut work,
+                    &sealing,
+                    "ordered",
+                    &producer,
+                    "producer",
+                    "admin_url"
+                )
+                .await?
+                == admin_url.unwrap(),
+            "admin output must use its release pins, not newer stored values"
+        );
+        producer.template = Some("redis".into());
+        assert!(matches!(
+            stacks
+                .output(
+                    &mut work,
+                    &sealing,
+                    "ordered",
+                    &producer,
+                    "producer",
+                    "admin_url"
+                )
+                .await,
+            Err(Error::Invalid(_))
+        ));
+        Ok(())
+    }
 
     #[derive(Parser)]
     struct TestConfig {
@@ -4133,7 +4514,11 @@ mod tests {
         let mut work = Work::begin(&state.events, Uuid::now_v7(), "test").await?;
         work.allow_stack(bundle.id);
         for family in ["nats", "clickhouse"] {
-            let template = grund_domain::app::templates::resolve(family, true).unwrap();
+            let settings = grund_config::stack::TemplateSettings {
+                jetstream: family == "nats",
+                ..Default::default()
+            };
+            let template = grund_domain::app::templates::resolve(family, Some(&settings)).unwrap();
             let mut producer =
                 work.load_stack(bundle.id).await?.revisions[&1].services["producer"].clone();
             producer.template = Some(family.into());

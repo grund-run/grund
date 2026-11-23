@@ -453,17 +453,14 @@ impl Stacks {
                 .template
                 .as_deref()
                 .map(|id| {
-                    grund_domain::app::templates::resolve(
-                        id,
-                        service.settings.as_ref().is_some_and(|s| s.jetstream),
-                    )
-                    .filter(|template| template.unavailable.is_none())
-                    .ok_or_else(|| {
-                        invalid(
-                            format!("stack.services.{name}.template"),
-                            "template is unavailable",
-                        )
-                    })
+                    grund_domain::app::templates::resolve(id, service.settings.as_ref())
+                        .filter(|template| template.unavailable.is_none())
+                        .ok_or_else(|| {
+                            invalid(
+                                format!("stack.services.{name}.template"),
+                                "template is unavailable",
+                            )
+                        })
                 })
                 .transpose()?;
             if prior.is_some_and(|prior| {
@@ -490,11 +487,15 @@ impl Stacks {
             if let Some(current) = current
                 && (selected.is_some_and(|s| s != name) || unchanged_template)
             {
+                let (_, _, refs) = definition
+                    .service(name, catalogue.and_then(|template| template.spec(false)))?;
+                validate_admin_references(&definition, name, &refs)?;
                 revision.services.insert(name.clone(), current.clone());
                 continue;
             }
             let (mut spec, mut settings, refs) =
                 expand_service(&definition, name, catalogue, prior)?;
+            validate_admin_references(&definition, name, &refs)?;
             if let Some(volume) = self
                 .selected_data_volume(
                     &mut *self.state.pool.acquire().await?,
@@ -561,10 +562,7 @@ impl Stacks {
                 }
                 if reference.output == "url"
                     && let Some(template) = producer.template.as_deref().and_then(|id| {
-                        grund_domain::app::templates::resolve(
-                            id,
-                            producer.settings.as_ref().is_some_and(|s| s.jetstream),
-                        )
+                        grund_domain::app::templates::resolve(id, producer.settings.as_ref())
                     })
                     && !matches!(template.family, "postgres" | "redis")
                     && template
@@ -707,10 +705,7 @@ impl Stacks {
                     if let Some(template) = service.template.as_deref().and_then(|id| {
                         grund_domain::app::templates::resolve(
                             id,
-                            definition.services[name]
-                                .settings
-                                .as_ref()
-                                .is_some_and(|s| s.jetstream),
+                            definition.services[name].settings.as_ref(),
                         )
                     }) && let Some(storage) = template.storage
                     {
@@ -1003,12 +998,7 @@ impl Stacks {
         let storage = definition
             .template
             .as_deref()
-            .and_then(|id| {
-                grund_domain::app::templates::resolve(
-                    id,
-                    definition.settings.as_ref().is_some_and(|s| s.jetstream),
-                )
-            })
+            .and_then(|id| grund_domain::app::templates::resolve(id, definition.settings.as_ref()))
             .and_then(|template| template.storage)
             .ok_or_else(|| invalid(&field, "only a stateful template can select a data volume"))?;
         let prior =
@@ -1384,6 +1374,51 @@ fn volume_intent(
     }
 }
 
+fn validate_admin_references(
+    definition: &Definition,
+    name: &str,
+    refs: &[stack::ConnectionRef],
+) -> Result<(), Error> {
+    for reference in refs {
+        if reference.output != "admin_url" {
+            continue;
+        }
+        let producer = &definition.services[&reference.service];
+        if producer
+            .template
+            .as_deref()
+            .and_then(grund_domain::app::templates::family)
+            != Some("clickhouse")
+            || !producer
+                .settings
+                .as_ref()
+                .is_some_and(|settings| settings.admin)
+        {
+            return Err(invalid(
+                format!("stack.services.{name}.env.{}", reference.env),
+                "admin_url requires a ClickHouse producer with settings.admin enabled",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn exports_admin_url(producer: &Service) -> bool {
+    producer
+        .template
+        .as_deref()
+        .and_then(grund_domain::app::templates::family)
+        == Some("clickhouse")
+        && ["CLICKHOUSE_ADMIN_USER", "CLICKHOUSE_ADMIN_PASSWORD"]
+            .iter()
+            .all(|variable| {
+                producer.release.spec.secrets.iter().any(|secret| {
+                    secret.env == *variable
+                        && secret.secret == crate::services::apps::secret_name_for(variable)
+                })
+            })
+}
+
 fn expand_service(
     definition: &Definition,
     name: &str,
@@ -1477,17 +1512,56 @@ mod template_settings_tests {
     use super::*;
 
     #[test]
+    fn enabling_clickhouse_admin_binds_only_the_producer_and_consumers_choose_their_output() {
+        let definition = stack::parse(
+            "stack:\n  name: sight\n  services:\n    warehouse:\n      template: clickhouse\n      settings: {admin: true}\n    app:\n      image: redis\n      depends_on: [warehouse]\n      env:\n        DATABASE_URL: '${{ warehouse.url }}'\n    operator:\n      image: redis\n      depends_on: [warehouse]\n      env:\n        ADMIN_URL: '${{ warehouse.admin_url }}'\n    unrelated:\n      image: redis\n",
+        )
+        .unwrap();
+        let template = grund_domain::app::templates::resolve(
+            "clickhouse",
+            definition.services["warehouse"].settings.as_ref(),
+        )
+        .unwrap();
+        let (producer, _, _) =
+            expand_service(&definition, "warehouse", Some(template), None).unwrap();
+        assert_eq!(producer.secrets.len(), 4);
+        for variable in ["CLICKHOUSE_ADMIN_USER", "CLICKHOUSE_ADMIN_PASSWORD"] {
+            assert!(producer.secrets.iter().any(|binding| {
+                binding.env == variable
+                    && binding.secret == crate::services::apps::secret_name_for(variable)
+            }));
+        }
+        for (name, output) in [
+            ("app", Some("url")),
+            ("operator", Some("admin_url")),
+            ("unrelated", None),
+        ] {
+            let (spec, _, refs) = expand_service(&definition, name, None, None).unwrap();
+            validate_admin_references(&definition, name, &refs).unwrap();
+            assert!(spec.secrets.is_empty());
+            assert_eq!(refs.len(), usize::from(output.is_some()));
+            if let Some(output) = output {
+                assert_eq!(refs[0].output, output);
+            }
+        }
+    }
+
+    #[test]
     fn jetstream_is_opt_in_private_and_bounded_by_service_resources() {
         let plain =
             stack::parse("stack:\n  name: sight\n  services:\n    bus:\n      template: nats\n")
                 .unwrap();
-        let catalogue = grund_domain::app::templates::resolve("nats", false).unwrap();
+        let catalogue = grund_domain::app::templates::resolve("nats", None).unwrap();
         let (spec, _, _) = expand_service(&plain, "bus", Some(catalogue), None).unwrap();
         assert!(spec.volumes.is_empty());
         assert!(spec.secrets.is_empty());
         let yaml = "stack:\n  name: sight\n  services:\n    bus:\n      template: nats\n      settings: {jetstream: true}\n      resources: {memory: 512 MiB}\n";
         let definition = stack::parse(yaml).unwrap();
-        let catalogue = grund_domain::app::templates::resolve("nats", true).unwrap();
+        let catalogue = grund_domain::app::templates::resolve(
+            "nats",
+            definition.services["bus"].settings.as_ref(),
+        )
+        .unwrap();
         let (spec, settings, _) =
             expand_service(&definition, "bus", Some(catalogue), None).unwrap();
         assert_eq!(spec.volumes.len(), 1);

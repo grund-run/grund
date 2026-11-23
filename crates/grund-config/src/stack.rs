@@ -90,6 +90,8 @@ pub enum Restart {
 pub struct TemplateSettings {
     #[serde(default)]
     pub jetstream: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub admin: bool,
 }
 
 /// A service reuses the app-file fields, plus dependency and catalogue selection.
@@ -321,11 +323,11 @@ fn reference(env: &str, value: &str, field: &str) -> Result<Option<ConnectionRef
     name(service, field)?;
     if !matches!(
         output,
-        "url" | "host" | "port" | "access_key_id" | "secret_access_key" | "region"
+        "url" | "admin_url" | "host" | "port" | "access_key_id" | "secret_access_key" | "region"
     ) {
         return refuse(
             field,
-            "the connection output must be url, host, port, access_key_id, secret_access_key or region",
+            "the connection output must be url, admin_url, host, port, access_key_id, secret_access_key or region",
         );
     }
     Ok(Some(ConnectionRef {
@@ -349,11 +351,25 @@ impl Service {
         if self.app.image.is_empty() == self.template.is_none() {
             return refuse(field, "give exactly one of image or template");
         }
-        if self.settings.is_some() && self.template.as_deref() != Some("nats") {
-            return refuse(
-                format!("{field}.settings"),
-                "jetstream settings require the NATS template",
-            );
+        if let Some(settings) = &self.settings {
+            if !matches!(self.template.as_deref(), Some("nats" | "clickhouse")) {
+                return refuse(
+                    format!("{field}.settings"),
+                    "settings require the NATS or ClickHouse template",
+                );
+            }
+            if settings.jetstream && self.template.as_deref() != Some("nats") {
+                return refuse(
+                    format!("{field}.settings.jetstream"),
+                    "jetstream requires the NATS template",
+                );
+            }
+            if settings.admin && self.template.as_deref() != Some("clickhouse") {
+                return refuse(
+                    format!("{field}.settings.admin"),
+                    "admin requires the ClickHouse template",
+                );
+            }
         }
         if self
             .template
@@ -793,6 +809,32 @@ mod tests {
             .unwrap(),
             definition
         );
+    }
+
+    #[test]
+    fn admin_requires_clickhouse_and_an_explicit_sibling_dependency() {
+        let text = "stack:\n  name: bootstrap\n  services:\n    clickhouse:\n      template: clickhouse\n      settings: {admin: true}\n    bootstrap:\n      image: nginx\n      depends_on: [clickhouse]\n      env:\n        ADMIN_URL: ${{ clickhouse.admin_url }}\n";
+        let definition = parse(text).unwrap();
+        assert!(
+            definition.services["clickhouse"]
+                .settings
+                .as_ref()
+                .unwrap()
+                .admin
+        );
+        let (spec, _, refs) = definition.service("bootstrap", None).unwrap();
+        assert!(spec.env.is_empty());
+        assert_eq!(refs[0].output, "admin_url");
+        for invalid in [
+            text.replace("template: clickhouse", "template: nats"),
+            text.replace("template: clickhouse", "template: postgres"),
+            text.replace("admin: true", "admin: yes"),
+            text.replace("admin: true", "admn: true"),
+            text.replace("      depends_on: [clickhouse]\n", ""),
+            text.replace("admin: true", "jetstream: true"),
+        ] {
+            assert!(parse(&invalid).is_err());
+        }
     }
 
     #[test]

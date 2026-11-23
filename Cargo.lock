@@ -2019,6 +2019,7 @@ dependencies = [
  "getrandom 0.3.4",
  "grund-agent",
  "grund-cli",
+ "grund-config",
  "grund-containers",
  "grund-crypto",
  "grund-domain",

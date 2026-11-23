@@ -6,6 +6,7 @@ use std::{
     time::Duration,
 };
 
+use grund_config::stack::TemplateSettings;
 use grund_domain::app::templates;
 use serde_json::{Value, json};
 use template_support::{Fixture, Mount};
@@ -14,7 +15,11 @@ use uuid::Uuid;
 #[test]
 #[ignore = "requires Linux bridge access, Docker, and the catalogue's pinned NATS image already provisioned locally"]
 fn jetstream_authenticates_and_keeps_file_messages_after_copy_recreation() {
-    let template = templates::resolve("nats", true).expect("JetStream template exists");
+    let settings = TemplateSettings {
+        jetstream: true,
+        ..TemplateSettings::default()
+    };
+    let template = templates::resolve("nats", Some(&settings)).expect("JetStream template exists");
     let mut fixture = Fixture::new(template, &[]);
     fixture.start(Some(Mount::Writable));
     fixture.wait_until_ready();
@@ -58,8 +63,13 @@ fn jetstream_authenticates_and_keeps_file_messages_after_copy_recreation() {
 #[test]
 #[ignore = "requires Docker and the catalogue's pinned NATS image already provisioned locally"]
 fn jetstream_refuses_a_missing_or_read_only_owned_volume() {
+    let settings = TemplateSettings {
+        jetstream: true,
+        ..TemplateSettings::default()
+    };
     for mount in [None, Some(Mount::ReadOnly)] {
-        let template = templates::resolve("nats", true).expect("JetStream template exists");
+        let template =
+            templates::resolve("nats", Some(&settings)).expect("JetStream template exists");
         let mut fixture = Fixture::new(template, &[]);
         fixture.start(mount);
         fixture.assert_startup_refused();
@@ -69,8 +79,13 @@ fn jetstream_refuses_a_missing_or_read_only_owned_volume() {
 #[test]
 #[ignore = "requires Docker and the catalogue's pinned NATS image already provisioned locally"]
 fn jetstream_refuses_either_missing_store_bound() {
+    let settings = TemplateSettings {
+        jetstream: true,
+        ..TemplateSettings::default()
+    };
     for bound in ["NATS_MAX_MEM", "NATS_MAX_FILE"] {
-        let template = templates::resolve("nats", true).expect("JetStream template exists");
+        let template =
+            templates::resolve("nats", Some(&settings)).expect("JetStream template exists");
         let mut fixture = Fixture::new(template, &[bound]);
         fixture.start(Some(Mount::Writable));
         fixture.assert_startup_refused();

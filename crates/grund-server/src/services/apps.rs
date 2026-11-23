@@ -322,13 +322,28 @@ pub(crate) async fn generate_template_credentials_in(
     app_id: Uuid,
     template: &grund_domain::app::templates::Template,
 ) -> Result<Vec<SecretVersion>, AppsError> {
-    let mut versions = Vec::with_capacity(template.secret_variables.len());
+    generate_missing_template_credentials_in(work, sealing, actor, org, app_id, template, &[]).await
+}
+
+pub(crate) async fn generate_missing_template_credentials_in(
+    work: &mut Work<'_>,
+    sealing: &LessSafeKey,
+    actor: Uuid,
+    org: Uuid,
+    app_id: Uuid,
+    template: &grund_domain::app::templates::Template,
+    pinned: &[SecretVersion],
+) -> Result<Vec<SecretVersion>, AppsError> {
+    let mut versions = Vec::new();
     for variable in template.secret_variables {
         let name = secret_name_for(variable);
+        if pinned.iter().any(|pin| pin.name == name) {
+            continue;
+        }
         let mut bytes = [0u8; 32];
         getrandom::fill(&mut bytes).map_err(anyhow::Error::from)?;
         let mut value = [0u8; 70];
-        let value = if *variable == "CLICKHOUSE_USER" {
+        let value = if matches!(*variable, "CLICKHOUSE_USER" | "CLICKHOUSE_ADMIN_USER") {
             value[..6].copy_from_slice(b"grund_");
             hex::encode_to_slice(bytes, &mut value[6..]).expect("a 32-byte secret is 64 hex bytes");
             &value[..]

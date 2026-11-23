@@ -265,10 +265,40 @@ const NATS_JETSTREAM: Template = Template {
     ..CATALOGUE[0]
 };
 
-/// Resolves the existing NATS template's explicit persistence option.
-pub fn resolve(key: &str, jetstream: bool) -> Option<&'static Template> {
-    if key == "nats" && jetstream {
+const CLICKHOUSE_ADMIN: Template = Template {
+    command: &[
+        "/bin/bash",
+        "-ec",
+        concat!(
+            "eval \"$GRUND_CLICKHOUSE_ADMIN_SETUP\"\n",
+            include_str!("clickhouse-start.sh")
+        ),
+    ],
+    env: &[
+        ("CLICKHOUSE_DB", "grund"),
+        (
+            "GRUND_CLICKHOUSE_ADMIN_SETUP",
+            include_str!("clickhouse-admin.sh"),
+        ),
+    ],
+    secret_variables: &[
+        "CLICKHOUSE_USER",
+        "CLICKHOUSE_PASSWORD",
+        "CLICKHOUSE_ADMIN_USER",
+        "CLICKHOUSE_ADMIN_PASSWORD",
+    ],
+    ..CATALOGUE[7]
+};
+
+/// Resolves explicit catalogue options without changing omitted defaults.
+pub fn resolve(
+    key: &str,
+    settings: Option<&grund_config::stack::TemplateSettings>,
+) -> Option<&'static Template> {
+    if key == "nats" && settings.is_some_and(|s| s.jetstream) {
         Some(&NATS_JETSTREAM)
+    } else if key == "clickhouse" && settings.is_some_and(|s| s.admin) {
+        Some(&CLICKHOUSE_ADMIN)
     } else {
         find(key)
     }
@@ -398,6 +428,35 @@ impl Template {
 mod tests {
     use super::*;
     use grund_config::app::spec::{AppName, ImageReference};
+
+    #[test]
+    fn clickhouse_admin_is_opt_in_and_omission_preserves_the_default_spec_bytes() {
+        let default = find("clickhouse").unwrap();
+        let baseline = serde_json::to_vec(&default.spec(false).unwrap()).unwrap();
+        for settings in [
+            None,
+            Some(&grund_config::stack::TemplateSettings::default()),
+        ] {
+            let resolved = resolve("clickhouse", settings).unwrap();
+            assert_eq!(resolved.secret_variables, default.secret_variables);
+            assert_eq!(
+                serde_json::to_vec(&resolved.spec(false).unwrap()).unwrap(),
+                baseline
+            );
+        }
+        let settings = grund_config::stack::TemplateSettings {
+            admin: true,
+            ..Default::default()
+        };
+        let admin = resolve("clickhouse", Some(&settings)).unwrap();
+        let mut spec = admin.spec(false).unwrap();
+        spec.clone().validate().unwrap();
+        assert_eq!(admin.secret_variables.len(), 4);
+        assert_ne!(spec.command, default.spec(false).unwrap().command);
+        spec.env = default.spec(false).unwrap().env;
+        spec.command = default.spec(false).unwrap().command;
+        assert_eq!(serde_json::to_vec(&spec).unwrap(), baseline);
+    }
 
     #[test]
     fn every_available_template_is_a_valid_spec_pinned_by_digest() {

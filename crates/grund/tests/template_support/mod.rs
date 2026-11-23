@@ -90,7 +90,7 @@ impl Fixture {
             .open(fixture.directory.join("service.env"))
             .expect("create private environment file");
         for variable in &spec.env {
-            if !omitted_env.contains(&variable.name.as_str()) {
+            if !omitted_env.contains(&variable.name.as_str()) && !variable.value.contains('\n') {
                 writeln!(env, "{}={}", variable.name, variable.value)
                     .expect("write the actual AppSpec environment");
             }
@@ -165,12 +165,27 @@ impl Fixture {
         if mount.is_some() {
             args.extend_from_slice(&["--mount", &volume]);
         }
+        for variable in &spec.env {
+            if variable.value.contains('\n') {
+                args.extend_from_slice(&["--env", &variable.name]);
+            }
+        }
         if let Some(entrypoint) = spec.command.first() {
             args.extend_from_slice(&["--entrypoint", entrypoint]);
         }
         args.push(&spec.image);
         args.extend(spec.command.iter().skip(1).map(String::as_str));
-        self.container = Some(checked(&args, "create the actual template AppSpec"));
+        let mut create = Command::new("docker");
+        create.args(&args);
+        for variable in &spec.env {
+            if variable.value.contains('\n') {
+                create.env(&variable.name, &variable.value);
+            }
+        }
+        self.container = Some(self.successful(
+            create.output().expect("create the actual template AppSpec"),
+            "create the actual template AppSpec",
+        ));
         checked(&["start", self.id()], "start the actual template AppSpec");
         self.address = checked(
             &[

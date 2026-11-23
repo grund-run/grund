@@ -878,6 +878,14 @@ stack:
 Use `template: clickhouse`; consumers declare `depends_on: [warehouse]`
 and `CLICKHOUSE_URL: ${{ warehouse.url }}` for an authenticated HTTP URL
 including the generated username, password and `grund` database.
+The normal URL cannot manage users, roles, settings profiles or quotas.
+For bootstrap work, `settings: {admin: true}` on the ClickHouse service opts
+in to a **separate privileged credential**, absent by default. A bootstrap
+service declares `depends_on: [clickhouse]` and explicitly binds
+`CLICKHOUSE_ADMIN_URL: ${{ clickhouse.admin_url }}` in its `env`.
+Ordinary consumers keep `${{ clickhouse.url }}` with unchanged, non-admin
+rights; the admin credential is never delivered to them automatically.
+
 Its default service memory is 1024 MiB; `max_server_memory_usage` is 75% of
 the selected service memory (768 MiB by default), leaving runtime headroom.
 Background pools, query concurrency and caches are reduced for trial workloads;
