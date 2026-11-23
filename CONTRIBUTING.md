@@ -60,6 +60,12 @@ By making a contribution to this project, I certify that:
 - In Rust, the only comments are doc comments on public items; `cargo run
   -q -p comment-policy` checks it, and CI runs it.
 - Before opening a pull request, run the gates in the README ("Verify").
+- Spawned acceptance instances report their exit status and combined
+  stdout/stderr on startup failure, without waiting out readiness for an
+  exited process. A still-running child is identified separately.
+- Keep the development SHA-256 profile override: serving the installer hashes
+  the entire executable before HTTP starts, and unoptimised hashing can exceed
+  the readiness deadline when the acceptance suites run in parallel.
 - For anything larger than a fix, open an issue first, so we agree on the
   shape before you spend the time.
 - Security problems: do not open a public issue. Mail the maintainer

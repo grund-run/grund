@@ -515,15 +515,33 @@ impl Fixture {
                 Ok(response) => anyhow::anyhow!("status {}: {}", response.status, response.text()),
                 Err(error) => error,
             };
-            if Instant::now() > deadline {
+            let child_state = self
+                .child
+                .lock()
+                .unwrap()
+                .as_mut()
+                .map(|child| {
+                    child
+                        .try_wait()
+                        .map(|status| (child.id(), status))
+                        .context("read grund child exit status")
+                })
+                .transpose()?;
+            let exited = child_state.is_some_and(|(_, status)| status.is_some());
+            if exited || Instant::now() > deadline {
                 let log = log
                     .and_then(|path| std::fs::read_to_string(path).ok())
                     .unwrap_or_default();
+                let child_state = match child_state {
+                    Some((pid, Some(status))) => format!("pid {pid} exited with {status}"),
+                    Some((pid, None)) => format!("pid {pid} is still running"),
+                    None => "no local child (external target or network lab)".into(),
+                };
                 anyhow::bail!(
-                    "{}/health/ready never answered 200: {error:#}\n\
+                    "{}/health/ready never answered 200: {error:#}\nchild: {child_state}\n\
                      (spawned instances need PostgreSQL at GRUND_ACCEPT_DATABASE_URL, default \
                      {DEFAULT_DATABASE_URL}: `docker compose -f compose.yaml -f compose.dev.yaml \
-                     up -d postgres nats mailpit`)\n--- server log\n{log}",
+                     up -d postgres nats mailpit`)\n--- server stdout/stderr\n{log}",
                     self.origin.authority()
                 );
             }

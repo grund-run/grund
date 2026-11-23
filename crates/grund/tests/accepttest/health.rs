@@ -108,3 +108,24 @@ async fn every_response_carries_the_security_headers() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn a_spawned_instance_reports_its_startup_exit_and_stderr() -> anyhow::Result<()> {
+    if crate::accepttest::fixtures::external_target().is_some() {
+        return Ok(());
+    }
+    let error =
+        match crate::accepttest::fixtures::Fixture::spawn(&[("GRUND_ORGANISATIONS", "not-a-mode")])
+            .await
+        {
+            Ok(_) => anyhow::bail!("grund accepted an invalid organisation mode"),
+            Err(error) => format!("{error:#}"),
+        };
+    anyhow::ensure!(
+        error.contains("exited with exit status: 2")
+            && error.contains("not-a-mode")
+            && error.contains("--organisations"),
+        "{error}"
+    );
+    Ok(())
+}

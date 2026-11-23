@@ -86,3 +86,8 @@ opt-level = 3
 
 [profile.dev.package.blake2]
 opt-level = 3
+
+# Installer startup hashes the whole executable before binding HTTP. Keep
+# debug binaries' SHA-256 within the startup budget under parallel test load.
+[profile.dev.package."sha2@0.10.9"]
+opt-level = 3
