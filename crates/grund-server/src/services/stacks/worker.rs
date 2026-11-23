@@ -323,12 +323,12 @@ impl Stacks {
                     &service.release.spec.volumes,
                 )
                 .await?;
-                if revision
-                    .public_service
-                    .as_ref()
-                    .and_then(|name| revision.services.get(name))
-                    .is_some_and(|public| public.app_id == service.app_id)
-                {
+                if service.release.spec.ports.iter().any(|port| port.public) {
+                    let public = revision
+                        .public_service
+                        .as_ref()
+                        .and_then(|name| revision.services.get(name))
+                        .map(|service| service.app_id);
                     self.state
                         .domains()
                         .rebind_stack_public_in(
@@ -336,8 +336,8 @@ impl Stacks {
                             Uuid::nil(),
                             org,
                             id,
-                            Some(service.app_id),
-                            Some(service.app_id),
+                            public,
+                            public,
                             &stack.name,
                         )
                         .await

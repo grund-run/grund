@@ -36,15 +36,12 @@
           "description": "Only kind and labels are allowed: stacks always place together."
         },
         "public": {
-          "anyOf": [
+          "allOf": [
             {
-              "$ref": "#/definitions/PublicTarget"
-            },
-            {
-              "type": "null"
+              "$ref": "#/definitions/PublicTargets"
             }
           ],
-          "description": "The single public HTTP or h2c endpoint; omitted means private."
+          "description": "Public HTTP or h2c endpoints; omitted means private, and one target uses the stack address."
         },
         "services": {
           "additionalProperties": {
@@ -599,7 +596,7 @@
     },
     "PublicTarget": {
       "additionalProperties": false,
-      "description": "One selected service port exposed at the stack address.",
+      "description": "One selected service port exposed publicly.",
       "properties": {
         "port": {
           "type": "string"
@@ -613,6 +610,19 @@
         "port"
       ],
       "type": "object"
+    },
+    "PublicTargets": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/PublicTarget"
+        },
+        {
+          "items": {
+            "$ref": "#/definitions/PublicTarget"
+          },
+          "type": "array"
+        }
+      ]
     },
     "StackService": {
       "additionalProperties": false,

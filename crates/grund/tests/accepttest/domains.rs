@@ -118,6 +118,126 @@ pub(super) async fn status_of(
 }
 
 #[tokio::test]
+async fn two_public_stack_services_keep_their_bound_domains_after_a_rerelease() -> anyhow::Result<()>
+{
+    let Some(mut edge) = a_stack_with(&[("GRUND_APP_DOMAINS", "custom-only")]).await? else {
+        return Ok(());
+    };
+    let owner = edge.given.a_signed_in_account().await?;
+    let org = &owner.username;
+    let _machine = edge.a_machine(org, "box").await?;
+    edge.start_edge()?;
+    let first_image = edge.publish_image("gateway", "1");
+    let second_image = edge.publish_image("queue", "1");
+    let updated_image = edge.publish_image("gateway", "2");
+    let yaml = |image: &str, public: bool| {
+        let targets = if public {
+            "  public:\n    - {service: gateway, port: http}\n    - {service: queue, port: http}\n"
+        } else {
+            ""
+        };
+        format!(
+            "stack:\n  name: sight\n{targets}  services:\n    gateway:\n      image: {image}\n      env: {{PORT: '8080'}}\n      ports: [{{name: http, port: 8080, protocol: http}}]\n      resources: {{memory: 64 MiB, cpu: 0.1}}\n      release: {{min_ready: 0, ready_deadline: 30, drain: 1}}\n    queue:\n      image: {second_image}\n      env: {{PORT: '8080'}}\n      ports: [{{name: http, port: 8080, protocol: http}}]\n      resources: {{memory: 64 MiB, cpu: 0.1}}\n      release: {{min_ready: 0, ready_deadline: 30, drain: 1}}\n"
+        )
+    };
+    let (when, then) = (&edge.when, &edge.then);
+    let deploy =
+        |yaml: String, key: &str| json!({"organisation": org, "yaml": yaml, "idempotencyKey": key});
+    when.calling(
+        "/grund.stack.v1.StackService/DeployStack",
+        &deploy(yaml(&first_image, false), "private").to_string(),
+    )
+    .await?;
+    then.status(200)?;
+    let initial = then.json()?["stack"].clone();
+    let names: Vec<String> = ["gateway", "queue"]
+        .iter()
+        .map(|name| {
+            initial["services"]
+                .as_array()
+                .and_then(|services| services.iter().find(|service| service["name"] == *name))
+                .and_then(|service| service["appName"].as_str())
+                .map(str::to_owned)
+                .ok_or_else(|| anyhow::anyhow!("missing service {name}: {initial}"))
+        })
+        .collect::<anyhow::Result<_>>()?;
+    let domains = [a_custom_name(), a_custom_name()];
+    for (name, app) in domains.iter().zip(&names) {
+        verified(&edge, when, then, org, name).await?;
+        let answer = domain_call(
+            when,
+            then,
+            "BindDomain",
+            json!({"organisation": org, "name": name, "app": app}),
+        )
+        .await?;
+        anyhow::ensure!(answer.0 == 200, "bind stack member: {}", answer.1);
+    }
+    let wait_ready = async || -> anyhow::Result<Value> {
+        let started = Instant::now();
+        loop {
+            when.calling(
+                "/grund.stack.v1.StackService/GetStack",
+                &json!({"organisation": org, "name": "sight"}).to_string(),
+            )
+            .await?;
+            then.status(200)?;
+            let state = then.json()?;
+            if state["stack"]["status"] == "ready"
+                && state["stack"]["operation"]
+                    .as_str()
+                    .is_none_or(str::is_empty)
+            {
+                return Ok(state["stack"].clone());
+            }
+            anyhow::ensure!(
+                state["stack"]["status"] != "halted" && started.elapsed() < Duration::from_secs(90),
+                "stack did not become ready: {state}"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    };
+    let mut current = wait_ready().await?;
+    for (image, key) in [(&first_image, "publish"), (&updated_image, "rerelease")] {
+        let mut request = deploy(yaml(image, true), key);
+        request["expectedVersion"] = current["version"].clone();
+        when.calling(
+            "/grund.stack.v1.StackService/DeployStack",
+            &request.to_string(),
+        )
+        .await?;
+        then.status(200)?;
+        current = wait_ready().await?;
+        for (name, app) in domains.iter().zip(&names) {
+            let domain = status_of(when, then, org, name).await?;
+            anyhow::ensure!(
+                domain["app"] == app.as_str(),
+                "{key} changed domain ownership: {domain}"
+            );
+            edge.served(name, Duration::from_secs(90)).await?;
+            let mut conn = edge.connect(name).await?;
+            let answer = conn.get(name, "/", &[]).await?;
+            let body = answer.text();
+            let state = edge.app(org, app).await?;
+            let replicas = state["replicas"]
+                .as_array()
+                .ok_or_else(|| anyhow::anyhow!("missing app replicas: {state}"))?;
+            anyhow::ensure!(
+                answer.status == 200
+                    && replicas.iter().any(|replica| {
+                        replica["replicaId"]
+                            .as_str()
+                            .is_some_and(|id| body.contains(id))
+                    }),
+                "{key} routed {name} to the wrong service: {}",
+                body
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn concurrent_publication_and_last_domain_removal_cannot_both_succeed() -> anyhow::Result<()>
 {
     let Some(stack) = a_stack_with(&[("GRUND_APP_DOMAINS", "custom-only")]).await? else {

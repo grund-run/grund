@@ -437,8 +437,14 @@ impl Stacks {
             number: previous.map_or(1, |r| r.number + 1),
             yaml: yaml.to_string(),
             services: BTreeMap::new(),
-            public_service: definition.public.as_ref().map(|p| p.service.clone()),
-            public_port: definition.public.as_ref().map(|p| p.port.clone()),
+            public_service: match definition.public.as_slice() {
+                [target] => Some(target.service.clone()),
+                _ => None,
+            },
+            public_port: match definition.public.as_slice() {
+                [target] => Some(target.port.clone()),
+                _ => None,
+            },
             created_at: at,
             created_by: Uuid::nil(),
             rollback_of: None,
@@ -483,7 +489,14 @@ impl Stacks {
                 && previous_definition
                     .as_ref()
                     .and_then(|d| d.services.get(name))
-                    == Some(service);
+                    == Some(service)
+                && previous_definition.as_ref().is_some_and(|before| {
+                    before.public.iter().find(|target| target.service == *name)
+                        == definition
+                            .public
+                            .iter()
+                            .find(|target| target.service == *name)
+                });
             if let Some(current) = current
                 && (selected.is_some_and(|s| s != name) || unchanged_template)
             {
@@ -1437,13 +1450,17 @@ fn expand_service(
     let Some(template) = catalogue else {
         return Ok((spec, settings, refs));
     };
-    if definition
+    if let Some((index, _)) = definition
         .public
-        .as_ref()
-        .is_some_and(|public| public.service == name)
+        .iter()
+        .enumerate()
+        .find(|(_, public)| public.service == name)
         && template.publishable.is_none()
     {
-        return Err(invalid("stack.public", "this template is private only"));
+        return Err(invalid(
+            format!("stack.public[{index}].service"),
+            "this template is private only",
+        ));
     }
     if template.family == "nats"
         && template.storage.is_none()

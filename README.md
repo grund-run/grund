@@ -777,6 +777,33 @@ Services use app fields or a catalogue `template`. A whole env value such as
 connection binding without copying credentials into the file.
 Prefix a whole expression with an extra `$` (`$${{ database.url }}`) to deliver it literally.
 
+`stack.public` selects HTTP or h2c ports; all other ports stay private:
+
+```yaml
+stack:
+  name: sight-dev
+  public:
+    - {service: gateway, port: grpc}
+    - {service: queue, port: http}
+  services:
+    gateway:
+      image: example/gateway:1
+      ports: [{name: grpc, port: 50051, protocol: h2c}]
+    queue:
+      image: example/queue:1
+      ports: [{name: http, port: 8080, protocol: http}]
+```
+
+Each service has at most one public target: domains and the edge select an app,
+not a port within it. Duplicate targets and a second port on the same service
+are refused before deployment. The original single-object form
+`public: {service: gateway, port: grpc}` remains supported with its stack address.
+Multiple public services use their own backing-app addresses; bind each custom
+domain with `grund domain bind <domain> <app>`, using the service's `appName`
+from `grund stack status sight-dev --json`. Bindings stay on that app across stack
+releases. In custom-only mode, deploy privately first, verify and bind each
+domain, then deploy with `stack.public`.
+
 For `template: seaweedfs` in a service named `storage`, its consumer declares
 `depends_on: [storage]` and uses these environment entries:
 

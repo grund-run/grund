@@ -2431,6 +2431,399 @@ mod tests {
         })
     }
 
+    async fn release_both_members(
+        state: &State,
+        bundle: &Bundle,
+        public: bool,
+    ) -> anyhow::Result<()> {
+        let mut work = Work::begin(&state.events, Uuid::now_v7(), "test").await?;
+        work.allow_stack(bundle.id);
+        let stack = work.load_stack(bundle.id).await?;
+        let mut revision = stack.revisions[&stack.desired_revision].clone();
+        if let Some(op) = &stack.operation {
+            work.stack(
+                bundle.id,
+                Command::Complete {
+                    operation_id: op.id,
+                    applied_revision: revision.number,
+                    status: Status::Ready,
+                    purge_after: None,
+                    failure: None,
+                },
+            )
+            .await?;
+        }
+        let previous = revision
+            .public_service
+            .as_ref()
+            .map(|name| revision.services[name].app_id);
+        revision.number += 1;
+        revision.public_service = None;
+        revision.public_port = None;
+        revision.yaml = "stack:\n  name: ordered\n  public:\n    - {service: producer, port: http}\n    - {service: consumer, port: http}\n  services:\n    producer:\n      image: redis\n      restart: exclusive\n      ports: [{name: http, port: 8080, protocol: h2c}]\n    consumer:\n      image: redis\n      restart: exclusive\n      depends_on: [producer]\n      ports: [{name: http, port: 8080, protocol: http}]\n".into();
+        if !public {
+            revision.yaml = revision.yaml.replace(
+                "  public:\n    - {service: producer, port: http}\n    - {service: consumer, port: http}\n",
+                "",
+            );
+        }
+        for (name, service) in &mut revision.services {
+            service.release.spec.ports = vec![grund_config::app::spec::PortSpec {
+                name: "http".into(),
+                port: 8080,
+                protocol: if name == "producer" {
+                    Protocol::H2c
+                } else {
+                    Protocol::Http
+                },
+                public,
+            }];
+            work.app(
+                service.app_id,
+                AppCommand::Release {
+                    actor: Uuid::nil(),
+                    spec: service.release.spec.clone(),
+                    image_digest: service.release.image_digest.clone(),
+                    platforms: Vec::new(),
+                    exposed_ports: None,
+                    secret_versions: Vec::new(),
+                    source: ReleaseSource::File,
+                    external_release: None,
+                    request: None,
+                    rollback_of: None,
+                    note: String::new(),
+                    rollout_id: Uuid::now_v7(),
+                    at: Utc::now(),
+                },
+            )
+            .await?;
+            service.release = work
+                .load_app(service.app_id)
+                .await?
+                .releases
+                .last()
+                .unwrap()
+                .clone();
+            sqlx::query("UPDATE grund_replicas SET release=$2 WHERE app_id=$1")
+                .bind(service.app_id)
+                .bind(service.release.number as i32)
+                .execute(&mut **work.sql())
+                .await?;
+        }
+        let op = operation(
+            Kind::Deploy,
+            revision.number,
+            stack.applied_revision,
+            order(&revision)?,
+            Utc::now(),
+        );
+        work.stack(
+            bundle.id,
+            Command::Revise {
+                revision,
+                operation: op,
+            },
+        )
+        .await?;
+        state
+            .domains()
+            .rebind_stack_public_in(
+                &mut work,
+                Uuid::nil(),
+                bundle.org,
+                bundle.id,
+                previous,
+                None,
+                "ordered",
+            )
+            .await?;
+        work.commit().await?;
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn public_members_keep_their_bound_domains_and_edge_routes_after_another_stack_release(
+        pool: sqlx::PgPool,
+    ) -> anyhow::Result<()> {
+        use crate::services::entry::EntryState;
+        use grund_domain::custom_domain::{DomainCommand, DomainName};
+        let mut state = state(pool).await?;
+        let config = Arc::get_mut(&mut state.config).unwrap();
+        config.entry.app_domains = crate::config::AppDomains::CustomOnly;
+        config.tls.acme_directory = Some("https://acme.example.test/directory".into());
+        state.certificates = crate::certificates::Certificates::new(
+            &state.config,
+            state.pool.clone(),
+            state.secret.clone(),
+        );
+        let bundle = bundle(&state, true).await?;
+        release_both_members(&state, &bundle, false).await?;
+        let at = Utc::now();
+        let mut work = Work::begin(&state.events, Uuid::now_v7(), "test").await?;
+        for name in ["gateway.example.test", "queue.example.test"] {
+            let domain = Uuid::now_v7();
+            work.domain(
+                domain,
+                DomainCommand::Add {
+                    actor: Uuid::nil(),
+                    organisation_id: bundle.org,
+                    name: DomainName::parse(name)?,
+                    token: format!("grund-verify-{}", "b".repeat(43)),
+                    at,
+                },
+            )
+            .await?;
+            work.domain(
+                domain,
+                DomainCommand::Verify {
+                    actor: Uuid::nil(),
+                    at,
+                },
+            )
+            .await?;
+        }
+        work.commit().await?;
+        let membership = grund_store::organisations::Membership {
+            organisation_id: bundle.org,
+            slug: "lifecycle".into(),
+            kind: "personal".into(),
+            role: "owner".into(),
+            created_at: at,
+            deletion_requested_at: None,
+            deletion_request_id: None,
+            deletion_refusal: None,
+        };
+        for (domain, app_name) in [
+            ("gateway.example.test", "producer"),
+            ("queue.example.test", "consumer"),
+        ] {
+            state
+                .domains()
+                .bind(Uuid::nil(), &membership, domain, app_name)
+                .await?;
+        }
+        for app in [bundle.producer, bundle.consumer] {
+            let spec = grund_store::domains::current_spec(&state.pool, app)
+                .await?
+                .unwrap();
+            assert!(spec.ports.iter().all(|port| !port.public));
+        }
+        let custom_certificates = || {
+            sqlx::query_as::<_, (Vec<String>, String)>(
+                "SELECT names,challenge FROM grund_certificates \
+                 WHERE names && ARRAY['gateway.example.test','queue.example.test']::text[] \
+                 ORDER BY names",
+            )
+            .fetch_all(&state.pool)
+        };
+        assert!(custom_certificates().await?.is_empty());
+        release_both_members(&state, &bundle, true).await?;
+        assert_eq!(
+            custom_certificates().await?,
+            vec![
+                (
+                    vec!["gateway.example.test".to_string()],
+                    "http-01".to_string()
+                ),
+                (
+                    vec!["queue.example.test".to_string()],
+                    "http-01".to_string()
+                ),
+            ],
+        );
+        let parent = Uuid::now_v7();
+        let mut work = Work::begin(&state.events, Uuid::now_v7(), "test").await?;
+        for command in [
+            DomainCommand::Add {
+                actor: Uuid::nil(),
+                organisation_id: bundle.org,
+                name: DomainName::parse("apps.example.test")?,
+                token: format!("grund-verify-{}", "a".repeat(43)),
+                at,
+            },
+            DomainCommand::Verify {
+                actor: Uuid::nil(),
+                at,
+            },
+            DomainCommand::EnableAppDomain {
+                actor: Uuid::nil(),
+                at,
+            },
+        ] {
+            work.domain(parent, command).await?;
+        }
+        state
+            .domains()
+            .rebind_stack_public_in(
+                &mut work,
+                Uuid::nil(),
+                bundle.org,
+                bundle.id,
+                None,
+                None,
+                "ordered",
+            )
+            .await?;
+        work.commit().await?;
+        sqlx::query("INSERT INTO grund_machine_presence(machine_id,last_seen_at) VALUES($1,clock_timestamp())")
+            .bind(bundle.machine).execute(&state.pool).await?;
+        sqlx::query("INSERT INTO grund_replica_status(replica_id,machine_id,state,ready,observed_at) \
+            SELECT replica_id,machine_id,'running',true,clock_timestamp() FROM grund_replicas WHERE machine_id=$1")
+            .bind(bundle.machine).execute(&state.pool).await?;
+        for release in 0..2 {
+            if release != 0 {
+                release_both_members(&state, &bundle, true).await?;
+            }
+            let table = state.entry().route_table().await?;
+            for (app, custom, generated) in [
+                (
+                    bundle.producer,
+                    "gateway.example.test",
+                    "producer.apps.example.test",
+                ),
+                (
+                    bundle.consumer,
+                    "queue.example.test",
+                    "consumer.apps.example.test",
+                ),
+            ] {
+                let assignment =
+                    grund_store::domains::managed_assignment(&state.pool, bundle.org, app)
+                        .await?
+                        .unwrap();
+                assert_eq!(assignment.name, generated);
+                assert_eq!(assignment.app_id, Some(app));
+                for name in [custom, generated] {
+                    let route = table
+                        .routes
+                        .iter()
+                        .find(|route| route.name == name)
+                        .unwrap();
+                    assert_eq!(route.app_id, app.to_string());
+                    assert_eq!(route.machines.len(), 1);
+                    assert_eq!(route.machines[0].machine_id, bundle.machine.to_string());
+                    assert_eq!(route.machines[0].ready_copies, 1);
+                }
+            }
+            assert!(
+                !table
+                    .routes
+                    .iter()
+                    .any(|route| route.name == "ordered.apps.example.test")
+            );
+        }
+        Ok(())
+    }
+    #[sqlx::test(migrations = false)]
+    async fn restoring_a_multi_public_stack_restores_each_managed_address_before_capacity_is_available(
+        pool: sqlx::PgPool,
+    ) -> anyhow::Result<()> {
+        use grund_domain::custom_domain::{DomainCommand, DomainName};
+        let state = state(pool).await?;
+        let bundle = bundle(&state, false).await?;
+        release_both_members(&state, &bundle, true).await?;
+        let mut work = Work::begin(&state.events, Uuid::now_v7(), "test").await?;
+        let at = Utc::now();
+        let parent = Uuid::now_v7();
+        for command in [
+            DomainCommand::Add {
+                actor: Uuid::nil(),
+                organisation_id: bundle.org,
+                name: DomainName::parse("restore.example.test")?,
+                token: format!("grund-verify-{}", "c".repeat(43)),
+                at,
+            },
+            DomainCommand::Verify {
+                actor: Uuid::nil(),
+                at,
+            },
+            DomainCommand::EnableAppDomain {
+                actor: Uuid::nil(),
+                at,
+            },
+        ] {
+            work.domain(parent, command).await?;
+        }
+        state
+            .domains()
+            .rebind_stack_public_in(
+                &mut work,
+                Uuid::nil(),
+                bundle.org,
+                bundle.id,
+                None,
+                None,
+                "ordered",
+            )
+            .await?;
+        let stack = work.load_stack(bundle.id).await?;
+        work.stack(
+            bundle.id,
+            Command::Complete {
+                operation_id: stack.operation.unwrap().id,
+                applied_revision: stack.desired_revision,
+                status: Status::Ready,
+                purge_after: None,
+                failure: None,
+            },
+        )
+        .await?;
+        work.commit().await?;
+        let before = grund_store::domains::list(&state.pool, bundle.org).await?;
+        let version = store::get(&state.pool, bundle.org, bundle.id)
+            .await?
+            .unwrap()
+            .stream_version;
+        state
+            .stacks()
+            .delete(
+                Uuid::nil(),
+                bundle.org,
+                "ordered",
+                Some(version),
+                "delete-multi",
+            )
+            .await?;
+        for _ in 0..5 {
+            state.stacks().reconcile_one(bundle.org, bundle.id).await?;
+        }
+        let deleted = store::get(&state.pool, bundle.org, bundle.id)
+            .await?
+            .unwrap();
+        assert_eq!(deleted.state.status, Status::Deleted);
+        state
+            .stacks()
+            .restore(
+                Uuid::nil(),
+                bundle.org,
+                "ordered",
+                Some(deleted.stream_version),
+                "restore-multi",
+            )
+            .await?;
+        for app in [bundle.producer, bundle.consumer] {
+            let assignment = grund_store::domains::managed_assignment(&state.pool, bundle.org, app)
+                .await?
+                .unwrap();
+            assert_eq!(assignment.app_id, Some(app));
+            assert!(
+                before
+                    .iter()
+                    .any(|row| row.domain_id == assignment.domain_id && row.app_id == Some(app))
+            );
+        }
+        state.stacks().reconcile_one(bundle.org, bundle.id).await?;
+        assert_eq!(
+            store::get(&state.pool, bundle.org, bundle.id)
+                .await?
+                .unwrap()
+                .state
+                .status,
+            Status::Waiting
+        );
+        Ok(())
+    }
+
     async fn snapshot(state: &State) -> anyhow::Result<serde_json::Value> {
         Ok(sqlx::query_scalar::<_, Json<serde_json::Value>>(
             "SELECT jsonb_build_object( \

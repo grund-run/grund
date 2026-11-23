@@ -683,7 +683,7 @@ impl Domains {
         Ok(())
     }
 
-    /// Moves the stack's real public bindings when its selected child changes.
+    /// Moves legacy stack-address bindings, leaving independently published members alone.
     /// The caller commits this with RevisionRequested and wakes documents.
     #[allow(clippy::too_many_arguments)]
     pub async fn rebind_stack_public_in(
@@ -701,16 +701,15 @@ impl Domains {
         if stack.organisation_id != organisation_id || stack.name != stack_name {
             return Err(DomainsError::NotFound);
         }
-        let public = stack
+        let revision = stack
             .revisions
             .get(&stack.desired_revision)
-            .and_then(|revision| {
-                revision
-                    .public_service
-                    .as_ref()
-                    .and_then(|name| revision.services.get(name))
-                    .map(|service| service.app_id)
-            });
+            .ok_or(DomainsError::NotFound)?;
+        let public = revision
+            .public_service
+            .as_ref()
+            .and_then(|name| revision.services.get(name))
+            .map(|service| service.app_id);
         if public != selected {
             return Err(DomainsError::NamespaceConflict(
                 "the stack's public service changed".into(),
@@ -739,6 +738,20 @@ impl Domains {
             }
         }
         let Some(selected) = selected else {
+            for service in revision.services.values() {
+                if service.release.spec.ports.iter().any(|port| port.public) {
+                    self.allocate_app_domain_in(
+                        work,
+                        actor,
+                        organisation_id,
+                        service.app_id,
+                        &service.app_name,
+                    )
+                    .await?;
+                }
+            }
+            self.want_stack_public_certificates(work.sql(), revision)
+                .await?;
             self.publish_apps(work.sql(), &apps).await?;
             return Ok(());
         };
@@ -748,7 +761,7 @@ impl Domains {
             .filter(|row| {
                 row.managed_app_id
                     .or(row.app_id)
-                    .is_some_and(|id| id != selected && apps.contains(&id))
+                    .is_some_and(|id| id != selected && Some(id) == previous)
             })
             .collect();
         let moved_bound = sources.iter().filter(|row| row.app_id.is_some()).count() as i64;
@@ -782,7 +795,36 @@ impl Domains {
         }
         self.allocate_app_domain_in(work, actor, organisation_id, selected, stack_name)
             .await?;
+        self.want_stack_public_certificates(work.sql(), revision)
+            .await?;
         self.publish_apps(work.sql(), &apps).await?;
+        Ok(())
+    }
+
+    async fn want_stack_public_certificates(
+        &self,
+        connection: &mut PgConnection,
+        revision: &grund_domain::stack::Revision,
+    ) -> Result<(), DomainsError> {
+        let Some((directory, profile)) = self.state.certificates.ordering() else {
+            return Ok(());
+        };
+        for service in revision.services.values() {
+            if !publishes(&service.release.spec) {
+                continue;
+            }
+            for domain in domains::bound_to(&mut *connection, service.app_id).await? {
+                domains::want_certificate(
+                    &mut *connection,
+                    domain.domain_id,
+                    domain.organisation_id,
+                    &domain.name,
+                    &directory,
+                    &profile,
+                )
+                .await?;
+            }
+        }
         Ok(())
     }
 

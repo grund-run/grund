@@ -189,7 +189,7 @@ fn rpc(method: &str) -> String {
     format!("{SERVICE}/{method}")
 }
 
-fn read_file(path: &std::path::Path) -> CliResult<String> {
+fn read_definition(path: &std::path::Path) -> CliResult<(String, grund_config::stack::Definition)> {
     let mut text = String::new();
     std::fs::File::open(path)?
         .take(MAX_FILE_BYTES + 1)
@@ -197,7 +197,10 @@ fn read_file(path: &std::path::Path) -> CliResult<String> {
     if text.len() as u64 > MAX_FILE_BYTES {
         return Err(CliError::usage("stack file exceeds 1 MiB").field(path.display().to_string()));
     }
-    Ok(text)
+    let definition = grund_config::stack::parse(&text).map_err(|error| {
+        CliError::new(Code::Invalid, error.to_string()).field(path.display().to_string())
+    })?;
+    Ok((text, definition))
 }
 
 fn secret_name(text: &str) -> CliResult<(&str, &str)> {
@@ -467,11 +470,7 @@ pub async fn run(ctx: &Ctx, action: StacksAction) -> CliResult<Output> {
             app_telemetry::metrics(&api, &org, MetricsArgs { app, options }).await
         }
         StacksAction::Deploy(mut args) => {
-            let yaml = read_file(&args.file)?;
-            let definition = grund_config::stack::parse(&yaml).map_err(|error| {
-                CliError::new(Code::Invalid, error.to_string())
-                    .field(args.file.display().to_string())
-            })?;
+            let (yaml, definition) = read_definition(&args.file)?;
             let preview_request = json!({"organisation": org, "yaml": yaml, "service": args.service.as_deref().unwrap_or_default(), "refreshTemplate": args.refresh_template.as_deref().unwrap_or_default()});
             let preview = api
                 .call(&rpc("PreviewStack"), preview_request.clone())
@@ -572,6 +571,26 @@ pub async fn run(ctx: &Ctx, action: StacksAction) -> CliResult<Output> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deploy_input_accepts_public_lists_without_rewriting_the_submitted_yaml() {
+        let yaml = "stack:\n  name: demo\n  public: [{service: web, port: http}, {service: api, port: rpc}]\n  services:\n    web:\n      image: nginx\n      ports: [{name: http, port: 80, protocol: http}]\n    api:\n      image: nginx\n      ports: [{name: rpc, port: 8080, protocol: h2c}]\n";
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("grund.yaml");
+        std::fs::write(&path, yaml).unwrap();
+        let (submitted, definition) = read_definition(&path).unwrap();
+        assert_eq!(submitted, yaml);
+        for service in ["web", "api"] {
+            assert!(definition.service(service, None).unwrap().0.ports[0].public);
+        }
+        std::fs::write(
+            &path,
+            yaml.replace("{service: api, port: rpc}", "{service: web, port: http}"),
+        )
+        .unwrap();
+        let error = read_definition(&path).unwrap_err();
+        assert!(error.to_string().contains("stack.public[1].service"));
+    }
 
     #[test]
     fn secret_input_is_an_object_of_nonempty_write_only_values() {

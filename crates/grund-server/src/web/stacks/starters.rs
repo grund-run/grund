@@ -157,7 +157,7 @@ pub(super) fn yaml(key: &str, schema_url: &str) -> Option<String> {
             name: "my-stack".into(),
             machines: Vec::new(),
             placement: None,
-            public: Some(public),
+            public: vec![public],
             services,
         }),
         ..GrundFile::default()
@@ -253,7 +253,7 @@ mod tests {
             );
             assert!(spec.secrets.is_empty());
         }
-        let public = definition.public.unwrap();
+        let public = &definition.public[0];
         assert_eq!(
             (public.service.as_str(), public.port.as_str()),
             ("web", "http")

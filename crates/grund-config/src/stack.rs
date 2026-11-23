@@ -38,9 +38,15 @@ pub struct Definition {
     )]
     #[schemars(with = "Option<HardPlacement>")]
     pub placement: Option<FilePlacement>,
-    /// The single public HTTP or h2c endpoint; omitted means private.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub public: Option<PublicTarget>,
+    /// Public HTTP or h2c endpoints; omitted means private, and one target uses the stack address.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "public_targets",
+        serialize_with = "serialize_public_targets"
+    )]
+    #[schemars(with = "PublicTargets")]
+    pub public: Vec<PublicTarget>,
     /// Services in declaration order. Duplicate names are refused.
     #[serde(deserialize_with = "file::unique_map")]
     #[schemars(extend("minProperties" = 1, "maxProperties" = 10, "propertyNames" = {"pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$", "maxLength": 32}))]
@@ -68,12 +74,38 @@ fn optional_placement<'de, D: serde::Deserializer<'de>>(
     }))
 }
 
-/// One selected service port exposed at the stack address.
+/// One selected service port exposed publicly.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PublicTarget {
     pub service: String,
     pub port: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum PublicTargets {
+    Single(PublicTarget),
+    Multiple(Vec<PublicTarget>),
+}
+
+fn public_targets<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<PublicTarget>, D::Error> {
+    Ok(match PublicTargets::deserialize(deserializer)? {
+        PublicTargets::Single(target) => vec![target],
+        PublicTargets::Multiple(targets) => targets,
+    })
+}
+
+fn serialize_public_targets<S: serde::Serializer>(
+    targets: &[PublicTarget],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    match targets {
+        [target] => target.serialize(serializer),
+        _ => targets.serialize(serializer),
+    }
 }
 
 /// The replacement policy, independent of ordinary app rolling settings.
@@ -502,6 +534,22 @@ impl Definition {
             field: format!("stack.{}", error.field),
             problem: error.problem,
         })?;
+        let mut public_services = BTreeSet::new();
+        for (index, public) in self.public.iter().enumerate() {
+            let field = format!("stack.public[{index}]");
+            let Some(service) = self.services.get(&public.service) else {
+                return refuse(format!("{field}.service"), "name a declared service");
+            };
+            if !public_services.insert(&public.service) {
+                return refuse(
+                    format!("{field}.service"),
+                    "select each service only once; each app supports one public port",
+                );
+            }
+            if service.template.is_some() && public.port.is_empty() {
+                return refuse(format!("{field}.port"), "name an HTTP or h2c port");
+            }
+        }
         for (service_name, service) in &self.services {
             let field = format!("stack.services.{service_name}");
             name(service_name, &field)?;
@@ -552,28 +600,22 @@ impl Definition {
                 return refuse("stack.services", "dependency graph contains a cycle");
             }
         }
-        if let Some(public) = &self.public {
-            let Some(service) = self.services.get(&public.service) else {
-                return refuse("stack.public.service", "name a declared service");
-            };
-            if service.template.is_none() {
-                let (spec, _, _) = self.service(&public.service, None)?;
-                self.validate_public(&public.service, &spec)?;
-            } else if public.port.is_empty() {
-                return refuse("stack.public.port", "name an HTTP or h2c port");
-            }
-        }
         validate_expanded(self)
     }
 
     fn validate_public(&self, service: &str, spec: &AppSpec) -> Result<(), SpecError> {
-        if let Some(public) = &self.public
-            && public.service == service
-            && !spec.ports.iter().any(|port| {
-                port.name == public.port && matches!(port.protocol, Protocol::Http | Protocol::H2c)
-            })
-        {
-            return refuse("stack.public.port", "select a declared HTTP or h2c port");
+        for (index, public) in self.public.iter().enumerate() {
+            if public.service == service
+                && !spec.ports.iter().any(|port| {
+                    port.name == public.port
+                        && matches!(port.protocol, Protocol::Http | Protocol::H2c)
+                })
+            {
+                return refuse(
+                    format!("stack.public[{index}].port"),
+                    "select a declared HTTP or h2c port",
+                );
+            }
         }
         Ok(())
     }
@@ -723,8 +765,8 @@ impl Definition {
         for port in &mut spec.ports {
             port.public = self
                 .public
-                .as_ref()
-                .is_some_and(|public| public.service == service_name && public.port == port.name);
+                .iter()
+                .any(|public| public.service == service_name && public.port == port.name);
         }
         validate_expanded(&(&spec, &settings, &references))?;
         Ok((spec, settings, references))
@@ -782,6 +824,168 @@ mod tests {
     use super::*;
 
     const SIMPLE: &str = "stack:\n  name: demo\n  services:\n    web:\n      image: nginx\n";
+
+    const PUBLIC_SERVICES: &str = "stack:
+  name: frontend
+  services:
+    web:
+      image: nginx
+      ports:
+        - {name: http, port: 80, protocol: http}
+        - {name: admin, port: 8081, protocol: http}
+    api:
+      image: nginx
+      ports:
+        - {name: rpc, port: 8080, protocol: h2c}
+        - {name: debug, port: 9000, protocol: tcp}
+    internal:
+      image: nginx
+      ports:
+        - {name: http, port: 8080, protocol: http}
+";
+
+    fn public_stack(targets: &str) -> String {
+        PUBLIC_SERVICES.replace("  services:", &format!("  public: {targets}\n  services:"))
+    }
+
+    #[test]
+    fn public_lists_expose_each_selected_http_port_and_leave_every_other_port_private() {
+        let definition = parse(&public_stack(
+            "[{service: web, port: http}, {service: api, port: rpc}]",
+        ))
+        .unwrap();
+        assert_eq!(definition.public.len(), 2);
+        for (service, expected) in [
+            ("web", vec![true, false]),
+            ("api", vec![true, false]),
+            ("internal", vec![false]),
+        ] {
+            let (spec, _, _) = definition.service(service, None).unwrap();
+            assert_eq!(
+                spec.ports
+                    .iter()
+                    .map(|port| port.public)
+                    .collect::<Vec<_>>(),
+                expected,
+                "{service}"
+            );
+        }
+        let serialized = crate::yaml::to_string(&file::GrundFile {
+            apps: IndexMap::new(),
+            stack: Some(definition.clone()),
+        });
+        assert_eq!(parse(&serialized).unwrap(), definition);
+        assert!(serde_json::to_value(&definition).unwrap()["public"].is_array());
+    }
+
+    #[test]
+    fn a_single_public_target_retains_legacy_serialized_bytes_regardless_of_input_shape() {
+        let legacy = parse(&public_stack("{service: web, port: http}")).unwrap();
+        let list = parse(&public_stack("[{service: web, port: http}]")).unwrap();
+        assert_eq!(legacy, list);
+        let private = parse(PUBLIC_SERVICES).unwrap();
+        let expected = serde_json::to_string(&private).unwrap().replacen(
+            "\"services\":",
+            "\"public\":{\"service\":\"web\",\"port\":\"http\"},\"services\":",
+            1,
+        );
+        assert_eq!(serde_json::to_string(&legacy).unwrap(), expected);
+        assert_eq!(serde_json::to_string(&list).unwrap(), expected);
+        assert_eq!(
+            legacy.service("web", None).unwrap(),
+            list.service("web", None).unwrap()
+        );
+        let empty = parse(&public_stack("[]")).unwrap();
+        assert_eq!(empty, private);
+        assert_eq!(
+            serde_json::to_vec(&empty).unwrap(),
+            serde_json::to_vec(&private).unwrap()
+        );
+        for service in private.services.keys() {
+            assert!(
+                private
+                    .service(service, None)
+                    .unwrap()
+                    .0
+                    .ports
+                    .iter()
+                    .all(|port| !port.public)
+            );
+        }
+    }
+
+    #[test]
+    fn public_lists_refuse_duplicate_services_and_non_http_or_undeclared_targets() {
+        for target in ["{service: web, port: http}", "{service: web, port: admin}"] {
+            let error = parse(&public_stack(&format!(
+                "[{{service: web, port: http}}, {target}]"
+            )))
+            .unwrap_err();
+            assert_eq!(error.field, "stack.public[1].service");
+            assert!(error.problem.contains("each service only once"));
+        }
+        for (target, field) in [
+            ("{service: missing, port: http}", "service"),
+            ("{service: api, port: missing}", "port"),
+            ("{service: api, port: debug}", "port"),
+            ("{service: api, port: ''}", "port"),
+        ] {
+            let error = parse(&public_stack(&format!(
+                "[{{service: web, port: http}}, {target}]"
+            )))
+            .unwrap_err();
+            assert_eq!(error.field, format!("stack.public[1].{field}"));
+        }
+        assert!(parse(&public_stack("[{service: web, port: http, public: true}]")).is_err());
+    }
+
+    #[test]
+    fn template_expansion_clears_catalogue_public_defaults_and_validates_selected_ports() {
+        let text = public_stack(
+            "[{service: web, port: http}, {service: api, port: rpc}]",
+        )
+        .replace(
+            "      image: nginx\n      ports:\n        - {name: rpc, port: 8080, protocol: h2c}\n        - {name: debug, port: 9000, protocol: tcp}",
+            "      template: api",
+        );
+        let catalogue = file::parse_app(
+            "apps:\n  api:\n    image: nginx\n    ports:\n      - {name: rpc, port: 8080, protocol: h2c}\n      - {name: admin, port: 9000, protocol: http, public: true}\n",
+            "api",
+        )
+        .unwrap()
+        .spec;
+        let definition = parse(&text).unwrap();
+        let (spec, _, _) = definition.service("api", Some(catalogue.clone())).unwrap();
+        assert_eq!(
+            spec.ports
+                .iter()
+                .map(|port| port.public)
+                .collect::<Vec<_>>(),
+            [true, false]
+        );
+        let mut private = definition.clone();
+        private.public.clear();
+        assert!(
+            private
+                .service("api", Some(catalogue.clone()))
+                .unwrap()
+                .0
+                .ports
+                .iter()
+                .all(|port| !port.public)
+        );
+        for port in ["missing", "rpc"] {
+            let mut invalid = definition.clone();
+            invalid.public[1].port = port.into();
+            let mut catalogue = catalogue.clone();
+            if port == "rpc" {
+                catalogue.ports[0].protocol = Protocol::Tcp;
+            }
+            let error = invalid.service("api", Some(catalogue)).unwrap_err();
+            assert_eq!(error.field, "stack.public[1].port");
+        }
+        assert!(parse(&text.replace("port: rpc}", "port: ''}")).is_err());
+    }
 
     #[test]
     fn jetstream_options_reject_typos_and_non_nats_services() {
@@ -995,13 +1199,13 @@ mod tests {
         };
         assert_eq!(public_ports(&definition, "web"), ["http"]);
         assert!(public_ports(&definition, "backend").is_empty());
-        definition.public = Some(PublicTarget {
+        definition.public = vec![PublicTarget {
             service: "backend".into(),
             port: "http".into(),
-        });
+        }];
         assert!(public_ports(&definition, "web").is_empty());
         assert_eq!(public_ports(&definition, "backend"), ["http"]);
-        definition.public = None;
+        definition.public.clear();
         assert!(public_ports(&definition, "web").is_empty());
         assert!(public_ports(&definition, "backend").is_empty());
     }

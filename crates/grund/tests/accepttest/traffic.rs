@@ -314,6 +314,11 @@ impl Stack {
         Ok(Agent { dir, child })
     }
 
+    pub(super) fn publish_image(&self, app: &str, tag: &str) -> String {
+        self.registry.publish(&format!("acme/{app}"), tag);
+        self.registry.image(&format!("acme/{app}"), tag)
+    }
+
     pub(super) async fn deploy(
         &self,
         organisation: &str,

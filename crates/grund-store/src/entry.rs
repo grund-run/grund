@@ -32,8 +32,12 @@ pub struct RouteRow {
 /// Every live app and its running (not draining) copies, oldest app first.
 pub async fn route_rows(executor: impl PgExecutor<'_>) -> Result<Vec<RouteRow>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT a.app_id, a.organisation_id, COALESCE(stack.name,a.name) AS app_name, o.slug AS organisation_slug, \
-                COALESCE((stack.state->'revisions'->'1'->>'created_at')::timestamptz,a.created_at) AS app_created_at, (s.app_id IS NOT NULL) AS suspended, \
+        "SELECT a.app_id, a.organisation_id, \
+                CASE WHEN stack.state->'revisions'->(stack.state->>'desired_revision')->>'public_service'=member.service \
+                  THEN stack.name ELSE a.name END AS app_name, o.slug AS organisation_slug, \
+                CASE WHEN stack.state->'revisions'->(stack.state->>'desired_revision')->>'public_service'=member.service \
+                  THEN (stack.state->'revisions'->'1'->>'created_at')::timestamptz ELSE a.created_at END AS app_created_at, \
+                (s.app_id IS NOT NULL) AS suspended, \
                 cur.spec AS current_spec, r.replica_id, r.machine_id, rel.spec, \
                 COALESCE(rs.ready, false) AS ready, \
                 (pause.machine_id IS NOT NULL) AS migration_paused, \
@@ -55,7 +59,10 @@ pub async fn route_rows(executor: impl PgExecutor<'_>) -> Result<Vec<RouteRow>, 
            LEFT JOIN grund_machine_migration_pauses pause \
              ON pause.machine_id = m.machine_id AND pause.expires_at > clock_timestamp() \
           WHERE a.deleted_at IS NULL AND (member.app_id IS NULL OR (stack.status NOT IN ('deleted','deleting') \
-            AND stack.state->'revisions'->(stack.state->>'desired_revision')->>'public_service'=member.service)) \
+            AND (stack.state->'revisions'->(stack.state->>'desired_revision')->>'public_service'=member.service \
+              OR EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE( \
+                stack.state->'revisions'->(stack.state->>'desired_revision')->'services'->member.service->'release'->'spec'->'ports', \
+                '[]'::jsonb)) port WHERE port->>'public'='true')))) \
           ORDER BY app_created_at, a.app_id, r.machine_id, r.replica_id",
     )
     .fetch_all(executor)
@@ -166,14 +173,22 @@ pub async fn apps_named(
     label: &str,
 ) -> Result<Vec<AppNameRow>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT a.app_id, COALESCE(stack.name,a.name) AS app_name, o.slug AS organisation_slug, \
-           COALESCE((stack.state->'revisions'->'1'->>'created_at')::timestamptz,a.created_at) AS app_created_at \
+        "SELECT a.app_id, \
+           CASE WHEN stack.state->'revisions'->(stack.state->>'desired_revision')->>'public_service'=member.service \
+             THEN stack.name ELSE a.name END AS app_name, o.slug AS organisation_slug, \
+           CASE WHEN stack.state->'revisions'->(stack.state->>'desired_revision')->>'public_service'=member.service \
+             THEN (stack.state->'revisions'->'1'->>'created_at')::timestamptz ELSE a.created_at END AS app_created_at \
          FROM grund_apps a JOIN grund_organisations o ON o.organisation_id=a.organisation_id \
          LEFT JOIN grund_stack_members member ON member.organisation_id=a.organisation_id AND member.app_id=a.app_id \
          LEFT JOIN grund_stacks stack ON stack.organisation_id=member.organisation_id AND stack.stack_id=member.stack_id \
-         WHERE a.deleted_at IS NULL AND COALESCE(stack.name,a.name)||'-'||o.slug=$1 \
+         WHERE a.deleted_at IS NULL AND \
+           (CASE WHEN stack.state->'revisions'->(stack.state->>'desired_revision')->>'public_service'=member.service \
+             THEN stack.name ELSE a.name END)||'-'||o.slug=$1 \
            AND (member.app_id IS NULL OR (stack.status NOT IN ('deleted','deleting') \
-             AND stack.state->'revisions'->(stack.state->>'desired_revision')->>'public_service'=member.service)) \
+             AND (stack.state->'revisions'->(stack.state->>'desired_revision')->>'public_service'=member.service \
+               OR EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE( \
+                 stack.state->'revisions'->(stack.state->>'desired_revision')->'services'->member.service->'release'->'spec'->'ports', \
+                 '[]'::jsonb)) port WHERE port->>'public'='true')))) \
          ORDER BY app_created_at,a.app_id",
     )
     .bind(label)
@@ -181,18 +196,22 @@ pub async fn apps_named(
     .await
 }
 
-/// An ordinary app name, or the stable owning stack name for its selected public
-/// service. Nonpublic members deliberately have no independent shared address.
+/// An ordinary or independently published member app name, or the owning stack
+/// name for its legacy selected public service. Private members have no address.
 pub async fn public_name(
     executor: impl PgExecutor<'_>,
     app_id: Uuid,
 ) -> Result<Option<String>, sqlx::Error> {
     sqlx::query_scalar(
-        "SELECT COALESCE(stack.name,a.name) FROM grund_apps a \
+        "SELECT CASE WHEN stack.state->'revisions'->(stack.state->>'desired_revision')->>'public_service'=member.service \
+           THEN stack.name ELSE a.name END FROM grund_apps a \
          LEFT JOIN grund_stack_members member ON member.organisation_id=a.organisation_id AND member.app_id=a.app_id \
          LEFT JOIN grund_stacks stack ON stack.organisation_id=member.organisation_id AND stack.stack_id=member.stack_id \
          WHERE a.app_id=$1 AND a.deleted_at IS NULL AND (member.app_id IS NULL OR (stack.status NOT IN ('deleted','deleting') \
-           AND stack.state->'revisions'->(stack.state->>'desired_revision')->>'public_service'=member.service))",
+           AND (stack.state->'revisions'->(stack.state->>'desired_revision')->>'public_service'=member.service \
+             OR EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE( \
+               stack.state->'revisions'->(stack.state->>'desired_revision')->'services'->member.service->'release'->'spec'->'ports', \
+               '[]'::jsonb)) port WHERE port->>'public'='true'))))",
     ).bind(app_id).fetch_optional(executor).await
 }
 
@@ -244,9 +263,14 @@ pub async fn app_by_slug(
         "SELECT a.app_id FROM grund_apps a JOIN grund_organisations o ON o.organisation_id=a.organisation_id \
          LEFT JOIN grund_stack_members member ON member.organisation_id=a.organisation_id AND member.app_id=a.app_id \
          LEFT JOIN grund_stacks stack ON stack.organisation_id=member.organisation_id AND stack.stack_id=member.stack_id \
-         WHERE o.slug=$1 AND COALESCE(stack.name,a.name)=$2 AND a.deleted_at IS NULL \
+         WHERE o.slug=$1 AND \
+           (CASE WHEN stack.state->'revisions'->(stack.state->>'desired_revision')->>'public_service'=member.service \
+             THEN stack.name ELSE a.name END)=$2 AND a.deleted_at IS NULL \
            AND (member.app_id IS NULL OR (stack.status NOT IN ('deleted','deleting') \
-             AND stack.state->'revisions'->(stack.state->>'desired_revision')->>'public_service'=member.service))",
+             AND (stack.state->'revisions'->(stack.state->>'desired_revision')->>'public_service'=member.service \
+               OR EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE( \
+                 stack.state->'revisions'->(stack.state->>'desired_revision')->'services'->member.service->'release'->'spec'->'ports', \
+                 '[]'::jsonb)) port WHERE port->>'public'='true'))))",
     )
     .bind(slug)
     .bind(name)
@@ -450,6 +474,123 @@ mod tests {
                 .iter()
                 .any(|row| row.app_id == second)
         );
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn multiple_public_members_keep_distinct_addresses_and_only_the_selected_revision_routes(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
+        use grund_config::app::spec::{AppName, AppSettings};
+        use grund_domain::app::AppEvent;
+
+        let (org, stack) = (Uuid::now_v7(), Uuid::now_v7());
+        let at = Utc::now();
+        sqlx::query(
+            "INSERT INTO grund_organisations(organisation_id,slug,kind,created_at,stream_version) \
+            VALUES($1,'multi','personal',$2,1)",
+        )
+        .bind(org)
+        .bind(at)
+        .execute(&pool)
+        .await?;
+        let public = serde_json::json!({"release": {"spec": {"ports": [{"public": true}]}}});
+        let private = serde_json::json!({"release": {"spec": {"ports": [{"public": false}]}}});
+        let state = serde_json::json!({
+            "desired_revision": 1,
+            "revisions": {
+                "1": {"created_at": at, "services": {
+                    "web": public, "api": public, "private": private, "removed": public
+                }},
+                "2": {"created_at": at, "services": {"web": private, "api": public, "private": private}}
+            }
+        });
+        sqlx::query(
+            "INSERT INTO grund_stacks(organisation_id,stack_id,name,state,status,stream_version) \
+            VALUES($1,$2,'shop',$3,'deploying',1)",
+        )
+        .bind(org)
+        .bind(stack)
+        .bind(Json(state))
+        .execute(&pool)
+        .await?;
+        let mut members = Vec::new();
+        let mut connection = pool.acquire().await?;
+        for service in ["web", "api", "private", "removed"] {
+            let app = Uuid::now_v7();
+            let name = format!("shop-{service}-abcd");
+            crate::apps::apply_app(
+                app,
+                1,
+                &AppEvent::Created {
+                    organisation_id: org,
+                    name: AppName::parse(&name)?,
+                    settings: AppSettings::default(),
+                    created_by: Uuid::nil(),
+                    created_at: at,
+                },
+                &mut connection,
+            )
+            .await?;
+            sqlx::query("INSERT INTO grund_stack_members(organisation_id,stack_id,service,app_id,app_name,exclusive) \
+                VALUES($1,$2,$3,$4,$5,false)")
+                .bind(org).bind(stack).bind(service).bind(app).bind(&name)
+                .execute(&mut *connection).await?;
+            members.push((service, app, name));
+        }
+        drop(connection);
+        for (service, app, name) in &members {
+            let expected = (*service != "private").then_some(*app);
+            assert_eq!(
+                public_name(&pool, *app).await?,
+                expected.map(|_| name.clone())
+            );
+            assert_eq!(app_by_slug(&pool, "multi", name).await?, expected);
+            assert_eq!(app_by_slug(&pool, "another", name).await?, None);
+            assert_eq!(
+                apps_named(&pool, &format!("{name}-multi"))
+                    .await?
+                    .first()
+                    .map(|row| row.app_id),
+                expected,
+            );
+        }
+        assert!(apps_named(&pool, "shop-multi").await?.is_empty());
+        let rows = route_rows(&pool).await?;
+        assert_eq!(rows.len(), 3);
+        for row in rows {
+            assert!(
+                members
+                    .iter()
+                    .any(|(_, app, name)| *app == row.app_id && *name == row.app_name)
+            );
+        }
+        sqlx::query(
+            "UPDATE grund_stacks SET state=jsonb_set(state,'{desired_revision}','2') \
+            WHERE organisation_id=$1 AND stack_id=$2",
+        )
+        .bind(org)
+        .bind(stack)
+        .execute(&pool)
+        .await?;
+        for (service, app, name) in &members {
+            let expected = (*service == "api").then_some(*app);
+            assert_eq!(
+                public_name(&pool, *app).await?,
+                expected.map(|_| name.clone())
+            );
+            assert_eq!(app_by_slug(&pool, "multi", name).await?, expected);
+            assert_eq!(
+                apps_named(&pool, &format!("{name}-multi"))
+                    .await?
+                    .first()
+                    .map(|row| row.app_id),
+                expected,
+            );
+        }
+        let rows = route_rows(&pool).await?;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].app_name, "shop-api-abcd");
         Ok(())
     }
 
