@@ -578,6 +578,165 @@ async fn an_app_restricted_deploy_token_redeploys_only_the_stack_it_covers() -> 
 }
 
 #[tokio::test]
+async fn an_app_restricted_deploy_token_covers_the_remaining_stack_after_a_service_is_removed()
+-> anyhow::Result<()> {
+    let registry = FakeRegistry::start().await?;
+    let Some((given, when, then)) =
+        testcase_configured(&[("GRUND_INSECURE_REGISTRIES", &registry.host)]).await?
+    else {
+        return Ok(());
+    };
+    let owner = given.a_signed_in_account().await?;
+    let org = owner.username.as_str();
+    let (_, client, result) = given.testcase.another_browser();
+    let _agent = a_machine(&when, &then, org, "stack-box").await?;
+    registry.publish("acme/producer", "1");
+    registry.publish("acme/producer", "2");
+    registry.publish("acme/consumer", "1");
+    let producer_image = registry.image("acme/producer", "1");
+    let consumer_image = registry.image("acme/consumer", "1");
+    call(
+        &when,
+        &then,
+        "DeployStack",
+        json!({"organisation":org,"yaml":yaml(&producer_image, Some(&consumer_image)),
+            "idempotencyKey":"initial"}),
+    )
+    .await?;
+    then.status(200)?;
+    let first = ready(&when, &then, org).await?;
+    ensure!(
+        first["services"]
+            .as_array()
+            .is_some_and(|services| services.len() == 2),
+        "both services must converge before removal: {first}"
+    );
+    let reduced = yaml(&producer_image, None);
+    call(
+        &when,
+        &then,
+        "DeployStack",
+        json!({"organisation":org,"yaml":reduced,"expectedVersion":first["version"],
+            "confirmedRemovals":["consumer"],"idempotencyKey":"remove-consumer"}),
+    )
+    .await?;
+    then.status(200)?;
+    let remaining = ready(&when, &then, org).await?;
+    ensure!(
+        remaining["services"]
+            .as_array()
+            .is_some_and(|services| services.len() == 1),
+        "removed service remains desired: {remaining}"
+    );
+    let apps = vec![
+        child(&remaining, "producer")?["appName"]
+            .as_str()
+            .context("remaining app name")?
+            .to_string(),
+    ];
+    let bot = token(
+        &when,
+        &then,
+        org,
+        "remaining-service-bot",
+        "TOKEN_SCOPE_DEPLOY",
+        &apps,
+    )
+    .await?;
+    let read = token_call(
+        &client,
+        &result,
+        &bot,
+        "GetStack",
+        json!({"organisation":org,"name":"ordered"}),
+    )
+    .await?;
+    result.status(200)?;
+    ensure!(
+        read["stack"]["yaml"] == reduced
+            && read["stack"]["services"]
+                .as_array()
+                .is_some_and(|services| services.len() == 1)
+            && child(&read["stack"], "producer")?["appName"] == apps[0],
+        "remaining-app grant did not read the remaining stack: {read}"
+    );
+    let updated_image = registry.image("acme/producer", "2");
+    let updated = yaml(&updated_image, None);
+    let preview = token_call(
+        &client,
+        &result,
+        &bot,
+        "PreviewStack",
+        json!({"organisation":org,"yaml":updated}),
+    )
+    .await?;
+    result.status(200)?;
+    ensure!(
+        preview["preview"]["services"]
+            .as_array()
+            .is_some_and(|services| services.len() == 1),
+        "remaining-app grant did not preview the remaining stack: {preview}"
+    );
+    let deployed = token_call(
+        &client,
+        &result,
+        &bot,
+        "DeployStack",
+        json!({"organisation":org,"yaml":updated,"expectedVersion":remaining["version"],
+            "idempotencyKey":"remaining-service-update"}),
+    )
+    .await?;
+    result.status(200)?;
+    ensure!(
+        deployed["stack"]["yaml"] == updated,
+        "remaining-app grant did not deploy its update: {deployed}"
+    );
+    let updated_stack = ready(&when, &then, org).await?;
+    ensure!(
+        ready_on(&app(&when, &then, org, &apps[0]).await?, 2) == 1,
+        "remaining service's scoped-token update never went live"
+    );
+    for method in ["PreviewStack", "DeployStack"] {
+        let mut request = json!({"organisation":org,
+            "yaml":yaml(&updated_image, Some(&consumer_image))});
+        if method == "DeployStack" {
+            request["expectedVersion"] = updated_stack["version"].clone();
+            request["idempotencyKey"] = json!("restore-consumer");
+        }
+        let refused = token_call(&client, &result, &bot, method, request).await?;
+        result.status(404)?.connect_code("not_found")?;
+        ensure!(
+            refused.get("stack").is_none() && refused.get("preview").is_none(),
+            "remaining-app grant exposed a re-added service: {refused}"
+        );
+    }
+    let (outsider, other_when, other_then) = given.testcase.another_browser();
+    let other = outsider.a_signed_in_account().await?;
+    call(
+        &other_when,
+        &other_then,
+        "DeployStack",
+        json!({"organisation":other.username,"yaml":updated,"idempotencyKey":"other-stack"}),
+    )
+    .await?;
+    other_then.status(200)?;
+    for (method, fields) in [
+        ("GetStack", json!({"name":"ordered"})),
+        ("PreviewStack", json!({"yaml":updated})),
+        (
+            "DeployStack",
+            json!({"yaml":updated,"idempotencyKey":"cross-org"}),
+        ),
+    ] {
+        let mut request = fields;
+        request["organisation"] = json!(other.username);
+        token_call(&client, &result, &bot, method, request).await?;
+        result.status(404)?.connect_code("not_found")?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_postgres_service_moves_between_majors_with_its_volume_and_credentials_but_not_to_another_family()
 -> anyhow::Result<()> {
     let registry = FakeRegistry::start().await?;

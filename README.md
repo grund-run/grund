@@ -1127,8 +1127,10 @@ What a token can do:
   `full` may also change stacks, delete apps and manage machines, custom domains,
   members, invitations and registry logins. Stack changes need a full organisation
   token, with one exception: a deploy token whose `--apps` list covers every
-  current and retained backing app of an existing stack may redeploy that stack
-  (a release bot's grant). It cannot create stacks, add or remove services, set
+  current backing app, plus removed apps still live or retaining replicas or volumes,
+  of an existing stack may redeploy that stack (a release bot's grant). A removed,
+  deleted app with no replicas or retained volumes no longer needs coverage; re-adding
+  it still does. It cannot create stacks, add or remove services, set
   launch secrets or refresh templates. App-limited tokens can read a stack only
   when their allowlist covers those backing apps; organisation-wide deploy tokens
   read every stack but change none. Neither scope reaches the account, sessions,

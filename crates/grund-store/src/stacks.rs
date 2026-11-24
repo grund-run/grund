@@ -59,7 +59,29 @@ pub async fn list(
     after: Option<Uuid>,
     allowed_apps: Option<&[String]>,
 ) -> Result<Vec<Row>, sqlx::Error> {
-    sqlx::query_as("SELECT stack_id,state,stream_version FROM grund_stacks s WHERE organisation_id=$1 AND ($2::uuid IS NULL OR stack_id>$2) AND ($4::text[] IS NULL OR (EXISTS (SELECT 1 FROM grund_stack_members m WHERE m.organisation_id=s.organisation_id AND m.stack_id=s.stack_id) AND NOT EXISTS (SELECT 1 FROM grund_stack_members m WHERE m.organisation_id=s.organisation_id AND m.stack_id=s.stack_id AND NOT (m.app_name=ANY($4))))) ORDER BY stack_id LIMIT $3")
+    sqlx::query_as(
+        "SELECT stack_id,state,stream_version FROM grund_stacks s \
+         WHERE organisation_id=$1 AND ($2::uuid IS NULL OR stack_id>$2) \
+         AND ($4::text[] IS NULL OR ( \
+           EXISTS (SELECT 1 FROM grund_stack_members m \
+                   WHERE m.organisation_id=s.organisation_id AND m.stack_id=s.stack_id) \
+           AND NOT EXISTS ( \
+             SELECT 1 FROM grund_stack_members m \
+             WHERE m.organisation_id=s.organisation_id AND m.stack_id=s.stack_id \
+             AND NOT (m.app_name=ANY($4)) AND ( \
+               COALESCE((s.state->'revisions'->(s.state->>'desired_revision')->'services') ? m.service,true) \
+               OR NOT EXISTS (SELECT 1 FROM grund_apps a \
+                              WHERE a.organisation_id=m.organisation_id AND a.app_id=m.app_id \
+                              AND a.deleted_at IS NOT NULL) \
+               OR EXISTS (SELECT 1 FROM grund_replicas r \
+                          WHERE r.organisation_id=m.organisation_id AND r.app_id=m.app_id) \
+               OR EXISTS (SELECT 1 FROM grund_volumes v \
+                          WHERE v.organisation_id=m.organisation_id AND v.app_id=m.app_id \
+                          AND v.status<>'deleted') \
+             ) \
+           ) \
+         )) ORDER BY stack_id LIMIT $3",
+    )
         .bind(org).bind(after).bind(limit.clamp(1,101)).bind(allowed_apps).fetch_all(executor).await
 }
 
@@ -93,14 +115,35 @@ pub async fn live_service_links(
         .bind(org).bind(app).fetch_all(executor).await
 }
 
-/// Requires the complete owned bundle, including retained children, in the app grant.
+/// Removed identities stop requiring a grant only after deletion, replica drain and data purge.
 pub async fn allowed(
     executor: impl PgExecutor<'_>,
     org: Uuid,
     stack: Uuid,
     apps: &[String],
 ) -> Result<bool, sqlx::Error> {
-    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM grund_stack_members WHERE organisation_id=$1 AND stack_id=$2) AND NOT EXISTS (SELECT 1 FROM grund_stack_members WHERE organisation_id=$1 AND stack_id=$2 AND NOT (app_name=ANY($3)))")
+    sqlx::query_scalar(
+        "SELECT EXISTS ( \
+           SELECT 1 FROM grund_stacks s WHERE s.organisation_id=$1 AND s.stack_id=$2 \
+           AND EXISTS (SELECT 1 FROM grund_stack_members m \
+                       WHERE m.organisation_id=s.organisation_id AND m.stack_id=s.stack_id) \
+           AND NOT EXISTS ( \
+             SELECT 1 FROM grund_stack_members m \
+             WHERE m.organisation_id=s.organisation_id AND m.stack_id=s.stack_id \
+             AND NOT (m.app_name=ANY($3)) AND ( \
+               COALESCE((s.state->'revisions'->(s.state->>'desired_revision')->'services') ? m.service,true) \
+               OR NOT EXISTS (SELECT 1 FROM grund_apps a \
+                              WHERE a.organisation_id=m.organisation_id AND a.app_id=m.app_id \
+                              AND a.deleted_at IS NOT NULL) \
+               OR EXISTS (SELECT 1 FROM grund_replicas r \
+                          WHERE r.organisation_id=m.organisation_id AND r.app_id=m.app_id) \
+               OR EXISTS (SELECT 1 FROM grund_volumes v \
+                          WHERE v.organisation_id=m.organisation_id AND v.app_id=m.app_id \
+                          AND v.status<>'deleted') \
+             ) \
+           ) \
+         )",
+    )
         .bind(org).bind(stack).bind(apps).fetch_one(executor).await
 }
 

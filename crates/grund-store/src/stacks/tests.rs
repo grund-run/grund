@@ -232,10 +232,11 @@ async fn a_long_stack_operation_hydrates_identically_from_snapshot_and_history(
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn a_stack_grant_must_include_removed_children_not_only_the_current_revision(
+async fn a_stack_grant_can_omit_only_removed_deleted_children_without_replicas_or_data(
     pool: sqlx::PgPool,
 ) -> anyhow::Result<()> {
     let (events, org, id, mut revision, mut operation) = fixture(&pool).await?;
+    let removed_app = revision.services["web"].app_id;
     let mut surviving = revision.services.remove("web").unwrap();
     surviving.app_id = Uuid::now_v7();
     surviving.app_name = "survivor".into();
@@ -296,6 +297,103 @@ async fn a_stack_grant_must_include_removed_children_not_only_the_current_revisi
         id
     );
     assert_eq!(list(&pool, org, 1, None, None).await?[0].stack_id, id);
+    sqlx::query(
+        "UPDATE grund_apps SET deleted_at=clock_timestamp() WHERE organisation_id=$1 AND app_id=$2",
+    )
+    .bind(org)
+    .bind(removed_app)
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "UPDATE grund_stack_members SET stopping=true WHERE organisation_id=$1 AND app_id=$2",
+    )
+    .bind(org)
+    .bind(removed_app)
+    .execute(&pool)
+    .await?;
+    assert!(allowed(&pool, org, id, &current_only).await?);
+    assert_eq!(
+        list(&pool, org, 1, None, Some(&current_only)).await?[0].stack_id,
+        id
+    );
+    assert!(!allowed(&pool, Uuid::now_v7(), id, &current_only).await?);
+    assert!(
+        list(&pool, Uuid::now_v7(), 1, None, Some(&current_only))
+            .await?
+            .is_empty()
+    );
+    assert!(!allowed(&pool, org, id, &[]).await?);
+    for state in ["running", "draining"] {
+        let replica = Uuid::now_v7();
+        sqlx::query("INSERT INTO grund_replicas(replica_id,app_id,organisation_id,machine_id,slot,release,placement,state,placed_at) VALUES($1,$2,$3,$4,0,1,0,$5,clock_timestamp())")
+            .bind(replica).bind(removed_app).bind(org).bind(Uuid::now_v7()).bind(state)
+            .execute(&pool).await?;
+        assert!(!allowed(&pool, org, id, &current_only).await?);
+        assert!(allowed(&pool, org, id, &complete).await?);
+        assert!(
+            list(&pool, org, 1, None, Some(&current_only))
+                .await?
+                .is_empty()
+        );
+        sqlx::query("DELETE FROM grund_replicas WHERE replica_id=$1")
+            .bind(replica)
+            .execute(&pool)
+            .await?;
+    }
+    let volume = Uuid::now_v7();
+    sqlx::query("INSERT INTO grund_volumes(organisation_id,app_id,volume_id,name,path,status,created_at,stream_version) VALUES($1,$2,$3,'data','/data','available',clock_timestamp(),1)")
+        .bind(org).bind(removed_app).bind(volume).execute(&pool).await?;
+    for status in ["requested", "available", "attached", "deleting"] {
+        sqlx::query("UPDATE grund_volumes SET status=$3 WHERE organisation_id=$1 AND volume_id=$2")
+            .bind(org)
+            .bind(volume)
+            .bind(status)
+            .execute(&pool)
+            .await?;
+        assert!(!allowed(&pool, org, id, &current_only).await?);
+        assert!(allowed(&pool, org, id, &complete).await?);
+        assert!(
+            list(&pool, org, 1, None, Some(&current_only))
+                .await?
+                .is_empty()
+        );
+    }
+    sqlx::query(
+        "UPDATE grund_volumes SET status='deleted' WHERE organisation_id=$1 AND volume_id=$2",
+    )
+    .bind(org)
+    .bind(volume)
+    .execute(&pool)
+    .await?;
+    assert!(allowed(&pool, org, id, &current_only).await?);
+    assert_eq!(
+        list(&pool, org, 1, None, Some(&current_only)).await?[0].stack_id,
+        id
+    );
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_deleted_current_service_still_requires_coverage_for_stack_restoration(
+    pool: sqlx::PgPool,
+) -> anyhow::Result<()> {
+    let (_, org, id, revision, _) = fixture(&pool).await?;
+    let app = revision.services["web"].app_id;
+    sqlx::query(
+        "UPDATE grund_apps SET deleted_at=clock_timestamp() WHERE organisation_id=$1 AND app_id=$2",
+    )
+    .bind(org)
+    .bind(app)
+    .execute(&pool)
+    .await?;
+    let unrelated = vec!["other".into()];
+    assert!(!allowed(&pool, org, id, &unrelated).await?);
+    assert!(
+        list(&pool, org, 1, None, Some(&unrelated))
+            .await?
+            .is_empty()
+    );
+    assert!(allowed(&pool, org, id, &["backing".into()]).await?);
     Ok(())
 }
 
