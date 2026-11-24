@@ -87,6 +87,7 @@ fn failed(error: DomainsError) -> ConnectError {
         | DomainsError::LastPublicDomain
         | DomainsError::NamespaceConflict(_)
         | DomainsError::AppDomainRequired => ConnectError::failed_precondition(message),
+        DomainsError::PlacementChanged => ConnectError::aborted(message),
         DomainsError::Internal(cause) => {
             tracing::error!(error = %format!("{cause:#}"), "domain API call failed");
             ConnectError::internal("grund could not finish that")

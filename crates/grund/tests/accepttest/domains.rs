@@ -187,8 +187,41 @@ async fn two_public_stack_services_keep_their_bound_domains_after_a_rerelease() 
     };
     let mut current = wait_ready().await?;
     let domains = [a_custom_name(), a_custom_name()];
-    for (name, app) in domains.iter().zip(&names) {
+    for (index, (name, app)) in domains.iter().zip(&names).enumerate() {
         verified(&edge, when, then, org, name).await?;
+        if index == 0 {
+            let url =
+                when.testcase.fixture.database_url().ok_or_else(|| {
+                    anyhow::anyhow!("placement conflict needs a spawned database")
+                })?;
+            let pool = sqlx::PgPool::connect(&url).await?;
+            let mut placement = pool.begin().await?;
+            sqlx::query(
+                "SELECT pg_advisory_xact_lock(hashtextextended( \
+                 'grund-apps-placement:' || organisation_id::text,0)) \
+                 FROM grund_organisations WHERE slug=$1",
+            )
+            .bind(org)
+            .execute(&mut *placement)
+            .await?;
+            let answer = domain_call(
+                when,
+                then,
+                "BindDomain",
+                json!({"organisation": org, "name": name, "app": app}),
+            )
+            .await?;
+            refused_with(&answer, 409, "placement_changed")?;
+            anyhow::ensure!(answer.1["code"] == "aborted", "{}", answer.1);
+            let unchanged = status_of(when, then, org, name).await?;
+            anyhow::ensure!(
+                unchanged["status"] == "DOMAIN_STATUS_VERIFIED"
+                    && unchanged["app"].as_str().is_none_or(str::is_empty),
+                "a placement conflict committed the binding: {unchanged}"
+            );
+            placement.rollback().await?;
+            pool.close().await;
+        }
         let answer = domain_call(
             when,
             then,

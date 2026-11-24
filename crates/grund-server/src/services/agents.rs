@@ -141,6 +141,10 @@ pub enum VmOutcome {
     PoolFull,
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("app placement changed; retry publishing the document")]
+pub(crate) struct PlacementChanged;
+
 /// Control-link flows.
 #[derive(Clone)]
 pub struct Agents {
@@ -469,10 +473,9 @@ impl Agents {
         .bind(organisation_id)
         .fetch_one(&mut *connection)
         .await?;
-        anyhow::ensure!(
-            placement,
-            "app placement changed; retry publishing the document"
-        );
+        if !placement {
+            return Err(PlacementChanged.into());
+        }
         let generation = agents::lock_generation(&mut *connection, host_machine_id).await? + 1;
         let previous = agents::document(&mut *connection, host_machine_id)
             .await?

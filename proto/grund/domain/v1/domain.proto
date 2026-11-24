@@ -37,7 +37,7 @@ import "google/protobuf/timestamp.proto";
 // what DNS answered), app_not_found, app_not_public (no public HTTP port),
 // app_domain_limit, namespace_conflict (overlapping authority, live children,
 // or an attempt to move a generated hostname), app_domain_required,
-// subdomain_invalid.
+// subdomain_invalid, placement_changed (aborted; retry the whole request).
 service DomainService {
   // By name.
   rpc ListDomains(ListDomainsRequest) returns (ListDomainsResponse) {
@@ -64,6 +64,7 @@ service DomainService {
   // Owners and admins. Binds a verified domain to an app with a public
   // HTTP port (the port its address serves); binding it to another app
   // moves it. At most 10 per app.
+  // Concurrent app placement may abort the transaction; retry the whole call.
   rpc BindDomain(BindDomainRequest) returns (BindDomainResponse) {
     option idempotency_level = IDEMPOTENT;
   }

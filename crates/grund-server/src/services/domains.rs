@@ -230,8 +230,10 @@ pub enum DomainsError {
         "an app subdomain must be one lowercase DNS label, 1–63 letters, digits or hyphens, without a leading or trailing hyphen"
     )]
     InvalidSubdomain,
+    #[error("app placement changed; retry the domain request")]
+    PlacementChanged,
     #[error(transparent)]
-    Internal(#[from] anyhow::Error),
+    Internal(anyhow::Error),
 }
 
 impl DomainsError {
@@ -256,6 +258,7 @@ impl DomainsError {
             DomainsError::NamespaceConflict(_) => "namespace_conflict",
             DomainsError::AppDomainRequired => "app_domain_required",
             DomainsError::InvalidSubdomain => "subdomain_invalid",
+            DomainsError::PlacementChanged => "placement_changed",
             DomainsError::Internal(_) => "internal",
         }
     }
@@ -290,6 +293,16 @@ impl From<WorkError> for DomainsError {
 impl From<sqlx::Error> for DomainsError {
     fn from(error: sqlx::Error) -> Self {
         DomainsError::Internal(error.into())
+    }
+}
+
+impl From<anyhow::Error> for DomainsError {
+    fn from(error: anyhow::Error) -> Self {
+        if error.is::<crate::services::agents::PlacementChanged>() {
+            Self::PlacementChanged
+        } else {
+            Self::Internal(error)
+        }
     }
 }
 

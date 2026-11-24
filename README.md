@@ -803,6 +803,8 @@ domain with `grund domain bind <domain> <app>`, using the service's `appName`
 from `grund stack status sight-dev --json`. Bindings stay on that app across stack
 releases. In custom-only mode, deploy privately first, verify and bind each
 domain, then deploy with `stack.public`.
+If placement changes during binding, the call returns `aborted` with reason
+`placement_changed` without committing the binding; retry the whole bind request.
 
 For `template: seaweedfs` in a service named `storage`, its consumer declares
 `depends_on: [storage]` and uses these environment entries:
