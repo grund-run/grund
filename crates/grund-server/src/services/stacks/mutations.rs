@@ -1305,6 +1305,199 @@ mod tests {
     use std::sync::Arc;
 
     #[sqlx::test(migrations = false)]
+    async fn compensation_keeps_the_previous_singleton_and_drains_its_crash_looping_successor(
+        pool: sqlx::PgPool,
+    ) -> anyhow::Result<()> {
+        let state = state(pool).await?;
+        let bundle = bundle(&state, true).await?;
+        let at = Utc::now();
+        sqlx::query("UPDATE grund_machines SET minted_by='account:test' WHERE machine_id=$1")
+            .bind(bundle.machine)
+            .execute(&state.pool)
+            .await?;
+        sqlx::query("INSERT INTO grund_machine_presence(machine_id,last_seen_at,capabilities) VALUES($1,$2,$3)")
+            .bind(bundle.machine).bind(at).bind(Json(serde_json::json!({
+                "apps": true, "stack_services": true, "resources_allocatable": true,
+                "volumes": true, "arch": "x86_64", "memory_mib": 4096, "cpu_millis": 4000
+            }))).execute(&state.pool).await?;
+        sqlx::query("INSERT INTO grund_replica_status(replica_id,machine_id,state,ready,ready_since,ever_ready,observed_at) \
+            SELECT replica_id,machine_id,'running',true,$2,true,$3 FROM grund_replicas WHERE machine_id=$1")
+            .bind(bundle.machine).bind(at - Duration::minutes(1)).bind(at)
+            .execute(&state.pool).await?;
+        let old = apps::app_replicas(&state.pool, bundle.consumer).await?[0].replica_id;
+        let mut work = Work::begin(&state.events, Uuid::now_v7(), "test").await?;
+        work.allow_stack(bundle.id);
+        for id in [bundle.producer, bundle.consumer] {
+            let app = work.load_app(id).await?;
+            let rollout_id = app.rollout.unwrap().rollout_id;
+            work.app_decide(id, |_| {
+                Ok((
+                    vec![
+                        AppEvent::RolloutSucceeded {
+                            rollout_id,
+                            succeeded_at: at,
+                        },
+                        AppEvent::CurrentReleaseSet {
+                            release: 1,
+                            set_at: at,
+                        },
+                    ],
+                    (),
+                ))
+            })
+            .await?;
+        }
+        work.stack(
+            bundle.id,
+            Command::Complete {
+                operation_id: bundle.former.id,
+                applied_revision: 1,
+                status: Status::Ready,
+                purge_after: None,
+                failure: None,
+            },
+        )
+        .await?;
+        let mut revision = work.load_stack(bundle.id).await?.revisions[&1].clone();
+        revision.number = 2;
+        let service = revision.services.get_mut("consumer").unwrap();
+        service.exclusive = false;
+        service.settings.auto_rollback = false;
+        service.settings.rollout.min_ready_seconds = 0;
+        service.release.number = 2;
+        service
+            .release
+            .spec
+            .env
+            .push(grund_config::app::spec::EnvVar {
+                name: "UPDATE".into(),
+                value: "new".into(),
+            });
+        let op = operation(Kind::Deploy, 2, 1, vec!["consumer".into()], at);
+        work.stack(
+            bundle.id,
+            Command::Revise {
+                revision,
+                operation: op,
+            },
+        )
+        .await?;
+        work.commit().await?;
+        let stacks = state.stacks();
+        stacks.reconcile_one(bundle.org, bundle.id).await?;
+        state
+            .apps()
+            .reconcile_app(bundle.consumer, bundle.org)
+            .await?;
+        let replicas = apps::app_replicas(&state.pool, bundle.consumer).await?;
+        let failed = replicas
+            .iter()
+            .find(|r| r.release == 2)
+            .context("surge placed")?
+            .replica_id;
+        sqlx::query("INSERT INTO grund_replica_status(replica_id,machine_id,state,ready,ever_ready,restarts,last_exit_code,observed_at) \
+            VALUES($1,$2,'exited',false,false,3,1,clock_timestamp())")
+            .bind(failed).bind(bundle.machine).execute(&state.pool).await?;
+        state
+            .apps()
+            .reconcile_app(bundle.consumer, bundle.org)
+            .await?;
+        assert!(
+            apps::app(&state.pool, bundle.consumer)
+                .await?
+                .unwrap()
+                .halted
+        );
+        stacks.reconcile_one(bundle.org, bundle.id).await?;
+        let compensating = store::get(&state.pool, bundle.org, bundle.id)
+            .await?
+            .unwrap()
+            .state
+            .0;
+        assert!(compensating.operation.as_ref().unwrap().compensating);
+        assert_eq!(
+            compensating.revisions[&3].services["consumer"]
+                .release
+                .number,
+            1
+        );
+        stacks.reconcile_one(bundle.org, bundle.id).await?;
+        state
+            .apps()
+            .reconcile_app(bundle.consumer, bundle.org)
+            .await?;
+        let replicas = apps::app_replicas(&state.pool, bundle.consumer).await?;
+        assert!(
+            replicas
+                .iter()
+                .any(|r| r.replica_id == old && r.state == "running")
+        );
+        assert!(
+            replicas
+                .iter()
+                .any(|r| r.replica_id == failed && r.state == "draining")
+        );
+        stacks.reconcile_one(bundle.org, bundle.id).await?;
+        assert!(
+            store::get(&state.pool, bundle.org, bundle.id)
+                .await?
+                .unwrap()
+                .state
+                .0
+                .operation
+                .is_some()
+        );
+        let member = store::member(&state.pool, bundle.org, bundle.consumer)
+            .await?
+            .unwrap();
+        let mut connection = state.pool.acquire().await?;
+        assert!(
+            apps::record_stack_receipt(
+                &mut connection,
+                bundle.org,
+                bundle.machine,
+                failed,
+                member.required_generation,
+                member.operation_id.unwrap(),
+            )
+            .await?
+        );
+        drop(connection);
+        state
+            .apps()
+            .reconcile_app(bundle.consumer, bundle.org)
+            .await?;
+        for _ in 0..3 {
+            stacks.reconcile_one(bundle.org, bundle.id).await?;
+        }
+        let restored = store::get(&state.pool, bundle.org, bundle.id)
+            .await?
+            .unwrap()
+            .state
+            .0;
+        assert_eq!(restored.status, Status::Ready);
+        assert!(restored.operation.is_none());
+        assert_eq!(
+            restored.revisions[&restored.applied_revision].rollback_of,
+            Some(1)
+        );
+        assert_ne!(restored.failure.as_deref(), Some("rollback_failed"));
+        let app = apps::app(&state.pool, bundle.consumer).await?.unwrap();
+        assert!(!app.halted);
+        assert_eq!(app.current_release, Some(1));
+        assert_eq!(
+            apps::releases(&state.pool, bundle.consumer, 100)
+                .await?
+                .len(),
+            2
+        );
+        let replicas = apps::app_replicas(&state.pool, bundle.consumer).await?;
+        assert_eq!(replicas.len(), 1);
+        assert_eq!(replicas[0].replica_id, old);
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = false)]
     async fn supplied_secrets_cannot_replace_generated_clickhouse_admin_credentials(
         pool: sqlx::PgPool,
     ) -> anyhow::Result<()> {

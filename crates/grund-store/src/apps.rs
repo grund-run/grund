@@ -513,6 +513,24 @@ pub async fn apply_app(
             )
             .await?;
         }
+        AppEvent::CurrentReleaseResumed {
+            release,
+            resumed_at,
+        } => {
+            sqlx::query("UPDATE grund_apps SET halted = false, rollout = NULL WHERE app_id = $1")
+                .bind(app_id)
+                .execute(&mut *connection)
+                .await?;
+            activity(
+                connection,
+                app_id,
+                version,
+                *resumed_at,
+                "current_release_resumed",
+                json!({ "release": release }),
+            )
+            .await?;
+        }
         AppEvent::Deleted {
             deleted_by,
             deleted_at,

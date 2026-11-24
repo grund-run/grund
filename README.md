@@ -836,6 +836,10 @@ longer than 30 minutes, status shows `operation_deadline`; stopping continues
 without restarting services or deleting their data. A returning machine does not
 shorten the recovery window. **A singleton stateful restart briefly interrupts
 that service.** Rollback pins images and secret versions, not database contents.
+Automatic compensation reuses a matching current release and drains its failed
+successor instead of starting another copy beside it. Services already replaced
+still need a new rollback release. Use `restart: exclusive` for singleton services
+that cannot start while their previous process is running.
 Change backing apps through their stack; `grund stack --help` lists lifecycle
 commands and protected secret input.
 

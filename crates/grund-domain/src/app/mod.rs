@@ -246,6 +246,10 @@ pub enum AppEvent {
         release: u32,
         set_at: DateTime<Utc>,
     },
+    CurrentReleaseResumed {
+        release: u32,
+        resumed_at: DateTime<Utc>,
+    },
     Deleted {
         deleted_by: Uuid,
         deleted_at: DateTime<Utc>,
@@ -301,7 +305,7 @@ pub struct App {
     pub current_release: Option<u32>,
     pub rollout: Option<Rollout>,
     /// A release failed with automatic rollback off: nothing changes until
-    /// the next release.
+    /// the next release or the current execution is resumed.
     pub halted: bool,
     pub replicas: Vec<Replica>,
     pub next_placement: u64,
@@ -436,6 +440,10 @@ impl mire::Aggregate for App {
                 self.halted = !rolled_back;
             }
             AppEvent::CurrentReleaseSet { release, .. } => self.current_release = Some(*release),
+            AppEvent::CurrentReleaseResumed { .. } => {
+                self.halted = false;
+                self.rollout = None;
+            }
             AppEvent::Deleted { purge_after, .. } => {
                 self.deleted = true;
                 self.purge_after = *purge_after;
@@ -531,6 +539,11 @@ pub enum AppCommand {
         expected_release: u32,
         secret_versions: Vec<SecretVersion>,
         rollout_id: Uuid,
+        at: DateTime<Utc>,
+    },
+    /// Resumes the current execution without creating a release or replacing replicas.
+    ResumeCurrent {
+        expected_release: u32,
         at: DateTime<Utc>,
     },
     Delete {
@@ -676,6 +689,33 @@ impl mire::Command for AppCommand {
                         *serial = true;
                     }
                 }
+                Ok(events)
+            }
+            AppCommand::ResumeCurrent {
+                expected_release,
+                at,
+            } => {
+                if app.current_release != Some(expected_release) {
+                    return Err(AppError::RestartStale);
+                }
+                if app.release(expected_release).is_none() {
+                    return Err(AppError::ReleaseNotFound);
+                }
+                if !app.halted && app.rollout.is_none() {
+                    return Ok(Vec::new());
+                }
+                let mut events = Vec::with_capacity(if app.rollout.is_some() { 2 } else { 1 });
+                if let Some(rollout) = &app.rollout {
+                    events.push(AppEvent::RolloutSuperseded {
+                        rollout_id: rollout.rollout_id,
+                        by: expected_release,
+                        superseded_at: at,
+                    });
+                }
+                events.push(AppEvent::CurrentReleaseResumed {
+                    release: expected_release,
+                    resumed_at: at,
+                });
                 Ok(events)
             }
             AppCommand::Release {
@@ -974,6 +1014,120 @@ mod tests {
         }
         assert!(!app.halted);
         assert_eq!(app.target(), Some(2));
+    }
+
+    fn running() -> App {
+        let mut app = created();
+        for event in release(&app) {
+            app.apply(&event);
+        }
+        app.apply(&AppEvent::RolloutSucceeded {
+            rollout_id: Uuid::from_u128(9),
+            succeeded_at: at(),
+        });
+        app.apply(&AppEvent::CurrentReleaseSet {
+            release: 1,
+            set_at: at(),
+        });
+        app.apply(&AppEvent::ReplicaPlaced {
+            replica_id: Uuid::from_u128(5),
+            slot: 0,
+            release: 1,
+            machine_id: Uuid::from_u128(7),
+            placement: 0,
+            reason: PlaceReason::Rollout,
+            placed_at: at(),
+        });
+        app
+    }
+
+    #[test]
+    fn a_halted_current_execution_resumes_without_a_new_release_or_replica() {
+        let mut app = running();
+        for event in release(&app) {
+            app.apply(&event);
+        }
+        app.apply(&AppEvent::RolloutFailed {
+            rollout_id: Uuid::from_u128(9),
+            reason: "crashed".into(),
+            rolled_back: false,
+            failed_at: at(),
+        });
+        assert!(app.halted);
+        assert_eq!(app.target(), None);
+        let mut expected = app.clone();
+        expected.halted = false;
+        let command = AppCommand::ResumeCurrent {
+            expected_release: 1,
+            at: at(),
+        };
+        let events = command.clone().handle(&app).unwrap();
+        assert_eq!(
+            events,
+            vec![AppEvent::CurrentReleaseResumed {
+                release: 1,
+                resumed_at: at(),
+            }]
+        );
+        for event in events {
+            app.apply(&event);
+        }
+        assert_eq!(app, expected);
+        assert_eq!(app.current_release, Some(1));
+        assert_eq!(app.target(), Some(1));
+        assert_eq!(app.releases.len(), 2);
+        assert!(command.handle(&app).unwrap().is_empty());
+    }
+
+    #[test]
+    fn resuming_refuses_a_changed_or_missing_current_release() {
+        let mut app = running();
+        let resume = |expected_release| AppCommand::ResumeCurrent {
+            expected_release,
+            at: at(),
+        };
+        assert_eq!(resume(2).handle(&app), Err(AppError::RestartStale));
+        assert!(resume(1).handle(&app).unwrap().is_empty());
+        app.current_release = None;
+        assert_eq!(resume(1).handle(&app), Err(AppError::RestartStale));
+        app.current_release = Some(2);
+        assert_eq!(resume(2).handle(&app), Err(AppError::ReleaseNotFound));
+    }
+
+    #[test]
+    fn resuming_the_current_execution_supersedes_an_active_rollout() {
+        let mut app = running();
+        for event in release(&app) {
+            app.apply(&event);
+        }
+        assert_eq!(app.target(), Some(2));
+        let mut expected = app.clone();
+        expected.rollout = None;
+        let command = AppCommand::ResumeCurrent {
+            expected_release: 1,
+            at: at(),
+        };
+        let events = command.clone().handle(&app).unwrap();
+        assert_eq!(
+            events,
+            vec![
+                AppEvent::RolloutSuperseded {
+                    rollout_id: Uuid::from_u128(9),
+                    by: 1,
+                    superseded_at: at(),
+                },
+                AppEvent::CurrentReleaseResumed {
+                    release: 1,
+                    resumed_at: at(),
+                },
+            ]
+        );
+        for event in events {
+            app.apply(&event);
+        }
+        assert_eq!(app, expected);
+        assert_eq!(app.target(), Some(1));
+        assert!(command.handle(&app).unwrap().is_empty());
     }
 
     #[test]

@@ -376,13 +376,27 @@ impl Stacks {
                 )
                 .await
                 .map_err(anyhow::Error::from)?;
+            let resume = op.compensating
+                && app.current_release == Some(service.release.number)
+                && app.release(service.release.number).is_some_and(|release| {
+                    release.spec == service.release.spec
+                        && release.image_digest == service.release.image_digest
+                        && release.secret_versions == service.release.secret_versions
+                });
             let next = app.latest_release().map_or(1, |r| r.number + 1);
             let number = op.releases.get(&name).copied().unwrap_or(next);
-            if next != number {
+            if !resume && next != number {
                 return Err(Error::Conflict);
             }
-            work.app(service.app_id, release_command(&service.release, now))
-                .await?;
+            let command = if resume {
+                AppCommand::ResumeCurrent {
+                    expected_release: number,
+                    at: now,
+                }
+            } else {
+                release_command(&service.release, now)
+            };
+            work.app(service.app_id, command).await?;
             op.releases.insert(name.clone(), number);
             store::gate(work.sql(), org, id, &name, true, false, Some(op.id)).await?;
             op.step = Step::Applying;
@@ -934,7 +948,12 @@ impl Stacks {
         for name in &op.order {
             if let Some(service) = prior.services.get_mut(name) {
                 let app = work.load_app(service.app_id).await?;
-                service.release.number = app.latest_release().map_or(1, |r| r.number + 1);
+                let current = service.execution_release(name, None, &app);
+                service.release.number = if !app.deleted && app.current_release == Some(current) {
+                    current
+                } else {
+                    app.latest_release().map_or(1, |r| r.number + 1)
+                };
                 op.releases.insert(name.clone(), service.release.number);
             }
         }
